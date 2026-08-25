@@ -7,11 +7,11 @@ use super::super::*;
 use super::super::{LspServer, MessageType, md5, normalize_package_separator};
 #[cfg(test)]
 use perl_lsp_rs_core::config::SystemIncProbeOutcome;
-use perl_module::resolution::use_lib::{UseLibPath, resolve_use_lib_paths_from_source};
-use perl_module::resolution::{
+use perl_module::{
     ModuleUriResolution, build_effective_inc_roots,
     resolve_module_path as resolve_workspace_module_path, resolve_module_uri_with_effective_inc,
 };
+use perl_module::{UseLibPath, resolve_use_lib_paths_from_source};
 use perl_parser_core::hir::{IncRootAction, lower_ast};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -221,7 +221,7 @@ fn resolve_hir_use_lib_paths_and_cancelled(
             continue;
         }
 
-        let resolved = perl_module::resolution::use_lib::resolve_use_lib_paths(
+        let resolved = perl_module::resolve_use_lib_paths(
             std::slice::from_ref(&fact.path),
             workspace_root,
             file_dir,
@@ -680,8 +680,8 @@ mod tests {
     use super::*;
     use crate::runtime::workspace_folder::WorkspaceFolderState;
     use crate::state::DocumentState;
-    use perl_module::resolution::IncRootKind;
-    use perl_module::resolution::build_effective_inc_roots;
+    use perl_module::IncRootKind;
+    use perl_module::build_effective_inc_roots;
     use std::fs;
 
     // --- workspace root detection warning tests ---

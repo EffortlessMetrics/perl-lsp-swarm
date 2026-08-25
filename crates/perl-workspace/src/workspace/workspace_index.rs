@@ -70,7 +70,7 @@ use parking_lot::{ArcMutexGuard, Mutex, RawMutex, RwLock};
 use perl_position_tracking::{WireLocation, WirePosition, WireRange};
 use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, EdgeFact, EntityFact, EntityId, EntityKind, FileId,
-    PackageEdge, PackageEdgeKind, Provenance,
+    OccurrenceFact, OccurrenceId, OccurrenceKind, PackageEdge, PackageEdgeKind, Provenance,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -1500,6 +1500,14 @@ impl WorkspaceIndex {
         )
     }
 
+    fn sort_and_dedup_definition_candidates(entries: &mut Vec<DefinitionCandidate>) {
+        entries.sort_by(|left, right| {
+            Self::definition_candidate_sort_key(left)
+                .cmp(&Self::definition_candidate_sort_key(right))
+        });
+        entries.dedup();
+    }
+
     fn rebuild_symbol_cache(
         files: &HashMap<String, FileIndex>,
         symbols: &mut HashMap<String, Vec<DefinitionCandidate>>,
@@ -1521,11 +1529,7 @@ impl WorkspaceIndex {
             }
         }
         for entries in symbols.values_mut() {
-            entries.sort_by(|left, right| {
-                Self::definition_candidate_sort_key(left)
-                    .cmp(&Self::definition_candidate_sort_key(right))
-            });
-            entries.dedup();
+            Self::sort_and_dedup_definition_candidates(entries);
         }
     }
 
@@ -1563,24 +1567,27 @@ impl WorkspaceIndex {
         symbols: &mut HashMap<String, Vec<DefinitionCandidate>>,
         file_index: &FileIndex,
     ) {
+        let mut touched_keys = HashSet::new();
         for sym in &file_index.symbols {
             if let Some(ref qname) = sym.qualified_name {
-                symbols.entry(qname.clone()).or_default().push(DefinitionCandidate {
+                let key = qname.clone();
+                symbols.entry(key.clone()).or_default().push(DefinitionCandidate {
                     location: Location { uri: sym.uri.clone(), range: sym.range },
                     kind: sym.kind,
                 });
+                touched_keys.insert(key);
             }
-            symbols.entry(sym.name.clone()).or_default().push(DefinitionCandidate {
+            let key = sym.name.clone();
+            symbols.entry(key.clone()).or_default().push(DefinitionCandidate {
                 location: Location { uri: sym.uri.clone(), range: sym.range },
                 kind: sym.kind,
             });
+            touched_keys.insert(key);
         }
-        for entries in symbols.values_mut() {
-            entries.sort_by(|left, right| {
-                Self::definition_candidate_sort_key(left)
-                    .cmp(&Self::definition_candidate_sort_key(right))
-            });
-            entries.dedup();
+        for key in touched_keys {
+            if let Some(entries) = symbols.get_mut(&key) {
+                Self::sort_and_dedup_definition_candidates(entries);
+            }
         }
     }
 
@@ -3574,6 +3581,9 @@ impl WorkspaceIndex {
         reindex_metrics::record_eval_sub(eval_sub_start.elapsed());
         let dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
             eval_sub_triples.iter().map(|(_, _, occ)| occ.clone()).collect();
+        let (hir_boundary_anchors, hir_boundary_occurrences) = dynamic_isa_facts(uri, ast, file_id);
+        let mut dynamic_boundaries = dynamic_boundaries;
+        dynamic_boundaries.extend(hir_boundary_occurrences);
         #[cfg(test)]
         let generated_member_start = Instant::now();
         let generated_member_facts =
@@ -3604,6 +3614,7 @@ impl WorkspaceIndex {
         all_synthetic_entities.extend(synthetic_entities_from_generated);
         let mut all_synthetic_anchors = synthetic_anchors_from_eval;
         all_synthetic_anchors.extend(synthetic_anchors_from_generated);
+        all_synthetic_anchors.extend(hir_boundary_anchors);
 
         // Build the canonical fact shard.
         // Synthetic entities/anchors are now passed to the builder so that
@@ -3663,8 +3674,14 @@ impl WorkspaceIndex {
             crate::semantic::eval_sub_extractor::extract_eval_sub_boundaries(ast, file_id);
         #[cfg(test)]
         reindex_metrics::record_eval_sub(eval_sub_start.elapsed());
-        let dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
+        let (hir_boundary_anchors, hir_boundary_occurrences) = dynamic_isa_facts(uri, ast, file_id);
+        // The refs path's contract (see the doc comment above) keeps every
+        // non-reference extractor identical to `build_canonical_fact_shard_for_ast`;
+        // the isa boundary occurrences must reach the shard here exactly as
+        // they do there, or the paired anchors dangle without occurrences.
+        let mut dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
             eval_sub_triples.iter().map(|(_, _, occ)| occ.clone()).collect();
+        dynamic_boundaries.extend(hir_boundary_occurrences);
         #[cfg(test)]
         let generated_member_start = Instant::now();
         let generated_member_facts =
@@ -3687,6 +3704,7 @@ impl WorkspaceIndex {
         all_synthetic_entities.extend(synthetic_entities_from_generated);
         let mut all_synthetic_anchors = synthetic_anchors_from_eval;
         all_synthetic_anchors.extend(synthetic_anchors_from_generated);
+        all_synthetic_anchors.extend(hir_boundary_anchors);
 
         crate::semantic::facts::build_canonical_fact_shard(
             uri,
@@ -5254,6 +5272,49 @@ fn package_edges_from_stash_graph(
             ))
         })
         .collect()
+}
+
+fn dynamic_isa_facts(
+    uri: &str,
+    ast: &Node,
+    file_id: FileId,
+) -> (Vec<AnchorFact>, Vec<OccurrenceFact>) {
+    let hir = perl_parser_core::hir::lower_ast(ast);
+    let mut anchors = Vec::new();
+    let mut occurrences = Vec::new();
+    for boundary in hir.stash_graph.dynamic_boundaries.iter().filter(|boundary| {
+        boundary.kind == perl_parser_core::hir::StashDynamicBoundaryKind::DynamicInheritance
+    }) {
+        let mut anchor_hasher = DefaultHasher::new();
+        uri.hash(&mut anchor_hasher);
+        boundary.range.start.hash(&mut anchor_hasher);
+        boundary.range.end.hash(&mut anchor_hasher);
+        boundary.kind.hash(&mut anchor_hasher);
+        let anchor_id = AnchorId(anchor_hasher.finish());
+        let mut occurrence_hasher = DefaultHasher::new();
+        anchor_id.hash(&mut occurrence_hasher);
+        1u8.hash(&mut occurrence_hasher);
+        let occurrence_id = OccurrenceId(occurrence_hasher.finish());
+        anchors.push(AnchorFact {
+            id: anchor_id,
+            file_id,
+            span_start_byte: boundary.range.start.min(u32::MAX as usize) as u32,
+            span_end_byte: boundary.range.end.min(u32::MAX as usize) as u32,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        });
+        occurrences.push(OccurrenceFact {
+            id: occurrence_id,
+            kind: OccurrenceKind::DynamicBoundary,
+            entity_id: None,
+            anchor_id,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        });
+    }
+    (anchors, occurrences)
 }
 
 /// AST visitor for extracting symbols and references
@@ -10163,6 +10224,71 @@ Utils::process_data();
     }
 
     #[test]
+    fn incremental_add_symbols_only_normalizes_touched_name_buckets() {
+        let mut symbols = HashMap::new();
+        let untouched = vec![
+            DefinitionCandidate {
+                location: Location {
+                    uri: "file:///z.pm".to_string(),
+                    range: Range {
+                        start: Position { byte: 0, line: 0, column: 0 },
+                        end: Position { byte: 1, line: 0, column: 1 },
+                    },
+                },
+                kind: SymbolKind::Subroutine,
+            },
+            DefinitionCandidate {
+                location: Location {
+                    uri: "file:///a.pm".to_string(),
+                    range: Range {
+                        start: Position { byte: 0, line: 0, column: 0 },
+                        end: Position { byte: 1, line: 0, column: 1 },
+                    },
+                },
+                kind: SymbolKind::Subroutine,
+            },
+        ];
+        symbols.insert("untouched".to_string(), untouched.clone());
+        symbols.insert(
+            "shared".to_string(),
+            vec![DefinitionCandidate {
+                location: Location {
+                    uri: "file:///z.pm".to_string(),
+                    range: Range {
+                        start: Position { byte: 0, line: 0, column: 0 },
+                        end: Position { byte: 1, line: 0, column: 1 },
+                    },
+                },
+                kind: SymbolKind::Subroutine,
+            }],
+        );
+
+        let symbol = WorkspaceSymbol {
+            name: "shared".to_string(),
+            kind: SymbolKind::Subroutine,
+            uri: "file:///a.pm".to_string(),
+            range: Range {
+                start: Position { byte: 0, line: 0, column: 0 },
+                end: Position { byte: 1, line: 0, column: 1 },
+            },
+            qualified_name: Some("Pkg::shared".to_string()),
+            documentation: None,
+            container_name: Some("Pkg".to_string()),
+            has_body: true,
+            workspace_folder_uri: None,
+            is_lexical: false,
+        };
+        let file_index = FileIndex { symbols: vec![symbol], ..FileIndex::default() };
+
+        WorkspaceIndex::incremental_add_symbols(&mut symbols, &file_index);
+
+        assert_eq!(symbols["untouched"], untouched);
+        assert_eq!(symbols["shared"][0].location.uri, "file:///a.pm");
+        assert_eq!(symbols["shared"].len(), 2);
+        assert_eq!(symbols["Pkg::shared"].len(), 1);
+    }
+
+    #[test]
     fn test_remove_file_preserves_shadowed_symbols() {
         let index = WorkspaceIndex::new();
 
@@ -13905,6 +14031,19 @@ mod extraction_bundle_shadow_compare {
     }
 
     // ── Targeted edge cases ──────────────────────────────────────────────
+
+    #[test]
+    fn parity_dynamic_isa_boundary() {
+        // An interpolated `push @ISA` creates a DynamicInheritance boundary
+        // whose occurrence facts must reach the canonical shard identically
+        // through both extraction paths -- the refs path dropped them while
+        // keeping the paired anchors (dangling-anchor asymmetry).
+        let text = "package Child;\npush @ISA, \"Base::$suffix\";\nsub m { 1; }\n";
+        let uri = "file:///edge/dynamic_isa.pl";
+        assert_parity("dynamic_isa", uri, text);
+        assert_unified_canonical_parity("dynamic_isa", uri, text);
+        assert_unified_legacy_is_superset("dynamic_isa", uri, text);
+    }
 
     #[test]
     fn parity_comment_only() {

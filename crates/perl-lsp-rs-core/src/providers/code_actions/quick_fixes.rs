@@ -1418,7 +1418,7 @@ pub fn fix_parse_error(
                 is_preferred: true,
             });
         }
-        "PL001" | "PL002"
+        "PL001" | "PL002" | "PL003"
             if diagnostic.message.to_ascii_lowercase().contains("missing semicolon") =>
         {
             // PL001/PL002 are general parse error codes. When the message indicates a missing
@@ -1450,6 +1450,27 @@ pub fn fix_parse_error(
                     is_preferred: true,
                 });
             }
+        }
+        "PL003" => {
+            // Unexpected EOF has no interior delimiter location. Offer the
+            // bounded fallback only when source evidence supports an
+            // unclosed block; PL003 also covers incomplete strings and other
+            // delimiters where adding a brace would be unrelated.
+            if !has_unclosed_brace(source) {
+                return actions;
+            }
+            actions.push(CodeAction {
+                title: "Add closing brace at end of file".to_string(),
+                kind: CodeActionKind::QuickFix,
+                diagnostics: vec![code.to_string()],
+                edit: CodeActionEdit {
+                    changes: vec![TextEdit {
+                        location: SourceLocation { start: source.len(), end: source.len() },
+                        new_text: "\n}".to_string(),
+                    }],
+                },
+                is_preferred: true,
+            });
         }
         "parse-error-unclosedstring" => {
             // Add closing quote
@@ -1524,6 +1545,73 @@ pub fn fix_parse_error(
     }
 
     actions
+}
+
+/// Conservatively detect an unmatched block opener without treating braces in
+/// ordinary quoted strings or comments as block structure. False negatives are
+/// intentional: PL003 does not carry delimiter-kind metadata, so uncertainty
+/// must suppress the edit rather than authorize an unrelated token.
+fn has_unclosed_brace(source: &str) -> bool {
+    let mut depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut in_comment = false;
+
+    let mut chars = source.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if in_comment {
+            if ch == '\n' {
+                in_comment = false;
+            }
+            continue;
+        }
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if (in_single || in_double) && ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if !in_double && ch == '\'' {
+            in_single = !in_single;
+            continue;
+        }
+        if !in_single && ch == '"' {
+            in_double = !in_double;
+            continue;
+        }
+        if !in_single && !in_double && ch == '#' {
+            in_comment = true;
+            continue;
+        }
+        if !in_single && !in_double && ch == '/' {
+            // Regex and substitution delimiters need Perl-aware lexing.
+            return false;
+        }
+        if !in_single && !in_double && ch == '<' && chars.peek() == Some(&'<') {
+            // Heredocs can contain arbitrary brace text until a later
+            // terminator, so the source is ambiguous without lexer facts.
+            return false;
+        }
+        if in_single || in_double {
+            continue;
+        }
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    depth == 1 && paren_depth == 0 && bracket_depth == 0 && !in_single && !in_double && !in_comment
 }
 
 /// Fix unused parameter by adding underscore prefix

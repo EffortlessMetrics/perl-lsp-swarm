@@ -57,7 +57,7 @@ mod uses;
 
 use crate::ast::{Node, NodeKind};
 use crate::pragma_tracker::{PragmaQueryCursor, PragmaState};
-use perl_module::import::resolve_known_export_tag;
+use perl_module::resolve_known_export_tag;
 use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};

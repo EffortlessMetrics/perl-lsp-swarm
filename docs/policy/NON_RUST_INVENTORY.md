@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11645 |
-| Rust-family files | 3515 |
-| Non-Rust files | 8130 |
-| Allowlisted | 5805 |
+| Total tracked files | 11670 |
+| Rust-family files | 3529 |
+| Non-Rust files | 8141 |
+| Allowlisted | 5816 |
 | Unclassified | 2325 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 407 |
-| documentation | 2664 |
+| config | 413 |
+| documentation | 2667 |
 | generated | 2 |
 | production | 317 |
 | test | 1936 |
-| tooling | 479 |
+| tooling | 481 |
 | unclassified | 2325 |
 
 ## Unclassified files
@@ -2393,6 +2393,7 @@
 | `.cargo/config.toml` | config | `non-rust-cargo-config` | release/ci |
 | `.cargo/mutants.toml` | config | `non-rust-cargo-config` | release/ci |
 | `.changes/header.tpl.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.changes/unreleased/product-0000-Changed-module-facade-seal.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10004-Changed-201500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10100-Added-025500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10532-Added-121200.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2406,6 +2407,7 @@
 | `.changes/unreleased/product-11950-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12022-Removed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12024-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12085-Fixed-103000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12094-Fixed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2654,6 +2656,7 @@
 | `.ci/fixtures/zed-perl-upstream/zed-core/perl-defaults.patch` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/zed-defaults.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/zed-perl/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/zed-perl-upstream/zed-perl/debug_adapter_schemas/perl-dap.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/zed-perl/extension.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/zed-perl/languages/perl/config.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/zed-perl/languages/perl/semantic_token_rules.json` | config | `non-rust-ci-config` | release/ci |
@@ -2747,6 +2750,7 @@
 | `.ci/receipts/schemas/workflow-trigger-lint.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/worktree-lease.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/release/evidence.toml` | config | `non-rust-ci-config` | release/ci |
+| `.ci/risk-tags.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/agent-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-ux.schema.json` | config | `non-rust-ci-config` | release/ci |
@@ -2866,6 +2870,8 @@
 | `.github/actions/setup-rust/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/setup-vscode-toolchain/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/upload-receipt/action.yml` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/upload-receipt/test_validate_paths.py` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/upload-receipt/validate_paths.py` | config | `non-rust-github-actions` | release/ci |
 | `.github/ci-config.yml` | config | `non-rust-github-policy` | release/ci |
 | `.github/copilot-instructions.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.github/dependabot.yml` | config | `non-rust-github-policy` | release/ci |
@@ -4528,6 +4534,7 @@
 | `docs/explanation/RUST_VS_C_COMPARISON.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/explanation/SLASH_DISAMBIGUATION.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/explanation/TREE_SITTER_COMPATIBILITY.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/explanation/prototype-signature-semicolon-boundary.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/forensics/.template-real-workspace-baseline.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/forensics/2026-04-11-pragma-phase-block-case-study.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/forensics/2026-04-11-three-swarm-cooperation.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6001,6 +6008,7 @@
 | `policy/clippy-lints.d/70-iteration-suppression.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/clippy-lints.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/framework-adapters.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/generated-allowlist.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/generated-status-contract.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/generated-status-evidence.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/install-surface-registry.toml` | config | `non-rust-policy-ledgers` | release/ci |
@@ -6037,6 +6045,7 @@
 | `schemas/perl_compiler_proof_policy.v1.schema.json` | config | `non-rust-compiler-proof-policy-schema` | compiler |
 | `schemas/perl_core_harness_runner_parity.v1.schema.json` | config | `non-rust-core-harness-runner-parity-schema` | compiler |
 | `schemas/perl_core_harness_runner_plan.v1.schema.json` | config | `non-rust-core-harness-runner-plan-schema` | compiler |
+| `schemas/perl_core_harness_runner_plan.v2.schema.json` | config | `non-rust-core-harness-runner-plan-v2-schema` | compiler |
 | `schemas/perl_core_harness_target_matrix.v1.schema.json` | config | `non-rust-core-harness-target-matrix-schema` | compiler |
 | `schemas/perl_core_harness_target_matrix_index.v1.schema.json` | config | `non-rust-core-harness-target-matrix-index-schema` | compiler |
 | `schemas/perl_core_harness_target_matrix_part.v1.schema.json` | config | `non-rust-core-harness-target-matrix-part-schema` | compiler |
@@ -6247,6 +6256,7 @@
 | `scripts/ci/test_validate_policy_checks_inventory.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_risk_packs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_trust_lanes.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_verify_gate_receipt_freshness.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_verify_homebrew_formula_digests.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_verify_rustfmt_receipt.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_workflow_security_ratchet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6258,6 +6268,7 @@
 | `scripts/ci/validate_provider_fact_reads.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_risk_packs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_trust_lanes.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/verify_gate_receipt_freshness.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/verify_homebrew_formula_digests.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/verify_rustfmt_receipt.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/workflow_security_ratchet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |

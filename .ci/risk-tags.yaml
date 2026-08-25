@@ -1,0 +1,55 @@
+# CI scope risk taxonomy (schema v2)
+#
+# The Rust classifier in xtask/src/tasks/ci_scope.rs is the executable
+# authority. This file is the reviewable policy surface: it records the
+# vocabulary, detection intent, and the existing proof lanes promoted by each
+# risk. Lane names must remain names understood by the gate policy.
+
+schema_version: 1
+authority: xtask/src/tasks/ci_scope.rs
+
+detection:
+  mode: path_prefix_and_crate
+  content_scan: not_yet_implemented
+  note: >-
+    Path and crate evidence is deterministic and fail-closed. Content keyword
+    scanning remains a follow-up when a reviewed diff-content contract exists.
+
+risk_tags:
+  concurrency:
+    examples: [async, concurrent, thread, mutex, rwlock, arc]
+    promotes: [thread_sanitizer]
+  parser_recovery:
+    examples: ["/recovery/", "/expressions/", "parser recovery"]
+    promotes: [bounded_parser_fuzz]
+  offset_math:
+    examples: [position, offset, utf, column]
+    promotes: []
+  path_normalization:
+    examples: [uri, workspace-folder, file_uri]
+    promotes: []
+  perf_hot_path:
+    examples: [benchmarks/, benches/, criterion/]
+    promotes: [perf_regression]
+  public_api:
+    examples: [perl-parser, perl-lexer, perl-parser-core, perl-lsp-rs, perl-dap]
+    promotes: []
+    note: >-
+      The existing public API/semver workflow remains the authority for
+      compatibility checks. This classifier records the risk but does not
+      claim a PR-fast lane until that workflow is wired into the scope planner.
+  dep_change:
+    examples: [Cargo.toml, Cargo.lock]
+    promotes: []
+    note: >-
+      Dependency changes already select the standard publish/security lanes
+      through the workspace-root rule; they are not duplicated as heavy lanes.
+  security_surface:
+    examples: [auth, eval, exec, deserializ, shell]
+    promotes: [security_audit]
+
+invariants:
+  - risk_tags are sorted and deduplicated in ci-scope JSON
+  - promoted lanes are deduplicated even when multiple tags select them
+  - every promoted lane has a machine-readable reason
+  - no risk tag widens a docs-only diff into a code lane

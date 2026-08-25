@@ -312,15 +312,17 @@ enum Commands {
         command: PrSubcommand,
     },
 
-    /// Verify merge-base ancestry proof before closing a PR.
+    /// Verify landing and content-survival proof without evaluating semantic completion.
     ///
-    /// Implements CLOSE_PROOF_POLICY.md Rule 1: runs
-    /// `git merge-base --is-ancestor <commit> <canonical-main>` and emits
-    /// a structured receipt.
+    /// Implements the landing-proof layer of CLOSE_PROOF_POLICY.md: runs
+    /// `git merge-base --is-ancestor <commit> <canonical-main>` and emits a
+    /// structured `landing_proof.v1` receipt. Landing ancestry never
+    /// authorizes an issue close; `semantic_completion` is always
+    /// `not_evaluated`.
     ///
-    /// Exit 0 = reachable (safe to close), exit 2 = not reachable (do not close),
+    /// Exit 0 = landing proof passes, exit 2 = commit is not reachable,
     /// exit 1 = error (git failed).
-    #[command(name = "pr-close-proof")]
+    #[command(name = "landing-proof")]
     PrCloseProof {
         /// Commit SHA to verify.
         #[arg(long)]
@@ -2537,6 +2539,18 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+
+    /// Check tracked generated artifacts against policy/generated-allowlist.toml.
+    #[command(name = "check-generated")]
+    CheckGenerated {
+        /// Enforcement mode.
+        #[arg(long, value_enum, default_value = "advisory")]
+        mode: tasks::generated_policy::GeneratedPolicyMode,
+
+        /// Override the default JSON receipt path.
+        #[arg(long)]
+        json: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
@@ -4536,7 +4550,8 @@ fn run_cli(cli: Cli) -> Result<()> {
             })?;
             if !reachable {
                 // Exit 2: not ancestor — distinct from 1 (error).
-                // CLOSE_PROOF_POLICY.md: do not close if not reachable.
+                // CLOSE_PROOF_POLICY.md: landing proof failed; this result
+                // carries no issue-close authority in either direction.
                 std::process::exit(2);
             }
             Ok(())
@@ -5865,6 +5880,10 @@ fn run_cli(cli: Cli) -> Result<()> {
                     root_override,
                 },
             )
+        }
+        Commands::CheckGenerated { mode, json } => {
+            let root = utils::project_root()?;
+            tasks::generated_policy::run(&root, mode, json)
         }
         Commands::FreshnessCheck {
             base,
