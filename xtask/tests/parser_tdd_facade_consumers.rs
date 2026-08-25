@@ -7,22 +7,63 @@
 //! compatibility exports until #11385, so it is excluded here. Any
 //! re-introduction elsewhere must register an owned, conditioned exception
 //! below instead of silently returning.
+//!
+//! Detection normalizes each source before matching so formatting cannot hide
+//! a violation: line and block comments are stripped, then every
+//! `perl_parser ::` path head and brace-group membership is scanned with
+//! whitespace-insensitive boundaries. Multi-line forms like
+//!
+//! ```ignore
+//! use perl_parser::{
+//!     Parser,
+//!     tdd_basic::TestGenerator,
+//! };
+//! ```
+//!
+//! are rejected exactly like their single-line equivalents, matching the
+//! pre-image shape this cutover removed from
+//! `crates/perl-lsp-rs/src/runtime/mod.rs`.
+//!
+//! The facade's `compat` escape hatch is covered as well: while #11385 has
+//! not removed `perl_parser::compat::{tdd_basic, tdd_workflow, test_generator,
+//! test_runner}`, a consumer such as
+//! `use perl_parser::compat::test_generator::TestGenerator;` reaches the same
+//! authority and is rejected with a `perl_parser::compat::...` token. Importing
+//! the bare `compat` module without a governed segment stays allowed.
+//!
+//! Governed scan roots are the workspace `crates` tree plus the root-level
+//! members `xtask/src` and `fuzz/fuzz_targets`; `crates/perl-parser/` itself
+//! is excluded because it is the facade owner until #11385.
+//! `proptest::test_runner` and similar foreign heads never match because
+//! every hit must anchor on the `perl_parser` path head.
+//!
+//! Known limitation: comment stripping is lexical and does not tokenize
+//! string literals, so a `//` or unbalanced `/*` inside a string can hide the
+//! remainder of that line from the scan. This mirrors the precision of the
+//! sibling semantic facade guard and stays on the safe side for import
+//! statements.
 
-use std::{fs, path::Path, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 const FACADE_CRATE_PREFIX: &str = "crates/perl-parser/";
+const FACADE_HEAD: &str = "perl_parser";
 
-const FORBIDDEN_TDD_FACADE_TOKENS: &[&str] = &[
-    "perl_parser::tdd_basic",
-    "perl_parser::tdd_workflow",
-    "perl_parser::tdd",
-    "perl_parser::test_generator",
-    "perl_parser::test_runner",
-    "perl_parser::TestGenerator",
-    "perl_parser::TestFramework",
-    "perl_parser::TestRunner",
-    "perl_parser::TddWorkflow",
-];
+/// Scan roots for governed consumer sources. Root-level workspace members
+/// (`xtask`, `fuzz`) are scanned explicitly alongside `crates`.
+const SCAN_ROOTS: &[&str] = &["crates", "xtask/src", "fuzz/fuzz_targets"];
+
+/// Leading path segments of `perl-parser` modules that re-export TDD and
+/// test-generation authority.
+const FORBIDDEN_FACADE_SEGMENTS: &[&str] =
+    &["tdd", "tdd_basic", "tdd_workflow", "test_generator", "test_runner"];
+
+/// Root re-export items of those same TDD modules. These only match in a
+/// `perl_parser ::` path-head or brace-group membership context, never bare.
+const FORBIDDEN_ROOT_REEXPORT_ITEMS: &[&str] =
+    &["TestFramework", "TestGenerator", "TestRunner", "TddWorkflow"];
 
 struct TemporaryException {
     path: &'static str,
@@ -39,21 +80,171 @@ fn repo_root() -> PathBuf {
     root
 }
 
-fn code_without_line_comments(source: &str) -> String {
-    source
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n")
+/// Strip line comments and (nested) block comments while preserving all other
+/// structure, including newlines and brace groups.
+fn code_without_comments(source: &str) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    let mut out = String::with_capacity(source.len());
+    let mut index = 0;
+    let mut block_depth = 0usize;
+    while index < chars.len() {
+        if block_depth == 0 && chars[index] == '/' && chars.get(index + 1) == Some(&'/') {
+            while index < chars.len() && chars[index] != '\n' {
+                index += 1;
+            }
+        } else if chars[index] == '/' && chars.get(index + 1) == Some(&'*') {
+            block_depth += 1;
+            index += 2;
+        } else if block_depth > 0 && chars[index] == '*' && chars.get(index + 1) == Some(&'/') {
+            block_depth -= 1;
+            index += 2;
+        } else {
+            if block_depth == 0 {
+                out.push(chars[index]);
+            }
+            index += 1;
+        }
+    }
+    out
 }
 
-fn contains_facade_token(code: &str, token: &str) -> bool {
-    code.match_indices(token).any(|(index, _)| {
-        code[index + token.len()..]
-            .chars()
-            .next()
-            .is_none_or(|next| !(next.is_ascii_alphanumeric() || next == '_'))
-    })
+fn skip_whitespace(chars: &[char], mut index: usize) -> usize {
+    while index < chars.len() && chars[index].is_whitespace() {
+        index += 1;
+    }
+    index
+}
+
+fn read_identifier(chars: &[char], start: usize, end: usize) -> String {
+    let mut ident = String::new();
+    let mut index = start;
+    while index < end && (chars[index].is_ascii_alphanumeric() || chars[index] == '_') {
+        ident.push(chars[index]);
+        index += 1;
+    }
+    ident
+}
+
+fn skip_to_identifier_end(chars: &[char], start: usize) -> usize {
+    let mut index = start;
+    while index < chars.len() && (chars[index].is_ascii_alphanumeric() || chars[index] == '_') {
+        index += 1;
+    }
+    index
+}
+
+fn is_forbidden_ident(ident: &str) -> bool {
+    FORBIDDEN_FACADE_SEGMENTS.contains(&ident) || FORBIDDEN_ROOT_REEXPORT_ITEMS.contains(&ident)
+}
+
+/// Record a forbidden identifier under its governing path-head token name,
+/// threading the `compat` escape-hatch infix through the hit label.
+fn record_forbidden_ident(ident: &str, compat: bool, hits: &mut Vec<String>) {
+    if is_forbidden_ident(ident) {
+        if compat {
+            hits.push(format!("{FACADE_HEAD}::compat::{ident}"));
+        } else {
+            hits.push(format!("{FACADE_HEAD}::{ident}"));
+        }
+    }
+}
+
+/// Record the leading identifier of one brace-group member span, descending
+/// into nested groups (for example `test_runner::{TestKind, TestRunner}`).
+fn record_member(chars: &[char], start: usize, end: usize, compat: bool, hits: &mut Vec<String>) {
+    let member_start = skip_whitespace(chars, start);
+    if member_start >= end {
+        return;
+    }
+    let ident = read_identifier(chars, member_start, end);
+    record_forbidden_ident(&ident, compat, hits);
+    let mut cursor = member_start + ident.len();
+    while cursor < end {
+        if chars[cursor] == '{' {
+            cursor = scan_brace_group(chars, cursor + 1, compat, hits);
+        } else {
+            cursor += 1;
+        }
+    }
+}
+
+/// Walk one brace group starting just past `{`. Split top-level members on
+/// commas and return the index just past the matching `}`.
+fn scan_brace_group(chars: &[char], start: usize, compat: bool, hits: &mut Vec<String>) -> usize {
+    let mut depth = 1usize;
+    let mut member_start = start;
+    let mut index = start;
+    while index < chars.len() {
+        match chars[index] {
+            '{' => {
+                depth += 1;
+                index += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    record_member(chars, member_start, index, compat, hits);
+                    return index + 1;
+                }
+                index += 1;
+            }
+            ',' if depth == 1 => {
+                record_member(chars, member_start, index, compat, hits);
+                member_start = index + 1;
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    index
+}
+
+/// Consume one `::`-continuation of a `perl_parser` path head. A leading
+/// `compat` segment is transparent: scanning resumes after it with the
+/// `compat` infix enabled so escape-hatch consumers stay detected. Returns
+/// the index the outer scan should resume from.
+fn scan_facade_path(chars: &[char], start: usize, compat: bool, hits: &mut Vec<String>) -> usize {
+    let mut cursor = skip_whitespace(chars, start);
+    if chars.get(cursor) != Some(&':') {
+        return start;
+    }
+    cursor = skip_whitespace(chars, cursor + 1);
+    if chars.get(cursor) != Some(&':') {
+        return start;
+    }
+    cursor = skip_whitespace(chars, cursor + 1);
+    match chars.get(cursor) {
+        Some('{') => scan_brace_group(chars, cursor + 1, compat, hits),
+        Some(_) => {
+            let ident_end = skip_to_identifier_end(chars, cursor);
+            let ident = read_identifier(chars, cursor, ident_end);
+            if ident == "compat" && !compat {
+                return scan_facade_path(chars, ident_end, true, hits).max(start);
+            }
+            record_forbidden_ident(&ident, compat, hits);
+            ident_end.max(start)
+        }
+        None => start,
+    }
+}
+
+fn forbidden_facade_references(code: &str) -> Vec<String> {
+    let chars: Vec<char> = code.chars().collect();
+    let head: Vec<char> = FACADE_HEAD.chars().collect();
+    let mut hits: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index + head.len() <= chars.len() {
+        if chars[index..index + head.len()] != head[..]
+            || index > 0 && (chars[index - 1].is_ascii_alphanumeric() || chars[index - 1] == '_')
+        {
+            index += 1;
+            continue;
+        }
+        index = scan_facade_path(&chars, index + head.len(), false, &mut hits);
+    }
+    hits.sort();
+    hits.dedup();
+    hits
 }
 
 fn collect_rs_files(
@@ -95,7 +286,9 @@ fn unregistered_facade_imports() -> (Vec<(String, String)>, Vec<String>) {
     let root = repo_root();
     let mut files = Vec::new();
     let mut failures = Vec::new();
-    collect_rs_files(&root.join("crates"), "crates", &mut files, &mut failures);
+    for scan_root in SCAN_ROOTS {
+        collect_rs_files(&root.join(scan_root), scan_root, &mut files, &mut failures);
+    }
     files.sort();
 
     let mut violations = Vec::new();
@@ -107,14 +300,12 @@ fn unregistered_facade_imports() -> (Vec<(String, String)>, Vec<String>) {
                 continue;
             }
         };
-        let code = code_without_line_comments(&source);
-        for token in FORBIDDEN_TDD_FACADE_TOKENS {
-            if contains_facade_token(&code, token)
-                && !TEMPORARY_EXCEPTIONS
-                    .iter()
-                    .any(|exception| exception.path == relative && exception.token == *token)
+        for hit in forbidden_facade_references(&code_without_comments(&source)) {
+            if !TEMPORARY_EXCEPTIONS
+                .iter()
+                .any(|exception| exception.path == relative && exception.token == hit)
             {
-                violations.push((relative.clone(), (*token).to_string()));
+                violations.push((relative.clone(), hit));
             }
         }
     }
@@ -126,7 +317,7 @@ fn no_consumer_imports_tdd_authority_through_perl_parser() {
     let (violations, failures) = unregistered_facade_imports();
     assert!(
         failures.is_empty(),
-        "governed scan must reach every crate file (issue #11382): {failures:?}"
+        "governed scan must reach every governed file (issue #11382): {failures:?}"
     );
     assert!(
         violations.is_empty(),
@@ -155,7 +346,7 @@ fn temporary_exceptions_are_unique_owned_and_still_consumed() {
 
         assert!(
             fs::read_to_string(root.join(exception.path))
-                .is_ok_and(|source| code_without_line_comments(&source).contains(exception.token)),
+                .is_ok_and(|source| code_without_comments(&source).contains(exception.token)),
             "stale exception {} / {} must be removed",
             exception.path,
             exception.token
@@ -164,7 +355,7 @@ fn temporary_exceptions_are_unique_owned_and_still_consumed() {
 }
 
 #[test]
-fn a_new_tdd_facade_import_is_rejected() {
+fn single_line_direct_path_imports_are_rejected() {
     let source = "\
 use perl_parser::tdd_basic::TestGenerator;
 use perl_parser::tdd_workflow::TddWorkflow;
@@ -176,17 +367,131 @@ use perl_parser::TestFramework;
 use perl_parser::TestRunner;
 use perl_parser::TddWorkflow;
 ";
-    let code = code_without_line_comments(source);
-    for token in FORBIDDEN_TDD_FACADE_TOKENS.iter().copied() {
-        assert!(contains_facade_token(&code, token), "token {token} detection mismatch");
-    }
+    let hits = forbidden_facade_references(&code_without_comments(source));
+    assert_eq!(
+        hits,
+        vec![
+            "perl_parser::TddWorkflow".to_string(),
+            "perl_parser::TestFramework".to_string(),
+            "perl_parser::TestGenerator".to_string(),
+            "perl_parser::TestRunner".to_string(),
+            "perl_parser::tdd".to_string(),
+            "perl_parser::tdd_basic".to_string(),
+            "perl_parser::tdd_workflow".to_string(),
+            "perl_parser::test_generator".to_string(),
+            "perl_parser::test_runner".to_string(),
+        ]
+    );
 }
 
 #[test]
-fn boundary_check_rejects_longer_path_prefixes() {
-    let code = code_without_line_comments(
-        "use perl_parser::tddx::Other;\nuse perl_parser::test_runners_local::Thing;\n",
+fn multi_line_brace_pre_image_is_rejected() {
+    let source = "\
+use perl_parser::{
+    Parser,
+    ast::{Node, NodeKind},
+    declaration::ParentMap,
+    tdd_basic::TestGenerator,
+    test_runner::{TestKind, TestRunner},
+};
+";
+    let hits = forbidden_facade_references(&code_without_comments(source));
+    assert_eq!(
+        hits,
+        vec![
+            "perl_parser::TestRunner".to_string(),
+            "perl_parser::tdd_basic".to_string(),
+            "perl_parser::test_runner".to_string(),
+        ]
     );
-    assert!(!contains_facade_token(&code, "perl_parser::tdd"));
-    assert!(!contains_facade_token(&code, "perl_parser::test_runner"));
+}
+
+#[test]
+fn single_line_brace_group_is_rejected() {
+    let source = "use perl_parser::{Parser, tdd_basic::TestGenerator, test_runner::TestKind};\n";
+    let hits = forbidden_facade_references(&code_without_comments(source));
+    assert_eq!(
+        hits,
+        vec!["perl_parser::tdd_basic".to_string(), "perl_parser::test_runner".to_string()]
+    );
+}
+
+#[test]
+fn compat_escape_hatch_paths_are_rejected() {
+    let direct = "use perl_parser::compat::test_generator::TestGenerator;\n";
+    let hits = forbidden_facade_references(&code_without_comments(direct));
+    assert_eq!(hits, vec!["perl_parser::compat::test_generator".to_string()]);
+
+    let braced = "use perl_parser::compat::{tdd_basic, tdd_workflow, TddWorkflow};\n";
+    let hits = forbidden_facade_references(&code_without_comments(braced));
+    assert_eq!(
+        hits,
+        vec![
+            "perl_parser::compat::TddWorkflow".to_string(),
+            "perl_parser::compat::tdd_basic".to_string(),
+            "perl_parser::compat::tdd_workflow".to_string(),
+        ]
+    );
+
+    let spaced = "use perl_parser :: compat :: tdd_basic ;\n";
+    let hits = forbidden_facade_references(&code_without_comments(spaced));
+    assert_eq!(hits, vec!["perl_parser::compat::tdd_basic".to_string()]);
+}
+
+#[test]
+fn bare_compat_module_import_remains_allowed() {
+    let source = "use perl_parser::compat;\nuse perl_parser::prelude::*;\n";
+    assert!(forbidden_facade_references(&code_without_comments(source)).is_empty());
+}
+
+#[test]
+fn whitespace_between_path_segments_is_normalized_before_matching() {
+    let source = "use perl_parser :: {\n    tdd_basic :: TestGenerator ,\n};\nlet x =\n    perl_parser\n        ::\n        test_runner ;\n";
+    let hits = forbidden_facade_references(&code_without_comments(source));
+    assert_eq!(
+        hits,
+        vec!["perl_parser::tdd_basic".to_string(), "perl_parser::test_runner".to_string()]
+    );
+}
+
+#[test]
+fn comments_cannot_hide_or_create_violations() {
+    let hidden = "// use perl_parser::tdd_basic::TestGenerator;\n\
+                  /* use perl_parser::{\n       tdd_basic::TestGenerator,\n   }; */\n\
+                  let ok = 1;\n";
+    assert!(forbidden_facade_references(&code_without_comments(hidden)).is_empty());
+
+    let allowed =
+        "use perl_parser::Parser;\n/* perl_parser::tdd_basic */\n// perl_parser::test_runner\n";
+    assert!(forbidden_facade_references(&code_without_comments(allowed)).is_empty());
+}
+
+#[test]
+fn parser_authority_and_canonical_owner_members_remain_allowed() {
+    let source = "\
+use perl_parser::{Node, NodeKind, Parser, SourceLocation};
+use perl_parser::{
+    ast::{Node as AstNode, NodeKind},
+    error, parser, position,
+};
+use perl_tdd_support::{
+    tdd_basic::TestGenerator,
+    test_runner::{TestKind, TestRunner},
+};
+use proptest::test_runner;
+use perl_parser_pest::PureRustPerlParser;
+";
+    assert!(forbidden_facade_references(&code_without_comments(source)).is_empty());
+}
+
+#[test]
+fn boundary_check_rejects_longer_path_prefixes_and_other_heads() {
+    let source = "\
+mod tdd_basic_helpers;
+use perl_parser::tdd_basic_local::Thing;
+use perl_parser::test_runners_local::Other;
+use my_perl_parser::tdd_basic::Wrong;
+";
+    let hits = forbidden_facade_references(&code_without_comments(source));
+    assert!(hits.is_empty(), "unexpected boundary hits: {hits:?}");
 }
