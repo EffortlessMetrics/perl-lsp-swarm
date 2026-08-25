@@ -460,6 +460,89 @@ fn cancelled_detection_is_an_instrument_failure() {
     );
 }
 
+// Review regression: a pre-cancelled admission snapshot fails closed before
+// module evidence is evaluated, even with a matched supported module.
+#[test]
+fn pre_cancelled_input_detection_fails_closed() {
+    let mut cancelled_input = detected_input("9.34", "gen-1");
+    cancelled_input.cancellation = perl_semantic_facts::framework::AdapterCancellation::cancelled();
+    let detection = detect_mojo_base(&cancelled_input);
+    assert_eq!(detection.outcome, DetectionOutcome::Cancelled);
+    let site = first_site("package App;\nuse Mojo::Base -base;\n", "gen-1");
+    let facts = mojo_base_activation_facts(&detection, &site.anchor, &site.evidence);
+    assert!(matches!(facts.outcome, MojoBaseActivationOutcome::InstrumentFailure { .. }));
+    assert!(!facts.is_exact());
+}
+
+// Review regression: interpolated double-quoted parents and falsy quoted
+// parents cannot become exact literals.
+#[test]
+fn interpolated_and_falsy_quoted_parents_cannot_activate() {
+    let interpolated = facts_for("package App;\nuse Mojo::Base \"$parent\";\n", "gen-1", "gen-1");
+    assert!(
+        matches!(interpolated.outcome, MojoBaseActivationOutcome::DynamicOrUnmodeledParent { .. }),
+        "interpolated parent must stay dynamic, got {:?}",
+        interpolated.outcome
+    );
+
+    for code in ["package App;\nuse Mojo::Base '';\n", "package App;\nuse Mojo::Base '0';\n"] {
+        let falsy = facts_for(code, "gen-1", "gen-1");
+        assert!(
+            matches!(falsy.outcome, MojoBaseActivationOutcome::AbsentWithCompleteEvidence { .. }),
+            "falsy quoted parent degrades to strict-only, got {:?} for {code:?}",
+            falsy.outcome
+        );
+    }
+}
+
+// Review regression: a leading `-signatures` flag occupies the base/parent
+// slot of `Mojo::Base::import` and is not a reviewed activation form.
+#[test]
+fn leading_signatures_flag_is_malformed() {
+    let facts = facts_for("package App;\nuse Mojo::Base -signatures;\n", "gen-1", "gen-1");
+    assert!(
+        matches!(facts.outcome, MojoBaseActivationOutcome::RecoveredOrMalformedSource { .. }),
+        "leading `-signatures` must stay malformed, got {:?}",
+        facts.outcome
+    );
+    assert!(!facts.is_exact());
+}
+
+// Review regression: a raw Detected result without contributing module and
+// version evidence cannot become exact activation.
+#[test]
+fn raw_detected_result_without_evidence_is_not_exact() {
+    use perl_semantic_facts::framework::AdapterDetectionResult;
+    let raw = AdapterDetectionResult::new(
+        mojo_base_descriptor(),
+        SourceGeneration::known("gen-1"),
+        DetectionOutcome::Detected {
+            confidence: Confidence::High,
+            framework_version: Some("9.34".to_string()),
+        },
+    );
+    let site = first_site("package App;\nuse Mojo::Base -base;\n", "gen-1");
+    let facts = mojo_base_activation_facts(&raw, &site.anchor, &site.evidence);
+    assert!(
+        matches!(facts.outcome, MojoBaseActivationOutcome::StaleOrIncompleteInput { .. }),
+        "missing contributing evidence must stay incomplete, got {:?}",
+        facts.outcome
+    );
+}
+
+// Review regression: a bareword parent that also occurs inside the module
+// name must not capture the module name's range.
+#[test]
+fn bareword_parent_range_avoids_module_name_capture() {
+    let code = "package App;\nuse Mojo::Base Base;\n";
+    let found = sites(code, "gen-1");
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].evidence.parent, MojoBaseParentSelection::Literal("Base".to_string()));
+    let range = must_some(found[0].anchor.parent_range);
+    let (start, end) = range;
+    assert_eq!(&code[(start as usize)..(end as usize)], "Base");
+}
+
 // Typed outcome: strict-only imports are complete-evidence absence, and a
 // `use Mojo::Base;` without arguments never activates.
 #[test]

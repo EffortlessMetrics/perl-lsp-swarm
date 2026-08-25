@@ -176,8 +176,11 @@ fn walk_package_block(
 ///
 /// The parser stores import arguments as plain strings without per-token
 /// spans, so the range is located deterministically inside the statement's
-/// own source interval: the quoted spelling first, then the bareword
-/// spelling. Absence of a located range never fabricates one.
+/// own source interval: the search starts after the `Mojo::Base` module
+/// prefix (plus any version token) so a bareword parent that also occurs
+/// inside the module name cannot capture the module's range, then tries the
+/// quoted spelling before the bareword spelling. Absence of a located range
+/// never fabricates one.
 fn literal_parent_range(
     source: &str,
     span_start: u32,
@@ -193,14 +196,36 @@ fn literal_parent_range(
         return None;
     }
     let statement = source.get(start..end)?;
+    let search_from = argument_search_offset(statement);
+    let arguments = statement.get(search_from..)?;
     for spelling in [format!("'{parent}'"), format!("\"{parent}\""), parent.clone()] {
-        if let Some(offset) = statement.find(&spelling) {
-            let range_start = start + offset;
+        if let Some(offset) = arguments.find(&spelling) {
+            let range_start = start + search_from + offset;
             let range_end = range_start + spelling.len();
             return Some((range_start as u32, range_end as u32));
         }
     }
     None
+}
+
+/// Byte offset where the import argument list starts inside one `use` statement:
+/// after the module name and any version token that follows it.
+fn argument_search_offset(statement: &str) -> usize {
+    let Some(module_at) = statement.find("Mojo::Base") else {
+        return 0;
+    };
+    let mut offset = module_at + "Mojo::Base".len();
+    let rest = &statement[offset..];
+    let version_len = rest.find(|c: char| !c.is_ascii_whitespace()).map_or(0, |lead| {
+        let after_space = &rest[lead..];
+        let version = after_space
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '_')
+            .count();
+        if version > 0 { lead + version } else { 0 }
+    });
+    offset += version_len;
+    offset
 }
 
 #[cfg(test)]
@@ -293,6 +318,24 @@ mod tests {
             found[1].evidence.parent,
             MojoBaseParentSelection::Literal("Parent".to_string())
         );
+    }
+
+    #[test]
+    fn bareword_parent_range_avoids_module_name_capture() {
+        // A bareword parent that also occurs inside the module name must not
+        // capture the module's own range.
+        let code = "package App;\nuse Mojo::Base Base;\n";
+        let found = sites(code);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].evidence.parent, MojoBaseParentSelection::Literal("Base".to_string()));
+        let (start, end) = must_some(found[0].anchor.parent_range);
+        assert_eq!(
+            &code[(start as usize)..(end as usize)],
+            "Base",
+            "range must cover the argument, not the module name"
+        );
+        let module_prefix_end = found[0].anchor.span_start_byte + "use Mojo::Base".len() as u32;
+        assert!(start >= module_prefix_end, "range must start after the module name prefix");
     }
 
     #[test]

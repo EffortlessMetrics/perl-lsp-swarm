@@ -77,9 +77,14 @@ pub fn mojo_base_descriptor() -> AdapterDescriptor {
 /// Run the registry-backed Mojo::Base detection over one checked input.
 ///
 /// Only the descriptor-owned `Mojo::Base` selector participates; nested
-/// `Mojo::Base::*` modules never activate this adapter.
+/// `Mojo::Base::*` modules never activate this adapter. A pre-cancelled
+/// admission snapshot fails closed to `DetectionOutcome::Cancelled` before
+/// any module evidence is evaluated.
 #[must_use]
 pub fn detect_mojo_base(input: &AdapterDetectionInput) -> AdapterDetectionResult {
+    if input.cancellation.is_cancelled {
+        return AdapterDetectionResult::for_input(input, DetectionOutcome::Cancelled);
+    }
     let descriptor = &input.descriptor;
     let Some(evaluation) = input.module_observation.evaluations.iter().find(
         |evaluation: &&ModuleSelectorEvaluation| {
@@ -233,13 +238,17 @@ pub fn parse_mojo_base_import_args(args: &[String]) -> MojoBaseImportEvidence {
     let tokens = normalize_import_tokens(args);
     for token in &tokens {
         if token == "-signatures" {
-            // The reviewed import option; valid in any slot position.
-            evidence.signatures = true;
             if evidence.parent == MojoBaseParentSelection::None {
-                // `-signatures` without a base/parent slot is a strict-only
-                // import with signatures enabled.
-                evidence.parent = MojoBaseParentSelection::StrictOnly;
+                // `Mojo::Base::import` binds the first argument to the
+                // base/parent slot, so a leading `-signatures` is not a
+                // reviewed activation form: it would become the parent
+                // spelling itself. Classify it malformed, fail-closed.
+                evidence.parent = MojoBaseParentSelection::Malformed {
+                    reason: "flag `-signatures` occupies the base/parent slot".to_string(),
+                };
             }
+            // The reviewed import option; valid in any flag position.
+            evidence.signatures = true;
             continue;
         }
         if evidence.parent == MojoBaseParentSelection::None {
@@ -277,7 +286,19 @@ fn classify_parent_value(token: &str) -> MojoBaseParentSelection {
     if let Some(reason) = malformed_reason(token) {
         return MojoBaseParentSelection::Malformed { reason };
     }
-    if let Some(inner) = unquote(token) {
+    if let Some((style, inner)) = unquote_styled(token) {
+        // `Mojo::Base::import` treats a falsy base (`''`/`'0'`) as no parent:
+        // the import degrades to strict/warnings only.
+        if inner.is_empty() || inner == "0" {
+            return MojoBaseParentSelection::StrictOnly;
+        }
+        // Double-quoted spellings interpolate in Perl; any interpolation
+        // sigil makes the parent computed, not a static literal.
+        if style == QuoteStyle::Double && (inner.contains('$') || inner.contains('@')) {
+            return MojoBaseParentSelection::Dynamic {
+                reason: format!("double-quoted parent `{token}` interpolates at runtime"),
+            };
+        }
         return MojoBaseParentSelection::Literal(inner);
     }
     let dynamic = token.starts_with('$')
@@ -294,6 +315,27 @@ fn classify_parent_value(token: &str) -> MojoBaseParentSelection {
     MojoBaseParentSelection::Literal(token.to_string())
 }
 
+/// Quote style of a delimited import token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuoteStyle {
+    Single,
+    Double,
+}
+
+fn unquote_styled(token: &str) -> Option<(QuoteStyle, String)> {
+    let (style, close): (QuoteStyle, char) = if token.starts_with('\'') {
+        (QuoteStyle::Single, '\'')
+    } else if token.starts_with('"') {
+        (QuoteStyle::Double, '"')
+    } else {
+        return None;
+    };
+    if !token.ends_with(close) || token.len() < 2 {
+        return None;
+    }
+    Some((style, token[1..token.len() - 1].to_string()))
+}
+
 /// A quote-delimited token whose closing quote is missing — the parser
 /// recovered the source; the spelling is not an exact literal.
 fn malformed_reason(token: &str) -> Option<String> {
@@ -305,14 +347,6 @@ fn malformed_reason(token: &str) -> Option<String> {
         return Some(format!("empty quote fragment in import argument `{token}`"));
     }
     None
-}
-
-fn unquote(token: &str) -> Option<String> {
-    let inner = token
-        .strip_prefix('\'')
-        .and_then(|value| value.strip_suffix('\''))
-        .or_else(|| token.strip_prefix('"').and_then(|value| value.strip_suffix('"')))?;
-    Some(inner.to_string())
 }
 
 fn normalize_import_tokens(args: &[String]) -> Vec<String> {
@@ -473,9 +507,10 @@ const SHADOW_LIMITATIONS: &[&str] = &[
 ///
 /// Ordering is fail-closed: instrument failures and module availability
 /// first, then source-level classification (malformed, dynamic, strict-only),
-/// then generation staleness, then the reviewed-profile check. Only a
-/// `Detected` outcome with current site, module, and version generations and
-/// no unreviewed import options yields an exact activation.
+/// then evidence completeness, generation staleness, and the reviewed-profile
+/// check. Only a `Detected` outcome carrying contributing module and version
+/// evidence with current site, module, and version generations and no
+/// unreviewed import options yields an exact activation.
 #[must_use]
 pub fn mojo_base_activation_facts(
     detection: &AdapterDetectionResult,
@@ -582,7 +617,19 @@ pub fn mojo_base_activation_facts(
     facts.confidence = *confidence;
     facts.framework_version = framework_version.clone().unwrap_or_default();
 
-    // 6. Generation staleness: site, module, and version evidence must all be
+    // 6. Evidence completeness: a raw or deserialized `Detected` result does
+    // not become exact activation without its contributing module identity
+    // and version evidence attached.
+    if detection.contributing_modules.is_empty() || detection.version_evidence.is_none() {
+        facts.outcome = MojoBaseActivationOutcome::StaleOrIncompleteInput {
+            reason: "detected result lacks contributing module or version evidence; raw \
+                     results cannot become exact activation"
+                .to_string(),
+        };
+        return facts;
+    }
+
+    // 7. Generation staleness: site, module, and version evidence must all be
     // current for the detection generation.
     if let Some(reason) = staleness_reason(detection, anchor) {
         facts.outcome = MojoBaseActivationOutcome::StaleOrIncompleteInput { reason };
@@ -590,7 +637,7 @@ pub fn mojo_base_activation_facts(
     }
     facts.source_generation = anchor.source_generation.clone();
 
-    // 7. The reviewed profile must cover every import option.
+    // 8. The reviewed profile must cover every import option.
     if !evidence.unmodeled_options.is_empty() {
         facts.outcome = MojoBaseActivationOutcome::UnsupportedVersionOrProfile {
             reason: format!(
@@ -601,7 +648,7 @@ pub fn mojo_base_activation_facts(
         return facts;
     }
 
-    // 8. Exact activation under the reviewed profile.
+    // 9. Exact activation under the reviewed profile.
     facts.outcome = match &evidence.parent {
         MojoBaseParentSelection::Base => MojoBaseActivationOutcome::ExactBaseActivation,
         MojoBaseParentSelection::Literal(parent) => {
@@ -721,9 +768,34 @@ mod tests {
     fn strict_only_import_is_not_an_activation() {
         assert_eq!(parse(&["-strict"]).parent, MojoBaseParentSelection::StrictOnly);
         assert_eq!(parse(&[]).parent, MojoBaseParentSelection::StrictOnly);
-        let signatures_only = parse(&["-signatures"]);
-        assert_eq!(signatures_only.parent, MojoBaseParentSelection::StrictOnly);
-        assert!(signatures_only.signatures);
+    }
+
+    #[test]
+    fn falsy_quoted_parent_is_strict_only() {
+        // `Mojo::Base::import` treats a falsy base (`''`/`'0'`) as no parent.
+        assert_eq!(parse(&["''"]).parent, MojoBaseParentSelection::StrictOnly);
+        assert_eq!(parse(&["'0'"]).parent, MojoBaseParentSelection::StrictOnly);
+        assert_eq!(parse(&["\"\""]).parent, MojoBaseParentSelection::StrictOnly);
+    }
+
+    #[test]
+    fn leading_signatures_flag_is_malformed() {
+        // `Mojo::Base::import` binds the first argument to the base/parent
+        // slot; a leading `-signatures` is not a reviewed activation form.
+        let evidence = parse(&["-signatures"]);
+        assert!(matches!(evidence.parent, MojoBaseParentSelection::Malformed { .. }));
+        assert!(evidence.signatures, "the flag is still recorded where it appears");
+    }
+
+    #[test]
+    fn interpolated_double_quoted_parent_is_dynamic() {
+        let evidence = parse(&["\"$parent\""]);
+        assert!(
+            matches!(evidence.parent, MojoBaseParentSelection::Dynamic { .. }),
+            "double-quoted interpolation must not become a static literal"
+        );
+        let static_double = parse(&["\"Parent\""]);
+        assert_eq!(static_double.parent, MojoBaseParentSelection::Literal("Parent".to_string()));
     }
 
     #[test]
@@ -733,6 +805,40 @@ mod tests {
             matches!(evidence.parent, MojoBaseParentSelection::Dynamic { .. }),
             "computed parent must not silently become a literal"
         );
+    }
+
+    #[test]
+    fn pre_cancelled_input_fails_closed() {
+        let input = AdapterDetectionInput::new(
+            mojo_base_descriptor(),
+            crate::framework::ModuleObservationReceipt::new(
+                "module-resolver.v1",
+                "root:fixture",
+                "project-environment.v1",
+                SourceGeneration::known("gen-1"),
+                "sha256:fixture-input",
+                vec![ModuleSelectorEvaluation::new(
+                    "Mojo::Base",
+                    ModuleSelectorOutcome::Matched {
+                        activation: ModuleActivationIdentity::new(
+                            "Mojo::Base",
+                            None,
+                            SourceGeneration::known("gen-1"),
+                        )
+                        .with_observed_version(
+                            crate::framework::ModuleVersionEvidence::new(
+                                "9.34",
+                                SourceGeneration::known("gen-1"),
+                            ),
+                        ),
+                        evidence_class: crate::framework::DetectionEvidenceClass::ResolvedModule,
+                    },
+                )],
+            ),
+            None,
+            crate::framework::AdapterCancellation::cancelled(),
+        );
+        assert_eq!(detect_mojo_base(&input).outcome, DetectionOutcome::Cancelled);
     }
 
     #[test]
@@ -767,5 +873,30 @@ mod tests {
         assert!(matches!(evidence.parent, MojoBaseParentSelection::Dynamic { .. }));
         assert!(evidence.signatures);
         assert!(evidence.unmodeled_options.is_empty());
+    }
+
+    #[test]
+    fn detected_result_without_module_evidence_is_not_exact() {
+        let detection = AdapterDetectionResult::new(
+            mojo_base_descriptor(),
+            SourceGeneration::known("gen-1"),
+            DetectionOutcome::Detected {
+                confidence: Confidence::High,
+                framework_version: Some("9.34".to_string()),
+            },
+        );
+        let anchor = MojoBaseSiteAnchor::new(
+            Some("App".to_string()),
+            0,
+            1,
+            None,
+            SourceGeneration::known("gen-1"),
+        );
+        let evidence = parse_mojo_base_import_args(&["-base".to_string()]);
+        let facts = mojo_base_activation_facts(&detection, &anchor, &evidence);
+        assert!(
+            matches!(facts.outcome, MojoBaseActivationOutcome::StaleOrIncompleteInput { .. }),
+            "a raw Detected result without contributing evidence must not become exact"
+        );
     }
 }
