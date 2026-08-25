@@ -17,4 +17,5 @@ pub mod publication_drift;
 pub mod rust_hygiene;
 pub mod vim_lsp_cell_catalog;
 pub mod vim_lsp_specialized_driver;
+pub mod vim_lsp_subject_refresh;
 pub mod worktree_cleanup;
