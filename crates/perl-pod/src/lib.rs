@@ -79,6 +79,10 @@ pub fn extract_pod(source: &str) -> PodDoc {
     // (=over/=item lists land here) — such a flush must retain the content
     // under a synthetic Synopsis rather than dropping it (#2488).
     let mut leading_list = false;
+    // Any `=head` seen yet — distinguishes genuinely leading content from
+    // content under an unsupported heading (whose current_section is also
+    // None but which must never synthesize or clobber a Synopsis).
+    let mut saw_any_head = false;
     let mut in_pod = false;
     let mut in_over = false;
 
@@ -131,6 +135,8 @@ pub fn extract_pod(source: &str) -> PodDoc {
             let heading = pod_command_arg(line, "=head1").trim();
             flush_section(&mut doc, &current_section, &body, leading_list);
             body.clear();
+            saw_any_head = true;
+            leading_list = false;
             if let Some(section) = match heading {
                 "NAME" => Some(Section::Name),
                 "SYNOPSIS" => Some(Section::Synopsis),
@@ -153,6 +159,8 @@ pub fn extract_pod(source: &str) -> PodDoc {
             let heading = strip_pod_formatting(pod_command_arg(line, "=head2").trim());
             flush_section(&mut doc, &current_section, &body, leading_list);
             body.clear();
+            saw_any_head = true;
+            leading_list = false;
             current_section = Some(Section::Method(heading));
             continue;
         }
@@ -167,6 +175,8 @@ pub fn extract_pod(source: &str) -> PodDoc {
             flush_section(&mut doc, &current_section, &body, leading_list);
             current_section = None;
             body.clear();
+            saw_any_head = true;
+            leading_list = false;
             continue;
         }
 
@@ -182,7 +192,7 @@ pub fn extract_pod(source: &str) -> PodDoc {
         // any =head section exists (#2488: these form an implicit "SYNOPSIS" or
         // "DESCRIPTION" block in many CPAN modules).
         if (!body.is_empty() || !line.is_empty()) && (current_section.is_some() || in_over) {
-            if current_section.is_none() {
+            if current_section.is_none() && !saw_any_head {
                 leading_list = true;
             }
             if !body.is_empty() {

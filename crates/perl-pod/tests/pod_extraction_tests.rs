@@ -1087,3 +1087,42 @@ Related modules go here.
     assert!(doc.examples.is_some());
     assert!(doc.see_also.is_some());
 }
+
+#[test]
+fn list_under_unsupported_heading_never_clobbers_real_synopsis() {
+    // A real SYNOPSIS section followed by a list under an unsupported heading
+    // (=head1 AUTHOR maps to no Section, so current_section is None there)
+    // must not synthesize a new Synopsis or overwrite the real one.
+    let source = r#"
+=pod
+
+=head1 SYNOPSIS
+
+    use Foo;
+
+=head1 AUTHOR
+
+=over 4
+
+=item *
+
+An author note in a list.
+
+=back
+
+=cut
+"#;
+
+    let doc = extract_pod(source);
+
+    assert!(
+        doc.synopsis.as_ref().is_some_and(|s| s.contains("use Foo;")),
+        "real synopsis must survive: {:?}",
+        doc.synopsis
+    );
+    assert!(
+        !doc.synopsis.as_ref().is_some_and(|s| s.contains("An author note")),
+        "unsupported-heading list must not leak into synopsis: {:?}",
+        doc.synopsis
+    );
+}
