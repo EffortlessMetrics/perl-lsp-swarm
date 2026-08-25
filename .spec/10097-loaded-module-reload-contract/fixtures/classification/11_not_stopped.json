@@ -1,0 +1,17 @@
+{
+  "name": "11_not_stopped.json",
+  "fixture_class": "readiness reachability; debuggee running or not command-ready",
+  "observation": {
+  "stopped_and_command_ready": false,
+  "runtime_supported": true,
+  "loaded_in_runtime": true,
+  "within_launch_authority": true,
+  "runtime_mapping_unambiguous": true,
+  "identity_binding_complete": true,
+  "identity_current": true,
+  "client_source_matches_saved": true,
+  "module_classification": "source_backed_perl_module",
+  "active_frame_in_target": false
+},
+  "expected_disposition": "not_stopped_or_not_command_ready"
+}

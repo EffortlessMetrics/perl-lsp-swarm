@@ -2,47 +2,56 @@
 
 use super::{DapMessage, DebugAdapter, Value};
 
-impl DebugAdapter {
-    const SUPPORTED_COMMANDS: [&str; 37] = [
-        "initialize",
-        "launch",
-        "attach",
-        "disconnect",
-        "terminate",
-        "setBreakpoints",
-        "setFunctionBreakpoints",
-        "setExceptionBreakpoints",
-        "configurationDone",
-        "threads",
-        "stackTrace",
-        "scopes",
-        "variables",
-        "setVariable",
-        "continue",
-        "next",
-        "stepIn",
-        "stepOut",
-        "pause",
-        "evaluate",
-        "inlineValues",
-        "breakpointLocations",
-        "source",
-        "loadedSources",
-        "modules",
-        "completions",
-        "exceptionInfo",
-        "restart",
-        "setExpression",
-        "dataBreakpointInfo",
-        "setDataBreakpoints",
-        "cancel",
-        "stepInTargets",
-        "gotoTargets",
-        "goto",
-        "restartFrame",
-        "terminateThreads",
-    ];
+/// The adapter's closed standard DAP request-command list — the single
+/// authority, also consumed by the reload contract's collision check
+/// (#10097).
+pub(crate) const SUPPORTED_COMMANDS: [&str; 37] = [
+    "initialize",
+    "launch",
+    "attach",
+    "disconnect",
+    "terminate",
+    "setBreakpoints",
+    "setFunctionBreakpoints",
+    "setExceptionBreakpoints",
+    "configurationDone",
+    "threads",
+    "stackTrace",
+    "scopes",
+    "variables",
+    "setVariable",
+    "continue",
+    "next",
+    "stepIn",
+    "stepOut",
+    "pause",
+    "evaluate",
+    "inlineValues",
+    "breakpointLocations",
+    "source",
+    "loadedSources",
+    "modules",
+    "completions",
+    "exceptionInfo",
+    "restart",
+    "setExpression",
+    "dataBreakpointInfo",
+    "setDataBreakpoints",
+    "cancel",
+    "stepInTargets",
+    "gotoTargets",
+    "goto",
+    "restartFrame",
+    "terminateThreads",
+];
 
+/// Whether `command` is one of the standard DAP request names this
+/// adapter dispatches.
+pub(crate) fn is_supported_dap_command(command: &str) -> bool {
+    SUPPORTED_COMMANDS.contains(&command)
+}
+
+impl DebugAdapter {
     /// Dispatch a DAP request and return the response message.
     ///
     /// Emits the `initialized` event automatically when an `initialize` request
@@ -153,15 +162,13 @@ impl DebugAdapter {
     }
 
     fn suggested_command(command: &str) -> Option<&'static str> {
-        if let Some(case_suggestion) = Self::SUPPORTED_COMMANDS
-            .iter()
-            .copied()
-            .find(|known| known.eq_ignore_ascii_case(command))
+        if let Some(case_suggestion) =
+            SUPPORTED_COMMANDS.iter().copied().find(|known| known.eq_ignore_ascii_case(command))
         {
             return Some(case_suggestion);
         }
 
-        Self::SUPPORTED_COMMANDS
+        SUPPORTED_COMMANDS
             .iter()
             .copied()
             .filter_map(|known| {

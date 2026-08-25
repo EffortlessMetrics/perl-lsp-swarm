@@ -891,7 +891,7 @@ Directive::Clean - real docs
 }
 
 #[test]
-fn list_items_without_active_section_do_not_create_documentation() {
+fn list_items_without_active_section_do_not_create_method_documentation() {
     let source = r#"
 =over 4
 
@@ -906,7 +906,12 @@ This item is not under a named POD section.
 
     let doc = extract_pod(source);
 
-    assert!(doc.is_empty());
+    // Since #2488 the leading list is retained under the synthetic synopsis
+    // instead of being discarded when no =head section exists.
+    assert!(doc.synopsis.is_some(), "leading list must be retained (#2488)");
+    assert!(doc.synopsis.as_ref().is_some_and(|s| s.contains("ghost")));
+    // Stray items still never become method documentation.
+    assert!(doc.methods.is_empty());
 }
 
 #[test]
@@ -1081,4 +1086,43 @@ Related modules go here.
     assert!(doc.return_values.is_some());
     assert!(doc.examples.is_some());
     assert!(doc.see_also.is_some());
+}
+
+#[test]
+fn list_under_unsupported_heading_never_clobbers_real_synopsis() {
+    // A real SYNOPSIS section followed by a list under an unsupported heading
+    // (=head1 AUTHOR maps to no Section, so current_section is None there)
+    // must not synthesize a new Synopsis or overwrite the real one.
+    let source = r#"
+=pod
+
+=head1 SYNOPSIS
+
+    use Foo;
+
+=head1 AUTHOR
+
+=over 4
+
+=item *
+
+An author note in a list.
+
+=back
+
+=cut
+"#;
+
+    let doc = extract_pod(source);
+
+    assert!(
+        doc.synopsis.as_ref().is_some_and(|s| s.contains("use Foo;")),
+        "real synopsis must survive: {:?}",
+        doc.synopsis
+    );
+    assert!(
+        !doc.synopsis.as_ref().is_some_and(|s| s.contains("An author note")),
+        "unsupported-heading list must not leak into synopsis: {:?}",
+        doc.synopsis
+    );
 }

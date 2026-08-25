@@ -106,6 +106,7 @@ pub fn extract_dancer2_route_declarations(
 #[must_use]
 pub fn extract_dancer2_route_contexts(ast: &Node, file_id: FileId) -> Dancer2RouteContexts {
     let mut state = WalkState {
+        file_id,
         current_package: Some("main".to_string()),
         prefix_states: HashMap::new(),
         next_route_index: 0,
@@ -118,6 +119,7 @@ pub fn extract_dancer2_route_contexts(ast: &Node, file_id: FileId) -> Dancer2Rou
 }
 
 struct WalkState {
+    file_id: FileId,
     current_package: Option<String>,
     prefix_states: HashMap<String, PrefixState>,
     next_route_index: u32,
@@ -185,16 +187,14 @@ fn walk_statements(statements: &[Node], file_id: FileId, state: &mut WalkState) 
         let statement = &statements[index];
         if let NodeKind::ExpressionStatement { expression } = &statement.kind {
             // Single-statement forms: `VERB ...` call or `any [...] ...` list.
-            if let Some(declaration) =
-                route_from_expression(expression, file_id, state, state.next_route_index)
-            {
+            if let Some(declaration) = route_from_expression(expression, state) {
                 state.routes.push(declaration);
                 state.next_route_index += 1;
                 index += 1;
                 continue;
             }
             // Prefix declaration (sticky or lexical block form).
-            if handle_prefix_statement(expression, file_id, state) {
+            if handle_prefix_statement(expression, state) {
                 index += 1;
                 continue;
             }
@@ -306,9 +306,7 @@ fn any_list_head(expression: &Node) -> Option<(&Node, &Node, &[Node])> {
 
 fn route_from_expression(
     expression: &Node,
-    file_id: FileId,
-    state: &mut WalkState,
-    declaration_index: u32,
+    state: &WalkState,
 ) -> Option<Dancer2RouteDeclaration> {
     if let NodeKind::FunctionCall { name, args } = &expression.kind {
         if !DANCER2_ROUTE_KEYWORDS.contains(&name.as_str()) {
@@ -325,9 +323,7 @@ fn route_from_expression(
             expression.location.end,
             methods,
             &operands,
-            file_id,
             state,
-            declaration_index,
         );
     }
 
@@ -343,9 +339,7 @@ fn route_from_expression(
         expression.location.end,
         method_set_from_list(method_list),
         &operands,
-        file_id,
         state,
-        declaration_index,
     )
 }
 
@@ -427,7 +421,6 @@ fn method_set_from_elements(elements: &[Node]) -> RouteMethodSet {
 /// pattern; a literal prefix that ends with an open token run makes the
 /// composed token boundary ambiguous, so the capture shape becomes an
 /// unsupported-capture boundary instead of guessed keys.
-#[allow(clippy::too_many_arguments)] // mirrors the reviewed grammar binding
 fn build_from_operands(
     keyword: &str,
     keyword_start: usize,
@@ -435,10 +428,11 @@ fn build_from_operands(
     declaration_end: usize,
     methods: RouteMethodSet,
     operands: &[&Node],
-    file_id: FileId,
-    state: &mut WalkState,
-    declaration_index: u32,
+    state: &WalkState,
 ) -> Option<Dancer2RouteDeclaration> {
+    let file_id = state.file_id;
+    let declaration_index = state.next_route_index;
+    let current_package = state.current_package.clone();
     if operands.len() < 2 {
         // A route needs at least a pattern operand and a handler operand.
         return None;
@@ -507,7 +501,7 @@ fn build_from_operands(
         }
     }
     Some(Dancer2RouteDeclaration {
-        package: state.current_package.clone(),
+        package: current_package.clone(),
         file_id,
         declaration_start_byte: span_u32(keyword_start),
         declaration_end_byte: span_u32(declaration_end),
@@ -532,13 +526,14 @@ fn build_from_operands(
 /// grammar (exact or bounded), so the caller consumes the statement. The
 /// lexical block form walks its load-time callback with the composed prefix
 /// state and restores the enclosing state afterwards.
-fn handle_prefix_statement(expression: &Node, file_id: FileId, state: &mut WalkState) -> bool {
+fn handle_prefix_statement(expression: &Node, state: &mut WalkState) -> bool {
     let NodeKind::FunctionCall { name, args } = &expression.kind else {
         return false;
     };
     if name != "prefix" {
         return false;
     }
+    let file_id = state.file_id;
     let keyword_start = expression.location.start;
     let declaration_end = expression.location.end;
     let declaration_index = state.next_prefix_index;
