@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11800 |
-| Rust-family files | 3576 |
-| Non-Rust files | 8224 |
-| Allowlisted | 5899 |
+| Total tracked files | 11808 |
+| Rust-family files | 3581 |
+| Non-Rust files | 8227 |
+| Allowlisted | 5902 |
 | Unclassified | 2325 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 419 |
+| config | 420 |
 | documentation | 2687 |
 | generated | 2 |
 | production | 321 |
-| test | 1939 |
+| test | 1941 |
 | tooling | 531 |
 | unclassified | 2325 |
 
@@ -2632,6 +2632,7 @@
 | `.ci/editor-clients/vim-vim-lsp-activation-root.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-configuration.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-public-surface.v1.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/editor-clients/vim-vim-lsp-recovery-root.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-subject.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vimspector-perl-dap.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/examples/receipt-full-success.json` | config | `non-rust-ci-config` | release/ci |
@@ -3491,6 +3492,7 @@
 | `clients/lite-xl/tests/json_decode_test.lua` | test | `non-rust-litexl-json-decode-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_frame_test.lua` | test | `non-rust-litexl-server-frame-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_logging_test.lua` | test | `non-rust-litexl-server-logging-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/server_message_scheduling_test.lua` | test | `non-rust-litexl-server-message-scheduling-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_config_merge_test.lua` | test | `non-rust-litexl-config-merge-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_file_uri_test.lua` | test | `non-rust-litexl-file-uri-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_show_document_test.lua` | test | `non-rust-litexl-show-document-tests` | editor/lite-xl |
@@ -3679,6 +3681,7 @@
 | `crates/perl-lexer/tests/fixtures/substitution_operators/valid_s.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-lexer/tests/fixtures/substitution_operators/valid_tr.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-lexer/tests/fixtures/substitution_operators/valid_y.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-lexer/tests/lexer_robustness_tests.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-lexer/tests/prop_lexer_termination.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-line-index/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-line-index/README.md` | documentation | `non-rust-root-governance-docs` | docs |
