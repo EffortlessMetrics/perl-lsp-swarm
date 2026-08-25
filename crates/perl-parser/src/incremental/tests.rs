@@ -119,6 +119,56 @@ fn incremental_state_records_lex_and_parse_restart_points() -> Result<()> {
 }
 
 #[test]
+fn parse_checkpoints_capture_scalar_and_list_locals_before_nested_blocks() -> Result<()> {
+    let source = "package Example;\nmy $scalar;\nmy ($first, @items);\nsub run { my $local = 1; }\n";
+    let state = IncrementalState::new(source.to_string());
+
+    let sub_start = source
+        .find("sub run")
+        .ok_or_else(|| anyhow::anyhow!("subroutine declaration not found in source"))?;
+    let sub_checkpoint = state
+        .find_parse_checkpoint(sub_start)
+        .ok_or_else(|| anyhow::anyhow!("subroutine declaration must create a checkpoint"))?;
+    assert_eq!(
+        sub_checkpoint.scope_snapshot.locals,
+        vec!["$scalar", "$first", "@items"],
+        "scalar and list declarations before the subroutine must be retained"
+    );
+
+    let block_start = source
+        .find('{')
+        .ok_or_else(|| anyhow::anyhow!("subroutine block not found in source"))?;
+    let block_checkpoint = state
+        .find_parse_checkpoint(block_start)
+        .ok_or_else(|| anyhow::anyhow!("nested blocks must create a checkpoint"))?;
+    assert_eq!(
+        block_checkpoint.scope_snapshot.locals,
+        vec!["$scalar", "$first", "@items"],
+        "the block checkpoint must retain the enclosing lexical scope"
+    );
+    Ok(())
+}
+
+#[test]
+fn parse_checkpoints_accumulate_nested_scalar_locals_in_source_order() -> Result<()> {
+    let source = "sub run { my $first = 1; { my $second = 2; } }";
+    let state = IncrementalState::new(source.to_string());
+
+    let nested_block_start = source
+        .rfind('{')
+        .ok_or_else(|| anyhow::anyhow!("nested block not found in source"))?;
+    let checkpoint = state
+        .find_parse_checkpoint(nested_block_start)
+        .ok_or_else(|| anyhow::anyhow!("nested block must create a checkpoint"))?;
+    assert_eq!(
+        checkpoint.scope_snapshot.locals,
+        vec!["$first"],
+        "a nested block checkpoint must see locals declared before it"
+    );
+    Ok(())
+}
+
+#[test]
 fn expression_only_trees_have_no_parse_restart_checkpoint() -> Result<()> {
     let state = IncrementalState::new("1 + 2;".to_string());
     anyhow::ensure!(
