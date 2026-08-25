@@ -2749,6 +2749,51 @@ fn recovery_stage_vocabularies_cannot_stand_in_for_each_other() -> Result<()> {
     )
 }
 
+/// The complete scenario-owner set of each stage is pinned: dropping a
+/// non-classifying entry-path owner (the crash/restart paths that
+/// distinguish a recovery stage from a clean first launch) or widening the
+/// set with another landed recovery action both fail closed, even though the
+/// union-coverage law would stay satisfied through other cells.
+#[test]
+fn recovery_stage_owner_sets_are_pinned_fail_closed() -> Result<()> {
+    // Dropping the termination entry path from the initialize stage: the
+    // classifying action stays an owner, so only the pinned-set law catches
+    // it.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell =
+                recovery_cell_mut(catalog, "vim.vim_lsp.recovery.initialized_new_generation")?;
+            cell.scenario_owners.retain(|owner| {
+                owner != "vim.vim_lsp.specialized.recovery.terminate_server_process"
+            });
+            Ok(())
+        },
+        "scenario owners drifted from the pinned initialized_new_generation stage owner set",
+    )?;
+    // Same law on the stop entry path of the explicit-restart stage.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.explicit_restart")?;
+            cell.scenario_owners.retain(|owner| {
+                owner != "vim.vim_lsp.specialized.recovery.stop_server_public_route"
+            });
+            Ok(())
+        },
+        "scenario owners drifted from the pinned explicit_restart stage owner set",
+    )?;
+    // Widening is also rejected: a landed recovery action that is not part of
+    // the stage's declared owner set cannot be attached to the cell.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.shutdown_cleanup")?;
+            cell.scenario_owners
+                .push("vim.vim_lsp.specialized.recovery.bounded_retry_disposition".to_string());
+            Ok(())
+        },
+        "scenario owners drifted from the pinned shutdown_cleanup stage owner set",
+    )
+}
+
 #[test]
 fn recovery_cannot_be_filled_by_another_family_or_baseline_row() -> Result<()> {
     // A freshness action cannot classify a recovery cell.
@@ -2762,7 +2807,10 @@ fn recovery_cannot_be_filled_by_another_family_or_baseline_row() -> Result<()> {
         "is not a landed recovery action",
     )?;
     // A host-reopen action is landed #11380 vocabulary but does not belong to
-    // the recovery ledger; it cannot own a recovery cell.
+    // the recovery ledger; it cannot own a recovery cell. The pinned
+    // stage-owner-set family law rejects the widened set before the shared
+    // ledger law is reached, so the pinned-set reason is the observed
+    // rejection surface for owner additions in this family.
     assert_recovery_rejects(
         |catalog| {
             let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.shutdown_cleanup")?;
@@ -2770,7 +2818,7 @@ fn recovery_cannot_be_filled_by_another_family_or_baseline_row() -> Result<()> {
                 .push("vim.vim_lsp.specialized.host_reopen.buffer_close_wipe_reopen".to_string());
             Ok(())
         },
-        "absent from ledger",
+        "scenario owners drifted from the pinned shutdown_cleanup stage owner set",
     )?;
     // A baseline scenario stays owned by the baseline catalog.
     assert_recovery_rejects(
@@ -2779,7 +2827,7 @@ fn recovery_cannot_be_filled_by_another_family_or_baseline_row() -> Result<()> {
             cell.scenario_owners.push("vim.bdd.lifecycle.03".to_string());
             Ok(())
         },
-        "absent from ledger",
+        "scenario owners drifted from the pinned explicit_restart stage owner set",
     )?;
     // An activation action cannot own a recovery cell either.
     assert_recovery_rejects(
@@ -2789,7 +2837,7 @@ fn recovery_cannot_be_filled_by_another_family_or_baseline_row() -> Result<()> {
                 .push("vim.vim_lsp.specialized.activation.observe_service_attachment".to_string());
             Ok(())
         },
-        "absent from ledger",
+        "scenario owners drifted from the pinned document_replay stage owner set",
     )
 }
 

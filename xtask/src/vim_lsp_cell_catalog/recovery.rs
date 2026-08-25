@@ -67,7 +67,10 @@
 //!   initialize/initialized/buffer-enabled sequence dimension, so process
 //!   spawn without initialize/readiness cannot satisfy them;
 //! - each stage is classified by its one pinned #11380 action, so a
-//!   disposition observation can never classify an initialize proposition;
+//!   disposition observation can never classify an initialize proposition,
+//!   and each stage's complete scenario-owner set is pinned to its declared
+//!   entry paths, so the crash/restart owners that distinguish a stage from
+//!   a clean first launch cannot be dropped or widened;
 //! - the adverse-exit stage never admits `pass` (an unexpected exit is never
 //!   a passing recovery observation), and the exit/retry stages keep
 //!   `manual_restart_required` (a manual-restart client cannot be relabeled
@@ -637,6 +640,20 @@ pub fn validate_recovery_catalog(catalog: &CellCatalog, ledger: &ScenarioLedger)
             "cell {} observation class {} must be one of its own scenario owners",
             cell.cell_id,
             cell.observation_class
+        );
+        // The stage's complete scenario-owner set is pinned, not only its
+        // classifying action: the entry-path owners that distinguish a stage
+        // from a clean first launch (for example the restart/termination
+        // owners of `initialized_new_generation`) cannot be dropped while the
+        // union-coverage law stays satisfied through other cells.
+        let expected_owners: BTreeSet<&str> =
+            STAGE_SCENARIO_OWNERS[index].iter().copied().collect();
+        let declared_owners: BTreeSet<&str> =
+            cell.scenario_owners.iter().map(String::as_str).collect();
+        ensure!(
+            declared_owners == expected_owners,
+            "cell {} scenario owners drifted from the pinned {stage} stage owner set; the recovery-entry paths that distinguish this stage from a first launch cannot be dropped or widened",
+            cell.cell_id
         );
         ensure!(
             cell.allowed_results.iter().any(|result| result == "fail")
