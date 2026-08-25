@@ -47,9 +47,11 @@ not an arena or index tree.
   truncation is visible. Rust `Debug` is not machine identity, equality, or
   a durable metric. Configured complete/truncated rendering is
   [#8832](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8832).
-- Recursive read helpers may stay depth-guarded and may truncate. Silent
-  truncation of an operation advertised as exact is a separate claim
-  ([#8867](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8867)).
+- Exact whole-tree reads (`count_nodes`, `find_deepest_containing_offset`)
+  are iterative over the canonical child visit table and cannot silently
+  truncate. Bounded variants expose complete/truncated/instrument-failed
+  state. `to_sexp` may stay depth-guarded; configured rendering remains
+  [#8832](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8832).
 
 ## Contributor checklist (AST behavior changes)
 

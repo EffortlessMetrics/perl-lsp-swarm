@@ -45,11 +45,11 @@
 //! # Traversal
 //!
 //! [`Node`] exposes `to_sexp()` for a tree-sitter-compatible S-expression and
-//! `count_nodes()` for a quick size metric. [`validate_ast`] uses the canonical
-//! exhaustive child iterator to check source and tree invariants without a
-//! recursive call stack. The policy registry is reconciled directly with
-//! [`NodeKind::ALL_KIND_NAMES`], so a new variant cannot inherit an undocumented
-//! permissive policy.
+//! `count_nodes()` for an exact iterative size metric. [`validate_ast`] uses the
+//! canonical exhaustive child iterator to check source and tree invariants
+//! without a recursive call stack. The policy registry is reconciled directly
+//! with [`NodeKind::ALL_KIND_NAMES`], so a new variant cannot inherit an
+//! undocumented permissive policy.
 //!
 //! # Depth safety
 //!
@@ -63,7 +63,10 @@
 //! bounded human projection: a 50,000-node chain on a 256 KiB worker does
 //! not overflow the thread stack, output stays under the documented byte
 //! bound, and truncation is visible. Rust [`Debug`] is not machine identity.
-//! See [`Node`] for the operation-by-operation contract.
+//! Exact whole-tree reads (`count_nodes`, `find_deepest_containing_offset`) are
+//! iterative over the #8424 visit table and do not silently truncate; bounded
+//! variants expose [`AstReadResult`]. [`Node::to_sexp`] remains separately
+//! depth-guarded. See [`Node`] for the operation-by-operation contract.
 
 pub mod ast;
 /// Static classification metadata for [`NodeKind`] variants: categories and flags.
@@ -85,7 +88,10 @@ pub use perl_ast_v2 as v2;
 /// Discriminant for the three semantically distinct forms of Perl's `goto` statement.
 pub use ast::GotoTargetForm;
 /// Primary AST node -- the building block of every syntax tree.
-pub use ast::{FieldId, Node, NodeKind};
+pub use ast::{
+    AstReadExact, AstReadInstrumentCause, AstReadLimits, AstReadPath, AstReadPathStep,
+    AstReadResult, AstReadTruncation, AstReadWork, DeepestContainingMatch, FieldId, Node, NodeKind,
+};
 /// Exhaustive AST invariant policy types and registry.
 pub use invariant_policy::{
     AST_NODE_POLICIES, AST_NODE_POLICY_SCHEMA_VERSION, AstChildContainmentPolicy,
