@@ -1185,3 +1185,47 @@ void test('overall status treats the crash journey like the activation journey',
     'failed',
   );
 });
+
+void test('crash-recovery leg env arms one leg and strips foreign selectors', () => {
+  const context = {
+    vsixPath: '/tmp/perl-lsp-rs-0.17.0.vsix',
+    vsixSha256: 'a'.repeat(64),
+    revision: 'r'.repeat(40),
+    serverSourceRevision: 'r'.repeat(40),
+    workspacePath: '/tmp/workspace',
+    userDataDir: '/tmp/profile/user-data',
+    extensionsDir: '/tmp/profile/extensions',
+  };
+  const transientEnv = crashRecoveryLegEnv(
+    {
+      PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
+      PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1',
+      PERL_LSP_FIRST_HOUR_SERVER_PATH: '/ambient/server',
+      PERL_LSP_CURRENT_SOURCE_SHA: 'c'.repeat(40),
+      PERL_LSP_ACTIVATION_FAILURE_SMOKE: '1',
+      PERL_LSP_ACTIVATION_FAILURE_LEG: 'failure',
+      PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE: 'stale-from-outer-env',
+    },
+    'transient',
+    context,
+  );
+  assert.equal(transientEnv.PERL_LSP_CRASH_RECOVERY_SMOKE, '1');
+  assert.equal(transientEnv.PERL_LSP_CRASH_RECOVERY_LEG, 'transient');
+  assert.equal(transientEnv.PERL_LSP_PUBLISHED_EXTENSION_SOURCE, 'vsix');
+  assert.equal(transientEnv.PERL_LSP_PUBLISHED_VSIX_PATH, context.vsixPath);
+  assert.equal(transientEnv.PERL_LSP_VSIX_SHA256, context.vsixSha256);
+  assert.equal(transientEnv.PERL_LSP_SERVER_SOURCE_SHA, context.serverSourceRevision);
+  // Foreign selectors must not leak: the crash journey selects its own suite
+  // and resolves the bundled candidate itself.
+  assert.equal('PERL_LSP_CURRENT_SOURCE_SMOKE' in transientEnv, false);
+  assert.equal('PERL_LSP_PACKAGED_BUNDLE_SMOKE' in transientEnv, false);
+  assert.equal('PERL_LSP_FIRST_HOUR_SERVER_PATH' in transientEnv, false);
+  assert.equal('PERL_LSP_CURRENT_SOURCE_SHA' in transientEnv, false);
+  assert.equal('PERL_LSP_ACTIVATION_FAILURE_SMOKE' in transientEnv, false);
+  assert.equal('PERL_LSP_ACTIVATION_FAILURE_LEG' in transientEnv, false);
+  assert.equal('PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE' in transientEnv, false);
+
+  const breakerEnv = crashRecoveryLegEnv({}, 'breaker', context);
+  assert.equal(breakerEnv.PERL_LSP_CRASH_RECOVERY_LEG, 'breaker');
+  assert.equal(breakerEnv.PERL_LSP_CRASH_RECOVERY_SMOKE, '1');
+});
