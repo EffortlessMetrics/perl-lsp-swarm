@@ -9161,10 +9161,7 @@ exit 7
         };
 
         assert!(err.to_string().contains("direct runner terminal status"));
-        let report: RunReport = serde_json::from_str(&fs::read_to_string(output)?)?;
-        assert_eq!(report.harness_status, Some(0));
-        assert_eq!(report.summary.files_passed, 1);
-        assert_eq!(report.summary.files_failed, 0);
+        assert!(!output.exists(), "rejected direct fallback must not publish a report");
         Ok(())
     }
 
