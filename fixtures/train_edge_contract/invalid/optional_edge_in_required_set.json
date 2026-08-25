@@ -1,0 +1,27 @@
+{
+  "schema": "train_edge_contract.v1",
+  "schema_version": 1,
+  "contract_id": "invalid-optional-edge-in-required-set",
+  "programme": { "name": "invalid-examples" },
+  "propositions": [
+    { "id": "P_core", "claim_ceiling": "Core only." },
+    { "id": "P_optional_evidence", "claim_ceiling": "Optional evidence only." }
+  ],
+  "edges": [
+    {
+      "source": "P_core",
+      "kind": "consumes_if_available",
+      "target": "P_optional_evidence",
+      "provenance": "optional consumption must never become a requirement"
+    }
+  ],
+  "claim_profiles": [
+    {
+      "id": "invalid_profile",
+      "version": 1,
+      "required": ["P_core", "P_optional_evidence"],
+      "allowed_terminal_limitation_states": ["not_proven"],
+      "claim_ceiling": "Invalid example: consumes_if_available blocks unrelated work."
+    }
+  ]
+}

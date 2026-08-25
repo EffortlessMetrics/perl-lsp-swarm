@@ -103,33 +103,116 @@ fn load_schema() -> Result<Value, Box<dyn Error>> {
     }
 }
 
+/// #8311 recurrence check, part 1: every section exposed by the public
+/// generic settings schema must map to a registered runtime owner.
+///
+/// A public configuration key may not name an editor/provider surface that
+/// has no registered runtime owner; `nextEdit` was hidden for exactly that
+/// reason. Adding a schema section without a registered owner (or retiring a
+/// section without dropping its mapping) fails here. Reintroducing something
+/// like `nextEdit` requires a dedicated issue/programme plus an actually
+/// registered provider, at which point it earns a mapping entry.
+#[test]
+fn generic_schema_sections_have_registered_runtime_owners() -> Result<(), Box<dyn Error>> {
+    /// Sections of the generic settings schema and the registered runtime
+    /// owner that consumes each one. Deny-by-default: no entry, no exposure.
+    const REGISTERED_OWNERS: &[(&str, &str)] = &[
+        ("workspace", "WorkspaceConfig::update_from_value"),
+        ("inlayHints", "ServerConfig::update_from_value"),
+        ("limits", "LspLimits::update_from_value"),
+        ("telemetry", "ServerConfig::update_from_value"),
+        ("perlcritic", "ServerConfig::update_from_value (deprecated alias)"),
+        ("critic", "ServerConfig::update_from_value"),
+        ("formatting", "ServerConfig::update_from_value"),
+        ("aiCompletion", "ServerConfig::update_from_value + registered inline-completion runtime"),
+    ];
+
+    let schema = load_schema()?;
+    let sections = schema["properties"]["perl"]["properties"]
+        .as_object()
+        .ok_or("generic settings schema has no perl.properties object")?;
+
+    for (section, owner) in REGISTERED_OWNERS {
+        assert!(
+            sections.contains_key(*section),
+            "registered owner mapping for `{section}` ({owner}) has no matching schema section; \
+             remove the stale mapping",
+        );
+    }
+    for section in sections.keys() {
+        assert!(
+            REGISTERED_OWNERS.iter().any(|(name, _)| name == section),
+            "public settings section `{section}` has no registered runtime owner (#8311): a \
+             public configuration key may not name an editor/provider surface with no \
+             registered runtime owner",
+        );
+    }
+
+    Ok(())
+}
+
+/// #8311 recurrence check, part 2: the hidden next-edit setting must stay
+/// absent from every surface that advertises public configuration.
+///
+/// The internal scaffold types remain (default-off, receipt-only, exercised
+/// only by dev harnesses) and legacy supplied keys are answered with one
+/// bounded ignored/deprecation reason by the config layer, but no schema,
+/// example, onboarding, or editor-contribution surface may advertise
+/// `nextEdit`/`[next_edit]` again until a provider is registered.
+#[test]
+fn hidden_next_edit_setting_stays_absent_from_public_configuration_surfaces() {
+    let surfaces = [
+        ("settings schema", include_str!("../../../schemas/perllsp-settings.schema.json")),
+        ("configuration reference", include_str!("../../../docs/reference/CONFIG.md")),
+        ("configuration guide", include_str!("../../../docs/reference/CONFIGURATION.md")),
+        (
+            "configuration schema reference",
+            include_str!("../../../docs/reference/CONFIGURATION_SCHEMA.md"),
+        ),
+        ("example project config", include_str!("../../../.perl-lsp.toml.example")),
+        (
+            "fuzz corpus example project config",
+            include_str!("../../../fuzz/corpus/config_surfaces/.perl-lsp.toml.example"),
+        ),
+        ("vscode extension contributions", include_str!("../../../vscode-extension/package.json")),
+    ];
+    let forbidden = ["nextEdit", "next_edit"];
+
+    for (surface_name, surface) in surfaces {
+        for marker in forbidden {
+            assert!(
+                !surface.contains(marker),
+                "hidden next-edit setting marker {marker:?} reintroduced in {surface_name} (#8311)"
+            );
+        }
+    }
+}
+
 #[test]
 fn generic_settings_schema_is_server_native_and_namespaced() -> Result<(), Box<dyn Error>> {
     let schema = load_schema()?;
     let properties = &schema["properties"]["perl"]["properties"];
     assert_eq!(properties.get("testRunner"), None);
+    // #8311: `nextEdit` names an editor provider surface with no registered
+    // runtime owner, so it must not appear as a public settings section.
+    assert_eq!(properties.get("nextEdit"), None);
 
     for section in [
         "workspace",
         "inlayHints",
         "limits",
         "telemetry",
-        "nextEdit",
         "perlcritic",
         "critic",
         "formatting",
         "aiCompletion",
     ] {
-        assert_eq!(
-            properties.get(section).is_some(),
-            true,
-            "missing generic settings section {section}"
-        );
+        assert!(properties.get(section).is_some(), "missing generic settings section {section}");
     }
 
-    assert_eq!(schema["properties"].get("perl-lsp").is_none(), true);
-    assert_eq!(schema["properties"].get("serverPath").is_none(), true);
-    assert_eq!(schema["properties"].get("autoDownload").is_none(), true);
+    assert!(schema["properties"].get("perl-lsp").is_none());
+    assert!(schema["properties"].get("serverPath").is_none());
+    assert!(schema["properties"].get("autoDownload").is_none());
 
     Ok(())
 }
@@ -182,7 +265,6 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
             "astCacheMaxMemoryBytes": 3000
         },
         "telemetry": { "enabled": true },
-        "nextEdit": { "enabled": true },
         "critic": {
             "enabled": true,
             "severity": 4,
@@ -226,41 +308,47 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
     let mut server = ServerConfig::default();
     server.update_from_value(&settings);
 
-    assert_eq!(server.inlay_hints_enabled, false);
-    assert_eq!(server.inlay_hints_parameter_hints, false);
-    assert_eq!(server.inlay_hints_type_hints, false);
-    assert_eq!(server.inlay_hints_chained_hints, true);
+    assert!(!server.inlay_hints_enabled);
+    assert!(!server.inlay_hints_parameter_hints);
+    assert!(!server.inlay_hints_type_hints);
+    assert!(server.inlay_hints_chained_hints);
     assert_eq!(server.inlay_hints_max_length, 48);
-    assert_eq!(server.telemetry_enabled, true);
-    assert_eq!(server.next_edit.enabled, true);
+    assert!(server.telemetry_enabled);
     assert_eq!(server.perlcritic_severity, 4);
     assert_eq!(server.native_critic_profile, "strict");
-    assert_eq!(server.format_on_save, false);
-    assert_eq!(matches!(server.formatting_engine, FormatterMode::Compat), true);
+    assert!(!server.format_on_save);
+    assert!(matches!(server.formatting_engine, FormatterMode::Compat));
     assert_eq!(server.perltidy_maximum_line_length, Some(100));
     assert_eq!(server.perltidy_indent_columns, Some(2));
     assert_eq!(server.perltidy_tabs, Some(false));
     assert_eq!(server.perltidy_timeout_secs, 12);
-    assert_eq!(server.ai_completion.user_enabled, true);
-    assert_eq!(server.ai_completion.model, "fixture-model");
+    // #4997: activation/selection fields from the generic schema are rejected;
+    // compiled defaults survive. Envelope fields remain behavior-backed.
+    assert!(!server.ai_completion.user_enabled);
+    assert_eq!(
+        server.ai_completion.activation_authority,
+        perl_lsp_rs_core::config::AiActivationAuthority::Unavailable
+    );
+    assert_eq!(server.ai_completion.provider, "openai_compat");
+    assert_eq!(server.ai_completion.model, "gpt-4o-mini");
     assert_eq!(server.ai_completion.timeout_ms, 2200);
     assert_eq!(server.ai_completion.max_output_tokens, 96);
     assert_eq!(server.ai_completion.max_inflight, 2);
-    assert_eq!(server.ai_completion.fallback, false);
-    assert_eq!(server.ai_completion.local_model_mode, true);
-    assert_eq!(server.ai_completion.streaming.user_enabled, false);
+    assert!(!server.ai_completion.fallback);
+    assert!(server.ai_completion.local_model_mode);
+    assert!(server.ai_completion.streaming.user_enabled);
     assert_eq!(server.ai_completion.streaming.update_debounce_ms, 80);
 
     let mut workspace = WorkspaceConfig::default();
     let rejected = workspace.update_from_value(&settings);
-    assert_eq!(rejected.is_empty(), true);
+    assert!(rejected.is_empty());
     assert_eq!(workspace.include_paths, ["lib", "vendor/lib"]);
     assert_eq!(workspace.discovery_extra_extensions, [".cgi"]);
     assert_eq!(workspace.discovery_extra_skipped_dirs, ["generated"]);
-    assert_eq!(workspace.use_system_inc, true);
+    assert!(workspace.use_system_inc);
     assert_eq!(workspace.resolution_timeout_ms, 75);
-    assert_eq!(workspace.use_perl5lib, false);
-    assert_eq!(matches!(workspace.perl5lib_precedence, Perl5LibPrecedence::Append), true);
+    assert!(!workspace.use_perl5lib);
+    assert!(matches!(workspace.perl5lib_precedence, Perl5LibPrecedence::Append));
 
     let mut limits = LspLimits::default();
     limits.update_from_value(&settings);
@@ -290,22 +378,43 @@ fn generic_schema_excludes_security_sensitive_lsp_settings() -> Result<(), Box<d
     let perl = &schema["properties"]["perl"]["properties"];
 
     let workspace = &perl["workspace"]["properties"];
-    assert_eq!(workspace.get("perlPath").is_none(), true);
-    assert_eq!(workspace.get("perlArgs").is_none(), true);
+    assert!(workspace.get("perlPath").is_none());
+    assert!(workspace.get("perlArgs").is_none());
 
     let formatting = &perl["formatting"]["properties"];
-    assert_eq!(formatting.get("profile").is_none(), true);
-    assert_eq!(formatting.get("extraArgs").is_none(), true);
+    assert!(formatting.get("profile").is_none());
+    assert!(formatting.get("extraArgs").is_none());
 
     let perlcritic = &perl["perlcritic"]["properties"];
-    assert_eq!(perlcritic.get("profile").is_none(), true);
-    assert_eq!(perlcritic.get("theme").is_none(), true);
+    assert!(perlcritic.get("profile").is_none());
+    assert!(perlcritic.get("theme").is_none());
 
     let ai = &perl["aiCompletion"]["properties"];
-    assert_eq!(ai.get("endpoint").is_none(), true);
-    assert_eq!(ai.get("apiKeyEnv").is_none(), true);
-    assert_eq!(ai.get("apiKeyHeader").is_none(), true);
-    assert_eq!(ai.get("apiKeyPrefix").is_none(), true);
+    assert!(ai.get("endpoint").is_none());
+    assert!(ai.get("apiKeyEnv").is_none());
+    assert!(ai.get("apiKeyHeader").is_none());
+    assert!(ai.get("apiKeyPrefix").is_none());
+
+    // #4997: activation and selection fields remain documented for the future
+    // trusted adapter but advertise no generic client transport.
+    for activation_field in ["enabled", "provider", "model"] {
+        let field = ai
+            .get(activation_field)
+            .unwrap_or_else(|| panic!("aiCompletion.{activation_field} must stay documented"));
+        assert_eq!(
+            field["x-perllsp-transports"],
+            json!([]),
+            "aiCompletion.{activation_field} must not advertise client transports (#4997)",
+        );
+        assert_eq!(field["x-perllsp-scope"], json!("machine"));
+    }
+    let streaming_enabled =
+        &perl["aiCompletion"]["properties"]["streaming"]["properties"]["enabled"];
+    assert_eq!(
+        streaming_enabled["x-perllsp-transports"],
+        json!([]),
+        "streaming.enabled must not advertise client transports (#4997)",
+    );
 
     Ok(())
 }

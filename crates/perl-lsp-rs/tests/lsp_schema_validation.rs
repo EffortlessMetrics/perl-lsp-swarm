@@ -1553,30 +1553,3 @@ fn validate_logtrace(msg: &Value, trace: &str) -> Result<(), String> {
     }
     Ok(())
 }
-
-#[test]
-fn test_lsp_3_17_compliance_summary() -> TestResult {
-    println!("LSP 3.17 Schema Validation Summary:");
-    println!("====================================");
-    println!("✓ Position, Range, Location validated");
-    println!("✓ LocationLink support (3.14+)");
-    println!("✓ Diagnostic with tags, data, codeDescription (3.15-3.17)");
-    println!("✓ MarkupContent validated (3.3+)");
-    println!("✓ CompletionList with itemDefaults (3.17)");
-    println!("✓ WorkspaceSymbol with optional range (3.17)");
-    println!("✓ CodeAction with isPreferred, disabled (3.16+)");
-    println!("✓ WorkspaceEdit with changeAnnotations (3.16+)");
-    println!("✓ File operations (create, rename, delete)");
-    println!("✓ SemanticTokens validated");
-    println!("✓ InlayHint validated (3.17)");
-    println!("✓ Diagnostic pull model (3.17)");
-    println!("✓ TypeHierarchy validated (3.17)");
-    println!("✓ Error codes including -32802 ServerCancelled, -32803 RequestFailed");
-    println!("✓ SignatureHelp with per-signature activeParameter (3.16+)");
-    println!("✓ Telemetry constrained to object|array (3.17)");
-    println!("✓ Pre-initialize message constraints enforced");
-    println!("✓ Partial result streaming contracts validated");
-
-    println!("\nAll LSP 3.17 message schemas validated!");
-    Ok(())
-}

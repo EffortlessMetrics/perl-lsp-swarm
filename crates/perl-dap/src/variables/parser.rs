@@ -403,7 +403,7 @@ impl VariableParser {
                     if !trimmed.is_empty() {
                         elements.push(trimmed);
                     }
-                    current = String::new();
+                    current.clear();
                 }
                 _ => {
                     current.push(ch);

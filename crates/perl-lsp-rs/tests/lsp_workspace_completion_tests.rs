@@ -4,13 +4,12 @@
 /// index to provide cross-file symbol completions.
 use insta::assert_yaml_snapshot;
 use serde_json::json;
+use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 mod common;
-use common::{
-    completion_items, drain_until_quiet, initialize_lsp, send_notification, send_request,
-    start_lsp_server,
-};
+use common::{completion_items, send_notification, send_request, start_lsp_server};
 
 fn completion_snapshot(items: &[serde_json::Value], prefix: &str) -> Vec<serde_json::Value> {
     let mut snapshot_items: Vec<serde_json::Value> = items
@@ -76,10 +75,77 @@ fn completion_snapshot_for_labels(
     snapshot_items
 }
 
-fn await_open_processing(server: &common::LspServer) {
-    // didOpen triggers parse + indexing work asynchronously in the spawned server.
-    // Drain until quiet before asserting on workspace-aware completions.
-    drain_until_quiet(server, Duration::from_millis(50), Duration::from_millis(500));
+/// Shared empty workspace root for the suite's servers.
+///
+/// The suite drives virtual `file:///workspace/...` documents that never exist
+/// on disk. With no root of any kind, the server deliberately adopts the
+/// process working directory (lightweight-client compatibility fallback) and
+/// bulk-indexes it, racing these tests' asynchronous index commits with a
+/// real-directory scan and flooding capped completion pages with unrelated
+/// workspace symbols. An empty root keeps the workspace index populated only
+/// by the documents each test opens.
+fn isolated_workspace_root() -> &'static Path {
+    static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let dir = std::env::temp_dir()
+            .join(format!("perl-lsp-ws-completion-tests-{}", std::process::id()));
+        // Recreate so a leftover directory from an earlier crashed run cannot
+        // smuggle files into an otherwise empty root.
+        let _ = std::fs::remove_dir_all(&dir);
+        perl_tdd_support::must(
+            std::fs::create_dir_all(&dir)
+                .map_err(|err| format!("failed to create isolated root {}: {err}", dir.display())),
+        );
+        dir
+    })
+}
+
+/// Initialize the server against an empty, isolated workspace root.
+fn initialize_isolated(server: &common::LspServer) {
+    common::initialize_lsp_with_root_path(server, &isolated_workspace_root().to_string_lossy());
+    // `initialize_lsp` consumes the initial `perl-lsp/index-ready`, which the
+    // server emits while the background workspace scan is still Building. The
+    // scan emits a second `perl-lsp/index-ready` when it finishes and the
+    // coordinator reaches Ready — the only state in which completion requests
+    // get full workspace-index access. Consuming that second notification
+    // makes every test start from a settled index instead of racing the scan.
+    let budget = Duration::from_secs(10);
+    perl_tdd_support::must(
+        common::read_notification_method(server, "perl-lsp/index-ready", budget).ok_or_else(|| {
+            format!(
+                "background workspace scan never completed within {budget:?}; {}",
+                server.stderr_tail()
+            )
+        }),
+    );
+}
+
+/// Deterministically wait for the workspace index to incorporate an opened
+/// document.
+///
+/// After `textDocument/didOpen`, the server dispatches a background task that
+/// commits the document into the workspace index and then emits a
+/// `perl-lsp/active-document-ready` notification carrying the document URI.
+/// Waiting for that notification — rather than sleeping a wall-clock budget —
+/// makes the ordering between the asynchronous index commit and the
+/// completion request deterministic.
+///
+/// Every opened document must be awaited this way, not just the module under
+/// test: while ANY open document's index commit is still in flight, the
+/// server's freshness gate (`workspace_index_stale_for_any_open_document`)
+/// cuts completion's workspace-index access entirely, leaving only built-in
+/// and in-file candidates.
+fn await_document_indexed(server: &common::LspServer, uri: &str) {
+    let budget = Duration::from_secs(10);
+    perl_tdd_support::must(
+        common::read_notification_for_uri(server, "perl-lsp/active-document-ready", uri, budget)
+            .ok_or_else(|| {
+                format!(
+                    "server never acknowledged indexing of {uri} within {budget:?}; {}",
+                    server.stderr_tail()
+                )
+            }),
+    );
 }
 
 fn is_bare_completion_item(item: &serde_json::Value, bare_name: &str) -> bool {
@@ -91,27 +157,6 @@ fn is_bare_completion_item(item: &serde_json::Value, bare_name: &str) -> bool {
         == Some(bare_name)
 }
 
-/// Wait for the workspace index to incorporate a freshly opened module.
-///
-/// After `textDocument/didOpen` for a module file, the server dispatches a
-/// background task (tokio blocking pool) to extract and insert symbols into
-/// the workspace index.  No LSP notification is emitted when a per-file
-/// background indexing task completes (the `perl-lsp/index-ready` notification
-/// is sent once during `initialized` and is consumed by `initialize_lsp`).
-///
-/// This helper drains pending LSP traffic first, then waits a fixed interval
-/// to give the blocking-pool task time to commit its symbol insertions.  The
-/// 500ms wall-clock budget is generous enough for debug builds on slow CI
-/// machines while remaining acceptable in total test time.
-fn await_module_indexed(server: &common::LspServer) {
-    // Drain any pending diagnostics / notifications from the didOpen.
-    drain_until_quiet(server, Duration::from_millis(50), Duration::from_millis(500));
-    // Fixed sleep: the background indexing task emits no notification when it
-    // completes, so we must wait a wall-clock budget for it to finish.
-    // 500ms is sufficient for debug-build Perl symbol extraction on slow machines.
-    std::thread::sleep(Duration::from_millis(500));
-}
-
 /// Test cross-file function completion
 ///
 /// When a user types a function name, the completion provider should suggest
@@ -119,7 +164,7 @@ fn await_module_indexed(server: &common::LspServer) {
 #[test]
 fn test_completion_cross_file_function() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
-    initialize_lsp(&server);
+    initialize_isolated(&server);
 
     // Index a module file with a function
     let module_uri = "file:///workspace/EmailUtils.pm";
@@ -152,9 +197,17 @@ sub parse_email_header {
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, module_uri);
 
-    // Now open a different file and request completion
+    // Open a different file and request completion.
+    //
+    // The import is an explicit list because EmailUtils declares no Exporter
+    // @EXPORT: under the #11158 bare-insertion contract a plain
+    // `use EmailUtils;` imports nothing, so a bare `validate_email`
+    // completion would insert a call that dies at runtime. The explicit
+    // import is the honest authority for the bare form. (Contrast
+    // test_completion_bare_function_from_workspace, which keeps the plain
+    // `use` and relies on that module's Exporter @EXPORT facts.)
     let script_uri = "file:///workspace/script.pl";
     send_notification(
         &server,
@@ -167,7 +220,7 @@ sub parse_email_header {
                     "languageId": "perl",
                     "version": 1,
                     "text": r#"
-use EmailUtils;
+use EmailUtils qw(validate_email);
 
 my $email = 'test@example.com';
 vali
@@ -176,7 +229,7 @@ vali
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, script_uri);
 
     // Request completion at position after "vali"
     let response = send_request(
@@ -209,7 +262,7 @@ vali
 #[test]
 fn test_completion_cross_file_qualified() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
-    initialize_lsp(&server);
+    initialize_isolated(&server);
 
     // Index a module file
     let module_uri = "file:///workspace/DataProcessor.pm";
@@ -242,7 +295,7 @@ sub transform_data {
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, module_uri);
 
     // Open a file requesting qualified completion
     let script_uri = "file:///workspace/main.pl";
@@ -265,7 +318,7 @@ my $result = DataProcessor::
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, script_uri);
 
     // Request completion after "DataProcessor::"
     let response = send_request(
@@ -318,7 +371,7 @@ my $result = DataProcessor::
 #[test]
 fn test_completion_cross_file_variable() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
-    initialize_lsp(&server);
+    initialize_isolated(&server);
 
     // Index a module with exported variables
     let module_uri = "file:///workspace/Config.pm";
@@ -344,7 +397,7 @@ our $DEBUG_MODE = 1;
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, module_uri);
 
     // Open a file requesting variable completion
     let script_uri = "file:///workspace/app.pl";
@@ -367,7 +420,7 @@ print $Config::CONF
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, script_uri);
 
     // Request completion after "$Config::CONF"
     let response = send_request(
@@ -400,7 +453,7 @@ print $Config::CONF
 #[test]
 fn test_completion_bare_function_from_workspace() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
-    initialize_lsp(&server);
+    initialize_isolated(&server);
 
     // Index a module with exported functions
     let module_uri = "file:///workspace/StringUtils.pm";
@@ -437,7 +490,7 @@ sub uppercase {
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, module_uri);
 
     // Open a file that imports the module
     let script_uri = "file:///workspace/text_processor.pl";
@@ -461,7 +514,7 @@ tri
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, script_uri);
 
     // Request completion after "tri"
     let response = send_request(
@@ -497,7 +550,7 @@ tri
 fn test_completion_bare_function_withdraws_module_auto_import_edit()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
-    initialize_lsp(&server);
+    initialize_isolated(&server);
 
     let module_uri = "file:///workspace/StringUtils.pm";
     send_notification(
@@ -515,7 +568,7 @@ fn test_completion_bare_function_withdraws_module_auto_import_edit()
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, module_uri);
 
     // Script does NOT import StringUtils. A bare `trimmer` candidate would be
     // unsafe because accepting it leaves a broken primary after any import
@@ -536,7 +589,7 @@ fn test_completion_bare_function_withdraws_module_auto_import_edit()
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, script_uri);
 
     let response = send_request(
         &server,
@@ -571,7 +624,7 @@ fn test_completion_bare_function_withdraws_module_auto_import_edit()
 fn test_completion_runtime_import_does_not_grant_file_wide_bare_authority()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
-    initialize_lsp(&server);
+    initialize_isolated(&server);
 
     let module_uri = "file:///workspace/Foo.pm";
     send_notification(
@@ -589,7 +642,7 @@ fn test_completion_runtime_import_does_not_grant_file_wide_bare_authority()
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, module_uri);
 
     let script_uri = "file:///workspace/runtime_import.pl";
     let source = "bar\nrequire Foo; Foo->import(qw(bar));\nbar";
@@ -608,7 +661,7 @@ fn test_completion_runtime_import_does_not_grant_file_wide_bare_authority()
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, script_uri);
 
     let before_response = send_request(
         &server,
@@ -663,7 +716,7 @@ fn test_completion_runtime_import_does_not_grant_file_wide_bare_authority()
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, script_uri);
 
     let explicit_response = send_request(
         &server,
@@ -699,7 +752,7 @@ fn test_completion_runtime_import_does_not_grant_file_wide_bare_authority()
 #[test]
 fn test_completion_inherited_method_from_parent() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
-    initialize_lsp(&server);
+    initialize_isolated(&server);
 
     // Index the base class with a method
     let base_uri = "file:///workspace/CompletionBase.pm";
@@ -718,7 +771,7 @@ fn test_completion_inherited_method_from_parent() -> Result<(), Box<dyn std::err
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, base_uri);
 
     // Index the child class that inherits from base
     let child_uri = "file:///workspace/CompletionChild.pm";
@@ -737,7 +790,7 @@ fn test_completion_inherited_method_from_parent() -> Result<(), Box<dyn std::err
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, child_uri);
 
     // Open a script that uses the child class with '->'-prefixed cursor
     // We place the cursor right after 'CompletionChild->' on line 3 (0-indexed: line 2)
@@ -757,7 +810,7 @@ fn test_completion_inherited_method_from_parent() -> Result<(), Box<dyn std::err
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, script_uri);
 
     // Request completion at position right after '$c->' (line 2, char 4)
     let response = send_request(
@@ -806,7 +859,7 @@ fn test_completion_inherited_method_from_parent() -> Result<(), Box<dyn std::err
 fn test_object_method_completion_replaces_typed_method_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
-    initialize_lsp(&server);
+    initialize_isolated(&server);
 
     let module_uri = "file:///workspace/CompletionObject.pm";
     send_notification(
@@ -824,7 +877,7 @@ fn test_object_method_completion_replaces_typed_method_prefix()
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, module_uri);
 
     let script_uri = "file:///workspace/object_completion.pl";
     let source_line = "$object->register";
@@ -845,7 +898,7 @@ fn test_object_method_completion_replaces_typed_method_prefix()
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, script_uri);
 
     let response = send_request(
         &server,
@@ -892,7 +945,7 @@ fn test_object_method_completion_replaces_typed_method_prefix()
 fn test_workspace_method_candidates_survive_typed_method_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
-    initialize_lsp(&server);
+    initialize_isolated(&server);
 
     let module_uri = "file:///workspace/TypedPrefix.pm";
     send_notification(
@@ -910,7 +963,7 @@ fn test_workspace_method_candidates_survive_typed_method_prefix()
             }
         }),
     );
-    await_module_indexed(&server);
+    await_document_indexed(&server, module_uri);
 
     // The receiver has no static evidence: `load_object()` resolves to nothing
     // and the script never imports TypedPrefix, so only the runtime workspace
@@ -931,7 +984,7 @@ fn test_workspace_method_candidates_survive_typed_method_prefix()
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, script_uri);
 
     let response = send_request(
         &server,
@@ -963,7 +1016,7 @@ fn test_workspace_method_candidates_survive_typed_method_prefix()
 fn test_completion_detail_includes_literal_bless_confidence_label()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
-    initialize_lsp(&server);
+    initialize_isolated(&server);
 
     let module_uri = "file:///workspace/BlessedGreeter.pm";
     send_notification(
@@ -981,7 +1034,7 @@ fn test_completion_detail_includes_literal_bless_confidence_label()
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, module_uri);
 
     let script_uri = "file:///workspace/bless_usage.pl";
     send_notification(
@@ -999,7 +1052,7 @@ fn test_completion_detail_includes_literal_bless_confidence_label()
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, script_uri);
 
     let response = send_request(
         &server,
@@ -1042,7 +1095,7 @@ fn test_completion_detail_includes_literal_bless_confidence_label()
 #[test]
 fn test_completion_textedit_replaces_qualified_prefix() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
-    initialize_lsp(&server);
+    initialize_isolated(&server);
 
     // Index a module that exposes a package variable.
     let module_uri = "file:///workspace/Cfg.pm";
@@ -1062,7 +1115,7 @@ fn test_completion_textedit_replaces_qualified_prefix() -> Result<(), Box<dyn st
         }),
     );
     // Wait for the workspace index to incorporate $CFG_VALUE before requesting completion.
-    await_module_indexed(&server);
+    await_document_indexed(&server, module_uri);
 
     // Open a usage file with a partially-typed qualified variable.
     //
@@ -1090,7 +1143,7 @@ fn test_completion_textedit_replaces_qualified_prefix() -> Result<(), Box<dyn st
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, script_uri);
 
     // Request completion at end-of-prefix (line 0, char 16).
     let response = send_request(
@@ -1145,7 +1198,7 @@ fn test_completion_textedit_replaces_qualified_prefix() -> Result<(), Box<dyn st
 #[test]
 fn test_completion_textedit_utf16_position() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
-    initialize_lsp(&server);
+    initialize_isolated(&server);
 
     // Index a module with a qualified variable.
     let module_uri = "file:///workspace/Enc.pm";
@@ -1165,7 +1218,7 @@ fn test_completion_textedit_utf16_position() -> Result<(), Box<dyn std::error::E
         }),
     );
     // Wait for the workspace index to incorporate $ENC_KEY before requesting completion.
-    await_module_indexed(&server);
+    await_document_indexed(&server, module_uri);
 
     // Open a usage file.  The `£` sign is U+00A3: 2 UTF-8 bytes, 1 UTF-16 code unit.
     //
@@ -1197,7 +1250,7 @@ fn test_completion_textedit_utf16_position() -> Result<(), Box<dyn std::error::E
             }
         }),
     );
-    await_open_processing(&server);
+    await_document_indexed(&server, script_uri);
 
     // Cursor at end of `$Enc::EN`:
     //   UTF-8 offset 21 → UTF-16 col 20 (£ costs 2 UTF-8 bytes, 1 UTF-16 unit)

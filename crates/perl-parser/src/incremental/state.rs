@@ -1,5 +1,5 @@
 use crate::incremental::checkpoint::{LexCheckpoint, ParseCheckpoint, ScopeSnapshot};
-use crate::incremental::lex::lex_source_with_checkpoints;
+use crate::incremental::lex::{StoredLexCheckpoint, lex_source_with_checkpoints};
 use crate::incremental::snapshot::{ParseGeneration, ParseSnapshot, ParseSnapshotStrategy};
 use perl_lexer::Token;
 use perl_line_index::LineIndex;
@@ -44,6 +44,11 @@ pub struct IncrementalStateReadView {
 /// [`IncrementalState::new`], read-only accessors, and [`super::apply_edits`] to
 /// move between committed generations.
 ///
+/// Complete behavior-bearing lexer checkpoints are retained privately and move
+/// atomically with source, token, line-index, and parser state. The public
+/// `LexCheckpoint` vector remains a compact compatibility summary; it is not
+/// the restart authority.
+///
 /// Legacy field-style reads remain available:
 ///
 /// ```
@@ -74,6 +79,10 @@ pub struct IncrementalStateReadView {
 #[non_exhaustive]
 pub struct IncrementalState {
     pub(super) read_view: IncrementalStateReadView,
+    /// Complete generation-bound lexer checkpoints retained privately. These
+    /// move atomically with the committed generation and never leak through
+    /// the read-only compatibility view.
+    stored_lex_checkpoints: Vec<StoredLexCheckpoint>,
 }
 
 impl Deref for IncrementalState {
@@ -111,6 +120,7 @@ impl IncrementalState {
                 snapshot,
                 tokens: lexed.tokens,
             },
+            stored_lex_checkpoints: lexed.stored_checkpoints,
         }
     }
 
@@ -136,6 +146,16 @@ impl IncrementalState {
     #[must_use]
     pub fn lex_checkpoints(&self) -> &[LexCheckpoint] {
         &self.read_view.lex_checkpoints
+    }
+
+    /// Number of complete generation-bound lexer checkpoints retained privately.
+    #[must_use]
+    pub fn stored_lex_checkpoint_count(&self) -> usize {
+        self.stored_lex_checkpoints.len()
+    }
+
+    pub(crate) fn stored_lex_checkpoints(&self) -> &[StoredLexCheckpoint] {
+        &self.stored_lex_checkpoints
     }
 
     /// Parser restart summaries for the current committed parse output.
@@ -201,14 +221,16 @@ impl IncrementalState {
         self.read_view.source = source;
     }
 
-    /// Replace the staged lexer output and its restart summaries together.
+    /// Replace the staged lexer output and both checkpoint planes together.
     pub(super) fn replace_lex_state(
         &mut self,
         tokens: Vec<Token>,
         lex_checkpoints: Vec<LexCheckpoint>,
+        stored_lex_checkpoints: Vec<StoredLexCheckpoint>,
     ) {
         self.read_view.tokens = tokens;
         self.read_view.lex_checkpoints = lex_checkpoints;
+        self.stored_lex_checkpoints = stored_lex_checkpoints;
     }
 
     /// Refresh the authoritative parser output from the current source.

@@ -108,7 +108,7 @@ scoping tiers:
   per-folder effective workspace config, so two folders can have completely
   different include paths without interacting.
 - **Server-global** — `[diagnostics]`, `[critic]`, `[features]`, `[formatting]`,
-  `[ai_completion]`, and `[next_edit]`. These target the single shared
+  and `[ai_completion]`. These target the single shared
   `ServerConfig`, so they are inherently server-wide rather than per-folder.
 
 Because the server-global sections are shared, two folders that set the **same**
@@ -1051,7 +1051,7 @@ launch `perllsp --stdio`.
 |---|---|---|---|
 | `perl-lsp.enableSemanticTokens` | `boolean` | `true` | Enhanced syntax highlighting. |
 | `perl-lsp.enableFormatting` | `boolean` | `true` | Document formatting. Native formatting is built in; external perltidy is compatibility mode. |
-| `perl-lsp.formatOnSave` | `boolean` | `false` | Auto-format on save. |
+| `perl-lsp.formatOnSave` | `boolean` | `false` | Auto-format on save. The extension formats through the whole-document provider; server-owned `willSaveWaitUntil` formatting is withdrawn (#11955) until #8092 proves one save owner. |
 | `perl-lsp.enableTestIntegration` | `boolean` | `true` | Test::More and Test2 integration. |
 | `perl-lsp.autoPopulateNewFiles` | `boolean` | `true` | Insert package boilerplate into new `.pm` files and Test::More boilerplate into new `.t` files. Files with existing content are not modified. |
 

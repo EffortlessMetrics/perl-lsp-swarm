@@ -6,6 +6,9 @@
 //!
 //! The resulting behavior is intentionally conservative: common non-source directories
 //! are skipped in both modes (`.git`, `.hg`, `.svn`, `target`, `node_modules`, `.cache`).
+//! Symlinked files and directories inside the workspace are followed so shared library
+//! trees remain visible; external targets require an explicit include path. `WalkDir`'s
+//! loop detection prevents cyclic links from making discovery unbounded.
 //! Explicit include roots can relax that skip only for configured Perl dependency
 //! trees such as `local/lib/perl5`.
 
@@ -13,7 +16,7 @@ use crate::ignore::{is_skipped_dir_name_with_extra, path_contains_skipped_compon
 use perl_parser_core::source_file::is_perl_source_path;
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -214,6 +217,14 @@ fn try_git_discovery(
     let mut child = std::process::Command::new("git")
         .args(GIT_LS_FILES_ARGS)
         .current_dir(root)
+        // `git ls-files` never reads standard input; without an explicit
+        // null stdin the child inherits the server's transport pipe. On
+        // Windows a spawned git that inherits an open, non-console stdin
+        // pipe blocks instead of exiting (observed: `git ls-files` outside
+        // a repository stays alive until the next client write on that
+        // pipe), coupling background scan completion to unrelated client
+        // traffic and stalling the index coordinator in a Building state.
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()?;
@@ -246,11 +257,33 @@ fn try_git_discovery(
         return Err(std::io::Error::other("git ls-files failed"));
     }
 
-    let (files, excluded_count, cancelled) =
+    let (mut files, mut excluded_count, cancelled) =
         parse_git_ls_files_output_with_cancel(root, &stdout, allowlist, config, should_cancel);
     if cancelled {
         return Ok(GitDiscoveryOutcome::Cancelled);
     }
+
+    // `git ls-files` reports a tracked directory symlink as one entry and does
+    // not enumerate the linked tree. Expand those entries separately so a
+    // linked library remains visible in the fast path as well as the walk
+    // fallback. The same skip and extension policy is applied to the expansion.
+    let tracked_paths = cached_git_paths(root).unwrap_or_default();
+    let (linked_files, linked_excluded, linked_cancelled) = discover_linked_git_directories(
+        root,
+        &stdout,
+        &tracked_paths,
+        allowlist,
+        config,
+        should_cancel,
+    );
+    if linked_cancelled {
+        return Ok(GitDiscoveryOutcome::Cancelled);
+    }
+    files.extend(linked_files);
+    excluded_count += linked_excluded;
+    sort_paths_lexically(&mut files);
+    files.dedup();
+
     let result = DiscoveryResult {
         files,
         method: DiscoveryMethod::Git,
@@ -263,6 +296,83 @@ fn try_git_discovery(
     Ok(GitDiscoveryOutcome::Complete(result))
 }
 
+fn discover_linked_git_directories(
+    root: &Path,
+    stdout: &[u8],
+    tracked_paths: &HashSet<PathBuf>,
+    allowlist: &DiscoveryIncludeAllowlist,
+    config: &DiscoveryConfig,
+    should_cancel: &impl Fn() -> bool,
+) -> (Vec<PathBuf>, usize, bool) {
+    let mut files = Vec::new();
+    let mut excluded_count = 0;
+
+    for entry in stdout.split(|byte| *byte == b'\0').filter(|entry| !entry.is_empty()) {
+        if should_cancel() {
+            return (files, excluded_count, true);
+        }
+
+        let relative_path = PathBuf::from(bytes_to_os_string(entry));
+        if !tracked_paths.contains(&relative_path) {
+            continue;
+        }
+        let path = root.join(&relative_path);
+        let is_linked_directory = std::fs::symlink_metadata(&path)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            && std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir());
+        if !is_linked_directory
+            || !is_allowed_link_target(root, &path, allowlist)
+            || is_skipped_path(root, &relative_path, allowlist)
+        {
+            continue;
+        }
+
+        let mut candidates = Vec::new();
+        for linked_entry in
+            WalkDir::new(&path).follow_links(true).into_iter().filter_entry(|entry| {
+                !should_skip_dir_with_allowlist(root, entry, allowlist, config)
+                    && is_allowed_link_target(root, entry.path(), allowlist)
+            })
+        {
+            if should_cancel() {
+                return (files, excluded_count, true);
+            }
+            let linked_entry = match linked_entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            if !linked_entry.file_type().is_file() {
+                continue;
+            }
+            candidates.push(linked_entry.path().to_path_buf());
+        }
+        let ignored = git_ignored_paths(root, &candidates);
+        for linked_path in candidates {
+            let relative = linked_path.strip_prefix(root).unwrap_or(&linked_path);
+            if ignored.contains(relative) {
+                excluded_count += 1;
+            } else if config.is_discovery_path(&linked_path) {
+                files.push(linked_path);
+            } else {
+                excluded_count += 1;
+            }
+        }
+    }
+
+    (files, excluded_count, false)
+}
+
+fn is_skipped_path(
+    root: &Path,
+    relative_path: &Path,
+    allowlist: &DiscoveryIncludeAllowlist,
+) -> bool {
+    !is_safe_relative_git_path(relative_path)
+        || allowlist.has_unallowed_skipped_component(relative_path)
+        || !root.join(relative_path).is_dir()
+}
+
+#[derive(Debug)]
 enum GitDiscoveryOutcome {
     Complete(DiscoveryResult),
     Cancelled,
@@ -322,6 +432,12 @@ fn parse_git_ls_files_output_with_cancel(
         }
 
         let path = root.join(relative_path);
+        if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+            && !is_allowed_link_target(root, &path, allowlist)
+        {
+            excluded_count += 1;
+            continue;
+        }
         if !config.is_discovery_path(&path) {
             excluded_count += 1;
             continue;
@@ -359,7 +475,76 @@ fn should_require_existing_git_files(root: &Path) -> bool {
 }
 
 fn is_existing_regular_file(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
+    // `metadata` follows symlinks. Git reports symlink entries through `ls-files`,
+    // but the workspace should index a linked Perl file just like its target.
+    std::fs::metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
+}
+
+fn cached_git_paths(root: &Path) -> std::io::Result<HashSet<PathBuf>> {
+    let output = std::process::Command::new("git")
+        .args(["ls-files", "-z", "--cached"])
+        .current_dir(root)
+        .output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other("git ls-files cached failed"));
+    }
+    Ok(output
+        .stdout
+        .split(|byte| *byte == b'\0')
+        .filter(|entry| !entry.is_empty())
+        .map(bytes_to_os_string)
+        .map(PathBuf::from)
+        .collect())
+}
+
+fn git_ignored_paths(root: &Path, paths: &[PathBuf]) -> HashSet<PathBuf> {
+    let relative_paths: Vec<PathBuf> = paths
+        .iter()
+        .filter_map(|path| path.strip_prefix(root).ok().map(Path::to_path_buf))
+        .collect();
+    if relative_paths.is_empty() {
+        return HashSet::new();
+    }
+
+    let mut child = match std::process::Command::new("git")
+        .args(["check-ignore", "-z", "--stdin", "--no-index"])
+        .current_dir(root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return HashSet::new(),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        for path in &relative_paths {
+            let _ = stdin.write_all(path.to_string_lossy().as_bytes());
+            let _ = stdin.write_all(&[0]);
+        }
+    }
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(_) => return HashSet::new(),
+    };
+    output
+        .stdout
+        .split(|byte| *byte == b'\0')
+        .filter(|entry| !entry.is_empty())
+        .map(bytes_to_os_string)
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn is_allowed_link_target(root: &Path, link: &Path, allowlist: &DiscoveryIncludeAllowlist) -> bool {
+    let Ok(target) = link.canonicalize() else {
+        return false;
+    };
+    let Ok(workspace_root) = root.canonicalize() else {
+        return false;
+    };
+    target.starts_with(workspace_root)
+        || allowlist.external_include_roots.iter().any(|allowed| target.starts_with(allowed))
 }
 
 #[cfg(test)]
@@ -385,12 +570,12 @@ fn walk_discovery_with_allowlist(
     let mut skipped_dir_count: usize = 0;
     let mut cancelled = false;
 
-    for entry in WalkDir::new(root).follow_links(false).into_iter().filter_entry(|entry| {
+    for entry in WalkDir::new(root).follow_links(true).into_iter().filter_entry(|entry| {
         if should_skip_dir_with_allowlist(root, entry, allowlist, config) {
             skipped_dir_count += 1;
             return false;
         }
-        true
+        is_allowed_link_target(root, entry.path(), allowlist)
     }) {
         if should_cancel() {
             cancelled = true;
@@ -485,6 +670,7 @@ fn log_discovery(result: &DiscoveryResult) {
 #[derive(Debug, Default)]
 struct DiscoveryIncludeAllowlist {
     include_roots: Vec<PathBuf>,
+    external_include_roots: Vec<PathBuf>,
     extra_skipped_dirs: Vec<String>,
 }
 
@@ -498,9 +684,18 @@ impl DiscoveryIncludeAllowlist {
         P: AsRef<Path>,
     {
         let mut include_roots = Vec::new();
+        let mut external_include_roots = Vec::new();
         let mut seen = HashSet::new();
 
         for include_path in include_paths {
+            if include_path.as_ref().is_absolute()
+                && !include_path.as_ref().starts_with(workspace_root)
+            {
+                if let Ok(path) = include_path.as_ref().canonicalize() {
+                    external_include_roots.push(path);
+                }
+                continue;
+            }
             let Some(relative_path) = normalize_include_path(workspace_root, include_path.as_ref())
             else {
                 continue;
@@ -520,7 +715,11 @@ impl DiscoveryIncludeAllowlist {
             }
         }
 
-        Self { include_roots, extra_skipped_dirs: config.extra_skipped_dirs.clone() }
+        Self {
+            include_roots,
+            external_include_roots,
+            extra_skipped_dirs: config.extra_skipped_dirs.clone(),
+        }
     }
 
     fn has_unallowed_skipped_component(&self, relative_path: &Path) -> bool {
@@ -660,6 +859,148 @@ mod tests {
         assert_eq!(result.files.len(), 1);
         assert!(result.files[0].ends_with("lib/Foo.pm"));
         assert_eq!(result.excluded_count, 3);
+
+        Ok(())
+    }
+
+    fn git_on_path() -> bool {
+        std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
+
+    /// Call-observation for the discovery git spawn: on a root outside any
+    /// git repository, `git ls-files` fails fast and discovery returns the
+    /// error variant that triggers the caller's walk fallback. The spawned
+    /// git gets an explicit null stdin — a git inheriting an open,
+    /// non-console stdin pipe blocks instead of exiting on Windows, which
+    /// stalled background workspace scans until unrelated client input
+    /// arrived. The bounded-time assertion observes that completion contract
+    /// end to end through the spawn.
+    #[test]
+    fn try_git_discovery_errors_promptly_on_non_repo_root_without_caller_stdin() -> TestResult {
+        if !git_on_path() {
+            return Ok(());
+        }
+        let tmp = tempfile::tempdir()?;
+        create_file(tmp.path(), "lib/One.pm")?;
+
+        let started = Instant::now();
+        let outcome = super::try_git_discovery(
+            tmp.path(),
+            started,
+            &DiscoveryIncludeAllowlist::default(),
+            &DiscoveryConfig::default(),
+            &|| false,
+        );
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(30),
+            "git discovery must complete without waiting on caller input; took {elapsed:?}"
+        );
+        assert!(
+            outcome.is_err(),
+            "git ls-files outside a repository must surface the error variant that selects the walk fallback, got {outcome:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Call-observation for the success arm: inside a git repository the
+    /// spawned `git ls-files` reports tracked files with `DiscoveryMethod::Git`.
+    #[test]
+    fn try_git_discovery_completes_from_git_repository() -> TestResult {
+        if !git_on_path() {
+            return Ok(());
+        }
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+        create_file(root, "lib/One.pm")?;
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root)
+            .status()?;
+        assert!(init.success(), "git init must succeed for the fixture");
+        let add = std::process::Command::new("git")
+            .args(["add", "lib/One.pm"])
+            .current_dir(root)
+            .status()?;
+        assert!(add.success(), "git add must succeed for the fixture");
+
+        let outcome = super::try_git_discovery(
+            root,
+            Instant::now(),
+            &DiscoveryIncludeAllowlist::default(),
+            &DiscoveryConfig::default(),
+            &|| false,
+        );
+
+        match outcome {
+            Ok(super::GitDiscoveryOutcome::Complete(result)) => {
+                assert_eq!(result.method, DiscoveryMethod::Git);
+                assert!(result.files.iter().any(|path| path.ends_with("lib/One.pm")));
+            }
+            other => panic!("expected a complete git discovery, got {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    /// Exact boundary variant for the pre-spawn cancellation checkpoint: a
+    /// `should_cancel()` observer that is already cancelled returns the
+    /// Cancelled outcome without spawning the git child.
+    #[test]
+    fn try_git_discovery_cancelled_before_spawn_returns_cancelled() -> TestResult {
+        if !git_on_path() {
+            return Ok(());
+        }
+        let tmp = tempfile::tempdir()?;
+        create_file(tmp.path(), "lib/One.pm")?;
+
+        let outcome = super::try_git_discovery(
+            tmp.path(),
+            Instant::now(),
+            &DiscoveryIncludeAllowlist::default(),
+            &DiscoveryConfig::default(),
+            &|| true,
+        );
+
+        assert!(
+            matches!(outcome, Ok(super::GitDiscoveryOutcome::Cancelled)),
+            "pre-spawn cancellation must return the Cancelled variant, got {outcome:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Exact boundary variant for the child-wait checkpoint: cancelling
+    /// after the spawn kills the git child and still returns Cancelled
+    /// instead of blocking on the child or falling through to success.
+    #[test]
+    fn try_git_discovery_cancelled_during_child_wait_returns_cancelled() -> TestResult {
+        if !git_on_path() {
+            return Ok(());
+        }
+        let tmp = tempfile::tempdir()?;
+        create_file(tmp.path(), "lib/One.pm")?;
+
+        // First should_cancel() check (pre-spawn) passes; the next
+        // checkpoint — the child wait loop — cancels.
+        let checks = AtomicUsize::new(0);
+        let outcome = super::try_git_discovery(
+            tmp.path(),
+            Instant::now(),
+            &DiscoveryIncludeAllowlist::default(),
+            &DiscoveryConfig::default(),
+            &|| checks.fetch_add(1, Ordering::SeqCst) > 0,
+        );
+
+        assert!(
+            matches!(outcome, Ok(super::GitDiscoveryOutcome::Cancelled)),
+            "wait-loop cancellation must return the Cancelled variant, got {outcome:?}"
+        );
 
         Ok(())
     }

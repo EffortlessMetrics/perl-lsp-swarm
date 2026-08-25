@@ -8,14 +8,18 @@
 use super::*;
 use super::{
     Arc, BuiltInAnalyzer, DiagnosticsProvider, DocumentState, InternalDiagnosticSeverity,
-    JsonRpcError, LspServer, Mutex, Ordering, Value, json, source_path_from_uri,
+    JsonRpcError, LspServer, Mutex, Ordering, Value,
+    diagnostics_sink::{
+        PushDiagnosticIdentity, PushDiagnosticsCommitOutcome, PushDiagnosticsDisposition,
+    },
+    json, source_path_from_uri,
 };
 use crate::features::diagnostics::report_identity::{
     DiagnosticProjectionFragment, PullPositionEncoding, PullReportResultId, compose_report_identity,
 };
 use crate::features::diagnostics::{
     Diagnostic as InternalDiagnostic, DiagnosticTag as InternalDiagnosticTag,
-    PullDiagnosticsContext,
+    PullDiagnosticsContext, RelatedInformation as InternalRelatedInformation,
 };
 use crate::runtime::window::RequestProgressGuard;
 use perl_diagnostics::codes::DiagnosticCode;
@@ -207,9 +211,6 @@ pub struct PullDiagnosticsOrchestrator {
     /// Cached CriticAnalyzer for external perlcritic
     #[cfg(not(target_arch = "wasm32"))]
     critic_analyzer: Mutex<Option<perl_lsp_rs_core::tooling::perl_critic::CriticAnalyzer>>,
-    /// Track warnings already emitted (deduplication)
-    #[cfg(not(target_arch = "wasm32"))]
-    warnings_sent: Mutex<std::collections::HashSet<String>>,
 }
 
 impl PullDiagnosticsOrchestrator {
@@ -218,8 +219,6 @@ impl PullDiagnosticsOrchestrator {
         Self {
             #[cfg(not(target_arch = "wasm32"))]
             critic_analyzer: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            warnings_sent: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -384,7 +383,8 @@ impl PullDiagnosticsOrchestrator {
         {
             self.emit_warning(
                 server,
-                "missing-binary".to_string(),
+                super::session_warning_dedup::SessionWarningCode::CriticMissingBinary,
+                None,
                 "Perl::Critic is enabled but `perlcritic` was not found on PATH. Install Perl::Critic (for example: `cpanm Perl::Critic`) or disable perl.perlcritic.enabled.",
             );
             return;
@@ -402,7 +402,8 @@ impl PullDiagnosticsOrchestrator {
             if resolved.is_none() {
                 self.emit_warning(
                     server,
-                    format!("missing-profile:{configured_profile}"),
+                    super::session_warning_dedup::SessionWarningCode::CriticMissingProfile,
+                    Some(configured_profile),
                     &format!(
                         "Perl::Critic profile path does not exist: {configured_profile}. Update perl.perlcritic.profile or create the profile file."
                     ),
@@ -493,13 +494,15 @@ impl PullDiagnosticsOrchestrator {
                         tags: Vec::new(),
                         suggestion: None,
                         fixable,
+                        critic_observation: None,
                     });
                 }
             }
             Some(Err(e)) => {
                 self.emit_warning(
                     server,
-                    format!("execution-failed:{e}"),
+                    super::session_warning_dedup::SessionWarningCode::CriticExecutionFailed,
+                    Some(&e.to_string()),
                     &format!("Perl::Critic execution failed: {e}"),
                 );
                 tracing::warn!(uri, error = %e, "perlcritic failed");
@@ -519,24 +522,57 @@ impl PullDiagnosticsOrchestrator {
     ) {
     }
 
-    /// Emit a workspace-scoped warning (with deduplication).
+    /// Emit a workspace-scoped warning unless the same reviewed subject was
+    /// already emitted this session. Suppression identity lives in the
+    /// server's bounded session-warning dedup store (#9769), so the pull
+    /// path shares the same typed, hard-capped critic family as the push
+    /// path and retains no raw key strings of its own.
     #[cfg(not(target_arch = "wasm32"))]
-    fn emit_warning(&self, server: &LspServer, key: String, message: &str) {
-        let mut sent = self.warnings_sent.lock();
-        if sent.insert(key) {
+    fn emit_warning(
+        &self,
+        server: &LspServer,
+        code: super::session_warning_dedup::SessionWarningCode,
+        subject: Option<&str>,
+        message: &str,
+    ) {
+        let identity = match subject {
+            Some(subject) => super::session_warning_dedup::SessionWarningIdentity::fingerprinted(
+                code,
+                super::session_warning_dedup::SessionWarningSubjectTag::None,
+                subject,
+            ),
+            None => super::session_warning_dedup::SessionWarningIdentity::subjectless(code),
+        };
+        if !matches!(
+            server
+                .session_warning_dedup
+                .note(super::session_warning_dedup::SessionWarningFamily::Critic, identity),
+            super::session_warning_dedup::SessionWarningDecision::Suppress
+        ) {
             server.show_message_or_log(super::window::MessageType::Warning, message);
         }
     }
 
     /// No-op stub for WASM targets.
     #[cfg(target_arch = "wasm32")]
-    fn emit_warning(&self, _server: &LspServer, _key: String, _message: &str) {}
+    fn emit_warning(
+        &self,
+        _server: &LspServer,
+        _code: super::session_warning_dedup::SessionWarningCode,
+        _subject: Option<&str>,
+        _message: &str,
+    ) {
+    }
 
     /// Reset the orchestrator state (e.g., on configuration change).
+    ///
+    /// Warning-dedup state is not held here anymore: the didChangeConfiguration
+    /// critic transition clears the shared critic family (#9769) immediately
+    /// before calling this reset, keeping the analyzer and warning lifecycles
+    /// aligned.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn reset(&self) {
         *self.critic_analyzer.lock() = None;
-        self.warnings_sent.lock().clear();
     }
 
     /// No-op stub for WASM targets.
@@ -964,19 +1000,6 @@ impl LspServer {
                 .collect()
         };
 
-        // Generation-aware staleness guard: if a newer didChange arrived while
-        // diagnostics were being computed, discard this result â€” the debouncer
-        // will fire again for the latest version.
-        if generation.load(Ordering::SeqCst) != gen_at_snapshot {
-            tracing::debug!(
-                uri = %normalized_uri,
-                gen_at_snapshot,
-                current_gen = generation.load(Ordering::SeqCst),
-                "Skipping stale diagnostic publish (generation advanced during computation)"
-            );
-            return;
-        }
-
         tracing::debug!(
             count = lsp_diagnostics.len(),
             uri = %normalized_uri,
@@ -985,13 +1008,43 @@ impl LspServer {
             "Publishing diagnostics"
         );
 
-        // Send diagnostics notification with version.
-        // This ensures diagnostics are cleared when all errors are fixed.
-        if let Err(e) = self.notify(
-            "textDocument/publishDiagnostics",
-            publish_diagnostics_params(uri, Some(version), &lsp_diagnostics),
-        ) {
-            tracing::error!(uri, error = %e, "Failed to publish diagnostics");
+        // Accepted-ticket sink boundary (#11673): the irreversible enqueue
+        // re-validates document-instance identity AND accepted generation
+        // under the push-diagnostics sink lock. This replaces the previous
+        // value-only comparison, which passed for a closed-and-reopened
+        // document whose stale instance counter had not moved (close/reopen
+        // ABA) and left the send itself outside any currentness decision.
+        let identity =
+            PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot);
+        let disposition = if lsp_diagnostics.is_empty() {
+            PushDiagnosticsDisposition::Clear
+        } else {
+            PushDiagnosticsDisposition::Replacement
+        };
+        let payload = publish_diagnostics_params(uri, Some(version), &lsp_diagnostics);
+        match self.commit_push_diagnostics(&identity, payload, disposition) {
+            PushDiagnosticsCommitOutcome::CommittedCurrent
+            | PushDiagnosticsCommitOutcome::SafeClearCommitted => {}
+            PushDiagnosticsCommitOutcome::RejectedDocumentClosed => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                "Skipping diagnostic publish (document closed before sink boundary)"
+            ),
+            PushDiagnosticsCommitOutcome::RejectedWrongDocumentInstance => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                "Skipping diagnostic publish (document instance replaced before sink boundary)"
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                current_gen = generation.load(Ordering::SeqCst),
+                "Skipping stale diagnostic publish (superseded at sink boundary; \
+                 the debouncer fires again for the latest version)"
+            ),
+            PushDiagnosticsCommitOutcome::OutboundFailure => {
+                tracing::error!(uri, "Failed to publish diagnostics")
+            }
         }
     }
 
@@ -1073,29 +1126,33 @@ impl LspServer {
         let lsp_diagnostics =
             Self::syntax_only_lsp_diagnostics(&parse_errors, &text, &line_starts, false);
 
-        // Generation-aware staleness guard mirrors the full path.
-        if generation.load(Ordering::SeqCst) != gen_at_snapshot {
-            tracing::debug!(
+        // Accepted-ticket sink boundary (#11673): same contract as the full
+        // path -- validate instance + generation at the enqueue, not before.
+        let identity =
+            PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot);
+        let payload = publish_diagnostics_params(uri, Some(version), &lsp_diagnostics);
+        match self.commit_push_diagnostics(
+            &identity,
+            payload,
+            PushDiagnosticsDisposition::Replacement,
+        ) {
+            PushDiagnosticsCommitOutcome::CommittedCurrent
+            | PushDiagnosticsCommitOutcome::SafeClearCommitted => {}
+            PushDiagnosticsCommitOutcome::RejectedDocumentClosed
+            | PushDiagnosticsCommitOutcome::RejectedWrongDocumentInstance => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                "Skipping syntax-only diagnostic publish (document gone or replaced)"
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration => tracing::debug!(
                 uri = %normalized_uri,
                 gen_at_snapshot,
                 current_gen = generation.load(Ordering::SeqCst),
-                "Skipping stale syntax-only diagnostic publish (generation advanced)"
-            );
-            return;
-        }
-
-        tracing::debug!(
-            count = lsp_diagnostics.len(),
-            uri = %normalized_uri,
-            version,
-            "Publishing syntax-only diagnostics"
-        );
-
-        if let Err(e) = self.notify(
-            "textDocument/publishDiagnostics",
-            publish_diagnostics_params(uri, Some(version), &lsp_diagnostics),
-        ) {
-            tracing::error!(uri, error = %e, "Failed to publish syntax-only diagnostics");
+                "Skipping stale syntax-only diagnostic publish (superseded at sink boundary)"
+            ),
+            PushDiagnosticsCommitOutcome::OutboundFailure => {
+                tracing::error!(uri, "Failed to publish syntax-only diagnostics")
+            }
         }
     }
 
@@ -1140,16 +1197,29 @@ impl LspServer {
                     doc.version,
                     doc.line_starts.clone(),
                     std::sync::Arc::clone(&doc.text_arc),
+                    std::sync::Arc::clone(&doc.generation),
+                    doc.current_generation(),
                 )
             })
             // lock is released here
         };
-        let Some((parse_errors, version, line_starts, text)) = snapshot else { return };
+        let Some((parse_errors, version, line_starts, text, generation, gen_at_snapshot)) =
+            snapshot
+        else {
+            return;
+        };
 
         // Nothing to fast-publish when there are no parse errors (this also
         // covers the pending-parse gap -- see comment above).
         if parse_errors.is_empty() {
             return;
+        }
+
+        // Test seam mirroring the full path (#11673): lets a falsifier mutate
+        // document state between this snapshot and the sink-boundary enqueue.
+        #[cfg(test)]
+        if let Some(hook) = self.diagnostic_after_snapshot_hook.lock().as_ref() {
+            hook();
         }
 
         let pos16 = |offset: usize| line_starts.offset_to_position(&text, offset);
@@ -1189,15 +1259,48 @@ impl LspServer {
             "Publishing fast parse-error diagnostics"
         );
 
-        if let Err(e) = self.notify(
-            "textDocument/publishDiagnostics",
-            json!({
-                "uri": uri,
-                "version": version,
-                "diagnostics": lsp_diagnostics
-            }),
+        // Accepted-ticket sink boundary (#11673): the fast path previously
+        // enqueued with no commit-time currency check at all -- any wait
+        // between the snapshot above and this send could publish stale-N
+        // errors after N+1 acceptance, or onto a reopened instance of the
+        // same URI.
+        let identity =
+            PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot);
+        let payload = json!({
+            "uri": uri,
+            "version": version,
+            "diagnostics": lsp_diagnostics
+        });
+        match self.commit_push_diagnostics(
+            &identity,
+            payload,
+            PushDiagnosticsDisposition::Replacement,
         ) {
-            tracing::error!(uri, error = %e, "Failed to publish fast parse-error diagnostics");
+            PushDiagnosticsCommitOutcome::CommittedCurrent
+            | PushDiagnosticsCommitOutcome::SafeClearCommitted => {}
+            PushDiagnosticsCommitOutcome::RejectedDocumentClosed => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                "Skipping fast parse-error publish (document closed before sink boundary)"
+            ),
+            PushDiagnosticsCommitOutcome::RejectedWrongDocumentInstance => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                "Skipping fast parse-error publish (document instance replaced before \
+                 sink boundary)"
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                current_gen = generation.load(Ordering::SeqCst),
+                "Skipping fast parse-error publish (superseded at sink boundary)"
+            ),
+            PushDiagnosticsCommitOutcome::OutboundFailure => {
+                tracing::error!(
+                    uri,
+                    "Failed to publish fast parse-error diagnostics at sink boundary"
+                );
+            }
         }
     }
 
@@ -2166,9 +2269,10 @@ impl LspServer {
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         diagnostics: &mut Vec<InternalDiagnostic>,
     ) {
+        use perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations;
         use perl_lsp_rs_core::tooling::perl_critic::{
-            NativeCriticPolicy, native_finding_candidates_with_accounting,
-            normalize_with_native_policy,
+            BuiltInCriticObservation, NativeCriticPolicy, built_in_observation_candidates,
+            native_finding_candidates_with_accounting, normalize_with_native_policy,
         };
 
         let (critic_engine, severity, profile, native_profile, native_include, native_exclude) = {
@@ -2208,11 +2312,24 @@ impl LspServer {
         // once post-merge. Findings without a registered producer-owned
         // identity are rejected here rather than guessed, and every rejection
         // is accounted for instead of silently vanishing.
+        //
+        // Core lint emitters that declared a reviewed critic overlap
+        // observation surrender their ordinary diagnostic here (#11918): the
+        // logical row comes out of this same normalization, merged with the
+        // native alias and carrying both contributor identities.
+        let overlap_observations: Vec<BuiltInCriticObservation> =
+            take_critic_overlap_observations(diagnostics);
         let candidates = native_finding_candidates_with_accounting(
             subject,
             registry.check_unfiltered(&critic_context),
             source_identity,
-        );
+        )
+        .into_iter()
+        .chain(built_in_observation_candidates(
+            overlap_observations,
+            doc_text,
+            source_identity,
+        ));
         let suppressions =
             perl_lsp_rs_core::tooling::perl_critic::CriticSuppressionMap::from_source(doc_text);
         let policy = NativeCriticPolicy::new(
@@ -2299,7 +2416,8 @@ impl LspServer {
             || (!skip_check && !crate::execute_command::command_exists("perlcritic"))
         {
             self.emit_perlcritic_workspace_warning(
-                "missing-binary".to_string(),
+                super::session_warning_dedup::SessionWarningCode::CriticMissingBinary,
+                None,
                 "Perl::Critic is enabled but `perlcritic` was not found on PATH. Install Perl::Critic (for example: `cpanm Perl::Critic`) or disable perl.perlcritic.enabled.",
             );
             return;
@@ -2314,7 +2432,8 @@ impl LspServer {
             );
             if resolved.is_none() {
                 self.emit_perlcritic_workspace_warning(
-                    format!("missing-profile:{configured_profile}"),
+                    super::session_warning_dedup::SessionWarningCode::CriticMissingProfile,
+                    Some(configured_profile),
                     &format!(
                         "Perl::Critic profile path does not exist: {configured_profile}. Update perl.perlcritic.profile or create the profile file."
                     ),
@@ -2417,12 +2536,14 @@ impl LspServer {
                         tags: Vec::new(),
                         suggestion: None,
                         fixable,
+                        critic_observation: None,
                     });
                 }
             }
             Some(Err(e)) => {
                 self.emit_perlcritic_workspace_warning(
-                    format!("execution-failed:{e}"),
+                    super::session_warning_dedup::SessionWarningCode::CriticExecutionFailed,
+                    Some(&e.to_string()),
                     &format!("Perl::Critic execution failed: {e}"),
                 );
                 tracing::warn!(uri, error = %e, "perlcritic failed");
@@ -2441,10 +2562,30 @@ impl LspServer {
     ) {
     }
 
+    /// Show a workspace-scoped Perl::Critic warning unless the same reviewed
+    /// subject was already emitted this session (#9769). `subject` is the
+    /// client/environment-controlled identity (configured profile string,
+    /// execution error text); only its deterministic fingerprint is retained.
     #[cfg(not(target_arch = "wasm32"))]
-    fn emit_perlcritic_workspace_warning(&self, key: String, message: &str) {
-        let mut sent = self.critic_workspace_warnings_sent.lock();
-        if sent.insert(key) {
+    fn emit_perlcritic_workspace_warning(
+        &self,
+        code: super::session_warning_dedup::SessionWarningCode,
+        subject: Option<&str>,
+        message: &str,
+    ) {
+        let identity = match subject {
+            Some(subject) => super::session_warning_dedup::SessionWarningIdentity::fingerprinted(
+                code,
+                super::session_warning_dedup::SessionWarningSubjectTag::None,
+                subject,
+            ),
+            None => super::session_warning_dedup::SessionWarningIdentity::subjectless(code),
+        };
+        if !matches!(
+            self.session_warning_dedup
+                .note(super::session_warning_dedup::SessionWarningFamily::Critic, identity),
+            super::session_warning_dedup::SessionWarningDecision::Suppress
+        ) {
             self.show_message_or_log(super::window::MessageType::Warning, message);
         }
     }
@@ -2454,6 +2595,11 @@ impl LspServer {
 /// when the native perlcritic engine and built-in lints report the same finding
 /// (e.g. `RequireUseStrictRule` ↔ PL100).  When collapsing, prefer built-in PL*
 /// codes over native-critic codes.  (#5088)
+///
+/// The reviewed overlap pairs migrated into the normalized critic seam
+/// (#11918) are exempt: their duplicate prevention happens upstream at
+/// producer-owned emission, so a regression that re-splits those rows must
+/// surface as duplicate diagnostics instead of being silently hidden here.
 fn dedup_overlapping_diagnostics(diagnostics: &mut Vec<perl_lsp_rs_core::providers::Diagnostic>) {
     // Sort so that PL* codes come before native.* codes at the same (range, severity).
     diagnostics.sort_by(|a, b| {
@@ -2472,7 +2618,44 @@ fn dedup_overlapping_diagnostics(diagnostics: &mut Vec<perl_lsp_rs_core::provide
         a.range == b.range
             && a.severity == b.severity
             && (is_native_critic_code(a.code.as_deref()) ^ is_native_critic_code(b.code.as_deref()))
+            && !is_upstream_merged_alias_pair(a.code.as_deref(), b.code.as_deref())
     });
+}
+
+/// Whether one `(PL* code, native rule id)` pair is a reviewed alias whose
+/// duplicate prevention moved upstream into the normalized critic seam
+/// (#11918).
+///
+/// The table lists exactly the reviewed alias pairs of the migrated producer
+/// cohort, in both orders: PL404 (literal shape) with the undef-comparison
+/// alias; PL601 with the backtick alias and, for the qx shape, the
+/// qx/readpipe alias; PL606 (readpipe shape) with the qx/readpipe alias; and
+/// PL603/PL604 with the system/exec rule that owns both shapes. Every other
+/// overlap pair keeps the transport-level coincidence dedup until its own
+/// producers migrate, so unrelated rows never lose their existing collapse
+/// behavior to this exemption.
+fn is_upstream_merged_alias_pair(a_code: Option<&str>, b_code: Option<&str>) -> bool {
+    let forward = matches!(
+        (a_code, b_code),
+        (Some("PL404"), Some("native.common.undef_comparison"))
+            | (
+                Some("PL601"),
+                Some("native.security.backtick_exec" | "native.security.qx_readpipe")
+            )
+            | (Some("PL606"), Some("native.security.qx_readpipe"))
+            | (Some("PL603" | "PL604"), Some("native.security.system_exec"))
+    );
+    let reverse = matches!(
+        (b_code, a_code),
+        (Some("PL404"), Some("native.common.undef_comparison"))
+            | (
+                Some("PL601"),
+                Some("native.security.backtick_exec" | "native.security.qx_readpipe")
+            )
+            | (Some("PL606"), Some("native.security.qx_readpipe"))
+            | (Some("PL603" | "PL604"), Some("native.security.system_exec"))
+    );
+    forward || reverse
 }
 
 /// Returns `true` if the code string looks like a native-critic code (not a PL* code).
@@ -2566,18 +2749,31 @@ fn push_diagnostic_source(code: Option<&str>) -> &'static str {
 ///
 /// This is the only place the push-diagnostics path reads normalized critic
 /// rows; producer spellings never reach this projection directly (#7475).
+/// The contributing ordinary producer's user-visible remediation rides along
+/// so the merged row renders exactly what its retired twin rendered (#12004).
 fn normalized_critic_finding_to_diagnostic(
     finding: &perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding,
 ) -> InternalDiagnostic {
+    let related_information = finding
+        .remediation_related_information()
+        .iter()
+        .map(|note| {
+            InternalRelatedInformation::new(
+                (note.range.start.byte, note.range.end.byte),
+                note.message.clone(),
+            )
+        })
+        .collect();
     InternalDiagnostic {
         range: (finding.range().start.byte, finding.range().end.byte),
         severity: critic_severity_to_internal(finding.severity()),
         code: Some(finding.public_code().to_string()),
         message: finding.message().to_string(),
-        related_information: Vec::new(),
+        related_information,
         tags: Vec::new(),
-        suggestion: None,
+        suggestion: finding.remediation_suggestion().map(str::to_string),
         fixable: finding.has_available_fix(),
+        critic_observation: None,
     }
 }
 
@@ -2630,6 +2826,7 @@ fn builtin_violation_to_diagnostic(
         tags: Vec::new(),
         suggestion: None,
         fixable: is_fixable_diagnostic(&violation.policy),
+        critic_observation: None,
     }
 }
 
@@ -3267,6 +3464,13 @@ mod tests {
             !text.contains("native.security.backtick_exec"),
             "excluding PL601 must remove the backtick logical row; got: {text:?}"
         );
+        // #11918: exclusion by the compatibility spelling removes the whole
+        // logical row — the built-in contributor no longer survives beside
+        // the excluded native alias.
+        assert!(
+            !text.contains("PL601"),
+            "excluding PL601 must remove the complete alias row; got: {text:?}"
+        );
     }
 
     #[test]
@@ -3298,6 +3502,189 @@ mod tests {
         assert!(
             !text.contains("native.security.system_exec"),
             "PL603 selector must suppress the system_exec logical row; got: {text:?}"
+        );
+        // #11918: the merged logical row is the product row, so suppressing
+        // by the built-in spelling removes the built-in contributor's
+        // presentation too — the whole row disappears, not just the native
+        // half.
+        assert!(
+            !text.contains("PL603"),
+            "suppression must remove the complete alias row, PL603 included; got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn native_critic_overlap_rows_merge_into_one_product_row_before_projection() {
+        // #11918 duplicate-count proof: with the transport-level XOR dedup
+        // retired for the migrated alias pairs, only the normalized seam
+        // prevents duplicates. `system()` fires both the PL603 core lint and
+        // the native rule; the published set must carry exactly one row.
+        let (server, buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_native_critic_profile("strict");
+        let uri = "file:///native_critic_overlap_merge_test.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "use strict;\nuse warnings;\nsystem('ls');\n"
+                }
+            })))
+            .unwrap();
+
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let bytes = buf.lock().clone();
+        let text = String::from_utf8(bytes).unwrap_or_default();
+        assert!(
+            !text.contains("native.security.system_exec"),
+            "the native spelling must not appear as a separate row; got: {text:?}"
+        );
+        // The transport may publish the same set more than once; every
+        // published set must carry exactly one merged PL603 row. The row
+        // signature `"code":"PL603","codeDescription` matches only the outer
+        // diagnostic code, not the data-block echo.
+        for published in text.split(r#""method":"textDocument/publishDiagnostics""#).skip(1) {
+            assert_eq!(
+                published.matches(r#""code":"PL603","codeDescription"#).count(),
+                1,
+                "each published set carries exactly one merged PL603 row; got: {published:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_push_publishes_exactly_one_merged_system_row_with_both_contributors_and_remediation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #12004 push-side count-level proof: one exact system() document must
+        // surface exactly one PL603 logical row carrying both contributor
+        // identities (the built-in spelling presents, the native spelling is
+        // retired into the row), plus the ordinary twin's preserved Suggestion
+        // text and related information. This server-initiated workspace
+        // surface is the push renderer that appends twin suggestions.
+        let (server, _buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_native_critic_profile("strict");
+        let uri = "file:///overlap_remediation_push_test.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use strict;\nuse warnings;\nsystem('ls -la');\n"
+            }
+        })))?;
+
+        let report = server
+            .handle_workspace_diagnostic(Some(json!({
+                "identifier": "perl-lsp",
+                "previousResultIds": []
+            })))?
+            .ok_or("workspace diagnostic response missing")?;
+        let items = report["items"].as_array().ok_or("workspace diagnostic items missing")?;
+        let file_report = items
+            .iter()
+            .find(|item| item["uri"].as_str() == Some(uri))
+            .ok_or("workspace diagnostic report missing opened document")?;
+        let diagnostics =
+            file_report["items"].as_array().ok_or("workspace diagnostic report missing items")?;
+
+        let pl603_rows: Vec<&Value> =
+            diagnostics.iter().filter(|diagnostic| diagnostic["code"] == json!("PL603")).collect();
+        assert_eq!(
+            pl603_rows.len(),
+            1,
+            "exactly one logical PL603 product row may exist on the push path: {diagnostics:#?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic["code"] != json!("native.security.system_exec")),
+            "the native spelling must survive only as a contributor, not a second row: {diagnostics:#?}"
+        );
+
+        let row = pl603_rows[0];
+        let message = row["message"].as_str().ok_or("row must carry a string message")?;
+        assert_eq!(
+            message,
+            "system() executes a shell command. Ensure input is sanitized.\nSuggestion: Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection",
+            "merged row must preserve the retiring twin's Suggestion text verbatim"
+        );
+        assert_eq!(
+            row["severity"],
+            json!(2),
+            "matched declarations project to the LSP warning scale the twin always had"
+        );
+        let related =
+            row["relatedInformation"].as_array().ok_or("row must carry related information")?;
+        assert!(
+            related.iter().any(|info| info["message"]
+                == json!(
+                    "Use the list form system($cmd, @args) to avoid shell injection when arguments come from user input"
+                )),
+            "merged row must keep the twin's related information: {related:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_critic_overlap_rows_stay_distinct_per_reviewed_shape() {
+        // #11918: `qx` and backtick are two reviewed PL601 shapes; each keeps
+        // its own logical row (qx merges with the native qx alias, backtick
+        // with the native backtick alias) and readpipe stays PL606.
+        let (server, buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_native_critic_profile("strict");
+        let uri = "file:///native_critic_overlap_shapes_test.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "use strict;\nuse warnings;\nmy $a = `ls`;\nmy $b = qx(date);\nmy $c = readpipe('id');\nprint $a . $b . $c;\n"
+                }
+            })))
+            .unwrap();
+
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let bytes = buf.lock().clone();
+        let text = String::from_utf8(bytes).unwrap_or_default();
+        let count_rows = |published: &str, code: &str| {
+            published.matches(&format!(r#""code":"{code}","codeDescription"#)).count()
+        };
+        let mut checked_any_publish = false;
+        for published in text.split(r#""method":"textDocument/publishDiagnostics""#).skip(1) {
+            if !published.contains("PL601") && !published.contains("PL606") {
+                continue;
+            }
+            checked_any_publish = true;
+            assert_eq!(
+                count_rows(published, "PL601"),
+                2,
+                "backtick and qx each keep one merged row: {published:?}"
+            );
+            assert_eq!(
+                count_rows(published, "PL606"),
+                1,
+                "readpipe keeps its own row: {published:?}"
+            );
+        }
+        assert!(
+            checked_any_publish,
+            "at least one published set must carry the command-execution rows; got: {text:?}"
+        );
+        assert!(
+            !text.contains("native.security.backtick_exec")
+                && !text.contains("native.security.qx_readpipe"),
+            "native spellings ride inside the merged rows, not beside them: {text:?}"
         );
     }
 
@@ -3441,14 +3828,22 @@ mod tests {
             }),
             "native critic engine should add native assignment-in-condition finding to workspace diagnostics: {report}"
         );
+        // #11918: the literal-undef comparison merges into one logical row
+        // presented with the built-in spelling; the native spelling rides
+        // inside the row as a contributor instead of appearing beside it.
         assert!(
             diagnostics.iter().any(|diag| {
-                diag["code"].as_str() == Some("native.common.undef_comparison")
+                diag["code"].as_str() == Some("PL404")
                     && diag["source"].as_str() == Some("perl-lsp")
-                    && diag["message"].as_str()
-                        == Some("Using '==' with undef -- use defined() to check first")
+                    && diag["message"].as_str().is_some_and(|message| message.contains("defined"))
             }),
-            "native critic engine should add native undef-comparison finding to workspace diagnostics: {report}"
+            "merged literal-undef comparison row should be presented as PL404: {report}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diag| diag["code"].as_str() == Some("native.common.undef_comparison")),
+            "native undef spelling must not appear as a separate row: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {
@@ -3510,20 +3905,31 @@ mod tests {
             "native critic engine should add native unchecked open/close finding to workspace diagnostics: {report}"
         );
         assert!(
-            diagnostics.iter().any(|diag| {
-                diag["code"].as_str() == Some("native.security.backtick_exec")
-                    && diag["source"].as_str() == Some("perl-lsp")
-                    && diag["message"].as_str() == Some("Command execution detected")
-            }),
-            "native critic engine should add native backtick execution finding to workspace diagnostics: {report}"
+            diagnostics.iter().filter(|diag| diag["code"].as_str() == Some("PL601")).count() == 2,
+            "backtick and qx rows merge per reviewed shape into two PL601 rows: {report}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diag| diag["code"].as_str() == Some("native.security.backtick_exec")),
+            "native backtick spelling must not appear as a separate row: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {
-                diag["code"].as_str() == Some("native.security.qx_readpipe")
+                diag["code"].as_str() == Some("PL606")
                     && diag["source"].as_str() == Some("perl-lsp")
-                    && diag["message"].as_str() == Some("qx/readpipe command execution detected")
+                    && diag["message"].as_str()
+                        == Some(
+                            "readpipe() executes a shell command (equivalent to qx//). Ensure input is sanitized.\nSuggestion: Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution",
+                        )
             }),
-            "native critic engine should add native qx/readpipe finding to workspace diagnostics: {report}"
+            "merged readpipe row should be presented as PL606: {report}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diag| diag["code"].as_str() == Some("native.security.qx_readpipe")),
+            "native qx/readpipe spelling must not appear as a separate row: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {
@@ -3535,11 +3941,28 @@ mod tests {
         );
         assert!(
             diagnostics.iter().any(|diag| {
-                diag["code"].as_str() == Some("native.security.system_exec")
+                diag["code"].as_str() == Some("PL603")
                     && diag["source"].as_str() == Some("perl-lsp")
-                    && diag["message"].as_str() == Some("system() executes a shell command")
+                    && diag["message"].as_str()
+                        == Some(
+                            "system() executes a shell command. Ensure input is sanitized.\nSuggestion: Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection",
+                        )
             }),
-            "native critic engine should add native system/exec finding to workspace diagnostics: {report}"
+            "merged system row should be presented as PL603: {report}"
+        );
+        assert!(
+            diagnostics.iter().any(|diag| {
+                diag["code"].as_str() == Some("PL604")
+                    && diag["source"].as_str() == Some("perl-lsp")
+                    && diag["message"].as_str().is_some_and(|m| m.starts_with("exec()"))
+            }),
+            "merged exec row should be presented as PL604: {report}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diag| diag["code"].as_str() == Some("native.security.system_exec")),
+            "native system/exec spelling must not appear as a separate row: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {
@@ -4633,5 +5056,40 @@ print \"unreachable\\n\";\n";
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn upstream_merged_alias_exemption_covers_exactly_the_reviewed_pairs() {
+        // #11918: the transport XOR retirement is keyed to the exact reviewed
+        // alias pairs, not a cross-product of cohort codes, so unrelated
+        // overlap pairs keep their pre-existing coincidence dedup.
+        let pl = |code: &'static str| Some(code);
+        for (a, b) in [
+            (pl("PL404"), pl("native.common.undef_comparison")),
+            (pl("PL601"), pl("native.security.backtick_exec")),
+            (pl("PL601"), pl("native.security.qx_readpipe")),
+            (pl("PL606"), pl("native.security.qx_readpipe")),
+            (pl("PL603"), pl("native.security.system_exec")),
+            (pl("PL604"), pl("native.security.system_exec")),
+        ] {
+            assert!(
+                is_upstream_merged_alias_pair(a, b) && is_upstream_merged_alias_pair(b, a),
+                "reviewed alias pair {a:?}/{b:?} must be exempt in both orders"
+            );
+        }
+        for (a, b) in [
+            (pl("PL404"), pl("native.security.system_exec")),
+            (pl("PL603"), pl("native.security.qx_readpipe")),
+            (pl("PL606"), pl("native.security.backtick_exec")),
+            (pl("PL100"), pl("native.security.system_exec")),
+            (pl("PL404"), pl("PL603")),
+            (pl("native.common.undef_comparison"), pl("native.security.system_exec")),
+            (pl("PL603"), None),
+        ] {
+            assert!(
+                !is_upstream_merged_alias_pair(a, b) && !is_upstream_merged_alias_pair(b, a),
+                "unrelated pair {a:?}/{b:?} must keep the transport coincidence dedup"
+            );
+        }
     }
 }
