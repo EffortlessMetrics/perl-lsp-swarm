@@ -10,12 +10,6 @@ fn performance_module_exposes_ast_cache() {
 }
 
 #[test]
-fn performance_module_exposes_incremental_parser() {
-    // Verify that IncrementalParser is accessible post-absorption
-    let _: Option<IncrementalParser> = None;
-}
-
-#[test]
 fn performance_module_exposes_symbol_index() {
     // Verify that SymbolIndex is accessible post-absorption
     let _: Option<SymbolIndex> = None;
@@ -35,45 +29,6 @@ fn performance_ast_cache_stores_and_retrieves() {
     // Note: full integration test would require actual Node construction,
     // which is complex. This test verifies the cache is instantiable.
     let _cache = cache;
-}
-
-#[test]
-fn incremental_parser_given_reversed_change_range_when_marked_then_reparse_is_detected() {
-    let mut parser = IncrementalParser::new();
-
-    // Simulate a caller accidentally sending end/start in reverse order.
-    parser.mark_changed(20, 10);
-
-    assert!(parser.needs_reparse(12, 18));
-    assert!(!parser.needs_reparse(0, 9));
-}
-
-#[test]
-fn incremental_parser_given_zero_width_change_when_marked_then_overlapping_nodes_require_reparse() {
-    let mut parser = IncrementalParser::new();
-
-    parser.mark_changed(10, 10);
-
-    assert!(parser.needs_reparse(0, 100));
-    assert!(!parser.needs_reparse(11, 100));
-}
-
-#[test]
-fn incremental_parser_given_reversed_node_range_when_checked_then_overlap_is_detected() {
-    let mut parser = IncrementalParser::new();
-    parser.mark_changed(10, 20);
-
-    assert!(parser.needs_reparse(18, 12));
-    assert!(!parser.needs_reparse(9, 0));
-}
-
-#[test]
-fn incremental_parser_given_point_query_inside_change_when_checked_then_reparse_is_required() {
-    let mut parser = IncrementalParser::new();
-    parser.mark_changed(30, 40);
-
-    assert!(parser.needs_reparse(35, 35));
-    assert!(!parser.needs_reparse(40, 40));
 }
 
 #[test]

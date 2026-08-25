@@ -57,7 +57,7 @@ fn test_for_my_two_vars_contains_loop_vars() -> Result<(), Box<dyn std::error::E
     assert!(sexp.contains("x"), "Expected 'x' in sexp: {}", sexp);
     assert!(sexp.contains("y"), "Expected 'y' in sexp: {}", sexp);
     // Must be a list declaration (parenthesized vars), not two separate Foreach nodes
-    assert!(sexp.contains("my_declaration"), "Expected my_declaration in sexp: {}", sexp,);
+    assert!(sexp.contains("my_declaration"), "Expected my_declaration in sexp: {}", sexp);
     Ok(())
 }
 
@@ -121,7 +121,7 @@ fn test_regression_c_style_for() -> Result<(), Box<dyn std::error::Error>> {
     );
     // Must produce a For (C-style) node (contains "(for " not starting with "(foreach ")
     // The sexp wraps in source_file, so we check the inner structure
-    assert!(sexp.contains("(for "), "Expected C-style for node, got: {}", sexp,);
+    assert!(sexp.contains("(for "), "Expected C-style for node, got: {}", sexp);
     Ok(())
 }
 

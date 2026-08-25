@@ -166,6 +166,80 @@ describe('bounded prove process execution', () => {
     });
   }, 30_000);
 
+  test('preserves UTF-8 characters split across stdout and stderr chunks', async () => {
+    const result = await runBoundedProcess(
+      process.execPath,
+      [
+        '-e',
+        [
+          'process.stdout.write(Buffer.from([0xc3]))',
+          'process.stderr.write(Buffer.from([0xf0, 0x9f]))',
+          'setTimeout(() => {',
+          'process.stdout.write(Buffer.from([0xa9]))',
+          'process.stderr.write(Buffer.from([0x98, 0x80]))',
+          '}, 10)',
+        ].join(';'),
+      ],
+      {
+        shell: false,
+        timeoutMs: 5_000,
+        maxOutputBytes: 64,
+        terminationGraceMs: 25,
+      },
+    );
+
+    expect(result).toMatchObject({
+      outcome: 'completed',
+      stdout: 'é',
+      stderr: '😀',
+      capturedOutputBytes: 6,
+    });
+  }, 30_000);
+
+  test('does not emit a replacement character when the byte ceiling cuts UTF-8', async () => {
+    const result = await runBoundedProcess(
+      process.execPath,
+      ['-e', 'process.stdout.write(Buffer.from([0xc3, 0xa9]))'],
+      {
+        shell: false,
+        timeoutMs: 5_000,
+        maxOutputBytes: 1,
+        terminationGraceMs: 25,
+      },
+    );
+
+    expect(result).toMatchObject({
+      outcome: 'output_limit',
+      stdout: '',
+      capturedOutputBytes: 1,
+    });
+    expect(result.stdout).not.toContain('\ufffd');
+  }, 30_000);
+
+  test('flushes the unaffected stream when the other stream hits the byte ceiling', async () => {
+    const result = await runBoundedProcess(
+      process.execPath,
+      [
+        '-e',
+        [
+          'process.stderr.write(Buffer.from([0xc3]))',
+          'process.stdout.write("x")',
+          'setTimeout(() => process.stderr.write(Buffer.from([0xa9])), 10)',
+        ].join(';'),
+      ],
+      {
+        shell: false,
+        timeoutMs: 5_000,
+        maxOutputBytes: 1,
+        terminationGraceMs: 25,
+      },
+    );
+
+    expect(result.outcome).toBe('output_limit');
+    expect(result.stderr).toBe('\ufffd');
+    expect(result.capturedOutputBytes).toBe(1);
+  }, 30_000);
+
   test('waits for close after escalating past an ignored SIGTERM', async () => {
     if (process.platform === 'win32') {
       return;

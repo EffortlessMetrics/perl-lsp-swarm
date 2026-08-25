@@ -3031,6 +3031,7 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
         &records,
         &runner_binary,
         &context_path,
+        config.runner,
         config.mode,
     )?;
     if used_direct_runner {
@@ -3057,6 +3058,20 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
     );
     tracing::info!("wrote {}", output_path.display());
 
+    let terminal = transition::TerminalProcessOutcome::from_harness_status(
+        output.status.code(),
+        config.runner,
+        config.mode,
+    );
+    if !terminal.is_scoreable() {
+        bail!(
+            "upstream harness terminal status {} is not admitted ({}) despite no recorded file failures\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            terminal.not_proven_reason(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     if report.summary.files_failed > 0 {
         bail!(
             "perl-core-harness {} {} failed for {} of {} files; see {}",
@@ -3065,14 +3080,6 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
             report.summary.files_failed,
             report.summary.files_total,
             output_path.display()
-        );
-    }
-    if !output.status.success() && !used_direct_runner {
-        bail!(
-            "upstream harness exited with status {} despite no recorded file failures\nstdout:\n{}\nstderr:\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
         );
     }
     Ok(())
@@ -3094,18 +3101,22 @@ pub fn baseline(config: BaselineConfig) -> Result<()> {
         .clone()
         .unwrap_or_else(|| default_baseline_path(config.mode, config.profile));
     let report = read_run_report(&report_path)?;
-    // An absent or nonzero legacy runner terminal status never proves process
-    // completion for parse/compile evidence, however green the file and
-    // assertion counts look (#6884 interim false-green block). Refuse to check
-    // or accept a baseline from it. Execute mode is excluded: its ratcheted
-    // selected-base receipt deliberately records the upstream scheduler's
-    // nonzero exit alongside green runner records (#3451), and replacing that
-    // modeling belongs to the typed terminal taxonomy on #6884.
-    if config.mode != HarnessMode::Execute && report.harness_status != Some(0) {
+    // Terminal admission precedes any count semantics (#6884): only a clean
+    // exit or a recognized runner/mode completion state proves process
+    // completion, however green the file and assertion counts look. The
+    // execute-mode recognition keeps the #3451 selected-base receipt flow
+    // working instead of permanently misclassifying it as instrument failure.
+    let terminal = transition::TerminalProcessOutcome::from_harness_status(
+        report.harness_status,
+        report.runner,
+        report.mode,
+    );
+    if !terminal.is_scoreable() {
         bail!(
-            "perl-core-harness baseline refuses {} with runner terminal status {:?}: process completion is not proven",
+            "perl-core-harness baseline refuses {} with runner terminal status {:?}: process completion is not proven ({})",
             report_path.display(),
-            report.harness_status
+            report.harness_status,
+            terminal.not_proven_reason()
         );
     }
     reject_v2_options_without_series(&config)?;
@@ -3566,6 +3577,7 @@ fn invoke_runner_for_missing_records(
     records: &[RunnerRecord],
     runner_binary: &Path,
     context_path: &Path,
+    runner: HarnessRunner,
     mode: HarnessMode,
 ) -> Result<bool> {
     let recorded = records
@@ -3585,6 +3597,21 @@ fn invoke_runner_for_missing_records(
 
     for test in &missing {
         let output = invoke_direct_runner(t_dir, runner_binary, context_path, mode, &test.path)?;
+        let terminal = transition::TerminalProcessOutcome::from_harness_status(
+            output.status.code(),
+            runner,
+            mode,
+        );
+        if !matches!(terminal, transition::TerminalProcessOutcome::CleanExit) {
+            bail!(
+                "direct runner terminal status {} is not a clean exit ({}) for {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                terminal.not_proven_reason(),
+                test.path,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         if !context_path.is_file() {
             bail!(
                 "direct runner did not write context for {}\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
@@ -7190,14 +7217,21 @@ mod tests {
     #[test]
     fn baseline_refuses_report_without_proven_zero_terminal_status() -> TestResult {
         let temp = tempfile::tempdir()?;
-        for (name, status) in [("missing-status.json", None), ("nonzero-status.json", Some(7))] {
+        for (name, mode, status) in [
+            ("missing-status.json", HarnessMode::Compile, None),
+            ("nonzero-status.json", HarnessMode::Compile, Some(7)),
+            // #6884: execute mode with no recorded terminal identity is an
+            // instrument failure, not a proven observation.
+            ("execute-missing-status.json", HarnessMode::Execute, None),
+        ] {
             let report_path = temp.path().join(name);
             let mut report = sample_compile_report();
+            report.mode = mode;
             report.harness_status = status;
             write_run_report(&report_path, &report)?;
 
             let error = match baseline(BaselineConfig {
-                mode: HarnessMode::Compile,
+                mode,
                 profile: HarnessProfile::Base,
                 report: Some(report_path),
                 baseline: Some(temp.path().join("baseline.json")),
@@ -8619,6 +8653,31 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn run_mode_execute_accepts_the_recognized_scheduler_status() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_base_if_test_and_exit(temp.path(), 1)?;
+        let runner = write_fake_execute_runner(temp.path())?;
+        let output = temp.path().join("execute-report.json");
+
+        run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Execute,
+            profile: HarnessProfile::Base,
+            tests: vec!["base/if.t".into()],
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+        })?;
+
+        let report: RunReport = serde_json::from_str(&fs::read_to_string(output)?)?;
+        assert_eq!(report.harness_status, Some(1));
+        assert_eq!(report.summary.files_failed, 0);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn run_mode_execute_runs_selected_base_subset() -> TestResult {
         let temp = tempfile::tempdir()?;
         let perl_tree = write_fake_perl_tree_with_base_execute_subset(temp.path())?;
@@ -8988,7 +9047,7 @@ mod tests {
             bail!("failing runner record should fail the harness run");
         };
 
-        assert!(err.to_string().contains("failed for 1 of 1 files"));
+        assert!(err.to_string().contains("upstream harness terminal status"));
         let raw = fs::read_to_string(output)?;
         let report: RunReport = serde_json::from_str(&raw)?;
         assert_eq!(report.summary.files_total, 1);
@@ -9026,10 +9085,10 @@ exit 7
             output: Some(output.clone()),
             runner_binary: Some(runner),
         }) else {
-            bail!("nonzero harness status should fail even when runner records pass");
+            bail!("unproven nonzero harness status should fail even when runner records pass");
         };
 
-        assert!(err.to_string().contains("upstream harness exited with status"));
+        assert!(err.to_string().contains("terminal status"));
         let raw = fs::read_to_string(output)?;
         let report: RunReport = serde_json::from_str(&raw)?;
         assert_eq!(report.summary.files_passed, 1);
@@ -9046,7 +9105,6 @@ exit 7
             temp.path(),
             r#"# Deliberately do not invoke ./perl; real harness integration bugs should fall
 # back to direct runner invocation for harness-selected files.
-exit 7
 "#,
         )?;
         let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
@@ -9070,7 +9128,37 @@ exit 7
         assert_eq!(report.summary.files_failed, 0);
         assert!(report.buckets.is_empty());
         assert!(report.failures.is_empty());
-        assert_eq!(report.harness_status, Some(7));
+        assert_eq!(report.harness_status, Some(0));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_rejects_recognized_direct_runner_status() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_execute_tree_with_run_body(
+            temp.path(),
+            r#"# Deliberately do not invoke ./perl; direct runner fallback supplies the record.
+"#,
+        )?;
+        let runner = write_fake_runner_with_exit_status(temp.path(), 1)?;
+        let output = temp.path().join("parse-report.json");
+
+        let Err(err) = run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Execute,
+            profile: HarnessProfile::Base,
+            tests: vec!["base/if.t".into()],
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+        }) else {
+            bail!("direct runner status must not be hidden by a passing record");
+        };
+
+        assert!(err.to_string().contains("direct runner terminal status"));
+        assert!(!output.exists(), "rejected direct fallback must not publish a report");
         Ok(())
     }
 
@@ -9128,18 +9216,38 @@ fi
 
     #[cfg(unix)]
     fn write_fake_perl_tree_with_base_if_test(root: &Path) -> TestResult<PathBuf> {
+        write_fake_perl_tree_with_base_if_test_and_body(root, "./perl base/if.t\n")
+    }
+
+    #[cfg(unix)]
+    fn write_fake_perl_tree_with_base_if_test_and_exit(
+        root: &Path,
+        status: i32,
+    ) -> TestResult<PathBuf> {
+        write_fake_perl_tree_with_base_if_test_and_body(
+            root,
+            &format!("./perl base/if.t\nexit {status}\n"),
+        )
+    }
+
+    #[cfg(unix)]
+    fn write_fake_perl_tree_with_base_if_test_and_body(
+        root: &Path,
+        run_body: &str,
+    ) -> TestResult<PathBuf> {
         let perl_tree = root.join("prepared-perl-base-if");
         let t_dir = perl_tree.join("t");
         fs::create_dir_all(t_dir.join("base"))?;
         fs::write(t_dir.join("base").join("if.t"), "1;\n")?;
-        let script = r#"#!/bin/sh
+        let script = format!(
+            r#"#!/bin/sh
 set -eu
-if [ "${1:-}" = "--dumptests" ]; then
+if [ "${{1:-}}" = "--dumptests" ]; then
   echo "base/if.t"
   exit 0
 fi
-./perl base/if.t
-"#;
+{run_body}"#
+        );
         fs::write(t_dir.join("TEST"), script)?;
         Ok(perl_tree)
     }
@@ -9245,8 +9353,35 @@ fi
     }
 
     #[cfg(unix)]
+    fn write_fake_execute_tree_with_run_body(root: &Path, run_body: &str) -> TestResult<PathBuf> {
+        let perl_tree = root.join("prepared-perl-execute");
+        let t_dir = perl_tree.join("t");
+        fs::create_dir_all(t_dir.join("base"))?;
+        fs::write(t_dir.join("base").join("if.t"), "1;\n")?;
+        let script = format!(
+            r#"#!/bin/sh
+set -eu
+if [ "${{1:-}}" = "--dumptests" ]; then
+  echo "base/if.t"
+  exit 0
+fi
+{run_body}"#
+        );
+        fs::write(t_dir.join("TEST"), script)?;
+        Ok(perl_tree)
+    }
+
+    #[cfg(unix)]
     fn write_fake_runner(root: &Path, status: RunnerStatus) -> TestResult<PathBuf> {
         write_fake_runner_with_bucket(root, status, Some("parse_recovery"))
+    }
+
+    #[cfg(unix)]
+    fn write_fake_runner_with_exit_status(root: &Path, status: i32) -> TestResult<PathBuf> {
+        let runner = write_fake_runner(root, RunnerStatus::Pass)?;
+        let mut file = fs::OpenOptions::new().append(true).open(&runner)?;
+        writeln!(file, "exit {status}")?;
+        Ok(runner)
     }
 
     #[cfg(unix)]

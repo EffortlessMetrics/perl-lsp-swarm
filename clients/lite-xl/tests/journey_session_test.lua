@@ -136,37 +136,46 @@ do
   ok(#batch == 1 and batch[1].params.textDocument.version == 1,
     "journey1: B owns an independent version stream starting at v1")
 
-  -- Step: backpressure window holds A's next edit unsent.
-  server.can_push_value = false
+  -- Step: A edits under load (#10833). With enqueue admission gone, each
+  -- edit queues immediately; an overwrite-capable newer batch replaces its
+  -- unsent predecessor in place, so bursts collapse to latest state without
+  -- losing a change and the version stream never rewinds or repeats.
   doc_a:raw_insert(2, 1, "local $z;\n")
-  ok(#server.outbound == 0,
-    "journey1: backpressured edit emits nothing while can_push is false")
+  ok(#server.outbound == 1
+    and server.outbound[1].params.textDocument.version == 3,
+    "journey1: edit queues immediately as batch v3 - no admission hold")
   local session_a = world.lsp.get_document_session(doc_a, server)
   ok(session_a ~= nil and #session_a.pending_changes == 1,
-    "journey1: held edit waits in the live session's pending queue")
+    "journey1: the queued batch's change waits in the live session until sent")
 
-  -- Step: close B while A's batch is still held; didClose is gated by no
-  -- backpressure, so it queues immediately.
+  doc_a:raw_insert(3, 1, "local $w;\n")
+  ok(#server.outbound == 1
+    and server.outbound[1].params.textDocument.version == 4
+    and #server.outbound[1].params.contentChanges == 2,
+    "journey1: a second edit coalesces onto the unsent batch at v4 carrying both changes")
+  ok(session_a ~= nil and #session_a.pending_changes == 2,
+    "journey1: the coalesced unsent batch keeps both changes pending")
+
+  -- Step: close B while A's coalesced batch is still unsent; didClose
+  -- queues right behind it.
   world.lsp.close_document(doc_b)
   ok(world.wire[#world.wire] ~= nil
     and world.wire[#world.wire].method == "textDocument/didClose",
     "journey1: didClose(B) recorded while A's batch is held")
 
-  -- Step: release backpressure. Production flushes on the next update
-  -- event, not spontaneously: the next batch carries the held change at
-  -- the session's NEXT version - the hold never rewinds or repeats.
-  server.can_push_value = true
-  world.lsp.update_document(doc_a)
+  -- Step: flush everything. The queue replays exactly as pushed - coalesced
+  -- batch first (newest state, both changes), then the close.
   local flushed = server:drain()
   ok(#flushed == 2
-    and flushed[1].method == "textDocument/didClose"
-    and flushed[2].method == "textDocument/didChange",
-    "journey1: queue order is close-then-flushed-batch, exactly as pushed")
-  ok(flushed[2].params.textDocument.version == 3,
-    "journey1: flushed batch continues the stream at v3 across the hold")
-  ok(#flushed[2].params.contentChanges == 1
-    and flushed[2].params.contentChanges[1].text == "local $z;\n",
-    "journey1: flushed batch carries exactly the once-held change")
+    and flushed[1].method == "textDocument/didChange"
+    and flushed[2].method == "textDocument/didClose",
+    "journey1: queue order is coalesced-batch-then-close, exactly as pushed")
+  ok(flushed[1].params.textDocument.version == 4,
+    "journey1: flushed batch continues the stream at v4 across the window")
+  ok(#flushed[1].params.contentChanges == 2
+    and flushed[1].params.contentChanges[1].text == "local $z;\n"
+    and flushed[1].params.contentChanges[2].text == "local $w;\n",
+    "journey1: flushed batch carries exactly the once-held changes")
 
   -- Step: full process replacement.
   local old_server = server
@@ -191,22 +200,22 @@ do
   ok(new_session_a.server_generation > old_generation,
     "journey1: replacement process owns a distinct server generation")
 
-  doc_a:raw_remove(3, 11, 3, 20)
+  doc_a:raw_remove(4, 11, 4, 20)
   batch = server:drain("textDocument/didChange")
   ok(#batch == 1 and batch[1].params.textDocument.version == 1,
     "journey1: new generation's stream starts cleanly at v1")
 
   -- The whole-journey wire history: exact methods AND owning generations,
-  -- including the held-then-flushed batch still tagged with generation 1
-  -- after the close of B.
+  -- including the coalesced-then-flushed batch still tagged with generation
+  -- 1 after the close of B.
   local expected = {
     { "textDocument/didOpen", 1 },
     { "textDocument/didChange", 1 },
     { "textDocument/didChange", 1 },
     { "textDocument/didOpen", 1 },
     { "textDocument/didChange", 1 },
-    { "textDocument/didClose", 1 },
     { "textDocument/didChange", 1 },
+    { "textDocument/didClose", 1 },
     { "textDocument/didOpen", 2 },
     { "textDocument/didChange", 2 },
   }
@@ -217,7 +226,8 @@ do
 
   -- Editor truth: the buffer mutated through real base Doc operations
   -- matches the composed edits exactly.
-  ok(table.concat(doc_a.lines) == "my $x = 10;\nlocal $z;\nmy $y = 2;\n",
+  ok(table.concat(doc_a.lines) ==
+    "my $x = 10;\nlocal $z;\nlocal $w;\nmy $y = 2;\n",
     "journey1: final editor bytes reflect insert/append/remove across the journey")
 
   world.teardown()
@@ -282,17 +292,13 @@ do
   old_server:drain("textDocument/didOpen")
   doc.lsp_open = true
 
-  -- Queue an unsent batch: backpressure holds it, then a flush event
-  -- enqueues the wire entry whose callback would clear the OLD session.
-  old_server.can_push_value = false
+  -- Queue an unsent batch: it queues immediately (#10833 - no admission
+  -- gate), and its callback would clear the OLD session only when played.
   doc:raw_insert(1, 2, "t")
-  ok(#old_server.outbound == 0, "journey3: hold keeps the batch unsent")
-  old_server.can_push_value = true
-  world.lsp.update_document(doc)
-  local old_session = world.lsp.get_document_session(doc, old_server)
   local held = old_server.outbound[1]
-  ok(held ~= nil and held.callback ~= nil,
-    "journey3: held batch carries its admission callback")
+  local old_session = world.lsp.get_document_session(doc, old_server)
+  ok(held ~= nil and not held.sent,
+    "journey3: queued batch stays unsent until its callback plays")
 
   -- Replace the process generation, reopen, and confirm clean state.
   world.stop_servers()
