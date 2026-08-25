@@ -25,7 +25,7 @@ The tree-sitter-perl project provides comprehensive workspace refactoring capabi
 
 ```rust
 use perl_parser::workspace_refactor::WorkspaceRefactor;
-use perl_parser::workspace_index::WorkspaceIndex;
+use perl_workspace::workspace_index::WorkspaceIndex;
 use std::path::Path;
 
 // Create and populate workspace index

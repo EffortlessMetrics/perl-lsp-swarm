@@ -18,7 +18,7 @@
 #[cfg(feature = "workspace")]
 mod degraded_mode_tests {
     use perl_lsp::runtime::routing::{IndexAccessMode, route_index_access};
-    use perl_parser::workspace_index::IndexCoordinator;
+    use perl_workspace::workspace_index::IndexCoordinator;
     use std::sync::Arc;
 
     #[test]

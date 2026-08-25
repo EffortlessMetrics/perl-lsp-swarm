@@ -179,7 +179,7 @@ impl WorkspaceIndex {
 
 **Example:**
 ```rust
-use perl_parser::workspace_index::{SymbolKey, SymKind};
+use perl_workspace::workspace_index::{SymbolKey, SymKind};
 
 let key = SymbolKey {
     pkg: Arc::from("MyModule"),

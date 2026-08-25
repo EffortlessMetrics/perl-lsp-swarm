@@ -152,7 +152,7 @@ pub use perl_uri::{is_file_uri, is_special_scheme, uri_extension, uri_key};
 /// # Usage
 ///
 /// ```rust,ignore
-/// use perl_parser::workspace_index::{IndexPhase, IndexState};
+/// use perl_workspace::workspace_index::{IndexPhase, IndexState};
 /// use std::time::Instant;
 ///
 /// let state = IndexState::Building {
@@ -262,7 +262,7 @@ impl IndexState {
 /// # Usage
 ///
 /// ```rust,ignore
-/// use perl_parser::workspace_index::{IndexCoordinator, IndexState};
+/// use perl_workspace::workspace_index::{IndexCoordinator, IndexState};
 ///
 /// let coordinator = IndexCoordinator::new();
 /// assert!(matches!(coordinator.state(), IndexState::Building { .. }));
@@ -325,7 +325,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// ```
@@ -359,7 +359,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{IndexCoordinator, IndexResourceLimits};
+    /// use perl_workspace::workspace_index::{IndexCoordinator, IndexResourceLimits};
     ///
     /// let limits = IndexResourceLimits::default();
     /// let coordinator = IndexCoordinator::with_limits(limits);
@@ -414,7 +414,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{IndexCoordinator, IndexState};
+    /// use perl_workspace::workspace_index::{IndexCoordinator, IndexState};
     ///
     /// let coordinator = IndexCoordinator::new();
     /// match coordinator.state() {
@@ -445,7 +445,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// let _index = coordinator.index();
@@ -494,7 +494,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// coordinator.notify_change("file:///example.pl");
@@ -524,7 +524,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// coordinator.notify_parse_complete("file:///example.pl");
@@ -578,7 +578,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// coordinator.transition_to_ready(100, 5000);
@@ -741,7 +741,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// coordinator.transition_to_building(100);
@@ -788,7 +788,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{DegradationReason, IndexCoordinator, ResourceKind};
+    /// use perl_workspace::workspace_index::{DegradationReason, IndexCoordinator, ResourceKind};
     ///
     /// let coordinator = IndexCoordinator::new();
     /// coordinator.transition_to_degraded(DegradationReason::ResourceLimit {
@@ -835,7 +835,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// let _reason = coordinator.check_limits();
@@ -877,7 +877,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// // ... index some files ...
@@ -929,7 +929,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// let locations = coordinator.query(
@@ -999,7 +999,7 @@ pub struct SymbolKey {
 /// # Examples
 ///
 /// ```rust,ignore
-/// use perl_parser::workspace_index::normalize_var;
+/// use perl_workspace::workspace_index::normalize_var;
 ///
 /// assert_eq!(normalize_var("$count"), (Some('$'), "count"));
 /// assert_eq!(normalize_var("process_emails"), (None, "process_emails"));
@@ -1831,7 +1831,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// assert!(!index.has_symbols());
@@ -2141,7 +2141,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     /// use url::Url;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -2622,7 +2622,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// index.remove_file("file:///example.pl");
@@ -2726,7 +2726,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     /// use url::Url;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -2753,7 +2753,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// index.clear_file("file:///example.pl");
@@ -2775,7 +2775,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     /// use url::Url;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -2849,7 +2849,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let index = WorkspaceIndex::new();
@@ -3078,7 +3078,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _refs = index.find_references("Utils::process_data");
@@ -3426,7 +3426,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _symbols = index.all_symbols();
@@ -4097,7 +4097,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// assert!(!index.has_symbols());
@@ -4128,7 +4128,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _results = index.search_symbols("example");
@@ -4376,7 +4376,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _results = index.find_symbols("example");
@@ -4401,7 +4401,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let symbols = index.search_symbols("example");
@@ -4452,7 +4452,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let ranked = index.search_symbols_ranked("example", "file:///project1/src/main.pl");
@@ -4522,7 +4522,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _symbols = index.file_symbols("file:///example.pl");
@@ -4548,7 +4548,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _deps = index.file_dependencies("file:///example.pl");
@@ -4574,7 +4574,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _files = index.find_dependents("My::Module");
@@ -4606,7 +4606,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _store = index.document_store();
@@ -4634,7 +4634,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _unused = index.find_unused_symbols();
@@ -4737,7 +4737,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _members = index.get_package_members("My::Package");
@@ -4976,7 +4976,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
+    /// use perl_workspace::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
     /// use std::sync::Arc;
     ///
     /// let index = WorkspaceIndex::new();
@@ -7162,7 +7162,7 @@ pub mod lsp_adapter {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{Location as IxLocation, lsp_adapter::to_lsp_location};
+    /// use perl_workspace::workspace_index::{Location as IxLocation, lsp_adapter::to_lsp_location};
     /// use lsp_types::Range;
     ///
     /// let ix_loc = IxLocation { uri: "file:///path.pl".to_string(), range: Range::default() };
@@ -7192,7 +7192,7 @@ pub mod lsp_adapter {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{Location as IxLocation, lsp_adapter::to_lsp_locations};
+    /// use perl_workspace::workspace_index::{Location as IxLocation, lsp_adapter::to_lsp_locations};
     /// use lsp_types::Range;
     ///
     /// let locations = vec![IxLocation { uri: "file:///script1.pl".to_string(), range: Range::default() }];
