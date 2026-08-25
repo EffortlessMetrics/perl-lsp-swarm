@@ -52,6 +52,11 @@ impl HostWorkSubject {
     /// subjects with equal keys are the same resource; different keys are
     /// never substituted for one another regardless of path or name
     /// resemblance.
+    ///
+    /// Each field is encoded length-delimited, so the encoding is injective:
+    /// field values containing the separator (or digit/colon sequences)
+    /// cannot shift field boundaries between adjacent positions to make two
+    /// distinct subjects collide on one key.
     pub fn subject_key(&self) -> String {
         let worktree_path =
             self.worktree.as_ref().map(|w| w.path.display().to_string()).unwrap_or_default();
@@ -59,21 +64,29 @@ impl HostWorkSubject {
             self.worktree.as_ref().and_then(|w| w.branch.clone()).unwrap_or_default();
         let storage_root =
             self.storage_root.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
-        format!(
-            "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        let fields = [
             self.scope_as_key_token(),
-            self.repository_root.display(),
-            self.common_dir.display(),
-            self.canonical_remote.as_deref().unwrap_or(""),
+            self.repository_root.display().to_string(),
+            self.common_dir.display().to_string(),
+            self.canonical_remote.clone().unwrap_or_default(),
             worktree_path,
             worktree_branch,
-            self.candidate_id.as_deref().unwrap_or(""),
-            self.executor_operation_id.as_deref().unwrap_or(""),
-            self.allocation_id.as_deref().unwrap_or(""),
-            self.reservation_id.as_deref().unwrap_or(""),
-            self.process_group_id.as_deref().unwrap_or(""),
+            self.candidate_id.clone().unwrap_or_default(),
+            self.executor_operation_id.clone().unwrap_or_default(),
+            self.allocation_id.clone().unwrap_or_default(),
+            self.reservation_id.clone().unwrap_or_default(),
+            self.process_group_id.clone().unwrap_or_default(),
             storage_root,
-        )
+        ];
+        let mut key = String::new();
+        for field in &fields {
+            key.push_str(&field.len().to_string());
+            key.push(':');
+            key.push_str(field);
+            key.push('\u{1f}');
+        }
+        key.pop();
+        key
     }
 
     fn scope_as_key_token(&self) -> String {

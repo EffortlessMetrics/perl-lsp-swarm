@@ -342,10 +342,13 @@ pub fn adapt_admission_report(
         .checks
         .iter()
         .any(|check| check.name == "writer-collision" && check.status == CheckStatus::Block);
-    let disk_below_floor = report.checks.iter().any(|check| {
-        check.name == "disk-capacity"
-            && (check.status == CheckStatus::Block || check.status == CheckStatus::NotProven)
-    });
+    // Only a proven blocking capacity result may claim the below-floor fact;
+    // a NotProven probe stays instrument-unavailable and never becomes a
+    // concrete LOW_DISK claim.
+    let disk_below_floor = report
+        .checks
+        .iter()
+        .any(|check| check.name == "disk-capacity" && check.status == CheckStatus::Block);
     let disk_not_proven = report
         .checks
         .iter()

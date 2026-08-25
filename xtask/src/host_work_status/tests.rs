@@ -1107,3 +1107,96 @@ fn host_work_status_readiness_dedup_collapses_nonadjacent_owned_by_duplicates() 
         .collect();
     assert_eq!(owned, vec!["A", "B"], "duplicate owners collapse; ties order deterministically");
 }
+
+// ---- Review response: the subject key is structurally collision-free -------
+
+#[test]
+fn host_work_status_subject_key_survives_delimiter_collision_attempts() {
+    // Moving the U+001F separator between two adjacent string fields must
+    // never merge two distinct subjects onto one key: the length-delimited
+    // encoding pins every field boundary.
+    let mut shifted = repository_subject(None);
+    shifted.canonical_remote = Some(String::from("a\u{1f}b"));
+    shifted.worktree = Some(WorktreeIdentity { path: std::path::PathBuf::from("c"), branch: None });
+
+    let mut absorbed = repository_subject(None);
+    absorbed.canonical_remote = Some(String::from("a"));
+    absorbed.worktree =
+        Some(WorktreeIdentity { path: std::path::PathBuf::from("b\u{1f}c"), branch: None });
+
+    assert_ne!(shifted, absorbed, "fixture subjects must be distinct");
+    assert_ne!(
+        shifted.subject_key(),
+        absorbed.subject_key(),
+        "delimiter movement between adjacent fields cannot fuse identities"
+    );
+
+    // Equal subjects still produce equal keys, deterministically.
+    let twin = shifted.clone();
+    assert_eq!(shifted.subject_key(), twin.subject_key());
+
+    // The key remains a pure function of the typed fields (no ambient state).
+    assert_eq!(shifted.subject_key(), shifted.subject_key());
+}
+
+// ---- Review response: NOT_PROVEN disk evidence never claims LOW_DISK --------
+
+#[test]
+fn host_work_status_disk_not_proven_stays_unknown_not_low_disk() {
+    let report = admission_report(
+        vec![
+            ("writer-collision", CheckStatus::Pass, String::from("ok")),
+            ("disk-capacity", CheckStatus::NotProven, String::from("disk probe unavailable")),
+        ],
+        AdmissionVerdict::NotProven,
+    );
+    let snapshot = clean_snapshot("agent/x", false);
+    let subject = repository_subject(None);
+    let outcome = adapt_admission_report(&report, Some(&snapshot), &subject).expect("adapts");
+    let observations = &outcome.subject_observations;
+    let storage_row = observations.set.storage().iter().next().expect("storage row");
+    assert!(
+        !storage_row.below_configured_floor,
+        "a failed/unavailable probe is not a below-floor capacity fact"
+    );
+    assert!(
+        matches!(storage_row.instrument, Instrument::Unavailable { .. }),
+        "the unproven probe stays visible on the instrument surface"
+    );
+
+    let status = HostWorkStatus::build(
+        &observations.subject,
+        &observations.set,
+        &observations.supplied_readiness,
+    )
+    .expect("builds");
+    assert!(
+        !status.aggregate.contains(&HostWorkObservationToken::LowDisk),
+        "NOT_PROVEN evidence must not emit the factual LOW_DISK token"
+    );
+    assert!(status.aggregate.contains(&HostWorkObservationToken::NotProven));
+}
+
+#[test]
+fn host_work_status_disk_block_still_emits_low_disk() {
+    // Positive control: a proven blocking capacity result keeps its
+    // concrete below-floor claim.
+    let report = admission_report(
+        vec![("disk-capacity", CheckStatus::Block, String::from("free space below floor"))],
+        AdmissionVerdict::Block,
+    );
+    let snapshot = clean_snapshot("agent/x", false);
+    let subject = repository_subject(None);
+    let outcome = adapt_admission_report(&report, Some(&snapshot), &subject).expect("adapts");
+    let observations = &outcome.subject_observations;
+    let storage_row = observations.set.storage().iter().next().expect("storage row");
+    assert!(storage_row.below_configured_floor);
+
+    let status = HostWorkStatus::build(
+        &observations.subject,
+        &observations.set,
+        &observations.supplied_readiness,
+    )
+    .expect("builds");
+    assert!(status.aggregate.contains(&HostWorkObservationToken::LowDisk));
+}
