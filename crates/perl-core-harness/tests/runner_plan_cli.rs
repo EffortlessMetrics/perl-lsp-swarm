@@ -262,6 +262,49 @@ fn build_writes_plan_and_prints_exact_summary() -> TestResult {
 }
 
 #[test]
+fn build_applies_runner_t_directory_relative_frame() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let raw = write_discovery(dir.path(), "raw.txt", b"base/if.t\n")?;
+    let matrix = bundle().to_string_lossy().into_owned();
+    let plan_path = dir.path().join("plan.json").to_string_lossy().into_owned();
+    let output = run(&[
+        "build",
+        &matrix,
+        "component_base",
+        "test",
+        raw.to_string_lossy().as_ref(),
+        &plan_path,
+        "--frame",
+        "runner_t_directory_relative",
+    ])?;
+    assert!(output.status.success(), "build failed: {}", String::from_utf8_lossy(&output.stderr));
+    let plan: serde_json::Value = must(serde_json::from_slice(&std::fs::read(&plan_path)?));
+    assert_eq!(plan["discovery_frame"], "runner_t_directory_relative");
+    assert_eq!(plan["normalized_membership"], serde_json::json!(["t/base/if.t"]));
+    Ok(())
+}
+
+#[test]
+fn mismatched_discovery_frame_is_rejected() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let matrix = bundle().to_string_lossy().into_owned();
+    let raw = discovery_paths(dir.path())?;
+    let out = dir.path().join("plan.json").to_string_lossy().into_owned();
+    let output = run(&[
+        "build",
+        &matrix,
+        "component_base",
+        "test",
+        &raw,
+        &out,
+        "--frame",
+        "runner_t_directory_relative",
+    ])?;
+    assert_cli_failure(&output, "is outside target component_base");
+    Ok(())
+}
+
+#[test]
 fn compare_prints_exact_parity_status() -> TestResult {
     let dir = tempfile::tempdir()?;
     let matrix = bundle().to_string_lossy().into_owned();
