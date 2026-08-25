@@ -81,7 +81,7 @@ pub(super) fn handle_typeglob(
     scope: &Rc<Scope>,
     issues: &mut Vec<ScopeIssue>,
     context: &AnalysisContext<'_>,
-    _strict_vars_mode: bool,
+    strict_vars_mode: bool,
 ) {
     // `Typeglob { name }` stores the name without its leading `*`, unlike the
     // equivalent `Variable { sigil: "*", name }` shape.  Reconstruct the
@@ -217,35 +217,4 @@ pub(super) fn handle_untie<'a>(
     ancestors.push(node);
     analyzer.analyze_node(variable, scope, ancestors, issues, context);
     ancestors.pop();
-}
-
-/// Handle `NodeKind::Identifier`.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn handle_identifier(
-    analyzer: &ScopeAnalyzer,
-    node: &Node,
-    name: &str,
-    issues: &mut Vec<ScopeIssue>,
-    context: &AnalysisContext<'_>,
-    ancestors: &[&Node],
-    pragma_state: &PragmaState,
-    strict_subs_mode: bool,
-) {
-    // Check for barewords under strict mode, excluding hash keys
-    // Hybrid check: Fast path for immediate hash keys (depth 1), then known functions, then deep check
-    if strict_subs_mode
-        && !analyzer.is_in_hash_key_context(node, ancestors, 1)
-        && !is_known_function(name)
-        && !pragma_state.has_builtin_import(name)
-        && !context.has_imported_bareword(name)
-        && !analyzer.is_in_hash_key_context(node, ancestors, 10)
-    {
-        issues.push(ScopeIssue {
-            kind: super::IssueKind::UnquotedBareword,
-            variable_name: name.to_string(),
-            line: context.get_line(node.location.start),
-            range: (node.location.start, node.location.end),
-            description: format!("Bareword '{}' not allowed under 'use strict'", name),
-        });
-    }
 }
