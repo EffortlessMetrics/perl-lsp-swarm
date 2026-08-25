@@ -64,7 +64,7 @@ fn execution_source_contract_binds_all_three_routes() -> Result<(), Box<dyn Erro
         "route authority is typed independently of canonical binary identity (#10340): identity proves what was selected, never that the selecting source was authorized"
     );
 
-    let explicit = route(&contract, "explicit_path")?;
+    let explicit = route(&contract, "binary_override")?;
     assert_eq!(
         explicit.get("extension_authority").and_then(Value::as_str),
         Some("refused"),
@@ -102,6 +102,16 @@ fn execution_source_contract_binds_all_three_routes() -> Result<(), Box<dyn Erro
     Ok(())
 }
 
+/// Drop `//` comment lines so structural pins can only be satisfied by real
+/// code, not by commented-out invocations.
+fn code_lines(source: &str) -> String {
+    source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
 fn extension_classifies_the_execution_source_before_any_lookup() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
@@ -112,17 +122,18 @@ fn extension_classifies_the_execution_source_before_any_lookup() -> Result<(), B
         "the fail-closed gate function must exist"
     );
     assert!(
-        source.contains("#[derive(Debug, Clone, Copy, PartialEq, Eq)]\nenum ExecutionRoute"),
+        source.contains("enum ExecutionRoute"),
         "execution routes must be a typed enum carrying no path or digest fields"
     );
 
+    let classified = code_lines(&source);
     let command_start =
-        source.find("fn perllsp_command(").ok_or("missing perllsp_command entry point")?;
-    let command_end = source[command_start..]
-        .find("fn perllsp_binary(")
-        .map(|offset| command_start + offset)
-        .ok_or("perllsp_command body has no terminator anchor")?;
-    let body = &source[command_start..command_end];
+        classified.find("fn perllsp_command(").ok_or("missing perllsp_command entry point")?;
+    let command_end = command_start
+        + classified[command_start..]
+            .find("fn perllsp_binary(")
+            .ok_or("perllsp_command body has no terminator anchor")?;
+    let body = &classified[command_start..command_end];
 
     let gate = body
         .find("authorize_execution_source(command_settings.path.as_deref())")
@@ -134,6 +145,85 @@ fn extension_classifies_the_execution_source_before_any_lookup() -> Result<(), B
     let lookup_after_gate = body.find("worktree.which(");
     if let Some(lookup_at) = lookup_after_gate {
         assert!(gate < lookup_at, "no PATH lookup may precede the execution-source gate");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn settings_overrides_cannot_inject_loader_environment() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let source = read(&root, EXTENSION_SOURCE_RELATIVE_PATH)?;
+
+    assert!(
+        source.contains("fn is_loader_injection_key"),
+        "the dynamic-loader injection filter must exist"
+    );
+    for key in [
+        "\"ld_preload\"",
+        "\"ld_audit\"",
+        "\"ld_library_path\"",
+        "\"dyld_insert_libraries\"",
+        "\"dyld_force_flat_namespace\"",
+        "\"dyld_library_path\"",
+        "\"dyld_framework_path\"",
+        "\"dyld_fallback_framework_path\"",
+    ] {
+        assert!(
+            source.contains(key),
+            "the filter must cover {key} so project settings cannot load code into the server process"
+        );
+    }
+
+    // The filter is applied to the settings-supplied layer before it joins
+    // the Zed-defined worktree environment.
+    let classified = code_lines(&source);
+    let settings_start =
+        classified.find("fn perllsp_command_settings").ok_or("missing perllsp_command_settings")?;
+    let settings_end = settings_start
+        + classified[settings_start..]
+            .find("fn normalize_perllsp_args")
+            .ok_or("perllsp_command_settings body has no terminator anchor")?;
+    let body = &classified[settings_start..settings_end];
+    let retain = body
+        .find("overrides.retain(|key, _| !is_loader_injection_key(key))")
+        .ok_or("the override layer must drop loader-injection keys")?;
+    let extend = body
+        .find("shell_env.extend(overrides)")
+        .ok_or("the worktree environment merge must stay intact")?;
+    assert!(
+        retain < extend,
+        "loader-injection keys must be dropped before overrides join the environment"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn worktree_path_hits_never_flow_through_release_identity_binding() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let source = read(&root, EXTENSION_SOURCE_RELATIVE_PATH)?;
+
+    // Negative control for project-controlled PATH resolution (#11041): a
+    // `worktree.which` hit resolves under the worktree-environment cell only
+    // and must not touch the selection manifest or any digest binding, so a
+    // hostile PATH entry can never be relabeled as release-proven.
+    let classified = code_lines(&source);
+    let binary_start = classified.find("fn perllsp_binary(").ok_or("missing perllsp_binary")?;
+    let binary_end = binary_start
+        + classified[binary_start..]
+            .find("fn download_perllsp(")
+            .ok_or("perllsp_binary body has no terminator anchor")?;
+    let body = &classified[binary_start..binary_end];
+    assert!(
+        body.contains("worktree.which(PERLLSP_SERVER_ID)"),
+        "perllsp_binary must keep its exact PATH discovery surface"
+    );
+    for identity_surface in ["SELECTION_MANIFEST", "content_sha256", "load_accepted_current_in"] {
+        assert!(
+            !body.contains(identity_surface),
+            "a worktree PATH hit must never flow through `{identity_surface}` release-identity binding"
+        );
     }
 
     Ok(())

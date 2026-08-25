@@ -10,7 +10,7 @@
   },
   "routes": [
     {
-      "route": "explicit_path",
+      "route": "binary_override",
       "surface": "lsp.perllsp.binary.path in merged LspSettings",
       "provenance": "unprovable_merged_settings",
       "extension_authority": "refused",
@@ -25,8 +25,9 @@
       "extension_authority": "authorized_worktree_environment",
       "extension_execution": true,
       "limitations": [
-        "direnv/shell/project hooks may alter PATH resolution",
-        "this cell is visibly distinct from managed release identity and is never presented as release-backed evidence"
+        "no extension-checkable host trust fact exists for a PATH hit; retention rests on Zed's product-level worktree-environment model, not on an in-extension proof",
+        "direnv/shell/project hooks may alter PATH resolution and a project-controlled entry can shadow other candidates within this cell",
+        "this cell is visibly distinct from managed release identity: a PATH-selected binary never flows through the selection-manifest digest binding and is never presented as release-backed evidence"
       ]
     },
     {
@@ -41,6 +42,7 @@
   "invariants": [
     "unknown or merged-away provenance cannot silently authorize execution",
     "project/resource inputs cannot gain stronger execution authority merely through precedence",
+    "settings-supplied environment overrides cannot load code into the launched process: dynamic-loader injection keys (LD_PRELOAD/LD_AUDIT/LD_LIBRARY_PATH and DYLD_* counterparts) are dropped from the unproven override layer",
     "structured path/argv identities only; no shell command string or interpolation is introduced",
     "source authority and binary identity remain independently required",
     "explicit, worktree-PATH, and managed routes remain separate support/evidence cells",

@@ -285,7 +285,7 @@ struct PerllspCommandSettings {
 /// Typed executable-selection routes for the managed product (#11041).
 ///
 /// Variant meanings mirror the host-receipt `resolution_route` vocabulary
-/// (`explicit_path` / `worktree_path` / `managed_download`) so every support
+/// (`binary_override` / `worktree_path` / `managed_download`) so every support
 /// and evidence surface keeps the three cells separate. Authority is carried
 /// by the route classification alone: a route variant deliberately holds no
 /// path or digest fields, because canonical binary identity (#10340) proves
@@ -831,9 +831,13 @@ fn perllsp_command_settings(worktree: &zed::Worktree) -> Result<PerllspCommandSe
         return Ok(PerllspCommandSettings { path: None, arguments: Vec::new(), env: shell_env });
     };
 
-    if let Some(overrides) = binary.env {
-        shell_env.extend(overrides);
-    }
+    // Settings-supplied overrides carry unproven merged provenance (#11041),
+    // so they may not load code into the launched process: dynamic-loader
+    // injection keys are dropped from the override layer only. The Zed-defined
+    // worktree environment itself stays the authorized execution context.
+    let mut overrides = binary.env.unwrap_or_default();
+    overrides.retain(|key, _| !is_loader_injection_key(key));
+    shell_env.extend(overrides);
 
     Ok(PerllspCommandSettings {
         path: binary.path,
@@ -891,6 +895,30 @@ fn is_non_lsp_argument(argument: &str) -> bool {
             | "--help"
             | "-h"
             | "-V"
+    )
+}
+
+/// Whether a settings-supplied environment override key could load code into
+/// the launched process (#11041). Comparison is ASCII-case-insensitive so
+/// host-specific casing cannot slip an injection variable past the filter.
+///
+/// Covered set: ELF dynamic-loader audit/preload/library-path keys
+/// (`LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`) and their Mach-O
+/// counterparts (`DYLD_INSERT_LIBRARIES`, `DYLD_FORCE_FLAT_NAMESPACE`,
+/// `DYLD_LIBRARY_PATH`, `DYLD_FRAMEWORK_PATH`,
+/// `DYLD_FALLBACK_FRAMEWORK_PATH`).
+fn is_loader_injection_key(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "ld_preload"
+            | "ld_audit"
+            | "ld_library_path"
+            | "dyld_insert_libraries"
+            | "dyld_force_flat_namespace"
+            | "dyld_library_path"
+            | "dyld_framework_path"
+            | "dyld_fallback_framework_path"
     )
 }
 
@@ -1501,7 +1529,7 @@ mod tests {
     fn execution_routes_map_to_distinct_receipt_cells() {
         fn receipt_cell(route: ExecutionRoute) -> &'static str {
             match route {
-                ExecutionRoute::ExplicitOverride => "explicit_path",
+                ExecutionRoute::ExplicitOverride => "binary_override",
                 ExecutionRoute::WorktreePathDiscovery => "worktree_path",
                 ExecutionRoute::ManagedArtifact => "managed_download",
             }
@@ -1525,6 +1553,56 @@ mod tests {
         // path gains nothing from merged settings (#10340 vs #11041).
         assert!(authorize_execution_source(Some("/exact/perllsp")).is_err());
         assert!(authorize_execution_source(Some("sha256:perllsp")).is_err());
+    }
+
+    #[test]
+    fn loader_injection_keys_are_dropped_from_settings_overrides() {
+        for key in [
+            "LD_PRELOAD",
+            "ld_preload",
+            "LD_AUDIT",
+            "LD_LIBRARY_PATH",
+            "DYLD_INSERT_LIBRARIES",
+            "dyld_insert_libraries",
+            "DYLD_FORCE_FLAT_NAMESPACE",
+            "DYLD_LIBRARY_PATH",
+            "DYLD_FRAMEWORK_PATH",
+            "DYLD_FALLBACK_FRAMEWORK_PATH",
+        ] {
+            assert!(
+                is_loader_injection_key(key),
+                "`{key}` must be filtered from unproven merged overrides"
+            );
+        }
+        // Ordinary server configuration keys pass untouched.
+        for key in ["PERL5LIB", "PERLLSP_LOG", "RUST_LOG", "HOME", "LANG"] {
+            assert!(!is_loader_injection_key(key), "`{key}` must not be filtered");
+        }
+    }
+
+    #[test]
+    fn worktree_path_hits_never_acquire_release_identity() {
+        // Negative control for project-controlled PATH resolution (#11041):
+        // a `worktree.which` hit resolves under the worktree-environment
+        // authority cell only. It must never flow through the managed
+        // selection-manifest digest binding, so no receipt can label a
+        // PATH-selected binary as release-proven even when a hostile PATH
+        // entry shadows the managed subject.
+        fn receipt_cell(route: ExecutionRoute) -> &'static str {
+            match route {
+                ExecutionRoute::ExplicitOverride => "binary_override",
+                ExecutionRoute::WorktreePathDiscovery => "worktree_path",
+                ExecutionRoute::ManagedArtifact => "managed_download",
+            }
+        }
+        assert_ne!(
+            receipt_cell(ExecutionRoute::WorktreePathDiscovery),
+            receipt_cell(ExecutionRoute::ManagedArtifact)
+        );
+        assert_ne!(
+            receipt_cell(ExecutionRoute::WorktreePathDiscovery),
+            receipt_cell(ExecutionRoute::ExplicitOverride)
+        );
     }
 
     #[test]
