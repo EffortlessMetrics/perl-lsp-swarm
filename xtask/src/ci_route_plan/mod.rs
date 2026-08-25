@@ -1,8 +1,24 @@
-//! Deterministic domain payload for routed CI planning.
+//! Typed route-plan domain (`ci_route_plan.v1`) for candidate-bound CI
+//! planning.
 //!
-//! This module owns the versioned, side-effect-free representation of a route
-//! plan. It does not discover changed files, select gates, inspect workflow
-//! YAML, execute commands, or decide live GitHub enforcement.
+//! This module owns the closed typed domain payload and one cross-field
+//! semantic validator. It does not discover changed files, select gates,
+//! inspect workflow YAML, execute gates, observe GitHub enforcement, or
+//! publish artifacts.
+//!
+//! Authorities consumed (never re-derived here):
+//!
+//! - `ci_route_profile.v1` (#10178): requested-profile expansion and the
+//!   exact governed denominator, received through [`RouteProfileExpansionInput`].
+//! - `gate_disposition.v1` (#10176): typed lifecycle/quarantine resolution,
+//!   received through [`RouteDispositionInput`].
+//! - PR #6858 policy role: the gate-row projection `required|advisory`,
+//!   carried per gate by the disposition authority.
+//!
+//! The binary-side adapters in `tasks/gates/planning_types.rs` project the
+//! resolved authority results into these input types. Canonical byte
+//! encoding, the semantic fingerprint, JSON-Schema conformance, and CLI/filesystem
+//! publication are the separate leaf #10179 and are intentionally absent here.
 
 mod compile;
 mod validate;
@@ -10,60 +26,65 @@ mod validate;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Domain contract identity. The checked-in JSON-Schema projection of this
+/// payload is owned by #10179, not this module.
 pub const CI_ROUTE_PLAN_SCHEMA: &str = "ci_route_plan.v1";
 pub const CI_ROUTE_PLAN_PRODUCER: &str = "xtask::ci_route_plan";
 
+/// Closed `PlannedOutcome::Error` reason-code vocabulary. Unknown codes fail
+/// validation instead of passing as free-form text.
+pub const CLOSED_ERROR_CODES: &[&str] = &[
+    "disposition_expired",
+    "disposition_invalid",
+    "lifecycle_non_runnable",
+    "selector_evidence_missing",
+    "selector_contradiction",
+    "execution_identity_missing",
+    "run_timeout_invalid",
+];
+
+/// One compiled route plan: exactly one row per governed denominator gate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CiRoutePlanV1 {
     pub schema: String,
     pub producer: String,
     pub subject: RouteSubjectRef,
-    pub profile: String,
+    /// Requested execution profile name, projected from #10178.
+    pub requested_profile: String,
+    /// Native tiers included by the profile expansion, projected from #10178.
+    pub included_native_tiers: Vec<String>,
+    /// #10178 profile/denominator identity (authority-computed).
+    pub expansion_fingerprint: String,
+    /// Policy semantic digest, projected from #10178 (authority-computed).
     pub policy_digest: String,
+    /// #10176 disposition semantic digest (authority-computed).
+    pub disposition_digest: String,
     pub workflow_digest: String,
+    /// Governed gate ids from #10178: sorted, unique, exactly one row each.
+    pub denominator: Vec<String>,
     pub selection: RouteSelectionEvidence,
     pub rows: Vec<RoutePlanRow>,
     pub summary: RoutePlanSummary,
-    pub semantic_fingerprint: String,
 }
 
 impl CiRoutePlanV1 {
+    /// Compile the typed domain payload from projected authority results and
+    /// runner adapter inputs. Pure: no filesystem, clock, or network access.
     pub fn compile(input: CompileRoutePlanInput) -> Result<Self, String> {
         compile::compile(input)
     }
 
-    pub fn normalize(&mut self) -> Result<(), String> {
-        validate::normalize(self)
-    }
-
+    /// Validate every cross-field invariant of the compiled payload.
     pub fn validate(&self) -> Result<(), String> {
         validate::validate(self)
     }
-
-    pub fn canonical_json(&self) -> Result<Vec<u8>, String> {
-        self.validate()?;
-        serde_json::to_vec_pretty(self).map_err(|error| error.to_string())
-    }
-
-    pub fn explain(&self, gate_id: Option<&str>) -> Result<String, String> {
-        self.validate()?;
-        if let Some(gate_id) = gate_id {
-            let row = self
-                .rows
-                .iter()
-                .find(|row| row.gate_id == gate_id)
-                .ok_or_else(|| format!("unknown gate {gate_id:?}"))?;
-            return serde_json::to_string_pretty(row).map_err(|error| error.to_string());
-        }
-        serde_json::to_string_pretty(&self.summary).map_err(|error| error.to_string())
-    }
 }
 
+/// Opaque subject reference supplied by the exact-subject authority (#8042).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RouteSubjectRef {
-    /// Opaque subject kind supplied by the exact-subject authority (#8042).
     pub kind: String,
     pub head_sha: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -72,6 +93,9 @@ pub struct RouteSubjectRef {
     pub subject_digest: String,
 }
 
+/// Selection evidence from the runner's scope seam, adapted from
+/// `ci_scope::ScopeOutput`. Fallback is recorded honestly: a fallback
+/// selection carries no positive selector proof anywhere in this payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RouteSelectionEvidence {
@@ -83,6 +107,8 @@ pub struct RouteSelectionEvidence {
     pub package_args: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<RouteScopeEvidence>,
+    /// #9149 selector-payload identity. Required whenever any row claims
+    /// selector-proved non-applicability.
     pub selector_digest: String,
 }
 
@@ -104,14 +130,97 @@ pub struct ScopedIdentity {
     pub reason: String,
 }
 
+/// One governed gate's planned row. Lifecycle, policy role, selector
+/// placement/applicability, and planned outcome stay independent facts;
+/// the outcome is composed from them, never substituted for them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoutePlanRow {
     pub gate_id: String,
+    /// The gate row's native policy tier (#10176 `intended_profile`).
+    pub native_tier: String,
+    /// Repository merge-policy role projected from the #6858/#10176
+    /// authority. Never derived from the requested profile.
     pub policy_role: PolicyRole,
+    /// Lifecycle disposition projected from #10176.
+    pub lifecycle: LifecycleDisposition,
+    /// Runner planning role for this gate on this subject.
     pub selector_role: SelectorRole,
+    /// The runner population the adapter observed for this gate.
+    pub selector_placement: SelectorPlacement,
+    /// Positive selector proof state. `Unknown` means no positive proof.
     pub applicability: Applicability,
     pub outcome: PlannedOutcome,
+}
+
+/// Gate-row projection of the accepted policy role vocabulary. `informational`
+/// and `local` exist in the #6858 status-context surface
+/// (`.ci/policies/required-checks.toml`); no gate row carries them today, so
+/// the honest gate-row projection is `required|advisory` only (per the
+/// #10176 authority) and this enum does not fabricate the unreachable
+/// variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyRole {
+    Required,
+    Advisory,
+}
+
+impl PolicyRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PolicyRole::Required => "required",
+            PolicyRole::Advisory => "advisory",
+        }
+    }
+}
+
+/// Lifecycle disposition, projected 1:1 from `gate_disposition.v1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LifecycleDisposition {
+    pub state: LifecycleState,
+    pub resolution: Resolution,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleState {
+    Active,
+    Dormant,
+    Quarantined,
+    Retired,
+    Blocked,
+}
+
+impl LifecycleState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LifecycleState::Active => "active",
+            LifecycleState::Dormant => "dormant",
+            LifecycleState::Quarantined => "quarantined",
+            LifecycleState::Retired => "retired",
+            LifecycleState::Blocked => "blocked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Resolution {
+    Current,
+    Expired,
+    Invalid,
+}
+
+impl Resolution {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Resolution::Current => "current",
+            Resolution::Expired => "expired",
+            Resolution::Invalid => "invalid",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -125,17 +234,23 @@ pub enum SelectorRole {
     Unspecified,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PolicyRole {
-    Required,
-    Advisory,
-    Informational,
-    LocalOnly,
-    ReleaseOnly,
+pub enum SelectorPlacement {
+    Selected,
+    Skipped,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+impl SelectorPlacement {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SelectorPlacement::Selected => "selected",
+            SelectorPlacement::Skipped => "skipped",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Applicability {
     Applicable,
@@ -143,6 +258,10 @@ pub enum Applicability {
     Unknown,
 }
 
+/// Planned outcome for one governed gate. `run` and `scoped_noop` both
+/// require positive selector proof; lifecycle authority gates
+/// `quarantined`; every other non-runnable or action-required state is a
+/// typed `error` row that remains visible in the denominator.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PlannedOutcome {
@@ -157,9 +276,11 @@ pub enum PlannedOutcome {
     },
     Quarantined {
         reason: String,
-        owner_issue: u64,
+        owner: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        review_after: Option<String>,
+        owner_issue: Option<String>,
+        /// Review horizon (`YYYY-MM-DD`) from #10176 quarantine evidence.
+        review_after: String,
     },
     Error {
         code: String,
@@ -178,89 +299,121 @@ pub struct RoutePlanSummary {
     pub by_policy_role: BTreeMap<PolicyRole, u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+// ---------------------------------------------------------------------------
+// Compile inputs (projected authority results + runner adapter inputs)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompileRoutePlanInput {
     pub subject: RouteSubjectRef,
-    pub plan: LegacyGatePlanInput,
-    pub policy: LegacyGatePolicyInput,
-    pub policy_digest: String,
+    /// #10178 expansion result, projected by the binary-side adapter.
+    pub expansion: RouteProfileExpansionInput,
+    /// #10176 resolved dispositions, projected 1:1 by the binary-side
+    /// adapter. Must cover every denominator gate.
+    pub dispositions: Vec<RouteDispositionInput>,
+    /// #10176 authority semantic digest.
+    pub disposition_digest: String,
     pub workflow_digest: String,
-    pub selector_digest: String,
+    /// Runner gate populations projected to typed selector inputs.
+    pub selectors: Vec<GateSelectorInput>,
+    pub selection: RouteSelectionEvidence,
+    /// Executable identity per gate, projected from the gate policy.
+    pub execution: Vec<RouteExecutionIdentity>,
 }
 
+/// 1:1 projection of a `ci_route_profile.v1` expansion result. Only a
+/// `Complete` expansion may carry a denominator; the adapter refuses to
+/// project unsupported/invalid expansions and compile fails closed on any
+/// non-complete status that reaches it anyway.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LegacyGatePlanInput {
-    pub tier: String,
-    pub base: String,
-    pub scope_ok: bool,
-    pub fallback_used: bool,
+pub struct RouteProfileExpansionInput {
+    pub requested_profile: String,
+    pub included_native_tiers: Vec<String>,
+    pub semantic_fingerprint: String,
+    pub policy_digest: String,
+    pub denominator: Vec<String>,
+    pub resolution: ExpansionStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub fallback_reason: Option<String>,
-    #[serde(default)]
-    pub package_args: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope: Option<LegacyScopeInput>,
-    pub selected: Vec<LegacyPlannedGate>,
-    pub skipped: Vec<LegacySkippedGate>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LegacyScopeInput {
-    pub head_sha: String,
-    pub diff_class: String,
-    pub direct_crates: Vec<ScopedIdentity>,
-    pub reverse_dependencies: Vec<ScopedIdentity>,
-    pub architecture_wideners: Vec<ScopedIdentity>,
-    pub risk_tags: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LegacyPlannedGate {
-    pub name: String,
-    pub role: LegacyPlanningRole,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LegacySkippedGate {
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<LegacyPlanningRole>,
-    pub reason: String,
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum LegacyPlanningRole {
-    AlwaysOn,
-    RustScoped,
-    RustFallback,
-    RustPackageScoped,
-    Static,
+pub enum ExpansionStatus {
+    Complete,
+    Unsupported,
+    Invalid,
+}
+
+impl ExpansionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ExpansionStatus::Complete => "complete",
+            ExpansionStatus::Unsupported => "unsupported",
+            ExpansionStatus::Invalid => "invalid",
+        }
+    }
+}
+
+/// 1:1 projection of one `gate_disposition.v1` row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouteDispositionInput {
+    pub gate_id: String,
+    pub policy_role: PolicyRole,
+    pub lifecycle: LifecycleDisposition,
+    /// The gate row's native policy tier.
+    pub native_tier: String,
+    /// Present exactly when the lifecycle claim is `Quarantined` with
+    /// complete current evidence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quarantine: Option<RouteQuarantineEvidence>,
+    /// Closed error detail when the resolution is not `Current`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LegacyGatePolicyInput {
-    pub gates: Vec<LegacyGatePolicyRow>,
+pub struct RouteQuarantineEvidence {
+    pub owner: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_issue: Option<String>,
+    pub reason_token: String,
+    /// Review horizon (`YYYY-MM-DD`).
+    pub review_after: String,
 }
 
+/// One gate's runner-observed selector facts. `proof` is `Some` only when a
+/// positive exact-subject selector proof exists (#9149 adapter seam; today
+/// the scope selector supplies it and fallback decisions supply nothing).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LegacyGatePolicyRow {
-    pub name: String,
-    pub tier: String,
-    pub required: bool,
+pub struct GateSelectorInput {
+    pub gate_id: String,
+    pub placement: SelectorPlacement,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<SelectorRole>,
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof: Option<SelectorProof>,
+}
+
+/// Positive exact-subject selector proof, projected 1:1 from the #10176
+/// planner-seam `SelectorEvidence` vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectorProof {
+    Applicable,
+    NotApplicableToSubject,
+}
+
+/// Executable identity for one gate, projected from the gate policy row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouteExecutionIdentity {
+    pub gate_id: String,
     pub command: String,
     pub timeout_seconds: u64,
-    pub quarantine: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub quarantine_owner_issue: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub quarantine_review_after: Option<String>,
 }

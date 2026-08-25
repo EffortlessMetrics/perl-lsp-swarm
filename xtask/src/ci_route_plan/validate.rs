@@ -1,31 +1,16 @@
 use std::collections::BTreeSet;
 
-use serde::Serialize;
-use sha2::{Digest, Sha256};
-
 use super::{
-    Applicability, CI_ROUTE_PLAN_PRODUCER, CI_ROUTE_PLAN_SCHEMA, CiRoutePlanV1, PlannedOutcome,
-    RoutePlanRow, RoutePlanSummary, RouteSelectionEvidence, RouteSubjectRef,
+    Applicability, CI_ROUTE_PLAN_PRODUCER, CI_ROUTE_PLAN_SCHEMA, CLOSED_ERROR_CODES, CiRoutePlanV1,
+    LifecycleDisposition, LifecycleState, PlannedOutcome, Resolution, RoutePlanRow,
+    RoutePlanSummary, RouteSelectionEvidence, RouteSubjectRef, SelectorPlacement,
 };
 
-#[derive(Serialize)]
-struct SemanticPlan<'a> {
-    schema: &'a str,
-    producer: &'a str,
-    subject: &'a RouteSubjectRef,
-    profile: &'a str,
-    policy_digest: &'a str,
-    workflow_digest: &'a str,
-    selection: &'a RouteSelectionEvidence,
-    rows: &'a [RoutePlanRow],
-}
-
-pub(super) fn normalize(plan: &mut CiRoutePlanV1) -> Result<(), String> {
-    plan.rows.sort_by(|left, right| left.gate_id.cmp(&right.gate_id));
-    plan.summary = summarize(&plan.rows)?;
-    plan.semantic_fingerprint = semantic_fingerprint(plan)?;
-    validate(plan)
-}
+/// Closed requested-profile vocabulary owned by `ci_route_profile.v1`
+/// (#10178). The lib-side domain cannot import the binary-side authority, so
+/// this set mirrors it for validation only; the authority remains the
+/// derivation owner and the adapter projects its exact value.
+const KNOWN_PROFILES: &[&str] = &["commit", "pr_fast", "merge_gate", "nightly", "all", "release"];
 
 pub(super) fn validate(plan: &CiRoutePlanV1) -> Result<(), String> {
     if plan.schema != CI_ROUTE_PLAN_SCHEMA {
@@ -35,53 +20,159 @@ pub(super) fn validate(plan: &CiRoutePlanV1) -> Result<(), String> {
         return Err(format!("unsupported route-plan producer {:?}", plan.producer));
     }
     validate_subject(&plan.subject)?;
-    validate_nonempty("profile", &plan.profile)?;
+    if !KNOWN_PROFILES.contains(&plan.requested_profile.as_str()) {
+        return Err(format!("unknown requested profile {:?}", plan.requested_profile));
+    }
+    validate_digest("expansion_fingerprint", &plan.expansion_fingerprint)?;
     validate_digest("policy_digest", &plan.policy_digest)?;
+    validate_digest("disposition_digest", &plan.disposition_digest)?;
     validate_digest("workflow_digest", &plan.workflow_digest)?;
     validate_selection(&plan.selection)?;
-    validate_digest("semantic_fingerprint", &plan.semantic_fingerprint)?;
-    if plan.rows.is_empty() {
-        return Err("route plan has no governed rows".to_string());
-    }
 
-    let mut seen = BTreeSet::new();
-    let mut previous = None;
-    for row in &plan.rows {
-        validate_gate_id(&row.gate_id)?;
-        if !seen.insert(row.gate_id.as_str()) {
-            return Err(format!("duplicate gate identity {:?}", row.gate_id));
+    validate_tiers(&plan.included_native_tiers)?;
+    validate_denominator(&plan.denominator)?;
+
+    // Exactly one row per governed denominator gate, in canonical order:
+    // omissions and duplicates cannot validate.
+    if plan.rows.len() != plan.denominator.len() {
+        return Err(format!(
+            "route plan has {} rows for {} governed denominator gates",
+            plan.rows.len(),
+            plan.denominator.len()
+        ));
+    }
+    for (row, gate_id) in plan.rows.iter().zip(&plan.denominator) {
+        if &row.gate_id != gate_id {
+            return Err(format!(
+                "route-plan row order does not reconcile with the governed denominator at \
+                 {gate_id:?}"
+            ));
         }
-        if let Some(previous) = previous
-            && previous > row.gate_id.as_str()
-        {
-            return Err("route-plan rows are not in canonical order".to_string());
-        }
-        previous = Some(row.gate_id.as_str());
-        validate_row(row)?;
+        validate_row(row, &plan.selection)?;
     }
 
     if plan.summary != summarize(&plan.rows)? {
         return Err("route-plan summary does not reconcile to rows".to_string());
     }
-    if plan.semantic_fingerprint != semantic_fingerprint(plan)? {
-        return Err("route-plan semantic fingerprint does not match payload".to_string());
+    Ok(())
+}
+
+fn validate_tiers(tiers: &[String]) -> Result<(), String> {
+    if tiers.is_empty() {
+        return Err("route plan includes no native tiers".to_string());
+    }
+    let mut seen = BTreeSet::new();
+    for tier in tiers {
+        validate_nonempty("included native tier", tier)?;
+        if !seen.insert(tier.as_str()) {
+            return Err(format!("included native tier {tier:?} is duplicated"));
+        }
     }
     Ok(())
 }
 
-fn semantic_fingerprint(plan: &CiRoutePlanV1) -> Result<String, String> {
-    let semantic = SemanticPlan {
-        schema: &plan.schema,
-        producer: &plan.producer,
-        subject: &plan.subject,
-        profile: &plan.profile,
-        policy_digest: &plan.policy_digest,
-        workflow_digest: &plan.workflow_digest,
-        selection: &plan.selection,
-        rows: &plan.rows,
-    };
-    let bytes = serde_json::to_vec(&semantic).map_err(|error| error.to_string())?;
-    Ok(Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect())
+fn validate_denominator(denominator: &[String]) -> Result<(), String> {
+    if denominator.is_empty() {
+        return Err("route plan has no governed denominator".to_string());
+    }
+    if !is_sorted_unique(denominator) {
+        return Err("governed denominator is not in canonical order".to_string());
+    }
+    for gate_id in denominator {
+        validate_gate_id(gate_id)?;
+    }
+    Ok(())
+}
+
+fn validate_row(row: &RoutePlanRow, selection: &RouteSelectionEvidence) -> Result<(), String> {
+    validate_nonempty("native tier", &row.native_tier)?;
+    match &row.outcome {
+        PlannedOutcome::Run { command, timeout_seconds, reason } => {
+            require(
+                row.applicability == Applicability::Applicable,
+                row,
+                "run requires applicable",
+            )?;
+            require(
+                row.selector_placement == SelectorPlacement::Selected,
+                row,
+                "run requires a selected placement",
+            )?;
+            require(
+                row.lifecycle
+                    == LifecycleDisposition {
+                        state: LifecycleState::Active,
+                        resolution: Resolution::Current,
+                    },
+                row,
+                "run requires an active current lifecycle",
+            )?;
+            validate_nonempty("run command", command)?;
+            validate_nonempty("run reason", reason)?;
+            if *timeout_seconds == 0 {
+                return Err(format!("run gate {:?} has zero timeout", row.gate_id));
+            }
+        }
+        PlannedOutcome::ScopedNoop { reason, selector_digest } => {
+            require(
+                row.applicability == Applicability::NotApplicable,
+                row,
+                "scoped_noop requires not-applicable",
+            )?;
+            require(
+                row.selector_placement == SelectorPlacement::Skipped,
+                row,
+                "scoped_noop requires a skipped placement",
+            )?;
+            require(
+                row.lifecycle
+                    == LifecycleDisposition {
+                        state: LifecycleState::Active,
+                        resolution: Resolution::Current,
+                    },
+                row,
+                "scoped_noop requires an active current lifecycle",
+            )?;
+            validate_nonempty("scoped-noop reason", reason)?;
+            validate_digest("selector_digest", selector_digest)?;
+            if selector_digest != &selection.selector_digest {
+                return Err(format!(
+                    "gate {:?} scoped-noop selector digest does not match the selection \
+                     evidence digest",
+                    row.gate_id
+                ));
+            }
+        }
+        PlannedOutcome::Quarantined { reason, owner, owner_issue, review_after } => {
+            require(
+                row.lifecycle.state == LifecycleState::Quarantined
+                    && row.lifecycle.resolution == Resolution::Current,
+                row,
+                "quarantined outcome requires a current quarantined lifecycle",
+            )?;
+            validate_nonempty("quarantine reason", reason)?;
+            validate_nonempty("quarantine owner", owner)?;
+            if let Some(owner_issue) = owner_issue {
+                validate_nonempty("quarantine owner_issue", owner_issue)?;
+            }
+            validate_nonempty("quarantine review_after", review_after)?;
+        }
+        PlannedOutcome::Error { code, message } => {
+            validate_reason_token("error code", code)?;
+            if !CLOSED_ERROR_CODES.contains(&code.as_str()) {
+                return Err(format!("gate {:?} carries unknown error code {code:?}", row.gate_id));
+            }
+            validate_nonempty("error message", message)?;
+        }
+    }
+    Ok(())
+}
+
+fn require(condition: bool, row: &RoutePlanRow, message: &str) -> Result<(), String> {
+    if !condition {
+        return Err(format!("gate {:?}: {message}", row.gate_id));
+    }
+    Ok(())
 }
 
 fn summarize(rows: &[RoutePlanRow]) -> Result<RoutePlanSummary, String> {
@@ -103,47 +194,6 @@ fn summarize(rows: &[RoutePlanRow]) -> Result<RoutePlanSummary, String> {
     Ok(summary)
 }
 
-fn validate_row(row: &RoutePlanRow) -> Result<(), String> {
-    match &row.outcome {
-        PlannedOutcome::Run { command, timeout_seconds, reason } => {
-            require_applicability(row, Applicability::Applicable)?;
-            validate_nonempty("run command", command)?;
-            validate_nonempty("run reason", reason)?;
-            if *timeout_seconds == 0 {
-                return Err(format!("run gate {:?} has zero timeout", row.gate_id));
-            }
-        }
-        PlannedOutcome::ScopedNoop { reason, selector_digest } => {
-            require_applicability(row, Applicability::NotApplicable)?;
-            validate_nonempty("scoped-noop reason", reason)?;
-            validate_digest("selector_digest", selector_digest)?;
-        }
-        PlannedOutcome::Quarantined { reason, owner_issue, review_after } => {
-            require_applicability(row, Applicability::Applicable)?;
-            validate_nonempty("quarantine reason", reason)?;
-            if *owner_issue == 0 {
-                return Err(format!("quarantined gate {:?} has no owner", row.gate_id));
-            }
-            if let Some(review_after) = review_after {
-                validate_nonempty("quarantine review_after", review_after)?;
-            }
-        }
-        PlannedOutcome::Error { code, message } => {
-            require_applicability(row, Applicability::Unknown)?;
-            validate_reason_token("error code", code)?;
-            validate_nonempty("error message", message)?;
-        }
-    }
-    Ok(())
-}
-
-fn require_applicability(row: &RoutePlanRow, expected: Applicability) -> Result<(), String> {
-    if row.applicability != expected {
-        return Err(format!("gate {:?} has contradictory applicability/outcome", row.gate_id));
-    }
-    Ok(())
-}
-
 pub(super) fn validate_subject(subject: &RouteSubjectRef) -> Result<(), String> {
     validate_reason_token("subject kind", &subject.kind)?;
     validate_sha("subject head_sha", &subject.head_sha)?;
@@ -153,7 +203,7 @@ pub(super) fn validate_subject(subject: &RouteSubjectRef) -> Result<(), String> 
     validate_digest("subject_digest", &subject.subject_digest)
 }
 
-fn validate_selection(selection: &RouteSelectionEvidence) -> Result<(), String> {
+pub(super) fn validate_selection(selection: &RouteSelectionEvidence) -> Result<(), String> {
     validate_nonempty("selection base", &selection.base)?;
     validate_digest("selection selector_digest", &selection.selector_digest)?;
     match (selection.fallback_used, &selection.fallback_reason) {
@@ -175,7 +225,7 @@ fn validate_selection(selection: &RouteSelectionEvidence) -> Result<(), String> 
             ("reverse_dependencies", &scope.reverse_dependencies),
             ("architecture_wideners", &scope.architecture_wideners),
         ] {
-            if !values.windows(2).all(|window| window[0] < window[1]) {
+            if !is_sorted_unique_by(values, |value| value.name.clone()) {
                 return Err(format!("scope {name} is not canonical"));
             }
             for value in values {
@@ -190,8 +240,12 @@ fn validate_selection(selection: &RouteSelectionEvidence) -> Result<(), String> 
     Ok(())
 }
 
-fn is_sorted_unique(values: &[String]) -> bool {
+fn is_sorted_unique<T: Ord>(values: &[T]) -> bool {
     values.windows(2).all(|window| window[0] < window[1])
+}
+
+fn is_sorted_unique_by<T, K: Ord>(values: &[T], key: impl Fn(&T) -> K) -> bool {
+    values.windows(2).all(|window| key(&window[0]) < key(&window[1]))
 }
 
 pub(super) fn validate_gate_id(value: &str) -> Result<(), String> {
@@ -224,15 +278,19 @@ pub(super) fn validate_nonempty(subject: &str, value: &str) -> Result<(), String
 }
 
 pub(super) fn validate_sha(subject: &str, value: &str) -> Result<(), String> {
-    if value.len() != 40 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!("{subject} must be a full 40-character SHA"));
+    if value.len() != 40 || !value.bytes().all(valid_lowercase_hex_byte) {
+        return Err(format!("{subject} must be a full 40-character lowercase hexadecimal SHA"));
     }
     Ok(())
 }
 
 pub(super) fn validate_digest(subject: &str, value: &str) -> Result<(), String> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!("{subject} must be a 64-character hexadecimal digest"));
+    if value.len() != 64 || !value.bytes().all(valid_lowercase_hex_byte) {
+        return Err(format!("{subject} must be a 64-character lowercase hexadecimal digest"));
     }
     Ok(())
+}
+
+fn valid_lowercase_hex_byte(byte: u8) -> bool {
+    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
 }
