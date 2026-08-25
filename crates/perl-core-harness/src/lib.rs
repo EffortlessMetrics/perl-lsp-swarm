@@ -9136,7 +9136,7 @@ exit 7
     #[test]
     fn run_mode_rejects_recognized_direct_runner_status() -> TestResult {
         let temp = tempfile::tempdir()?;
-        let perl_tree = write_fake_perl_tree_with_run_body(
+        let perl_tree = write_fake_execute_tree_with_run_body(
             temp.path(),
             r#"# Deliberately do not invoke ./perl; direct runner fallback supplies the record.
 "#,
@@ -9150,7 +9150,7 @@ exit 7
             runner: HarnessRunner::Test,
             mode: HarnessMode::Execute,
             profile: HarnessProfile::Base,
-            tests: Vec::new(),
+            tests: vec!["base/if.t".into()],
             output: Some(output.clone()),
             runner_binary: Some(runner),
         }) else {
@@ -9344,6 +9344,25 @@ fi
 set -eu
 if [ "${{1:-}}" = "--dumptests" ]; then
   echo "base/ok.t"
+  exit 0
+fi
+{run_body}"#
+        );
+        fs::write(t_dir.join("TEST"), script)?;
+        Ok(perl_tree)
+    }
+
+    #[cfg(unix)]
+    fn write_fake_execute_tree_with_run_body(root: &Path, run_body: &str) -> TestResult<PathBuf> {
+        let perl_tree = root.join("prepared-perl-execute");
+        let t_dir = perl_tree.join("t");
+        fs::create_dir_all(t_dir.join("base"))?;
+        fs::write(t_dir.join("base").join("if.t"), "1;\n")?;
+        let script = format!(
+            r#"#!/bin/sh
+set -eu
+if [ "${{1:-}}" = "--dumptests" ]; then
+  echo "base/if.t"
   exit 0
 fi
 {run_body}"#
