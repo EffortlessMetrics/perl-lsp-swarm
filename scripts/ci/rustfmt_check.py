@@ -27,7 +27,8 @@ from typing import Any, Sequence
 SCHEMA_VERSION = "rustfmt_check.v1"
 RECEIPT_KIND = "rustfmt_check"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-DIFF_RE = re.compile(r"^Diff in (.+):(\d+):\s*$", re.MULTILINE)
+DIFF_PREFIX = "Diff in "
+VERBOSE_LINE_MARKER = " at line "
 RUSTFMT_ERROR_RE = re.compile(
     r"^(?:error(?:\[[^\]]+\])?:|Error writing files:)",
     re.IGNORECASE | re.MULTILINE,
@@ -475,16 +476,60 @@ def parse_metadata(
     return manifests, targets
 
 
+def parse_diff_header(line: str) -> tuple[str, int] | None:
+    """Parse one rustfmt ``Diff in`` header into ``(path, line)``.
+
+    rustfmt emits one of two header shapes per unformatted file, matching
+    ``xtask`` ``extract_diff_path``:
+
+    * ``Diff in <path> at line N:``  (older / verbose-diff)
+    * ``Diff in <path>:<N>:``        (current default)
+
+    The verbose marker is tried first so a path containing ``:`` (Windows
+    ``\\\\?\\C:\\...``) is not split on a drive-letter colon. Returns
+    ``None`` for non-header lines.
+    """
+    stripped = line.strip()
+    if not stripped.startswith(DIFF_PREFIX):
+        return None
+    rest = stripped[len(DIFF_PREFIX) :]
+    verbose_at = rest.rfind(VERBOSE_LINE_MARKER)
+    if verbose_at != -1:
+        raw_path = rest[:verbose_at].strip()
+        tail = rest[verbose_at + len(VERBOSE_LINE_MARKER) :].strip()
+        if tail.endswith(":"):
+            tail = tail[:-1].strip()
+        try:
+            line_no = int(tail)
+        except ValueError:
+            return None
+        return raw_path, line_no
+
+    if not rest.endswith(":"):
+        return None
+    body = rest[:-1]
+    digit_end = len(body)
+    while digit_end > 0 and body[digit_end - 1].isdigit():
+        digit_end -= 1
+    if digit_end == len(body) or digit_end == 0 or body[digit_end - 1] != ":":
+        return None
+    raw_path = body[: digit_end - 1].strip()
+    try:
+        line_no = int(body[digit_end:])
+    except ValueError:
+        return None
+    if not raw_path:
+        return None
+    return raw_path, line_no
+
+
 def parse_diff_locations(output: str, root: Path) -> list[tuple[str, int]]:
     findings: set[tuple[str, int]] = set()
-    for match in DIFF_RE.finditer(output):
-        raw_path = match.group(1).strip()
-        try:
-            line = int(match.group(2))
-        except ValueError as error:
-            raise EvidenceError(
-                f"rustfmt emitted an invalid diff line: {match.group(0)}"
-            ) from error
+    for raw_line in output.splitlines():
+        parsed = parse_diff_header(raw_line)
+        if parsed is None:
+            continue
+        raw_path, line = parsed
         candidate = Path(raw_path)
         if not candidate.is_absolute():
             candidate = root / candidate

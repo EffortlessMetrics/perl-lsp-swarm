@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 MODULE_PATH = Path(__file__).with_name("rustfmt_check.py")
@@ -310,6 +312,54 @@ raise SystemExit(64)
         self.assertEqual(receipt["findings"][0]["path"], "pkg-a/src/lib.rs")
         self.assertEqual(receipt["findings"][0]["line"], 1)
 
+    def test_verbose_diff_header_is_a_format_failure(self) -> None:
+        source = self.root / "pkg-a/src/lib.rs"
+        self.set_fmt(
+            {
+                "pkg-a/Cargo.toml": {
+                    "exit": 1,
+                    "stdout": f"Diff in {source} at line 12:\n-old\n+new",
+                }
+            }
+        )
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        receipt = self.read_receipt()
+        self.assertEqual(receipt["result"], "format_failure", receipt)
+        self.assertEqual(receipt["instrument_failures"], [])
+        self.assertEqual(receipt["findings"][0]["path"], "pkg-a/src/lib.rs")
+        self.assertEqual(receipt["findings"][0]["line"], 12)
+
+    def test_parse_diff_locations_accepts_verbose_and_colon_headers(self) -> None:
+        output = (
+            f"Diff in {self.root / 'pkg-a/src/lib.rs'} at line 7:\n-old\n+new\n"
+            f"Diff in {self.root / 'xtask/src/main.rs'}:3:\n-old\n+new\n"
+        )
+        locations = rustfmt_check.parse_diff_locations(output, self.root)
+        self.assertEqual(
+            locations,
+            [("pkg-a/src/lib.rs", 7), ("xtask/src/main.rs", 3)],
+        )
+
+    def test_parse_diff_header_ignores_non_headers_and_untrusted_verbose_tails(self) -> None:
+        self.assertIsNone(rustfmt_check.parse_diff_header("rustfmt crashed"))
+        self.assertIsNone(rustfmt_check.parse_diff_header("Diff in nowhere at line nope:"))
+        self.assertIsNone(rustfmt_check.parse_diff_header("Diff in nowhere:"))
+        parsed = rustfmt_check.parse_diff_header(
+            f"Diff in {self.root / 'pkg-a/src/lib.rs'} at line 4:"
+        )
+        self.assertEqual(parsed, (str(self.root / "pkg-a/src/lib.rs"), 4))
+
+    def test_producer_rejects_changed_file_narrowing_flags(self) -> None:
+        for argv in (
+            ["--changed-files", "src/lib.rs"],
+            ["--files", "src/lib.rs"],
+            ["--paths", "crates/perl-parser-core"],
+        ):
+            with redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    rustfmt_check.parse_args(argv)
+
     def test_unformatted_xtask_integration_test_is_in_scope(self) -> None:
         self.set_fmt(
             {
@@ -462,6 +512,10 @@ raise SystemExit(64)
             link.symlink_to(self.root / "pkg-a/Cargo.toml")
         except OSError as error:
             self.skipTest(f"symbolic links unavailable: {error}")
+        self._git("add", "linked-manifest.toml")
+        self._git("commit", "-m", "symlink manifest")
+        self.candidate_sha = self._git("rev-parse", "HEAD").stdout.strip()
+        self.tree_sha = self._git("rev-parse", "HEAD^{tree}").stdout.strip()
         self._write_metadata(manifest_override=str(link))
         result = self.run_check()
         self.assertEqual(result.returncode, 2, result.stderr)
