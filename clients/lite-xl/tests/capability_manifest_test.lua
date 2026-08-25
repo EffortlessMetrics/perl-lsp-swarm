@@ -533,6 +533,25 @@ do
 
   claims = manifest.unsupported_custom_claims({ unknown_section = { x = 1 } })
   ok(#claims == 0, "unknown sections are outside the bounded scan")
+
+  -- An explicit false is a DECLINE of the capability, not a claim of
+  -- support: flagging it would warn on every startup for defensive
+  -- configuration (#12599 review).
+  claims = manifest.unsupported_custom_claims({
+    textDocument = {
+      publishDiagnostics = { relatedInformation = false },
+      semanticTokens = false,
+    },
+  })
+  ok(#claims == 0, "explicit false opt-outs are declines, not claims")
+
+  claims = manifest.unsupported_custom_claims({
+    textDocument = {
+      publishDiagnostics = { relatedInformation = true },
+      semanticTokens = { requests = { full = true } },
+    },
+  })
+  ok(#claims == 2, "true/table claims over unsupported rows still flag")
 end
 
 -- ---------------------------------------------------------------------------

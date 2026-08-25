@@ -715,7 +715,11 @@ function capability_manifest.unsupported_custom_claims(custom)
       local path = prefix == "" and tostring(key) or prefix .. "." .. tostring(key)
       local row = rows_by_path[path]
       if row then
-        claims[#claims + 1] = { path = path, disposition = row.disposition }
+        -- An explicit scalar false DECLINES the capability; only a true or
+        -- structured value claims support (#12599 review).
+        if value ~= false then
+          claims[#claims + 1] = { path = path, disposition = row.disposition }
+        end
       elseif type(value) == "table" then
         walk(value, path, depth + 1)
       end
