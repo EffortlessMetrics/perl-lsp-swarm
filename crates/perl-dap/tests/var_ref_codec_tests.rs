@@ -531,7 +531,7 @@ fn test_adversarial_scope_max_frame_id_all_kinds() -> Result<(), Box<dyn std::er
         let wire =
             original.encode().ok_or(format!("encode Scope({frame_id}, {kind:?}) must succeed"))?;
         // Confirm wire is within Scope band [1, 999_999]
-        assert!(wire >= 1 && wire <= 999_999, "Scope max wire {wire} must be in [1, 999_999]");
+        assert!((1..=999_999).contains(&wire), "Scope max wire {wire} must be in [1, 999_999]");
         let decoded = VariableReference::decode(wire)
             .ok_or(format!("decode({wire}) for Scope({frame_id}, {kind:?}) must succeed"))?;
         assert_eq!(

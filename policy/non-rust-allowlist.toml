@@ -2699,7 +2699,7 @@ language = "lua"
 surface = "editor"
 classification = "production"
 owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp init.lua (base d1432ae, blob 7b38c3a9) staged for the Lite XL integration train, carrying the #11115 monotonic document-version patch (one structured per-server/per-document open-session record owning versions, pending changes, server generations, and session identities) and the #11108 request-subject currentness patch (immutable subjects plus one reusable response-admission guard with typed dispositions)."
+reason = "Exact upstream lite-xl-lsp init.lua (base d1432ae, blob 7b38c3a9) staged for the Lite XL integration train, carrying the #11115 monotonic document-version patch (one structured per-server/per-document open-session record owning versions, pending changes, server generations, and session identities), the #11108 request-subject currentness patch (immutable subjects plus one reusable response-admission guard with typed dispositions), and the #10845 configuration-value patch (presence tracked separately from truthiness through workspace/configuration: found values append verbatim, only genuinely missing sections become the null sentinel)."
 covered_by = [
   "lua clients/lite-xl/tests/init_document_session_test.lua",
   "lua clients/lite-xl/tests/init_request_currentness_test.lua",
@@ -2748,7 +2748,7 @@ language = "lua"
 surface = "editor"
 classification = "test"
 owner = "editor/lite-xl"
-reason = "Deterministic framework-free workspace/configuration suite proving positional response slots, duplicate retention, explicit-null unresolved slots, typed empty arrays, string-id preservation, and fail-honest InvalidParams for malformed items; runs against the staged module or the pristine upstream blob for red-first checks and against single-behavior mutations for falsifier checks."
+reason = "Deterministic framework-free workspace/configuration suite proving positional response slots, duplicate retention, explicit-null unresolved slots, typed empty arrays, string-id preservation, fail-honest InvalidParams for malformed items, and the #10845 value-fidelity matrix (explicit false/true/0/empty-string/empty-array/nested-false round-trip exactly; only genuinely missing sections answer null; false-null-zero positional coexistence); runs against the staged module or the pristine upstream blob for red-first checks and against single-behavior mutations for falsifier checks."
 covered_by = [
   "lua clients/lite-xl/tests/init_configuration_items_test.lua",
   "cargo xtask check-file-policy",
@@ -2844,7 +2844,7 @@ language = "lua"
 surface = "editor"
 classification = "production"
 owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp util.lua (base d1432ae, blob 588c101a) staged for the Lite XL integration train, carrying the #11155 guarded sensitive-trace patch (log_file append failures warn once without recursion, documented source-bearing surface, no automatic retention), the #11162 shell-free external-launch patch (URI classification policy, argv-only platform launchers, testable show_document sequence), the #11143 typed configuration merge patch (deep_merge folds whole typed values: object recursion, atomic array replacement, exact scalar/null overrides, codec-authority container classification, immutable inputs), and the #11165 single local file-URI/path conversion authority patch (typed uri_to_path/path_to_uri with Windows drive/UNC/percent/separator semantics; legacy touri/tofilename removed)."
+reason = "Exact upstream lite-xl-lsp util.lua (base d1432ae, blob 588c101a) staged for the Lite XL integration train, carrying the #11155 guarded sensitive-trace patch (log_file append failures warn once without recursion, documented source-bearing surface, no automatic retention), the #11162 shell-free external-launch patch (URI classification policy, argv-only platform launchers, testable show_document sequence), the #11143 typed configuration merge patch (deep_merge folds whole typed values: object recursion, atomic array replacement, exact scalar/null overrides, codec-authority container classification, immutable inputs), the #11165 single local file-URI/path conversion authority patch (typed uri_to_path/path_to_uri with Windows drive/UNC/percent/separator semantics; legacy touri/tofilename removed), and the #10845 presence-aware lookup patch (table_get_field returns found separately from value so an explicit false stays distinct from a missing section; traversal recurses only into tables)."
 covered_by = [
   "lua clients/lite-xl/tests/server_logging_test.lua",
   "lua clients/lite-xl/tests/util_show_document_test.lua",

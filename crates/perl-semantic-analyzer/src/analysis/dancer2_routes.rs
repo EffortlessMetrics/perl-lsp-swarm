@@ -191,6 +191,7 @@ fn route_from_expression(
     current_package: &Option<String>,
     declaration_index: u32,
 ) -> Option<Dancer2RouteDeclaration> {
+    let context = DeclarationContext { file_id, current_package, declaration_index };
     if let NodeKind::FunctionCall { name, args } = &expression.kind {
         if !DANCER2_ROUTE_KEYWORDS.contains(&name.as_str()) {
             return None;
@@ -206,9 +207,7 @@ fn route_from_expression(
             expression.location.end,
             methods,
             &operands,
-            file_id,
-            current_package,
-            declaration_index,
+            &context,
         );
     }
 
@@ -224,9 +223,7 @@ fn route_from_expression(
         expression.location.end,
         method_set_from_list(method_list),
         &operands,
-        file_id,
-        current_package,
-        declaration_index,
+        &context,
     )
 }
 
@@ -297,11 +294,20 @@ fn method_set_from_elements(elements: &[Node]) -> RouteMethodSet {
     RouteMethodSet::Exact(methods)
 }
 
+/// File/package identity and source-order index shared by the declarations
+/// minted from one extraction walk.
+struct DeclarationContext<'a> {
+    file_id: FileId,
+    current_package: &'a Option<String>,
+    declaration_index: u32,
+}
+
 /// Bind name/pattern/options/handler operands by the reviewed form table.
 ///
 /// The handler is always the last operand. The remaining operands bind as
 /// `[PATTERN]`, `[PATTERN, OPTIONS]`, `[NAME, PATTERN]`, or
 /// `[NAME, PATTERN, OPTIONS]`; other shapes are malformed and mint nothing.
+#[allow(clippy::too_many_arguments)]
 fn build_from_operands(
     keyword: &str,
     keyword_start: usize,
@@ -309,10 +315,9 @@ fn build_from_operands(
     declaration_end: usize,
     methods: RouteMethodSet,
     operands: &[&Node],
-    file_id: FileId,
-    current_package: &Option<String>,
-    declaration_index: u32,
+    context: &DeclarationContext<'_>,
 ) -> Option<Dancer2RouteDeclaration> {
+    let DeclarationContext { file_id, current_package, declaration_index } = *context;
     if operands.len() < 2 {
         // A route needs at least a pattern operand and a handler operand.
         return None;
