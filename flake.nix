@@ -205,7 +205,7 @@
 
           perllsp = pkgs.rustPlatform.buildRustPackage {
             pname = "perllsp";
-            version = "0.17.0";
+            version = "0.18.0-rc.1";
             src = self;
             cargoLock.lockFile = ./Cargo.lock;
 

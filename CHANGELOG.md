@@ -290,6 +290,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a ReDoS vector where an unclosed heredoc delimiter in a large document could
   trigger catastrophic backtracking. (#3568)
 
+## [0.18.0-rc.1] - pending
+
+Release candidate 1 for the v0.18 line — **not yet tagged or published**.
+Prepared deterministically from the frozen product (`release/0.18` at
+`ef03daf44cc3dc46cec2126d2d58a54f9bed3c7e`; intake receipt
+`docs/releases/v0.18.0-rc.1-intake.json`) with no product behavior change:
+this entry advances release identities (workspace/crate versions, extension
+metadata, notes, and ledger) only. Canonical RC notes, claim boundary, and
+known limitations: [v0.18.0-rc.1](docs/releases/v0.18.0-rc.1.md).
+
+The user-facing delta from `0.17.0` remains itemized in [Unreleased] above
+and folds into the final `0.18.0` entry when the train ships.
+
 ## [0.17.0] - 2026-06-28
 
 ### Added
@@ -2409,6 +2422,7 @@ For the full cross-channel release history, see [RELEASE_HISTORY.md](RELEASE_HIS
 [0.9.0]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.8.5...v0.9.0
 [0.8.8]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.8.5...v0.8.8
 [0.13.0-rc1]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.12.4...v0.13.0-rc1
+[0.18.0-rc.1]: docs/releases/v0.18.0-rc.1.md
 [Unreleased]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.15.2...HEAD
 [0.15.2]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.15.0...v0.15.1

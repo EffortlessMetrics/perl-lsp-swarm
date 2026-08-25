@@ -1,0 +1,543 @@
+{
+  "schema": 1,
+  "release": "0.18.0-rc.1",
+  "track": "public-beta",
+  "frozen_product_sha": "ef03daf44cc3dc46cec2126d2d58a54f9bed3c7e",
+  "prepared_swarm_sha": null,
+  "workspace_version": "0.18.0-rc.1",
+  "published_crates": [
+    {
+      "name": "perl-corpus",
+      "package_path": "crates/perl-corpus",
+      "version": "0.18.0-rc.1",
+      "publish_order": 1,
+      "internal_dependencies": []
+    },
+    {
+      "name": "perl-diagnostics",
+      "package_path": "crates/perl-diagnostics",
+      "version": "0.18.0-rc.1",
+      "publish_order": 2,
+      "internal_dependencies": []
+    },
+    {
+      "name": "perl-line-index",
+      "package_path": "crates/perl-line-index",
+      "version": "0.18.0-rc.1",
+      "publish_order": 3,
+      "internal_dependencies": []
+    },
+    {
+      "name": "perl-parser-pest",
+      "package_path": "crates/perl-parser-pest",
+      "version": "0.18.0-rc.1",
+      "publish_order": 4,
+      "internal_dependencies": []
+    },
+    {
+      "name": "perl-pod",
+      "package_path": "crates/perl-pod",
+      "version": "0.18.0-rc.1",
+      "publish_order": 5,
+      "internal_dependencies": []
+    },
+    {
+      "name": "perl-position-tracking",
+      "package_path": "crates/perl-position-tracking",
+      "version": "0.18.0-rc.1",
+      "publish_order": 6,
+      "internal_dependencies": []
+    },
+    {
+      "name": "perl-ast-v2",
+      "package_path": "crates/perl-ast-v2",
+      "version": "0.18.0-rc.1",
+      "publish_order": 7,
+      "internal_dependencies": [
+        "perl-position-tracking"
+      ]
+    },
+    {
+      "name": "perl-lexer",
+      "package_path": "crates/perl-lexer",
+      "version": "0.18.0-rc.1",
+      "publish_order": 8,
+      "internal_dependencies": [
+        "perl-position-tracking"
+      ]
+    },
+    {
+      "name": "perl-regex",
+      "package_path": "crates/perl-regex",
+      "version": "0.18.0-rc.1",
+      "publish_order": 9,
+      "internal_dependencies": []
+    },
+    {
+      "name": "perl-semantic-facts",
+      "package_path": "crates/perl-semantic-facts",
+      "version": "0.18.0-rc.1",
+      "publish_order": 10,
+      "internal_dependencies": []
+    },
+    {
+      "name": "perl-source-identity",
+      "package_path": "crates/perl-source-identity",
+      "version": "0.18.0-rc.1",
+      "publish_order": 11,
+      "internal_dependencies": []
+    },
+    {
+      "name": "perl-subprocess-runtime",
+      "package_path": "crates/perl-subprocess-runtime",
+      "version": "0.18.0-rc.1",
+      "publish_order": 12,
+      "internal_dependencies": []
+    },
+    {
+      "name": "perl-test-facts",
+      "package_path": "crates/perl-test-facts",
+      "version": "0.18.0-rc.1",
+      "publish_order": 13,
+      "internal_dependencies": []
+    },
+    {
+      "name": "perl-test-generators",
+      "package_path": "crates/perl-test-generators",
+      "version": "0.18.0-rc.1",
+      "publish_order": 14,
+      "internal_dependencies": []
+    },
+    {
+      "name": "perl-test-must",
+      "package_path": "crates/perl-test-must",
+      "version": "0.18.0-rc.1",
+      "publish_order": 15,
+      "internal_dependencies": []
+    },
+    {
+      "name": "perl-token",
+      "package_path": "crates/perl-token",
+      "version": "0.18.0-rc.1",
+      "publish_order": 16,
+      "internal_dependencies": []
+    },
+    {
+      "name": "perl-ast",
+      "package_path": "crates/perl-ast",
+      "version": "0.18.0-rc.1",
+      "publish_order": 17,
+      "internal_dependencies": [
+        "perl-ast-v2",
+        "perl-position-tracking",
+        "perl-token"
+      ]
+    },
+    {
+      "name": "perl-pragma",
+      "package_path": "crates/perl-pragma",
+      "version": "0.18.0-rc.1",
+      "publish_order": 18,
+      "internal_dependencies": [
+        "perl-ast"
+      ]
+    },
+    {
+      "name": "perl-parser-core",
+      "package_path": "crates/perl-parser-core",
+      "version": "0.18.0-rc.1",
+      "publish_order": 19,
+      "internal_dependencies": [
+        "perl-ast",
+        "perl-ast-v2",
+        "perl-lexer",
+        "perl-position-tracking",
+        "perl-pragma",
+        "perl-regex",
+        "perl-semantic-facts",
+        "perl-token"
+      ]
+    },
+    {
+      "name": "perl-lsp-perltidy",
+      "package_path": "crates/perl-lsp-perltidy",
+      "version": "0.18.0-rc.1",
+      "publish_order": 20,
+      "internal_dependencies": [
+        "perl-parser-core",
+        "perl-subprocess-runtime"
+      ]
+    },
+    {
+      "name": "perl-symbol",
+      "package_path": "crates/perl-symbol",
+      "version": "0.18.0-rc.1",
+      "publish_order": 21,
+      "internal_dependencies": [
+        "perl-ast",
+        "perl-semantic-facts"
+      ]
+    },
+    {
+      "name": "perl-ripr-facts",
+      "package_path": "crates/perl-ripr-facts",
+      "version": "0.18.0-rc.1",
+      "publish_order": 22,
+      "internal_dependencies": [
+        "perl-parser-core",
+        "perl-symbol"
+      ]
+    },
+    {
+      "name": "perl-tdd-support",
+      "package_path": "crates/perl-tdd-support",
+      "version": "0.18.0-rc.1",
+      "publish_order": 23,
+      "internal_dependencies": [
+        "perl-parser-core",
+        "perl-test-must"
+      ]
+    },
+    {
+      "name": "perl-uri",
+      "package_path": "crates/perl-uri",
+      "version": "0.18.0-rc.1",
+      "publish_order": 24,
+      "internal_dependencies": []
+    },
+    {
+      "name": "perl-workspace",
+      "package_path": "crates/perl-workspace",
+      "version": "0.18.0-rc.1",
+      "publish_order": 25,
+      "internal_dependencies": [
+        "perl-parser-core",
+        "perl-position-tracking",
+        "perl-semantic-facts",
+        "perl-symbol",
+        "perl-uri"
+      ]
+    },
+    {
+      "name": "perl-module",
+      "package_path": "crates/perl-module",
+      "version": "0.18.0-rc.1",
+      "publish_order": 26,
+      "internal_dependencies": [
+        "perl-parser-core",
+        "perl-workspace"
+      ]
+    },
+    {
+      "name": "perl-semantic-analyzer",
+      "package_path": "crates/perl-semantic-analyzer",
+      "version": "0.18.0-rc.1",
+      "publish_order": 27,
+      "internal_dependencies": [
+        "perl-module",
+        "perl-parser-core",
+        "perl-pod",
+        "perl-semantic-facts",
+        "perl-symbol"
+      ]
+    },
+    {
+      "name": "perl-parser",
+      "package_path": "crates/perl-parser",
+      "version": "0.18.0-rc.1",
+      "publish_order": 28,
+      "internal_dependencies": [
+        "perl-ast",
+        "perl-lexer",
+        "perl-line-index",
+        "perl-module",
+        "perl-parser-core",
+        "perl-semantic-analyzer",
+        "perl-source-identity",
+        "perl-tdd-support",
+        "perl-workspace"
+      ]
+    },
+    {
+      "name": "perl-lsp-rs-core",
+      "package_path": "crates/perl-lsp-rs-core",
+      "version": "0.18.0-rc.1",
+      "publish_order": 29,
+      "internal_dependencies": [
+        "perl-ast",
+        "perl-diagnostics",
+        "perl-lexer",
+        "perl-lsp-perltidy",
+        "perl-module",
+        "perl-parser",
+        "perl-parser-core",
+        "perl-position-tracking",
+        "perl-pragma",
+        "perl-semantic-analyzer",
+        "perl-semantic-facts",
+        "perl-source-identity",
+        "perl-subprocess-runtime",
+        "perl-symbol",
+        "perl-test-facts",
+        "perl-workspace"
+      ]
+    },
+    {
+      "name": "perl-dap",
+      "package_path": "crates/perl-dap",
+      "version": "0.18.0-rc.1",
+      "publish_order": 30,
+      "internal_dependencies": [
+        "perl-ast",
+        "perl-lexer",
+        "perl-lsp-rs-core",
+        "perl-module",
+        "perl-parser",
+        "perl-parser-core"
+      ]
+    },
+    {
+      "name": "perl-lsp-rs",
+      "package_path": "crates/perl-lsp-rs",
+      "version": "0.18.0-rc.1",
+      "publish_order": 31,
+      "internal_dependencies": [
+        "perl-ast",
+        "perl-dap",
+        "perl-diagnostics",
+        "perl-lexer",
+        "perl-lsp-perltidy",
+        "perl-lsp-rs-core",
+        "perl-module",
+        "perl-parser",
+        "perl-parser-core",
+        "perl-pod",
+        "perl-position-tracking",
+        "perl-ripr-facts",
+        "perl-semantic-facts",
+        "perl-source-identity",
+        "perl-subprocess-runtime",
+        "perl-symbol",
+        "perl-uri",
+        "perl-workspace"
+      ]
+    },
+    {
+      "name": "perllsp",
+      "package_path": "crates/perllsp",
+      "version": "0.18.0-rc.1",
+      "publish_order": 32,
+      "internal_dependencies": [
+        "perl-lsp-rs"
+      ]
+    },
+    {
+      "name": "tree-sitter-perl-c",
+      "package_path": "crates/tree-sitter-perl-c",
+      "version": "0.18.0-rc.1",
+      "publish_order": 33,
+      "internal_dependencies": []
+    },
+    {
+      "name": "tree-sitter-perl-rs",
+      "package_path": "crates/tree-sitter-perl-rs",
+      "version": "0.18.0-rc.1",
+      "publish_order": 34,
+      "internal_dependencies": [
+        "perl-ast",
+        "perl-module",
+        "perl-parser-core",
+        "perl-pragma",
+        "perl-semantic-analyzer"
+      ]
+    }
+  ],
+  "crate_count": 34,
+  "binary_targets": [
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "os": "linux",
+      "architecture": "x86_64",
+      "libc": "gnu",
+      "runner": "ubuntu-22.04",
+      "archive_name": "perllsp-0.18.0-rc.1-x86_64-unknown-linux-gnu.tar.gz",
+      "required_members": [
+        "perllsp",
+        "perl-dap",
+        "README.md",
+        "LICENSE-APACHE",
+        "LICENSE-MIT",
+        "SHA256SUMS.txt"
+      ]
+    },
+    {
+      "target": "aarch64-unknown-linux-gnu",
+      "os": "linux",
+      "architecture": "aarch64",
+      "libc": "gnu",
+      "runner": "ubuntu-22.04",
+      "archive_name": "perllsp-0.18.0-rc.1-aarch64-unknown-linux-gnu.tar.gz",
+      "required_members": [
+        "perllsp",
+        "perl-dap",
+        "README.md",
+        "LICENSE-APACHE",
+        "LICENSE-MIT",
+        "SHA256SUMS.txt"
+      ]
+    },
+    {
+      "target": "x86_64-unknown-linux-musl",
+      "os": "linux",
+      "architecture": "x86_64",
+      "libc": "musl",
+      "runner": "ubuntu-22.04",
+      "archive_name": "perllsp-0.18.0-rc.1-x86_64-unknown-linux-musl.tar.gz",
+      "required_members": [
+        "perllsp",
+        "perl-dap",
+        "README.md",
+        "LICENSE-APACHE",
+        "LICENSE-MIT",
+        "SHA256SUMS.txt"
+      ]
+    },
+    {
+      "target": "aarch64-unknown-linux-musl",
+      "os": "linux",
+      "architecture": "aarch64",
+      "libc": "musl",
+      "runner": "ubuntu-22.04",
+      "archive_name": "perllsp-0.18.0-rc.1-aarch64-unknown-linux-musl.tar.gz",
+      "required_members": [
+        "perllsp",
+        "perl-dap",
+        "README.md",
+        "LICENSE-APACHE",
+        "LICENSE-MIT",
+        "SHA256SUMS.txt"
+      ]
+    },
+    {
+      "target": "x86_64-apple-darwin",
+      "os": "macos",
+      "architecture": "x86_64",
+      "libc": null,
+      "runner": "macos-15-intel",
+      "archive_name": "perllsp-0.18.0-rc.1-x86_64-apple-darwin.tar.gz",
+      "required_members": [
+        "perllsp",
+        "perl-dap",
+        "README.md",
+        "LICENSE-APACHE",
+        "LICENSE-MIT",
+        "SHA256SUMS.txt"
+      ]
+    },
+    {
+      "target": "aarch64-apple-darwin",
+      "os": "macos",
+      "architecture": "aarch64",
+      "libc": null,
+      "runner": "macos-14",
+      "archive_name": "perllsp-0.18.0-rc.1-aarch64-apple-darwin.tar.gz",
+      "required_members": [
+        "perllsp",
+        "perl-dap",
+        "README.md",
+        "LICENSE-APACHE",
+        "LICENSE-MIT",
+        "SHA256SUMS.txt"
+      ]
+    },
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "os": "windows",
+      "architecture": "x86_64",
+      "libc": null,
+      "runner": "windows-2022",
+      "archive_name": "perllsp-0.18.0-rc.1-x86_64-pc-windows-msvc.zip",
+      "required_members": [
+        "perllsp.exe",
+        "perl-dap.exe",
+        "README.md",
+        "LICENSE-APACHE",
+        "LICENSE-MIT",
+        "SHA256SUMS.txt"
+      ]
+    },
+    {
+      "target": "aarch64-pc-windows-msvc",
+      "os": "windows",
+      "architecture": "aarch64",
+      "libc": null,
+      "runner": "windows-11-arm",
+      "archive_name": "perllsp-0.18.0-rc.1-aarch64-pc-windows-msvc.zip",
+      "required_members": [
+        "perllsp.exe",
+        "perl-dap.exe",
+        "README.md",
+        "LICENSE-APACHE",
+        "LICENSE-MIT",
+        "SHA256SUMS.txt"
+      ]
+    }
+  ],
+  "archive_count": 8,
+  "vsix": {
+    "version": "0.18.0-rc.1",
+    "asset_name": "perl-lsp-rs-0.18.0-rc.1.vsix",
+    "package_path": "vscode-extension",
+    "managed_targets": [
+      "aarch64-apple-darwin",
+      "aarch64-pc-windows-msvc",
+      "aarch64-unknown-linux-gnu",
+      "aarch64-unknown-linux-musl",
+      "x86_64-apple-darwin",
+      "x86_64-pc-windows-msvc",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl"
+    ],
+    "bundled_targets": []
+  },
+  "primary_channels": [
+    "github_release",
+    "crates_io",
+    "vscode_marketplace",
+    "open_vsx"
+  ],
+  "secondary_channels": {
+    "docker": "required",
+    "homebrew": "deferred"
+  },
+  "sources": {
+    "Cargo.toml": {
+      "path": "Cargo.toml",
+      "sha256": "90b957b178df362e8736da72249bbbd52229e7fe0abcc2dcd4be4afd006258f8"
+    },
+    "Cargo.lock": {
+      "path": "Cargo.lock",
+      "sha256": "25f3c7613105aa177613dea8005f69aa7fd0eed2be78fff04d56c0db93f621e9"
+    },
+    ".github/workflows/release.yml": {
+      "path": ".github/workflows/release.yml",
+      "sha256": "8570239209acb9e992f46c48b41cdf9b3d895b56f73bcd33f382280518474f8f"
+    },
+    "vscode-extension/package.json": {
+      "path": "vscode-extension/package.json",
+      "sha256": "d78de7658c6f0f4184981a60ddb60d60a7bb358de14efed27bb226b066e28c9e"
+    },
+    "docs/reference/downstream-dap-integrations.json": {
+      "path": "docs/reference/downstream-dap-integrations.json",
+      "sha256": "2c94c45bbbd6c2ab46479d23f41ce1bb0828ed081b8f80325999aa60053eef47"
+    },
+    "vscode-extension/src/downloader.ts": {
+      "path": "vscode-extension/src/downloader.ts",
+      "sha256": "20679ae68c3c9d76e47480ff3807db7850f91ebf7ae8b03a410e91a6f72c871c"
+    },
+    "scripts/inject-sha-assets.sh": {
+      "path": "scripts/inject-sha-assets.sh",
+      "sha256": "7b56f78a5b46bda1a62c2f2da476de1031650b9b5dd20d6a0e2b35f4221c1f29"
+    }
+  }
+}

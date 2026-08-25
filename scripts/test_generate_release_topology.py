@@ -179,6 +179,38 @@ class ReleaseTopologyTests(unittest.TestCase):
         with self.assertRaises(MODULE.TopologyError):
             MODULE.derive_crates(metadata)
 
+    def test_dev_dependency_cycle_does_not_block_publish_order(self):
+        # A dev-dependency back-edge (leaf crate's tests depending on a crate
+        # that depends on the leaf) is not a publish-order cycle: dev-deps are
+        # never needed to build a published crate.
+        metadata = {
+            "metadata": {"publish": {"allow": ["a", "b"]}},
+            "workspace_members": ["a-id", "b-id"],
+            "packages": [
+                {
+                    "id": "a-id",
+                    "name": "a",
+                    "version": "0.18.0",
+                    "manifest_path": "/a/Cargo.toml",
+                    "publish": None,
+                    "dependencies": [{"name": "b", "source": None, "kind": None}],
+                },
+                {
+                    "id": "b-id",
+                    "name": "b",
+                    "version": "0.18.0",
+                    "manifest_path": "/b/Cargo.toml",
+                    "publish": None,
+                    "dependencies": [{"name": "a", "source": None, "kind": "dev"}],
+                },
+            ],
+        }
+        crates = MODULE.derive_crates(metadata)
+        orders = {entry["name"]: entry["publish_order"] for entry in crates}
+        self.assertEqual(orders, {"a": 2, "b": 1})
+        internal = {entry["name"]: entry["internal_dependencies"] for entry in crates}
+        self.assertEqual(internal, {"a": ["b"], "b": []})
+
     def test_downloader_target_derivation_requires_native_windows_arm64(self):
         source = """
         return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
@@ -215,6 +247,58 @@ class ReleaseTopologyTests(unittest.TestCase):
         self.assertEqual(
             MODULE.derive_downloader_targets(source, workflow_targets),
             workflow_targets,
+        )
+
+    def test_downloader_target_derivation_accepts_constant_bound_windows_targets(self):
+        # Production form: the downloader binds each Windows triple to a
+        # constant and returns the constant (see WINDOWS_X64_TARGET /
+        # WINDOWS_ARM64_TARGET in vscode-extension/src/downloader.ts).
+        source = """
+        export const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        export const WINDOWS_ARM64_TARGET = 'aarch64-pc-windows-msvc';
+        return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
+        archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        return `${archPrefix}-unknown-linux-${libc}`;
+        value === 'gnu';
+        value === 'musl';
+        return WINDOWS_ARM64_TARGET;
+        return WINDOWS_X64_TARGET;
+        """
+        workflow_targets = {
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-musl",
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
+        }
+        self.assertEqual(
+            MODULE.derive_downloader_targets(source, workflow_targets),
+            workflow_targets,
+        )
+
+    def test_downloader_constant_form_fails_when_return_is_removed(self):
+        source = """
+        export const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        export const WINDOWS_ARM64_TARGET = 'aarch64-pc-windows-msvc';
+        return WINDOWS_X64_TARGET;
+        """
+        workflow_targets = {
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
+        }
+        self.assertNotIn(
+            "aarch64-pc-windows-msvc",
+            MODULE.derive_downloader_targets(source, workflow_targets),
+        )
+
+    def test_downloader_constant_form_fails_when_constant_is_rebound(self):
+        source = """
+        export const WINDOWS_ARM64_TARGET = 'some-other-triple';
+        return WINDOWS_ARM64_TARGET;
+        """
+        workflow_targets = {"aarch64-pc-windows-msvc"}
+        self.assertNotIn(
+            "aarch64-pc-windows-msvc",
+            MODULE.derive_downloader_targets(source, workflow_targets),
         )
 
     def test_manifest_mutations_fail_closed(self):

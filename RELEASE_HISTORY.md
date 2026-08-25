@@ -14,6 +14,7 @@ Tag commit timestamps may differ from release dates.
 
 | Version | Tag | GitHub Release | Released | Tag commit | Compare | Assets | crates.io | VS Code Marketplace | Notes file |
 |---------|-----|----------------|----------|------------|---------|--------|-----------|---------------------|------------|
+| [0.18.0-rc.1] | `v0.18.0-rc.1` | pending | pending | `pending` | [v0.17.0...v0.18.0-rc.1] | pending | pending | pending | [v0.18.0-rc.1][n-0.18.0-rc.1] |
 | [0.17.0] | `v0.17.0` | [yes][gh-0.17.0] | 2026-06-28 | `pending` | [v0.16.0...v0.17.0] | 10 (7 binaries, VSIX, SHA256SUMS, SBOM) | 0.17.0 (31 crates) | [perl-lsp-rs][vsce] | [v0.17.0][n-0.17.0] |
 | [0.16.0] | `v0.16.0` | [yes][gh-0.16.0] | 2026-06-06 | `b6d9f12b` | [v0.15.2...v0.16.0] | 9 uploaded (GitHub UI reported 11 incl. source archives) | 0.16.0 | pending | [v0.16.0][n-0.16.0] |
 | [0.15.2] | `v0.15.2` | pending | 2026-05-26 | `746edcb7` | [v0.15.1...v0.15.2] | pending | pending | pending | [v0.15.2][n-0.15.2] |
@@ -185,6 +186,7 @@ the registry — the tree is not evidence about what shipped.
 ## Links
 
 <!-- Notes files -->
+[n-0.18.0-rc.1]: docs/releases/v0.18.0-rc.1.md
 [n-0.17.0]: docs/releases/v0.17.0.md
 [n-0.16.0]: docs/releases/v0.16.0.md
 [n-0.15.2]: docs/releases/v0.15.2.md
@@ -210,6 +212,7 @@ the registry — the tree is not evidence about what shipped.
 [n-0.8.3]: docs/releases/v0.8.3.md
 
 <!-- Version links (to notes files) -->
+[0.18.0-rc.1]: docs/releases/v0.18.0-rc.1.md
 [0.17.0]: docs/releases/v0.17.0.md
 [0.16.0]: docs/releases/v0.16.0.md
 [0.15.2]: docs/releases/v0.15.2.md
@@ -235,6 +238,7 @@ the registry — the tree is not evidence about what shipped.
 [0.8.3]: docs/releases/v0.8.3.md
 
 <!-- GitHub Releases -->
+[gh-0.18.0-rc.1]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.18.0-rc.1
 [gh-0.17.0]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.17.0
 [gh-0.16.0]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.16.0
 [gh-0.15.2]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.15.2
@@ -255,6 +259,7 @@ the registry — the tree is not evidence about what shipped.
 [gh-0.8.3]: https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.8.3
 
 <!-- Compare ranges -->
+[v0.17.0...v0.18.0-rc.1]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.17.0...v0.18.0-rc.1
 [v0.16.0...v0.17.0]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.16.0...v0.17.0
 [v0.15.2...v0.16.0]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.15.2...v0.16.0
 [v0.15.1...v0.15.2]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.15.1...v0.15.2

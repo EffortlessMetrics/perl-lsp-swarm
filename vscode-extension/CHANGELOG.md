@@ -107,6 +107,18 @@ All notable changes to the Perl Language Server extension will be documented in 
   granted. This prevents untrusted workspace content from triggering binary
   downloads or spawning server processes. (#4631)
 
+## [0.18.0-rc.1] - pending
+
+Release candidate 1 for the v0.18 line — **not yet tagged or published**.
+Extension package and lock metadata advance to `0.18.0-rc.1` as part of the
+deterministic, product-inert release preparation from the frozen product
+(`release/0.18` at `ef03daf44cc3dc46cec2126d2d58a54f9bed3c7e`). No extension
+behavior changes in this entry. Canonical RC notes and claim boundary:
+[docs/releases/v0.18.0-rc.1.md](../docs/releases/v0.18.0-rc.1.md).
+
+The user-facing delta from `0.17.0` remains itemized in [Unreleased] above
+and folds into the final `0.18.0` entry when the train ships.
+
 ## [0.17.0] - 2026-06-28
 
 ### Added

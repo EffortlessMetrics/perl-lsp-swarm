@@ -113,10 +113,16 @@ def derive_crates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
     dependencies: dict[str, set[str]] = {}
     for name in allowed:
         package = by_name[name]
+        # Publish order is governed by normal/build dependencies only:
+        # dev-dependencies are not needed to build a published crate and
+        # legitimately cycle back through the workspace (e.g. a leaf crate's
+        # tests depending on crates that depend on the leaf).
         dependencies[name] = {
             dependency["name"]
             for dependency in package.get("dependencies", [])
-            if dependency.get("name") in allowed and dependency.get("source") is None
+            if dependency.get("name") in allowed
+            and dependency.get("source") is None
+            and dependency.get("kind") != "dev"
         }
     ready = sorted(name for name, deps in dependencies.items() if not deps)
     order: list[str] = []
@@ -152,7 +158,9 @@ def derive_crates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
                     for dependency in (
                         item["name"]
                         for item in package.get("dependencies", [])
-                        if item.get("name") in allowed and item.get("source") is None
+                        if item.get("name") in allowed
+                        and item.get("source") is None
+                        and item.get("kind") != "dev"
                     )
                 ),
             }
@@ -247,9 +255,20 @@ def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[st
         managed.add("aarch64-apple-darwin")
     if "x86_64-apple-darwin" in source:
         managed.add("x86_64-apple-darwin")
-    if "return 'x86_64-pc-windows-msvc'" in source:
+    # The downloader either returns the triple literally or binds it to a
+    # constant (WINDOWS_X64_TARGET / WINDOWS_ARM64_TARGET) and returns the
+    # constant.  Both forms prove the target is reachable; the constant form
+    # requires the definition to pin the exact triple so a renamed or
+    # rebound constant still fails this check.
+    if "return 'x86_64-pc-windows-msvc'" in source or (
+        "WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc'" in source
+        and "return WINDOWS_X64_TARGET" in source
+    ):
         managed.add("x86_64-pc-windows-msvc")
-    if "return 'aarch64-pc-windows-msvc'" in source:
+    if "return 'aarch64-pc-windows-msvc'" in source or (
+        "WINDOWS_ARM64_TARGET = 'aarch64-pc-windows-msvc'" in source
+        and "return WINDOWS_ARM64_TARGET" in source
+    ):
         managed.add("aarch64-pc-windows-msvc")
 
     constructs_linux_targets = (

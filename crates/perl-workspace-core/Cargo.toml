@@ -1,6 +1,6 @@
 [package]
 name = "perl-workspace-core"
-version = "0.17.0"
+version = "0.18.0-rc.1"
 edition = "2024"
 description = "LSP-free project-facts substrate for Perl: files, packages, symbols, dynamic boundaries — with stable IDs, source ranges, provenance, and confidence."
 license = "MIT OR Apache-2.0"
