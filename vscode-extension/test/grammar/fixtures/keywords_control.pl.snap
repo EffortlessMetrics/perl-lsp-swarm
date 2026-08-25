@@ -121,10 +121,8 @@
 #               ^ source.perl
 #                ^ source.perl keyword.operator.assignment.perl
 #                 ^ source.perl
-#                  ^ source.perl keyword.operator.comparison.perl
-#                   ^^^^^ source.perl
-#                        ^ source.perl keyword.operator.comparison.perl
-#                         ^^^^ source.perl
+#                  ^^^^^^^^ source.perl string.other.readline.perl
+#                          ^^^^ source.perl
 >    chomp $line;
 #^^^^ source.perl
 #    ^^^^^ source.perl support.function.builtin.perl

@@ -1867,6 +1867,7 @@ dependencies = [
 name = "perl-regex"
 version = "0.17.0"
 dependencies = [
+ "perl-test-must",
  "proptest",
  "thiserror",
 ]
