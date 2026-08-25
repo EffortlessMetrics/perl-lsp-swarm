@@ -20,10 +20,12 @@ A candidate publishes ready only when all applicable local preparation is curren
   PR's file list) against the intended changed paths — a squash or partial stage must
   not silently drop an intended file (#12279 merged only `lower.rs` while its
   consumer-test alignment stayed uncommitted and reddened main until #12357);
-- `cargo fmt -p <pkg> -- --check` passes at BOTH the merge-base and the branch head:
-  post-#12320 the branch-only check is sufficient for gating, but the base check names
-  inherited base-redness honestly at publish time instead of discovering it as a red
-  required check after publishing (#12273/#12275 inherited drift until #12278);
+- `cargo fmt -p <pkg> -- --check` passes at the branch head, and its merge-base result
+  is classified: post-#12320 the branch-only check is sufficient for gating, but the
+  base check names inherited base-redness honestly at publish time instead of
+  discovering it as a red required check after publishing (#12273/#12275 inherited
+  drift until #12278) — the head check is binding and the base check diagnostic, so a
+  drift-repair candidate whose base is red by construction still publishes (#12278);
 - the controlling issue, claim boundary, and governing contract are current;
 - Changie/changelog, support, migration, and release dispositions are complete or explicitly not applicable;
 - the candidate is one coherent acceptance-and-rollback claim.
