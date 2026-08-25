@@ -3031,6 +3031,7 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
         &records,
         &runner_binary,
         &context_path,
+        config.runner,
         config.mode,
     )?;
     if used_direct_runner {
@@ -3057,16 +3058,6 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
     );
     tracing::info!("wrote {}", output_path.display());
 
-    if report.summary.files_failed > 0 {
-        bail!(
-            "perl-core-harness {} {} failed for {} of {} files; see {}",
-            report.mode,
-            report.profile,
-            report.summary.files_failed,
-            report.summary.files_total,
-            output_path.display()
-        );
-    }
     let terminal = transition::TerminalProcessOutcome::from_harness_status(
         output.status.code(),
         config.runner,
@@ -3079,6 +3070,16 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
             terminal.not_proven_reason(),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    if report.summary.files_failed > 0 {
+        bail!(
+            "perl-core-harness {} {} failed for {} of {} files; see {}",
+            report.mode,
+            report.profile,
+            report.summary.files_failed,
+            report.summary.files_total,
+            output_path.display()
         );
     }
     Ok(())
@@ -3576,6 +3577,7 @@ fn invoke_runner_for_missing_records(
     records: &[RunnerRecord],
     runner_binary: &Path,
     context_path: &Path,
+    runner: HarnessRunner,
     mode: HarnessMode,
 ) -> Result<bool> {
     let recorded = records
@@ -3595,6 +3597,21 @@ fn invoke_runner_for_missing_records(
 
     for test in &missing {
         let output = invoke_direct_runner(t_dir, runner_binary, context_path, mode, &test.path)?;
+        let terminal = transition::TerminalProcessOutcome::from_harness_status(
+            output.status.code(),
+            runner,
+            mode,
+        );
+        if !terminal.is_scoreable() {
+            bail!(
+                "direct runner terminal status {} is not admitted ({}) for {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                terminal.not_proven_reason(),
+                test.path,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         if !context_path.is_file() {
             bail!(
                 "direct runner did not write context for {}\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
@@ -9088,7 +9105,6 @@ exit 7
             temp.path(),
             r#"# Deliberately do not invoke ./perl; real harness integration bugs should fall
 # back to direct runner invocation for harness-selected files.
-exit 7
 "#,
         )?;
         let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
@@ -9116,6 +9132,39 @@ exit 7
         assert!(report.buckets.is_empty());
         assert!(report.failures.is_empty());
         assert_eq!(report.harness_status, Some(7));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_rejects_nonzero_direct_runner_status() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_run_body(
+            temp.path(),
+            r#"# Deliberately do not invoke ./perl; direct runner fallback supplies the record.
+"#,
+        )?;
+        let runner = write_fake_runner_with_exit_status(temp.path(), 7)?;
+        let output = temp.path().join("parse-report.json");
+
+        let Err(err) = run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+        }) else {
+            bail!("direct runner status must not be hidden by a passing record");
+        };
+
+        assert!(err.to_string().contains("direct runner terminal status"));
+        let report: RunReport = serde_json::from_str(&fs::read_to_string(output)?)?;
+        assert_eq!(report.harness_status, Some(0));
+        assert_eq!(report.summary.files_passed, 1);
+        assert_eq!(report.summary.files_failed, 0);
         Ok(())
     }
 
@@ -9312,6 +9361,14 @@ fi
     #[cfg(unix)]
     fn write_fake_runner(root: &Path, status: RunnerStatus) -> TestResult<PathBuf> {
         write_fake_runner_with_bucket(root, status, Some("parse_recovery"))
+    }
+
+    #[cfg(unix)]
+    fn write_fake_runner_with_exit_status(root: &Path, status: i32) -> TestResult<PathBuf> {
+        let runner = write_fake_runner(root, RunnerStatus::Pass)?;
+        let mut file = fs::OpenOptions::new().append(true).open(&runner)?;
+        writeln!(file, "exit {status}")?;
+        Ok(runner)
     }
 
     #[cfg(unix)]
