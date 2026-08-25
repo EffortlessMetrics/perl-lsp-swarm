@@ -39,6 +39,7 @@ use crate::utils::project_root;
 
 mod first_failure;
 mod planning_types;
+pub mod route_profile;
 
 pub use first_failure::{is_cargo_test_command, parse_first_failure};
 
@@ -615,6 +616,9 @@ pub struct GateRunnerConfig {
     pub receipt_path: Option<PathBuf>,
     pub diff_baseline: Option<PathBuf>,
     pub list_only: bool,
+    /// Explain the typed profile expansion and governed gate denominator
+    /// (`ci_route_profile.v1`, issue #10178) instead of running gates.
+    pub explain_denominator: bool,
     pub fail_fast: bool,
     /// For future parallel execution support
     #[allow(dead_code)]
@@ -640,6 +644,7 @@ impl Default for GateRunnerConfig {
             receipt_path: None,
             diff_baseline: None,
             list_only: false,
+            explain_denominator: false,
             fail_fast: false,
             parallel: false,
             verbose: false,
@@ -674,6 +679,21 @@ pub fn run(config: GateRunnerConfig) -> Result<()> {
     if config.list_only {
         let gates = filter_gates(&policy, &config)?;
         return list_gates(&gates, &policy);
+    }
+
+    // Explain mode prints the typed profile expansion (`ci_route_profile.v1`,
+    // issue #10178): the requested profile's included native tiers, the
+    // complete governed denominator, and the accounted exclusions. Like
+    // `--list`, this never executes a gate.
+    if config.explain_denominator {
+        let profile = route_profile::RequestedProfile::from_gate_tier(&config.tier);
+        let expansion = route_profile::expand_from_root(
+            &root,
+            profile,
+            config.gate_filter.as_deref(),
+        )?;
+        println!("{}", expansion.format_explanation());
+        return Ok(());
     }
 
     // Build the executable plan. PR-fast uses the shared xtask runner plus

@@ -2161,6 +2161,11 @@ enum Commands {
         #[arg(long, short)]
         list: bool,
 
+        /// Explain the typed profile expansion and governed gate denominator
+        /// (ci_route_profile.v1) without running anything
+        #[arg(long)]
+        explain_denominator: bool,
+
         /// Output format (default: human)
         #[arg(long, short, value_enum, default_value = "human")]
         format: GatesOutputFormat,
@@ -5606,6 +5611,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             gate,
             base,
             list,
+            explain_denominator,
             format,
             receipt,
             receipt_path,
@@ -5624,6 +5630,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             receipt_path,
             diff_baseline: diff,
             list_only: list,
+            explain_denominator,
             fail_fast,
             parallel,
             verbose,
