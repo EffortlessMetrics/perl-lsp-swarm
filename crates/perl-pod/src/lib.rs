@@ -845,9 +845,9 @@ fn leading_over_list_before_any_head_lands_in_synopsis() {
     // block (common in CPAN modules); it must be kept, not discarded.
     let text = "=pod\n\n=over 4\n\n=item *\n\nFirst leading point\n\n=item *\n\nSecond leading point\n\n=back\n\n=head1 DESCRIPTION\n\nBody text.\n\n=cut\n";
     let doc = extract_pod(text);
-    let synopsis = doc.synopsis.expect("leading list must be retained");
-    assert!(synopsis.contains("First leading point"), "synopsis: {synopsis}");
-    assert!(synopsis.contains("Second leading point"), "synopsis: {synopsis}");
+    assert!(doc.synopsis.is_some(), "leading list must be retained");
+    assert!(doc.synopsis.as_ref().is_some_and(|s| s.contains("First leading point")));
+    assert!(doc.synopsis.as_ref().is_some_and(|s| s.contains("Second leading point")));
 }
 
 #[test]

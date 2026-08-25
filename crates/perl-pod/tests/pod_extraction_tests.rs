@@ -908,8 +908,8 @@ This item is not under a named POD section.
 
     // Since #2488 the leading list is retained under the synthetic synopsis
     // instead of being discarded when no =head section exists.
-    let synopsis = doc.synopsis.expect("leading list must be retained (#2488)");
-    assert!(synopsis.contains("ghost"), "synopsis: {synopsis}");
+    assert!(doc.synopsis.is_some(), "leading list must be retained (#2488)");
+    assert!(doc.synopsis.as_ref().is_some_and(|s| s.contains("ghost")));
     // Stray items still never become method documentation.
     assert!(doc.methods.is_empty());
 }
