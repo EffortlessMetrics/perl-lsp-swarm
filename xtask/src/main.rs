@@ -3945,13 +3945,13 @@ enum PrLedgerCommand {
 enum SyncDivergenceCommand {
     /// Validate the target-only commit reconciliation ledger and write a receipt.
     Check {
-        /// Common source/target base used for the git cherry comparison.
-        #[arg(long)]
-        base: String,
-        /// Active swarm source ref.
+        /// Exact swarm source ref; resolved as the patch-equivalence upstream.
         #[arg(long)]
         source: String,
-        /// Release-repo target ref, normally the first parent of the sync merge.
+        /// Completed reconciliation boundary ref; resolved as the exclusive history floor.
+        #[arg(long)]
+        boundary: String,
+        /// Release-repo target ref (normally the release repository head).
         #[arg(long)]
         target: String,
         /// Machine-readable reconciliation ledger.
@@ -4604,13 +4604,14 @@ fn run_cli(cli: Cli) -> Result<()> {
             }
         },
         Commands::SyncDivergence { command } => match command {
-            SyncDivergenceCommand::Check { base, source, target, ledger, receipt } => {
+            SyncDivergenceCommand::Check { source, boundary, target, ledger, receipt } => {
                 tasks::sync_divergence::check(tasks::sync_divergence::CheckConfig {
-                    base,
                     source,
+                    boundary,
                     target,
                     ledger,
                     receipt,
+                    working_directory: None,
                 })
             }
         },
