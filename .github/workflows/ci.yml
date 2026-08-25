@@ -637,8 +637,13 @@ jobs:
           # produced while proving this subject; run_gate_shard.py sweeps its
           # own receipt dir again, and verify-gate-receipt-freshness
           # independently re-checks every binding before anything is uploaded.
+          # The step runs under `set +e`, so a failed clearance must abort
+          # here: logs/*.log and artifacts/* carry no SHA binding for the
+          # verifier to reject, and the following mkdir would otherwise
+          # overwrite the failure status.
           rm -rf target/receipts/shards target/receipts/shard-summaries \
-            target/receipts/logs target/receipts/artifacts
+            target/receipts/logs target/receipts/artifacts \
+            || { echo "::error::cannot clear cache-restored target/receipts surfaces (#12085); refusing to run the shard over possibly stale logs/artifacts"; exit 1; }
           mkdir -p target/receipts/shards target/receipts/shard-summaries
           timeout --signal=TERM --kill-after=30s 1200s \
             python3 scripts/ci/run_gate_shard.py \
