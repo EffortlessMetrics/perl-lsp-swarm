@@ -369,12 +369,7 @@ pub fn route_envelope(
         boundary.map(|kind| {
             // No separate boundary fact is minted: the typed boundary lives in
             // the route payload, so the link carries no foreign boundary id.
-            crate::BoundaryLink::new(
-                None,
-                kind,
-                BoundaryDisposition::Degrade,
-                boundary_reason,
-            )
+            crate::BoundaryLink::new(None, kind, BoundaryDisposition::Degrade, boundary_reason)
         }),
         dependencies,
         if exact {
