@@ -22,14 +22,21 @@
 "   lsp_buffer_enabled -> capture initialize capabilities -> observe #7762
 "   root selection -> stop server -> server exit -> quit.
 
-let s:adapter = expand('$PERLLSP_VIM_HOST_ADAPTER')
-let s:event_file = expand('$PERLLSP_VIM_HOST_EVENT_FILE')
-let s:capability_path = expand('$PERLLSP_VIM_HOST_CAPABILITY_SNAPSHOT')
-let s:fixture_root = expand('$PERLLSP_VIM_HOST_FIXTURE_ROOT')
-let s:candidate_sha = expand('$PERLLSP_VIM_HOST_CANDIDATE_SHA256')
-let s:budget = str2nr(expand('$PERLLSP_VIM_HOST_BUDGET_MS'))
-let s:server_name = expand('$PERLLSP_VIM_HOST_SERVER_NAME')
-let s:root_markers = split(expand('$PERLLSP_VIM_HOST_ROOT_MARKERS'), ',', v:false)
+" getenv() (not expand()) so unset variables stay empty and the fail-closed
+" checks below fire: expand('$NAME') returns the literal text for unset names.
+function! s:Env(name) abort
+  let l:value = getenv(a:name)
+  return type(l:value) == v:t_string ? l:value : ''
+endfunction
+
+let s:adapter = s:Env('PERLLSP_VIM_HOST_ADAPTER')
+let s:event_file = s:Env('PERLLSP_VIM_HOST_EVENT_FILE')
+let s:capability_path = s:Env('PERLLSP_VIM_HOST_CAPABILITY_SNAPSHOT')
+let s:fixture_root = s:Env('PERLLSP_VIM_HOST_FIXTURE_ROOT')
+let s:candidate_sha = s:Env('PERLLSP_VIM_HOST_CANDIDATE_SHA256')
+let s:budget = str2nr(s:Env('PERLLSP_VIM_HOST_BUDGET_MS'))
+let s:server_name = s:Env('PERLLSP_VIM_HOST_SERVER_NAME')
+let s:root_markers = split(s:Env('PERLLSP_VIM_HOST_ROOT_MARKERS'), ',', v:false)
 if s:budget <= 0
   let s:budget = 20000
 endif
@@ -135,7 +142,9 @@ if empty(s:failures)
     endif
   endfor
   if s:root_source !=# 'activation_root_marker'
-    call s:Fail('root did not resolve through an activation marker: ' . s:root_uri)
+    " The reason must stay a safe identity token: embedding the root URI
+    " would violate the Rust event contract and discard the whole stream.
+    call s:Fail('root did not resolve through an activation marker (marker_file_absent)')
   endif
   call s:Emit('root_selected', {'root_source': s:root_source, 'root_marker': s:root_marker})
 endif

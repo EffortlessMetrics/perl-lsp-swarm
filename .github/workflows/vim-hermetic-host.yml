@@ -104,6 +104,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: vim-hermetic-host-run
+          # Only the sanitized artifact tree and the receipt are uploaded:
+          # the raw run root carries unsanitized client/server logs and full
+          # runner process-table snapshots that must stay on the runner.
           path: |
-            target/vim-host-runs/
+            target/vim-host-runs/ci/run/receipt.json
+            target/vim-host-runs/ci/run/hermetic/artifacts/
           if-no-files-found: warn

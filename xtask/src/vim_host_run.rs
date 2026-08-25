@@ -378,6 +378,10 @@ pub fn host_run_from_cli(
         candidate_executable.display()
     );
     ensure!(out_root.is_absolute(), "output root must be an absolute path: {}", out_root.display());
+    ensure!(
+        timeout_ms == 0 || (1..=600_000).contains(&timeout_ms),
+        "timeout-ms must be between 1 and 600000 (or 0 for the default): {timeout_ms}"
+    );
     host_run(
         repo_root,
         &VimHostRunInputs {
@@ -666,7 +670,9 @@ pub fn evaluate_observation(
     } else {
         ObservationResult::NotProven
     };
-    let failure_class = if driver_failed {
+    let failure_class = if result == ObservationResult::Pass {
+        None
+    } else if driver_failed {
         Some(FailureClass::HostClient)
     } else if leaked {
         Some(FailureClass::Cleanup)
@@ -676,8 +682,13 @@ pub fn evaluate_observation(
         Some(FailureClass::Environment)
     } else if observation.status_code.is_some_and(|code| code != 0) {
         Some(FailureClass::HostClient)
+    } else if observation.cleanup == CleanupResult::NotProven {
+        Some(FailureClass::Cleanup)
     } else {
-        None
+        // Every not-proven receipt carries a failure class: the remaining
+        // cases are missing evidence without an observed fault, which the
+        // generic schema requires to be classified.
+        Some(FailureClass::Instrument)
     };
     Ok(OutcomeJudgment { result, failure_class, registration_digest_match })
 }

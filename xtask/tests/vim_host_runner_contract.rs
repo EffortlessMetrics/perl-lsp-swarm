@@ -226,9 +226,18 @@ fn thin_adapter_and_driver_never_force_a_filetype_or_second_orchestration() -> R
         adapter.contains("'cmd': {server_info -> [s:candidate, '--stdio']}"),
         "adapter must launch the exact env-delivered candidate executable"
     );
+    // The env boundary must use getenv(), not expand(): expand() returns the
+    // literal "$NAME" text for unset variables, so the fail-closed empty
+    // checks would never fire through it.
+    for (label, source) in [("adapter", &adapter), ("driver", &driver)] {
+        ensure!(
+            !source.contains("expand('$PERLLSP_VIM_HOST"),
+            "{label} must not read the run contract through expand() (unset variables expand              to their literal text, defeating fail-closed checks)"
+        );
+    }
     ensure!(
-        adapter.contains("expand('$PERLLSP_VIM_HOST_CANDIDATE')"),
-        "adapter must resolve the candidate through the wrapper environment"
+        adapter.contains("s:Env('PERLLSP_VIM_HOST_CANDIDATE')"),
+        "adapter must resolve the candidate through the wrapper environment boundary"
     );
     Ok(())
 }
@@ -740,7 +749,7 @@ fn exact_path_needle_does_not_attribute_foreign_perllsp_processes() -> Result<()
         "the run's own candidate is still detected"
     );
     ensure!(
-        surviving_processes(&before, &after, "/other/checkout/perllsp").is_empty(),
+        surviving_processes(&before, &after, "/another/checkout/perllsp").is_empty(),
         "a foreign perllsp from another checkout is never attributed to this run"
     );
     Ok(())

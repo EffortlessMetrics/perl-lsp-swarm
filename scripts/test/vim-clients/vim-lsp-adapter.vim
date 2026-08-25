@@ -51,12 +51,21 @@ set nomore
 set hidden
 filetype on
 
-let s:candidate = expand('$PERLLSP_VIM_HOST_CANDIDATE')
-let s:vim_lsp_dir = expand('$PERLLSP_VIM_HOST_VIM_LSP_DIR')
-let s:server_name = expand('$PERLLSP_VIM_HOST_SERVER_NAME')
-let s:root_markers = split(expand('$PERLLSP_VIM_HOST_ROOT_MARKERS'), ',', v:false)
-let s:client_log = expand('$PERLLSP_VIM_HOST_CLIENT_LOG')
-let s:server_trace = expand('$PERLLSP_VIM_HOST_SERVER_TRACE')
+" Resolve an environment variable to a string, with a genuinely empty value
+" for unset variables. (expand('$NAME') returns the literal "$NAME" text for
+" an unset variable, so the fail-closed empty checks below would never fire
+" through expand; getenv() returns v:null and is the correct boundary.)
+function! s:Env(name) abort
+  let l:value = getenv(a:name)
+  return type(l:value) == v:t_string ? l:value : ''
+endfunction
+
+let s:candidate = s:Env('PERLLSP_VIM_HOST_CANDIDATE')
+let s:vim_lsp_dir = s:Env('PERLLSP_VIM_HOST_VIM_LSP_DIR')
+let s:server_name = s:Env('PERLLSP_VIM_HOST_SERVER_NAME')
+let s:root_markers = split(s:Env('PERLLSP_VIM_HOST_ROOT_MARKERS'), ',', v:false)
+let s:client_log = s:Env('PERLLSP_VIM_HOST_CLIENT_LOG')
+let s:server_trace = s:Env('PERLLSP_VIM_HOST_SERVER_TRACE')
 
 if empty(s:candidate) || empty(s:vim_lsp_dir) || empty(s:server_name)
       \ || empty(s:root_markers) || empty(s:client_log) || empty(s:server_trace)
@@ -264,7 +273,7 @@ endfunction
 " lost-`job_stop` variant of that race, and everything stays inside the
 " parent-owned wait budget either way.
 function! VimLspHostStopServerAndWait() abort
-  let l:budget = str2nr(expand('$PERLLSP_VIM_HOST_BUDGET_MS'))
+  let l:budget = str2nr(s:Env('PERLLSP_VIM_HOST_BUDGET_MS'))
   if l:budget <= 0
     let l:budget = 90000
   endif

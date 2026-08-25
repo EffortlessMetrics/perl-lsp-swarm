@@ -769,6 +769,12 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                     .get("candidate_sha256")
                     .context("registration_selected omitted candidate_sha256")?;
                 validate_sha256(digest, "registration candidate_sha256")?;
+                let rank = lifecycle_rank(event.kind);
+                ensure!(
+                    rank >= last_lifecycle_rank,
+                    "driver lifecycle events arrived out of order"
+                );
+                last_lifecycle_rank = rank;
             }
             DriverEventKind::BufferEnabled => {
                 ensure!(
@@ -1021,6 +1027,19 @@ pub fn run_owned_process(
         vim_path(&plan.paths.candidate_executable).to_string_lossy().into_owned()
     };
     let probe_before = probe_process_table();
+    // A before-probe that cannot be parsed is recorded: treating it as an
+    // empty set would fabricate survivors later (every candidate process in
+    // the after-probe would look new). The comparison below refuses to judge
+    // cleanup when the before snapshot is unusable.
+    let before_parse_failed = probe_before.as_ref().is_some_and(|result| match result {
+        Ok(text) => if cfg!(windows) {
+            parse_windows_process_snapshot(text)
+        } else {
+            parse_process_snapshot(text)
+        }
+        .is_err(),
+        Err(_) => true,
+    });
     let before_lines = match &probe_before {
         Some(Ok(text)) => {
             let parsed = if cfg!(windows) {
@@ -1073,42 +1092,54 @@ pub fn run_owned_process(
     // `fail`. An unavailable or unparseable probe leaves the judgment
     // `not_proven` with the typed detail naming the missing evidence.
     let probe_after = probe_process_table();
-    let (mut cleanup, mut cleanup_detail, survivors) = match (&probe_before, &probe_after) {
-        (Some(Ok(_)), Some(Ok(after_text))) => {
-            let parsed = if cfg!(windows) {
-                parse_windows_process_snapshot(after_text)
-            } else {
-                parse_process_snapshot(after_text)
-            };
-            match parsed {
-                Ok(after_lines) => {
-                    let survivors = surviving_processes(&before_lines, &after_lines, &needle);
-                    if survivors.is_empty() {
-                        (CleanupResult::Pass, "process-set comparison clean".to_string(), survivors)
-                    } else {
-                        (
-                            CleanupResult::Fail,
-                            format!(
-                                "process-set comparison observed {} surviving candidate process(es) \
-                                 after the run",
-                                survivors.len()
-                            ),
-                            survivors,
-                        )
-                    }
-                }
-                Err(error) => (
-                    CleanupResult::NotProven,
-                    format!("after-process probe unparseable: {error}"),
-                    Vec::new(),
-                ),
-            }
-        }
-        _ => (
+    let (mut cleanup, mut cleanup_detail, survivors) = if before_parse_failed {
+        (
             CleanupResult::NotProven,
-            "process probe unavailable on this platform; cleanup not observed".to_string(),
+            "before-process probe unparseable; cleanup comparison refused".to_string(),
             Vec::new(),
-        ),
+        )
+    } else {
+        match (&probe_before, &probe_after) {
+            (Some(Ok(_)), Some(Ok(after_text))) => {
+                let parsed = if cfg!(windows) {
+                    parse_windows_process_snapshot(after_text)
+                } else {
+                    parse_process_snapshot(after_text)
+                };
+                match parsed {
+                    Ok(after_lines) => {
+                        let survivors = surviving_processes(&before_lines, &after_lines, &needle);
+                        if survivors.is_empty() {
+                            (
+                                CleanupResult::Pass,
+                                "process-set comparison clean".to_string(),
+                                survivors,
+                            )
+                        } else {
+                            (
+                                CleanupResult::Fail,
+                                format!(
+                                    "process-set comparison observed {} surviving candidate process(es) \
+                                 after the run",
+                                    survivors.len()
+                                ),
+                                survivors,
+                            )
+                        }
+                    }
+                    Err(error) => (
+                        CleanupResult::NotProven,
+                        format!("after-process probe unparseable: {error}"),
+                        Vec::new(),
+                    ),
+                }
+            }
+            _ => (
+                CleanupResult::NotProven,
+                "process probe unavailable on this platform; cleanup not observed".to_string(),
+                Vec::new(),
+            ),
+        }
     };
     // Retain both raw snapshots as run evidence even when the comparison
     // itself could not be made.
