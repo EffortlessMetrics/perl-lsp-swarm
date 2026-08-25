@@ -208,10 +208,10 @@ pub(super) fn compare_structural(
 
     while let Some(frame) = work_stack.pop() {
         work = work.saturating_add(1);
-        if let Some(limit) = max_work {
-            if work > limit {
-                return StructuralCompare::Truncated { reason: "diagnostic work limit", work };
-            }
+        if let Some(limit) = max_work
+            && work > limit
+        {
+            return StructuralCompare::Truncated { reason: "diagnostic work limit", work };
         }
 
         if frame.left.location != frame.right.location {
