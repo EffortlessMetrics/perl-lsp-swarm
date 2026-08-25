@@ -1,7 +1,7 @@
 //! Native Debug Adapter Protocol implementation for Perl.
 //!
 //! `perl-dap` is the Rust DAP server shipped with `perl-lsp`. It speaks DAP over
-//! stdio or TCP, launches or attaches to Perl debug sessions, validates
+//! stdio to editors, launches or attaches to Perl debug sessions, validates
 //! breakpoints with the native parser stack, and serves stack, variable,
 //! evaluation, and execution-control requests to DAP-capable editors.
 //!
@@ -28,11 +28,8 @@
 //! perl-dap --stdio
 //! ```
 //!
-//! Native TCP mode:
-//!
-//! ```text
-//! perl-dap --socket --port 13603
-//! ```
+//! Editor TCP (`--socket` / editor `--port`) is scheduled retirement (#10565)
+//! and is not a supported product run mode.
 //!
 //! # Programmatic launch
 //!

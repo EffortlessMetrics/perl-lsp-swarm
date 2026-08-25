@@ -1,8 +1,8 @@
-//! Shadow `NodeKind` structural registry.
+//! `NodeKind` structural registry.
 //!
-//! One row per primary variant. This table is check-mode authority only: it
-//! must describe current production structure, and it must not drive traversal,
-//! `FieldId` lookup, rendering, or status.
+//! One row per primary variant. This table is production authority for
+//! [`crate::FieldId`] set membership and field-aware child traversal. It does
+//! not drive rendering, status, fingerprint, or `source_boundary` classification.
 
 use super::{
     ChildFieldSpec, FieldCardinality, GrammarNameSpec, KindBody, KindStructuralRow,
@@ -59,10 +59,11 @@ macro_rules! kind_row {
     };
 }
 
-/// Shadow structural rows in `NodeKind` declaration order.
+/// Structural rows in `NodeKind` declaration order.
 ///
-/// Production traversal, field lookup, rendering, and status do not read this
-/// table. Parity tests fail when it drifts from those surfaces.
+/// Field-aware walkers emit the [`FieldId`] values named here. Physical child
+/// storage may interleave fields (`If` elsif, `HashLiteral` pairs); emission
+/// order is the shared visit table, not a regrouping by this slice.
 #[rustfmt::skip]
 pub const NODE_KIND_STRUCTURAL_REGISTRY: &[KindStructuralRow<'static>] = &[
     kind_row!("Program", ChildBearing, recovery = false, boundary = false, children = [STATEMENTS: Repeated], static "source_file"),
