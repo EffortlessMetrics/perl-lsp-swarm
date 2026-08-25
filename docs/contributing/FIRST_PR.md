@@ -54,6 +54,8 @@ reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t 
 
 Without this, `cargo fmt` may fail with "os error 206" from deep worktree paths. Start a new terminal after setting the key.
 
+**Windows users (optional):** symlink-creating tests skip with a visible `SKIPPED:` reason when the session lacks `SeCreateSymbolicLinkPrivilege` (os error 1314). Enabling Developer Mode (Settings → System → For developers) grants the privilege and opts the machine out of every skip, so those tests run in full. This is opt-in, not a requirement.
+
 Install the pre-push hook so the fast gate runs before every push:
 
 ```bash
