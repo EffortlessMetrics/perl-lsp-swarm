@@ -21,9 +21,31 @@
 //! The optional [`SemanticSnapshotJoinMetadata`] records that a matching
 //! semantic snapshot exists; it never participates in construction,
 //! validation of the compiler subject, or completeness upgrades.
+//!
+//! # Anchor authority boundary (#12191)
+//!
+//! [`OccurrenceAnchor`] is a mechanically-derived projection of the canonical
+//! #12191 [`PirSourceAnchor`]: it carries the typed [`PirAnchorKind`]
+//! provenance class, the exact byte range, the canonical [`AnchorId`], and the
+//! lowering `hir_item` index of the anchor it was derived from. It is not a
+//! fallback anchor/range vocabulary: construction rejects any anchor whose
+//! identity cannot be traced back to the canonical derivation.
+//!
+//! # Interim binding/role vocabulary boundary (#2660)
+//!
+//! [`LexicalSigil`], [`OccurrenceRole`], and [`LexicalBindingIdentity`] are an
+//! interim representation vocabulary only. Binding-identity and
+//! `Declaration | Read | Write | Modify` role authority belongs to #2660,
+//! which is still open; when #2660 lands its canonical types this envelope
+//! converges onto them with a schema-version bump. The in-crate
+//! `pir::extractor` `LexicalRole`/`LexicalBindingFact` are PR1 read/write
+//! extraction receipts — they deliberately skip `Modify` and carry no
+//! declaration role — so they are not the binding/role authority and this
+//! contract does not converge on them.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use perl_semantic_facts::AnchorId;
 use perl_source_identity::ContentDigest;
 use serde::Serialize;
 
@@ -59,7 +81,8 @@ pub struct ContributionSubjectIdentity {
     pub body_hir_identity: ContentDigest,
 }
 
-/// Sigil / namespace slot of a lexical variable (#2660).
+/// Sigil / namespace slot of a lexical variable (interim #2660 vocabulary;
+/// converges onto the canonical #2660 types when they land).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum LexicalSigil {
     /// Scalar `$x`.
@@ -72,7 +95,8 @@ pub enum LexicalSigil {
     Code,
 }
 
-/// Role of one lexical occurrence (#2660). All four remain distinct;
+/// Role of one lexical occurrence (interim #2660 vocabulary; converges onto
+/// the canonical #2660 types when they land). All four remain distinct;
 /// `Modify` is never folded into `Write`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum OccurrenceRole {
@@ -86,7 +110,8 @@ pub enum OccurrenceRole {
     Modify,
 }
 
-/// Stable lexical binding identity (#2660): body + scope + sigil + name.
+/// Stable lexical binding identity (interim #2660 vocabulary; converges onto
+/// the canonical #2660 types when they land): body + scope + sigil + name.
 ///
 /// The same display name in another body/scope/sigil is a different binding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -103,35 +128,118 @@ pub struct LexicalBindingIdentity {
     pub name: String,
     /// Exact declaration range (start/end byte offsets in the document).
     pub declaration_range: (usize, usize),
-    /// Deterministic binding fingerprint.
+    /// Deterministic binding fingerprint, derived from the identity fields by
+    /// [`LexicalBindingIdentity::fingerprint_for`].
+    ///
+    /// [`FilePirLexicalContributionV1::try_new`] re-derives it and rejects any
+    /// binding whose fingerprint does not match its identity fields, so a
+    /// stale or colliding caller-supplied fingerprint can never be attested.
     pub fingerprint: ContentDigest,
 }
 
-/// Self-contained source anchor snapshot for one occurrence.
+/// Canonical serialization view of the binding-identity fields the binding
+/// fingerprint covers.
+#[derive(Serialize)]
+struct BindingIdentityView<'a> {
+    body_id: &'a str,
+    scope_path: &'a [String],
+    sigil: LexicalSigil,
+    name: &'a str,
+    declaration_range: (usize, usize),
+}
+
+impl LexicalBindingIdentity {
+    /// Derive the deterministic binding fingerprint from the identity fields
+    /// `(body_id, scope_path, sigil, name, declaration_range)`.
+    ///
+    /// The fingerprint hashes the canonical JSON of exactly those fields, so
+    /// mutating any one of them changes the fingerprint.
+    pub fn fingerprint_for(
+        body_id: &str,
+        scope_path: &[String],
+        sigil: LexicalSigil,
+        name: &str,
+        declaration_range: (usize, usize),
+    ) -> Result<ContentDigest, ContributionError> {
+        let view = BindingIdentityView { body_id, scope_path, sigil, name, declaration_range };
+        let canonical = serde_json::to_string(&view)
+            .map_err(|error| ContributionError::Serialization { message: error.to_string() })?;
+        Ok(ContentDigest::of_bytes(canonical.as_bytes()))
+    }
+
+    /// Construct one binding identity with its fingerprint derived from the
+    /// identity fields.
+    pub fn new(
+        binding_id: String,
+        body_id: String,
+        scope_path: Vec<String>,
+        sigil: LexicalSigil,
+        name: String,
+        declaration_range: (usize, usize),
+    ) -> Result<Self, ContributionError> {
+        let fingerprint =
+            Self::fingerprint_for(&body_id, &scope_path, sigil, &name, declaration_range)?;
+        Ok(Self { binding_id, body_id, scope_path, sigil, name, declaration_range, fingerprint })
+    }
+
+    /// Re-derive this binding's fingerprint from its identity fields.
+    fn derived_fingerprint(&self) -> Result<ContentDigest, ContributionError> {
+        Self::fingerprint_for(
+            &self.body_id,
+            &self.scope_path,
+            self.sigil,
+            &self.name,
+            self.declaration_range,
+        )
+    }
+}
+
+/// Mechanically-derived projection of the canonical #12191 [`PirSourceAnchor`]
+/// for one occurrence.
 ///
-/// The contribution model deliberately does not embed foreign AST/HIR/PIR
-/// node types: only the stable provenance class name and the exact byte
-/// range travel with the fact.
+/// Every field is copied from the canonical anchor: the typed provenance
+/// class, the exact byte range, the canonical [`AnchorId`], and the lowering
+/// `hir_item` index. No foreign AST/HIR node type enters the fact model — only
+/// the stable identities travel with the fact — and no free-form anchor
+/// vocabulary can be attested: [`FilePirLexicalContributionV1::try_new`]
+/// rejects anchors whose `anchor_id` does not match the canonical derivation
+/// for their range, and non-source-backed provenance classes cannot
+/// structurally pass as source-backed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OccurrenceAnchor {
-    /// Stable [`PirAnchorKind`] name (provenance class).
-    pub anchor_kind: String,
-    /// Exact byte range (start inclusive, end exclusive).
+    /// Provenance class, copied from the canonical anchor's
+    /// [`PirSourceAnchor::kind`].
+    pub anchor_kind: PirAnchorKind,
+    /// Exact byte range (start inclusive, end exclusive), copied from the
+    /// canonical anchor's range.
     pub range: (usize, usize),
+    /// Canonical #12191 anchor identity, copied from the canonical anchor's
+    /// [`PirSourceAnchor::anchor_id`].
+    pub anchor_id: AnchorId,
+    /// Lowering provenance: index of the HIR item the canonical anchor lowered
+    /// from ([`PirSourceAnchor::hir_item`]), when it carries one.
+    pub hir_item_index: Option<u32>,
 }
 
 impl OccurrenceAnchor {
     /// Snapshot one source-backed PIR anchor.
     ///
-    /// Returns `None` when the anchor carries no concrete range or its
-    /// provenance is not source-backed; such occurrences are rejected.
+    /// Returns `None` when the anchor carries no concrete range, no canonical
+    /// anchor id, or its provenance is not source-backed; such occurrences are
+    /// rejected.
     #[must_use]
     pub fn from_pir_anchor(anchor: &PirSourceAnchor) -> Option<Self> {
         let range = anchor.range?;
         if !anchor.kind.is_source_backed() {
             return None;
         }
-        Some(Self { anchor_kind: anchor.kind.name().to_string(), range: (range.start, range.end) })
+        let anchor_id = anchor.anchor_id?;
+        Some(Self {
+            anchor_kind: anchor.kind,
+            range: (range.start, range.end),
+            anchor_id,
+            hir_item_index: anchor.hir_item.map(|hir_item| hir_item.index()),
+        })
     }
 }
 
@@ -353,6 +461,20 @@ pub enum ContributionError {
         /// The unanchored occurrence.
         occurrence_id: String,
     },
+    /// A binding's fingerprint did not match its identity fields.
+    #[error("binding {binding_id} carries a fingerprint that does not match its identity fields")]
+    BindingFingerprintMismatch {
+        /// The binding whose fingerprint is stale or foreign.
+        binding_id: String,
+    },
+    /// An occurrence anchor's id did not match the canonical #12191
+    /// derivation for its range.
+    #[error("occurrence {occurrence_id} carries an anchor id inconsistent with its range")]
+    InconsistentAnchorIdentity {
+        /// The occurrence whose anchor identity cannot be traced back to the
+        /// canonical anchor derivation.
+        occurrence_id: String,
+    },
     /// Canonical serialization failed.
     #[error("canonical serialization failed: {message}")]
     Serialization {
@@ -376,24 +498,6 @@ fn canonicalize(
     limitations.sort();
     limitations.dedup();
     (bindings, occurrences, limitations)
-}
-
-/// Every known [`PirAnchorKind`] provenance class name.
-const PIR_ANCHOR_KIND_NAMES: [PirAnchorKind; 6] = [
-    PirAnchorKind::ExplicitSource,
-    PirAnchorKind::SourceBackedGenerated,
-    PirAnchorKind::GeneratedNoSource,
-    PirAnchorKind::DynamicBoundary,
-    PirAnchorKind::AmbientInput,
-    PirAnchorKind::Unknown,
-];
-
-/// Whether `anchor_kind` names a source-backed [`PirAnchorKind`].
-///
-/// Unknown names and names of receipt-only kinds (generated-no-source,
-/// ambient-input, unknown) never back a source occurrence.
-fn is_source_backed_anchor_name(anchor_kind: &str) -> bool {
-    PIR_ANCHOR_KIND_NAMES.iter().any(|kind| kind.is_source_backed() && kind.name() == anchor_kind)
 }
 
 /// One immutable file-level compiler lexical contribution (#12109).
@@ -476,11 +580,13 @@ impl FilePirLexicalContributionV1 {
     /// Strictly validate and construct one contribution.
     ///
     /// Fails closed on mixed subjects, collapsed bindings, duplicated binding
-    /// ids, mislabeled declarations, non-source-backed occurrence anchors,
-    /// incomplete-but-complete claims, foreign joins, and unanchored
-    /// occurrences. The returned record carries a deterministic fingerprint
-    /// computed over the unsigned canonical serialization (every field in
-    /// fixed order except the fingerprint itself).
+    /// ids, stale binding fingerprints, mislabeled declarations,
+    /// non-source-backed occurrence anchors, anchor identities that do not
+    /// trace back to the canonical #12191 derivation, incomplete-but-complete
+    /// claims, foreign joins, and unanchored occurrences. The returned record
+    /// carries a deterministic fingerprint computed over the unsigned
+    /// canonical serialization (every field in fixed order except the
+    /// fingerprint itself).
     pub fn try_new(draft: ContributionDraft) -> Result<Self, ContributionError> {
         let ContributionDraft {
             producer,
@@ -533,6 +639,11 @@ impl FilePirLexicalContributionV1 {
                     second: binding.binding_id.clone(),
                 });
             }
+            if binding.derived_fingerprint()? != binding.fingerprint {
+                return Err(ContributionError::BindingFingerprintMismatch {
+                    binding_id: binding.binding_id.clone(),
+                });
+            }
         }
 
         let binding_by_id: BTreeMap<&str, &LexicalBindingIdentity> =
@@ -548,8 +659,13 @@ impl FilePirLexicalContributionV1 {
                     occurrence_id: occurrence.occurrence_id.clone(),
                 });
             }
-            if !is_source_backed_anchor_name(&occurrence.anchor.anchor_kind) {
+            if !occurrence.anchor.anchor_kind.is_source_backed() {
                 return Err(ContributionError::UnanchoredOccurrence {
+                    occurrence_id: occurrence.occurrence_id.clone(),
+                });
+            }
+            if occurrence.anchor.anchor_id != AnchorId(occurrence.anchor.range.0 as u64) {
+                return Err(ContributionError::InconsistentAnchorIdentity {
                     occurrence_id: occurrence.occurrence_id.clone(),
                 });
             }
@@ -727,11 +843,15 @@ impl FilePirLexicalContributionV1 {
 
     /// Whether this contribution proves an exact answer.
     ///
-    /// Only [`ContributionCompleteness::Complete`] qualifies: partial,
+    /// Only [`ContributionCompleteness::Complete`] records whose terminal
+    /// disposition is [`TerminalDisposition::Committed`] qualify: partial,
     /// unavailable, stale, cancelled, budget-exhausted, instrument-failed,
-    /// and invalid-subject records are never exact-empty.
+    /// and invalid-subject records are never exact-empty, and a superseded or
+    /// withdrawn record never authorizes an exact answer no matter what its
+    /// completeness axis claims.
     #[must_use]
     pub fn is_exact(&self) -> bool {
         self.completeness == ContributionCompleteness::Complete
+            && self.terminal_disposition == TerminalDisposition::Committed
     }
 }
