@@ -985,4 +985,77 @@ describe('production activation failure injection (#7855)', () => {
     expect(mockLanguageClientCtor).not.toHaveBeenCalled();
     expect(_autoRestartAttemptsForTest()).toBe(0);
   });
+
+  describe('packaged-journey harness failure seam (#7856)', () => {
+    const SEAM_ENV = 'PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE';
+    let savedEnv: string | undefined;
+
+    beforeEach(() => {
+      savedEnv = process.env[SEAM_ENV];
+      (vscode.extensions.getExtension as jest.Mock).mockReturnValue(undefined);
+    });
+
+    afterEach(() => {
+      if (savedEnv === undefined) {
+        delete process.env[SEAM_ENV];
+      } else {
+        process.env[SEAM_ENV] = savedEnv;
+      }
+      (vscode.extensions.getExtension as jest.Mock).mockReturnValue(undefined);
+    });
+
+    test('the seam is inert without the harness extension, even with the env set', async () => {
+      process.env[SEAM_ENV] = 'debugger';
+      // No harness extension installed: getExtension returns undefined.
+      await activate(makeContext(makeExtensionRoot()));
+      expect(_extensionActivationStateForTest()?.state).toBe('active');
+      await deactivate();
+    });
+
+    test('the seam is inert for an unknown phase name', async () => {
+      process.env[SEAM_ENV] = 'not-a-real-phase';
+      (vscode.extensions.getExtension as jest.Mock).mockReturnValue({});
+      await activate(makeContext(makeExtensionRoot()));
+      expect(_extensionActivationStateForTest()?.state).toBe('active');
+      await deactivate();
+    });
+
+    test('the seam fails the first boundary of the named phase and clears itself', async () => {
+      process.env[SEAM_ENV] = 'debugger';
+      (vscode.extensions.getExtension as jest.Mock).mockReturnValue({ id: 'harness' });
+
+      // The packaged failure leg: activation rejects at the named production
+      // boundary through the same rollback any real mid-activation exception
+      // takes, with the retained support set intact.
+      const context = makeContext(makeExtensionRoot());
+      await expect(activate(context)).rejects.toThrow(
+        'harness-injected activation failure after debugger-1 (#7856 packaged journey)',
+      );
+      const state = _extensionActivationStateForTest();
+      expect(state?.state).toBe('activation_failed');
+      expect(state?.lastCleanupReceipt?.terminal_state).toBe('activation_failed');
+      expect(state?.lastCleanupReceipt?.cleanup_failures).toEqual([]);
+      expect(registeredCommandIds()).toContain('perl-lsp.reportIssue');
+      expect(registeredCommandIds()).not.toContain('perl-lsp.restart');
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+        'setContext',
+        'perl-lsp.activated',
+        false,
+      );
+
+      // The retry leg: with the fault removed, a fresh attempt in the same
+      // host process cannot inherit the seam — the injector was cleared when
+      // the failed attempt ended.
+      delete process.env[SEAM_ENV];
+      const retryApi = await activate(makeContext(makeExtensionRoot()));
+      expect(retryApi).toBeDefined();
+      expect(_extensionActivationStateForTest()?.state).toBe('active');
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+        'setContext',
+        'perl-lsp.activated',
+        true,
+      );
+      await deactivate();
+    });
+  });
 });

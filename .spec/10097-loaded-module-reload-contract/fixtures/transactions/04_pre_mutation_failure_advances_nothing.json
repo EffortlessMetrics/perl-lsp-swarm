@@ -1,0 +1,13 @@
+{
+  "name": "pre_mutation_failure_advances_nothing",
+  "fixture_class": "failure before the boundary; no generation advances, no invalidation",
+  "phase": "prepare",
+  "outcome": {
+    "kind": "failed_before_mutation",
+    "failure_phase": "prepare",
+    "cause": "prepare_failed"
+  },
+  "expected_generation_effect": "none",
+  "expected_phase_valid": true,
+  "expected_clean_projection": true
+}

@@ -26,6 +26,13 @@ mod transport;
 pub mod var_ref;
 mod variable_cache;
 
+// Single-authority re-exports of the standard DAP command list, consumed
+// by the reload contract's protocol-surface collision check (#10097). The
+// list itself is enumerated only by tests.
+#[cfg(test)]
+pub(crate) use dispatch::SUPPORTED_COMMANDS;
+pub(crate) use dispatch::is_supported_dap_command;
+
 use crate::breakpoint::{AstBreakpointValidator, BreakpointValidator};
 use crate::eval::SafeEvaluator;
 use crate::feature_catalog::has_feature as catalog_has_feature;
@@ -51,7 +58,7 @@ use crate::types::{Source, StackFrame, Variable};
 use crate::variables::{PerlVariableRenderer, RenderedVariable, VariableParser, VariableRenderer};
 use perl_lexer::DAP_COMPLETION_KEYWORDS;
 use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
-use perl_module::path::module_path_to_name;
+use perl_module::module_path_to_name;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};

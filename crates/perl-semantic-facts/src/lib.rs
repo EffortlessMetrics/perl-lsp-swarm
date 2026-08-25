@@ -13,11 +13,16 @@ use serde::{Deserialize, Serialize};
 
 mod envelope;
 pub mod framework;
+/// Concrete registry-backed framework adapters built on the SDK.
+pub mod framework_adapters;
 /// Transport-neutral reachability operation, work-budget, and
 /// terminal-outcome contract (#11553).
 pub mod reachability_operation;
+/// Canonical framework route fact family (#8918).
+pub mod route;
 
 pub use envelope::*;
+pub use route::*;
 
 macro_rules! id_newtype {
     ($name:ident) => {

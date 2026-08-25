@@ -12,8 +12,8 @@ use std::io;
 use std::path::Path;
 
 use lsp_types::Position;
-use perl_module::reference::extract_module_reference as extract_module_reference_at_cursor;
-use perl_module::reference::extract_module_reference_extended as extract_module_reference_extended_at_cursor;
+use perl_module::extract_module_reference as extract_module_reference_at_cursor;
+use perl_module::extract_module_reference_extended as extract_module_reference_extended_at_cursor;
 use perl_position_tracking::offset_to_utf16_line_col;
 
 // Re-export engine utilities

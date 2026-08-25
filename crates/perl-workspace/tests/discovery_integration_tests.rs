@@ -96,6 +96,25 @@ fn discovers_files_via_walkdir_when_root_is_not_git_repo() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn external_symlink_requires_explicit_include_path() -> TestResult {
+    let root_tmp = TempDir::new()?;
+    let external_tmp = TempDir::new()?;
+    let root = root_tmp.path();
+    create_file(external_tmp.path(), "Shared/Module.pm")?;
+    std::os::unix::fs::symlink(external_tmp.path().join("Shared"), root.join("linked_lib"))?;
+
+    let default_result = discover_perl_files(root);
+    assert!(!contains_relative_file(&default_result.files, "linked_lib/Module.pm"));
+
+    let include_paths = vec![external_tmp.path().join("Shared")];
+    let included_result = discover_perl_files_with_include_paths(root, &include_paths);
+    assert!(contains_relative_file(&included_result.files, "linked_lib/Module.pm"));
+
+    Ok(())
+}
+
 #[test]
 fn discovers_files_via_git_and_honors_gitignore() -> TestResult {
     if !git_available() {

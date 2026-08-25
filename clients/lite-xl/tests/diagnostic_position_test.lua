@@ -320,7 +320,7 @@ end
 
 local path_util = dofile(here .. "/../upstream/util.lua")
 local function platform_path(path)
-  return path_util.tofilename(path_util.touri(path))
+  return path_util.uri_to_path(path_util.path_to_uri(path))
 end
 
 local URI = "file:///C:/proj/app.pl"
@@ -341,7 +341,7 @@ local function PUBLISH(diag, subject, params)
   if diag.publish then
     return select(1, diag.publish(subject, params))
   end
-  local fname = path_util.tofilename(params.uri)
+  local fname = path_util.uri_to_path(params.uri)
   if params.diagnostics and #params.diagnostics > 0 then
     return diag.add(fname, params.diagnostics)
   end

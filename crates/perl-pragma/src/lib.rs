@@ -12,10 +12,12 @@ use std::ops::Range;
 mod args;
 mod conditional;
 mod features;
+mod import_into;
 mod map;
 mod range_builder;
 mod version;
 
+pub use import_into::{ImportIntoCall, ImportIntoSource, ImportIntoTarget, find_import_into_calls};
 pub use map::{
     CompileTimePragmaEnvironment, PragmaEntry, PragmaMap, PragmaQueryCursor, PragmaStateQuery,
 };

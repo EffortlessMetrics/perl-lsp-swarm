@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { spawn, type SpawnOptions } from 'child_process';
+import { StringDecoder } from 'string_decoder';
 
 const WINDOWS_TREE_KILL_TIMEOUT_MS = 5_000;
 
@@ -115,9 +116,13 @@ export function runBoundedProcess(
       ...spawnOptions,
       stdio: 'pipe',
     });
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     let stdout = '';
     let stderr = '';
     let capturedOutputBytes = 0;
+    let truncatedTarget: 'stdout' | 'stderr' | undefined;
+    let decodersFlushed = false;
     let termination:
       | Exclude<BoundedProcessOutcome, 'completed' | 'spawn_error' | 'termination_failed'>
       | undefined;
@@ -183,6 +188,7 @@ export function runBoundedProcess(
         if (closed || settled) {
           return;
         }
+        flushDecoders();
         finish(
           'termination_failed',
           null,
@@ -230,6 +236,30 @@ export function runBoundedProcess(
       void (treeKill ?? Promise.resolve()).then(() => finish(outcome, exitCode, signal, detail));
     };
 
+    const appendDecodedOutput = (target: 'stdout' | 'stderr', text: string): void => {
+      if (target === 'stdout') {
+        stdout += text;
+      } else {
+        stderr += text;
+      }
+    };
+
+    const flushDecoders = (): void => {
+      if (decodersFlushed) {
+        return;
+      }
+      decodersFlushed = true;
+      // StringDecoder.end() emits U+FFFD for an incomplete trailing sequence.
+      // When the byte ceiling cuts a character, that partial character is not
+      // captured output and must not become a synthetic diagnostic character.
+      if (truncatedTarget !== 'stdout') {
+        appendDecodedOutput('stdout', stdoutDecoder.end());
+      }
+      if (truncatedTarget !== 'stderr') {
+        appendDecodedOutput('stderr', stderrDecoder.end());
+      }
+    };
+
     const onAbort = (): void => requestTermination('cancelled');
     if (signal?.aborted) {
       onAbort();
@@ -243,21 +273,22 @@ export function runBoundedProcess(
       }
       const remaining = maxOutputBytes - capturedOutputBytes;
       if (chunk.byteLength > remaining) {
-        const bounded = remaining > 0 ? chunk.subarray(0, remaining).toString('utf8') : '';
-        if (target === 'stdout') {
-          stdout += bounded;
-        } else {
-          stderr += bounded;
+        const bounded = remaining > 0 ? chunk.subarray(0, remaining) : undefined;
+        if (bounded !== undefined) {
+          appendDecodedOutput(
+            target,
+            target === 'stdout' ? stdoutDecoder.write(bounded) : stderrDecoder.write(bounded),
+          );
         }
+        truncatedTarget = target;
         capturedOutputBytes = maxOutputBytes;
         requestTermination('output_limit');
         return;
       }
-      if (target === 'stdout') {
-        stdout += chunk.toString('utf8');
-      } else {
-        stderr += chunk.toString('utf8');
-      }
+      appendDecodedOutput(
+        target,
+        target === 'stdout' ? stdoutDecoder.write(chunk) : stderrDecoder.write(chunk),
+      );
       capturedOutputBytes += chunk.byteLength;
     };
 
@@ -273,6 +304,7 @@ export function runBoundedProcess(
     });
     proc.on('close', (exitCode, signal) => {
       closed = true;
+      flushDecoders();
       if (termination === undefined) {
         finish('completed', exitCode, signal);
         return;
