@@ -3602,9 +3602,9 @@ fn invoke_runner_for_missing_records(
             runner,
             mode,
         );
-        if !terminal.is_scoreable() {
+        if !matches!(terminal, transition::TerminalProcessOutcome::CleanExit) {
             bail!(
-                "direct runner terminal status {} is not admitted ({}) for {}\nstdout:\n{}\nstderr:\n{}",
+                "direct runner terminal status {} is not a clean exit ({}) for {}\nstdout:\n{}\nstderr:\n{}",
                 output.status,
                 terminal.not_proven_reason(),
                 test.path,
@@ -9047,7 +9047,7 @@ mod tests {
             bail!("failing runner record should fail the harness run");
         };
 
-        assert!(err.to_string().contains("failed for 1 of 1 files"));
+        assert!(err.to_string().contains("upstream harness terminal status"));
         let raw = fs::read_to_string(output)?;
         let report: RunReport = serde_json::from_str(&raw)?;
         assert_eq!(report.summary.files_total, 1);
@@ -9137,21 +9137,21 @@ exit 7
 
     #[cfg(unix)]
     #[test]
-    fn run_mode_rejects_nonzero_direct_runner_status() -> TestResult {
+    fn run_mode_rejects_recognized_direct_runner_status() -> TestResult {
         let temp = tempfile::tempdir()?;
         let perl_tree = write_fake_perl_tree_with_run_body(
             temp.path(),
             r#"# Deliberately do not invoke ./perl; direct runner fallback supplies the record.
 "#,
         )?;
-        let runner = write_fake_runner_with_exit_status(temp.path(), 7)?;
+        let runner = write_fake_runner_with_exit_status(temp.path(), 1)?;
         let output = temp.path().join("parse-report.json");
 
         let Err(err) = run_mode(RunConfig {
             perl_tree,
             host_perl: PathBuf::from("/bin/sh"),
             runner: HarnessRunner::Test,
-            mode: HarnessMode::Parse,
+            mode: HarnessMode::Execute,
             profile: HarnessProfile::Base,
             tests: Vec::new(),
             output: Some(output.clone()),
