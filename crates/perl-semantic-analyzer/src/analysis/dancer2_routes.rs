@@ -201,9 +201,11 @@ fn route_from_expression(
             if name == "any" { bind_any_methods(&mut operands) } else { keyword_methods(name) };
         return build_from_operands(
             name,
-            keyword_start,
-            keyword_start + name.len(),
-            expression.location.end,
+            DeclarationSpans {
+                keyword_start,
+                keyword_end: keyword_start + name.len(),
+                declaration_end: expression.location.end,
+            },
             methods,
             &operands,
             file_id,
@@ -219,9 +221,11 @@ fn route_from_expression(
     let operands: Vec<&Node> = rest.iter().collect();
     build_from_operands(
         name,
-        keyword_node.location.start,
-        keyword_node.location.end,
-        expression.location.end,
+        DeclarationSpans {
+            keyword_start: keyword_node.location.start,
+            keyword_end: keyword_node.location.end,
+            declaration_end: expression.location.end,
+        },
         method_set_from_list(method_list),
         &operands,
         file_id,
@@ -297,6 +301,14 @@ fn method_set_from_elements(elements: &[Node]) -> RouteMethodSet {
     RouteMethodSet::Exact(methods)
 }
 
+/// Byte positions of the route keyword and its enclosing declaration,
+/// resolved once by each expression shape before operand binding.
+struct DeclarationSpans {
+    keyword_start: usize,
+    keyword_end: usize,
+    declaration_end: usize,
+}
+
 /// Bind name/pattern/options/handler operands by the reviewed form table.
 ///
 /// The handler is always the last operand. The remaining operands bind as
@@ -304,15 +316,14 @@ fn method_set_from_elements(elements: &[Node]) -> RouteMethodSet {
 /// `[NAME, PATTERN, OPTIONS]`; other shapes are malformed and mint nothing.
 fn build_from_operands(
     keyword: &str,
-    keyword_start: usize,
-    keyword_end: usize,
-    declaration_end: usize,
+    spans: DeclarationSpans,
     methods: RouteMethodSet,
     operands: &[&Node],
     file_id: FileId,
     current_package: &Option<String>,
     declaration_index: u32,
 ) -> Option<Dancer2RouteDeclaration> {
+    let DeclarationSpans { keyword_start, keyword_end, declaration_end } = spans;
     if operands.len() < 2 {
         // A route needs at least a pattern operand and a handler operand.
         return None;
