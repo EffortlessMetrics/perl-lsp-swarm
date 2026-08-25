@@ -2,9 +2,9 @@
   "cache_recovery": {
     "known_good_before": {
       "archive_member": "perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap",
-      "asset_digest": "sha256:9bf7ea887985e7e9345d585a30287a570f1fb1579c0464493cf11250148ca00e",
+      "asset_digest": "sha256:79a6bd3a58feaf749d0deab3e16876bb8dccc553d122fbe28e36a13492b1914c",
       "asset_name": "good.tar.gz",
-      "installed_binary": "perl-dap-managed-9.9.9-x86_64-unknown-linux-musl/perl-dap",
+      "installed_binary": "perl-dap-managed-9.9.9-x86_64-unknown-linux-musl/perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap",
       "member_sha256": "sha256:382ace2b8bab5c10705b07514cd66c4d70e375cc025f87c83edc14ac49cf04cb",
       "target": "x86_64-unknown-linux-musl",
       "version": "9.9.9"
@@ -38,10 +38,15 @@
       {
         "detail": "archive lacks required perl-dap member 'perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap'",
         "known_good_preserved": true,
+        "scenario": "missing_member_preserves_known_good"
+      },
+      {
+        "detail": "archive lacks required perl-dap member 'perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap'",
+        "known_good_preserved": true,
         "scenario": "wrong_product_member_preserves_known_good"
       },
       {
-        "detail": "digest_mismatch: downloaded 'good.tar.gz' digest sha256:9bf7ea887985e7e9345d585a30287a570f1fb1579c0464493cf11250148ca00e does not match the retained digest sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "detail": "digest_mismatch: downloaded 'good.tar.gz' digest sha256:79a6bd3a58feaf749d0deab3e16876bb8dccc553d122fbe28e36a13492b1914c does not match the retained digest sha256:1111111111111111111111111111111111111111111111111111111111111111",
         "known_good_preserved": true,
         "scenario": "digest_mismatch_preserves_known_good"
       },
@@ -86,9 +91,14 @@
         "scenario": "protocol_impurity_preserves_known_good"
       },
       {
-        "detail": "promote_failure: simulated promote failure",
+        "detail": "commit_failure: simulated promote failure",
         "known_good_preserved": true,
         "scenario": "promote_failure_preserves_known_good"
+      },
+      {
+        "detail": "commit_failure: simulated manifest write failure",
+        "known_good_preserved": true,
+        "scenario": "manifest_failure_preserves_known_good"
       },
       {
         "detail": "cleanup removed exactly the superseded managed-DAP entries",
@@ -98,9 +108,9 @@
     ],
     "selected_after": {
       "archive_member": "perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap",
-      "asset_digest": "sha256:9bf7ea887985e7e9345d585a30287a570f1fb1579c0464493cf11250148ca00e",
+      "asset_digest": "sha256:79a6bd3a58feaf749d0deab3e16876bb8dccc553d122fbe28e36a13492b1914c",
       "asset_name": "good.tar.gz",
-      "installed_binary": "perl-dap-managed-9.9.9-x86_64-unknown-linux-musl/perl-dap",
+      "installed_binary": "perl-dap-managed-9.9.9-x86_64-unknown-linux-musl/perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap",
       "member_sha256": "sha256:382ace2b8bab5c10705b07514cd66c4d70e375cc025f87c83edc14ac49cf04cb",
       "target": "x86_64-unknown-linux-musl",
       "version": "9.9.9"
@@ -129,7 +139,7 @@
     ]
   },
   "limitations": [],
-  "observed_at": "2026-08-25T01:18:40.558700Z",
+  "observed_at": "2026-08-25T02:34:44.388320Z",
   "projection": {
     "debug_adapter_id": "perl-dap",
     "sha256": "sha256:a567b4e613a53c1c8b527c590b3ca1d83c7611f678eb1d8fc8cad50dbfa3cf5b",
@@ -168,7 +178,7 @@
       },
       "binary": {
         "archive_sums_sha256": "sha256:71e67c9c2798e54eaf18a3747882ad8d57c2a1118706ec233a9b1497b58e8a75",
-        "executable": true,
+        "executable": null,
         "name": "perl-dap",
         "product": "perl-dap",
         "sha256": "sha256:71e67c9c2798e54eaf18a3747882ad8d57c2a1118706ec233a9b1497b58e8a75"
@@ -201,7 +211,7 @@
       },
       "binary": {
         "archive_sums_sha256": "sha256:6f89a9a33ee81540da5d3272e03ec6254fdfdec51d1858751626394838f3f2f3",
-        "executable": true,
+        "executable": null,
         "name": "perl-dap",
         "product": "perl-dap",
         "sha256": "sha256:6f89a9a33ee81540da5d3272e03ec6254fdfdec51d1858751626394838f3f2f3"
@@ -234,7 +244,7 @@
       },
       "binary": {
         "archive_sums_sha256": "sha256:fae17f2f586f19cb5221489321311478632024baf14e97ce189117c5bb5cc559",
-        "executable": true,
+        "executable": null,
         "name": "perl-dap",
         "product": "perl-dap",
         "sha256": "sha256:fae17f2f586f19cb5221489321311478632024baf14e97ce189117c5bb5cc559"
@@ -267,7 +277,7 @@
       },
       "binary": {
         "archive_sums_sha256": "sha256:5384315b2bec53b110b3dd756463a29ae0aeecb33cbf36a8a9b9911c8ea5b047",
-        "executable": true,
+        "executable": null,
         "name": "perl-dap",
         "product": "perl-dap",
         "sha256": "sha256:5384315b2bec53b110b3dd756463a29ae0aeecb33cbf36a8a9b9911c8ea5b047"
@@ -300,7 +310,7 @@
       },
       "binary": {
         "archive_sums_sha256": "sha256:5b888c17f34198234c401441f1bc8cf4317154abad2ae7eccff37225e0102db4",
-        "executable": true,
+        "executable": null,
         "name": "perl-dap.exe",
         "product": "perl-dap",
         "sha256": "sha256:5b888c17f34198234c401441f1bc8cf4317154abad2ae7eccff37225e0102db4"
@@ -315,17 +325,17 @@
         "frames": 4,
         "initialize_response": true,
         "initialized_event": true,
-        "launched_pid": 200004,
+        "launched_pid": 256872,
         "orphan_result": "no_orphans",
         "process_exit": 0,
         "process_inventory_after": [],
         "process_inventory_after_launch": [
-          200004
+          256872
         ],
         "process_inventory_before": [],
         "result": "pass",
-        "stderr_sha256": "sha256:43a066750509378d25162cda2bb66feb6eac7605ceed6b910eebf5020fc2b2f1",
-        "stderr_tail": "2026-08-25T01:19:14.775034Z  INFO perl_lsp_rs_core::runtime::launcher: server starting server=\"perl-dap\" version=\"0.17.0\" transport=\"stdio\"\n2026-08-25T01:19:14.775097Z  INFO perl_dap: Starting DAP server on stdio\n",
+        "stderr_sha256": "sha256:684efb3161922ab95461f3bf3b136dd3a9ab24d4672ee8cf6079008c0da0408c",
+        "stderr_tail": "2026-08-25T02:34:50.285242Z  INFO perl_lsp_rs_core::runtime::launcher: server starting server=\"perl-dap\" version=\"0.17.0\" transport=\"stdio\"\n2026-08-25T02:34:50.285395Z  INFO perl_dap: Starting DAP server on stdio\n",
         "stdout_pure": true,
         "terminated_event": true,
         "version_output": "perl-dap 0.17.0"

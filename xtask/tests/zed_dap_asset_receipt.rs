@@ -134,13 +134,21 @@ fn checked_projection_not_run_template_and_cache_recovery_validate_offline()
         vec!["x86_64-pc-windows-msvc"],
         "exactly the verifier-matching row may appear executed"
     );
-    let smoke_version = committed
-        .pointer("/targets/4/stdio_smoke/version_output")
+    let executed_row = committed["targets"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row.get("result").and_then(Value::as_str) == Some("managed_executed"))
+        })
+        .cloned()
+        .ok_or_else(|| io::Error::other("committed receipt lacks an executed row"))?;
+    let smoke_version = executed_row
+        .pointer("/stdio_smoke/version_output")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    assert!(
-        smoke_version.contains("perl-dap") && smoke_version.contains("0.17.0"),
-        "the executed row must record the exact perl-dap version output"
+    assert_eq!(
+        smoke_version, "perl-dap 0.17.0",
+        "the executed row must record the exact canonical perl-dap version line"
     );
     let work_dir = root.join("target/zed-dap-receipt-contract-tests/cache");
     let _ = fs::remove_dir_all(&work_dir);
@@ -274,7 +282,7 @@ fn receipt_mutations_fail_closed_on_overclaim_and_stale_subjects() -> Result<(),
         .ok_or_else(|| io::Error::other("contract lacks the linux musl row"))?;
     let scenarios: Vec<Value> = std::iter::repeat_n(
         json!({"scenario": "x", "known_good_preserved": true, "detail": "x"}),
-        16,
+        18,
     )
     .collect();
     let mut fake_pass = template.clone();
@@ -361,7 +369,15 @@ fn receipt_mutations_fail_closed_on_overclaim_and_stale_subjects() -> Result<(),
     // contract's exact bytes, not to its shape.
     let committed = load_json(&root.join(EXECUTED_RECEIPT))?;
     let mut tampered = committed.clone();
-    tampered["targets"][4]["asset"]["sha256"] =
+    let tamper_index = committed["targets"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter().position(|row| {
+                row.get("result").and_then(Value::as_str) == Some("managed_executed")
+            })
+        })
+        .ok_or_else(|| io::Error::other("committed receipt lacks an executed row"))?;
+    tampered["targets"][tamper_index]["asset"]["sha256"] =
         json!("sha256:7777777777777777777777777777777777777777777777777777777777777777");
     let tampered_path = target.join("receipt-tampered-asset.json");
     write_temp(&tampered_path, &tampered)?;

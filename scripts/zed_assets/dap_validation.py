@@ -162,6 +162,14 @@ def validate_dap_receipt(
         if not isinstance(checked, dict):
             raise ReceiptError(f"managed target {target_name} is absent from the contract")
         if (
+            row.get("os") != checked.get("os")
+            or row.get("architecture") != checked.get("architecture")
+        ):
+            raise ReceiptError(
+                f"receipt host projection for {target_name} does not match the contract row; "
+                "a self-reported os/architecture cannot authorize an execution claim"
+            )
+        if (
             asset.get("id") != checked.get("asset_id")
             or asset.get("name") != checked.get("asset_name")
             or asset.get("sha256") != checked.get("asset_digest")
@@ -194,6 +202,30 @@ def validate_dap_receipt(
                 raise ReceiptError("executed target lacks passing DAP stdio smoke")
             if smoke.get("stdout_pure") is not True or smoke.get("orphan_result") != "no_orphans":
                 raise ReceiptError("executed target lacks stdout-purity or orphan proof")
+            # The execution claim is bound to the full recorded lifecycle, not
+            # to the aggregate word: every phase flag, a clean exit, at least
+            # the four exchange frames, and the exact canonical version line.
+            for flag in (
+                "initialize_response",
+                "initialized_event",
+                "disconnect_response",
+                "terminated_event",
+            ):
+                if smoke.get(flag) is not True:
+                    raise ReceiptError(
+                        f"executed target {target_name} lacks the {flag} lifecycle proof"
+                    )
+            if smoke.get("process_exit") != 0:
+                raise ReceiptError("executed target did not record a clean process exit")
+            frames = smoke.get("frames")
+            if not isinstance(frames, int) or frames < 4:
+                raise ReceiptError("executed target lacks a complete frame transcript")
+            expected_version_line = f"perl-dap {source.get('version')}"
+            if smoke.get("version_output") != expected_version_line:
+                raise ReceiptError(
+                    "executed target version output is not the exact canonical line "
+                    f"{expected_version_line!r}"
+                )
 
     if managed == 0:
         raise ReceiptError("passing receipt contains no managed perl-dap target evidence")
@@ -208,10 +240,16 @@ def validate_dap_receipt(
     scenarios = cache.get("scenario_results")
     if not isinstance(scenarios, list):
         raise ReceiptError("cache recovery block lacks scenario results")
+    for row in scenarios:
+        if not isinstance(row, dict):
+            raise ReceiptError(
+                "cache recovery scenario results must be objects; "
+                f"got {type(row).__name__}"
+            )
     observed_names = [
         row.get("scenario")
         for row in scenarios
-        if isinstance(row, dict) and isinstance(row.get("scenario"), str)
+        if isinstance(row.get("scenario"), str)
     ]
     if sorted(observed_names) != sorted(EXPECTED_SCENARIOS):
         raise ReceiptError(
@@ -222,10 +260,15 @@ def validate_dap_receipt(
             raise ReceiptError(
                 f"cache recovery scenario {row.get('scenario')!r} is not preserved"
             )
-    if not isinstance(cache.get("known_good_before"), dict) or not isinstance(
-        cache.get("selected_after"), dict
-    ):
+    known_good_before = cache.get("known_good_before")
+    selected_after = cache.get("selected_after")
+    if not isinstance(known_good_before, dict) or not isinstance(selected_after, dict):
         raise ReceiptError("cache recovery block lacks known-good/selected evidence")
+    if not known_good_before or known_good_before != selected_after:
+        raise ReceiptError(
+            "cache recovery suite must end with the exact known-good selection it "
+            "started from; a mutated incumbent cannot pass"
+        )
     if boundary.get("cache_recovery") != CACHE_RECOVERY_PROVEN:
         raise ReceiptError(
             "passing receipt must bound its cache proof to the isolated model"

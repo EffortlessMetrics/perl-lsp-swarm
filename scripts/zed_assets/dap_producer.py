@@ -226,7 +226,9 @@ def _execute_target(
         "name": binary.name,
         "sha256": binary_digest,
         "archive_sums_sha256": archive_sums_recorded,
-        "executable": os.access(binary, os.X_OK) if os.name != "nt" else True,
+        # Observed only where the verifier applies POSIX mode semantics; a
+        # Windows verifier never fabricates an executable-bit observation.
+        "executable": os.access(binary, os.X_OK) if os.name != "nt" else None,
     }
     if expected_host(row, verifier):
         target_result["stdio_smoke"] = run_dap_stdio_smoke(

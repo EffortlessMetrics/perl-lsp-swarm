@@ -110,6 +110,18 @@ def run_dap_stdio_smoke(
         process.wait(timeout=10)
         raise
 
+    # Cleanup is proven before the protocol assertions: a candidate whose
+    # transcript later fails validation must not escape the orphan inventory
+    # just because parsing raised first.
+    after = matching_processes(binary)
+    leaked = sorted(after - before)
+    if leaked:
+        raise ReceiptError(
+            "perl-dap process inventory grew after disconnect: " + ",".join(map(str, leaked))
+        )
+    if process.pid in after:
+        raise ReceiptError(f"launched perl-dap process {process.pid} survived disconnect")
+
     frames = parse_lsp_frames(stdout)
 
     # The lifecycle claim is an ordered protocol sequence, so the proof keeps
@@ -175,15 +187,6 @@ def run_dap_stdio_smoke(
         raise ReceiptError("DAP disconnect response did not succeed")
     if process.returncode != 0:
         raise ReceiptError(f"perl-dap DAP process exited with {process.returncode}")
-
-    after = matching_processes(binary)
-    leaked = sorted(after - before)
-    if leaked:
-        raise ReceiptError(
-            "perl-dap process inventory grew after disconnect: " + ",".join(map(str, leaked))
-        )
-    if process.pid in after:
-        raise ReceiptError(f"launched perl-dap process {process.pid} survived disconnect")
 
     bounded_stderr = stderr[-MAX_STDERR_BYTES:].decode("utf-8", errors="replace")
     bounded_stderr = bounded_stderr.replace(str(work_dir), "<work-dir>")

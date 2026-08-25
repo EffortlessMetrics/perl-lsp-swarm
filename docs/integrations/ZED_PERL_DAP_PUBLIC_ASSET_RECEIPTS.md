@@ -19,7 +19,7 @@ release metadata
   < exact-host perl-dap --version (exact canonical `perl-dap <version>` line) and the
   DAP initialize/disconnect exchange with its partial-order transcript proof
   (initialize before disconnect, initialized before terminated, terminated last)
-  < offline managed-cache known-good preservation suite (16 scenarios)
+  < offline managed-cache known-good preservation suite (18 scenarios)
   < real Zed debug session (#9486) and official-registry journey (#9487)
 ```
 
@@ -118,7 +118,8 @@ stack/variables behavior, or public support projection (#9489).
 
 ## Downstream consumption
 
-#9487 consumes the checked projection and the committed matching-host
-receipts directly; no second public asset inventory may be reconstructed.
+Issue #9487 consumes the checked projection and the committed
+matching-host receipts directly; no second public asset inventory may be
+reconstructed.
 A receipt is current only while its recorded contract sha256, release
 identity, topology/projection binding digests, and verifier remain exact.

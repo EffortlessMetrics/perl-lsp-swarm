@@ -304,6 +304,68 @@ fn live_frontier_matches_merged_and_open_pr_state() -> Result<(), Box<dyn Error>
     Ok(())
 }
 
+/// The DAP counterpart of `ready_stages_and_the_declared_frontier_follow_from_landed_dependencies`.
+///
+/// The DAP frontier is derived from landed core and sidecar dependencies, not
+/// restated: a `ready` DAP stage must have only landed dependencies (and no
+/// pull request yet), a blocked one must retain an unlanded dependency, and
+/// the declared `current_dap_frontier` must equal the derived set.
+#[test]
+fn dap_frontier_follows_from_landed_dependencies() -> Result<(), Box<dyn Error>> {
+    let train = load_train()?;
+    let core = core_index(&train)?;
+    let dap = dap_index(&train)?;
+
+    let mut derived = BTreeSet::new();
+    for (id, stage) in &dap {
+        let state = string(stage, "state")?;
+        let mut unlanded = BTreeSet::new();
+        for dependency in string_set(stage, "depends_on_core")? {
+            let declared = core.get(dependency).ok_or_else(|| {
+                io::Error::other(format!("`{id}` depends on unknown core `{dependency}`"))
+            })?;
+            if !LANDED_STATES.contains(&string(declared, "state")?) {
+                unlanded.insert(format!("core:{dependency}"));
+            }
+        }
+        for dependency in string_set(stage, "depends_on_sidecar")? {
+            let declared = dap.get(dependency).ok_or_else(|| {
+                io::Error::other(format!("`{id}` depends on unknown sidecar `{dependency}`"))
+            })?;
+            if !LANDED_STATES.contains(&string(declared, "state")?) {
+                unlanded.insert(format!("sidecar:{dependency}"));
+            }
+        }
+
+        match state {
+            "ready" => {
+                assert!(
+                    unlanded.is_empty(),
+                    "DAP stage `{id}` is `ready` while dependencies {unlanded:?} have not landed"
+                );
+                assert!(
+                    stage.get("pull_request").and_then(Value::as_u64).is_none(),
+                    "DAP stage `{id}` is `ready` but already names a pull request"
+                );
+                derived.insert(*id);
+            }
+            "blocked_on_dependencies" => assert!(
+                !unlanded.is_empty(),
+                "DAP stage `{id}` is blocked but every dependency has landed"
+            ),
+            _ => {}
+        }
+    }
+
+    let rules = train.get("rules").ok_or_else(|| io::Error::other("train lacks rules"))?;
+    assert_eq!(
+        string_set(rules, "current_dap_frontier")?,
+        derived,
+        "declared DAP frontier drifted from the frontier derived from landed dependencies"
+    );
+    Ok(())
+}
+
 #[test]
 fn landed_stages_never_depend_on_unlanded_stages() -> Result<(), Box<dyn Error>> {
     let train = load_train()?;

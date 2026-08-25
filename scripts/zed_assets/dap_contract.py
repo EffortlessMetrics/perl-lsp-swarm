@@ -120,6 +120,12 @@ def _validate_bindings(bindings: dict[str, Any], repo_root: Path | None) -> None
     if projection.get("debug_binary") != DAP_ADAPTER_ID:
         raise ReceiptError("projection binding must name the perl-dap debug binary")
 
+    # The binding digests are structural identity, not optional context: they
+    # must be exact sha256 values even when the caller has no repository tree
+    # to recompute them against.
+    for key in ("topology", "zed_adapter_projection"):
+        parse_digest(bindings[key].get("sha256"), f"contract bindings {key} sha256")
+
     if repo_root is None:
         return
     for key, path in (
@@ -127,7 +133,6 @@ def _validate_bindings(bindings: dict[str, Any], repo_root: Path | None) -> None
         ("zed_adapter_projection", projection.get("path")),
     ):
         recorded = bindings[key].get("sha256")
-        parse_digest(recorded, f"contract bindings {key} sha256")
         subject = repo_root / str(path)
         if not subject.is_file():
             raise ReceiptError(
@@ -170,6 +175,14 @@ def _validate_row(row: dict[str, Any], index: int, version: str) -> None:
     if not isinstance(target, str) or not target:
         raise ReceiptError(f"target row {index} lacks target")
     validate_single_component(target, f"target row {index} target")
+
+    # The os/architecture projection is load-bearing for the matching-host
+    # proof, so every row must carry exact canonical values — a missing or
+    # free-form value can never authorize an execution claim later.
+    if row.get("os") not in {"linux", "macos", "windows"}:
+        raise ReceiptError(f"target row {index} lacks a canonical os projection")
+    if row.get("architecture") not in {"x86_64", "aarch64"}:
+        raise ReceiptError(f"target row {index} lacks a canonical architecture projection")
 
     if disposition != "managed":
         if disposition not in {"path_only", "deferred", "unsupported"}:

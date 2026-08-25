@@ -39,12 +39,14 @@ EXPECTED_SCENARIOS: tuple[str, ...] = (
     "member_digest_mismatch_preserves_known_good",
     "unsafe_archive_path_preserves_known_good",
     "duplicate_member_preserves_known_good",
+    "missing_member_preserves_known_good",
     "foreign_executable_member_preserves_known_good",
     "partial_download_preserves_known_good",
     "extraction_failure_preserves_known_good",
     "launch_failure_preserves_known_good",
     "protocol_impurity_preserves_known_good",
     "promote_failure_preserves_known_good",
+    "manifest_failure_preserves_known_good",
     "cleanup_stays_inside_the_perl_dap_family",
 )
 
@@ -138,15 +140,18 @@ class ManagedDapCache:
         version: str,
         verify_process: Callable[[Path], None] | None = None,
         simulate_promote_failure: bool = False,
+        simulate_manifest_failure: bool = False,
     ) -> Path:
         """Install one candidate release row, preserving known-good on failure.
 
-        The candidate is staged in a private `.tmp` sibling, verified against
-        the exact release/member digests, and promoted through a
-        retire-and-swap: the incumbent is moved aside, the staged tree is
-        renamed into place, and any promote failure rolls the incumbent back
-        before the error surfaces, so the durable directory and the current
-        selection are never simultaneously absent.
+        The candidate is staged in a private `.tmp` sibling at the exact
+        archive-member path, verified against the exact release/member
+        digests, and committed through a retire-and-swap: the incumbent is
+        moved aside, the staged tree is renamed into place, the selection
+        manifest is written, and only then is the retired incumbent deleted.
+        Any promote or manifest failure rolls the incumbent back before the
+        error surfaces, so the durable directory tree and the current
+        selection are never simultaneously inconsistent.
         """
         name = row.get("asset_name")
         matches = assets_by_name.get(str(name), [])
@@ -182,6 +187,13 @@ class ManagedDapCache:
                 staging,
                 bool(row["make_executable"]),
             )
+            # Keep the exact archive-member path inside the managed tree so
+            # the installed projection matches the contract layout instead
+            # of a flattened basename.
+            nested = staging / str(row["archive_member"])
+            nested.parent.mkdir(parents=True, exist_ok=True)
+            binary.rename(nested)
+            binary = nested
             binary_digest = sha256_file(binary)
             if binary_digest != row["member_sha256"]:
                 raise ReceiptError(
@@ -206,10 +218,28 @@ class ManagedDapCache:
                 if simulate_promote_failure:
                     raise OSError("simulated promote failure")
                 os.rename(staging, version_dir)
+                if simulate_manifest_failure:
+                    raise OSError("simulated manifest write failure")
+                self._write_current(
+                    {
+                        "version": version,
+                        "target": target,
+                        "asset_name": str(name),
+                        "asset_digest": row["asset_digest"],
+                        "archive_member": row["archive_member"],
+                        "member_sha256": row["member_sha256"],
+                        "installed_binary": str(
+                            (version_dir / str(row["archive_member"])).relative_to(self.root)
+                        ).replace("\\", "/"),
+                    }
+                )
             except BaseException as error:
                 if incumbent_retired:
+                    if version_dir.exists():
+                        shutil.rmtree(version_dir, ignore_errors=True)
                     os.rename(retired, version_dir)
-                raise ReceiptError(f"promote_failure: {error}") from error
+                self.current_manifest_path().with_suffix(".json.tmp").unlink(missing_ok=True)
+                raise ReceiptError(f"commit_failure: {error}") from error
             if incumbent_retired:
                 shutil.rmtree(retired, ignore_errors=True)
         except ReceiptError:
@@ -219,20 +249,7 @@ class ManagedDapCache:
             shutil.rmtree(staging, ignore_errors=True)
             raise ReceiptError(f"extraction_failure: {error}") from error
 
-        self._write_current(
-            {
-                "version": version,
-                "target": target,
-                "asset_name": str(name),
-                "asset_digest": row["asset_digest"],
-                "archive_member": row["archive_member"],
-                "member_sha256": row["member_sha256"],
-                "installed_binary": str(
-                    (version_dir / binary.name).relative_to(self.root)
-                ).replace("\\", "/"),
-            }
-        )
-        return version_dir / binary.name
+        return version_dir / str(row["archive_member"])
 
     # -- cleanup ---------------------------------------------------------------
 
@@ -358,6 +375,18 @@ def run_recovery_scenarios(root: Path) -> dict[str, Any]:
         wrong_target_row,
         {wrong_target_archive.name: [wrong_target_archive]},
         "ambiguous perl-dap member",
+    )
+
+    # -- a member-free archive: no executable ships at all -------------------
+    no_member_archive = build_tar(
+        scenario_root / "no-member.tar.gz", {f"{package}/README.md": b"docs only"}
+    )
+    no_member_row = good_row(version, target, no_member_archive, _digest_bytes(perl_dap))
+    expect_preserved(
+        "missing_member_preserves_known_good",
+        no_member_row,
+        {no_member_archive.name: [no_member_archive]},
+        "lacks required perl-dap member",
     )
 
     # -- wrong-product archive: only the perllsp member ships ------------------
@@ -493,28 +522,34 @@ def run_recovery_scenarios(root: Path) -> dict[str, Any]:
         verify_process=impure_protocol,
     )
 
-    # -- promote failure: the incumbent must roll back into place ----------
+    # -- promote and manifest commit failures: the incumbent must roll back --
     before_selection = cache.current()
     before_snapshot = fingerprint(cache.root)
-    try:
-        cache.install(
-            gate_row,
-            {gate_archive.name: [gate_archive]},
-            version,
-            simulate_promote_failure=True,
-        )
-        promote_preserved = False
-        promote_detail = "promote failure was accepted"
-    except ReceiptError as error:
-        message = str(error)
-        incumbent_intact = (
-            cache.current() == before_selection
-            and fingerprint(cache.root) == before_snapshot
-            and (scenario_root / "selection" / f"{DAP_MANAGED_PREFIX}{version}-{target}").is_dir()
-        )
-        promote_preserved = "promote_failure" in message and incumbent_intact
-        promote_detail = message
-    record("promote_failure_preserves_known_good", promote_preserved, promote_detail)
+
+    def expect_commit_preserved(scenario: str, manifest_failure: bool) -> None:
+        try:
+            cache.install(
+                gate_row,
+                {gate_archive.name: [gate_archive]},
+                version,
+                simulate_promote_failure=not manifest_failure,
+                simulate_manifest_failure=manifest_failure,
+            )
+            preserved = False
+            detail = "commit failure was accepted"
+        except ReceiptError as error:
+            message = str(error)
+            incumbent_intact = (
+                cache.current() == before_selection
+                and fingerprint(cache.root) == before_snapshot
+                and (scenario_root / "selection" / f"{DAP_MANAGED_PREFIX}{version}-{target}").is_dir()
+            )
+            preserved = "commit_failure" in message and incumbent_intact
+            detail = message
+        record(scenario, preserved, detail)
+
+    expect_commit_preserved("promote_failure_preserves_known_good", manifest_failure=False)
+    expect_commit_preserved("manifest_failure_preserves_known_good", manifest_failure=True)
 
     # -- cleanup boundary -----------------------------------------------------------
     cleanup_root = scenario_root / "cleanup"

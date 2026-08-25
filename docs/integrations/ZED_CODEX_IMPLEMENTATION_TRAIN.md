@@ -312,6 +312,7 @@ Add the smallest current Zed extension API manifest/schema/callback/configuratio
 
 **Depends on sidecar:** D01.
 **State:** evidence merged via PR #12333; the committed matching-host receipt (windows-x86_64, release `v0.17.0`) stays current against the checked projection, and the linux/macOS rows remain `managed_extracted_not_executed` until matching hosts execute them.
+
 Extend or reuse canonical read-only public-asset machinery for `product = perl-dap` without weakening the `perllsp` discriminator. Execute matching-host public adapter binaries, retain cross-built non-execution, prove exact release/target/archive/member/process identity and known-good preservation, and emit per-target plus aggregate receipts.
 
 #7980/#8678 are `perllsp`-only. They cannot satisfy DA01.
