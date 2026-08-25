@@ -89,18 +89,25 @@ impl Evaluator {
 
         match &node.kind {
             NodeKind::ExpressionStatement { expression } => self.eval(expression, depth + 1),
-            NodeKind::Number { value } => parse_integer(value).map_or(AbstractValue::Unknown, |value| {
-                AbstractValue::Scalar(ScalarValue::Integer(value))
-            }),
+            NodeKind::Number { value } => parse_integer(value)
+                .map_or(AbstractValue::Unknown, |value| {
+                    AbstractValue::Scalar(ScalarValue::Integer(value))
+                }),
             NodeKind::String { value, interpolated } if !interpolated => {
-                let Some(value) = unquote(value) else {
+                let Some(value) = decode_literal(value) else {
                     return AbstractValue::Unknown;
                 };
                 if value.len() > self.budget.max_string_length {
                     AbstractValue::OverBudget
                 } else {
-                    AbstractValue::Scalar(ScalarValue::String(value.to_owned()))
+                    AbstractValue::Scalar(ScalarValue::String(value))
                 }
+            }
+            // Backtick capture (`qx{...}`) is stored as an interpolated
+            // string, but its value is runtime command output, not the
+            // source spelling: classify it as a declared dynamic boundary.
+            NodeKind::String { value, interpolated: true } if value.starts_with('`') => {
+                AbstractValue::Dynamic
             }
             NodeKind::Undef => AbstractValue::Scalar(ScalarValue::Undef),
             NodeKind::ArrayLiteral { elements } => self.eval_array(elements, depth),
@@ -120,13 +127,21 @@ impl Evaluator {
     }
 
     fn eval_array(&self, elements: &[Node], depth: usize) -> AbstractValue {
-        if elements.len() > self.budget.max_alternatives {
-            return AbstractValue::OverBudget;
-        }
-        let mut values = Vec::with_capacity(elements.len());
+        // Alternatives are a set, matching `join`'s semantics: duplicates
+        // collapse while evaluating and `max_alternatives` bounds the number
+        // of distinct retained values, never the source element count.
+        let mut values: Vec<ScalarValue> = Vec::new();
         for element in elements {
             match self.eval(element, depth + 1) {
-                AbstractValue::Scalar(value) => values.push(value),
+                AbstractValue::Scalar(value) => {
+                    if values.contains(&value) {
+                        continue;
+                    }
+                    if values.len() >= self.budget.max_alternatives {
+                        return AbstractValue::OverBudget;
+                    }
+                    values.push(value);
+                }
                 AbstractValue::Finite(_) => return AbstractValue::Unknown,
                 AbstractValue::OverBudget => return AbstractValue::OverBudget,
                 AbstractValue::Dynamic => return AbstractValue::Dynamic,
@@ -159,7 +174,10 @@ impl Evaluator {
                 a.checked_mul(b).map_or(AbstractValue::Unknown, scalar_integer)
             }
             ("/", ScalarValue::Integer(a), ScalarValue::Integer(b)) if b != 0 => {
-                if a % b == 0 {
+                // `checked_rem` (not `%`): `i128::MIN % -1` would panic before
+                // the widening decision, and the checked form returns `None`
+                // so the pair widens to `Unknown` instead.
+                if a.checked_rem(b) == Some(0) {
                     a.checked_div(b).map_or(AbstractValue::Unknown, scalar_integer)
                 } else {
                     AbstractValue::Unknown
@@ -275,22 +293,58 @@ fn format_scalar(value: &ScalarValue) -> String {
     }
 }
 
-fn unquote(value: &str) -> Option<&str> {
-    if value.len() > 1 && value.starts_with('q') && !value.starts_with("qq") {
+/// Decode one non-interpolated string literal exactly, or return `None`
+/// when the spelling cannot be proven from source alone.
+///
+/// Quote-like operators (`q{...}`, `qw{...}`, ...) keep their full lexeme in
+/// the AST, and their delimiter/escape decoding is out of scope here, so
+/// they classify as `Unknown`. Double-quoted literals carry a richer escape
+/// set than this evaluator decodes, so only escape-free spellings publish.
+fn decode_literal(raw: &str) -> Option<String> {
+    if raw.len() > 1 && raw.starts_with('q') && !raw.starts_with("qq") {
         return None;
     }
-    Some(value
-        .strip_prefix('"')
-        .and_then(|value| value.strip_suffix('"'))
-        .or_else(|| value.strip_prefix('\'').and_then(|value| value.strip_suffix('\'')))
-        .unwrap_or(value))
+    if let Some(content) = raw.strip_prefix('\'').and_then(|value| value.strip_suffix('\'')) {
+        return decode_single_quoted(content);
+    }
+    if let Some(content) = raw.strip_prefix('"').and_then(|value| value.strip_suffix('"')) {
+        return if content.contains('\\') { None } else { Some(content.to_owned()) };
+    }
+    // Bare content with an unknown quoting context: escape-free only.
+    if raw.contains('\\') { None } else { Some(raw.to_owned()) }
+}
+
+/// Perl single-quote escape semantics, exactly: `\\` decodes to a backslash
+/// and `\'` to a quote; every other backslash sequence is literal (the
+/// backslash is retained), and a trailing lone backslash is not a valid
+/// literal spelling.
+fn decode_single_quoted(content: &str) -> Option<String> {
+    let mut decoded = String::with_capacity(content.len());
+    let mut chars = content.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some('\\') => decoded.push('\\'),
+                Some('\'') => decoded.push('\''),
+                Some(other) => {
+                    decoded.push('\\');
+                    decoded.push(other);
+                }
+                None => return None,
+            }
+        } else {
+            decoded.push(ch);
+        }
+    }
+    Some(decoded)
 }
 
 fn parse_integer(value: &str) -> Option<i128> {
     let value = value.replace('_', "");
     let (negative, value) =
         value.strip_prefix('-').map_or((false, value.as_str()), |value| (true, value));
-    let parsed = if let Some(value) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
+    let parsed = if let Some(value) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X"))
+    {
         i128::from_str_radix(value, 16).ok()
     } else if let Some(value) = value.strip_prefix("0b").or_else(|| value.strip_prefix("0B")) {
         i128::from_str_radix(value, 2).ok()
@@ -316,9 +370,28 @@ fn numeric_equal(left: &ScalarValue, right: &ScalarValue) -> Option<bool> {
 fn numeric_value(value: &ScalarValue) -> Option<i128> {
     match value {
         ScalarValue::Integer(value) => Some(*value),
-        ScalarValue::String(value) => parse_integer(value),
+        ScalarValue::String(value) => numify_string(value),
         ScalarValue::Undef => Some(0),
     }
+}
+
+/// Conservative numeric numification of a proven string scalar.
+///
+/// Perl numifies strings decimally at runtime; source-literal spellings
+/// (`0x`, `0b`, leading-zero octal, `_` separators) do not apply to a
+/// runtime string, so reusing `parse_integer` here would fabricate values
+/// (`'0x10'` would fold to 16 although Perl numifies it to 0). Only plain
+/// decimal digits (and the empty string, which numifies to 0) are proven;
+/// every other spelling widens to `None` so the comparison publishes
+/// `Unknown` instead of a fabricated branch.
+fn numify_string(value: &str) -> Option<i128> {
+    if value.is_empty() {
+        return Some(0);
+    }
+    if value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return value.parse().ok();
+    }
+    None
 }
 
 fn string_equal(left: &ScalarValue, right: &ScalarValue) -> Option<bool> {
@@ -369,10 +442,7 @@ mod tests {
 
     #[test]
     fn widening_is_explicit_and_budgeted() {
-        let budget = EvaluationBudget {
-            max_alternatives: 1,
-            ..EvaluationBudget::default()
-        };
+        let budget = EvaluationBudget { max_alternatives: 1, ..EvaluationBudget::default() };
         assert_eq!(
             evaluate_with_budget(&expression("$flag ? 'Foo' : 'Bar';"), budget),
             AbstractValue::OverBudget
@@ -386,5 +456,105 @@ mod tests {
             ])
         );
     }
-}
+    #[test]
+    fn single_quote_escapes_decode_exactly() {
+        // `\'` decodes to a quote and `\\` to a backslash; the published
+        // value is the Perl value, not the raw token text.
+        assert_eq!(
+            evaluate(&expression(r"'it\'s';")),
+            AbstractValue::Scalar(ScalarValue::String("it's".into()))
+        );
+        assert_eq!(
+            evaluate(&expression(r"'a\\b';")),
+            AbstractValue::Scalar(ScalarValue::String(r"a\b".into()))
+        );
+        // Other backslash sequences are literal in single quotes.
+        assert_eq!(
+            evaluate(&expression(r"'a\tb';")),
+            AbstractValue::Scalar(ScalarValue::String("a\\tb".into()))
+        );
+        // Double-quoted literals are interpolating contexts (the parser
+        // marks them interpolated), so they widen to Unknown regardless of
+        // escape content; the exact decoder never sees them.
+        assert_eq!(evaluate(&expression(r#""plain";"#)), AbstractValue::Unknown);
+        assert_eq!(evaluate(&expression(r#""a\\b";"#)), AbstractValue::Unknown);
+    }
+
+    #[test]
+    fn remainder_overflow_pair_neither_panics_nor_fabricates() {
+        // i128::MIN is reachable via checked multiplication; `MIN % -1`
+        // must widen instead of panicking (the pre-fix `%` panicked before
+        // the widening decision).
+        let source = "(-85070591730234615865843651857942052864 * 2) / -1;";
+        assert_eq!(evaluate(&expression(source)), AbstractValue::Unknown);
+        // Integral quotients still fold, including negative divisors.
+        assert_eq!(evaluate(&expression("6 / -2;")), scalar_integer(-3));
+        // Fractional quotients widen rather than truncating.
+        assert_eq!(evaluate(&expression("3 / 2;")), AbstractValue::Unknown);
+    }
+
+    #[test]
+    fn array_alternatives_deduplicate_before_the_budget() {
+        // Alternatives are a set: duplicates collapse while evaluating and
+        // the budget bounds distinct values, never the source element count.
+        assert_eq!(
+            evaluate(&expression("(1, 1, 1);")),
+            AbstractValue::Finite(vec![ScalarValue::Integer(1)])
+        );
+        let one_alternative =
+            EvaluationBudget { max_alternatives: 1, ..EvaluationBudget::default() };
+        assert_eq!(
+            evaluate_with_budget(&expression("(1, 1, 1);"), one_alternative),
+            AbstractValue::Finite(vec![ScalarValue::Integer(1)])
+        );
+        assert_eq!(
+            evaluate_with_budget(&expression("(1, 1, 2);"), one_alternative),
+            AbstractValue::OverBudget
+        );
+        assert_eq!(
+            evaluate(&expression("(1, 2, 3);")),
+            AbstractValue::Finite(vec![
+                ScalarValue::Integer(1),
+                ScalarValue::Integer(2),
+                ScalarValue::Integer(3)
+            ])
+        );
+    }
+
+    #[test]
+    fn legacy_leading_zero_literals_decode_as_octal() {
+        // Source literals follow Perl's legacy octal spelling; a decimal
+        // fallback would publish 755 for `0755` although Perl evaluates 493.
+        assert_eq!(evaluate(&expression("0755;")), scalar_integer(493));
+        assert_eq!(evaluate(&expression("0644;")), scalar_integer(420));
+        // Invalid octal digits widen instead of fabricating a decimal value.
+        assert_eq!(evaluate(&expression("08;")), AbstractValue::Unknown);
+        assert_eq!(evaluate(&expression("0;")), scalar_integer(0));
+    }
+
+    #[test]
+    fn equality_coerces_per_operator_without_fabricating() {
+        // Numeric coercion: `"01" == 1` is true because Perl numifies the
+        // string decimally (not octally) at runtime.
+        assert_eq!(evaluate(&expression("'01' == 1;")), scalar_integer(1));
+        assert_eq!(evaluate(&expression("'01' != 1;")), scalar_integer(0));
+        // String coercion: `"1" eq 1` compares both sides as strings.
+        assert_eq!(evaluate(&expression("'1' eq 1;")), scalar_integer(1));
+        assert_eq!(evaluate(&expression("'1' ne 1;")), scalar_integer(0));
+        // Spellings whose numification is not proven (Perl numifies `'0x10'`
+        // to 0, unlike the source literal `0x10`) widen instead of folding a
+        // fabricated branch.
+        assert_eq!(evaluate(&expression("'0x10' == 0;")), AbstractValue::Unknown);
+        assert_eq!(evaluate(&expression("'' == 0;")), scalar_integer(1));
+    }
+
+    #[test]
+    fn runtime_boundaries_stay_distinct_from_missing_cases() {
+        // Filehandle reads and glob expansion depend on runtime state.
+        assert_eq!(evaluate(&expression("<STDIN>;")), AbstractValue::Dynamic);
+        assert_eq!(evaluate(&expression("<*.pm>;")), AbstractValue::Dynamic);
+        // Backtick capture is command output: a declared dynamic boundary,
+        // not an unknown evaluation.
+        assert_eq!(evaluate(&expression("`date`;")), AbstractValue::Dynamic);
+    }
 }
