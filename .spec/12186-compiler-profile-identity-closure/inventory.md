@@ -49,8 +49,11 @@ module and its tests are the executable authority.
     verbatim preservation of every imported row and limitation.
   - `canonical_semantic_text` / `semantic_fingerprint`: deterministic,
     insertion-order independent, sensitive to every semantic field.
-  - `required_applicable_row_ids`: the conjunctive required set; no aggregate
-    roll-up figure exists.
+  - `required_unconditional_row_ids`: the conjunctive unconditional required
+    set; `conditional_row_triggers`: conditional rows with their triggers,
+    resolved by the downstream evaluator; no aggregate roll-up figure exists.
+  - `ClaimCeiling::strongest_claim`: inspectable per-ceiling claim data; no
+    variant maps to support, release, or publication authority.
 
 ## Shape fixtures (representability only, not the checked inventory)
 

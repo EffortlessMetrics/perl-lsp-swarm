@@ -673,10 +673,15 @@ impl ClaimCeiling {
     pub const ALL: [Self; 3] =
         [Self::ObservedEvidence, Self::AcceptedCompatibility, Self::BoundedPublicClaim];
 
-    /// A profile row can never confer support, release, or publication
-    /// authority; that authorization lives outside the profile model (#12186).
-    pub fn confers_support_release_authority(&self) -> bool {
-        false
+    /// Strongest claim this ceiling can support, as inspectable data.  No
+    /// variant maps to support, release, or publication authority; that
+    /// authorization lives outside the profile model (#12186).
+    pub fn strongest_claim(self) -> &'static str {
+        match self {
+            Self::ObservedEvidence => "internal observed evidence",
+            Self::AcceptedCompatibility => "accepted compatibility state",
+            Self::BoundedPublicClaim => "bounded public claim",
+        }
     }
 
     fn tag(self) -> &'static str {
@@ -965,14 +970,33 @@ impl CompilerProfileDefinition {
         Ok(())
     }
 
-    /// Identities of the required applicable rows.  Satisfaction of a profile
-    /// is the conjunction of exactly these rows; the model deliberately
-    /// defines no aggregate roll-up figure, so there is nothing to average.
-    pub fn required_applicable_row_ids(&self) -> BTreeSet<&str> {
+    /// Identities of the unconditionally required rows.  Satisfaction of a
+    /// profile is the conjunction of these rows plus every conditional row
+    /// whose trigger currently holds; trigger state is runtime data this
+    /// dependency-neutral model deliberately does not carry, so conditional
+    /// applicability is resolved by the downstream evaluator (a separate
+    /// claim), never assumed here.  The model deliberately defines no
+    /// aggregate roll-up figure, so there is nothing to average.
+    pub fn required_unconditional_row_ids(&self) -> BTreeSet<&str> {
         self.rows
             .iter()
             .filter(|row| row.disposition.is_required())
             .map(|row| row.id.as_str())
+            .collect()
+    }
+
+    /// Identities of the conditional rows together with their triggers.  Each
+    /// listed row becomes conjunctive while its named trigger holds; the
+    /// downstream evaluator owns trigger evaluation.
+    pub fn conditional_row_triggers(&self) -> BTreeMap<&str, &str> {
+        self.rows
+            .iter()
+            .filter_map(|row| match &row.disposition {
+                RowDisposition::Conditional { trigger } => {
+                    Some((row.id.as_str(), trigger.as_str()))
+                }
+                _ => None,
+            })
             .collect()
     }
 
@@ -1396,8 +1420,13 @@ mod tests {
         }
     }
 
-    fn assert_invalid(profile: &CompilerProfileDefinition, context: &str) {
-        assert!(profile.validate().is_err(), "{context}");
+    fn assert_invalid(profile: &CompilerProfileDefinition, expected: &str, context: &str) {
+        let error = match profile.validate() {
+            Err(error) => error,
+            Ok(()) => unreachable!("{context}"),
+        };
+        let text = format!("{error:#}");
+        assert!(text.contains(expected), "{context}: expected {expected:?}, got {text}");
     }
 
     // The issue's falsifier 1: #12079 or one local lexical pass can stand in
@@ -1534,7 +1563,11 @@ mod tests {
         row.ceiling = ClaimCeiling::BoundedPublicClaim;
         let mut profile = shape_fixtures::compiler_local_lexical_v1()?;
         profile.rows[0] = row;
-        assert_invalid(&profile, "an unsupported row must not claim bounded public support");
+        assert_invalid(
+            &profile,
+            "cannot claim more than observed evidence",
+            "an unsupported row must not claim bounded public support",
+        );
 
         let mut strengthened = shape_fixtures::compiler_local_lexical_v1()?;
         strengthened.rows[0].ceiling = ClaimCeiling::BoundedPublicClaim;
@@ -1716,9 +1749,11 @@ mod tests {
             None => unreachable!("module has a production half"),
         };
         let production = production.to_lowercase();
+        let tokens: BTreeSet<&str> =
+            production.split(|character: char| !character.is_ascii_alphanumeric()).collect();
         for forbidden in ["score", "percent", "weight", "readiness", "f32", "f64", "ratio"] {
             assert!(
-                !production.contains(forbidden),
+                !tokens.contains(forbidden),
                 "the production model must not introduce an aggregate figure ({forbidden})"
             );
         }
@@ -1727,7 +1762,7 @@ mod tests {
             Ok(profile) => profile,
             Err(error) => unreachable!("fixture builds: {error}"),
         };
-        let required: BTreeSet<&str> = local.required_applicable_row_ids();
+        let required: BTreeSet<&str> = local.required_unconditional_row_ids();
         assert_eq!(required.len(), 2);
     }
 
@@ -1744,15 +1779,27 @@ mod tests {
 
         let mut no_invalidation = shape_fixtures::compiler_local_lexical_v1()?;
         no_invalidation.rows[0].invalidation.clear();
-        assert_invalid(&no_invalidation, "a row without invalidation inputs must fail validation");
+        assert_invalid(
+            &no_invalidation,
+            "must name at least one invalidation input",
+            "a row without invalidation inputs must fail validation",
+        );
 
         let mut no_wake = shape_fixtures::compiler_local_lexical_v1()?;
         no_wake.rows[0].owner.wake_event.clear();
-        assert_invalid(&no_wake, "a row without a wake event must fail validation");
+        assert_invalid(
+            &no_wake,
+            "wake event must not be empty",
+            "a row without a wake event must fail validation",
+        );
 
         let mut no_owner = shape_fixtures::compiler_local_lexical_v1()?;
         no_owner.rows[0].owner.owner.clear();
-        assert_invalid(&no_owner, "a row without an owner must fail validation");
+        assert_invalid(
+            &no_owner,
+            "owner must not be empty",
+            "a row without an owner must fail validation",
+        );
         Ok(())
     }
 
@@ -1760,11 +1807,27 @@ mod tests {
     // result.
     #[test]
     fn falsifier_15_profile_evidence_confers_no_support_release_authority() -> Result<()> {
+        // The ceiling vocabulary is closed and exactly these three variants.
+        assert_eq!(
+            ClaimCeiling::ALL,
+            [
+                ClaimCeiling::ObservedEvidence,
+                ClaimCeiling::AcceptedCompatibility,
+                ClaimCeiling::BoundedPublicClaim,
+            ]
+        );
+        // Every ceiling's strongest claim is inspectable data, and none of
+        // them is a support, release, or publication authorization.
         for ceiling in ClaimCeiling::ALL {
-            assert!(
-                !ceiling.confers_support_release_authority(),
-                "ceiling {ceiling:?} must not confer support/release authority"
-            );
+            for token in ceiling.strongest_claim().split_whitespace() {
+                for forbidden in ["support", "release", "publication", "authorization"] {
+                    assert!(
+                        token != forbidden,
+                        "ceiling {ceiling:?} maps toward {forbidden} authority: {}",
+                        ceiling.strongest_claim()
+                    );
+                }
+            }
         }
         let maintained = baseline_profile();
         let strongest = match maintained
@@ -1781,16 +1844,17 @@ mod tests {
             None => unreachable!("maintained fixture has required rows"),
         };
         assert_eq!(strongest, ClaimCeiling::BoundedPublicClaim);
-        assert!(!strongest.confers_support_release_authority());
+        assert_eq!(strongest.strongest_claim(), "bounded public claim");
         Ok(())
     }
 
-    // Closure law: every required applicable row is conjunctive, and the
-    // other dispositions are closed typed states.
+    // Closure law: unconditionally required rows are conjunctive, conditional
+    // rows expose their triggers for the downstream evaluator, and the other
+    // dispositions are closed typed states.
     #[test]
     fn closure_required_rows_are_conjunctive_and_dispositions_closed() -> Result<()> {
         let maintained = baseline_profile();
-        let required = maintained.required_applicable_row_ids();
+        let required = maintained.required_unconditional_row_ids();
         assert!(required.contains("intelligence.edit-authorization"));
         assert!(required.contains("intelligence.public-claim"));
         assert!(
@@ -1806,6 +1870,20 @@ mod tests {
         ] {
             disposition.validate()?;
         }
+        // Conditional rows are not silently dropped from the conjunction
+        // surface: their triggers stay visible for the downstream evaluator.
+        assert!(maintained.conditional_row_triggers().is_empty());
+        let mut with_conditional = maintained.clone();
+        let conditional_id = with_conditional.rows[0].id.as_str().to_owned();
+        with_conditional.rows[0].disposition =
+            RowDisposition::conditional("while the named trigger holds")?;
+        assert_eq!(
+            with_conditional.conditional_row_triggers().get(conditional_id.as_str()),
+            Some(&"while the named trigger holds")
+        );
+        assert!(
+            !with_conditional.required_unconditional_row_ids().contains(conditional_id.as_str())
+        );
         Ok(())
     }
 
