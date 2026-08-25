@@ -714,10 +714,19 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let suppressions = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))?;
     let head_extents = HeadLineExtents::from_committed_diff(repo, &diff_receipt);
     // Attribution basis for the new-gap count (#11690): findings must sit in a
-    // changed workspace package or one of its real dependents. Metadata failure
-    // keeps every finding counted — the gate never under-attributes on an
-    // unreadable graph.
-    let attribution_scope = attribution_scope_for_repo(repo, &diff_receipt).ok();
+    // changed workspace package or one of its real dependents. The production
+    // surface (#12267 review repair) decides compiled-into-production status
+    // for the structural non-production filter. Both derive from the same
+    // cargo metadata run; a metadata failure keeps every finding counted —
+    // the gate never under-attributes on an unreadable graph.
+    let metadata = crate::tasks::ci_scope::load_metadata(repo).ok();
+    let changed_paths = committed_diff_entry_paths(&diff_receipt.entries);
+    let attribution_scope = metadata
+        .as_ref()
+        .and_then(|metadata| dependency_attribution_scope(metadata, &changed_paths).ok());
+    let production_surface = metadata
+        .as_ref()
+        .and_then(|metadata| production_surface_from_metadata(repo, metadata).ok());
     let packet = pr_evidence_packet_with_count(
         options,
         &check_value,
@@ -727,6 +736,7 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
         changed_file_count,
         Some(&head_extents),
         attribution_scope.as_ref(),
+        production_surface.as_ref(),
     );
     validate_pr_evidence_packet(&packet, options, changed_file_count, true, &base_sha, &head_sha)?;
     write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&packet)?)?;
@@ -804,10 +814,12 @@ struct RiprPrSummaryCounts {
     /// packages' dependent closure (#11690). Dropped before bucket counting and
     /// reported for transparency; not a policy suppression.
     out_of_dependency_graph: usize,
-    /// Findings on non-production paths (#11690) — archived sources and Cargo
-    /// integration-test directories, per [`is_non_production_path`]. Dropped
-    /// from the buckets before counting and reported for transparency; not a
-    /// policy suppression.
+    /// Findings on non-production paths (#11690) — archived sources and
+    /// Cargo integration-test files no production artifact compiles, per
+    /// [`classify_non_production`]. Dropped from the buckets before counting
+    /// and reported for transparency; not a policy suppression. Takes
+    /// precedence over dependency-graph attribution so an archived seam
+    /// reports here even when the graph would also drop it.
     non_production_excluded: usize,
     /// Same, for findings whose classification was not recognized. Decrements
     /// `severe_gaps` directly, like `suppressed_unclassified`.
@@ -820,6 +832,7 @@ fn ripr_pr_summary_counts(
     suppressions: &RiprSuppressionRules,
     head_extents: Option<&HeadLineExtents>,
     attribution: Option<&DependencyAttribution>,
+    production_surface: Option<&ProductionSurface>,
 ) -> RiprPrSummaryCounts {
     let summary_counts = RiprPrSummaryCounts {
         weakly_exposed: count_field(check_summary, "weakly_exposed"),
@@ -855,15 +868,20 @@ fn ripr_pr_summary_counts(
             Some("no_static_path") => Some("no_static_path"),
             _ => None,
         };
-        // A finding is discounted for exactly one reason: suppression policy takes
-        // precedence so `suppressed_by_policy` keeps its established meaning, and
-        // head-range filtering (#6260) applies only to what policy left standing,
-        // and the non-production filter (#11690) only to what both left standing.
+        // A finding is discounted for exactly one reason, in precedence
+        // order: suppression policy keeps `suppressed_by_policy` meaning what
+        // it always meant, head-range filtering (#6260) applies only to what
+        // policy left standing, the non-production filter (#11690) only to
+        // what both left standing, and dependency-graph attribution last — so
+        // an archived seam reports as `non_production_excluded` even though
+        // the graph would also drop it (#12267): the receipt attributes the
+        // advertised basis, not whichever branch happened to run first.
         let outside = head_extents.is_some_and(|extents| extents.finding_is_outside_head(finding));
-        // No resolvable path is never non-production: the structural filter, like
-        // #6260, must not take a fail-open shortcut on ambiguous input.
-        let non_production_surface = ripr_finding_path(finding)
-            .is_some_and(|path| is_non_production_path(&normalize_suppression_match_path(&path)));
+        // No resolvable path — and no compiled-into-production view — is
+        // never non-production: the structural filter, like #6260, must not
+        // take a fail-open shortcut on ambiguous input.
+        let non_production_kind = ripr_finding_path(finding)
+            .and_then(|path| classify_non_production(production_surface, &path));
         // Path suppression is checked BEFORE the classification guard (#1346).
         // A finding whose classification is unrecognized must still be suppressed if its
         // path matches a policy rule — skipping only path-unknown findings, not
@@ -875,7 +893,7 @@ fn ripr_pr_summary_counts(
             } else if outside {
                 outside_head.outside_head_revision += 1;
                 outside_head.outside_head_unclassified += 1;
-            } else if non_production_surface {
+            } else if non_production_kind.is_some() {
                 non_production.non_production_excluded += 1;
                 non_production.non_production_unclassified += 1;
             }
@@ -884,12 +902,14 @@ fn ripr_pr_summary_counts(
         let policy_suppressed = suppression_matches_finding(suppressions, finding);
         if !policy_suppressed
             && !outside
+            && non_production_kind.is_none()
             && attribution.is_some_and(|attribution| attribution.finding_is_out_of_graph(finding))
         {
             // #11690: the finding sits in a workspace package that does not
             // depend on any changed package (or outside every package). It is
             // dropped before bucket counting and reported for transparency.
-            // Policy suppression and head-revision filtering keep precedence.
+            // Policy suppression, head-revision filtering, and the structural
+            // non-production filter all keep precedence.
             out_of_graph_total += 1;
             match canonical {
                 "weakly_exposed" => out_of_graph_buckets.weakly_exposed += 1,
@@ -905,7 +925,7 @@ fn ripr_pr_summary_counts(
         } else if outside {
             outside_head.outside_head_revision += 1;
             &mut outside_head
-        } else if non_production_surface {
+        } else if non_production_kind.is_some() {
             non_production.non_production_excluded += 1;
             &mut non_production
         } else {
@@ -1405,17 +1425,6 @@ fn dependency_attribution_scope(
     }))
 }
 
-/// Resolve the live attribution scope for a repo checkout. Metadata failure is
-/// reported, never guessed around.
-fn attribution_scope_for_repo(
-    repo: &Path,
-    diff: &CommittedDiffReceipt,
-) -> Result<AttributionScope> {
-    let metadata = crate::tasks::ci_scope::load_metadata(repo)?;
-    let changed_paths = committed_diff_entry_paths(&diff.entries);
-    dependency_attribution_scope(&metadata, &changed_paths)
-}
-
 fn attribution_stamp(scope: Option<&AttributionScope>) -> Value {
     let Some(scope) = scope else {
         return json!({
@@ -1446,33 +1455,336 @@ fn normalize_suppression_match_path(path: &str) -> String {
         .map_or_else(|| normalized.to_string(), |index| normalized[index..].to_string())
 }
 
-/// True when a normalized finding path belongs to a surface that is not a
-/// production file for the new-gap basis (#11690).
+/// The basis stamped into packets that classify findings as non-production:
+/// a finding is excluded only when its file is provably outside the set of
+/// sources compiled into workspace artifacts (#11690, #12267 review).
+const NON_PRODUCTION_BASIS: &str = "compiled_into_workspace_artifacts";
+
+/// Graph source recorded alongside the basis so receipts stay honest about
+/// where the compiled-into-production decision came from.
+const NON_PRODUCTION_SOURCE: &str = "cargo_metadata_target_membership";
+
+/// Why a finding path is structurally non-production for the new-gap basis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NonProductionKind {
+    /// Archived sources under the repository's `archive/**`.
+    Archive,
+    /// A file under a Cargo integration-test directory that no production
+    /// artifact compiles.
+    IntegrationTest,
+}
+
+/// The compiled-into-production view of the workspace (#12267 review repair).
 ///
-/// Production for the blocking count means code a PR can be required to reveal:
-/// active sources compiled into workspace artifacts. Two structural classes are
-/// not production, independent of any mutable suppression policy:
+/// Production for the blocking count means code a PR can be required to
+/// reveal: active sources compiled into workspace artifacts. Membership is
+/// decided by target graph and include closure, not by pathname shape:
 ///
-/// - archived sources under `archive/**` — not active behavior, excluded "on
-///   principle" per #11690 (mirrors the `ripr-suppress-archive` policy kind
-///   `generated_or_non_production_surface`, but structural rather than
-///   policy-scoped so a policy edit alone can never re-inflate the basis);
-/// - files under a Cargo integration-test directory (a path component exactly
-///   `tests/`), e.g. `crates/perl-semantic-facts/tests/prop_json_roundtrip.rs`
-///   — the recurring `test_receipt_surface` class behind #6842's 162-finding
-///   block and the accumulating per-file suppressions. This repository has no
-///   production module directory named `tests` (`crates/*/src/tests` does not
-///   exist), so the component is unambiguous here.
+/// - the `src_path` of every workspace target whose kinds contain at least one
+///   production kind (anything other than `test`, `bench`, and `example`) — so
+///   an explicit `[[bin]]` whose path lives under `tests/` is production;
+/// - every `.rs` file under a workspace package's `src/` tree (a safe
+///   over-approximation: mislabeling a dead source as production only keeps a
+///   finding counted, the fail-closed direction);
+/// - the transitive textual include closure from those seeds: `#[path = "…"]`
+///   string-literal includes and plain `mod name;` sibling declarations. This
+///   is what marks `xtask/tests/support/emacs_host_runner.rs` (compiled into
+///   the exported `xtask::emacs_host_run` module) and the
+///   `xtask/tests/support/zed_*.rs` validator substrates (compiled into the
+///   `validate-zed-*` binaries) as production even though a `tests` component
+///   appears in their paths.
 ///
-/// The input must already be normalized by [`normalize_suppression_match_path`]
-/// so Windows/absolute/checkout-prefixed finding paths anchor correctly. A
-/// finding with no resolvable path is never classified non-production — the
-/// gate keeps failing closed on ambiguous input.
-fn is_non_production_path(path: &str) -> bool {
-    if path == "archive" || path.starts_with("archive/") {
-        return true;
+/// Limitations, kept honest by the receipt stamp: the closure is textual, not
+/// a cargo build graph — `include!`, macro-generated module paths, and
+/// multi-line `#[path]` attributes are not followed, and `#[cfg(test)] mod`
+/// declarations inside production files over-include their siblings (the safe
+/// direction). A `tests/`-located file compiled through an unfollowed
+/// mechanism would be misclassified as non-production.
+#[derive(Debug, Clone)]
+struct ProductionSurface {
+    /// Normalized (forward-slash) absolute host path of the workspace root,
+    /// from `cargo metadata`. Archive classification anchors here.
+    repo_root: String,
+    /// Repo-relative normalized paths of files compiled into production
+    /// workspace artifacts.
+    production_paths: BTreeSet<String>,
+}
+
+impl ProductionSurface {
+    #[cfg(test)]
+    fn from_parts(repo_root: &str, production_paths: &[&str]) -> Self {
+        ProductionSurface {
+            repo_root: repo_root.to_string(),
+            production_paths: production_paths.iter().map(|path| path.to_string()).collect(),
+        }
     }
-    path.split('/').any(|component| component == "tests")
+}
+
+/// Resolve a finding path (host-absolute or repo-relative) against the
+/// repository root. Absolute paths strip the workspace root prefix; a path
+/// that is absolute but outside the root resolves to `None` — fail closed —
+/// because no repo-relative classification is possible. Relative paths pass
+/// through. This deliberately does not reuse the earliest-anchor-substring
+/// normalization: a checkout under `/work/archive/perl-lsp-swarm` would
+/// otherwise normalize active sources to `archive/perl-lsp-swarm/...`.
+fn repo_relative_surface_path(surface: &ProductionSurface, raw_path: &str) -> Option<String> {
+    let normalized = normalize_path_text(raw_path);
+    // Windows verbatim prefixes (`//?/F:/...`) from directory walks and host
+    // tools must not defeat the root-prefix match against cargo's plain
+    // `F:/...` workspace root.
+    let normalized = normalized.strip_prefix("//?/").unwrap_or(&normalized);
+    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
+    let absolute = normalized.starts_with('/') || normalized.as_bytes().get(1) == Some(&b':');
+    if !absolute {
+        return Some(normalized.to_string());
+    }
+    let root = surface.repo_root.trim_end_matches('/');
+    normalized.strip_prefix(root).and_then(|rest| rest.strip_prefix('/')).map(str::to_string)
+}
+
+/// True when a finding path belongs to a surface that is not production for
+/// the new-gap basis (#11690).
+///
+/// Two structural classes are non-production, independent of any mutable
+/// suppression policy:
+///
+/// - archived sources under the repository's `archive/**` — anchored at the
+///   workspace root so an ancestor checkout directory named `archive` never
+///   classifies active sources as archived;
+/// - files under a Cargo integration-test directory (a path component exactly
+///   `tests/`) that the production surface does not compile — the recurring
+///   `test_receipt_surface` class behind #6842's 162-finding block. A
+///   `tests/`-located file that IS compiled into a production artifact (the
+///   `xtask::emacs_host_run` runner substrate, the `validate-zed-*` validator
+///   substrates) stays counted.
+///
+/// `None` (including when no production surface could be built, or the path
+/// cannot be resolved against the repository root) is never non-production:
+/// the gate keeps failing closed on ambiguous input, the same convention as
+/// #6260 and the dependency-graph filter.
+fn classify_non_production(
+    surface: Option<&ProductionSurface>,
+    raw_path: &str,
+) -> Option<NonProductionKind> {
+    let surface = surface?;
+    let path = repo_relative_surface_path(surface, raw_path)?;
+    if path == "archive" || path.starts_with("archive/") {
+        return Some(NonProductionKind::Archive);
+    }
+    if path.split('/').any(|component| component == "tests")
+        && !surface.production_paths.contains(&path)
+    {
+        return Some(NonProductionKind::IntegrationTest);
+    }
+    None
+}
+
+/// Build the production surface from cargo metadata and the repo checkout.
+/// Errors mean the surface could not be established; callers must then skip
+/// non-production classification entirely rather than guess.
+fn production_surface_from_metadata(repo: &Path, metadata: &Value) -> Result<ProductionSurface> {
+    let root = metadata
+        .get("workspace_root")
+        .and_then(Value::as_str)
+        .ok_or_else(|| eyre!("cargo metadata missing workspace_root"))?
+        .replace('\\', "/");
+    let packages = metadata
+        .get("packages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| eyre!("cargo metadata missing packages array"))?;
+    let mut surface = ProductionSurface { repo_root: root, production_paths: BTreeSet::new() };
+    let mut scan_queue: Vec<String> = Vec::new();
+    for package in packages {
+        let manifest = package.get("manifest_path").and_then(Value::as_str);
+        let package_dir =
+            manifest.map(|manifest| manifest.replace('\\', "/")).and_then(|manifest| {
+                manifest
+                    .strip_prefix(surface.repo_root.as_str())
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .and_then(|rest| rest.strip_suffix("/Cargo.toml"))
+                    .map(str::to_string)
+            });
+        // Target membership: a target with any production kind compiles its
+        // src_path into workspace artifacts, wherever that file lives.
+        for target in package.get("targets").and_then(Value::as_array).into_iter().flatten() {
+            let production_kind =
+                target.get("kind").and_then(Value::as_array).is_some_and(|kinds| {
+                    kinds.iter().any(|kind| {
+                        kind.as_str()
+                            .is_some_and(|kind| !matches!(kind, "test" | "bench" | "example"))
+                    })
+                });
+            if !production_kind {
+                continue;
+            }
+            let Some(src_path) = target.get("src_path").and_then(Value::as_str) else {
+                continue;
+            };
+            let resolved = repo_relative_surface_path(&surface, src_path);
+            if let Some(resolved) = resolved
+                && surface.production_paths.insert(resolved.clone())
+            {
+                scan_queue.push(resolved);
+            }
+        }
+        // Seed with the package's whole `src/` tree: a safe over-approximation
+        // that also gives the include closure its production starting points.
+        if let Some(package_dir) = package_dir {
+            let src_dir = repo.join(&package_dir).join("src");
+            if src_dir.is_dir() {
+                for entry in
+                    walkdir::WalkDir::new(&src_dir).into_iter().filter_map(|entry| entry.ok())
+                {
+                    let is_source = entry.file_type().is_file()
+                        && entry.path().extension().is_some_and(|ext| ext == "rs");
+                    if !is_source {
+                        continue;
+                    }
+                    let entry_path = entry.path().display().to_string();
+                    if let Some(resolved) = repo_relative_surface_path(&surface, &entry_path)
+                        && surface.production_paths.insert(resolved.clone())
+                    {
+                        scan_queue.push(resolved);
+                    }
+                }
+            }
+        }
+    }
+    if surface.production_paths.is_empty() {
+        bail!("cargo metadata resolved no workspace production sources");
+    }
+    scan_include_closure(repo, &mut surface.production_paths, scan_queue);
+    Ok(surface)
+}
+
+/// Follow `#[path = "…"]` includes and plain `mod name;` declarations from the
+/// seeded production files so sources compiled from outside `src/` trees
+/// (notably under `tests/`) join the production set. Only files that newly
+/// join the set are scanned, so cycles terminate.
+fn scan_include_closure(repo: &Path, production_paths: &mut BTreeSet<String>, queue: Vec<String>) {
+    let mut queue = std::collections::VecDeque::from(queue);
+    while let Some(file) = queue.pop_front() {
+        let Ok(text) = fs::read_to_string(repo.join(&file)) else {
+            continue;
+        };
+        let file_dir = file.rsplit_once('/').map(|(dir, _)| dir.to_string()).unwrap_or_default();
+        for target in module_include_targets(&text, &file_dir) {
+            if production_paths.insert(target.clone()) {
+                queue.push_back(target);
+            }
+        }
+    }
+}
+
+/// Textually resolve the module targets a source file compiles: every
+/// single-line `#[path = "…"]` string-literal include and every plain
+/// `mod name;` declaration (sibling `name.rs` or `name/mod.rs`). A `mod` line
+/// covered by its own preceding `#[path]` attribute uses that attribute's
+/// target only. Paths are normalized lexically; an include that escapes the
+/// repository root is ignored (fail closed: it cannot be a workspace source).
+fn module_include_targets(text: &str, file_dir: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut previous_line_was_path_attribute = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some(relative) = path_attribute_target(trimmed) {
+            if let Some(resolved) = lexically_join(file_dir, relative) {
+                targets.push(resolved);
+            }
+            previous_line_was_path_attribute = true;
+            continue;
+        }
+        if let Some(name) = plain_mod_declaration_name(trimmed)
+            && !previous_line_was_path_attribute
+        {
+            let base =
+                if file_dir.is_empty() { name.to_string() } else { format!("{file_dir}/{name}") };
+            targets.push(format!("{base}.rs"));
+            targets.push(format!("{base}/mod.rs"));
+        }
+        previous_line_was_path_attribute = false;
+    }
+    targets
+}
+
+/// Extract the quoted target of a `#[path = "…"]` attribute on one line.
+/// `#[path` must be followed by `=`, whitespace, or `]` so a hypothetical
+/// longer attribute name is not mistaken for the include attribute.
+fn path_attribute_target(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("#[path")?;
+    if !rest.starts_with(['=', ' ', '\t', ']']) {
+        return None;
+    }
+    let quoted = line.split_once('"')?.1;
+    let target = quoted.split_once('"')?.0;
+    if target.is_empty() { None } else { Some(target) }
+}
+
+/// Extract the module name from a plain `mod name;` declaration (any
+/// visibility prefix), skipping inline `mod name {` bodies and `#[path]`
+/// lines, which carry their own target.
+fn plain_mod_declaration_name(line: &str) -> Option<&str> {
+    if line.starts_with("#[") {
+        return None;
+    }
+    let mut words = line.split_whitespace();
+    let mut word = words.next()?;
+    while word == "pub" || word.starts_with("pub(") {
+        word = words.next()?;
+    }
+    if word != "mod" {
+        return None;
+    }
+    let name = words.next()?.strip_suffix(';')?;
+    if name.is_empty()
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || name.starts_with(|c: char| c.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(name)
+}
+
+/// Join a relative include path onto its containing directory, resolving `.`
+/// and `..` lexically. Returns `None` when the path would escape the root.
+fn lexically_join(dir: &str, relative: &str) -> Option<String> {
+    let relative = normalize_path_text(relative);
+    let mut components: Vec<&str> = Vec::new();
+    for component in dir.split('/').chain(relative.split('/')) {
+        match component {
+            "." | "" => {}
+            ".." => {
+                if components.pop().is_none() {
+                    return None;
+                }
+            }
+            other => components.push(other),
+        }
+    }
+    if components.is_empty() {
+        return None;
+    }
+    Some(components.join("/"))
+}
+
+/// The receipt-facing non-production stamp: what basis classified findings,
+/// and whether that basis was available at all. Deliberately carries no host
+/// path — receipts never emit CI-runner paths.
+fn non_production_stamp(surface: Option<&ProductionSurface>) -> Value {
+    let Some(surface) = surface else {
+        return json!({
+            "basis": NON_PRODUCTION_BASIS,
+            "source": NON_PRODUCTION_SOURCE,
+            "status": "unavailable",
+            "reason": "cargo metadata could not be read; no findings were classified non-production",
+        });
+    };
+    json!({
+        "basis": NON_PRODUCTION_BASIS,
+        "source": NON_PRODUCTION_SOURCE,
+        "status": "applied",
+        "production_sources": surface.production_paths.len(),
+    })
 }
 
 #[cfg(test)]
@@ -1493,6 +1805,30 @@ fn pr_evidence_packet(
         changed_files.len(),
         None,
         None,
+        None,
+    )
+}
+
+#[cfg(test)]
+fn pr_evidence_packet_on_surface(
+    options: &PrEvidenceOptions,
+    changed_files: &[String],
+    check_value: &Value,
+    base_sha: &str,
+    head_sha: &str,
+    suppressions: &RiprSuppressionRules,
+    production_surface: Option<&ProductionSurface>,
+) -> Value {
+    pr_evidence_packet_with_count(
+        options,
+        check_value,
+        base_sha,
+        head_sha,
+        suppressions,
+        changed_files.len(),
+        None,
+        None,
+        production_surface,
     )
 }
 
@@ -1505,6 +1841,7 @@ fn pr_evidence_packet_with_count(
     changed_file_count: usize,
     head_extents: Option<&HeadLineExtents>,
     attribution_scope: Option<&AttributionScope>,
+    production_surface: Option<&ProductionSurface>,
 ) -> Value {
     let check_summary = check_value.get("summary").and_then(Value::as_object);
     let summary = ripr_pr_summary_counts(
@@ -1513,6 +1850,7 @@ fn pr_evidence_packet_with_count(
         suppressions,
         head_extents,
         attribution_scope.and_then(AttributionScope::applied),
+        production_surface,
     );
     let weakly_exposed = summary.weakly_exposed;
     let reachable_unrevealed = summary.reachable_unrevealed;
@@ -1570,6 +1908,7 @@ fn pr_evidence_packet_with_count(
             "suppression_patterns": suppressions.display_patterns.clone(),
         },
         "attribution": attribution_stamp(attribution_scope),
+        "non_production": non_production_stamp(production_surface),
         "artifacts": [
             {
                 "label": "PR evidence JSON",
@@ -1701,6 +2040,20 @@ fn validate_pr_evidence_packet(
             }
         }
         None => violations.push("attribution is missing or not an object".to_string()),
+    }
+    match packet.get("non_production").and_then(Value::as_object) {
+        Some(non_production) => {
+            if non_production.get("basis").and_then(Value::as_str) != Some(NON_PRODUCTION_BASIS) {
+                violations.push(format!("non_production.basis must be {NON_PRODUCTION_BASIS:?}"));
+            }
+            match non_production.get("status").and_then(Value::as_str) {
+                Some("applied" | "unavailable") => {}
+                _ => {
+                    violations.push("non_production.status is not a valid basis status".to_string())
+                }
+            }
+        }
+        None => violations.push("non_production is missing or not an object".to_string()),
     }
     if !packet.get("warnings").is_some_and(Value::is_array) {
         violations.push("warnings is missing or not an array".to_string());
@@ -2113,15 +2466,58 @@ fn fallback_guidance_comments(
     // Best-effort head-revision and dependency-graph filters, matching the
     // producer's counted set (#6260, #11690). If the diff cannot be resolved,
     // name without them — the direction is names ⊇ counted, which stays
-    // fail-closed.
+    // fail-closed. The non-production filter (#12267 review repair) applies
+    // here too, with the same precedence as the counted set, so truncated
+    // fallback guidance cannot fill up with seams the count already dropped.
     let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head).ok();
+    let metadata = crate::tasks::ci_scope::load_metadata(repo).ok();
     let attribution = diff_receipt
         .as_ref()
-        .and_then(|diff| attribution_scope_for_repo(repo, diff).ok())
+        .and_then(|diff| {
+            metadata.as_ref().and_then(|metadata| {
+                dependency_attribution_scope(metadata, &committed_diff_entry_paths(&diff.entries))
+                    .ok()
+            })
+        })
         .unwrap_or(AttributionScope::NoChangedPackage);
+    let production_surface = metadata
+        .as_ref()
+        .and_then(|metadata| production_surface_from_metadata(repo, metadata).ok());
     let head_extents =
         diff_receipt.as_ref().map(|diff| HeadLineExtents::from_committed_diff(repo, diff));
 
+    let (mut seams, suppressed) = fallback_seam_entries(
+        findings,
+        &suppressions,
+        head_extents.as_ref(),
+        attribution.applied(),
+        production_surface.as_ref(),
+    );
+
+    seams.sort_by(|left, right| (&left.0, left.1, &left.2).cmp(&(&right.0, right.1, &right.2)));
+    seams.dedup_by(|next, previous| next.0 == previous.0 && next.1 == previous.1);
+    seams.truncate(FALLBACK_GUIDANCE_LIMIT);
+    let comments = seams.into_iter().map(|(_, _, _, comment)| comment).collect::<Vec<_>>();
+    if comments.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((comments, suppressed)))
+}
+
+/// Collect the gate-actionable seams fallback guidance should name, applying
+/// the same filters — and the same precedence — as `ripr_pr_summary_counts`:
+/// suppression policy, head-range (#6260), structural non-production
+/// classification (#11690), then dependency-graph attribution. Non-production
+/// seams are dropped before sorting and truncation so the
+/// [`FALLBACK_GUIDANCE_LIMIT`] slice cannot crowd out a production seam that
+/// actually keeps `new_unresolved` positive.
+fn fallback_seam_entries(
+    findings: &[Value],
+    suppressions: &RiprSuppressionRules,
+    head_extents: Option<&HeadLineExtents>,
+    attribution: Option<&DependencyAttribution>,
+    production_surface: Option<&ProductionSurface>,
+) -> (Vec<(String, u64, String, Value)>, usize) {
     let mut suppressed = 0usize;
     let mut seams: Vec<(String, u64, String, Value)> = Vec::new();
     for finding in findings {
@@ -2140,14 +2536,19 @@ fn fallback_guidance_comments(
         if !gate_actionable_classification(canonical) {
             continue;
         }
-        if suppression_matches_finding(&suppressions, finding) {
+        if suppression_matches_finding(suppressions, finding) {
             suppressed += 1;
             continue;
         }
-        if head_extents.as_ref().is_some_and(|extents| extents.finding_is_outside_head(finding)) {
+        if head_extents.is_some_and(|extents| extents.finding_is_outside_head(finding)) {
             continue;
         }
-        if let Some(attribution) = attribution.applied()
+        if ripr_finding_path(finding)
+            .is_some_and(|path| classify_non_production(production_surface, &path).is_some())
+        {
+            continue;
+        }
+        if let Some(attribution) = attribution
             && attribution.finding_is_out_of_graph(finding)
         {
             continue;
@@ -2190,15 +2591,7 @@ fn fallback_guidance_comments(
         });
         seams.push((path.clone(), line, id.to_string(), comment));
     }
-
-    seams.sort_by(|left, right| (&left.0, left.1, &left.2).cmp(&(&right.0, right.1, &right.2)));
-    seams.dedup_by(|next, previous| next.0 == previous.0 && next.1 == previous.1);
-    seams.truncate(FALLBACK_GUIDANCE_LIMIT);
-    let comments = seams.into_iter().map(|(_, _, _, comment)| comment).collect::<Vec<_>>();
-    if comments.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some((comments, suppressed)))
+    (seams, suppressed)
 }
 
 /// Emit an `incomplete` guidance receipt that names the gate-actionable seams
@@ -4220,6 +4613,7 @@ paths = ["archive/["]
             1,
             Some(extents),
             None,
+            None,
         )
     }
 
@@ -4433,7 +4827,7 @@ paths = ["archive/["]
             ]
         });
 
-        let packet = pr_evidence_packet(
+        let packet = pr_evidence_packet_on_surface(
             &PrEvidenceOptions {
                 root: ".".to_string(),
                 base: "origin/main".to_string(),
@@ -4445,6 +4839,13 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             &no_suppressions(),
+            Some(&ProductionSurface::from_parts(
+                "/ws",
+                &[
+                    "crates/perl-core-harness/src/contract.rs",
+                    "crates/perl-lsp-rs/src/runtime/scheduler.rs",
+                ],
+            )),
         );
 
         // weakly_gripped folds into reachable_unrevealed (0.9.x): the ux
@@ -4482,7 +4883,7 @@ paths = ["archive/["]
             ]
         });
 
-        let packet = pr_evidence_packet(
+        let packet = pr_evidence_packet_on_surface(
             &PrEvidenceOptions {
                 root: ".".to_string(),
                 base: "origin/main".to_string(),
@@ -4494,6 +4895,13 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             &no_suppressions(),
+            Some(&ProductionSurface::from_parts(
+                "/ws",
+                &[
+                    "crates/perl-core-harness/src/contract.rs",
+                    "crates/perl-core-harness/src/tests.rs",
+                ],
+            )),
         );
 
         assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(2)));
@@ -4524,7 +4932,7 @@ paths = ["archive/["]
             suppression_reasons: Vec::new(),
         };
 
-        let packet = pr_evidence_packet(
+        let packet = pr_evidence_packet_on_surface(
             &PrEvidenceOptions {
                 root: ".".to_string(),
                 base: "origin/main".to_string(),
@@ -4536,6 +4944,7 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             &suppressions,
+            Some(&ProductionSurface::from_parts("/ws", &[])),
         );
 
         assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(0)));
@@ -4567,7 +4976,7 @@ paths = ["archive/["]
             ]
         });
 
-        let packet = pr_evidence_packet(
+        let packet = pr_evidence_packet_on_surface(
             &PrEvidenceOptions {
                 root: ".".to_string(),
                 base: "origin/main".to_string(),
@@ -4579,6 +4988,10 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             &no_suppressions(),
+            Some(&ProductionSurface::from_parts(
+                "/ws",
+                &["crates/perl-core-harness/src/contract.rs"],
+            )),
         );
 
         assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(0)));
@@ -4604,7 +5017,7 @@ paths = ["archive/["]
             ]
         });
 
-        let packet = pr_evidence_packet(
+        let packet = pr_evidence_packet_on_surface(
             &PrEvidenceOptions {
                 root: ".".to_string(),
                 base: "origin/main".to_string(),
@@ -4616,6 +5029,7 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             &no_suppressions(),
+            Some(&ProductionSurface::from_parts("/ws", &[])),
         );
 
         // The unrecognized class cannot be attributed to a bucket, so only the
@@ -4627,29 +5041,252 @@ paths = ["archive/["]
     }
 
     /// The classifier anchors the same path shapes the suppression matcher
-    /// accepts (0.9.x Windows and checkout-prefixed absolute paths), and treats
-    /// a file named `tests.rs` or a `perl-lsp-ux-tests` crate segment as
-    /// production — only a real `tests/` directory component classifies.
+    /// accepts (0.9.x Windows and checkout-prefixed absolute paths) — but
+    /// against the workspace root, not the earliest anchor substring — and
+    /// treats a file named `tests.rs` or a `perl-lsp-ux-tests` crate segment
+    /// as production. Only a real `tests/` directory component that the
+    /// production surface does not compile classifies.
     #[test]
     fn non_production_paths_classify_windows_and_absolute_forms() {
+        // A checkout whose ancestor directory is itself named `archive`
+        // (#12267 review repair): active sources must not classify as
+        // archived just because an ancestor matches the anchor substring.
+        let surface = ProductionSurface::from_parts(
+            "/work/archive/perl-lsp-swarm",
+            &["crates/perl-core-harness/src/contract.rs"],
+        );
         let cases = [
-            (r".\crates\perl-x\tests\case.rs", true),
-            ("//?/H:/Code/Rust3/perl-lsp-swarm/crates/perl-x/tests/case.rs", true),
-            ("/home/runner/work/perl-lsp-swarm/xtask/tests/it/main.rs", true),
-            ("./archive/crates/old-crate/src/lib.rs", true),
-            ("crates/perl-lsp-ux-tests/src/lib.rs", false),
-            ("crates/perl-x/src/tests.rs", false),
-            ("crates/perl-core-harness/src/contract.rs", false),
-            ("xtask/src/tasks/ripr_evidence.rs", false),
+            (r".\crates\perl-x\tests\case.rs", Some(NonProductionKind::IntegrationTest)),
+            (
+                "//?/H:/Code/Rust3/perl-lsp-swarm/crates/perl-x/tests/case.rs",
+                None, // absolute path outside the surface's repository root: fail closed
+            ),
+            (
+                "/work/archive/perl-lsp-swarm/xtask/tests/it/main.rs",
+                Some(NonProductionKind::IntegrationTest),
+            ),
+            (
+                // The reviewer's exact wrong candidate: an active source under
+                // an ancestor `archive` directory must classify by repo root.
+                "/work/archive/perl-lsp-swarm/crates/perl-lsp-rs/src/runtime.rs",
+                None,
+            ),
+            ("./archive/crates/old-crate/src/lib.rs", Some(NonProductionKind::Archive)),
+            ("archive/crates/old-crate/src/lib.rs", Some(NonProductionKind::Archive)),
+            (
+                "/work/archive/perl-lsp-swarm/archive/crates/old/src/lib.rs",
+                Some(NonProductionKind::Archive),
+            ),
+            ("crates/perl-lsp-ux-tests/src/lib.rs", None),
+            ("crates/perl-x/src/tests.rs", None),
+            ("crates/perl-core-harness/src/contract.rs", None),
+            ("xtask/src/tasks/ripr_evidence.rs", None),
         ];
         for (raw, expected) in cases {
-            let normalized = normalize_suppression_match_path(raw);
             assert_eq!(
-                is_non_production_path(&normalized),
+                classify_non_production(Some(&surface), raw),
                 expected,
-                "path {raw:?} normalized to {normalized:?}"
+                "path {raw:?} classified against root {:?}",
+                surface.repo_root
             );
         }
+        // No compiled-into-production view at all: nothing is classified —
+        // the gate never under-attributes on an unreadable workspace graph.
+        assert_eq!(classify_non_production(None, "crates/perl-x/tests/case.rs"), None);
+        assert_eq!(classify_non_production(None, "archive/crates/old/src/lib.rs"), None);
+    }
+
+    /// P1 regression (#12267 review): a `tests/`-located file that production
+    /// code compiles via `#[path]` — the `xtask::emacs_host_run` runner
+    /// substrate and the `validate-zed-*` validator substrates — must stay in
+    /// the counted basis. Wrong candidate: the lexical `tests` component alone
+    /// used to exclude it.
+    #[test]
+    fn path_included_test_sources_stay_in_the_production_basis() -> Result<()> {
+        let surface = ProductionSurface::from_parts(
+            "/ws",
+            &[
+                "xtask/tests/support/emacs_host_runner.rs",
+                "xtask/tests/support/zed_host_compat.rs",
+                "crates/perl-core-harness/src/contract.rs",
+            ],
+        );
+        // The exact repository seams the reviewer named: exported module
+        // substrate and validator binaries compiled from xtask/tests/support.
+        assert_eq!(
+            classify_non_production(Some(&surface), "xtask/tests/support/emacs_host_runner.rs"),
+            None
+        );
+        assert_eq!(
+            classify_non_production(Some(&surface), "/ws/xtask/tests/support/zed_host_compat.rs"),
+            None
+        );
+        // A genuine integration test file no production artifact compiles
+        // still classifies.
+        assert_eq!(
+            classify_non_production(Some(&surface), "crates/perl-x/tests/case.rs"),
+            Some(NonProductionKind::IntegrationTest)
+        );
+
+        // Counts level: a finding on the `#[path]`-included substrate keeps
+        // counting; the integration-test finding does not.
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 2, "no_static_path": 0 },
+            "findings": [
+                {
+                    "grip_class": "reachable_unrevealed",
+                    "seam": { "file": "xtask/tests/support/emacs_host_runner.rs", "line": 21 }
+                },
+                {
+                    "grip_class": "reachable_unrevealed",
+                    "seam": { "file": "crates/perl-x/tests/case.rs", "line": 7 }
+                }
+            ]
+        });
+        let packet = pr_evidence_packet_on_surface(
+            &PrEvidenceOptions {
+                root: ".".to_string(),
+                base: "origin/main".to_string(),
+                head: "HEAD".to_string(),
+                pr_head_sha: None,
+            },
+            &["xtask/tests/support/emacs_host_runner.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &no_suppressions(),
+            Some(&surface),
+        );
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/non_production_excluded"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/non_production/status"), Some(&json!("applied")));
+        Ok(())
+    }
+
+    /// P1 regression, closure level: the surface builder must actually find
+    /// the `#[path]`-included files — target membership alone cannot, because
+    /// cargo metadata does not list `#[path]` modules. The scan follows
+    /// `#[path = "…"]` includes and plain `mod name;` siblings transitively
+    /// from production seeds.
+    #[test]
+    fn include_closure_marks_path_compiled_test_support_as_production() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        fs::create_dir_all(repo.join("xtask/src/bin"))?;
+        fs::create_dir_all(repo.join("xtask/tests/support"))?;
+        // The repository's real shapes: an exported module substrate and a
+        // validator binary that compile files from under tests/.
+        fs::write(
+            repo.join("xtask/src/emacs_host_run.rs"),
+            "#[path = \"../tests/support/emacs_host_runner.rs\"]\npub mod emacs_host_runner;\n",
+        )?;
+        fs::write(
+            repo.join("xtask/src/bin/validate-zed-host-receipt.rs"),
+            "#[path = \"../../tests/support/zed_host_compat.rs\"]\nmod zed_host_compat;\nfn main() {}\n",
+        )?;
+        fs::write(
+            repo.join("xtask/tests/support/emacs_host_runner.rs"),
+            "// runner substrate\nmod deeper;\n",
+        )?;
+        fs::write(repo.join("xtask/tests/support/zed_host_compat.rs"), "// compat\n")?;
+        fs::write(repo.join("xtask/tests/support/deeper.rs"), "// sibling module\n")?;
+
+        let mut production = BTreeSet::from([
+            "xtask/src/emacs_host_run.rs".to_string(),
+            "xtask/src/bin/validate-zed-host-receipt.rs".to_string(),
+        ]);
+        scan_include_closure(
+            repo,
+            &mut production,
+            vec![
+                "xtask/src/emacs_host_run.rs".to_string(),
+                "xtask/src/bin/validate-zed-host-receipt.rs".to_string(),
+            ],
+        );
+
+        for included in [
+            "xtask/tests/support/emacs_host_runner.rs",
+            "xtask/tests/support/zed_host_compat.rs",
+            // Plain `mod deeper;` from a production-compiled tests/ file joins
+            // the closure too (over-inclusive direction: keeps findings counted).
+            "xtask/tests/support/deeper.rs",
+        ] {
+            assert!(production.contains(included), "{included} must be production: {production:?}");
+        }
+        Ok(())
+    }
+
+    /// P1 regression, target membership: a workspace target with a production
+    /// kind whose src_path lives under `tests/` compiles that file into an
+    /// artifact, so it must not be excluded; a `test`-kind target still does.
+    #[test]
+    fn production_kind_targets_under_tests_directories_stay_counted() -> Result<()> {
+        let metadata = json!({
+            "workspace_root": "/ws",
+            "packages": [
+                {
+                    "name": "xtask",
+                    "manifest_path": "/ws/xtask/Cargo.toml",
+                    "targets": [
+                        { "kind": ["lib"], "src_path": "/ws/xtask/src/lib.rs" },
+                        { "kind": ["bin"], "src_path": "/ws/xtask/tests/support/cli_harness.rs" },
+                        { "kind": ["test"], "src_path": "/ws/xtask/tests/it.rs" }
+                    ]
+                }
+            ]
+        });
+        let surface = production_surface_from_metadata(Path::new("/nonexistent"), &metadata)?;
+        assert!(surface.production_paths.contains("xtask/tests/support/cli_harness.rs"));
+        assert!(!surface.production_paths.contains("xtask/tests/it.rs"));
+        assert_eq!(
+            classify_non_production(Some(&surface), "xtask/tests/support/cli_harness.rs"),
+            None
+        );
+        assert_eq!(
+            classify_non_production(Some(&surface), "xtask/tests/it.rs"),
+            Some(NonProductionKind::IntegrationTest)
+        );
+        Ok(())
+    }
+
+    /// P2 regression (#12267 review): fallback guidance applies the same
+    /// non-production filter as the counted set, before sorting and
+    /// truncation — so excluded test seams cannot fill the 25-item fallback
+    /// slice and crowd out the production seam that keeps `new_unresolved`
+    /// positive. Wrong candidate: without the filter, 25 lexically earlier
+    /// `tests/` seams push `xtask/src/tools/prod.rs` past the limit.
+    #[test]
+    fn fallback_guidance_names_the_filtered_set_not_the_raw_check() -> Result<()> {
+        let mut findings = Vec::new();
+        for index in 0..25 {
+            findings.push(raw_check_finding(
+                &format!("probe:test{index:02}"),
+                "no_static_path",
+                &format!("crates/perl-x/tests/it/case_{index:02}.rs"),
+                10 + index,
+            ));
+        }
+        findings.push(raw_check_finding(
+            "probe:prod",
+            "no_static_path",
+            "xtask/src/tools/prod.rs",
+            5,
+        ));
+        let surface = ProductionSurface::from_parts("/ws", &["xtask/src/tools/prod.rs"]);
+
+        let (seams, suppressed) =
+            fallback_seam_entries(&findings, &no_suppressions(), None, None, Some(&surface));
+        assert_eq!(suppressed, 0);
+        let paths: Vec<&str> = seams.iter().map(|(path, _, _, _)| path.as_str()).collect();
+        assert_eq!(paths, vec!["xtask/src/tools/prod.rs"], "only the production seam is named");
+
+        // Fail-closed control: without a compiled-into-production view the
+        // fallback keeps naming everything (names ⊇ counted still holds).
+        let (unfiltered, _) =
+            fallback_seam_entries(&findings, &no_suppressions(), None, None, None);
+        assert_eq!(unfiltered.len(), 26);
+        Ok(())
     }
 
     /// Fail closed: a finding with no resolvable path is never classified
@@ -5374,7 +6011,10 @@ paths = ["archive/["]
 
     /// Packet-level #6766-style dry-run: four findings from a raw check whose
     /// scan expanded past the diff; only changed-plus-dependent seams survive,
-    /// and the packet records exactly what was dropped and why.
+    /// and the packet records exactly what was dropped and why. The archived
+    /// seam reports under `non_production_excluded` even with the graph
+    /// active: the structural filter takes precedence over graph attribution
+    /// (#12267 review repair).
     #[test]
     fn packet_narrows_new_gaps_to_reachable_dependents_and_stamps_the_basis() -> Result<()> {
         let options = PrEvidenceOptions {
@@ -5401,6 +6041,14 @@ paths = ["archive/["]
                 ("perl-dap", "crates", &[]),
             ],
         );
+        let surface = ProductionSurface::from_parts(
+            "/ws",
+            &[
+                "crates/perl-core-harness/src/contract.rs",
+                "crates/perl-core-test-runner/src/runner.rs",
+                "crates/perl-dap/src/debug_adapter/evaluation.rs",
+            ],
+        );
         let scope = attribution_for(&metadata, &["crates/perl-core-harness/src/contract.rs"])?;
         let packet = pr_evidence_packet_with_count(
             &options,
@@ -5411,14 +6059,20 @@ paths = ["archive/["]
             5,
             None,
             Some(&scope),
+            Some(&surface),
         );
 
         assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(2)));
         assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(2)));
-        assert_eq!(packet.pointer("/summary/out_of_dependency_graph"), Some(&json!(2)));
+        // The archived seam is attributed to the structural non-production
+        // filter, not swallowed by the earlier graph branch; only the
+        // non-dependent perl-dap seam lands in the graph bucket.
+        assert_eq!(packet.pointer("/summary/out_of_dependency_graph"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/non_production_excluded"), Some(&json!(1)));
         assert_eq!(packet.pointer("/attribution/basis"), Some(&json!(ATTRIBUTION_BASIS)));
         assert_eq!(packet.pointer("/attribution/graph_source"), Some(&json!("cargo_metadata")));
         assert_eq!(packet.pointer("/attribution/status"), Some(&json!("applied")));
+        assert_eq!(packet.pointer("/non_production/status"), Some(&json!("applied")));
 
         // The same raw check with no attribution scope still applies the
         // structural non-production filter (#11690): the archived seam drops
@@ -5433,6 +6087,7 @@ paths = ["archive/["]
             5,
             None,
             None,
+            Some(&surface),
         );
         assert_eq!(unfiltered.pointer("/summary/severe_gaps"), Some(&json!(3)));
         assert_eq!(unfiltered.pointer("/summary/non_production_excluded"), Some(&json!(1)));
@@ -5461,6 +6116,7 @@ paths = ["archive/["]
             "head-sha",
             &suppressions,
             1,
+            None,
             None,
             None,
         );

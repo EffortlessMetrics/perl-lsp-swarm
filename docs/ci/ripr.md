@@ -102,15 +102,31 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
   as repo-wide RIPR+ receipts. Suppressed paths remain visible in receipts, but
   they do not count as new blocking gaps.
 - Production-scopes the new-gap basis structurally, independent of the mutable
-  suppression policy (#11690): seams on archived sources (`archive/**`) and on
-  files under a Cargo integration-test directory (a `tests/` path component,
-  e.g. `crates/*/tests/**`, the recurring `test_receipt_surface` class behind
-  #6842) are dropped from the blocking buckets before counting and reported as
+  suppression policy (#11690): seams on archived sources (the repository's
+  `archive/**`, anchored at the workspace root so an ancestor checkout directory
+  named `archive` never classifies active sources) and on files under a Cargo
+  integration-test directory (a `tests/` path component, e.g.
+  `crates/*/tests/**`, the recurring `test_receipt_surface` class behind #6842)
+  are dropped from the blocking buckets before counting and reported as
   `summary.non_production_excluded` in the PR evidence receipt and the quality
-  gate receipt. Production seams keep counting, and suppression policy keeps
-  precedence when both mechanisms match one finding: a suppressed finding does
-  not count, and a non-production file does not inflate the basis. Findings
-  with no resolvable path are never classified non-production (fail closed).
+  gate receipt. Classification is by compiled-into-production status, not
+  pathname shape (#12267): a `tests/`-located file that a workspace artifact
+  compiles — an explicit production target path, or a `#[path]`/`mod` include
+  from one (the `xtask::emacs_host_run` runner substrate and the
+  `validate-zed-*` validator substrates under `xtask/tests/support/`) — keeps
+  counting. The packet stamps the basis (`non_production.basis =
+  compiled_into_workspace_artifacts`, `source =
+  cargo_metadata_target_membership`); when cargo metadata cannot be read,
+  nothing is classified non-production (fail closed). Production seams keep
+  counting, and suppression policy keeps precedence when both mechanisms match
+  one finding: a suppressed finding does not count, and a non-production file
+  does not inflate the basis. The non-production filter also takes precedence
+  over dependency-graph attribution — an archived seam reports as
+  `non_production_excluded`, never silently as `out_of_dependency_graph` — and
+  the degraded fallback guidance receipt applies the same filter before
+  sorting and truncation, so excluded seams cannot crowd out a production seam
+  from the named-evidence list. Findings with no resolvable path are never
+  classified non-production (fail closed).
 - In CI, review guidance has an explicit timeout. When the guidance pass does
   not finish, the harness emits an `incomplete` receipt that names the
   gate-actionable seams (`reachable_unrevealed` / `no_static_path`) from the
