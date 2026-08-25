@@ -1,0 +1,86 @@
+{
+  "schema": "standalone_semantic_packet.v1",
+  "vector_id": "v008-fallback-forbidden-no-registry-action",
+  "contract_generation": 1,
+  "route": "first_party_powershell",
+  "mode": "release_archive",
+  "requested_product_unit": "server_only",
+  "effective_product_unit": "server_only",
+  "effective_path_policy": "persist",
+  "resolved_subject_digest": "sha256:bcd84e6847edf9381d4a993710f28cb3bbac173eb2dc857a139945c70a6b8abe",
+  "attempts": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "outcome": "failed",
+      "reason_family": "integrity_failed"
+    }
+  ],
+  "branches": [
+    {
+      "branch_id": "branch-main",
+      "subject_digest": "sha256:bcd84e6847edf9381d4a993710f28cb3bbac173eb2dc857a139945c70a6b8abe",
+      "terminal_result": "failed",
+      "reason_family": "integrity_failed"
+    }
+  ],
+  "executed_stages": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "resolve_subject",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:9897b242a8130813434d365d92c1b91946bb5dcb408f80ccd3d9ad9e14084c1b",
+      "predecessor_digests": []
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "transport",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:773ef18d09ec9ec99b963515a9c1144d287abf4dde5ad1118257fbf58e81519c",
+      "predecessor_digests": [
+        "sha256:9897b242a8130813434d365d92c1b91946bb5dcb408f80ccd3d9ad9e14084c1b"
+      ],
+      "artifacts": [
+        "artifact-archive-v008"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "checksum_integrity",
+      "result": "failed",
+      "reason_family": "integrity_failed",
+      "receipt_digest": "sha256:0df852e6f02f1e4f65c8b38122f21c1daaeba0930316f59cd5b24543f61c18b2",
+      "predecessor_digests": []
+    }
+  ],
+  "skipped_stages": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "source_build",
+      "authorization": "mode_authorized"
+    }
+  ],
+  "observations": [],
+  "effects": [
+    {
+      "level": "transport_artifacts",
+      "kind": "transport_artifacts"
+    }
+  ],
+  "side_effect_ceiling": "transport_artifacts",
+  "claim_ceiling": "none",
+  "pair_claims_satisfied": false,
+  "terminal": {
+    "result": "failed",
+    "stage_id": "checksum_integrity",
+    "reason_family": "integrity_failed",
+    "action_class": "abort_install"
+  },
+  "redaction_disposition": "roles_only"
+}

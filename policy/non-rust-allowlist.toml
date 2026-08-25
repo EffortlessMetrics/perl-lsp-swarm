@@ -3209,6 +3209,22 @@ created = "2026-08-24"
 review_after = "2026-11-24"
 
 [[allow]]
+id = "non-rust-standalone-install-vector-fixtures"
+glob = "fixtures/standalone_install_vectors/**/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/install-conformance"
+reason = "Deterministic standalone semantic conformance corpus (#11550, child of #10737): the 21 platform-neutral transaction vectors, their scripted stage-port fixtures, and the independently derived golden semantic packets consumed by cargo xtask standalone-vectors."
+covered_by = [
+  "cargo xtask standalone-vectors check",
+  "cargo xtask standalone-vectors mutation-check",
+]
+created = "2026-08-25"
+review_after = "2026-11-25"
+
+[[allow]]
 id = "non-rust-agent-review-finding-schema"
 path = "schemas/agent_review_finding.v1.schema.json"
 kind = "agent_contract"
