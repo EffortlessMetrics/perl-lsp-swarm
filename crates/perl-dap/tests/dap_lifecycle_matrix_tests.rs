@@ -11,6 +11,10 @@
 //! All tests skip gracefully when `perl` is not on `PATH`.
 //! AC: DAP lifecycle matrix — phase 2 e2e coverage.
 
+#![expect(
+    clippy::print_stderr,
+    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
+)]
 mod common;
 
 use common::{DapWorkflowSession, perl_available, workflow_timeout};
