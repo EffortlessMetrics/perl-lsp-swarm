@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11852 |
-| Rust-family files | 3594 |
-| Non-Rust files | 8258 |
-| Allowlisted | 5933 |
+| Total tracked files | 11899 |
+| Rust-family files | 3606 |
+| Non-Rust files | 8293 |
+| Allowlisted | 5968 |
 | Unclassified | 2325 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 422 |
-| documentation | 2688 |
+| config | 427 |
+| documentation | 2691 |
 | generated | 2 |
 | production | 324 |
-| test | 1943 |
-| tooling | 554 |
+| test | 1966 |
+| tooling | 558 |
 | unclassified | 2325 |
 
 ## Unclassified files
@@ -2411,9 +2411,11 @@
 | `.changes/unreleased/product-12094-Fixed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12180-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12185-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12213-Added-053344.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12425-Changed-064000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12428-Changed-071500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12489-Changed-095500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12573-Changed-194700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2626,6 +2628,7 @@
 | `.ci/cpan-corpus-manifest.txt` | config | `non-rust-ci-config` | release/ci |
 | `.ci/cpan-top-1000-distributions.txt` | config | `non-rust-ci-config` | release/ci |
 | `.ci/cpan-top-50-distributions.txt` | config | `non-rust-ci-config` | release/ci |
+| `.ci/dap/editor-transport-inventory.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/dap/protocol-authority.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/dead-code-baseline.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/debt-ledger.yaml` | config | `non-rust-ci-config` | release/ci |
@@ -2908,6 +2911,7 @@
 | `.github/workflows/ci.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/composite-action-contracts.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/corpus-windows-reparse-proof.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/dap-editor-transport.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dap-protocol-authority.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dap-scorecard.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dependency-review.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -4243,6 +4247,7 @@
 | `docs/adr/0044-octopus-cluster-orchestration.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/0045-noncurrent-frame-mutation-disposition.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/0046-loaded-module-reload-semantics.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/adr/0047-dap-stdio-only-editor-transport.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_001_AGENT_ARCHITECTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_002_API_DOCUMENTATION_INFRASTRUCTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_003_MISSING_DOCUMENTATION_INFRASTRUCTURE.md` | documentation | `non-rust-docs-tree` | docs |
@@ -5984,6 +5989,29 @@
 | `fixtures/agent_review_packet/shuffled/challenger_service_marker_shuffled.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/debug-peer/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `fixtures/debug-peer/perl/minimal_ptkdb_peer.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/experience/standalone_candidate_selection/01_complete_archive_pair.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/02_historical_server_only.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/03_exact_source_server_only.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/04_mixed_pair_rejected.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/05_published_unselected.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/06_failed_b_preserves_a.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/07_ab_selection_committed.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/08_rollback_b_to_a.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/09_malformed_current_record.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/10a_wrong_root_selection.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/10b_wrong_target_selection.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/11_cross_attempt_transition.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/12_independent_outcomes.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/13_source_mode_as_pair_rejected.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/14_dap_preview_cannot_weaken_pair.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/15_local_development_non_authoritative.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/16_candidate_identity_drift.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/17_generation_regression.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/18_revert_without_rollback.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/19_rollback_target_not_governed.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/20_previous_current_alias.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/21_private_path_leakage.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_candidate_selection/22_current_names_missing_candidate.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/train_edge_contract/external_stages.v1.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/expected_errors.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/external_stage_satisfied_internally.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
@@ -6146,6 +6174,9 @@
 | `schemas/publication_runtime_identity.v1.schema.json` | config | `non-rust-publication-runtime-identity-schema` | release/ci |
 | `schemas/release_topology.v1.schema.json` | config | `non-rust-release-topology-schema` | release/ci |
 | `schemas/stage_closure_projection.v1.schema.json` | config | `non-rust-stage-closure-projection-schema` | tooling/agent-review |
+| `schemas/standalone_candidate.v1.schema.json` | config | `non-rust-standalone-candidate-schema` | release/ci |
+| `schemas/standalone_current_selection.v1.schema.json` | config | `non-rust-standalone-current-selection-schema` | release/ci |
+| `schemas/standalone_install_transition.v1.schema.json` | config | `non-rust-standalone-install-transition-schema` | release/ci |
 | `schemas/train_edge_contract.v1.schema.json` | config | `non-rust-train-edge-contract-schema` | tooling/train-graph |
 | `schemas/vsix_candidate_payload.v1.schema.json` | config | `non-rust-vsix-candidate-payload-schema` | release/ci |
 | `scripts/.ignored-baseline` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6202,6 +6233,9 @@
 | `scripts/ci/dap_authority_production.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_receipt.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_schema.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/dap_editor_transport_inventory.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/dap_editor_transport_scan.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/dap_editor_transport_schema.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_protocol_authority.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_scorecard_model.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_scorecard_packet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6538,6 +6572,7 @@
 | `scripts/tests/test-validate-workspace-exclusions-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-windows-fresh-path-oracle.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-worktree-manager.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test_dap_editor_transport_inventory.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test_dap_protocol_authority.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test_dap_scorecard_packet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test_dap_scorecard_runtime.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |

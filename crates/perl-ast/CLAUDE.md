@@ -32,6 +32,7 @@ cargo doc -p perl-ast --open         # View documentation
 |------|---------|
 | `lib.rs` | Re-exports `Node`, `NodeKind`, `SourceLocation` |
 | `ast.rs` | Primary AST: `Node` struct (kind + location), `NodeKind` enum (50+ variants), S-expression output |
+| `kind_schema/` | Structural `NodeKind` registry: production `FieldId` membership and field-aware child traversal; not rendering/status/fingerprint authority |
 | `ast/node_clone.rs` | Iterative `Node` clone over canonical child fields |
 | `ast/node_debug.rs` | Iterative bounded `Node`/`NodeKind` `Debug` |
 | `ast/node_eq.rs` | Iterative `Node` structural equality over canonical child fields |
@@ -89,7 +90,7 @@ match &node.kind {
 - `NodeKind::kind_name()` returns a static string name; `NodeKind::ALL_KIND_NAMES` lists all names
 - `NodeKind::grammar_kind_name_static()` is the allocation-free canonical grammar-kind table; `grammar_kind_name()` handles only runtime-derived names
 - Adding a new `NodeKind` variant also requires deliberate classification in `grammar_kind_name_static()`; its exhaustive match is part of the metadata drift guard
-- `Node::for_each_child_with_field()` is the canonical read-only traversal source for positional and named-child access; keep `FieldId` names stable when extending the AST
+- `Node::for_each_child_with_field()` / `try_for_each_child_mut_with_field()` share one visit table owned by `kind_schema`; keep `FieldId` names stable when extending the AST
 - Adding a new `NodeKind` variant also requires adding a representative instance to every all-variant test fixture: `classification.rs`'s `all_variants()`/`all_variants_maximal()`, `tests/helpers.rs`'s `all_nodekind_instances()`, `tests/nodekind_coverage_tests.rs`'s `build_cases()`, and `ast.rs`'s `all_node_kinds()`. Each is guarded by a name-set comparison against `ALL_KIND_NAMES`, so an omission fails a test rather than silently narrowing coverage
-- Adding new `NodeKind` variants require updating `to_sexp()`, `to_sexp_inner()`, `kind_name()`, and the exhaustive child traversal methods (`try_for_each_child_with_field_observed()` and `for_each_child_mut()`) — `ALL_KIND_NAMES` is auto-derived and does not need manual updating
+- Adding new `NodeKind` variants require updating `to_sexp()`, `to_sexp_inner()`, `kind_name()`, and the structural registry row in `kind_schema/registry.rs`. The shared child-visit table is exhaustive; `ALL_KIND_NAMES` is auto-derived and does not need manual updating
 - Dependents: `perl-parser-core`, `perl-tokenizer`, `perl-pragma`, `perl-error`
