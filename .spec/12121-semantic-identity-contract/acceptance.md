@@ -5,8 +5,7 @@
 - `cargo fmt -p perl-semantic-facts -- --check` clean on changed regions.
 - `cargo clippy -p perl-semantic-facts --all-targets --locked -- -D warnings` clean.
 - No production `unwrap`/`expect`/`panic!` added; constructors return
-  `Result<SemanticIdentityContractError, _>`; tests use `expect` under the
-  crate's documented test allowance.
+  `Result<_, SemanticIdentityContractError>`.
 
 Accepted limitation: same-anchor sibling disambiguation is a parent-local
 ordinal (see context.md); reordering identical-anchor siblings yields distinct

@@ -63,17 +63,29 @@ fn child_scope(
 }
 
 /// Inserting an unrelated earlier scope preserves an unaffected logical
-/// identity: the later sibling's fingerprint is unchanged because identity
-/// composes anchor digests and parent fingerprints, never ordinals-of-position.
+/// identity. The property is structural: a child's fingerprint folds only
+/// its own inputs (subject, kind, declaration key, parent fingerprint,
+/// anchor digest + ordinal, package context, recovery), and no parent
+/// fingerprint folds its descendant set or construction order. The fixture
+/// models the insertion explicitly: an earlier `prepare` sibling exists in
+/// the after-state, and `cleanup`'s fingerprint is identical whether it is
+/// constructed alone, before, or after the sibling, in any order.
 #[test]
 fn unrelated_earlier_insertion_preserves_unaffected_identity() -> FixtureResult {
     let subject_gen = subject("doc-1", "gen-1")?;
     let file = file_scope(subject_gen.clone())?;
-    let before = child_scope(subject_gen.clone(), &file, "cleanup", 0)?;
-    // An unrelated earlier scope `prepare` is inserted; `cleanup` keeps its
-    // anchor digest and sibling ordinal among identical anchors.
-    let after = child_scope(subject_gen, &file, "cleanup", 0)?;
-    assert_eq!(before.fingerprint(), after.fingerprint());
+    let parent_before = file.fingerprint();
+    let cleanup_alone = child_scope(subject_gen.clone(), &file, "cleanup", 0)?;
+    let prepare = child_scope(subject_gen.clone(), &file, "prepare", 0)?;
+    // Constructing the earlier sibling does not move the parent fingerprint
+    // (descendant set never enters any fingerprint) ...
+    let parent_after = file_scope(subject_gen.clone())?.fingerprint();
+    assert_eq!(parent_before, parent_after);
+    // ... and `cleanup`'s identity is order-independent with respect to the
+    // sibling: same fingerprint whether built alone or after `prepare`.
+    let cleanup_after_insertion = child_scope(subject_gen, &file, "cleanup", 0)?;
+    assert_eq!(cleanup_alone.fingerprint(), cleanup_after_insertion.fingerprint());
+    assert_ne!(cleanup_alone.fingerprint(), prepare.fingerprint());
     Ok(())
 }
 
@@ -219,8 +231,8 @@ fn package_scope_requires_source_order_context() -> FixtureResult {
         anchor.clone(),
         None,
         SemanticScopeRecovery::Exact,
-    )?;
-    assert!(scope.validate().is_err());
+    );
+    assert!(scope.is_err()); // fail-closed at construction
     let with_context = SemanticScopeIdentity::new(
         subject("doc-1", "gen-1")?,
         SemanticScopeKind::PackageStatement,

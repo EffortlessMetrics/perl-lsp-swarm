@@ -443,6 +443,22 @@ impl SemanticScopeIdentity {
                 "SemanticScopeIdentity.parent_fingerprint",
             ));
         }
+        // Fail closed at construction: validity is not opt-in through a
+        // later validate() call.
+        if matches!(kind, SemanticScopeKind::PackageStatement | SemanticScopeKind::PackageBlock)
+            && package_context.is_none()
+        {
+            return Err(SemanticIdentityContractError::MissingCompanion(
+                "SemanticScopeIdentity.package_context",
+            ));
+        }
+        if matches!(recovery, SemanticScopeRecovery::Recovered | SemanticScopeRecovery::Ambiguous)
+            && matches!(kind, SemanticScopeKind::File)
+        {
+            return Err(SemanticIdentityContractError::ContradictoryStatus(
+                "file/global scope must be exact or explicitly synthesized, never recovered/ambiguous",
+            ));
+        }
         Ok(Self {
             schema: SemanticIdentitySchema::V1,
             subject,
