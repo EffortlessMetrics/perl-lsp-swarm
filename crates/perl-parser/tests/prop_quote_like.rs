@@ -18,8 +18,28 @@ mod tests {
         tr_modifiers,
     };
 
+    fn qw_list_inner(token: &str) -> Option<&str> {
+        let rest = token.strip_prefix("qw")?;
+        let mut chars = rest.chars();
+        let open = chars.next()?;
+        let close = match open {
+            '(' => ')',
+            '[' => ']',
+            '{' => '}',
+            '<' => '>',
+            _ => open,
+        };
+        rest.strip_prefix(open)?.strip_suffix(close)
+    }
+
     fn token_contains_name(token: &str, name: &str) -> bool {
-        token == name || token.split_whitespace().any(|word| word == name)
+        if token == name {
+            return true;
+        }
+        if let Some(inner) = qw_list_inner(token) {
+            return inner.split_whitespace().any(|word| word == name);
+        }
+        token.split_whitespace().any(|word| word == name)
     }
 
     fn typed_use_args_contain(node: &Node, name: &str) -> bool {
