@@ -433,6 +433,64 @@ fn unsupported_owner_has_no_contribution_identity() -> FixtureResult {
     Ok(())
 }
 
+/// Fact-family ownership classes are exercised directly: scope-local
+/// families and only those report `is_scope_local`, so later invalidation
+/// policy cannot misfile a family class.
+#[test]
+fn fact_family_scope_local_classification() {
+    for family in [
+        SemanticFactFamily::ScopeLocalDeclaration,
+        SemanticFactFamily::ScopeLocalReference,
+        SemanticFactFamily::ScopeLocalToken,
+        SemanticFactFamily::HoverFact,
+    ] {
+        assert!(family.is_scope_local(), "{:?} must be scope-local", family);
+    }
+    for family in [
+        SemanticFactFamily::PackageFact,
+        SemanticFactFamily::ExportFact,
+        SemanticFactFamily::PragmaFact,
+        SemanticFactFamily::ImportFact,
+        SemanticFactFamily::PrototypeFact,
+        SemanticFactFamily::FeatureFact,
+        SemanticFactFamily::ClassInheritanceFact,
+        SemanticFactFamily::GeneratedMemberFact,
+        SemanticFactFamily::DataSectionFact,
+        SemanticFactFamily::SourceBoundaryFact,
+        SemanticFactFamily::DynamicLimitation,
+        SemanticFactFamily::RecoveryLimitation,
+    ] {
+        assert!(!family.is_scope_local(), "{:?} must not be scope-local", family);
+    }
+}
+
+/// Contribution-id construction binds the family and ordinal it was given.
+#[test]
+fn contribution_id_binds_family_and_ordinal() -> FixtureResult {
+    let id = SemanticContributionId::new(
+        "owner-fingerprint",
+        SemanticFactFamily::ScopeLocalToken,
+        "anchor",
+        7,
+    )?;
+    assert_eq!(id.fact_family(), SemanticFactFamily::ScopeLocalToken);
+    let same_args = SemanticContributionId::new(
+        "owner-fingerprint",
+        SemanticFactFamily::ScopeLocalToken,
+        "anchor",
+        7,
+    )?;
+    assert_eq!(id.fingerprint(), same_args.fingerprint());
+    let other_ordinal = SemanticContributionId::new(
+        "owner-fingerprint",
+        SemanticFactFamily::ScopeLocalToken,
+        "anchor",
+        8,
+    )?;
+    assert_ne!(id.fingerprint(), other_ordinal.fingerprint());
+    Ok(())
+}
+
 /// Architecture fence: the lower identity model carries no LSP, parser, or
 /// provider types, and never uses a traversal-order `ScopeId(` constructor.
 #[test]
