@@ -719,118 +719,188 @@ local function apply_edit(server, doc, text_edit, is_snippet, update_cursor_posi
   return true
 end
 
----Callback given to autocomplete plugin which is executed once for each
----element of the autocomplete box which is hovered with the idea of providing
----better description of the selected element by requesting the LSP server for
----detailed information/documentation.
----@param index integer
----@param item table
-local function autocomplete_onhover(index, item)
-  local completion_item = item.data.completion_item
+-- Local patch (#11188): completionItem/resolve is an explicit, generation-
+-- bound pre-application operation owned by per-item state, not a hover side
+-- effect. Hover may prefetch one resolve; selection joins the same operation
+-- and never mutates the document while resolution is pending. The full item
+-- travels as received (`completion_item.data` is not a protocol
+-- requirement), responses admit against their captured subject (#11108),
+-- timeouts arrive through the per-request timeout seam (#10657), and queue
+-- rejection surfaces as a typed failed terminal (#10833). Resolved fields
+-- feed one validated application; late/stale results can never touch a newer
+-- document, provider, or server generation.
+--
+-- Item resolve states: not_needed | unresolved | in_flight | resolved |
+-- failed | timed_out | stale, with an exactly-once applied flag.
 
-  if item.data.server.verbose then
-    item.data.server:log(
-      "Resolve item: %s", util.jsonprettify(json.encode(completion_item))
-    )
-  end
-
-  -- Only send resolve request if data field (which should contain
-  -- the item id) is available.
-  if completion_item.data then
-    -- Local patch (#11108): resolve requests carry their own subject bound
-    -- to the same document as the admitted completion round; the response
-    -- admits against it before enriching the visible description.
-    local resolved_doc = item.data.subject and item.data.subject.doc or nil
-    local subject = lsp.make_request_subject(
-      'completionItem/resolve', resolved_doc, item.data.server, nil, nil)
-    if not subject then
-      return
-    end
-    item.data.server:push_request('completionItem/resolve', {
-      params = completion_item,
-      callback = function(server, response)
-        -- Local patch (#11108): admission before any effect.
-        local admitted, disposition = lsp.admit_response(subject)
-        if not admitted then
-          core.log_quiet(
-            "[LSP] %s response dropped (%s)",
-            "completionItem/resolve", disposition or "stale"
-          )
-          return
-        end
-        if response.result then
-          local symbol = response.result
-          if symbol.detail and #item.desc <= 0 then
-            item.desc = symbol.detail
-          end
-          if symbol.documentation then
-            if #item.desc > 0 then
-              item.desc = item.desc .. "\n\n"
-            end
-            if
-              type(symbol.documentation) == "table"
-              and
-              symbol.documentation.value
-            then
-              item.desc = item.desc .. symbol.documentation.value
-              if
-                symbol.documentation.kind
-                and
-                symbol.documentation.kind == "markdown"
-              then
-                item.desc = util.strip_markdown(item.desc)
-              end
-            else
-              item.desc = item.desc .. symbol.documentation
-            end
-          end
-          item.desc = item.desc:gsub("[%s\n]+$", "")
-            :gsub("^[%s\n]+", "")
-            :gsub("\n\n\n+", "\n\n")
-          if symbol.additionalTextEdits then
-            completion_item.additionalTextEdits = symbol.additionalTextEdits
-          end
-
-          if server.verbose then
-            server:log(
-              "Resolve response: %s", util.jsonprettify(json.encode(symbol))
-            )
-          end
-        elseif server.verbose then
-          server:log("Resolve returned empty response")
-        end
+---Deterministic structural digest of one CompletionItem (#11188). Item
+---identity is content identity: display labels or menu positions never stand
+---in for the same item subject.
+local function completion_item_digest(item)
+  local function encode(value, depth)
+    if depth > 6 then return "#" end
+    local vtype = type(value)
+    if vtype == "table" then
+      local keys = {}
+      for key in pairs(value) do keys[#keys + 1] = tostring(key) end
+      table.sort(keys)
+      local inner = {}
+      for _, key in ipairs(keys) do
+        inner[#inner + 1]
+          = "[" .. tostring(key) .. "]=" .. encode(value[key], depth + 1)
       end
-    })
+      return "{" .. table.concat(inner, ",") .. "}"
+    end
+    return vtype .. ":" .. tostring(value)
   end
+  if type(item) ~= "table" then return tostring(item) end
+  return encode(item, 0)
 end
 
----Callback that handles insertion of an autocompletion item that has
----the information of insertion
----@param index integer
----@param item table
-local function autocomplete_onselect(index, item)
-  -- Local patch (#11108): a completion edit computed for one accepted
-  -- document state is revalidated against its stored subject at the
-  -- moment of user selection; stale edits are never applied optimistically
-  -- against newer bytes.
-  if item.data.subject then
-    local admitted, disposition = lsp.admit_response(item.data.subject)
+---Resolve-support disposition for one server (#11188).
+local function completion_resolve_supported(server)
+  local capabilities = server.capabilities or {}
+  local provider = capabilities.completionProvider or {}
+  return provider.resolveProvider == true
+end
+
+---One structured pre-apply resolve state per completion item (#11188).
+---@param server lsp.server
+---@param completion_item table Original CompletionItem as received
+---@param round_subject lsp.request.subject|nil Subject of the completion round
+---@return table resolve_state
+local function new_completion_resolve_state(server, completion_item, round_subject)
+  local supported = completion_resolve_supported(server)
+  return {
+    supported = supported,
+    original_digest = completion_item_digest(completion_item),
+    round_subject = round_subject,
+    state = supported and "unresolved" or "not_needed",
+    resolved_item = nil,
+    resolve_subject = nil,
+    pending_apply = false,
+    applied = false,
+    disposition = nil,
+  }
+end
+
+---True when the original item alone carries every field the application
+---paths consume (#11188 declared completeness policy): its own textEdit or
+---an LSP-snippet insertText. Plain-text insertText/label items are not
+---applied by any path without resolution supplying a textEdit.
+local function completion_self_complete(item)
+  if item.textEdit then return true end
+  if
+    snippets_found
+    and item.insertText
+    and item.insertTextFormat == Server.insert_text_format.Snippet
+  then
+    return true
+  end
+  return false
+end
+
+---Resolved view over the original item (#11188): resolved fields win; fields
+---the server left unset inherit the original content.
+local function overlay_resolved_item(original, resolved)
+  local merged = {}
+  for key, value in pairs(original) do merged[key] = value end
+  for key, value in pairs(resolved) do merged[key] = value end
+  return merged
+end
+
+---Merge one admitted resolve result into the hovered item description.
+local function merge_resolve_description(item, symbol)
+  if symbol.detail and #item.desc <= 0 then
+    item.desc = symbol.detail
+  end
+  if symbol.documentation then
+    if #item.desc > 0 then
+      item.desc = item.desc .. "\n\n"
+    end
+    if
+      type(symbol.documentation) == "table"
+      and
+      symbol.documentation.value
+    then
+      item.desc = item.desc .. symbol.documentation.value
+      if
+        symbol.documentation.kind
+        and
+        symbol.documentation.kind == "markdown"
+      then
+        item.desc = util.strip_markdown(item.desc)
+      end
+    else
+      item.desc = item.desc .. symbol.documentation
+    end
+  end
+  item.desc = item.desc:gsub("[%s\n]+$", "")
+    :gsub("^[%s\n]+", "")
+    :gsub("\n\n\n+", "\n\n")
+end
+
+---Apply the selected item exactly once from its final effective fields
+---(#11188). Resolution outcomes decide the effective item: a resolved item
+---overlays the original; a not_needed item applies as received; failed,
+---timed_out, and stale terminals fall back only when the original alone
+---proves its own application surface (its own textEdit or LSP-snippet
+---insertText - fields resolution would only enrich) and otherwise refuse
+---without partial mutation. Every application revalidates the captured
+---round subject before any effect, so a terminal that arrives after edits,
+---session transitions, or server replacement can never touch newer bytes,
+---and the edit lands only in the exact document the round was computed for.
+local function apply_selected_completion(item, rstate)
+  if rstate.applied then return true end
+  local original = item.data.completion_item
+  local round_subject = rstate.round_subject or item.data.subject
+  if round_subject then
+    local admitted, disposition = lsp.admit_response(round_subject)
     if not admitted then
       core.log_quiet(
-        "[LSP] completion edit refused (%s)", disposition or "stale"
+        "[LSP] completion apply refused (%s)", disposition or "stale"
+      )
+      return false
+    end
+  end
+  local effective = nil
+  if rstate.state == "resolved" then
+    effective = rstate.resolved_item
+      and overlay_resolved_item(original, rstate.resolved_item)
+      or original
+  elseif rstate.state == "not_needed" then
+    effective = original
+  else
+    if completion_self_complete(original) then
+      effective = original
+    else
+      core.log_quiet(
+        "[LSP] completion apply refused (%s)",
+        rstate.disposition or rstate.state
       )
       return false
     end
   end
 
-  local completion = item.data.completion_item
   local dv = get_active_docview()
+  -- Deferred terminals re-fetch the active view: applying a completion to a
+  -- different document than the one its ranges were computed for is refusal,
+  -- not adaptation (#11188).
+  if
+    dv
+    and round_subject
+    and round_subject.doc
+    and dv.doc ~= round_subject.doc
+  then
+    core.log_quiet("[LSP] completion apply refused (%s)", "document_mismatch")
+    return false
+  end
   local edit_applied = false
-  if completion.textEdit then
+  if effective.textEdit then
     if dv then
-      local is_snippet = completion.insertTextFormat
-        and completion.insertTextFormat == Server.insert_text_format.Snippet
-      edit_applied = apply_edit(item.data.server, dv.doc, completion.textEdit, is_snippet, true)
+      local is_snippet = effective.insertTextFormat
+        and effective.insertTextFormat == Server.insert_text_format.Snippet
+      edit_applied = apply_edit(item.data.server, dv.doc, effective.textEdit, is_snippet, true)
       if edit_applied then
         -- Retrigger code completion if last char is a trigger
         -- this is useful for example with clangd when autocompleting
@@ -857,9 +927,9 @@ local function autocomplete_onselect(index, item)
   elseif
     dv and snippets_found and config.plugins.lsp.snippets
     and
-    completion.insertText and completion.insertTextFormat
+    effective.insertText and effective.insertTextFormat
     and
-    completion.insertTextFormat == Server.insert_text_format.Snippet
+    effective.insertTextFormat == Server.insert_text_format.Snippet
   then
     ---@type core.doc
     local doc = dv.doc
@@ -867,22 +937,193 @@ local function autocomplete_onselect(index, item)
       local line2, col2 = doc:get_selection()
       local line1, col1 = doc:position_offset(line2, col2, translate.start_of_word)
       doc:set_selection(line1, col1, line2, col2)
-      snippets.execute {format = 'lsp', template = completion.insertText}
+      snippets.execute {format = 'lsp', template = effective.insertText}
       edit_applied = true
     end
   end
-  if edit_applied and completion.additionalTextEdits and #completion.additionalTextEdits > 0 then
-    -- TODO: do we need to sort this? Or is it expected to be already sorted?
-    -- TODO: are the edit ranges considered as if the "main" textEdit was applied already?
-
+  if edit_applied and effective.additionalTextEdits and #effective.additionalTextEdits > 0 then
     -- Apply the edits in reverse order, so that their ranges are not shifted
     -- around by previous edits
-    for i=#completion.additionalTextEdits,1,-1 do
-      local edit = completion.additionalTextEdits[i]
+    for i=#effective.additionalTextEdits,1,-1 do
+      local edit = effective.additionalTextEdits[i]
       apply_edit(item.data.server, dv.doc, edit, false, false)
     end
   end
+  if edit_applied then
+    rstate.applied = true
+  end
   return edit_applied
+end
+
+---Terminal handling of one completionItem/resolve response for its item
+---subject (#11188). Admission comes before any effect; only an exact-current
+---result may resolve the state, update the visible description, or run a
+---deferred selection application.
+local function on_completion_resolve_response(item, rstate, response)
+  local admitted, disposition = lsp.admit_response(rstate.resolve_subject)
+  if not admitted then
+    rstate.state = "stale"
+    rstate.disposition = disposition or "stale"
+    rstate.pending_apply = false
+    core.log_quiet(
+      "[LSP] %s response dropped (%s)",
+      "completionItem/resolve", rstate.disposition
+    )
+    return
+  end
+  local result = response.result
+  if response.error then
+    -- A JSON-RPC error is a failed terminal, not an empty resolution: the
+    -- pending selection must hit the completeness-guarded fallback instead
+    -- of treating the original as confirmed (#11188).
+    rstate.state = "failed"
+    rstate.disposition = "server_error"
+  elseif result then
+    rstate.state = "resolved"
+    rstate.resolved_item = result
+    merge_resolve_description(item, result)
+  else
+    -- Null result: the server supplied nothing new; the application falls
+    -- back through the same guarded original-item terminal.
+    rstate.state = "failed"
+    rstate.disposition = "empty_result"
+  end
+  if rstate.pending_apply then
+    rstate.pending_apply = false
+    apply_selected_completion(item, rstate)
+  end
+end
+
+---Start at most one completionItem/resolve for an unresolved item subject
+---(#11188). Hover prefetch and selection land here, so one item owns one
+---request; the full item travels as received.
+local function begin_completion_resolve(item, rstate)
+  if rstate.state ~= "unresolved" then return rstate end
+  local data = item.data
+  local doc = rstate.round_subject and rstate.round_subject.doc or nil
+  local subject = lsp.make_request_subject(
+    'completionItem/resolve', doc, data.server, nil, nil)
+  if not subject then
+    rstate.state = "stale"
+    rstate.disposition = "no_session"
+    if rstate.pending_apply then
+      rstate.pending_apply = false
+      apply_selected_completion(item, rstate)
+    else
+      core.log_quiet("[LSP] completion apply refused (%s)", "no_session")
+    end
+    return rstate
+  end
+  rstate.state = "in_flight"
+  rstate.resolve_subject = subject
+  local queued = data.server:push_request('completionItem/resolve', {
+    params = data.completion_item,
+    callback = function(server, response)
+      on_completion_resolve_response(item, rstate, response)
+    end,
+    timeout_callback = function()
+      if rstate.state ~= "in_flight" then return end
+      rstate.state = "timed_out"
+      rstate.disposition = "timeout"
+      if rstate.pending_apply then
+        rstate.pending_apply = false
+        apply_selected_completion(item, rstate)
+      end
+    end,
+  })
+  if queued == "not_queued" then
+    rstate.state = "failed"
+    rstate.disposition = "not_queued"
+    if rstate.pending_apply then
+      rstate.pending_apply = false
+      apply_selected_completion(item, rstate)
+    else
+      core.log_quiet("[LSP] completion apply refused (%s)", "not_queued")
+    end
+  end
+  return rstate
+end
+
+---Callback given to autocomplete plugin which is executed once for each
+---element of the autocomplete box which is hovered with the idea of providing
+---better description of the selected element by requesting the LSP server for
+---detailed information/documentation.
+---@param index integer
+---@param item table
+local function autocomplete_onhover(index, item)
+  local completion_item = item.data.completion_item
+
+  if item.data.server.verbose then
+    item.data.server:log(
+      "Resolve item: %s", util.jsonprettify(json.encode(completion_item))
+    )
+  end
+
+  -- Local patch (#11188): hover starts at most one resolve prefetch for the
+  -- item subject; selection joins the same operation instead of sending a
+  -- duplicate. Description updates come only from an admitted exact-current
+  -- result in the resolve callback.
+  local rstate = item.data.resolve
+  if rstate and rstate.supported then
+    begin_completion_resolve(item, rstate)
+  end
+end
+
+---Callback that handles insertion of an autocompletion item that has
+---the information of insertion
+---@param index integer
+---@param item table
+local function autocomplete_onselect(index, item)
+  -- Local patch (#11108): a completion edit computed for one accepted
+  -- document state is revalidated against its stored subject at the
+  -- moment of user selection; stale edits are never applied optimistically
+  -- against newer bytes.
+  if item.data.subject then
+    local admitted, disposition = lsp.admit_response(item.data.subject)
+    if not admitted then
+      core.log_quiet(
+        "[LSP] completion edit refused (%s)", disposition or "stale"
+      )
+      return false
+    end
+  end
+
+  -- Local patch (#11188): selection obtains an exact resolved/current item or
+  -- a typed disposition before any document mutation. An unresolved or
+  -- in-flight item defers application to its resolve terminal instead of
+  -- applying whatever fields happen to be present; each item applies at most
+  -- once regardless of repeated callbacks.
+  local rstate = item.data.resolve
+  if not rstate then
+    return apply_selected_completion(item, { state = "not_needed", applied = false })
+  end
+  if rstate.applied then
+    return true
+  end
+  if
+    not rstate.supported
+    or rstate.state == "not_needed"
+    or rstate.state == "resolved"
+    or rstate.state == "failed"
+    or rstate.state == "timed_out"
+    or rstate.state == "stale"
+  then
+    return apply_selected_completion(item, rstate)
+  end
+  if rstate.state == "in_flight" then
+    rstate.pending_apply = true
+    return false
+  end
+  -- unresolved: selection triggers the exact pre-apply resolution itself.
+  rstate.pending_apply = true
+  begin_completion_resolve(item, rstate)
+  if not rstate.pending_apply then
+    -- The operation terminated synchronously (typed queue rejection or a
+    -- missing session): its guarded terminal already fell back or refused,
+    -- so selection surfaces that real outcome instead of a deferral.
+    return rstate.applied
+  end
+  return false
 end
 
 --
@@ -1784,11 +2025,12 @@ function lsp.update_document(doc, request_completion)
       goto continue
     end
     local sync_kind = server.capabilities.textDocumentSync.change
-    if
-      sync_kind ~= Server.text_document_sync_kind.None
-      and
-      server:can_push() -- ensure we don't loose incremental changes
-    then
+    -- Local patch (#10833): no enqueue admission gate. The former
+    -- server:can_push() hit-rate probe delayed batch emission under unrelated
+    -- provider traffic and could starve document truth; batches now always
+    -- queue (overwriting the unsent predecessor) and the send loop paces
+    -- delivery.
+    if sync_kind ~= Server.text_document_sync_kind.None then
       local completion_callback = nil
       if request_completion then
         completion_callback = function() request_signature_completion(doc) end
@@ -2039,7 +2281,10 @@ function lsp.request_completion(doc, line, col, forced)
               data = {
                 -- Local patch (#11108): carry the admitted request subject
                 -- so deferred edit application revalidates at select time.
-                server = server, completion_item = symbol, subject = subject
+                server = server, completion_item = symbol, subject = subject,
+                -- Local patch (#11188): one structured pre-apply resolve
+                -- state per item; selection and hover share it.
+                resolve = new_completion_resolve_state(server, symbol, subject)
               },
               onselect = autocomplete_onselect
             }

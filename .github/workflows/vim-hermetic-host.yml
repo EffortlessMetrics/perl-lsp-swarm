@@ -1,0 +1,113 @@
+name: Vim vim-lsp hermetic host
+
+on:
+  pull_request:
+    paths:
+      - "xtask/**"
+      - "scripts/test/vim-host-driver.vim"
+      - "scripts/test/vim-clients/**"
+      - ".ci/editor-clients/vim-vim-lsp-*.json"
+      - "crates/perl-lsp-rs-core/**"
+      - "crates/perllsp/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/vim-hermetic-host.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vim-hermetic-host-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  hermetic-host-run:
+    name: actual Vim + vim-lsp + perllsp / Linux x64
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # The pinned subject commit is read from the governed #11369 manifest
+      # inside the job; this env var only names the manifest, never a second
+      # pin.
+      VIM_LSP_SUBJECT_MANIFEST: .ci/editor-clients/vim-vim-lsp-subject.v1.json
+      PERLLSP_VIM_HOST_RUN_OUT: target/vim-host-runs/ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Confirm the exact Vim host and its transport features
+        run: |
+          vim --version | head -n 2
+          # Fail closed when the runner image ships a Vim without the
+          # transport features vim-lsp requires (typed environment boundary,
+          # never a skip).
+          vim -Nu NONE -n -i NONE -es +'if !has("channel") || !has("job") || !has("timers") | cquit 5 | endif' +qa!
+
+      - name: Build the exact perllsp candidate
+        run: cargo build --locked -p perllsp
+
+      - name: Acquire the pinned vim-lsp subject bytes
+        run: |
+          set -euo pipefail
+          pinned_commit="$(jq -r '.upstream.selected_commit' "${VIM_LSP_SUBJECT_MANIFEST}")"
+          echo "pinned vim-lsp commit: ${pinned_commit}"
+          git clone --quiet --no-checkout https://github.com/prabirshrestha/vim-lsp.git target/vim-lsp-subject
+          git -C target/vim-lsp-subject fetch --quiet --depth 1 origin "${pinned_commit}"
+          git -C target/vim-lsp-subject checkout --quiet FETCH_HEAD
+          # The runner re-verifies commit, tree, and entry-file digests
+          # against the manifest before launch; a fetch of the wrong bytes
+          # fails closed there.
+
+      - name: Plant a decoy perllsp on PATH (ambient-PATH discrimination)
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /usr/local/bin
+          printf '#!/bin/sh\necho "decoy perllsp must never run" >&2\nexit 42\n' \
+            | sudo tee /usr/local/bin/perllsp >/dev/null
+          sudo chmod +x /usr/local/bin/perllsp
+          # If the client ever resolved `perllsp` through PATH, the decoy
+          # would break the run: the exact absolute candidate must win.
+
+      - name: Run the hermetic host journey
+        run: >-
+          cargo run --quiet --locked -p xtask --
+          editor-compat vim run
+          --subject pinned_vim_lsp_upstream
+          --vim "$(command -v vim)"
+          --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"
+          --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"
+          --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/run"
+          --timeout-ms 420000
+
+      - name: Bind the receipt result (fail closed on any non-pass)
+        run: |
+          set -euo pipefail
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/run/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          cleanup="$(jq -r '.process_cleanup' "${receipt}")"
+          echo "host run result: ${result} (cleanup: ${cleanup})"
+          [ "${result}" = "pass" ]
+          [ "${cleanup}" = "pass" ]
+          [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/run/hermetic/raw/vim-lsp-client.log" ]
+          [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/run/hermetic/raw/initialize.json" ]
+
+      - name: Prove no candidate process survives the journey
+        run: |
+          if pgrep -f '[p]erllsp([[:space:]]|$)' >/dev/null; then
+            echo "a perllsp process survived the hermetic host run" >&2
+            pgrep -af '[p]erllsp([[:space:]]|$)' >&2 || true
+            exit 1
+          fi
+
+      - name: Upload the run evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: vim-hermetic-host-run
+          # Only the sanitized artifact tree and the receipt are uploaded:
+          # the raw run root carries unsanitized client/server logs and full
+          # runner process-table snapshots that must stay on the runner.
+          path: |
+            target/vim-host-runs/ci/run/receipt.json
+            target/vim-host-runs/ci/run/hermetic/artifacts/
+          if-no-files-found: warn

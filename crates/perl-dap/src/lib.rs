@@ -156,6 +156,10 @@ pub mod ptkdb_bootstrap;
 /// transaction phases, runtime-module generation, invalidation, protocol
 /// requirements, and mechanism limits.
 pub mod reload;
+/// Wire registration for the `perl-lsp/loadedModuleReload` custom DAP family
+/// (R01B, #10138): transport and compatibility only, unadvertised and
+/// undischarged.
+pub mod reload_family;
 /// Frozen debug-session packet builder (the stable external handoff format).
 pub mod session_plan;
 
