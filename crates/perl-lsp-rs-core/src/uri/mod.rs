@@ -61,9 +61,14 @@ fn windows_file_path_uri(s: &str) -> Option<Uri> {
 /// Accepts valid URI strings and absolute local file paths (both Unix and
 /// Windows styles). Falls back to a guaranteed-valid URI if parsing fails.
 ///
-/// The selected substrate's `Uri` is String-backed; parse fallibility moved
-/// from construction-time to this explicit `url::Url` validation gate
-/// (DELTA-URI-DEFAULT, protocol-type-substrate-matrix §5).
+/// The selected substrate's `Uri` is String-backed, so validity is enforced
+/// through an explicit `url::Url` validation gate (DELTA-URI-DEFAULT,
+/// protocol-type-substrate-matrix §5) while the caller's spelling is
+/// preserved byte-for-byte. Returning `Url::parse`'s canonical form instead
+/// would silently rewrite dot-segments and percent-escapes (e.g.
+/// `file:///a/../b.pl` → `file:///b.pl`) and change document identity on the
+/// wire; the incumbent lsp-types adapter preserved client spelling. Final
+/// URI ruling stays with LT03 (#8156/#8484).
 #[must_use]
 pub fn parse_uri(s: &str) -> Uri {
     let sanitized = s.trim_start_matches('\u{feff}').trim();
@@ -77,14 +82,14 @@ pub fn parse_uri(s: &str) -> Uri {
     }
 
     match Url::parse(sanitized) {
-        Ok(url) => Uri(url.as_str().to_string()),
+        Ok(_) => Uri(sanitized.to_string()),
         Err(_) => fallback_uri(),
     }
 }
 
 #[cfg(test)]
 mod uri_path_helpers_tests {
-    use super::{file_path_uri, parse_uri, windows_file_path_uri};
+    use super::{Url, file_path_uri, parse_uri, windows_file_path_uri};
 
     /// `windows_file_path_uri` rejects drive-relative paths (drive + colon but no
     /// separator), e.g. `C:relative` — these are NOT absolute Windows paths.
@@ -227,6 +232,52 @@ mod uri_path_helpers_tests {
             uri.as_ref(),
             "file:///workspace/lib/Mod.pm",
             "parse_uri must convert a Unix absolute path to a file:// URI via path-detection"
+        );
+    }
+
+    /// Regression guard (#11803 repair): a validated URI keeps its dot-segments
+    /// exactly as received. The `Url::parse` gate is validation-only; letting it
+    /// canonicalize would silently rewrite `file:///workspace/a/../lib/Mod.pm`
+    /// into `file:///workspace/lib/Mod.pm` and change document identity on the
+    /// wire (incumbent lsp-types behavior preserved spelling).
+    #[test]
+    fn parse_uri_preserves_dot_segments() {
+        let uri = parse_uri("file:///workspace/a/../lib/Mod.pm");
+        assert_eq!(
+            uri.as_ref(),
+            "file:///workspace/a/../lib/Mod.pm",
+            "validated URI spelling must be preserved instead of Url-canonicalized"
+        );
+    }
+
+    /// Percent-escape spelling is preserved as well (`Url::parse` decodes
+    /// unreserved escapes such as `%7e`); clients key documents on the bytes
+    /// they sent, so recanonicalization would split one document into two
+    /// identities across client and server.
+    #[test]
+    fn parse_uri_preserves_percent_escape_spelling() {
+        let uri = parse_uri("file:///lib/%7emod.pm");
+        assert_eq!(
+            uri.as_ref(),
+            "file:///lib/%7emod.pm",
+            "percent-escape spelling must be preserved instead of being recanonicalized"
+        );
+    }
+
+    /// The `Url::parse` gate still rejects garbage: input that fails validation
+    /// falls back to a guaranteed-valid URI instead of being echoed verbatim.
+    #[test]
+    fn parse_uri_falls_back_on_invalid_uri() {
+        let invalid = "not a uri ::";
+        let uri = parse_uri(invalid);
+        assert_ne!(
+            uri.as_ref(),
+            invalid,
+            "input failing the validation gate must not be echoed verbatim"
+        );
+        assert!(
+            Url::parse(uri.as_ref()).is_ok(),
+            "fallback result must itself pass the validation gate"
         );
     }
 }
