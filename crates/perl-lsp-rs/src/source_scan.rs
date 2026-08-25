@@ -38,13 +38,18 @@ pub(crate) struct PanicFamilySuppression {
     pub scope: SuppressionScope,
     pub lints: Vec<PanicFamilyLint>,
     pub has_reason: bool,
+    /// True when an outer attribute decorates `mod` / `impl` / `trait`.
+    /// Those items are still blankets even with `expect` + `reason`.
+    pub decorates_wide_item: bool,
 }
 
 impl PanicFamilySuppression {
     pub(crate) fn is_forbidden(&self) -> bool {
         match self.scope {
             SuppressionScope::Inner => true,
-            SuppressionScope::Outer => self.kind == SuppressionKind::Allow || !self.has_reason,
+            SuppressionScope::Outer => {
+                self.kind == SuppressionKind::Allow || !self.has_reason || self.decorates_wide_item
+            }
         }
     }
 }
@@ -58,6 +63,38 @@ fn ident_continues(source: &str, ident_len: usize) -> bool {
         .chars()
         .next()
         .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn starts_with_keyword(rest: &str, kw: &str) -> bool {
+    rest.starts_with(kw) && !ident_continues(rest, kw.len())
+}
+
+/// Skip remaining outer attributes, visibility, and `unsafe`/`const`/`auto`/
+/// `default` prefixes, then report whether the decorated item is `mod`,
+/// `impl`, or `trait` (a module-wide blanket, not a narrow function).
+fn following_item_is_wide(source: &str, mut i: usize) -> bool {
+    i = skip_outer_attributes(source, i);
+    i = skip_visibility(source, i);
+    i = skip_trivia(source, i);
+    loop {
+        let rest = rest_at(source, i);
+        let prefix_len = if starts_with_keyword(rest, "unsafe") {
+            6
+        } else if starts_with_keyword(rest, "auto") {
+            4
+        } else if starts_with_keyword(rest, "default") {
+            7
+        } else if starts_with_keyword(rest, "const") {
+            5
+        } else {
+            break;
+        };
+        i = skip_trivia(source, i + prefix_len);
+    }
+    let rest = rest_at(source, i);
+    starts_with_keyword(rest, "mod")
+        || starts_with_keyword(rest, "impl")
+        || starts_with_keyword(rest, "trait")
 }
 
 fn scan_char_literal(source: &str, i: usize) -> Option<usize> {
@@ -345,6 +382,8 @@ pub(crate) fn panic_family_suppressions(source: &str) -> Vec<PanicFamilySuppress
                 scope,
                 lints,
                 has_reason: attr_has_reason(body),
+                decorates_wide_item: scope == SuppressionScope::Outer
+                    && following_item_is_wide(source, attr_end),
             });
         }
         i = attr_end.max(i + 1);

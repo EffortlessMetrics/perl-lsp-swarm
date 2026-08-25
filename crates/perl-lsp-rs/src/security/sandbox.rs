@@ -654,7 +654,7 @@ mod tests {
         let result = sandbox.execute("cmd", &["/C", "echo", "test"]);
 
         assert!(result.is_err(), "Expected fail-closed error on Windows with sandbox enabled");
-        let err_msg = format!("{}", result.unwrap_err());
+        let err_msg = format!("{}", crate::must_err(result));
         assert!(
             err_msg.contains("Windows job objects") || err_msg.contains("sandbox.enabled"),
             "Error should mention Windows job objects or sandbox.enabled, got: {}",

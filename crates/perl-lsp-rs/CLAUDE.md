@@ -20,7 +20,9 @@ cargo fmt --all
 # Package-local equivalent (same lib; this crate's Cargo package name):
 cargo clippy -p perl-lsp-rs --lib --locked --no-deps -- -D warnings -A missing_docs
 # `--all-targets` is the product subject (#9600). `--tests` is not a substitute:
-# it omits benches/build and hides --lib unused-import findings (#9618).
+# it omits benches and hides --lib unused-import findings (#9618).
+# `build.rs` is a compile prerequisite of `--lib` / `--tests` / `--all-targets`,
+# not an `--all-targets`-only subject.
 cargo clippy -p perl-lsp-rs --all-targets --locked --no-deps -- -D warnings -A missing_docs
 RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs -- --test-threads=2
 ```

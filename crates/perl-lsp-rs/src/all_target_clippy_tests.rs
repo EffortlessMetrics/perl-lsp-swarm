@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::source_scan::{
     PanicFamilyLint, SuppressionKind, SuppressionScope, lib_source, panic_family_suppressions,
+    skip_balanced,
 };
 
 /// Exact package `--lib` command this issue reproduces. Not a second executor.
@@ -16,17 +17,16 @@ const LIB_CLIPPY: ClippySubject = ClippySubject {
     unit_tests: false,
     integration_tests: false,
     benches: false,
-    build_scripts: false,
 };
 
 /// `--tests` is the #9599/#9618 configuration contrast, not the product subject.
+/// It still compiles `build.rs` as a prerequisite of the selected targets.
 const TESTS_CLIPPY: ClippySubject = ClippySubject {
     selector: "--tests",
     argv_tail: &["--locked", "--no-deps", "--", "-D", "warnings", "-A", "missing_docs"],
     unit_tests: true,
     integration_tests: true,
     benches: false,
-    build_scripts: false,
 };
 
 /// Exact package `--all-targets` command this issue reproduces.
@@ -36,7 +36,6 @@ const ALL_TARGETS_CLIPPY: ClippySubject = ClippySubject {
     unit_tests: true,
     integration_tests: true,
     benches: true,
-    build_scripts: true,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +45,6 @@ struct ClippySubject {
     unit_tests: bool,
     integration_tests: bool,
     benches: bool,
-    build_scripts: bool,
 }
 
 fn crate_root() -> PathBuf {
@@ -96,17 +94,13 @@ fn package_rust_files() -> Result<Vec<PathBuf>, String> {
 fn tests_selector_is_not_all_targets() {
     assert_ne!(
         TESTS_CLIPPY.selector, ALL_TARGETS_CLIPPY.selector,
-        "substituting --tests for --all-targets hides benches and build scripts"
+        "substituting --tests for --all-targets hides benches"
     );
     let tests_omits = occupancy_flags(TESTS_CLIPPY);
     let all_includes = occupancy_flags(ALL_TARGETS_CLIPPY);
     assert!(
         !tests_omits.contains("benches") && all_includes.contains("benches"),
         "--tests omits benches; --all-targets includes them"
-    );
-    assert!(
-        !tests_omits.contains("build_scripts") && all_includes.contains("build_scripts"),
-        "--tests omits build scripts; --all-targets includes them"
     );
     assert_eq!(LIB_CLIPPY.argv_tail, ALL_TARGETS_CLIPPY.argv_tail);
 }
@@ -115,9 +109,6 @@ fn occupancy_flags(subject: ClippySubject) -> String {
     let mut flags = Vec::new();
     if subject.benches {
         flags.push("benches");
-    }
-    if subject.build_scripts {
-        flags.push("build_scripts");
     }
     if subject.unit_tests {
         flags.push("unit_tests");
@@ -152,7 +143,7 @@ fn package_has_bench_and_build_subjects_all_targets_must_include() -> Result<(),
     );
     assert!(
         root.join("build.rs").is_file(),
-        "perl-lsp-rs must keep build.rs so --all-targets includes the build target"
+        "perl-lsp-rs must keep build.rs so the crate walk still covers the custom-build script"
     );
     assert!(
         root.join("tests").is_dir(),
@@ -256,8 +247,56 @@ fn boom() {
         !hits[0].is_forbidden(),
         "item-level expect with reason is the accepted deliberate-panic form"
     );
+    assert!(!hits[0].decorates_wide_item);
     assert_eq!(hits[0].scope, SuppressionScope::Outer);
     assert_eq!(hits[0].kind, SuppressionKind::Expect);
+}
+
+#[test]
+fn outer_expect_on_mod_is_forbidden() {
+    let carved = r#"
+#[expect(clippy::panic, reason = "one panic in this module is enough")]
+mod tests {
+    fn boom() { panic!("one"); }
+    fn also_boom() { panic!("two"); }
+}
+"#;
+    let hits = panic_family_suppressions(carved);
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].is_forbidden(), "expect on mod is still a module-wide blanket");
+    assert!(hits[0].decorates_wide_item);
+    assert_eq!(hits[0].scope, SuppressionScope::Outer);
+    assert!(hits[0].has_reason);
+}
+
+#[test]
+fn stacked_outer_expect_on_mod_is_forbidden() {
+    let carved = r#"
+#[expect(clippy::unwrap_used, reason = "tracked conversion debt")]
+#[cfg(test)]
+mod tests {
+    fn hidden() { None::<()>.unwrap(); }
+}
+"#;
+    let hits = panic_family_suppressions(carved);
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].is_forbidden());
+    assert!(hits[0].decorates_wide_item);
+}
+
+#[test]
+fn outer_expect_on_impl_is_forbidden() {
+    let carved = r#"
+struct Probe;
+#[expect(clippy::panic, reason = "the handler under test must actually panic")]
+impl Probe {
+    fn boom() { panic!("impl-wide"); }
+}
+"#;
+    let hits = panic_family_suppressions(carved);
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].is_forbidden(), "expect on impl is still a blanket");
+    assert!(hits[0].decorates_wide_item);
 }
 
 #[test]
@@ -330,6 +369,30 @@ fn package_guidance_names_lib_and_all_targets() -> Result<(), String> {
         }),
         "Verify must not present --tests as the Clippy product command"
     );
+    assert!(
+        !verify.contains("omits benches/build"),
+        "Verify must not claim --tests omits build.rs; Cargo compiles it as a prerequisite"
+    );
+    Ok(())
+}
+
+#[test]
+fn windows_sandbox_fail_closed_uses_must_err_not_unwrap() -> Result<(), String> {
+    let source = read_source(&crate_root().join("src/security/sandbox.rs"))?;
+    let start = source
+        .find("fn test_windows_sandbox_fails_closed")
+        .ok_or_else(|| "sandbox.rs must keep the Windows fail-closed test".to_string())?;
+    let rest = source.get(start..).ok_or_else(|| "Windows fail-closed test slice".to_string())?;
+    let brace =
+        rest.find('{').ok_or_else(|| "Windows fail-closed test must have a body".to_string())?;
+    let end = skip_balanced(&source, start + brace, '{', '}');
+    let body =
+        source.get(start..end).ok_or_else(|| "Windows fail-closed body bounds".to_string())?;
+    assert!(
+        !body.contains("unwrap_err"),
+        "Windows --all-targets compiles this test; unwrap_err is clippy::unwrap_used"
+    );
+    assert!(body.contains("must_err"), "Windows fail-closed must use must_err like the Linux twin");
     Ok(())
 }
 
