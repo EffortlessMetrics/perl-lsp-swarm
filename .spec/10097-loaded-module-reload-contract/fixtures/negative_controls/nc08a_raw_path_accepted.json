@@ -1,0 +1,14 @@
+{
+  "name": "nc08a_raw_path_accepted",
+  "control": 8,
+  "op": "validate_request_surface",
+  "input": {
+    "family": "perl-lsp/loadedModuleReload",
+    "family_version": 1,
+    "correlation_identity": 41,
+    "payload_kind": "raw_path",
+    "payload_value": "/etc/passwd",
+    "capability_kind": "unadvertised"
+  },
+  "expected_error": "raw_client_input_accepted"
+}

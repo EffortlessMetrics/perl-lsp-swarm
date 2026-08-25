@@ -1193,11 +1193,19 @@ function lsp.start_server(filename, project_directory)
             local settings_list = {}
             for i = 1, #items do
               local item = items[i]
+              -- Local patch (#10845): presence and value are tracked
+              -- independently. A found value is appended verbatim — explicit
+              -- false stays JSON false, as do 0/""/[] and nested false — and
+              -- only a genuinely missing section becomes the null sentinel.
+              -- The legacy `value or json.null` collapsed an explicitly
+              -- configured false into absent/default semantics.
               local value = nil
+              local found = false
               if item.section then
                 -- No workspace was specified so we return from default settings
                 if not item.scopeUri then
-                  value = util.table_get_field(settings_default, item.section)
+                  value, found = util.table_get_field(
+                    settings_default, item.section)
                 -- A workspace was specified so we return from that workspace
                 else
                   -- Local patch (#11165): scope URIs convert through the one
@@ -1215,17 +1223,22 @@ function lsp.start_server(filename, project_directory)
                   local settings_workspace = lsp.get_workspace_settings(
                     server, scope_path
                   )
-                  value = util.table_get_field(settings_workspace, item.section)
+                  value, found = util.table_get_field(
+                    settings_workspace, item.section)
                 end
 
-                if not value then
+                if not found then
                   server:log("Asking for '%s' config but not set", item.section)
                 else
                   server:log("Asking for '%s' config", item.section)
                 end
               end
 
-              table.insert(settings_list, value or json.null)
+              if found then
+                table.insert(settings_list, value)
+              else
+                table.insert(settings_list, json.null)
+              end
             end
 
             server:push_response(
@@ -1237,51 +1250,100 @@ function lsp.start_server(filename, project_directory)
         )
 
         -- Respond to window/showDocument request
+        -- Local patch (#10873): the ShowDocumentResult reflects the completed
+        -- client action instead of preemptive success. The external prompt is
+        -- generation-owned (an old prompt cannot answer after server
+        -- replacement through the servers_running identity), nothing responds
+        -- before the user/open terminal outcome, and internal open or
+        -- selection-conversion failures carry explicit typed dispositions.
+        -- #10785 owns response correlation; this listener answers exactly
+        -- once with the truthful payload.
         client:add_request_listener(
           "window/showDocument",
           function(server, request)
-            if request.params.external then
-              MessageBox.info(
-                server.name .. " LSP Server",
-                "Wants to externally open:\n'" .. request.params.uri .. "'",
-                function(_, button_id)
-                  if button_id == 1 then
-                    util.open_external(request.params.uri)
+            local responded = false
+            util.show_document(server, request.params, {
+              confirm = function(_, _, answered)
+                MessageBox.info(
+                  server.name .. " LSP Server",
+                  "Wants to externally open:\n'"
+                    .. tostring(request.params.uri) .. "'",
+                  function(_, button_id)
+                    answered(button_id == 1)
+                  end,
+                  MessageBox.BUTTONS_YES_NO
+                )
+                -- The decision arrives asynchronously; no response exists
+                -- until the user outcome settles.
+                return nil
+              end,
+              reveal = function(uri)
+                -- Local patch (#11165): internal reveal converts through the
+                -- one authority; non-file or malformed URIs fail closed.
+                local document, document_reason = util.uri_to_path(uri)
+                if not document then
+                  core.log_quiet(
+                    "[LSP] showDocument refused (%s)",
+                    document_reason or "unconvertible uri"
+                  )
+                  return nil, document_reason or "unconvertible_uri"
+                end
+                local ok_open, doc_view_or_error = pcall(function()
+                  ---@type core.docview
+                  return core.root_view:open_doc(
+                    core.open_doc(common.home_expand(document))
+                  )
+                end)
+                if not ok_open or not doc_view_or_error then
+                  core.log_quiet(
+                    "[LSP] showDocument open failed (%s)",
+                    tostring(doc_view_or_error or "no docview")
+                  )
+                  return nil, "open_failed"
+                end
+                if request.params.selection then
+                  local ok_selection, selection_error = pcall(function()
+                    local line1, col1, line2, col2 = util.toselection(
+                      request.params.selection, doc_view_or_error.doc
+                    )
+                    doc_view_or_error.doc:set_selection(
+                      line1, col1, line2, col2
+                    )
+                  end)
+                  if not ok_selection then
+                    core.log_quiet(
+                      "[LSP] showDocument selection conversion failed (%s)",
+                      tostring(selection_error)
+                    )
+                    return nil, "selection_failed"
                   end
-                end,
-                MessageBox.BUTTONS_YES_NO
-              )
-            else
-              -- Local patch (#11165): internal reveal converts through the
-              -- one authority; non-file or malformed URIs fail closed with a
-              -- truthful response instead of opening fabricated paths.
-              local document, document_reason = util.uri_to_path(
-                request.params.uri
-              )
-              if not document then
-                core.log_quiet(
-                  "[LSP] showDocument refused (%s)",
-                  document_reason or "unconvertible uri"
-                )
-                server:push_response(request.method, request.id, {success=false})
-                return
-              end
-              ---@type core.docview
-              local doc_view = core.root_view:open_doc(
-                core.open_doc(common.home_expand(document))
-              )
-              if request.params.selection then
-                local line1, col1, line2, col2 = util.toselection(
-                  request.params.selection, doc_view.doc
-                )
-                doc_view.doc:set_selection(line1, col1, line2, col2)
-              end
-              if request.params.takeFocus then
+                end
+                return doc_view_or_error
+              end,
+              raise = function()
                 system.raise_window()
-              end
-            end
-
-            server:push_response(request.method, request.id, {success=true})
+              end,
+              alive = function()
+                -- Generation ownership: only the currently registered server
+                -- instance may answer; replacement/shutdown retires old
+                -- prompts without responding (#10873).
+                return lsp.servers_running[server.name] == server
+              end,
+              outcome = function(success, reason)
+                if responded then
+                  return
+                end
+                responded = true
+                if not success then
+                  core.log_quiet(
+                    "[LSP] showDocument refused (%s)", reason or "failed"
+                  )
+                end
+                server:push_response(
+                  request.method, request.id, {success = success}
+                )
+              end,
+            })
           end
         )
 
@@ -1722,11 +1784,12 @@ function lsp.update_document(doc, request_completion)
       goto continue
     end
     local sync_kind = server.capabilities.textDocumentSync.change
-    if
-      sync_kind ~= Server.text_document_sync_kind.None
-      and
-      server:can_push() -- ensure we don't loose incremental changes
-    then
+    -- Local patch (#10833): no enqueue admission gate. The former
+    -- server:can_push() hit-rate probe delayed batch emission under unrelated
+    -- provider traffic and could starve document truth; batches now always
+    -- queue (overwriting the unsent predecessor) and the send loop paces
+    -- delivery.
+    if sync_kind ~= Server.text_document_sync_kind.None then
       local completion_callback = nil
       if request_completion then
         completion_callback = function() request_signature_completion(doc) end

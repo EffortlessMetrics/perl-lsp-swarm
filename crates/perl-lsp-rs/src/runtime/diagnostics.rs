@@ -19,7 +19,7 @@ use crate::features::diagnostics::report_identity::{
 };
 use crate::features::diagnostics::{
     Diagnostic as InternalDiagnostic, DiagnosticTag as InternalDiagnosticTag,
-    PullDiagnosticsContext,
+    PullDiagnosticsContext, RelatedInformation as InternalRelatedInformation,
 };
 use crate::runtime::window::RequestProgressGuard;
 use perl_diagnostics::codes::DiagnosticCode;
@@ -211,9 +211,6 @@ pub struct PullDiagnosticsOrchestrator {
     /// Cached CriticAnalyzer for external perlcritic
     #[cfg(not(target_arch = "wasm32"))]
     critic_analyzer: Mutex<Option<perl_lsp_rs_core::tooling::perl_critic::CriticAnalyzer>>,
-    /// Track warnings already emitted (deduplication)
-    #[cfg(not(target_arch = "wasm32"))]
-    warnings_sent: Mutex<std::collections::HashSet<String>>,
 }
 
 impl PullDiagnosticsOrchestrator {
@@ -222,8 +219,6 @@ impl PullDiagnosticsOrchestrator {
         Self {
             #[cfg(not(target_arch = "wasm32"))]
             critic_analyzer: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            warnings_sent: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -388,7 +383,8 @@ impl PullDiagnosticsOrchestrator {
         {
             self.emit_warning(
                 server,
-                "missing-binary".to_string(),
+                super::session_warning_dedup::SessionWarningCode::CriticMissingBinary,
+                None,
                 "Perl::Critic is enabled but `perlcritic` was not found on PATH. Install Perl::Critic (for example: `cpanm Perl::Critic`) or disable perl.perlcritic.enabled.",
             );
             return;
@@ -406,7 +402,8 @@ impl PullDiagnosticsOrchestrator {
             if resolved.is_none() {
                 self.emit_warning(
                     server,
-                    format!("missing-profile:{configured_profile}"),
+                    super::session_warning_dedup::SessionWarningCode::CriticMissingProfile,
+                    Some(configured_profile),
                     &format!(
                         "Perl::Critic profile path does not exist: {configured_profile}. Update perl.perlcritic.profile or create the profile file."
                     ),
@@ -504,7 +501,8 @@ impl PullDiagnosticsOrchestrator {
             Some(Err(e)) => {
                 self.emit_warning(
                     server,
-                    format!("execution-failed:{e}"),
+                    super::session_warning_dedup::SessionWarningCode::CriticExecutionFailed,
+                    Some(&e.to_string()),
                     &format!("Perl::Critic execution failed: {e}"),
                 );
                 tracing::warn!(uri, error = %e, "perlcritic failed");
@@ -524,24 +522,57 @@ impl PullDiagnosticsOrchestrator {
     ) {
     }
 
-    /// Emit a workspace-scoped warning (with deduplication).
+    /// Emit a workspace-scoped warning unless the same reviewed subject was
+    /// already emitted this session. Suppression identity lives in the
+    /// server's bounded session-warning dedup store (#9769), so the pull
+    /// path shares the same typed, hard-capped critic family as the push
+    /// path and retains no raw key strings of its own.
     #[cfg(not(target_arch = "wasm32"))]
-    fn emit_warning(&self, server: &LspServer, key: String, message: &str) {
-        let mut sent = self.warnings_sent.lock();
-        if sent.insert(key) {
+    fn emit_warning(
+        &self,
+        server: &LspServer,
+        code: super::session_warning_dedup::SessionWarningCode,
+        subject: Option<&str>,
+        message: &str,
+    ) {
+        let identity = match subject {
+            Some(subject) => super::session_warning_dedup::SessionWarningIdentity::fingerprinted(
+                code,
+                super::session_warning_dedup::SessionWarningSubjectTag::None,
+                subject,
+            ),
+            None => super::session_warning_dedup::SessionWarningIdentity::subjectless(code),
+        };
+        if !matches!(
+            server
+                .session_warning_dedup
+                .note(super::session_warning_dedup::SessionWarningFamily::Critic, identity),
+            super::session_warning_dedup::SessionWarningDecision::Suppress
+        ) {
             server.show_message_or_log(super::window::MessageType::Warning, message);
         }
     }
 
     /// No-op stub for WASM targets.
     #[cfg(target_arch = "wasm32")]
-    fn emit_warning(&self, _server: &LspServer, _key: String, _message: &str) {}
+    fn emit_warning(
+        &self,
+        _server: &LspServer,
+        _code: super::session_warning_dedup::SessionWarningCode,
+        _subject: Option<&str>,
+        _message: &str,
+    ) {
+    }
 
     /// Reset the orchestrator state (e.g., on configuration change).
+    ///
+    /// Warning-dedup state is not held here anymore: the didChangeConfiguration
+    /// critic transition clears the shared critic family (#9769) immediately
+    /// before calling this reset, keeping the analyzer and warning lifecycles
+    /// aligned.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn reset(&self) {
         *self.critic_analyzer.lock() = None;
-        self.warnings_sent.lock().clear();
     }
 
     /// No-op stub for WASM targets.
@@ -2385,7 +2416,8 @@ impl LspServer {
             || (!skip_check && !crate::execute_command::command_exists("perlcritic"))
         {
             self.emit_perlcritic_workspace_warning(
-                "missing-binary".to_string(),
+                super::session_warning_dedup::SessionWarningCode::CriticMissingBinary,
+                None,
                 "Perl::Critic is enabled but `perlcritic` was not found on PATH. Install Perl::Critic (for example: `cpanm Perl::Critic`) or disable perl.perlcritic.enabled.",
             );
             return;
@@ -2400,7 +2432,8 @@ impl LspServer {
             );
             if resolved.is_none() {
                 self.emit_perlcritic_workspace_warning(
-                    format!("missing-profile:{configured_profile}"),
+                    super::session_warning_dedup::SessionWarningCode::CriticMissingProfile,
+                    Some(configured_profile),
                     &format!(
                         "Perl::Critic profile path does not exist: {configured_profile}. Update perl.perlcritic.profile or create the profile file."
                     ),
@@ -2509,7 +2542,8 @@ impl LspServer {
             }
             Some(Err(e)) => {
                 self.emit_perlcritic_workspace_warning(
-                    format!("execution-failed:{e}"),
+                    super::session_warning_dedup::SessionWarningCode::CriticExecutionFailed,
+                    Some(&e.to_string()),
                     &format!("Perl::Critic execution failed: {e}"),
                 );
                 tracing::warn!(uri, error = %e, "perlcritic failed");
@@ -2528,10 +2562,30 @@ impl LspServer {
     ) {
     }
 
+    /// Show a workspace-scoped Perl::Critic warning unless the same reviewed
+    /// subject was already emitted this session (#9769). `subject` is the
+    /// client/environment-controlled identity (configured profile string,
+    /// execution error text); only its deterministic fingerprint is retained.
     #[cfg(not(target_arch = "wasm32"))]
-    fn emit_perlcritic_workspace_warning(&self, key: String, message: &str) {
-        let mut sent = self.critic_workspace_warnings_sent.lock();
-        if sent.insert(key) {
+    fn emit_perlcritic_workspace_warning(
+        &self,
+        code: super::session_warning_dedup::SessionWarningCode,
+        subject: Option<&str>,
+        message: &str,
+    ) {
+        let identity = match subject {
+            Some(subject) => super::session_warning_dedup::SessionWarningIdentity::fingerprinted(
+                code,
+                super::session_warning_dedup::SessionWarningSubjectTag::None,
+                subject,
+            ),
+            None => super::session_warning_dedup::SessionWarningIdentity::subjectless(code),
+        };
+        if !matches!(
+            self.session_warning_dedup
+                .note(super::session_warning_dedup::SessionWarningFamily::Critic, identity),
+            super::session_warning_dedup::SessionWarningDecision::Suppress
+        ) {
             self.show_message_or_log(super::window::MessageType::Warning, message);
         }
     }
@@ -2695,17 +2749,29 @@ fn push_diagnostic_source(code: Option<&str>) -> &'static str {
 ///
 /// This is the only place the push-diagnostics path reads normalized critic
 /// rows; producer spellings never reach this projection directly (#7475).
+/// The contributing ordinary producer's user-visible remediation rides along
+/// so the merged row renders exactly what its retired twin rendered (#12004).
 fn normalized_critic_finding_to_diagnostic(
     finding: &perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding,
 ) -> InternalDiagnostic {
+    let related_information = finding
+        .remediation_related_information()
+        .iter()
+        .map(|note| {
+            InternalRelatedInformation::new(
+                (note.range.start.byte, note.range.end.byte),
+                note.message.clone(),
+            )
+        })
+        .collect();
     InternalDiagnostic {
         range: (finding.range().start.byte, finding.range().end.byte),
         severity: critic_severity_to_internal(finding.severity()),
         code: Some(finding.public_code().to_string()),
         message: finding.message().to_string(),
-        related_information: Vec::new(),
+        related_information,
         tags: Vec::new(),
-        suggestion: None,
+        suggestion: finding.remediation_suggestion().map(str::to_string),
         fixable: finding.has_available_fix(),
         critic_observation: None,
     }
@@ -3492,6 +3558,80 @@ mod tests {
     }
 
     #[test]
+    fn workspace_push_publishes_exactly_one_merged_system_row_with_both_contributors_and_remediation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #12004 push-side count-level proof: one exact system() document must
+        // surface exactly one PL603 logical row carrying both contributor
+        // identities (the built-in spelling presents, the native spelling is
+        // retired into the row), plus the ordinary twin's preserved Suggestion
+        // text and related information. This server-initiated workspace
+        // surface is the push renderer that appends twin suggestions.
+        let (server, _buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_native_critic_profile("strict");
+        let uri = "file:///overlap_remediation_push_test.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use strict;\nuse warnings;\nsystem('ls -la');\n"
+            }
+        })))?;
+
+        let report = server
+            .handle_workspace_diagnostic(Some(json!({
+                "identifier": "perl-lsp",
+                "previousResultIds": []
+            })))?
+            .ok_or("workspace diagnostic response missing")?;
+        let items = report["items"].as_array().ok_or("workspace diagnostic items missing")?;
+        let file_report = items
+            .iter()
+            .find(|item| item["uri"].as_str() == Some(uri))
+            .ok_or("workspace diagnostic report missing opened document")?;
+        let diagnostics =
+            file_report["items"].as_array().ok_or("workspace diagnostic report missing items")?;
+
+        let pl603_rows: Vec<&Value> =
+            diagnostics.iter().filter(|diagnostic| diagnostic["code"] == json!("PL603")).collect();
+        assert_eq!(
+            pl603_rows.len(),
+            1,
+            "exactly one logical PL603 product row may exist on the push path: {diagnostics:#?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic["code"] != json!("native.security.system_exec")),
+            "the native spelling must survive only as a contributor, not a second row: {diagnostics:#?}"
+        );
+
+        let row = pl603_rows[0];
+        let message = row["message"].as_str().ok_or("row must carry a string message")?;
+        assert_eq!(
+            message,
+            "system() executes a shell command. Ensure input is sanitized.\nSuggestion: Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection",
+            "merged row must preserve the retiring twin's Suggestion text verbatim"
+        );
+        assert_eq!(
+            row["severity"],
+            json!(2),
+            "matched declarations project to the LSP warning scale the twin always had"
+        );
+        let related =
+            row["relatedInformation"].as_array().ok_or("row must carry related information")?;
+        assert!(
+            related.iter().any(|info| info["message"]
+                == json!(
+                    "Use the list form system($cmd, @args) to avoid shell injection when arguments come from user input"
+                )),
+            "merged row must keep the twin's related information: {related:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn native_critic_overlap_rows_stay_distinct_per_reviewed_shape() {
         // #11918: `qx` and backtick are two reviewed PL601 shapes; each keeps
         // its own logical row (qx merges with the native qx alias, backtick
@@ -3779,7 +3919,9 @@ mod tests {
                 diag["code"].as_str() == Some("PL606")
                     && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str()
-                        == Some("readpipe() executes a shell command (equivalent to qx//). Ensure input is sanitized.")
+                        == Some(
+                            "readpipe() executes a shell command (equivalent to qx//). Ensure input is sanitized.\nSuggestion: Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution",
+                        )
             }),
             "merged readpipe row should be presented as PL606: {report}"
         );
@@ -3802,7 +3944,9 @@ mod tests {
                 diag["code"].as_str() == Some("PL603")
                     && diag["source"].as_str() == Some("perl-lsp")
                     && diag["message"].as_str()
-                        == Some("system() executes a shell command. Ensure input is sanitized.")
+                        == Some(
+                            "system() executes a shell command. Ensure input is sanitized.\nSuggestion: Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection",
+                        )
             }),
             "merged system row should be presented as PL603: {report}"
         );

@@ -10,6 +10,7 @@
 //! of this module can be constructed from a subprocess violation without
 //! passing through the registry-checked identity constructors.
 
+use super::native::CriticRelatedInformation;
 use super::normalized::{
     CriticFindingCandidate, CriticSourceIdentity, NormalizedCriticFinding,
     normalize_critic_findings,
@@ -39,6 +40,12 @@ pub struct BuiltInCriticObservation {
     byte_range: (usize, usize),
     message: String,
     explanation: Option<String>,
+    /// Producer-owned user-visible remediation of the ordinary twin row
+    /// (#12004): the exact suggestion text the ordinary diagnostic rendered.
+    suggestion: Option<String>,
+    /// Producer-owned related information of the ordinary twin row, as
+    /// byte spans over the same source the emitter observed.
+    related_information: Vec<((usize, usize), String)>,
 }
 
 impl BuiltInCriticObservation {
@@ -169,7 +176,15 @@ impl BuiltInCriticObservation {
         message: impl Into<String>,
         explanation: Option<String>,
     ) -> Self {
-        Self { identity, severity, byte_range, message: message.into(), explanation }
+        Self {
+            identity,
+            severity,
+            byte_range,
+            message: message.into(),
+            explanation,
+            suggestion: None,
+            related_information: Vec::new(),
+        }
     }
 
     /// Checked producer-declared critic identity.
@@ -202,12 +217,54 @@ impl BuiltInCriticObservation {
         self.explanation.as_deref()
     }
 
+    /// Carry the ordinary twin row's exact suggestion text (#12004).
+    ///
+    /// This is a producer declaration of content that already exists on the
+    /// ordinary diagnostic; it is never composed or reworded here.
+    #[must_use]
+    pub fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
+        self.suggestion = Some(suggestion.into());
+        self
+    }
+
+    /// Carry one producer-owned related-information entry as a byte span over
+    /// the observed source (#12004).
+    #[must_use]
+    pub fn with_related_information(
+        mut self,
+        byte_range: (usize, usize),
+        message: impl Into<String>,
+    ) -> Self {
+        self.related_information.push((byte_range, message.into()));
+        self
+    }
+
+    /// Producer-owned suggestion text declared for the ordinary twin row.
+    #[must_use]
+    pub fn suggestion(&self) -> Option<&str> {
+        self.suggestion.as_deref()
+    }
+
+    /// Producer-owned related information declared for the ordinary twin row.
+    #[must_use]
+    pub fn related_information(&self) -> &[((usize, usize), String)] {
+        &self.related_information
+    }
+
     fn into_candidate(
         self,
         source: &str,
         source_identity: CriticSourceIdentity,
     ) -> CriticFindingCandidate {
         let range = range_for_byte_span(source, self.byte_range.0, self.byte_range.1);
+        let related_information = self
+            .related_information
+            .iter()
+            .map(|(span, message)| CriticRelatedInformation {
+                range: range_for_byte_span(source, span.0, span.1),
+                message: message.clone(),
+            })
+            .collect();
         CriticFindingCandidate::new(
             self.identity,
             source_identity,
@@ -216,6 +273,7 @@ impl BuiltInCriticObservation {
             self.message,
             self.explanation,
         )
+        .with_remediation(self.suggestion, related_information)
     }
 }
 
