@@ -120,7 +120,8 @@ fn incremental_state_records_lex_and_parse_restart_points() -> Result<()> {
 
 #[test]
 fn parse_checkpoints_capture_scalar_and_list_locals_before_nested_blocks() -> Result<()> {
-    let source = "package Example;\nmy $scalar;\nmy ($first, @items);\nsub run { my $local = 1; }\n";
+    let source =
+        "package Example;\nmy $scalar;\nmy ($first, @items);\nsub run { my $local = 1; }\n";
     let state = IncrementalState::new(source.to_string());
 
     let sub_start = source
@@ -135,9 +136,8 @@ fn parse_checkpoints_capture_scalar_and_list_locals_before_nested_blocks() -> Re
         "scalar and list declarations before the subroutine must be retained"
     );
 
-    let block_start = source
-        .find('{')
-        .ok_or_else(|| anyhow::anyhow!("subroutine block not found in source"))?;
+    let block_start =
+        source.find('{').ok_or_else(|| anyhow::anyhow!("subroutine block not found in source"))?;
     let block_checkpoint = state
         .find_parse_checkpoint(block_start)
         .ok_or_else(|| anyhow::anyhow!("nested blocks must create a checkpoint"))?;
@@ -154,9 +154,8 @@ fn parse_checkpoints_accumulate_nested_scalar_locals_in_source_order() -> Result
     let source = "sub run { my $first = 1; { my $second = 2; } }";
     let state = IncrementalState::new(source.to_string());
 
-    let nested_block_start = source
-        .rfind('{')
-        .ok_or_else(|| anyhow::anyhow!("nested block not found in source"))?;
+    let nested_block_start =
+        source.rfind('{').ok_or_else(|| anyhow::anyhow!("nested block not found in source"))?;
     let checkpoint = state
         .find_parse_checkpoint(nested_block_start)
         .ok_or_else(|| anyhow::anyhow!("nested block must create a checkpoint"))?;
