@@ -480,7 +480,6 @@ fn evaluate_pir_reference_candidate(
     target_sigil: &str,
     target_name: &str,
     target_body_idx: usize,
-    legacy_ranges: &BTreeSet<(usize, usize)>,
     uri_mapper: &dyn Fn(usize, usize) -> gen_lsp_types::Range,
     include_declaration: bool,
 ) -> Result<Vec<gen_lsp_types::Range>, PirShadowRefusalReason> {
