@@ -18,9 +18,12 @@ fn files_under(root: &Path, include: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
     let mut pending = vec![root.to_path_buf()];
 
     while let Some(path) = pending.pop() {
-        let Ok(metadata) = fs::metadata(&path) else {
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
             continue;
         };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
         if metadata.is_dir() {
             let Ok(entries) = fs::read_dir(path) else {
                 continue;
