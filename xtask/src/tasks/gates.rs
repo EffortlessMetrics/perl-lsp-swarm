@@ -684,11 +684,13 @@ pub fn run(config: GateRunnerConfig) -> Result<()> {
     // Explain mode prints the typed profile expansion (`ci_route_profile.v1`,
     // issue #10178): the requested profile's included native tiers, the
     // complete governed denominator, and the accounted exclusions. Like
-    // `--list`, this never executes a gate.
+    // `--list`, this never executes a gate. It expands the *selected*
+    // policy — `--gate-policy <path>` is honored, never silently replaced
+    // by the checked-in default.
     if config.explain_denominator {
         let profile = route_profile::RequestedProfile::from_gate_tier(&config.tier);
-        let expansion =
-            route_profile::expand_from_root(&root, profile, config.gate_filter.as_deref())?;
+        let mut expansion = route_profile::expand(&policy, profile, config.gate_filter.as_deref());
+        expansion.policy_source_path = policy_path.display().to_string();
         println!("{}", expansion.format_explanation());
         return Ok(());
     }

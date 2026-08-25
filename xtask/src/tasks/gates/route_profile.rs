@@ -163,9 +163,12 @@ impl RequestedProfile {
     }
 
     /// Native tiers the profile excludes by definition, with the reason —
-    /// recorded so exclusions are accounted rather than silent.
+    /// recorded so exclusions are accounted rather than silent. Always in
+    /// canonical tier order: `policy_tiers` comes from a `HashMap`, so the
+    /// derived branch must not preserve its randomized iteration order into
+    /// a digest/explanation that claims per-process determinism.
     fn excluded_native_tiers(self, policy_tiers: &[String]) -> Vec<ExcludedTier> {
-        match self {
+        let mut excluded = match self {
             RequestedProfile::Nightly => vec![
                 ExcludedTier {
                     tier: "commit".to_string(),
@@ -192,7 +195,9 @@ impl RequestedProfile {
                     })
                     .collect()
             }
-        }
+        };
+        excluded.sort_by_key(|excluded| tier_order(&excluded.tier));
+        excluded
     }
 }
 
@@ -324,6 +329,9 @@ impl ProfileExpansion {
             format!("profile={} resolution={}", self.requested_profile, self.resolution),
             format!("included_native_tiers={}", self.included_native_tiers.join(",")),
         ];
+        if !self.policy_source_path.is_empty() {
+            lines.push(format!("policy_source={}", self.policy_source_path));
+        }
         if !self.excluded_native_tiers.is_empty() {
             lines.push(format!(
                 "excluded_native_tiers={}",
@@ -493,6 +501,7 @@ pub fn expand(
         profile,
         &included_tiers,
         &denominator,
+        &gate_tiers,
         &excluded_gate_ids,
         gate_filter.as_ref(),
     );
@@ -518,6 +527,8 @@ pub fn expand(
 }
 
 /// Expand from the checked-in policy under `root`, recording the source path.
+#[allow(dead_code)] // test/consumer seam: production explains expand the
+// already-selected policy (honoring `--gate-policy`) and record its path
 pub fn expand_from_root(
     root: &Path,
     profile: RequestedProfile,
@@ -569,11 +580,16 @@ fn expansion_rule_digest(included: &[String], excluded: &[ExcludedTier]) -> Stri
 }
 
 /// Deterministic profile/denominator identity: requested profile, included
-/// tiers, sorted denominator, accounted exclusions, and filter identity.
+/// tiers, sorted denominator *with each gate's native tier assignment*,
+/// accounted exclusions, and filter identity. Tier assignments are hashed so
+/// a gate moving between two included tiers (e.g. `pr_fast` -> `merge_gate`,
+/// which changes execution from scope-planned to static) cannot keep a stale
+/// plan/result identity even though the denominator set is unchanged.
 fn semantic_fingerprint(
     profile: RequestedProfile,
     included: &[String],
     denominator: &BTreeSet<String>,
+    gate_tiers: &BTreeMap<&str, &str>,
     excluded: &[ExcludedGate],
     gate_filter: Option<&GateFilter>,
 ) -> String {
@@ -587,6 +603,10 @@ fn semantic_fingerprint(
     hasher.update([0x1e]);
     for gate_id in denominator {
         hasher.update(gate_id.as_bytes());
+        hasher.update([0x1f]);
+        if let Some(tier) = gate_tiers.get(gate_id.as_str()) {
+            hasher.update(tier.as_bytes());
+        }
         hasher.update([0x1f]);
     }
     hasher.update([0x1e]);
@@ -1028,6 +1048,40 @@ mod route_profile_spec {
         // Policy digest has the same order-independence / movement property.
         assert_eq!(policy_digest(&full_policy()), policy_digest(&reordered),);
         assert_ne!(policy_digest(&full_policy()), policy_digest(&moved));
+    }
+
+    #[test]
+    fn excluded_native_tiers_are_in_canonical_order_not_hashmap_order() {
+        // Review finding: the derived exclusion branch preserved the policy
+        // HashMap's randomized iteration order into the rule digest and
+        // explanation, so separate processes could disagree about identity.
+        // The exclusion list must come back in canonical tier order.
+        let expansion = expand(&full_policy(), RequestedProfile::PrFast, None);
+        let excluded: Vec<&str> =
+            expansion.excluded_native_tiers.iter().map(|tier| tier.tier.as_str()).collect();
+        assert_eq!(excluded, vec!["commit", "merge_gate", "nightly", "release"]);
+        // The nightly exclusions stay in canonical order too.
+        let nightly = expand(&full_policy(), RequestedProfile::Nightly, None);
+        let nightly_excluded: Vec<&str> =
+            nightly.excluded_native_tiers.iter().map(|tier| tier.tier.as_str()).collect();
+        assert_eq!(nightly_excluded, vec!["commit", "release"]);
+    }
+
+    #[test]
+    fn gate_tier_movement_between_included_tiers_changes_the_fingerprint() {
+        // Review finding: the fingerprint previously hashed only the
+        // denominator set, so a gate moving pr_fast -> merge_gate under a
+        // merge_gate request kept the same identity even though execution
+        // changes from scope-planned to static. Tier assignments are bound.
+        let base = expand(&full_policy(), RequestedProfile::MergeGate, None);
+        let mut moved = full_policy();
+        let fmt = moved.gates.iter_mut().find(|gate| gate.name == "fmt_check").unwrap();
+        fmt.tier = "merge_gate".to_string();
+        let moved = expand(&moved, RequestedProfile::MergeGate, None);
+        // Same denominator set, different gate->tier assignment.
+        assert_eq!(base.denominator, moved.denominator);
+        assert_ne!(base.semantic_fingerprint, moved.semantic_fingerprint);
+        assert!(!base.same_profile_identity(&moved));
     }
 
     #[test]
