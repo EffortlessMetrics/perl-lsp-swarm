@@ -24,6 +24,14 @@ pub enum SemanticFactKind {
     CallableResult,
     /// Framework route declaration (canonical route fact family).
     Route,
+    /// Framework route prefix declaration (canonical route fact family).
+    RoutePrefix,
+    /// Route-local parameter/capture segment of one route pattern (canonical
+    /// route fact family).
+    RouteParameter,
+    /// Route-handler source interval where route-handler-only DSL keywords
+    /// are semantically available (canonical route fact family).
+    RouteHandlerContext,
     /// Framework hook declaration (canonical hook fact family).
     Hook,
 }

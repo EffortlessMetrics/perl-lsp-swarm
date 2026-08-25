@@ -30,17 +30,23 @@ No new `NodeKind` variant should land without all of the following:
 `perl_ast::Node` stays recursively owned. That is the public geometry; it is
 not an arena or index tree.
 
-- **Drop** is iterative and depth-independent. Destruction must not leak the
-  tree and must not depend on raising the thread stack. New child fields must
-  be visited by the canonical mutable child walk so they inherit destruction
-  safety.
-- **Clone**, **Debug**, and **PartialEq** remain derived and recursive. They
-  are supported only for ordinary parser-produced nesting. Adversarial
-  50,000-node chains are outside that precondition, and the precondition is
-  not runtime-enforced. Replacements are [#8837](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8837)
-  (Clone), [#8839](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8839)
-  (PartialEq), and [#8840](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8840)
-  (Debug).
+- **Drop** is iterative and depth-independent. New child fields must be
+  visited by the canonical mutable child walk so they inherit destruction
+  safety. Overflow is proven on a 50,000-node chain with a 256 KiB worker;
+  construct/destroy equality is proven at 10,000-node cycle depth.
+- **Clone** is iterative over the same canonical child fields. Overflow is
+  proven on a 50,000-node chain with a 256 KiB worker. Cloning is a full
+  owned duplication, not a shared projection.
+- **PartialEq** is iterative exact structural equality over the same
+  canonical child fields. Overflow is proven on a 50,000-node chain with a
+  256 KiB worker. This preserves current `==` semantics; it is not
+  S-expression, fingerprint, or source-text equality.
+- **Debug** is an iterative bounded human projection over the same
+  canonical child fields. Overflow is proven on a 50,000-node chain with a
+  256 KiB worker. Output stays at or under the documented byte bound, and
+  truncation is visible. Rust `Debug` is not machine identity, equality, or
+  a durable metric. Configured complete/truncated rendering is
+  [#8832](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8832).
 - Recursive read helpers may stay depth-guarded and may truncate. Silent
   truncation of an operation advertised as exact is a separate claim
   ([#8867](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8867)).

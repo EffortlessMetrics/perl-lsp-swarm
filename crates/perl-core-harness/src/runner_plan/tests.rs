@@ -107,8 +107,14 @@ fn frame_and_normalization_schema_are_part_of_plan_identity() -> Result<()> {
     assert_ne!(from_t_digest, from_root_digest);
     assert_eq!(from_t.normalization_schema, "perl_core_harness.source_identity.v2");
     let mut historical = from_t.clone();
-    historical.schema_version = "perl_core_harness.runner_plan.v1".to_string();
-    assert!(crate::build::validate_runner_plan(&historical).is_err());
+    historical.schema_version = crate::runner_model::RUNNER_PLAN_V1_SCHEMA_VERSION.to_string();
+    let Err(v1_error) = crate::build::validate_runner_plan(&historical) else {
+        bail!("retired runner_plan.v1 must be rejected");
+    };
+    assert!(
+        v1_error.contains(crate::runner_model::RUNNER_PLAN_V1_SCHEMA_VERSION),
+        "unexpected schema error: {v1_error}"
+    );
     Ok(())
 }
 

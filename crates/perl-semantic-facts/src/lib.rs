@@ -25,6 +25,8 @@ pub mod hook;
 pub mod reachability_operation;
 /// Canonical framework route fact family (#8918).
 pub mod route;
+/// Transport-neutral stable semantic identity and ownership contract (#12121).
+pub mod semantic_identity;
 
 pub use envelope::*;
 pub use handler::*;
