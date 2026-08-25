@@ -220,6 +220,7 @@ impl FamilyStore {
         self.state.lock().note(identity)
     }
 
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
     fn forget(&self, identity: &SessionWarningIdentity) {
         self.state.lock().forget(identity);
     }
@@ -275,6 +276,7 @@ impl SessionWarningDedupStore {
 
     /// Reverse a retention after the outbound send failed, so a warning the
     /// client never received can be retried on the next occurrence.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) fn forget(&self, family: SessionWarningFamily, identity: &SessionWarningIdentity) {
         self.family(family).forget(identity);
     }
