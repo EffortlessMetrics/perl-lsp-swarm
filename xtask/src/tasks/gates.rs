@@ -37,6 +37,7 @@ use crate::tasks::ci_scope::{self, ScopeOutput};
 use crate::tasks::git_context::git_stdout_with_worktree_fallback;
 use crate::utils::project_root;
 
+pub mod disposition;
 mod first_failure;
 mod planning_types;
 
@@ -216,6 +217,10 @@ pub struct FlakePolicy {
     pub max_retries: u32,
     pub auto_quarantine_threshold: u32,
     pub quarantine_duration_days: u32,
+    /// Declared source of truth for quarantined items; consumed by the
+    /// `gate_disposition.v1` resolver (#10176) instead of a hardcoded path.
+    #[serde(default)]
+    pub debt_ledger_path: Option<String>,
     #[serde(default)]
     pub quarantined_gates: Vec<QuarantinedGate>,
     #[serde(default)]
@@ -615,6 +620,9 @@ pub struct GateRunnerConfig {
     pub receipt_path: Option<PathBuf>,
     pub diff_baseline: Option<PathBuf>,
     pub list_only: bool,
+    /// Explain the typed gate lifecycle disposition authority
+    /// (`gate_disposition.v1`, issue #10176) instead of running gates.
+    pub explain_disposition: bool,
     pub fail_fast: bool,
     /// For future parallel execution support
     #[allow(dead_code)]
@@ -640,6 +648,7 @@ impl Default for GateRunnerConfig {
             receipt_path: None,
             diff_baseline: None,
             list_only: false,
+            explain_disposition: false,
             fail_fast: false,
             parallel: false,
             verbose: false,
@@ -674,6 +683,16 @@ pub fn run(config: GateRunnerConfig) -> Result<()> {
     if config.list_only {
         let gates = filter_gates(&policy, &config)?;
         return list_gates(&gates, &policy);
+    }
+
+    // Explain mode prints the typed lifecycle disposition authority
+    // (`gate_disposition.v1`, issue #10176): for every governed gate, the
+    // current lifecycle, resolution, and the closed reason any row is
+    // expired or invalid. Like `--list`, this never executes a gate.
+    if config.explain_disposition {
+        let authority = disposition::resolve_with_policy_path(&root, &policy_path)?;
+        println!("{}", authority.format_explanation());
+        return Ok(());
     }
 
     // Build the executable plan. PR-fast uses the shared xtask runner plus
