@@ -265,10 +265,7 @@ fn receipts_dir_with_exact_source(
         "evidence_stage": evidence_stage,
         "result": result,
     });
-    write_temp(
-        &dir.join("exact-source-synthetic.json"),
-        &serde_json::to_string_pretty(&receipt)?,
-    )?;
+    write_temp(&dir.join("exact-source-synthetic.json"), &serde_json::to_string_pretty(&receipt)?)?;
     Ok(dir)
 }
 
