@@ -251,26 +251,36 @@ mod tests {
 
     #[test]
     fn matching_is_exact_or_glob_based() {
-        let exact = Entry {
-            id: "exact".into(),
-            path: Some("Cargo.lock".into()),
-            glob: None,
-            kind: "lockfile".into(),
-            generated_by: "cargo".into(),
-            regenerate: Some("cargo update".into()),
-            owner: "deps".into(),
-            reason: "pins deps".into(),
-            covered_by: vec![],
-            created: "2026-01-01".into(),
-            review_after: "2026-02-01".into(),
-            broad_glob_reason: None,
-        };
-        assert!(entry_matches(&exact, "Cargo.lock"));
-        assert!(!entry_matches(&exact, "flake.lock"));
-        let mut glob = exact.clone();
-        glob.path = None;
-        glob.glob = Some("docs/project/status/**.md".into());
-        assert!(entry_matches(&glob, "docs/project/status/ci.md"));
+        let root = crate::utils::project_root().expect("project root");
+        let files = tracked_files(&root).expect("tracked files");
+        let policy = load_policy(&root, &root.join("policy/generated-allowlist.toml"))
+            .expect("generated allowlist");
+
+        let exact = policy
+            .allow
+            .iter()
+            .find(|entry| entry.id == "generated-cargo-lock")
+            .expect("generated-cargo-lock allowlist entry");
+        assert_eq!(exact.path.as_deref(), Some("Cargo.lock"));
+        assert!(files.iter().any(|path| path == "Cargo.lock"), "Cargo.lock must stay tracked");
+        assert!(entry_matches(exact, "Cargo.lock"));
+        assert!(!entry_matches(exact, "flake.lock"));
+
+        let glob = policy
+            .allow
+            .iter()
+            .find(|entry| entry.id == "generated-status-pages")
+            .expect("generated-status-pages allowlist entry");
+        // `**` must be a whole path component for the `glob` crate; `**.md` is invalid
+        // and matches nothing.
+        assert_eq!(glob.glob.as_deref(), Some("docs/project/status/**/*.md"));
+        const SAMPLE: &str = "docs/project/status/dap.md";
+        assert!(
+            files.iter().any(|path| path == SAMPLE),
+            "status glob sample {SAMPLE} must stay tracked"
+        );
+        assert!(entry_matches(glob, SAMPLE));
+        assert!(!entry_matches(glob, "docs/project/ROADMAP.md"));
     }
 
     #[test]

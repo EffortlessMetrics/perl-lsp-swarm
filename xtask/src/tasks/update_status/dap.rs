@@ -232,14 +232,31 @@ mod tests {
     fn test_count_dap_tests() -> Result<()> {
         let root = crate::utils::project_root()?;
         let counts = count_dap_tests(&root);
-        assert!(
-            counts.integration_test_targets >= 1,
-            "expected at least 1 [[test]] target in perl-dap/Cargo.toml, got {}",
+        const COUNTED_FIXTURES: &[&str] = &[
+            "args.pl",
+            "breakpoints_begin_end.pl",
+            "eval.pl",
+            "hello.pl",
+            "loops.pl",
+            "value_format_stdio_matrix.pl",
+        ];
+        let fixture_dir = root.join("crates/perl-dap/tests/fixtures");
+        for name in COUNTED_FIXTURES {
+            assert!(
+                fixture_dir.join(name).is_file(),
+                "counted DAP fixture {name} must remain present"
+            );
+        }
+        assert_eq!(
+            counts.integration_test_targets, 67,
+            "expected 67 [[test]] targets in perl-dap/Cargo.toml, got {}",
             counts.integration_test_targets
         );
         assert_eq!(
-            counts.scorecard_fixtures, 5,
-            "expected 5 scorecard fixtures (hello, loops, eval, args, breakpoints_begin_end), got {}",
+            counts.scorecard_fixtures,
+            COUNTED_FIXTURES.len(),
+            "expected {} counted fixtures (args, breakpoints_begin_end, eval, hello, loops, value_format_stdio_matrix), got {}",
+            COUNTED_FIXTURES.len(),
             counts.scorecard_fixtures
         );
         Ok(())
