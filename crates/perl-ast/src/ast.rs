@@ -5309,14 +5309,14 @@ mod deep_tree_destruction_tests {
             NodeKind::HashLiteral { pairs } => {
                 assert_eq!(pairs.len(), 2);
                 match (&pairs[0].0.kind, &pairs[0].1.kind) {
-                    (NodeKind::Number { value: key }, NodeKind::Number { value: value }) => {
+                    (NodeKind::Number { value: key }, NodeKind::Number { value }) => {
                         assert_eq!(key, "k0");
                         assert_eq!(value, "v0");
                     }
                     (left, _) => assert_eq!(left.kind_name(), "Number"),
                 }
                 match (&pairs[1].0.kind, &pairs[1].1.kind) {
-                    (NodeKind::Number { value: key }, NodeKind::Number { value: value }) => {
+                    (NodeKind::Number { value: key }, NodeKind::Number { value }) => {
                         assert_eq!(key, "k1");
                         assert_eq!(value, "v1");
                     }
