@@ -55,9 +55,8 @@ fn g3_lsp_compat_feature_signal_not_gating() {
     // Inverse guard: the retired lsp-types dependency must not come back
     // alongside or instead of gen-lsp-types. Line-anchored because
     // "gen-lsp-types.workspace" contains "lsp-types.workspace" as a substring.
-    let has_retired_lsp_types_line = content
-        .lines()
-        .any(|line| line.trim_start().starts_with("lsp-types"));
+    let has_retired_lsp_types_line =
+        content.lines().any(|line| line.trim_start().starts_with("lsp-types"));
     assert!(
         !has_retired_lsp_types_line,
         "retired lsp-types dependency must not be re-introduced; gen-lsp-types is the selected substrate (#11803)"

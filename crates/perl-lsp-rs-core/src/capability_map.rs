@@ -310,9 +310,10 @@ pub fn caps_from_feature_ids(features: &[&str]) -> ServerCapabilities {
                 // the production construction in protocol::capabilities::sections
                 // (#11803 repair; the former experimental-object workaround is
                 // retired, so this mapper must rebuild the typed field).
-                caps.type_hierarchy_provider = Some(TypeHierarchyProvider::TypeHierarchyOptions(
-                    TypeHierarchyOptions { work_done_progress_options: WorkDoneProgressOptions::default() },
-                ));
+                caps.type_hierarchy_provider =
+                    Some(TypeHierarchyProvider::TypeHierarchyOptions(TypeHierarchyOptions {
+                        work_done_progress_options: WorkDoneProgressOptions::default(),
+                    }));
             }
             LSP_MONIKER => {
                 caps.moniker_provider = Some(MonikerProvider::MonikerOptions(MonikerOptions {
@@ -324,9 +325,11 @@ pub fn caps_from_feature_ids(features: &[&str]) -> ServerCapabilities {
                 // through the typed top-level provider field, matching the
                 // production construction in protocol::capabilities::sections
                 // (#11803 repair).
-                caps.inline_completion_provider = Some(InlineCompletionProvider::InlineCompletionOptions(
-                    InlineCompletionOptions { work_done_progress_options: WorkDoneProgressOptions::default() },
-                ));
+                caps.inline_completion_provider = Some(
+                    InlineCompletionProvider::InlineCompletionOptions(InlineCompletionOptions {
+                        work_done_progress_options: WorkDoneProgressOptions::default(),
+                    }),
+                );
             }
             LSP_INLINE_VALUE => {
                 caps.inline_value_provider =
