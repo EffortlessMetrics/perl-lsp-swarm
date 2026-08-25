@@ -468,6 +468,39 @@ fn invalid_utf8_stream_is_malformed_not_repaired() -> Result<()> {
     Ok(())
 }
 
+/// The decoder never repairs whitespace drift: a row carrying leading or
+/// trailing whitespace is malformed, not trimmed into an accepted member, so
+/// drifted runner output cannot silently satisfy discovery.
+#[test]
+fn whitespace_drifted_rows_are_malformed_not_trimmed_into_members() -> Result<()> {
+    let matrix = matrix()?;
+    // Leading-space drift on an otherwise accepted member.
+    let mut drifted = base_input(&matrix, "component_base", b"t/base/if.t\n")?;
+    drifted.stdout_bytes = b" t/base/if.t\n".to_vec();
+    let receipt = build(&matrix, &drifted)?;
+    assert_eq!(receipt.payload.state, DiscoveryObservationState::MalformedOutput);
+    assert_eq!(receipt.payload.rows.len(), 1);
+    assert!(matches!(receipt.payload.rows[0].disposition, MemberDisposition::MalformedRow));
+    assert!(receipt.payload.rows[0].normalized.is_none());
+    ensure(validate_receipt_subject_binding(&receipt))?;
+    ensure(validate_observed_discovery_receipt(&matrix, &receipt))?;
+
+    // Trailing-space drift on the final row keeps the same law.
+    let mut trailing = base_input(&matrix, "component_base", b"t/base/if.t\n")?;
+    trailing.stdout_bytes = b"t/base/if.t \n".to_vec();
+    let receipt = build(&matrix, &trailing)?;
+    assert_eq!(receipt.payload.state, DiscoveryObservationState::MalformedOutput);
+    assert!(matches!(receipt.payload.rows[0].disposition, MemberDisposition::MalformedRow));
+    ensure(validate_observed_discovery_receipt(&matrix, &receipt))?;
+
+    // The undrifted spelling still passes: the law is about whitespace, not
+    // about the member itself.
+    let clean = base_input(&matrix, "component_base", b"t/base/if.t\n")?;
+    let receipt = build(&matrix, &clean)?;
+    assert_eq!(receipt.payload.state, DiscoveryObservationState::ObservedComplete);
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Falsifier 9: swapped or copied stream identities
 // ---------------------------------------------------------------------------

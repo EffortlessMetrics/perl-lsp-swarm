@@ -374,3 +374,164 @@ pub(crate) fn sha256_json<T: Serialize>(value: &T) -> Result<String, String> {
         .map_err(|error| format!("serializing observed discovery authority: {error}"))?;
     Ok(sha256_bytes(&bytes))
 }
+
+#[cfg(test)]
+mod contract_tests {
+    //! Focused unit proof for the strict input laws of the receipt builder:
+    //! every validation helper is exercised directly on both sides of each
+    //! branch, so the constructor's fail-closed seams keep a static test path
+    //! even when the public surface only reports the first rejection.
+
+    use super::{
+        MAX_RAW_STREAM_BYTES, required_limitations, retained_envelope, validate_argument,
+        validate_artifact_path, validate_capture_identity, validate_environment_part,
+        validate_environment_value, validate_reference, validate_sha256_field, validate_target_id,
+        validate_working_directory,
+    };
+
+    fn rejected_as<T>(outcome: Result<T, String>, fragment: &str) -> bool {
+        match outcome {
+            Err(message) => message.contains(fragment),
+            Ok(_) => false,
+        }
+    }
+
+    #[test]
+    fn retained_envelope_binds_nonce_hex_and_truncation_or_refuses_oversize() {
+        let retained = retained_envelope("nonce-1", b"t/base/if.t\n", false);
+        assert!(retained.is_ok());
+        let retained = retained.expect("small envelope retains");
+        assert_eq!(retained.process_nonce, "nonce-1");
+        assert_eq!(
+            retained.bytes_hex,
+            b"t/base/if.t\n".iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+        );
+        assert!(!retained.truncated);
+        let truncated = retained_envelope("nonce-1", b"t/base/if.t\n", true);
+        assert!(truncated.is_ok_and(|envelope| envelope.truncated));
+        let oversize = vec![b'a'; MAX_RAW_STREAM_BYTES + 1];
+        assert!(rejected_as(
+            retained_envelope("nonce-1", &oversize, true),
+            "exceeds the retained bound"
+        ));
+    }
+
+    #[test]
+    fn capture_identity_requires_printable_bounded_nonce() {
+        assert!(validate_capture_identity("capture-1").is_ok());
+        assert!(validate_capture_identity(&"x".repeat(128)).is_ok());
+        assert!(rejected_as(validate_capture_identity(""), "1-128 printable ASCII"));
+        assert!(rejected_as(validate_capture_identity(&"x".repeat(129)), "1-128 printable ASCII"));
+        assert!(rejected_as(validate_capture_identity("two words"), "1-128 printable ASCII"));
+    }
+
+    #[test]
+    fn arguments_stay_relative_control_free_and_bounded() {
+        assert!(validate_argument("--verbose").is_ok());
+        assert!(validate_argument(&"a".repeat(4096)).is_ok());
+        assert!(rejected_as(validate_argument(""), "nonempty and at most 4096"));
+        assert!(rejected_as(validate_argument(&"a".repeat(4097)), "nonempty and at most 4096"));
+        assert!(rejected_as(validate_argument("a\tb"), "must not contain control characters"));
+        assert!(rejected_as(validate_argument("/abs/path"), "is absolute"));
+        assert!(rejected_as(validate_argument("\\abs\\path"), "is absolute"));
+        assert!(rejected_as(validate_argument("C:\\cwd"), "is absolute"));
+        assert!(rejected_as(validate_argument("c:rel"), "is absolute"));
+    }
+
+    #[test]
+    fn working_directories_stay_simple_relative_components() {
+        assert!(validate_working_directory("t/base").is_ok());
+        assert!(validate_working_directory(&"a".repeat(1024)).is_ok());
+        assert!(rejected_as(validate_working_directory(""), "nonempty and at most 1024"));
+        assert!(rejected_as(
+            validate_working_directory(&"a".repeat(1025)),
+            "nonempty and at most 1024"
+        ));
+        assert!(rejected_as(validate_working_directory("/root"), "is absolute"));
+        assert!(rejected_as(validate_working_directory("a/./b"), "simple prepared-tree-relative"));
+        assert!(rejected_as(validate_working_directory("a/../b"), "simple prepared-tree-relative"));
+        assert!(rejected_as(validate_working_directory("a//b"), "simple prepared-tree-relative"));
+    }
+
+    #[test]
+    fn runner_artifact_paths_stay_simple_relative_components() {
+        assert!(validate_artifact_path("t/harness").is_ok());
+        assert!(rejected_as(validate_artifact_path(""), "nonempty and at most 1024"));
+        assert!(rejected_as(validate_artifact_path("C:/tools"), "is absolute"));
+        assert!(rejected_as(validate_artifact_path("a/../b"), "simple prepared-tree-relative"));
+        assert!(rejected_as(validate_artifact_path("a//b"), "simple prepared-tree-relative"));
+    }
+
+    #[test]
+    fn target_ids_are_lowercase_identifier_shaped() {
+        assert!(validate_target_id("perl_core_1").is_ok());
+        assert!(rejected_as(validate_target_id(""), "[a-z0-9_]+"));
+        assert!(rejected_as(validate_target_id("Perl"), "[a-z0-9_]+"));
+        assert!(rejected_as(validate_target_id("with-dash"), "[a-z0-9_]+"));
+    }
+
+    #[test]
+    fn references_enforce_their_declared_bounds_and_alphabet() {
+        assert!(validate_reference(&"ab".repeat(20), "commit", 40, 64, true).is_ok());
+        assert!(rejected_as(
+            validate_reference(&"ab".repeat(19), "commit", 40, 64, true),
+            "must be 40-64 characters"
+        ));
+        assert!(rejected_as(
+            validate_reference(&"AB".repeat(20), "commit", 40, 64, true),
+            "lower-case hexadecimal"
+        ));
+        assert!(validate_reference("v5.40.0", "perl ref", 1, 128, false).is_ok());
+        assert!(rejected_as(
+            validate_reference("has space", "perl ref", 1, 128, false),
+            "printable ASCII without whitespace"
+        ));
+    }
+
+    #[test]
+    fn environment_parts_and_values_are_bounded_and_control_free() {
+        assert!(validate_environment_part("PERL5LIB", "environment key", 128).is_ok());
+        assert!(rejected_as(validate_environment_part("", "environment key", 128), "at most 128"));
+        assert!(rejected_as(
+            validate_environment_part(&"k".repeat(129), "environment key", 128),
+            "at most 128"
+        ));
+        assert!(rejected_as(
+            validate_environment_part("two words", "environment key", 128),
+            "printable ASCII without whitespace"
+        ));
+        assert!(validate_environment_value("t/base").is_ok());
+        assert!(rejected_as(
+            validate_environment_value(&"v".repeat(1025)),
+            "at most 1024 characters"
+        ));
+        assert!(rejected_as(
+            validate_environment_value("a\u{7f}b"),
+            "must not contain control characters"
+        ));
+    }
+
+    #[test]
+    fn sha256_fields_must_be_exactly_64_hex_characters() {
+        assert!(validate_sha256_field(&"ab".repeat(32), "digest").is_ok());
+        assert!(rejected_as(
+            validate_sha256_field(&"ab".repeat(31), "digest"),
+            "64-character hexadecimal digest"
+        ));
+        assert!(rejected_as(
+            validate_sha256_field(&"zz".repeat(32), "digest"),
+            "64-character hexadecimal digest"
+        ));
+    }
+
+    #[test]
+    fn mandatory_limitations_are_exactly_the_sorted_required_set() {
+        let mut expected = vec![
+            crate::observed_discovery::model::LIMITATION_MEMBERSHIP_NOT_SELECTED,
+            crate::observed_discovery::model::LIMITATION_REFERENCES_ARE_CALLER_SUPPLIED,
+            crate::observed_discovery::model::LIMITATION_NO_LOCAL_DISCOVERY,
+        ];
+        expected.sort_unstable();
+        assert_eq!(required_limitations(), expected);
+    }
+}

@@ -8,7 +8,9 @@
 
 use crate::build::{effective_selection, find_target};
 use crate::model::UpstreamTargetMatrix;
-use crate::observed_discovery::build::{discovery_payload_digest, required_limitations};
+use crate::observed_discovery::build::{
+    discovery_payload_digest, required_limitations, sha256_json,
+};
 use crate::observed_discovery::decode::{
     decode_malformed, decode_stream, derive_observation_state, work_from_rows,
 };
@@ -30,7 +32,7 @@ pub fn validate_observed_discovery_receipt(
     let payload = &receipt.payload;
 
     let entry = find_target(matrix, &payload.subject.target_id)?;
-    let expected_contract_digest = sha256_json_of(&entry.contract)?;
+    let expected_contract_digest = sha256_json(&entry.contract)?;
     if expected_contract_digest != payload.subject.target_contract_digest {
         return Err(format!(
             "receipt target contract digest does not match target {}",
@@ -273,10 +275,4 @@ fn enforce_capture_identity(
         );
     }
     Ok(())
-}
-
-fn sha256_json_of<T: serde::Serialize>(value: &T) -> Result<String, String> {
-    let bytes = serde_json::to_vec(value)
-        .map_err(|error| format!("serializing observed discovery authority: {error}"))?;
-    Ok(crate::build::sha256_bytes(&bytes))
 }

@@ -125,11 +125,15 @@ fn classify_row(
     if raw_text.contains('\0')
         || raw_text.chars().any(is_forbidden_control)
         || raw_text.trim().is_empty()
+        // Strict no-repair law: a row carrying leading or trailing whitespace
+        // is malformed, never silently trimmed into an accepted member — the
+        // decoder must not repair drifted runner output.
+        || raw_text.len() != raw_text.trim().len()
     {
         return malformed();
     }
     *normalization_attempts += 1;
-    let normalized = match normalize_source_item(raw_text.trim(), frame) {
+    let normalized = match normalize_source_item(raw_text, frame) {
         Ok(item) => item,
         Err(_) => {
             return RowClassification {
