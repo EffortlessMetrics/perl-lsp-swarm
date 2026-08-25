@@ -19,7 +19,9 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use super::CompilerProfileError;
+use super::dimensions::ExecutionStage;
 use super::dimensions::ProofAxis;
+use super::dimensions::SemanticSupportLevel;
 use super::dimensions::encode_set;
 use super::fingerprint::CanonWriter;
 use super::fingerprint::CanonicalEncode;
@@ -31,6 +33,7 @@ use super::requirements::AllowedLimitation;
 use super::requirements::EvidenceRecord;
 use super::rows::AxisRejection;
 use super::rows::CompilerProfileRow;
+use super::rows::RowDisposition;
 
 /// Resolved dependency view supplied by callers for import validation.
 /// Keys are exact `(profile id, version)` pairs.
@@ -225,9 +228,6 @@ impl CompilerProfileDefinition {
     /// Authoritative local closure check. Required rows are conjunctive: each
     /// declared axis needs its own conforming evidence record, and general
     /// semantic support may never rest on source-stage-only observations.
-    ///
-    /// Scaffold note (commit 1): only structural checks are active here; the
-    /// per-axis required-evidence closure lands with the domain-model commit.
     pub fn validate(&self) -> Result<(), CompilerProfileError> {
         if self.purpose.trim().is_empty() {
             return Err(CompilerProfileError::Structure {
@@ -249,21 +249,120 @@ impl CompilerProfileDefinition {
         for record in &self.evidence {
             Self::pair_record(&self.rows, record)?;
         }
+        for (row_id, row) in &self.rows {
+            if !matches!(row.disposition, RowDisposition::Required) {
+                continue;
+            }
+            for axis in row.axis_specs.keys() {
+                let backing = self
+                    .evidence
+                    .iter()
+                    .find(|record| record.row_id == *row_id && &record.axis == axis);
+                let Some(record) = backing else {
+                    return Err(CompilerProfileError::MissingRequiredEvidence {
+                        row: row_id.as_str().to_string(),
+                        axis: format!("{:?} at {:?}", axis.family, axis.stage),
+                        detail: "required axis carries no evidence of its own".to_string(),
+                    });
+                };
+                if row.support_claim.semantic_support
+                    == SemanticSupportLevel::GeneralSemanticSupport
+                    && !record.stage_observed.at_least(ExecutionStage::ExactProcess)
+                {
+                    return Err(CompilerProfileError::SupportOverstatement {
+                        row: row_id.as_str().to_string(),
+                        detail: "general semantic support cannot rest on source-stage-only \
+                                 evidence"
+                            .to_string(),
+                    });
+                }
+            }
+        }
         Ok(())
     }
 
     /// Validates this profile plus its transitive import closure against
     /// `registry`: digests must match exactly and every imported row and
     /// limitation must be preserved verbatim.
-    ///
-    /// Scaffold note (commit 1): the closure law is pinned by the falsifiers
-    /// in `tests/compiler_profile_contract.rs` and lands with the
-    /// domain-model commit; this scaffold accepts any resolvable shape.
     pub fn validate_closure<'a>(
         &'a self,
-        _registry: &ProfileRegistry<'a>,
+        registry: &ProfileRegistry<'a>,
     ) -> Result<(), CompilerProfileError> {
-        self.validate()
+        self.validate()?;
+        let mut visiting = BTreeSet::new();
+        self.validate_closure_inner(registry, &mut visiting)
+    }
+
+    fn validate_closure_inner<'a>(
+        &'a self,
+        registry: &ProfileRegistry<'a>,
+        visiting: &mut BTreeSet<(CompilerProfileId, CompilerProfileVersion)>,
+    ) -> Result<(), CompilerProfileError> {
+        let key = (self.profile_id.clone(), self.version.clone());
+        if !visiting.insert(key) {
+            return Err(CompilerProfileError::ImportResolution {
+                importer: self.full_name(),
+                imported: self.full_name(),
+                detail: "import cycle detected".to_string(),
+            });
+        }
+        for import in &self.imports {
+            let imported_key = (import.imported_profile.clone(), import.imported_version.clone());
+            let resolved = registry.get(&imported_key);
+            let Some(resolved) = resolved else {
+                return Err(CompilerProfileError::ImportResolution {
+                    importer: self.full_name(),
+                    imported: format!(
+                        "{}.{}",
+                        import.imported_profile.as_str(),
+                        import.imported_version.as_str()
+                    ),
+                    detail: "imported profile absent from the registry".to_string(),
+                });
+            };
+            let resolved = *resolved;
+            if resolved.content_digest_hex() != import.content_digest.as_str() {
+                return Err(CompilerProfileError::ImportResolution {
+                    importer: self.full_name(),
+                    imported: resolved.full_name(),
+                    detail: "content digest does not match the resolved profile".to_string(),
+                });
+            }
+            for (row_id, imported_row) in &resolved.rows {
+                match self.rows.get(row_id) {
+                    None => {
+                        return Err(CompilerProfileError::ImportPreservation {
+                            importer: self.full_name(),
+                            imported: resolved.full_name(),
+                            detail: format!("imported row {} disappeared", row_id.as_str()),
+                        });
+                    }
+                    Some(preserved) if preserved != imported_row => {
+                        return Err(CompilerProfileError::ImportPreservation {
+                            importer: self.full_name(),
+                            imported: resolved.full_name(),
+                            detail: format!("imported row {} was altered", row_id.as_str()),
+                        });
+                    }
+                    Some(_) => {}
+                }
+            }
+            for limitation in &resolved.limitations {
+                if !self.limitations.contains(limitation) {
+                    return Err(CompilerProfileError::ImportPreservation {
+                        importer: self.full_name(),
+                        imported: resolved.full_name(),
+                        detail: format!(
+                            "imported limitation {} was dropped",
+                            limitation.limitation_id
+                        ),
+                    });
+                }
+            }
+            resolved.validate_closure_inner(registry, visiting)?;
+        }
+        visiting.remove(&(self.profile_id.clone(), self.version.clone()));
+        Ok(())
     }
 }
 
