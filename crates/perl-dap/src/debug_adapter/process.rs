@@ -741,6 +741,11 @@ impl DebugAdapter {
             let mut current_func = String::new();
             let mut current_line = 0;
             let mut _debugger_ready = false;
+            // Most recent `error_re` message line (`<text> at FILE line N`). An
+            // uncaught die arrives as that message line followed by the bare
+            // perl5db-handler suffix line; the suffix is the detection signal,
+            // but the message line is the text `exceptionInfo` should serve.
+            let mut last_error_message = String::new();
             // In-flight logpoint value query, if any. A logpoint hit queues a framed
             // `p` query for the scalars its template mentions; the replies stream back
             // through this same loop and are folded into the message here (#5045).
@@ -975,6 +980,7 @@ impl DebugAdapter {
                                 current_line = line_num.as_str().parse::<i32>().unwrap_or(0);
                             }
                             context_updated = true;
+                            last_error_message = analysis_text.clone();
 
                             // Send error event to client
                             if let Some(ref sender) = sender {
@@ -1034,11 +1040,21 @@ impl DebugAdapter {
                             let warning_match =
                                 break_on_warn && is_warning_line && !is_exception_line;
 
-                            // Store exception message for exceptionInfo request
+                            // Store exception message for exceptionInfo request.
+                            // When the handler suffix line is the detection
+                            // signal, its own text (`at FILE line N.`) is
+                            // content-free — serve the remembered die message
+                            // line instead.
                             if (exception_match || warning_match)
                                 && let Ok(mut guard) = last_exception_message.lock()
                             {
-                                *guard = Some(analysis_text.clone());
+                                let message =
+                                    if matched_die_suffix && !last_error_message.is_empty() {
+                                        last_error_message.clone()
+                                    } else {
+                                        analysis_text.clone()
+                                    };
+                                *guard = Some(message);
                             }
 
                             let mut should_emit_stopped = false;
