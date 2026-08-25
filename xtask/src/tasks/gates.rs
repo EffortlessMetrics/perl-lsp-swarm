@@ -3204,7 +3204,7 @@ mod tests {
         load_policy_for_inspection, load_receipt, log_reaches_test_execution, output_diff,
         parse_first_failure, parse_test_execution_reached, parse_test_metrics, plan_gates,
         read_gate_output, run_gate_plan, run_internal_commit_check, run_internal_xtask_gate,
-        run_shell_command_with_retries, run_shell_command_with_timeout, run_single_gate,
+        run_shell_command_with_timeout, run_single_gate,
         selects_commit_tier_gate, shell_command_watchdog_timeout, staged_guard_violation,
         static_gate_plan, write_receipt,
     };
