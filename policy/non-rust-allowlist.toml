@@ -1533,6 +1533,24 @@ covered_by = [
 created = "2026-08-14"
 review_after = "2026-11-14"
 
+# Loaded-module reload wire family (perl-lsp/loadedModuleReload v1)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-loaded-module-reload-family-schema"
+path = "schemas/loaded_module_reload_family.v1.schema.json"
+kind = "protocol_contract"
+language = "json"
+surface = "dap"
+classification = "config"
+owner = "identity"
+reason = "JSON Schema for the perl-lsp/loadedModuleReload v1 custom DAP family wire contract (#10138, frozen semantics #10097); schema parity is ratcheted by the reload_family seam tests."
+covered_by = [
+  "cargo test -p perl-dap reload_family --locked",
+]
+created = "2026-08-25"
+review_after = "2026-11-25"
+
 # Editor-intelligence gap-matrix fixture tree
 # =============================================================================
 
@@ -2683,13 +2701,30 @@ language = "lua"
 surface = "editor"
 classification = "production"
 owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp server.lua (base d1432ae, blob 33c8ccae) staged for the Lite XL integration train, carrying the #11151 bounded inbound frame-reader patch: explicit parser state, header/body budgets, strict Content-Length validation, remainder ownership, and typed content-free framing failures."
+reason = "Exact upstream lite-xl-lsp server.lua (base d1432ae, blob 33c8ccae) staged for the Lite XL integration train, carrying the #11151 bounded inbound frame-reader patch (explicit parser state, header/body budgets, strict Content-Length validation, remainder ownership, typed content-free framing failures) and the #10833 backpressure patch (hit-rate enqueue admission removed: notifications always queue with overwrite coalescing, requests queue or coalesce or reject explicitly at a bounded queue with typed not_queued dispositions and no phantom ids, responses are obligation-class and never dropped; pacing lives in the send loops)."
 covered_by = [
   "lua clients/lite-xl/tests/server_frame_test.lua",
+  "lua clients/lite-xl/tests/server_message_scheduling_test.lua",
   "cargo xtask check-file-policy",
 ]
 created = "2026-08-23"
 review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-server-message-scheduling-tests"
+path = "clients/lite-xl/tests/server_message_scheduling_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free admission/scheduling suite proving no silent drops under saturated rate state, overwrite coalescing to latest state, exact lifecycle/watcher ordering, full response-obligation flush, bounded request queues with typed not_queued rejections and stable reasons, and single-send id semantics under a fake clock; runs against the staged module or current main for red-first checks and against single-behavior mutations for falsifier checks."
+covered_by = [
+  "lua clients/lite-xl/tests/server_message_scheduling_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-25"
+review_after = "2026-09-25"
 
 [[allow]]
 id = "non-rust-litexl-init-plugin"
@@ -2699,7 +2734,7 @@ language = "lua"
 surface = "editor"
 classification = "production"
 owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp init.lua (base d1432ae, blob 7b38c3a9) staged for the Lite XL integration train, carrying the #11115 monotonic document-version patch (one structured per-server/per-document open-session record owning versions, pending changes, server generations, and session identities) and the #11108 request-subject currentness patch (immutable subjects plus one reusable response-admission guard with typed dispositions)."
+reason = "Exact upstream lite-xl-lsp init.lua (base d1432ae, blob 7b38c3a9) staged for the Lite XL integration train, carrying the #11115 monotonic document-version patch (one structured per-server/per-document open-session record owning versions, pending changes, server generations, and session identities), the #11108 request-subject currentness patch (immutable subjects plus one reusable response-admission guard with typed dispositions), the #10845 configuration-value patch (presence tracked separately from truthiness through workspace/configuration: found values append verbatim, only genuinely missing sections become the null sentinel), and the #10873 truthful showDocument patch (response follows the actual user/open outcome through the async util.show_document contract, generation-owned prompts via the servers_running identity, typed internal open/selection dispositions, exactly one response per request)."
 covered_by = [
   "lua clients/lite-xl/tests/init_document_session_test.lua",
   "lua clients/lite-xl/tests/init_request_currentness_test.lua",
@@ -2748,7 +2783,7 @@ language = "lua"
 surface = "editor"
 classification = "test"
 owner = "editor/lite-xl"
-reason = "Deterministic framework-free workspace/configuration suite proving positional response slots, duplicate retention, explicit-null unresolved slots, typed empty arrays, string-id preservation, and fail-honest InvalidParams for malformed items; runs against the staged module or the pristine upstream blob for red-first checks and against single-behavior mutations for falsifier checks."
+reason = "Deterministic framework-free workspace/configuration suite proving positional response slots, duplicate retention, explicit-null unresolved slots, typed empty arrays, string-id preservation, fail-honest InvalidParams for malformed items, and the #10845 value-fidelity matrix (explicit false/true/0/empty-string/empty-array/nested-false round-trip exactly; only genuinely missing sections answer null; false-null-zero positional coexistence); runs against the staged module or the pristine upstream blob for red-first checks and against single-behavior mutations for falsifier checks."
 covered_by = [
   "lua clients/lite-xl/tests/init_configuration_items_test.lua",
   "cargo xtask check-file-policy",
@@ -2844,7 +2879,7 @@ language = "lua"
 surface = "editor"
 classification = "production"
 owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp util.lua (base d1432ae, blob 588c101a) staged for the Lite XL integration train, carrying the #11155 guarded sensitive-trace patch (log_file append failures warn once without recursion, documented source-bearing surface, no automatic retention), the #11162 shell-free external-launch patch (URI classification policy, argv-only platform launchers, testable show_document sequence), the #11143 typed configuration merge patch (deep_merge folds whole typed values: object recursion, atomic array replacement, exact scalar/null overrides, codec-authority container classification, immutable inputs), and the #11165 single local file-URI/path conversion authority patch (typed uri_to_path/path_to_uri with Windows drive/UNC/percent/separator semantics; legacy touri/tofilename removed)."
+reason = "Exact upstream lite-xl-lsp util.lua (base d1432ae, blob 588c101a) staged for the Lite XL integration train, carrying the #11155 guarded sensitive-trace patch (log_file append failures warn once without recursion, documented source-bearing surface, no automatic retention), the #11162 shell-free external-launch patch (URI classification policy, argv-only platform launchers, testable show_document sequence), the #11143 typed configuration merge patch (deep_merge folds whole typed values: object recursion, atomic array replacement, exact scalar/null overrides, codec-authority container classification, immutable inputs), the #11165 single local file-URI/path conversion authority patch (typed uri_to_path/path_to_uri with Windows drive/UNC/percent/separator semantics; legacy touri/tofilename removed), the #10845 presence-aware lookup patch (table_get_field returns found separately from value so an explicit false stays distinct from a missing section; traversal recurses only into tables), and the #10873 async truthful-outcome patch (show_document gains a deferred decision mode with an alive generation gate, exactly-one outcome delivery, and typed internal reveal reasons; the synchronous contract is unchanged)."
 covered_by = [
   "lua clients/lite-xl/tests/server_logging_test.lua",
   "lua clients/lite-xl/tests/util_show_document_test.lua",
@@ -2854,6 +2889,38 @@ covered_by = [
 ]
 created = "2026-08-23"
 review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-init-completion-resolve-tests"
+path = "clients/lite-xl/tests/init_completion_resolve_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free completion resolve suite proving selection correctness independent of hover, full-item resolution without requiring completion_item.data, one shared generation-bound resolve per item subject, deferred application until the resolve terminal, resolved-field overlay feeding exactly-one validated application, typed timeout/failure refusal without partial mutation, and inertness of late resolves across edits, restarts, and provider switches; runs against the staged module or current main for red-first checks and against single-behavior mutations for falsifier checks."
+covered_by = [
+  "lua clients/lite-xl/tests/init_completion_resolve_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-25"
+review_after = "2026-09-25"
+
+[[allow]]
+id = "non-rust-litexl-init-show-document-outcome-tests"
+path = "clients/lite-xl/tests/init_show_document_outcome_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free showDocument outcome suite proving zero responses before the external user action, truthful accept/decline/cancel outcomes with verbatim request ids, typed internal open and selection-failure dispositions, inert prompts after server replacement, and exactly-once response delivery through the production listener; runs against the staged module or current main for red-first checks and against single-behavior mutations for falsifier checks."
+covered_by = [
+  "lua clients/lite-xl/tests/init_show_document_outcome_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-25"
+review_after = "2026-09-25"
 
 [[allow]]
 id = "non-rust-litexl-server-logging-tests"
@@ -3058,6 +3125,69 @@ reason = "Golden compact-prompt projection vectors proving the deterministic com
 covered_by = [
   "cargo xtask check-agent-implementation-packet",
   "cargo test -p xtask --bin xtask agent_implementation_packet --locked",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-standalone-candidate-schema"
+path = "schemas/standalone_candidate.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "JSON Schema pinning the closed immutable standalone candidate manifest contract (#11179); the derived candidate identity is recomputed over canonical bytes by the checked validator."
+covered_by = [
+  "cargo test -p xtask --locked --example standalone_candidate_selection",
+  "cargo run -p xtask --locked --example standalone_candidate_selection -- --verify-fixtures fixtures/experience/standalone_candidate_selection",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-standalone-current-selection-schema"
+path = "schemas/standalone_current_selection.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "JSON Schema pinning the closed standalone current-selection record contract (#11179): monotonic generations, previous-known-good governance, and digest-only identities with no private paths."
+covered_by = [
+  "cargo test -p xtask --locked --example standalone_candidate_selection",
+  "cargo run -p xtask --locked --example standalone_candidate_selection -- --verify-fixtures fixtures/experience/standalone_candidate_selection",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-standalone-install-transition-schema"
+path = "schemas/standalone_install_transition.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "JSON Schema pinning the closed install/repair/update/rollback transition record (#11179) with four independent outcome dimensions for product units, cleanup, process startup, and PATH persistence."
+covered_by = [
+  "cargo test -p xtask --locked --example standalone_candidate_selection",
+  "cargo run -p xtask --locked --example standalone_candidate_selection -- --verify-fixtures fixtures/experience/standalone_candidate_selection",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-standalone-candidate-selection-fixtures"
+glob = "fixtures/experience/standalone_candidate_selection/**/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "release/ci"
+reason = "Synthetic vectors for the #11179 standalone candidate/current-selection contract: the required pair/server-only/source scenarios plus fail-closed falsifiers each naming its expected reason code."
+covered_by = [
+  "cargo run -p xtask --locked --example standalone_candidate_selection -- --verify-fixtures fixtures/experience/standalone_candidate_selection",
 ]
 created = "2026-08-24"
 review_after = "2026-11-24"

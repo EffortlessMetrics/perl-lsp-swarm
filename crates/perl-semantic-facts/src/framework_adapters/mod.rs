@@ -7,7 +7,8 @@
 
 /// Dancer2 framework adapter (#8914).
 pub mod dancer2;
-
+/// Registry-activated Dancer2 hook fact minting (#8924).
+pub mod dancer2_hooks;
 /// Registry-activated Dancer2 route fact minting (#8918).
 pub mod dancer2_routes;
 

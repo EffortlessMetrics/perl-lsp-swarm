@@ -8,6 +8,8 @@ pub mod callable_exit;
 pub mod class_model;
 /// Registry-backed Dancer2 activation-site extraction (#8914).
 pub mod dancer2_activation;
+pub mod dancer2_handler_targets;
+pub mod dancer2_hooks;
 /// Dancer2 route-declaration extraction (#8918).
 pub mod dancer2_routes;
 /// Go-to-declaration support and parent map construction.
