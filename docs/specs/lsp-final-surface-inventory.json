@@ -49,7 +49,6 @@
       "documentLinkProvider.resolveProvider",
       "documentSymbolProvider",
       "executeCommandProvider.commands[]",
-      "experimental.typeHierarchyProvider",
       "foldingRangeProvider",
       "hoverProvider",
       "implementationProvider",
@@ -76,7 +75,7 @@
       "textDocumentSync.openClose",
       "textDocumentSync.save",
       "typeDefinitionProvider",
-      "typeHierarchyProvider.workDoneProgressOptions",
+      "typeHierarchyProvider",
       "workspaceSymbolProvider.resolveProvider"
     ],
     "ga-lock": [
@@ -99,7 +98,6 @@
       "documentLinkProvider.resolveProvider",
       "documentSymbolProvider",
       "executeCommandProvider.commands[]",
-      "experimental.typeHierarchyProvider",
       "foldingRangeProvider",
       "hoverProvider",
       "implementationProvider",
@@ -120,7 +118,7 @@
       "textDocumentSync.openClose",
       "textDocumentSync.save",
       "typeDefinitionProvider",
-      "typeHierarchyProvider.workDoneProgressOptions",
+      "typeHierarchyProvider",
       "workspaceSymbolProvider.resolveProvider"
     ],
     "production": [
@@ -143,7 +141,6 @@
       "documentLinkProvider.resolveProvider",
       "documentSymbolProvider",
       "executeCommandProvider.commands[]",
-      "experimental.typeHierarchyProvider",
       "foldingRangeProvider",
       "hoverProvider",
       "implementationProvider",
@@ -165,7 +162,7 @@
       "textDocumentSync.openClose",
       "textDocumentSync.save",
       "typeDefinitionProvider",
-      "typeHierarchyProvider.workDoneProgressOptions",
+      "typeHierarchyProvider",
       "workspaceSymbolProvider.resolveProvider"
     ]
   },
@@ -247,9 +244,6 @@
           "perl.previewPackageRename",
           "perl.explainMissingModuleLookup"
         ]
-      },
-      "experimental": {
-        "typeHierarchyProvider": true
       },
       "foldingRangeProvider": true,
       "hoverProvider": true,
@@ -347,9 +341,7 @@
         "save": true
       },
       "typeDefinitionProvider": true,
-      "typeHierarchyProvider": {
-        "workDoneProgressOptions": {}
-      },
+      "typeHierarchyProvider": {},
       "workspaceSymbolProvider": {
         "resolveProvider": true
       }
@@ -431,9 +423,6 @@
           "perl.previewPackageRename",
           "perl.explainMissingModuleLookup"
         ]
-      },
-      "experimental": {
-        "typeHierarchyProvider": true
       },
       "foldingRangeProvider": true,
       "hoverProvider": true,
@@ -517,9 +506,7 @@
         "save": true
       },
       "typeDefinitionProvider": true,
-      "typeHierarchyProvider": {
-        "workDoneProgressOptions": {}
-      },
+      "typeHierarchyProvider": {},
       "workspaceSymbolProvider": {
         "resolveProvider": true
       }
@@ -601,9 +588,6 @@
           "perl.previewPackageRename",
           "perl.explainMissingModuleLookup"
         ]
-      },
-      "experimental": {
-        "typeHierarchyProvider": true
       },
       "foldingRangeProvider": true,
       "hoverProvider": true,
@@ -688,9 +672,7 @@
         "save": true
       },
       "typeDefinitionProvider": true,
-      "typeHierarchyProvider": {
-        "workDoneProgressOptions": {}
-      },
+      "typeHierarchyProvider": {},
       "workspaceSymbolProvider": {
         "resolveProvider": true
       }
@@ -1081,30 +1063,6 @@
       "build_flag_effect": null
     },
     {
-      "surface_id": "cap.experimental.typeHierarchyProvider",
-      "kind": "capability-field",
-      "protocol_field": "experimental.typeHierarchyProvider",
-      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
-      "client_capability_inputs": [],
-      "build_profile_config_tool_inputs": [
-        "BuildFlags (ga-lock | production | all census profiles)"
-      ],
-      "disposition": "static",
-      "runtime_route_owner": "typeHierarchy/subtypes|supertypes",
-      "evidence_owner": "features.toml#lsp.type_hierarchy; feature_ids_from_caps detection contract",
-      "competing_paths": [
-        {
-          "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
-          "delta": "capabilities_json() additionally injects top-level typeHierarchyProvider {workDoneProgressOptions:{}} for LSP compatibility while apply_experimental_features() advertises experimental.typeHierarchyProvider boolean for feature_ids_from_caps detection - the same variant advertised twice through two paths"
-        }
-      ],
-      "target_issue": "#9665",
-      "compatibility": null,
-      "additional_owned_pointers": [],
-      "rewrites_surface_pointer": null,
-      "build_flag_effect": null
-    },
-    {
       "surface_id": "cap.foldingRangeProvider",
       "kind": "capability-field",
       "protocol_field": "foldingRangeProvider",
@@ -1186,14 +1144,14 @@
       "surface_id": "cap.inlineCompletionProvider",
       "kind": "capability-field",
       "protocol_field": "inlineCompletionProvider",
-      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags.inline_completion"
       ],
       "disposition": "static",
       "runtime_route_owner": "textDocument/inlineCompletion (static mode)",
-      "evidence_owner": "features.toml#lsp.inline_completion; lifecycle tests inline_completion_*",
+      "evidence_owner": "features.toml#lsp.inline_completion; PATCH-INLINECOMPLETION typed once (#11803); lifecycle tests inline_completion_*",
       "competing_paths": [
         {
           "path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
@@ -1579,23 +1537,18 @@
       "build_flag_effect": null
     },
     {
-      "surface_id": "cap.typeHierarchyProvider.workDoneProgressOptions",
+      "surface_id": "cap.typeHierarchyProvider",
       "kind": "capability-field",
-      "protocol_field": "typeHierarchyProvider.workDoneProgressOptions",
-      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "protocol_field": "typeHierarchyProvider",
+      "builder_mutator_path": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_navigation_features",
       "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [
         "BuildFlags (ga-lock | production | all census profiles)"
       ],
       "disposition": "static",
-      "runtime_route_owner": "typeHierarchy/subtypes|supertypes work-done progress",
-      "evidence_owner": "manual patch: lsp-types 0.97 lacks type_hierarchy_provider on ServerCapabilities",
-      "competing_paths": [
-        {
-          "path": "crates/perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
-          "delta": "experimental.typeHierarchyProvider boolean duplicates this top-level advertisement for typed-caps consumers that cannot see the JSON patch"
-        }
-      ],
+      "runtime_route_owner": "typeHierarchy/subtypes|supertypes",
+      "evidence_owner": "features.toml#lsp.type_hierarchy; typed field from the selected substrate",
+      "competing_paths": [],
       "target_issue": "#9665",
       "compatibility": null,
       "additional_owned_pointers": [],
@@ -3525,21 +3478,9 @@
       "target_issue": "#9665"
     },
     {
-      "surface_id": "cap.experimental.typeHierarchyProvider",
-      "protocol_field": "experimental.typeHierarchyProvider",
-      "primary_builder": "crates/perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
-      "competitors": [
-        {
-          "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
-          "delta": "capabilities_json() additionally injects top-level typeHierarchyProvider {workDoneProgressOptions:{}} for LSP compatibility while apply_experimental_features() advertises experimental.typeHierarchyProvider boolean for feature_ids_from_caps detection - the same variant advertised twice through two paths"
-        }
-      ],
-      "target_issue": "#9665"
-    },
-    {
       "surface_id": "cap.inlineCompletionProvider",
       "protocol_field": "inlineCompletionProvider",
-      "primary_builder": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
+      "primary_builder": "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_editing_features",
       "competitors": [
         {
           "path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
@@ -3556,18 +3497,6 @@
         {
           "path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
           "delta": "runtime replaces the whole textDocumentSync value after initialize parsing: adds willSave=true, willSaveWaitUntil=false and turns save from boolean true into {includeText:true} (see mut.handle_initialize.textDocumentSyncOverride)"
-        }
-      ],
-      "target_issue": "#9665"
-    },
-    {
-      "surface_id": "cap.typeHierarchyProvider.workDoneProgressOptions",
-      "protocol_field": "typeHierarchyProvider.workDoneProgressOptions",
-      "primary_builder": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs capabilities_json",
-      "competitors": [
-        {
-          "path": "crates/perl-lsp-rs-core/src/protocol/capabilities/experimental.rs apply_experimental_features",
-          "delta": "experimental.typeHierarchyProvider boolean duplicates this top-level advertisement for typed-caps consumers that cannot see the JSON patch"
         }
       ],
       "target_issue": "#9665"
