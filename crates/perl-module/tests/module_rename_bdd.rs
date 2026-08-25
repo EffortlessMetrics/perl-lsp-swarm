@@ -1,4 +1,4 @@
-use perl_module::rename::{apply_module_rename_edits, plan_module_rename_edits};
+use perl_module::{apply_module_rename_edits, plan_module_rename_edits};
 
 #[test]
 fn given_use_statement_when_module_is_renamed_then_import_is_rewritten() {

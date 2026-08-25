@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "B14-suppression-displacement-count-equal",
+  "family": "count_identity_debt_substitution",
+  "purpose": "Moving an accepted source suppression elsewhere while preserving its count defeats the reviewed-site contract.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "re-added blanket-style",
+      "deleted from generated.rs"
+    ],
+    "content": "// expectation deleted from generated.rs where it was reviewed...\n// ...and re-added blanket-style at mod.rs covering many sites\n#![expect(clippy::indexing_slicing, reason = \"table bounds\")]\n",
+    "sha256": "80c2d8b16bd1787568a0715cf4d5b8a3d4013b48ffa0e15aa782e78fe56aabdc"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "file_contract",
+    "reference": "file:docs/CLIPPY_POLICY.md#narrow"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "suppression_displacement"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "generated_lookup",
+      "proves this index"
+    ],
+    "note": "Suppression returns exactly where reviewed, site-scoped.",
+    "content": "#[expect(\n    clippy::indexing_slicing,\n    reason = \"Generated table construction proves this index is in bounds.\"\n)]\nfn generated_lookup(table: &[usize], index: usize) -> usize {\n    table[index]\n}\n",
+    "sha256": "90f52561f8653ae02a03223537ee6d5d049c28d0d60fb25f2e6c7387bc165227"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Suppression governance requires exact intentional exceptions; file-scope drift is reviewer-detectable via this frozen identity."
+}

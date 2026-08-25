@@ -572,7 +572,8 @@ fn competing_builder_diff_preserves_known_dual_writers() {
     let rendered = render_final_surface_inventory_json().expect("render must succeed");
     for dual_writer in [
         "cap.workspaceSymbolProvider.resolveProvider",
-        "cap.documentRangeFormattingProvider.rangesSupport",
+        "cap.experimental.typeHierarchyProvider",
+        "cap.typeHierarchyProvider.workDoneProgressOptions",
         "cap.textDocumentSync.save",
         "cap.declarationProvider",
         "cap.inlineCompletionProvider",

@@ -11,8 +11,8 @@
 #[cfg(test)]
 use super::*;
 use super::{
-    Arc, AtomicBool, AtomicU32, CodeFormatter, DocumentState, FormattingOptions, HashMap,
-    JsonRpcError, LspServer, Mutex, Node, NonZeroU32, Ordering, Parser, Value,
+    Arc, AtomicBool, AtomicU32, DocumentState, HashMap, JsonRpcError, LspServer, Mutex, Node,
+    NonZeroU32, Ordering, Parser, Value,
     diagnostics_sink::{PushDiagnosticIdentity, PushDiagnosticsDisposition},
     document_symbols_sink::DocumentSymbolIdentity as SymbolsIdentity,
     json, parse_worker, source_path_from_uri,
