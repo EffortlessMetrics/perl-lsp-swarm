@@ -156,7 +156,10 @@ fn parse_checkpoints_accumulate_nested_scalar_locals_in_source_order() -> Result
         NodeKind::VariableDeclaration {
             declarator: "my".to_string(),
             variable: Box::new(Node::new(
-                NodeKind::Variable { sigil: "$".to_string(), name: "first".to_string() },
+                NodeKind::Variable {
+                    sigil: "$".to_string(),
+                    name: "first".to_string(),
+                },
                 location(1, 7),
             )),
             attributes: vec![],
