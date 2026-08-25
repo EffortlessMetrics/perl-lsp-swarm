@@ -2839,12 +2839,12 @@ fn full_sigs_all_variants_start_with_function_name() -> Result<(), String> {
                     "Full sig {sig:?} for {name} should start with the function name"
                 ));
             };
-            if let Some(next) = rest.chars().next() {
-                if next.is_ascii_alphanumeric() || next == '_' {
-                    return Err(format!(
-                        "Full sig {sig:?} for {name} should keep the builtin name as a token boundary"
-                    ));
-                }
+            if let Some(next) = rest.chars().next()
+                && (next.is_ascii_alphanumeric() || next == '_')
+            {
+                return Err(format!(
+                    "Full sig {sig:?} for {name} should keep the builtin name as a token boundary"
+                ));
             }
         }
     }

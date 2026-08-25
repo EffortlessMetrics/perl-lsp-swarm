@@ -1821,12 +1821,12 @@ fn trivia_lexer_comment_only_source() -> Result<(), Box<dyn std::error::Error>> 
     let mut lexer = TriviaLexer::new(&source);
     let result = lexer.next_token_with_trivia();
     // Should either return None or EOF with the comment in trivia
-    if let Some((tok, trivia)) = result {
-        if !matches!(tok.token_type, perl_lexer::TokenType::EOF) {
-            // If not EOF, the trivia should have the comment
-            let has_comment = trivia.iter().any(|t| matches!(&t.trivia, Trivia::LineComment(_)));
-            assert!(has_comment, "comment should be in trivia");
-        }
+    if let Some((tok, trivia)) = result
+        && !matches!(tok.token_type, perl_lexer::TokenType::EOF)
+    {
+        // If not EOF, the trivia should have the comment
+        let has_comment = trivia.iter().any(|t| matches!(&t.trivia, Trivia::LineComment(_)));
+        assert!(has_comment, "comment should be in trivia");
     }
     Ok(())
 }

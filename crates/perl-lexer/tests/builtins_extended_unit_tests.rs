@@ -231,38 +231,35 @@ fn every_phf_file_test_exists_in_hashmap() -> Result<(), String> {
 
 #[test]
 fn full_sigs_print_starts_with_most_specific() -> Result<(), String> {
-    if let Some(sigs) = BUILTIN_FULL_SIGS.get("print") {
-        if let Some(first) = sigs.first() {
-            if !first.contains("FILEHANDLE") || !first.contains("LIST") {
-                return Err(format!(
-                    "print first full sig should be the most specific (FILEHANDLE LIST), got {first}"
-                ));
-            }
-        }
+    if let Some(sigs) = BUILTIN_FULL_SIGS.get("print")
+        && let Some(first) = sigs.first()
+        && (!first.contains("FILEHANDLE") || !first.contains("LIST"))
+    {
+        return Err(format!(
+            "print first full sig should be the most specific (FILEHANDLE LIST), got {first}"
+        ));
     }
     Ok(())
 }
 
 #[test]
 fn full_sigs_open_starts_with_three_arg_form() -> Result<(), String> {
-    if let Some(sigs) = BUILTIN_FULL_SIGS.get("open") {
-        if let Some(first) = sigs.first() {
-            if !first.contains("MODE") || !first.contains("FILENAME") {
-                return Err(format!("open first full sig should be 3-arg form, got {first}"));
-            }
-        }
+    if let Some(sigs) = BUILTIN_FULL_SIGS.get("open")
+        && let Some(first) = sigs.first()
+        && (!first.contains("MODE") || !first.contains("FILENAME"))
+    {
+        return Err(format!("open first full sig should be 3-arg form, got {first}"));
     }
     Ok(())
 }
 
 #[test]
 fn full_sigs_split_starts_with_three_arg_form() -> Result<(), String> {
-    if let Some(sigs) = BUILTIN_FULL_SIGS.get("split") {
-        if let Some(first) = sigs.first() {
-            if !first.contains("LIMIT") {
-                return Err(format!("split first full sig should include LIMIT, got {first}"));
-            }
-        }
+    if let Some(sigs) = BUILTIN_FULL_SIGS.get("split")
+        && let Some(first) = sigs.first()
+        && !first.contains("LIMIT")
+    {
+        return Err(format!("split first full sig should include LIMIT, got {first}"));
     }
     Ok(())
 }
