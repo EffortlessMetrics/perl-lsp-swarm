@@ -2044,10 +2044,17 @@ fn clone_node<O: CloneObserver>(root: &Node, observer: &mut O) -> Node {
     while let Some(item) = work.pop() {
         match item {
             Work::Enter(source) => {
-                let child_count = source.child_count();
-                observer.on_enter(child_count);
-                work.push(Work::Assemble { source, child_count });
+                // One child walk: record the Assemble frame first so children
+                // stay on top (postorder), then count those frames in place.
+                work.push(Work::Assemble { source, child_count: 0 });
+                let assemble_at = work.len().saturating_sub(1);
                 source.for_each_child(|child| work.push(Work::Enter(child)));
+                let child_count = work.len().saturating_sub(assemble_at.saturating_add(1));
+                if let Some(Work::Assemble { child_count: stored, .. }) = work.get_mut(assemble_at)
+                {
+                    *stored = child_count;
+                }
+                observer.on_enter(child_count);
                 observer.on_stack_depth(work.len());
             }
             Work::Assemble { source, child_count } => {
