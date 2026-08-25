@@ -2460,6 +2460,113 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn inherited_method_identity_is_shared_by_candidates_definitions_and_references()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let file_child = FileId(1);
+        let file_parent = FileId(2);
+        let parent_anchor = AnchorId(20);
+        let call_anchor = AnchorId(30);
+        let method_id = EntityId(200);
+
+        let shard_child = make_shard(
+            "file:///lib/Child.pm",
+            file_child,
+            vec![AnchorFact {
+                id: call_anchor,
+                file_id: file_child,
+                span_start_byte: 0,
+                span_end_byte: 15,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![OccurrenceFact {
+                id: OccurrenceId(300),
+                kind: OccurrenceKind::Call,
+                entity_id: Some(method_id),
+                anchor_id: call_anchor,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+        );
+
+        let shard_parent = make_shard(
+            "file:///lib/Parent.pm",
+            file_parent,
+            vec![AnchorFact {
+                id: parent_anchor,
+                file_id: file_parent,
+                span_start_byte: 0,
+                span_end_byte: 15,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![EntityFact {
+                id: method_id,
+                kind: EntityKind::Method,
+                canonical_name: "Parent::greet".to_string(),
+                anchor_id: Some(parent_anchor),
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![],
+        );
+
+        let mut shards = HashMap::new();
+        shards.insert(shard_child.source_uri.clone(), shard_child.clone());
+        shards.insert(shard_parent.source_uri.clone(), shard_parent.clone());
+
+        let mut package_graph = PackageGraphIndex::new();
+        package_graph.add_edges(
+            "file:///lib/Child.pm",
+            file_child,
+            vec![PackageEdge::new(
+                "Child".to_string(),
+                "Parent".to_string(),
+                PackageEdgeKind::Inherits,
+                Some(AnchorId(1)),
+                Provenance::ExactAst,
+                Confidence::High,
+            )],
+        );
+
+        let mut reference_index = ReferenceIndex::new();
+        reference_index.add_file(&shard_child);
+        let import_export_index = ImportExportIndex::new();
+        let queries = WorkspaceSemanticQueries::with_package_graph(
+            &reference_index,
+            &import_export_index,
+            &shards,
+            &package_graph,
+        );
+
+        let candidate = queries
+            .method_candidates("Child", "greet")
+            .into_iter()
+            .next()
+            .ok_or("inherited method candidate should resolve")?;
+        let definition = queries
+            .definitions("Parent::greet", &QueryContext::new(file_child, None, Some(10)))
+            .into_iter()
+            .next()
+            .ok_or("inherited method definition should resolve")?;
+        let references = queries.references(method_id);
+
+        assert_eq!(candidate.entity_id, method_id);
+        assert_eq!(definition.entity_id, method_id);
+        assert_eq!(references.len(), 1);
+        assert_eq!(references[0].entity_id, Some(method_id));
+        assert_eq!(references[0].anchor_id, call_anchor);
+        Ok(())
+    }
+
     fn role_method_entity(id: u64, canonical: &str, kind: EntityKind) -> EntityFact {
         EntityFact {
             id: EntityId(id),
