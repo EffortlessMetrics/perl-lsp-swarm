@@ -325,7 +325,6 @@ fn capability_rows() -> Vec<SurfaceRow> {
             "features.toml#lsp.formatting",
         ),
         SurfaceRow {
-        SurfaceRow {
             client_capability_inputs: &[
                 "textDocument.rename.prepareSupport",
                 "textDocument.rename.prepareSupportDefaultBehavior",
