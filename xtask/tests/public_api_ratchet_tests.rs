@@ -399,16 +399,24 @@ fn non_facade_crates_have_no_baselines() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-/// Test J (edge case & regression): perllsp baseline has exactly 2 lines (mod + re-export)
+/// Test J (edge case & regression): perllsp baseline has the expected structure
 ///
-/// `perllsp` is a thin binary wrapper that re-exports from `perl-lsp-rs`.
-/// Its public API surface should be minimal: just the module declaration and
-/// the re-export statement. This test verifies the format is preserved as expected.
+/// `perllsp` is a thin binary wrapper that re-exports from `perl-lsp-rs`.  Its core
+/// public API surface is the module declaration and the re-export statement.
 ///
-/// If perllsp's baseline grows significantly, it may indicate:
-/// - Additional public API was accidentally added to the lib target
-/// - The re-export pattern changed
-/// - The baseline was regenerated incorrectly
+/// The `claude_compat` module was intentionally added as public API so that
+/// the Claude Code integration binary target and its integration tests can consume
+/// typed compatibility-catalog types directly from the installed crate.  That
+/// module's full surface is pinned here to catch any further unintentional additions.
+///
+/// If this test fails it means one of the following happened:
+/// - A new module was accidentally made `pub` in `perllsp/src/lib.rs`
+/// - An item was added to (or removed from) `claude_compat` without updating this guard
+/// - The baseline was regenerated against an API surface that differs from main
+///
+/// To update: regenerate the baseline with `just public-api-update`, verify the diff
+/// in `.ci/public-api-baselines/perllsp.txt` is intentional, and update the expected
+/// count below accordingly.
 #[test]
 fn perllsp_baseline_has_expected_reexport_format() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
@@ -419,26 +427,55 @@ fn perllsp_baseline_has_expected_reexport_format() -> Result<(), Box<dyn std::er
 
     let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
 
+    // Ratchet: pin the exact count so any future surface change requires a conscious
+    // decision to update this assertion.  The current surface is:
+    //   line 1  – crate module declaration
+    //   line 2  – perl_lsp re-export wildcard
+    //   lines 3–81 – claude_compat typed compatibility-catalog API (79 entries)
     assert_eq!(
         lines.len(),
-        2,
-        "perllsp baseline should have exactly 2 lines (mod + re-export), got {}. Content:\n{}",
+        81,
+        "perllsp baseline line count changed (expected 81, got {}).  \
+         If the change is intentional, regenerate with `just public-api-update`, \
+         verify the diff, and update the expected count in this assertion.\n\
+         Content:\n{}",
         lines.len(),
         content
     );
 
-    // Verify first line is the module declaration
+    // Verify first line is the crate module declaration
     assert!(
         lines[0].starts_with("pub mod perllsp"),
-        "perllsp baseline first line should be module declaration, got: {}",
+        "perllsp baseline first line should be the module declaration, got: {}",
         lines[0]
     );
 
-    // Verify second line is a re-export (uses pub use and contains <<...>>)
+    // Verify second line is the perl_lsp wildcard re-export
     assert!(
         lines[1].contains("pub use") && lines[1].contains("<<"),
-        "perllsp baseline second line should be a re-export pattern, got: {}",
+        "perllsp baseline second line should be the re-export pattern, got: {}",
         lines[1]
+    );
+
+    // Verify the third line introduces the claude_compat module — the one and only
+    // intentional extension beyond the thin-wrapper baseline.
+    assert_eq!(
+        lines[2], "pub mod perllsp::claude_compat",
+        "perllsp baseline third line should be the claude_compat module declaration, got: {}",
+        lines[2]
+    );
+
+    // Verify that every entry beyond the first two belongs to claude_compat, i.e. no
+    // other top-level module crept into the perllsp public surface.
+    let unexpected: Vec<&str> = lines[3..]
+        .iter()
+        .copied()
+        .filter(|line| !line.contains("claude_compat"))
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "perllsp baseline contains entries outside claude_compat that were not expected:\n{}",
+        unexpected.join("\n")
     );
 
     Ok(())
