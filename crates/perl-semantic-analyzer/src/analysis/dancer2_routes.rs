@@ -82,6 +82,11 @@ fn walk_node(
         NodeKind::Package { name, block: None, .. } => {
             *current_package = Some(name.clone());
         }
+        // Route calls inside a subroutine body register only when that sub
+        // executes — statically execution-conditional, never a load-time
+        // declaration. Do not descend: a route-looking call inside any
+        // `sub { ... }` mints nothing.
+        NodeKind::Subroutine { .. } => {}
         _ => {
             for child in node.children() {
                 walk_node(child, file_id, current_package, declarations, next_index);
@@ -111,12 +116,16 @@ fn walk_statements(
                 continue;
             }
             // Two-statement form: `VERB` then a single-pair hash of
-            // (pattern, handler) — the shape a regex pattern produces.
+            // (regex pattern, handler) — the recovery shape the parser
+            // produces for `qr{...}` route patterns. The pattern operand must
+            // be a regex: a bare keyword statement fused with an unrelated
+            // single-pair hash (`get; { foo => sub {} };`) is not a route.
             if let NodeKind::Identifier { name } = &expression.kind
                 && DANCER2_ROUTE_KEYWORDS.contains(&name.as_str())
                 && index + 1 < statements.len()
                 && let Some((pattern_node, handler_node)) =
                     single_pair_pattern_handler(&statements[index + 1])
+                && matches!(pattern_node.kind, NodeKind::Regex { .. })
             {
                 declarations.push(Dancer2RouteDeclaration {
                     package: current_package.clone(),
@@ -267,11 +276,16 @@ fn method_set_from_elements(elements: &[Node]) -> RouteMethodSet {
     }
     let mut methods = Vec::with_capacity(elements.len());
     for element in elements {
-        let NodeKind::String { value, .. } = &element.kind else {
+        let NodeKind::String { value, interpolated } = &element.kind else {
             return RouteMethodSet::Dynamic {
                 reason: "computed entry in `any` method list".to_string(),
             };
         };
+        if *interpolated && interpolated_value_is_dynamic(value) {
+            return RouteMethodSet::Dynamic {
+                reason: "interpolated entry in `any` method list".to_string(),
+            };
+        }
         let normalized = normalize_dancer2_method(value);
         if normalized.is_empty() {
             return RouteMethodSet::Dynamic {
@@ -370,12 +384,27 @@ fn unquote(raw: &str) -> Option<String> {
 
 /// Whether an interpolated string operand is statically a computed value.
 ///
-/// Perl interpolation only occurs through `$`/`@` sigils, so an interpolated
-/// string whose text carries no sigil is still statically literal. Escaped
-/// sigils (`"\\$x"`) stay conservatively dynamic: the boundary is honest even
-/// when the escape would make the value static.
+/// Perl interpolation only occurs through `$`/`@` sigils **followed by an
+/// identifier or index** (`$name`, `${name}`, `@list`, `$arr[0]`), so a
+/// trailing sigil (e.g. the regex anchor `$` in `^/re/(\d+)$`) stays static.
+/// Escaped sigils (`"\\$x"`) stay conservatively dynamic: the boundary is
+/// honest even when the escape would make the value static.
 fn interpolated_value_is_dynamic(value: &str) -> bool {
-    value.contains('$') || value.contains('@')
+    let bytes = value.as_bytes();
+    bytes.iter().enumerate().any(|(index, byte)| {
+        matches!(byte, b'$' | b'@')
+            && bytes.get(index + 1).is_some_and(|next| {
+                next.is_ascii_alphabetic() || matches!(next, b'_' | b'{' | b'[')
+            })
+    })
+}
+
+/// Whether a `qr{...}` pattern interpolates at runtime.
+///
+/// Same sigil rule as [`interpolated_value_is_dynamic`]; regex anchors
+/// (`$` at pattern end, before `)` or `|`) do not interpolate.
+fn regex_pattern_interpolates(pattern: &str) -> bool {
+    interpolated_value_is_dynamic(pattern)
 }
 
 fn pattern_from_node(node: &Node, file_id: FileId) -> RoutePattern {
@@ -389,11 +418,15 @@ fn pattern_from_node(node: &Node, file_id: FileId) -> RoutePattern {
                 anchor: anchor(node.location.start, node.location.end, file_id),
             }
         }
-        NodeKind::Regex { pattern, .. } => RoutePattern {
-            kind: RoutePatternKind::Regex,
-            value: Some(pattern.clone()),
-            anchor: anchor(node.location.start, node.location.end, file_id),
-        },
+        NodeKind::Regex { pattern, has_embedded_code, .. }
+            if !*has_embedded_code && !regex_pattern_interpolates(pattern) =>
+        {
+            RoutePattern {
+                kind: RoutePatternKind::Regex,
+                value: Some(pattern.clone()),
+                anchor: anchor(node.location.start, node.location.end, file_id),
+            }
+        }
         _ => RoutePattern {
             kind: RoutePatternKind::Dynamic,
             value: None,
@@ -844,6 +877,59 @@ mod tests {
             &code[found[0].declaration_start_byte as usize..found[0].declaration_end_byte as usize],
             "get '/x' => sub { 1 }"
         );
+    }
+
+    #[test]
+    fn route_calls_inside_sub_bodies_mint_nothing() {
+        // A route-looking call inside a sub registers only when that sub
+        // executes — execution-conditional, never a load-time declaration.
+        let code = "package App;
+use Dancer2;
+sub later { get '/x' => sub { 1 }; }
+get '/y' => sub { 2 };
+";
+        let found = declarations(code);
+        assert_eq!(found.len(), 1, "only the load-time route mints");
+        assert_eq!(found[0].route.pattern.value.as_deref(), Some("/y"));
+    }
+
+    #[test]
+    fn bare_keyword_plus_unrelated_hash_is_not_a_route() {
+        // The two-statement recovery shape is reserved for regex patterns;
+        // `get; { foo => sub {} };` must not fuse into a route.
+        assert!(
+            declarations(
+                "get;
+{ foo => sub { 1 }; }
+"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn interpolated_method_entry_is_a_boundary() {
+        let found = declarations("any [\"$method\"] => '/x' => sub { 1 };");
+        assert_eq!(found.len(), 1);
+        assert!(
+            matches!(found[0].route.methods, RouteMethodSet::Dynamic { .. }),
+            "an interpolated method entry must not normalize into an exact set"
+        );
+    }
+
+    #[test]
+    fn interpolated_and_embedded_code_regex_patterns_are_boundaries() {
+        let interpolated = declarations(r"get qr{^/$prefix/(\d+)$} => sub { 1 };");
+        assert_eq!(interpolated.len(), 1);
+        assert_eq!(interpolated[0].route.pattern.kind, RoutePatternKind::Dynamic);
+        assert!(interpolated[0].route.pattern.value.is_none());
+
+        // The anchored fixture regex stays exact: a trailing `$` anchor does
+        // not interpolate.
+        let anchored = declarations(r"get qr{^/re/(\d+)$} => sub { 1 };");
+        assert_eq!(anchored.len(), 1);
+        assert_eq!(anchored[0].route.pattern.kind, RoutePatternKind::Regex);
+        assert!(anchored[0].route.pattern.value.is_some());
     }
 
     #[test]

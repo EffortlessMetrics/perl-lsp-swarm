@@ -221,8 +221,13 @@ impl RouteDeclaration {
 
 /// Canonical framework route fact: envelope plus route payload and framework
 /// identity.
+///
+/// Deserialization is checked: wire payloads are rebuilt through
+/// [`RouteFact::new`], so every constructor-side invariant (envelope kind,
+/// canonicalized method sets and option maps, no valueless literal patterns)
+/// also holds for decoded facts.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RouteFact {
     /// Canonical semantic envelope (kind forced to `Route`).
     pub envelope: SemanticFactEnvelope,
@@ -236,6 +241,33 @@ pub struct RouteFact {
     pub application_name: String,
     /// Route payload.
     pub route: RouteDeclaration,
+}
+
+#[derive(Deserialize)]
+struct RouteFactWire {
+    envelope: SemanticFactEnvelope,
+    framework_name: String,
+    adapter_id: AdapterId,
+    framework_version: String,
+    application_name: String,
+    route: RouteDeclaration,
+}
+
+impl<'de> Deserialize<'de> for RouteFact {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = RouteFactWire::deserialize(deserializer)?;
+        Ok(RouteFact::new(
+            wire.envelope,
+            wire.framework_name,
+            wire.adapter_id,
+            wire.framework_version,
+            wire.application_name,
+            wire.route,
+        ))
+    }
 }
 
 impl RouteFact {
@@ -256,6 +288,14 @@ impl RouteFact {
     ) -> Self {
         envelope.kind = SemanticFactKind::Route;
         let mut route = route;
+        // A literal/regex pattern without a value is incoherent as an exact
+        // operand: coerce it to the dynamic boundary so no exact status can
+        // rest on a missing value (covers unchecked wire payloads).
+        if matches!(route.pattern.kind, RoutePatternKind::Literal | RoutePatternKind::Regex)
+            && route.pattern.value.is_none()
+        {
+            route.pattern.kind = RoutePatternKind::Dynamic;
+        }
         if let RouteMethodSet::Exact(methods) = &mut route.methods {
             methods.sort();
             methods.dedup();
@@ -601,6 +641,41 @@ mod tests {
             route_fact_identity(FileId(1), 0, &SourceGeneration::known("gen-ba")).0,
             "transposed generations must not collide"
         );
+    }
+
+    #[test]
+    fn deserialization_reapplies_constructor_invariants() -> Result<(), serde_json::Error> {
+        let (fact_id, entity_id) =
+            route_fact_identity(FileId(1), 0, &SourceGeneration::known("gen-1"));
+        let fact = RouteFact::new(
+            envelope_for(fact_id, entity_id, true),
+            "Dancer2",
+            AdapterId(1),
+            "1.1.1",
+            "App",
+            literal_route(0),
+        );
+
+        // A forged wire payload: wrong envelope kind, unsorted/duplicate
+        // methods, and a valueless literal pattern.
+        let mut value = serde_json::to_value(&fact)?;
+        value["envelope"]["kind"] = serde_json::json!("Declaration");
+        value["route"]["methods"] = serde_json::json!({ "Exact": ["POST", "GET", "POST"] });
+        value["route"]["pattern"]["value"] = serde_json::json!(null);
+        let decoded: RouteFact = serde_json::from_value(value)?;
+        assert_eq!(decoded.envelope.kind, SemanticFactKind::Route, "kind is forced");
+        let methods = must_some(match &decoded.route.methods {
+            RouteMethodSet::Exact(methods) => Some(methods.clone()),
+            _ => None,
+        });
+        assert_eq!(methods, vec!["GET".to_string(), "POST".to_string()]);
+        assert_eq!(
+            decoded.route.pattern.kind,
+            RoutePatternKind::Dynamic,
+            "a valueless literal pattern is coerced to the dynamic boundary"
+        );
+        assert_eq!(decoded.status(), SemanticFactStatus::Degraded);
+        Ok(())
     }
 
     #[test]
