@@ -412,6 +412,35 @@ do
 end
 
 do
+  -- Bound-full overwrite onto an ALREADY-SENT request rejects the replacement
+  -- without retiring the in-flight original (#10833/#12544 review repair):
+  -- marking the sent request overwritten before the replacement is admitted
+  -- would suppress its valid response callback, losing both outcomes.
+  local s = fresh_server({ max_queued_requests = 2 })
+  s:push_request("a", { params = { v = 1 } })
+  s:push_request("b", { params = {} })
+  s:process_requests()
+  local reasons, methods = {}, {}
+  local d = s:push_request("a", {
+    overwrite = true,
+    params = { v = 2 },
+    not_queued_callback = function(r, m)
+      reasons[#reasons + 1] = r; methods[#methods + 1] = m
+    end,
+  })
+  ok(d == "not_queued",
+    "bound-full overwrite onto a sent request rejects the replacement explicitly")
+  ok(reasons[1] == "queue_full" and methods[1] == "a",
+    "the rejected replacement reports queue_full with its method")
+  local sent_a
+  for _, request in ipairs(s.request_list) do
+    if request.method == "a" then sent_a = request end
+  end
+  ok(sent_a and sent_a.times_sent == 1 and not sent_a.overwritten,
+    "the rejected replacement leaves the in-flight original's response callback intact")
+end
+
+do
   -- Not-initialized requests reject explicitly instead of silently.
   local s = fresh_server({ initialized = false })
   local got

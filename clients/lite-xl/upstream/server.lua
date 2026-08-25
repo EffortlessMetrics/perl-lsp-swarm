@@ -1193,11 +1193,17 @@ function Server:push_request(method, options)
 
   assert(options.params, "please provide the parameters for the request")
 
+  -- Locate the declared overwrite policy target before any rejection path.
+  -- An already-sent request is only marked overwritten once its replacement
+  -- is actually admitted: marking first and rejecting second would suppress
+  -- the in-flight request's valid response callback and lose both outcomes
+  -- (#10833).
+  local sent_overwrite_target = nil
   if options.overwrite then
     for _, request in ipairs(self.request_list) do
       if request.method == method then
         if request.times_sent > 0 then
-          request.overwritten = true
+          sent_overwrite_target = request
           break
         else
           request.params = options.params
@@ -1250,6 +1256,16 @@ function Server:push_request(method, options)
     timestamp = 0,
     times_sent = 0
   })
+
+  -- Replacement admitted: only now retire the already-sent predecessor so a
+  -- rejected replacement can never strand the in-flight original (#10833).
+  if sent_overwrite_target then
+    sent_overwrite_target.overwritten = true
+    if self.verbose then
+      self:log("Overwriting request %s", tostring(method))
+    end
+  end
+
   return "queued"
 end
 
