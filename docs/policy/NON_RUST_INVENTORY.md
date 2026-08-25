@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11902 |
-| Rust-family files | 3608 |
-| Non-Rust files | 8294 |
-| Allowlisted | 5988 |
+| Total tracked files | 11916 |
+| Rust-family files | 3612 |
+| Non-Rust files | 8304 |
+| Allowlisted | 5998 |
 | Unclassified | 2306 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 427 |
-| documentation | 2711 |
+| config | 429 |
+| documentation | 2713 |
 | generated | 2 |
-| production | 324 |
-| test | 1966 |
-| tooling | 558 |
+| production | 325 |
+| test | 1969 |
+| tooling | 560 |
 | unclassified | 2306 |
 
 ## Unclassified files
@@ -2544,6 +2544,7 @@
 | `.changes/unreleased/product-8311-Changed-164000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9103-Added-211500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9450-Added-125043.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-9487-Added-740216.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9516-Added-235900.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9593-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9593-Security-000001.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2633,6 +2634,7 @@
 | `.ci/fixtures/zed-perl-upstream/perl-dap-managed-downloads.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/receipts/dap-asset-template.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/receipts/dap-asset-windows-x86_64.v1.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/zed-perl-upstream/receipts/dap-public-registry.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/receipts/default-order-template.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/receipts/exact-source-observations-template.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/receipts/exact-source-template.json` | config | `non-rust-ci-config` | release/ci |
@@ -2760,6 +2762,7 @@
 | `.ci/schemas/zed-host-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/zed-managed-asset-receipt.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/zed-perl-dap-asset-receipt.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/schemas/zed-perl-dap-public-registry-receipt.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/scope.d/parser-ratchet.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/scripts/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.ci/scripts/check-from-raw.sh` | config | `non-rust-ci-config` | release/ci |
@@ -3509,9 +3512,11 @@
 | `book/src/user-guides/troubleshooting.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `book/src/user-guides/workspace-navigation.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `clients/lite-xl/tests/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `clients/lite-xl/tests/capability_manifest_test.lua` | test | `non-rust-litexl-capability-manifest-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/diagnostic_position_test.lua` | test | `non-rust-litexl-diagnostic-position-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/diagnostics_currentness_test.lua` | test | `non-rust-litexl-diagnostics-currentness-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/harness.lua` | test | `non-rust-litexl-journey-harness` | editor/lite-xl |
+| `clients/lite-xl/tests/init_command_projection_test.lua` | test | `non-rust-litexl-command-projection-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_completion_resolve_test.lua` | test | `non-rust-litexl-init-completion-resolve-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_configuration_items_test.lua` | test | `non-rust-litexl-init-configuration-items-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_document_session_test.lua` | test | `non-rust-litexl-init-session-tests` | editor/lite-xl |
@@ -3520,11 +3525,13 @@
 | `clients/lite-xl/tests/journey_session_test.lua` | test | `non-rust-litexl-journey-session-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/json_decode_test.lua` | test | `non-rust-litexl-json-decode-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_frame_test.lua` | test | `non-rust-litexl-server-frame-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/server_initialize_capabilities_test.lua` | test | `non-rust-litexl-initialize-capabilities-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_logging_test.lua` | test | `non-rust-litexl-server-logging-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_message_scheduling_test.lua` | test | `non-rust-litexl-server-message-scheduling-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_config_merge_test.lua` | test | `non-rust-litexl-config-merge-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_file_uri_test.lua` | test | `non-rust-litexl-file-uri-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_show_document_test.lua` | test | `non-rust-litexl-show-document-tests` | editor/lite-xl |
+| `clients/lite-xl/upstream/capability_manifest.lua` | production | `non-rust-litexl-capability-manifest` | editor/lite-xl |
 | `clients/lite-xl/upstream/diagnostics.lua` | production | `non-rust-litexl-diagnostics-store` | editor/lite-xl |
 | `clients/lite-xl/upstream/init.lua` | production | `non-rust-litexl-init-plugin` | editor/lite-xl |
 | `clients/lite-xl/upstream/json.lua` | production | `non-rust-litexl-json-codec` | editor/lite-xl |
@@ -4827,6 +4834,7 @@
 | `docs/integrations/ZED_EXACT_SOURCE_HOST.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/integrations/ZED_HOST_RECEIPT.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/integrations/ZED_PERL_DAP_PUBLIC_ASSET_RECEIPTS.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/integrations/ZED_PERL_DAP_PUBLIC_REGISTRY_RECEIPT.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/integrations/ZED_PUBLIC_ASSET_RECEIPTS.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/integrations/ZED_PUBLIC_REGISTRY_RECEIPT.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/integrations/ZED_REGISTRY_SUBMISSION.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6503,6 +6511,7 @@
 | `scripts/test/emacs-clients/eglot-released.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-host-driver.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-clients/vim-lsp-adapter.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-host-diagnostics-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6639,6 +6648,7 @@
 | `scripts/zed_assets/dap_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/zed_assets/dap_process.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/zed_assets/dap_producer.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/zed_assets/dap_public.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/zed_assets/dap_validation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/zed_assets/framing.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/zed_assets/github_io.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
