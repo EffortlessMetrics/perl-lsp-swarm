@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11902 |
-| Rust-family files | 3608 |
-| Non-Rust files | 8294 |
-| Allowlisted | 6012 |
-| Unclassified | 2282 |
+| Total tracked files | 11910 |
+| Rust-family files | 3611 |
+| Non-Rust files | 8299 |
+| Allowlisted | 6036 |
+| Unclassified | 2263 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
 | config | 427 |
-| documentation | 2692 |
+| documentation | 2711 |
 | generated | 2 |
-| production | 324 |
-| test | 1969 |
-| tooling | 598 |
-| unclassified | 2282 |
+| production | 325 |
+| test | 1972 |
+| tooling | 599 |
+| unclassified | 2263 |
 
 ## Unclassified files
 
@@ -61,25 +61,6 @@
 | `.editorconfig` | `` |
 | `.typos.toml` | `toml` |
 | `aqua.yaml` | `yaml` |
-| `archive/crates/tree-sitter-perl-rs/benchmark_results/comparison_results.json` | `json` |
-| `archive/crates/tree-sitter-perl-rs/edge_case_test_output.txt` | `txt` |
-| `archive/crates/tree-sitter-perl-rs/src/bin/benchmark_parsers.rs.disabled` | `disabled` |
-| `archive/crates/tree-sitter-perl-rs/src/bsearch.h` | `h` |
-| `archive/crates/tree-sitter-perl-rs/src/grammar.js` | `js` |
-| `archive/crates/tree-sitter-perl-rs/src/grammar.json` | `json` |
-| `archive/crates/tree-sitter-perl-rs/src/grammar.pest` | `pest` |
-| `archive/crates/tree-sitter-perl-rs/src/grammar_heredoc_fix.pest` | `pest` |
-| `archive/crates/tree-sitter-perl-rs/src/grammar_optimized.pest` | `pest` |
-| `archive/crates/tree-sitter-perl-rs/src/lib/primitives.js` | `js` |
-| `archive/crates/tree-sitter-perl-rs/src/lib/unicode_ranges.js` | `js` |
-| `archive/crates/tree-sitter-perl-rs/src/node-types.json` | `json` |
-| `archive/crates/tree-sitter-perl-rs/src/parser.c` | `c` |
-| `archive/crates/tree-sitter-perl-rs/src/scanner.c` | `c` |
-| `archive/crates/tree-sitter-perl-rs/src/tree_sitter/alloc.h` | `h` |
-| `archive/crates/tree-sitter-perl-rs/src/tree_sitter/array.h` | `h` |
-| `archive/crates/tree-sitter-perl-rs/src/tree_sitter/parser.h` | `h` |
-| `archive/crates/tree-sitter-perl-rs/src/tsp_unicode.h` | `h` |
-| `archive/crates/tree-sitter-perl-rs/test_output.sexp` | `sexp` |
 | `book/book.toml` | `toml` |
 | `contracts/actual_host_receipt.v1.schema.json` | `json` |
 | `crates/perl-corpus/concepts/incremental.toml` | `toml` |
@@ -3376,9 +3357,28 @@
 | `archive/crates/tree-sitter-perl-rs/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `archive/crates/tree-sitter-perl-rs/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `archive/crates/tree-sitter-perl-rs/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `archive/crates/tree-sitter-perl-rs/benchmark_results/comparison_results.json` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/edge_case_test_output.txt` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/proptest-regressions/fuzz_tests.txt` | test | `non-rust-proptest-default-layout-regressions` | parser/property-tests |
 | `archive/crates/tree-sitter-perl-rs/proptest-regressions/tests.txt` | test | `non-rust-proptest-default-layout-regressions` | parser/property-tests |
+| `archive/crates/tree-sitter-perl-rs/src/bin/benchmark_parsers.rs.disabled` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/bsearch.h` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/grammar.js` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/grammar.json` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/grammar.pest` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/grammar_heredoc_fix.pest` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/grammar_optimized.pest` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/lib/primitives.js` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/lib/unicode_ranges.js` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/node-types.json` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/parser.c` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/scanner.c` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/tree_sitter/alloc.h` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/tree_sitter/array.h` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/tree_sitter/parser.h` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/tsp_unicode.h` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/test.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `archive/crates/tree-sitter-perl-rs/test_output.sexp` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/tests/fixtures/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `archive/crates/tree-sitter-perl-rs/tests/fixtures/anti_patterns/begin_heredoc.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `archive/crates/tree-sitter-perl-rs/tests/fixtures/anti_patterns/dynamic_delimiter.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -3509,9 +3509,11 @@
 | `ci/unwrap_server_impl_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/xtask_wrapper.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `clients/lite-xl/tests/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `clients/lite-xl/tests/capability_manifest_test.lua` | test | `non-rust-litexl-capability-manifest-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/diagnostic_position_test.lua` | test | `non-rust-litexl-diagnostic-position-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/diagnostics_currentness_test.lua` | test | `non-rust-litexl-diagnostics-currentness-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/harness.lua` | test | `non-rust-litexl-journey-harness` | editor/lite-xl |
+| `clients/lite-xl/tests/init_command_projection_test.lua` | test | `non-rust-litexl-command-projection-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_completion_resolve_test.lua` | test | `non-rust-litexl-init-completion-resolve-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_configuration_items_test.lua` | test | `non-rust-litexl-init-configuration-items-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_document_session_test.lua` | test | `non-rust-litexl-init-session-tests` | editor/lite-xl |
@@ -3520,11 +3522,13 @@
 | `clients/lite-xl/tests/journey_session_test.lua` | test | `non-rust-litexl-journey-session-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/json_decode_test.lua` | test | `non-rust-litexl-json-decode-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_frame_test.lua` | test | `non-rust-litexl-server-frame-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/server_initialize_capabilities_test.lua` | test | `non-rust-litexl-initialize-capabilities-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_logging_test.lua` | test | `non-rust-litexl-server-logging-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_message_scheduling_test.lua` | test | `non-rust-litexl-server-message-scheduling-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_config_merge_test.lua` | test | `non-rust-litexl-config-merge-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_file_uri_test.lua` | test | `non-rust-litexl-file-uri-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_show_document_test.lua` | test | `non-rust-litexl-show-document-tests` | editor/lite-xl |
+| `clients/lite-xl/upstream/capability_manifest.lua` | production | `non-rust-litexl-capability-manifest` | editor/lite-xl |
 | `clients/lite-xl/upstream/diagnostics.lua` | production | `non-rust-litexl-diagnostics-store` | editor/lite-xl |
 | `clients/lite-xl/upstream/init.lua` | production | `non-rust-litexl-init-plugin` | editor/lite-xl |
 | `clients/lite-xl/upstream/json.lua` | production | `non-rust-litexl-json-codec` | editor/lite-xl |
@@ -6503,6 +6507,7 @@
 | `scripts/test/emacs-clients/eglot-released.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-host-driver.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-clients/vim-lsp-adapter.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-host-diagnostics-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
