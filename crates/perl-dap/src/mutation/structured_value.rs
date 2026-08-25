@@ -49,16 +49,38 @@ pub struct StructuredMutationLimits {
 
 impl Default for StructuredMutationLimits {
     fn default() -> Self {
-        Self {
-            max_input_bytes: 65_536,
-            max_scalar_bytes: 32_768,
-            max_aggregate_bytes: 65_536,
-            max_depth: 16,
-            max_nodes: 1_024,
-            max_entries: 512,
-            max_significant_digits: 256,
-            max_absolute_exponent: 4_096,
-        }
+        Self::PINNED_V1_MAXIMA
+    }
+}
+
+impl StructuredMutationLimits {
+    /// Pinned profile-v1 maxima (#11327). A caller-supplied profile may
+    /// tighten any budget, but a schema-v1 admission can never be emitted
+    /// under budgets wider than the reviewed profile: parse-time enforcement
+    /// keeps the `schema_version == 1` wire identity meaning the reviewed
+    /// bounds.
+    pub const PINNED_V1_MAXIMA: Self = Self {
+        max_input_bytes: 65_536,
+        max_scalar_bytes: 32_768,
+        max_aggregate_bytes: 65_536,
+        max_depth: 16,
+        max_nodes: 1_024,
+        max_entries: 512,
+        max_significant_digits: 256,
+        max_absolute_exponent: 4_096,
+    };
+
+    /// Whether every budget stays at or below the pinned v1 maxima.
+    fn within_pinned_v1(&self) -> bool {
+        let pinned = &Self::PINNED_V1_MAXIMA;
+        self.max_input_bytes <= pinned.max_input_bytes
+            && self.max_scalar_bytes <= pinned.max_scalar_bytes
+            && self.max_aggregate_bytes <= pinned.max_aggregate_bytes
+            && self.max_depth <= pinned.max_depth
+            && self.max_nodes <= pinned.max_nodes
+            && self.max_entries <= pinned.max_entries
+            && self.max_significant_digits <= pinned.max_significant_digits
+            && self.max_absolute_exponent <= pinned.max_absolute_exponent
     }
 }
 
@@ -132,6 +154,10 @@ pub enum StructuredRefusal {
         /// Byte offset where parsing stopped.
         offset: usize,
     },
+    /// Caller-supplied limits exceeded the pinned profile-v1 maxima; the
+    /// schema-v1 identity may not be emitted under widened budgets.
+    #[error("caller limits exceed the pinned profile v1 maxima")]
+    LimitsExceedPinnedProfile,
 }
 
 /// One exact structured value. Numbers never pass through `f64`.
@@ -154,23 +180,109 @@ pub enum StructuredValue {
 }
 
 /// Exact decimal/exponent number kept as canonical text (no binary float).
+///
+/// Construction is checked: only canonical JSON-number text is admitted, so
+/// invalid forms cannot enter the exact value model outside this parser.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExactDecimal {
     /// Canonical form: optional `-`, digits with one `.`, optional `e±exp`.
-    pub canonical: String,
+    canonical: String,
+}
+
+impl ExactDecimal {
+    /// Admit canonical JSON-number text (`-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?`).
+    /// Returns `None` for any non-canonical spelling.
+    pub fn admitted(canonical: &str) -> Option<Self> {
+        if !is_canonical_number(canonical) {
+            return None;
+        }
+        Some(Self { canonical: canonical.to_string() })
+    }
+
+    /// Canonical text form of this exact decimal.
+    pub fn canonical(&self) -> &str {
+        &self.canonical
+    }
+}
+
+/// Canonical JSON-number grammar: optional minus, integer part with the
+/// leading-zero rule, optional fraction with at least one digit, optional
+/// exponent with at least one digit.
+fn is_canonical_number(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    if bytes.first() == Some(&b'-') {
+        index += 1;
+    }
+    let integer_start = index;
+    while index < bytes.len() && bytes[index].is_ascii_digit() {
+        index += 1;
+    }
+    if index == integer_start {
+        return false;
+    }
+    if bytes[integer_start] == b'0' && index - integer_start > 1 {
+        return false;
+    }
+    if index < bytes.len() && bytes[index] == b'.' {
+        index += 1;
+        let fraction_start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if index == fraction_start {
+            return false;
+        }
+    }
+    if index < bytes.len() && matches!(bytes[index], b'e' | b'E') {
+        index += 1;
+        if index < bytes.len() && matches!(bytes[index], b'+' | b'-') {
+            index += 1;
+        }
+        let exponent_start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if index == exponent_start || index != bytes.len() {
+            return false;
+        }
+    }
+    index == bytes.len()
 }
 
 /// Versioned envelope pairing the scalar mutation text with its parsed
 /// structured payload.
+///
+/// Construction is sealed: the only producer is [`parse_structured_mutation`],
+/// and the fields are readable through accessors, so a v1 envelope and its
+/// digest can only describe admitted content and cannot be forged, widened,
+/// or mutated after parsing.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MutationStructuredValueV1 {
     /// Pinned schema version.
-    pub schema_version: u32,
+    schema_version: u32,
     /// The admitted structured value.
-    pub value: StructuredValue,
+    value: StructuredValue,
     /// Deterministic fingerprint over the canonical serialization of
     /// [`Self::value`] (fixed variant/field order, documented entry order).
-    pub fingerprint: ContentDigest,
+    fingerprint: ContentDigest,
+}
+
+impl MutationStructuredValueV1 {
+    /// Pinned schema version of this envelope.
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    /// The admitted structured value (read-only).
+    pub const fn value(&self) -> &StructuredValue {
+        &self.value
+    }
+
+    /// Fingerprint over the canonical serialization of the admitted value.
+    pub const fn fingerprint(&self) -> &ContentDigest {
+        &self.fingerprint
+    }
 }
 
 /// Strip-and-check the versioned prefix on the scalar text surface.
@@ -186,6 +298,9 @@ pub fn parse_structured_mutation(
     let payload = structured_payload(raw)?;
     if raw.len() > limits.max_input_bytes {
         return Err(StructuredRefusal::InputTooLarge { limit: limits.max_input_bytes });
+    }
+    if !limits.within_pinned_v1() {
+        return Err(StructuredRefusal::LimitsExceedPinnedProfile);
     }
     let mut parser = Parser::new(payload.as_bytes(), limits);
     let value = parser.parse_value(0)?;
@@ -265,6 +380,7 @@ impl<'a> Parser<'a> {
     ) -> Result<StructuredValue, StructuredRefusal> {
         if self.input[self.pos..].starts_with(word) {
             self.pos += word.len();
+            self.charge_bytes(word.len())?;
             Ok(value)
         } else {
             Err(StructuredRefusal::InvalidSyntax { offset: self.pos })
@@ -308,6 +424,12 @@ impl<'a> Parser<'a> {
                 }
                 _ => {
                     if b.is_ascii() {
+                        // Raw control characters (U+0000–U+001F) are not
+                        // legal inside a json: string; they must arrive via
+                        // the escape branch above.
+                        if b < 0x20 {
+                            return Err(StructuredRefusal::InvalidSyntax { offset: self.pos });
+                        }
                         decoded.push(b as char);
                         self.pos += 1;
                     } else {
@@ -337,6 +459,7 @@ impl<'a> Parser<'a> {
         self.skip_ws();
         if self.input.get(self.pos) == Some(&b']') {
             self.pos += 1;
+            self.charge_bytes(CONTAINER_DELIMITER_BYTES)?;
             return Ok(StructuredValue::Array(items));
         }
         loop {
@@ -363,6 +486,7 @@ impl<'a> Parser<'a> {
         self.skip_ws();
         if self.input.get(self.pos) == Some(&b'}') {
             self.pos += 1;
+            self.charge_bytes(CONTAINER_DELIMITER_BYTES)?;
             return Ok(StructuredValue::Object(entries));
         }
         loop {
@@ -402,13 +526,30 @@ impl<'a> Parser<'a> {
         if self.input.get(self.pos) == Some(&b'-') {
             self.pos += 1;
         }
-        while matches!(self.input.get(self.pos), Some(c) if c.is_ascii_digit()) {
+        // Integer component: at least one digit, and a leading zero may not
+        // be followed by further integer digits (JSON grammar).
+        let integer_start = self.pos;
+        if matches!(self.input.get(self.pos), Some(c) if c.is_ascii_digit()) {
             self.pos += 1;
+            if self.input[integer_start] == b'0' {
+                if matches!(self.input.get(self.pos), Some(c) if c.is_ascii_digit()) {
+                    return Err(StructuredRefusal::InvalidSyntax { offset: self.pos });
+                }
+            } else {
+                while matches!(self.input.get(self.pos), Some(c) if c.is_ascii_digit()) {
+                    self.pos += 1;
+                }
+            }
+        } else {
+            return Err(StructuredRefusal::InvalidSyntax { offset: self.pos });
         }
         let mut is_decimal = false;
         if self.input.get(self.pos) == Some(&b'.') {
             is_decimal = true;
             self.pos += 1;
+            if !matches!(self.input.get(self.pos), Some(c) if c.is_ascii_digit()) {
+                return Err(StructuredRefusal::InvalidSyntax { offset: self.pos });
+            }
             while matches!(self.input.get(self.pos), Some(c) if c.is_ascii_digit()) {
                 self.pos += 1;
             }

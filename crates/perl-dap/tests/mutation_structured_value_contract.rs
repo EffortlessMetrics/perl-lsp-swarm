@@ -23,8 +23,8 @@ type TestResult<T = ()> = Result<T, String>;
 fn parse(text: &str) -> TestResult<StructuredValue> {
     let envelope = parse_structured_mutation(text, &StructuredMutationLimits::default())
         .map_err(|error| error.to_string())?;
-    assert_eq!(envelope.schema_version, MUTATION_STRUCTURED_VALUE_SCHEMA_VERSION);
-    Ok(envelope.value)
+    assert_eq!(envelope.schema_version(), MUTATION_STRUCTURED_VALUE_SCHEMA_VERSION);
+    Ok(envelope.value().clone())
 }
 
 fn parse_envelope(text: &str) -> TestResult<perl_dap::mutation::MutationStructuredValueV1> {
@@ -146,12 +146,10 @@ fn digit_and_exponent_budgets_are_enforced() -> TestResult {
 
     let within =
         parse_structured_mutation("json:1.5e-8", &limits).map_err(|error| error.to_string())?;
-    assert_eq!(
-        within.value,
-        StructuredValue::Decimal(perl_dap::mutation::ExactDecimal {
-            canonical: "1.5e-8".to_string()
-        })
-    );
+    let expected = perl_dap::mutation::ExactDecimal::admitted("1.5e-8")
+        .ok_or("canonical 1.5e-8 must be admissible")?;
+    assert_eq!(within.value(), &StructuredValue::Decimal(expected.clone()));
+    assert_eq!(expected.canonical(), "1.5e-8");
     Ok(())
 }
 
@@ -172,11 +170,11 @@ fn scalars_admit_no_fresh_referent_arrays_and_objects_do() -> TestResult {
 fn ordering_is_deterministic_and_fingerprints_stable() -> TestResult {
     let first = parse_envelope(r#"json:{"z": 1, "a": [true, null]}"#)?;
     let second = parse_envelope(r#"json:{"z": 1, "a": [true, null]}"#)?;
-    assert_eq!(first.fingerprint, second.fingerprint);
-    assert_ne!(first.fingerprint, ContentDigest::of_bytes(b""));
+    assert_eq!(first.fingerprint(), second.fingerprint());
+    assert_ne!(first.fingerprint(), &ContentDigest::of_bytes(b""));
     // Object entry order is preserved as written (deterministic receipt-safe
     // ordering), not silently re-sorted.
-    let StructuredValue::Object(entries) = &first.value else {
+    let StructuredValue::Object(entries) = first.value() else {
         return Err("expected object".to_string());
     };
     assert_eq!(entries[0].0, "z");
@@ -190,22 +188,22 @@ fn fingerprint_derives_from_canonical_value_serialization() -> TestResult {
     // empty-content sentinel made this pass vacuously before.
     let one = parse_envelope("json:1")?;
     let two = parse_envelope("json:2")?;
-    assert_ne!(one.fingerprint, two.fingerprint);
+    assert_ne!(one.fingerprint(), two.fingerprint());
     assert_eq!(
-        one.fingerprint,
-        ContentDigest::of_bytes(
-            serde_json::to_string(&one.value).map_err(|error| error.to_string())?.as_bytes()
+        one.fingerprint(),
+        &ContentDigest::of_bytes(
+            serde_json::to_string(one.value()).map_err(|error| error.to_string())?.as_bytes()
         )
     );
 
     // Identical content reproduces the digest deterministically.
     let again = parse_envelope("json:2")?;
-    assert_eq!(two.fingerprint, again.fingerprint);
+    assert_eq!(two.fingerprint(), again.fingerprint());
 
     // Documented entry order participates: same members, different order.
     let z_then_a = parse_envelope(r#"json:{"z": 1, "a": 2}"#)?;
     let a_then_z = parse_envelope(r#"json:{"a": 2, "z": 1}"#)?;
-    assert_ne!(z_then_a.fingerprint, a_then_z.fingerprint);
+    assert_ne!(z_then_a.fingerprint(), a_then_z.fingerprint());
     Ok(())
 }
 
@@ -272,6 +270,133 @@ fn aggregate_budget_counts_decoded_data_bytes_not_entry_counts() -> TestResult {
     };
     let admitted = parse_structured_mutation(r#"json:{"key":"value"}"#, &generous)
         .map_err(|error| error.to_string())?;
-    assert!(matches!(admitted.value, StructuredValue::Object(_)));
+    assert!(matches!(admitted.value(), StructuredValue::Object(_)));
+    Ok(())
+}
+
+#[test]
+fn raw_control_characters_are_rejected_inside_strings() -> TestResult {
+    // Raw control characters (U+0000–U+001F) are illegal in a json: string
+    // and must arrive through the escape branch instead.
+    for raw in ["json:\"a\nb\"", "json:\"a\tb\"", "json:\"a\0b\"", "json:\"a\u{1f}b\""] {
+        let error = parse_refusal(raw)?;
+        assert!(
+            matches!(error, StructuredRefusal::InvalidSyntax { .. }),
+            "raw control character in {raw:?} must refuse as invalid syntax"
+        );
+    }
+    // Keys are strings too: the same rule binds object keys.
+    let raw_key = parse_refusal("json:{\"a\nb\": 1}")?;
+    assert!(matches!(raw_key, StructuredRefusal::InvalidSyntax { .. }));
+    // The escaped spellings stay legal through the escape branch.
+    let escaped = parse(r#"json:"a\nb""#)?;
+    assert_eq!(escaped, StructuredValue::String("a\nb".to_string()));
+    Ok(())
+}
+
+#[test]
+fn malformed_number_forms_are_rejected() -> TestResult {
+    // None of these is a valid JSON number.
+    for malformed in ["json:-e1", "json:-.1", "json:1.", "json:01", "json:+1", "json:."] {
+        let error = parse_refusal(malformed)?;
+        assert!(
+            matches!(error, StructuredRefusal::InvalidSyntax { .. }),
+            "{malformed:?} must refuse as invalid syntax, got {error:?}"
+        );
+    }
+    // The neighboring valid forms still admit.
+    for valid in ["json:-0.5", "json:0.5", "json:0", "json:-0", "json:1.5e-8", "json:1e2"] {
+        parse(valid).map_err(|error| format!("valid number {valid:?} refused: {error}"))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn empty_containers_and_literals_are_charged_to_the_aggregate() -> TestResult {
+    let zero =
+        StructuredMutationLimits { max_aggregate_bytes: 0, ..StructuredMutationLimits::default() };
+    for payload in ["json:[]", "json:{}", "json:null", "json:true", "json:false"] {
+        let error = parse_structured_mutation(payload, &zero)
+            .err()
+            .ok_or_else(|| format!("{payload} must not admit under a zero aggregate budget"))?;
+        assert_eq!(
+            error,
+            StructuredRefusal::AggregateTooLarge { limit: 0 },
+            "{payload} delimiters/literal bytes must charge the aggregate"
+        );
+    }
+    // A budget that exactly covers the two delimiters admits the empty array.
+    let two =
+        StructuredMutationLimits { max_aggregate_bytes: 2, ..StructuredMutationLimits::default() };
+    let empty_array =
+        parse_structured_mutation("json:[]", &two).map_err(|error| error.to_string())?;
+    assert!(matches!(empty_array.value(), StructuredValue::Array(_)));
+    // Four bytes cover `null`.
+    let four =
+        StructuredMutationLimits { max_aggregate_bytes: 4, ..StructuredMutationLimits::default() };
+    let null = parse_structured_mutation("json:null", &four).map_err(|error| error.to_string())?;
+    assert_eq!(null.value(), &StructuredValue::Null);
+    Ok(())
+}
+
+#[test]
+fn widened_limits_beyond_the_pinned_profile_are_refused() -> TestResult {
+    let widened = StructuredMutationLimits {
+        max_input_bytes: usize::MAX,
+        ..StructuredMutationLimits::default()
+    };
+    let error = parse_structured_mutation("json:1", &widened)
+        .err()
+        .ok_or("a widened profile must not be admitted under the v1 schema identity")?;
+    assert_eq!(error, StructuredRefusal::LimitsExceedPinnedProfile);
+
+    // Tighter-than-pinned profiles remain admissible (boundary tests rely on
+    // them); every widened budget refuses the same way.
+    let tightened =
+        StructuredMutationLimits { max_nodes: 2, ..StructuredMutationLimits::default() };
+    parse_structured_mutation("json:[1]", &tightened).map_err(|error| error.to_string())?;
+    for widened in [
+        StructuredMutationLimits {
+            max_scalar_bytes: 32_769,
+            ..StructuredMutationLimits::default()
+        },
+        StructuredMutationLimits {
+            max_aggregate_bytes: 65_537,
+            ..StructuredMutationLimits::default()
+        },
+        StructuredMutationLimits { max_depth: 17, ..StructuredMutationLimits::default() },
+        StructuredMutationLimits { max_nodes: 1_025, ..StructuredMutationLimits::default() },
+        StructuredMutationLimits { max_entries: 513, ..StructuredMutationLimits::default() },
+        StructuredMutationLimits {
+            max_significant_digits: 257,
+            ..StructuredMutationLimits::default()
+        },
+        StructuredMutationLimits {
+            max_absolute_exponent: 4_097,
+            ..StructuredMutationLimits::default()
+        },
+    ] {
+        let error = parse_structured_mutation("json:1", &widened)
+            .err()
+            .ok_or("widened budget must refuse")?;
+        assert_eq!(error, StructuredRefusal::LimitsExceedPinnedProfile);
+    }
+    Ok(())
+}
+
+#[test]
+fn exact_decimal_construction_is_checked() -> TestResult {
+    for invalid in ["1.", ".1", "01", "-", "-e1", "1e", "1.5e+", "+1", ""] {
+        assert!(
+            perl_dap::mutation::ExactDecimal::admitted(invalid).is_none(),
+            "non-canonical {invalid:?} must not be admissible"
+        );
+    }
+    for valid in ["0", "-0", "1.5", "-0.5", "1e2", "1.5e-8", "12"] {
+        assert!(
+            perl_dap::mutation::ExactDecimal::admitted(valid).is_some(),
+            "canonical {valid:?} must be admissible"
+        );
+    }
     Ok(())
 }
