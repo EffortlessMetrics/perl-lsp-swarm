@@ -121,6 +121,8 @@ export function runBoundedProcess(
     let stdout = '';
     let stderr = '';
     let capturedOutputBytes = 0;
+    let truncatedTarget: 'stdout' | 'stderr' | undefined;
+    let decodersFlushed = false;
     let termination:
       | Exclude<BoundedProcessOutcome, 'completed' | 'spawn_error' | 'termination_failed'>
       | undefined;
@@ -186,6 +188,7 @@ export function runBoundedProcess(
         if (closed || settled) {
           return;
         }
+        flushDecoders();
         finish(
           'termination_failed',
           null,
@@ -242,15 +245,20 @@ export function runBoundedProcess(
     };
 
     const flushDecoders = (): void => {
+      if (decodersFlushed) {
+        return;
+      }
+      decodersFlushed = true;
       // StringDecoder.end() emits U+FFFD for an incomplete trailing sequence.
       // When the byte ceiling cuts a character, that partial character is not
       // captured output and must not become a synthetic diagnostic character.
-      if (termination === 'output_limit') {
-        return;
+      if (truncatedTarget !== 'stdout') {
+        appendDecodedOutput('stdout', stdoutDecoder.end());
       }
-      appendDecodedOutput('stdout', stdoutDecoder.end());
-      appendDecodedOutput('stderr', stderrDecoder.end());
-    };
+      if (truncatedTarget !== 'stderr') {
+        appendDecodedOutput('stderr', stderrDecoder.end());
+      }
+    }
 
     const onAbort = (): void => requestTermination('cancelled');
     if (signal?.aborted) {
@@ -272,6 +280,7 @@ export function runBoundedProcess(
             target === 'stdout' ? stdoutDecoder.write(bounded) : stderrDecoder.write(bounded),
           );
         }
+        truncatedTarget = target;
         capturedOutputBytes = maxOutputBytes;
         requestTermination('output_limit');
         return;

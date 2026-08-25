@@ -216,6 +216,30 @@ describe('bounded prove process execution', () => {
     expect(result.stdout).not.toContain('\ufffd');
   }, 30_000);
 
+  test('flushes the unaffected stream when the other stream hits the byte ceiling', async () => {
+    const result = await runBoundedProcess(
+      process.execPath,
+      [
+        '-e',
+        [
+          'process.stderr.write(Buffer.from([0xc3]))',
+          'process.stdout.write("x")',
+          'setTimeout(() => process.stderr.write(Buffer.from([0xa9])), 10)',
+        ].join(';'),
+      ],
+      {
+        shell: false,
+        timeoutMs: 5_000,
+        maxOutputBytes: 1,
+        terminationGraceMs: 25,
+      },
+    );
+
+    expect(result.outcome).toBe('output_limit');
+    expect(result.stderr).toBe('\\ufffd');
+    expect(result.capturedOutputBytes).toBe(1);
+  }, 30_000);
+
   test('waits for close after escalating past an ignored SIGTERM', async () => {
     if (process.platform === 'win32') {
       return;
