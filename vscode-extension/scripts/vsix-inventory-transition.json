@@ -1,9 +1,9 @@
 {
-  "base_baseline_file_sha256": "4a662d41a6f80249245b526e89b6b706d1b847195c16231fe0d303cbd44a5011",
-  "base_inventory_sha256": "3087c97c983e74fbc5d814d8739e985dbacc26a54e7ad32c43f1e3f9dae7c19e",
-  "candidate_baseline_file_sha256": "8a20c2b29c57b1baad098d658e385e2a8f32b92cbd9637b6681aa51aefcd119e",
-  "candidate_inventory_sha256": "77366544182581a948a34d8f7701f7388f1384f0d1efb539c3221fe0e93e5895",
-  "owner_issue": 9842,
-  "reason": "#9842 renames the extension build/watch command surface and routes every public tsc path through the governed seam. Only shipped package.json script metadata changes (58406->58886, +480 measured from the packaged VSIX: the governed-tsc rewiring, the build/bundle/watch:bundle contract, and the check:tsconfig-inventory + governed test wiring). No file added, removed, or loosened; out/extension.js is byte-identical (Rolldown re-run under the new command names); total recomputed ->1696163.",
-  "schema_version": 1
+  "schema_version": 1,
+  "owner_issue": 7845,
+  "reason": "#7845 routes the process-exit crash handler, the watchdog timeout path, and the automatic-restart budget in extension.ts through the landed CrashRecoveryArbiter, including review-hardened stale-watchdog generation binding, snapshot-based episode settlement, episode-handle-bound settlement with deferred different-generation failures, and removal of the unreachable manual-restart catch. Composed on top of the accepted #9842 transition from main (package.json script metadata 58406->58886 already declared there); this transition owns out/extension.js 1519372->1534537 measured on the merged current-source tree (local rolldown 1.2.4, eol=lf; CI smoke re-measures the archive). No file added, removed, or loosened; total recomputed ->1711328.",
+  "base_baseline_file_sha256": "8a20c2b29c57b1baad098d658e385e2a8f32b92cbd9637b6681aa51aefcd119e",
+  "candidate_baseline_file_sha256": "ad49f7d100b5de70e7931e7c7e705a57fa00b6090bc807b391f2910673866ddf",
+  "base_inventory_sha256": "77366544182581a948a34d8f7701f7388f1384f0d1efb539c3221fe0e93e5895",
+  "candidate_inventory_sha256": "dd7332f25fca75e351a1813d63bb177ca14cf951c551651e406f979e0cf7a446"
 }
