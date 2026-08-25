@@ -346,7 +346,6 @@ fn is_skipped_path(
 ) -> bool {
     !is_safe_relative_git_path(relative_path)
         || allowlist.has_unallowed_skipped_component(relative_path)
-        || path_contains_skipped_component_with_extra(relative_path, &config.extra_skipped_dirs)
         || !root.join(relative_path).is_dir()
 }
 
