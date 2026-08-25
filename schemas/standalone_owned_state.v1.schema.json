@@ -82,20 +82,20 @@
       "description": "Exact path relative to the install root with forward slashes; absolute paths, drive letters, backslashes, empty segments, dot and parent segments, and glob metacharacters are structurally invalid because a removal target must be one exact entry."
     },
     "absolute_path": {
-      "allOf": [
+      "type": "string",
+      "minLength": 2,
+      "anyOf": [
         {
-          "type": "string",
-          "minLength": 2
+          "pattern": "^/(?!\\.{1,2}(/|$))[^/\\\\*?\"<>|]+(/(?!\\.{1,2}(/|$))[^/\\\\*?\"<>|]+)*$"
         },
         {
-          "anyOf": [
-            { "pattern": "^/" },
-            { "pattern": "^[A-Za-z]:[\\\\/]" },
-            { "pattern": "^\\\\\\\\[^\\\\]" }
-          ]
+          "pattern": "^[A-Za-z]:\\\\(?!\\.{1,2}(\\\\|$))[^/\\\\*?\"<>|]+(\\\\(?!\\.{1,2}(\\\\|$))[^/\\\\*?\"<>|]+)*$"
+        },
+        {
+          "pattern": "^\\\\\\\\(?!\\.{1,2}(\\\\|$))[^/\\\\*?\"<>|]+(\\\\(?!\\.{1,2}(\\\\|$))[^/\\\\*?\"<>|]+)*$"
         }
       ],
-      "description": "Bounded absolute filesystem identity for a root observation."
+      "description": "One canonical normalized physical absolute identity: exactly one form per family — POSIX (`/seg`+), drive (`X:\\seg`+, backslash separator only), or UNC (`\\\\host\\share`+). No dot or parent segments, no empty segments or trailing separators, no mixed separators, no glob/device metacharacters; equivalent spellings of the same physical root are invalid so one digest binds one representation."
     },
     "link_policy": {
       "enum": ["resolved_physical", "refused_substitution"]
@@ -110,7 +110,7 @@
         },
         "identity_digest_sha256": {
           "$ref": "#/$defs/sha256",
-          "description": "Digest binding the root identity recorded at scan time; substitution after planning fails currentness."
+          "description": "Digest binding the root identity recorded at scan time, computed over the canonical absolute representation; substitution or any equivalent-spelling respelling after planning fails currentness."
         },
         "link_policy": {
           "$ref": "#/$defs/link_policy"

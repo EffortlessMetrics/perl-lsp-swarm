@@ -3161,6 +3161,20 @@ review_after = "2026-09-23"
 
 
 [[allow]]
+id = "non-rust-install-owned-state-invalid-traversing-root-manifest"
+path = "fixtures/experience/install_owned_state/manifest_invalid_traversing_root.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "negative-control fixture: a parent-segment root spelling is non-canonical unbounded identity for the #11470 standalone owned-state manifest."
+covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
+created = "2026-08-25"
+review_after = "2026-09-23"
+
+
+[[allow]]
 id = "non-rust-install-owned-state-full-removal-plan"
 path = "fixtures/experience/install_owned_state/plan_full_removal.json"
 kind = "contract_fixture"

@@ -45,19 +45,22 @@
     "plan_id": {
       "type": "string",
       "minLength": 1,
-      "description": "Identifier of the standalone_removal_plan.v1 this outcome belongs to."
+      "description": "Identifier of the standalone_removal_plan.v1 this outcome belongs to; the checked validator requires it to equal the validated plan's plan_id when both documents are checked together."
     },
     "bound_manifest_sha256": {
-      "$ref": "standalone_owned_state.v1.schema.json#/$defs/sha256"
+      "$ref": "standalone_owned_state.v1.schema.json#/$defs/sha256",
+      "description": "Must equal the bound plan's manifest digest; a report whose manifest identity disagrees with its plan is invalid."
     },
     "removed_entries": {
       "type": "array",
+      "uniqueItems": true,
       "items": {
         "$ref": "standalone_owned_state.v1.schema.json#/$defs/relative_path"
       }
     },
     "preserved_entries": {
       "type": "array",
+      "uniqueItems": true,
       "items": {
         "$ref": "standalone_owned_state.v1.schema.json#/$defs/relative_path"
       }
@@ -111,6 +114,7 @@
         "properties": {
           "complete_evidence": { "const": true },
           "removed_entries": { "maxItems": 0 },
+          "preserved_entries": { "maxItems": 0 },
           "failed_entries": { "maxItems": 0 }
         }
       }
@@ -145,7 +149,8 @@
       },
       "then": {
         "properties": {
-          "activation_state": { "const": "conditional_activation_selected" }
+          "activation_state": { "const": "conditional_activation_selected" },
+          "preserved_entries": { "maxItems": 0 }
         }
       }
     },
@@ -168,6 +173,7 @@
       "then": {
         "properties": {
           "removed_entries": { "maxItems": 0 },
+          "preserved_entries": { "maxItems": 0 },
           "failed_entries": { "maxItems": 0 }
         }
       }

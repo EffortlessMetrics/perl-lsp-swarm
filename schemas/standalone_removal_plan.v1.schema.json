@@ -67,6 +67,7 @@
         },
         "entries": {
           "type": "array",
+          "uniqueItems": true,
           "items": {
             "$ref": "standalone_owned_state.v1.schema.json#/$defs/relative_path"
           }
@@ -93,15 +94,18 @@
         },
         "verify_entries_absent": {
           "type": "array",
+          "uniqueItems": true,
           "items": {
             "$ref": "standalone_owned_state.v1.schema.json#/$defs/relative_path"
           }
         },
         "verify_preserved": {
           "type": "array",
+          "uniqueItems": true,
           "items": {
             "$ref": "standalone_owned_state.v1.schema.json#/$defs/relative_path"
-          }
+          },
+          "description": "Exact preserved set: the checked validator requires this list to equal the plan's preserve-disposition population exactly; revalidate rows belong to neither postcondition list until revalidated, and overlap with verify_entries_absent is invalid."
         }
       }
     }
@@ -123,7 +127,8 @@
         },
         "order_index": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "description": "Enforced execution order: the checked validator requires order_index to be exactly the canonical 0-based sequence 0..N-1 matching array position; array order and index order are one authority, with duplicates, gaps, permutations, or reversal invalid."
         },
         "verified_identity_sha256": {
           "$ref": "standalone_owned_state.v1.schema.json#/$defs/sha256",

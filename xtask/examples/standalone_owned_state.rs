@@ -121,25 +121,76 @@ fn require_nonempty(value: &str, field: &str) -> ContractResult<()> {
     Ok(())
 }
 
-fn is_absolute_path(path: &str) -> bool {
-    if path.starts_with('/') || path.starts_with("\\\\") {
-        return true;
+const ROOT_METACHARACTERS: [char; 6] = ['*', '?', '"', '<', '>', '|'];
+
+fn reject_root_segment(segment: &str, path: &str, field: &str) -> ContractResult<()> {
+    if segment.is_empty() {
+        return err(format!(
+            "{field}: empty segment or trailing separator makes `{path}` a non-canonical equivalent spelling of the same root"
+        ));
     }
-    let bytes = path.as_bytes();
-    bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    if segment == "." || segment == ".." {
+        return err(format!(
+            "{field}: dot or parent segment escapes the bounded root identity; traversal spellings are invalid (`{path}`)"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_absolute_path(path: &str, field: &str) -> ContractResult<()> {
     require_nonempty(path, field)?;
-    if !is_absolute_path(path) {
-        return err(format!(
-            "{field}: root identity must be one exact absolute path; found `{path}`"
-        ));
+    for metacharacter in ROOT_METACHARACTERS {
+        if path.contains(metacharacter) {
+            return err(format!(
+                "{field}: glob or device metacharacter `{metacharacter}` makes the root identity unbounded; one physical representation only"
+            ));
+        }
     }
-    Ok(())
+    if let Some(rest) = path.strip_prefix('/') {
+        if rest.contains('\\') {
+            return err(format!(
+                "{field}: posix form must use the forward-slash separator consistently; found `{path}`"
+            ));
+        }
+        for segment in rest.split('/') {
+            reject_root_segment(segment, path, field)?;
+        }
+        return Ok(());
+    }
+    let bytes = path.as_bytes();
+    if bytes.len() >= 4 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\' {
+        let rest = &path[3..];
+        if rest.contains('/') {
+            return err(format!(
+                "{field}: drive form must use the backslash separator consistently; found `{path}`"
+            ));
+        }
+        for segment in rest.split('\\') {
+            reject_root_segment(segment, path, field)?;
+        }
+        return Ok(());
+    }
+    if path.starts_with("\\\\") && path.len() > 2 {
+        let rest = &path[2..];
+        if rest.contains('/') {
+            return err(format!(
+                "{field}: unc form must use the backslash separator consistently; found `{path}`"
+            ));
+        }
+        let segments: Vec<&str> = rest.split('\\').collect();
+        if segments.len() < 2 {
+            return err(format!(
+                "{field}: unc form requires host and share segments; found `{path}`"
+            ));
+        }
+        for segment in segments {
+            reject_root_segment(segment, path, field)?;
+        }
+        return Ok(());
+    }
+    err(format!(
+        "{field}: root identity must be one canonical absolute path (posix `/seg`, drive `X:\\seg`, or unc `\\\\host\\share`) without dot, parent, or empty segments; found `{path}`"
+    ))
 }
 
 fn validate_relative_path(path: &str, field: &str) -> ContractResult<()> {
@@ -648,6 +699,15 @@ pub fn validate_plan_against_current_manifest(
         ));
     }
 
+    for (position, action) in plan.actions.iter().enumerate() {
+        if action.order_index != position as u64 {
+            return err(format!(
+                "plan.actions: order_index must be the canonical execution sequence 0..N matching array order exactly; action `{}` carries index {} at position {position}; duplicates, gaps, permutations, and reversal are invalid",
+                action.relative_path, action.order_index
+            ));
+        }
+    }
+
     match plan.path_cleanup.mode {
         PathCleanupMode::Skipped if plan.path_cleanup.entries.is_empty() => {}
         PathCleanupMode::Skipped => {
@@ -691,22 +751,43 @@ pub fn validate_plan_against_current_manifest(
             "plan.postconditions.fresh_process_proof_required: hosted fresh-process proof is mandatory after uninstall",
         );
     }
-    let absent_requested: BTreeSet<&str> =
-        plan.postconditions.verify_entries_absent.iter().map(String::as_str).collect();
+    let absent_requested = collect_exact_paths(
+        &plan.postconditions.verify_entries_absent,
+        "plan.postconditions.verify_entries_absent",
+    )?;
     if absent_requested != destructive_paths {
         return err(
             "plan.postconditions.verify_entries_absent: must list exactly the destructively removed entries",
         );
     }
-    for preserved in &preserved_paths {
-        if !plan.postconditions.verify_preserved.iter().any(|path| path == preserved) {
+    let preserved_requested = collect_exact_paths(
+        &plan.postconditions.verify_preserved,
+        "plan.postconditions.verify_preserved",
+    )?;
+    if !absent_requested.is_disjoint(&preserved_requested) {
+        return err(
+            "plan.postconditions: verify_entries_absent and verify_preserved must not overlap; a path cannot be both removed and preserved postconditions",
+        );
+    }
+    if preserved_requested != preserved_paths {
+        return err(
+            "plan.postconditions.verify_preserved: must equal the plan's preserved population exactly (every preserve disposition, nothing else); revalidate rows belong to neither postcondition list until they are revalidated",
+        );
+    }
+    Ok(())
+}
+
+fn collect_exact_paths<'a>(paths: &'a [String], field: &str) -> ContractResult<BTreeSet<&'a str>> {
+    let mut exact = BTreeSet::new();
+    for path in paths {
+        validate_relative_path(path, field)?;
+        if !exact.insert(path.as_str()) {
             return err(format!(
-                "plan.postconditions.verify_preserved: preserved entry `{}` is not covered by postcondition verification",
-                preserved
+                "{field}: duplicate postcondition path `{path}`; postcondition populations are exact sets"
             ));
         }
     }
-    Ok(())
+    Ok(exact)
 }
 
 fn validate_destructive_action(
@@ -822,6 +903,11 @@ pub fn validate_result(outcome: &UninstallResult) -> ContractResult<()> {
             if failures_present || !outcome.removed_entries.is_empty() {
                 return err("result: already_absent_owned_state removes nothing and fails nothing");
             }
+            if !outcome.preserved_entries.is_empty() {
+                return err(
+                    "result: already_absent_owned_state verifies absence only; it must not claim preserved rows",
+                );
+            }
             if !outcome.complete_evidence {
                 return err(
                     "result: already_absent_owned_state requires complete_evidence; missing manifest is not automatically clean absence",
@@ -854,6 +940,9 @@ pub fn validate_result(outcome: &UninstallResult) -> ContractResult<()> {
                     "result: not_applicable requires #11417 conditional activation selection; issue existence alone never activates the lifecycle claim",
                 );
             }
+            if !outcome.preserved_entries.is_empty() {
+                return err("result: not_applicable ran nothing; it must not claim preserved rows");
+            }
         }
         UninstallOutcome::BlockedRunning
         | UninstallOutcome::BlockedUnknownOrForeign
@@ -864,6 +953,12 @@ pub fn validate_result(outcome: &UninstallResult) -> ContractResult<()> {
             if !outcome.removed_entries.is_empty() {
                 return err(format!(
                     "result: `{}` must not report removed entries; blocked and unproven outcomes delete nothing",
+                    outcome.result.as_str()
+                ));
+            }
+            if !outcome.preserved_entries.is_empty() {
+                return err(format!(
+                    "result: `{}` executed nothing; preserved_entries must be empty because no postcondition was evaluated",
                     outcome.result.as_str()
                 ));
             }
@@ -882,6 +977,134 @@ pub fn validate_result(outcome: &UninstallResult) -> ContractResult<()> {
     }
     for path in outcome.removed_entries.iter().chain(outcome.preserved_entries.iter()) {
         validate_relative_path(path, "result.removed/preserved_entries[]")?;
+    }
+
+    let mut removed_paths: BTreeSet<&str> = BTreeSet::new();
+    for path in &outcome.removed_entries {
+        if !removed_paths.insert(path.as_str()) {
+            return err(format!(
+                "result.removed_entries: duplicate entry `{path}`; reported populations are exact sets"
+            ));
+        }
+    }
+    let mut preserved_reported: BTreeSet<&str> = BTreeSet::new();
+    for path in &outcome.preserved_entries {
+        if !preserved_reported.insert(path.as_str()) {
+            return err(format!(
+                "result.preserved_entries: duplicate entry `{path}`; reported populations are exact sets"
+            ));
+        }
+    }
+    let mut failed_paths: BTreeSet<&str> = BTreeSet::new();
+    for failure in &outcome.failed_entries {
+        if !failed_paths.insert(failure.relative_path.as_str()) {
+            return err(format!(
+                "result.failed_entries: duplicate failure for `{}`; report one failure per entry",
+                failure.relative_path
+            ));
+        }
+    }
+    if let Some(path) = removed_paths.intersection(&preserved_reported).next() {
+        return err(format!(
+            "result: entry `{path}` is reported both removed and preserved; the populations must not overlap"
+        ));
+    }
+    if let Some(path) = removed_paths.intersection(&failed_paths).next() {
+        return err(format!(
+            "result: entry `{path}` is reported both removed and failed; a row is either removed or an explicit failure, never both"
+        ));
+    }
+    if let Some(path) = preserved_reported.intersection(&failed_paths).next() {
+        return err(format!(
+            "result: entry `{path}` is reported both preserved and failed; failures name the work that did not settle, and stay in failed_entries only"
+        ));
+    }
+    Ok(())
+}
+
+/// Binds one uninstall result to the exact validated plan and current manifest
+/// observation (#11470): plan identity, manifest identity, and per-row
+/// reconciliation between what was reported and what the plan admitted.
+pub fn validate_result_against_plan(
+    outcome: &UninstallResult,
+    plan: &RemovalPlan,
+    manifest: &OwnedStateManifest,
+    current_manifest_sha256: &str,
+) -> ContractResult<()> {
+    if outcome.plan_id != plan.plan_id {
+        return err(format!(
+            "result.plan_id: binds plan `{}` but was reported against plan `{}`; results bind the exact validated plan",
+            outcome.plan_id, plan.plan_id
+        ));
+    }
+    if outcome.bound_manifest_sha256 != plan.bound_subject.manifest_sha256 {
+        return err(
+            "result.bound_manifest_sha256: the result and its plan bind different manifest digests; the report and its plan disagree",
+        );
+    }
+    if plan.bound_subject.manifest_sha256 != current_manifest_sha256
+        || plan.bound_subject.install_root_absolute_path != manifest.install_root.absolute_path
+        || plan.bound_subject.install_root_digest_sha256
+            != manifest.install_root.identity_digest_sha256
+    {
+        return err(
+            "result: the plan's subject moved since planning; revalidation refuses with root_or_manifest_mismatch before any result may bind",
+        );
+    }
+
+    let mut destructive: BTreeMap<&str, ActionKind> = BTreeMap::new();
+    let mut preserve_dispositions: BTreeSet<&str> = BTreeSet::new();
+    for action in &plan.actions {
+        match action.action {
+            ActionKind::RemoveExact | ActionKind::RemoveMarker => {
+                destructive.insert(action.relative_path.as_str(), action.action);
+            }
+            ActionKind::Preserve => {
+                preserve_dispositions.insert(action.relative_path.as_str());
+            }
+            ActionKind::Revalidate => {}
+        }
+    }
+
+    let removed: BTreeSet<&str> = outcome.removed_entries.iter().map(String::as_str).collect();
+    let preserved_reported: BTreeSet<&str> =
+        outcome.preserved_entries.iter().map(String::as_str).collect();
+    let failed_paths: BTreeSet<&str> =
+        outcome.failed_entries.iter().map(|failure| failure.relative_path.as_str()).collect();
+
+    for path in &removed {
+        if !destructive.contains_key(path) {
+            return err(format!(
+                "result.removed_entries: `{path}` reconciles to no destructive action in the bound plan; removed rows must be planned destructive work (remove_exact/remove_marker)"
+            ));
+        }
+    }
+    for path in &failed_paths {
+        if !destructive.contains_key(path) && !preserve_dispositions.contains(path) {
+            return err(format!(
+                "result.failed_entries: `{path}` is not a planned path in the bound plan; failures reconcile to admitted actions only"
+            ));
+        }
+    }
+
+    match outcome.result {
+        UninstallOutcome::Removed
+        | UninstallOutcome::PartialFailure
+        | UninstallOutcome::PathCleanupFailed => {
+            if preserved_reported != preserve_dispositions {
+                return err(
+                    "result.preserved_entries: must equal the bound plan's preserve disposition population exactly for an executed outcome",
+                );
+            }
+            for path in destructive.keys() {
+                if !removed.contains(path) && !failed_paths.contains(path) {
+                    return err(format!(
+                        "result: planned destructive action `{path}` appears in neither removed nor failed entries; partial state must stay explicit"
+                    ));
+                }
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -926,7 +1149,7 @@ struct Args {
     /// standalone_removal_plan.v1 document; requires --manifest.
     #[arg(long)]
     plan: Option<PathBuf>,
-    /// standalone_uninstall_result.v1 document.
+    /// standalone_uninstall_result.v1 document; with --plan, binds against the exact validated plan.
     #[arg(long)]
     result: Option<PathBuf>,
     /// Print the manifest in canonical key-sorted serialization after validation.
@@ -964,6 +1187,7 @@ fn main() -> Result<()> {
         }
     }
 
+    let mut validated_plan: Option<RemovalPlan> = None;
     if let Some(plan_path) = &args.plan {
         let manifest_path = args
             .manifest
@@ -977,6 +1201,7 @@ fn main() -> Result<()> {
         validate_plan_against_current_manifest(&plan, &manifest, &digest)
             .with_context(|| "validating removal plan against current manifest")?;
         println!("standalone-owned-state: plan valid ({})", plan.plan_id);
+        validated_plan = Some(plan);
     }
 
     if let Some(result_path) = &args.result {
@@ -985,15 +1210,23 @@ fn main() -> Result<()> {
         let outcome: UninstallResult = serde_json::from_slice(&result_bytes)
             .with_context(|| format!("parsing {}", result_path.display()))?;
         validate_result(&outcome).with_context(|| "validating uninstall result")?;
-        if let Some(manifest_path) = &args.manifest {
-            let (_, digest) = load_and_validate_manifest(manifest_path)?;
-            if outcome.bound_manifest_sha256 != digest {
-                bail!(
-                    "result binds manifest {} but current manifest is {}; the claimed state moved",
-                    &outcome.bound_manifest_sha256[..16],
-                    &digest[..16]
-                );
+        match (&validated_plan, args.manifest.as_ref()) {
+            (Some(plan), Some(manifest_path)) => {
+                let (manifest, digest) = load_and_validate_manifest(manifest_path)?;
+                validate_result_against_plan(&outcome, plan, &manifest, &digest)
+                    .with_context(|| "validating uninstall result against its bound plan")?;
             }
+            (_, Some(manifest_path)) => {
+                let (_, digest) = load_and_validate_manifest(manifest_path)?;
+                if outcome.bound_manifest_sha256 != digest {
+                    bail!(
+                        "result binds manifest {} but current manifest is {}; the claimed state moved",
+                        &outcome.bound_manifest_sha256[..16],
+                        &digest[..16]
+                    );
+                }
+            }
+            _ => {}
         }
         println!("standalone-owned-state: result valid ({})", outcome.result.as_str());
     }
@@ -1007,6 +1240,7 @@ mod tests {
         ActionKind, ActivationState, ContractResult, FailureStage, LifecyclePolicy,
         OwnedStateManifest, RemovalPlan, UninstallOutcome, UninstallResult, canonical_json,
         sha256_hex, validate_manifest, validate_plan_against_current_manifest, validate_result,
+        validate_result_against_plan,
     };
     use color_eyre::eyre::{Result, bail, ensure};
     use serde_json::Value;
@@ -1038,6 +1272,23 @@ mod tests {
     fn fixture_text(name: &str) -> Result<String> {
         std::fs::read_to_string(format!("{MANIFEST_DIR}/{name}"))
             .map_err(|error| color_eyre::eyre::eyre!("fixture {name} unreadable: {error}"))
+    }
+
+    fn load_fixture_text(name: &str) -> ContractResult<String> {
+        std::fs::read_to_string(format!("{MANIFEST_DIR}/{name}")).map_err(|error| {
+            super::ContractError::new(format!("fixture {name} unreadable: {error}"))
+        })
+    }
+
+    fn mutated_document<T: serde::de::DeserializeOwned>(
+        name: &str,
+        mutate: impl FnOnce(&mut Value),
+    ) -> ContractResult<T> {
+        let mut value: Value = serde_json::from_str(&load_fixture_text(name)?)
+            .map_err(|error| super::ContractError::new(format!("parse error: {error}")))?;
+        mutate(&mut value);
+        serde_json::from_value(value)
+            .map_err(|error| super::ContractError::new(format!("parse error: {error}")))
     }
 
     fn canonical_digest() -> Result<String> {
@@ -1543,6 +1794,7 @@ mod tests {
             value["result"] = serde_json::json!("already_absent_owned_state");
             value["failed_entries"] = serde_json::json!([]);
             value["removed_entries"] = serde_json::json!([]);
+            value["preserved_entries"] = serde_json::json!([]);
             value["complete_evidence"] = serde_json::json!(false);
             serde_json::from_value(value)
                 .map_err(|error| super::ContractError::new(format!("parse error: {error}")))?
@@ -1651,6 +1903,356 @@ mod tests {
         );
         assert_eq!(FailureStage::MarkerCleanup.as_str(), "marker_cleanup");
         assert_eq!(LifecyclePolicy::RetainRollbackSelected.as_str(), "retain_rollback_selected");
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_absolute_roots_are_the_only_accepted_identity() -> Result<()> {
+        expect_rejected(
+            validate_manifest(&parse_manifest(&fixture_text(
+                "manifest_invalid_traversing_root.json",
+            )?)?),
+            "traversal spellings are invalid",
+        )?;
+
+        let traversing = mutated_document::<OwnedStateManifest>(
+            "manifest_canonical_full_install.json",
+            |value| {
+                value["install_root"]["absolute_path"] =
+                    serde_json::json!("/home/alice/.local/share/../etc/perllsp");
+            },
+        )?;
+        expect_rejected(validate_manifest(&traversing), "traversal spellings are invalid")?;
+
+        let double_slash = mutated_document::<OwnedStateManifest>(
+            "manifest_canonical_full_install.json",
+            |value| {
+                value["install_root"]["absolute_path"] =
+                    serde_json::json!("//home/alice/.local/share/perllsp");
+            },
+        )?;
+        expect_rejected(validate_manifest(&double_slash), "non-canonical equivalent spelling")?;
+
+        let trailing_separator = mutated_document::<OwnedStateManifest>(
+            "manifest_canonical_full_install.json",
+            |value| {
+                value["install_root"]["absolute_path"] =
+                    serde_json::json!("/home/alice/.local/share/perllsp/");
+            },
+        )?;
+        expect_rejected(
+            validate_manifest(&trailing_separator),
+            "non-canonical equivalent spelling",
+        )?;
+
+        let drive_traversal = mutated_document::<OwnedStateManifest>(
+            "manifest_canonical_full_install.json",
+            |value| {
+                value["install_root"]["absolute_path"] =
+                    serde_json::json!("C:\\perllsp\\..\\Windows");
+            },
+        )?;
+        expect_rejected(validate_manifest(&drive_traversal), "traversal spellings are invalid")?;
+
+        let forward_slash_drive = mutated_document::<OwnedStateManifest>(
+            "manifest_canonical_full_install.json",
+            |value| {
+                value["install_root"]["absolute_path"] = serde_json::json!("C:/perllsp");
+            },
+        )?;
+        expect_rejected(validate_manifest(&forward_slash_drive), "one canonical absolute path")?;
+
+        let device_path = mutated_document::<OwnedStateManifest>(
+            "manifest_canonical_full_install.json",
+            |value| {
+                value["install_root"]["absolute_path"] = serde_json::json!("\\\\?\\C:\\perllsp");
+            },
+        )?;
+        expect_rejected(validate_manifest(&device_path), "metacharacter")?;
+
+        for canonical_root in
+            ["/opt/perllsp", "C:\\Users\\alice\\.perllsp", "\\\\file.corp\\share\\perllsp"]
+        {
+            let valid = mutated_document::<OwnedStateManifest>(
+                "manifest_canonical_full_install.json",
+                |value| value["install_root"]["absolute_path"] = serde_json::json!(canonical_root),
+            )?;
+            validate_manifest(&valid).map_err(|error| {
+                color_eyre::eyre::eyre!("canonical root `{canonical_root}` must validate: {error}")
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn order_index_is_the_enforced_canonical_sequence() -> Result<()> {
+        let canonical = parse_manifest(canonical_manifest_text())?;
+
+        let duplicate_index: RemovalPlan = mutated_document("plan_full_removal.json", |value| {
+            if let Some(actions) = value["actions"].as_array_mut() {
+                actions[5]["order_index"] = serde_json::json!(4);
+            }
+        })?;
+        expect_rejected(
+            validate_plan_against_current_manifest(
+                &duplicate_index,
+                &canonical,
+                &canonical_digest()?,
+            ),
+            "canonical execution sequence",
+        )?;
+
+        let permutation: RemovalPlan = mutated_document("plan_full_removal.json", |value| {
+            if let Some(actions) = value["actions"].as_array_mut() {
+                let moved = actions[2]["order_index"].take();
+                actions[2]["order_index"] = actions[3]["order_index"].clone();
+                actions[3]["order_index"] = moved;
+            }
+        })?;
+        expect_rejected(
+            validate_plan_against_current_manifest(&permutation, &canonical, &canonical_digest()?),
+            "canonical execution sequence",
+        )?;
+
+        let gap: RemovalPlan = mutated_document("plan_full_removal.json", |value| {
+            if let Some(actions) = value["actions"].as_array_mut() {
+                let last = actions.len() - 1;
+                actions[last]["order_index"] = serde_json::json!(99);
+            }
+        })?;
+        expect_rejected(
+            validate_plan_against_current_manifest(&gap, &canonical, &canonical_digest()?),
+            "canonical execution sequence",
+        )?;
+
+        let reversed: RemovalPlan = mutated_document("plan_full_removal.json", |value| {
+            if let Some(actions) = value["actions"].as_array_mut() {
+                actions.reverse();
+            }
+        })?;
+        expect_rejected(
+            validate_plan_against_current_manifest(&reversed, &canonical, &canonical_digest()?),
+            "canonical execution sequence",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn verify_preserved_must_equal_the_preserved_population_exactly() -> Result<()> {
+        let canonical = parse_manifest(canonical_manifest_text())?;
+
+        let extra_unplanned_row: RemovalPlan =
+            mutated_document("plan_full_removal.json", |value| {
+                value["postconditions"]["verify_preserved"]
+                    .as_array_mut()
+                    .map(|paths| paths.push(serde_json::json!("stowaway.txt")));
+            })?;
+        expect_rejected(
+            validate_plan_against_current_manifest(
+                &extra_unplanned_row,
+                &canonical,
+                &canonical_digest()?,
+            ),
+            "preserved population exactly",
+        )?;
+
+        let traversal_injection: RemovalPlan =
+            mutated_document("plan_full_removal.json", |value| {
+                value["postconditions"]["verify_preserved"]
+                    .as_array_mut()
+                    .map(|paths| paths.push(serde_json::json!("../../outside")));
+            })?;
+        expect_rejected(
+            validate_plan_against_current_manifest(
+                &traversal_injection,
+                &canonical,
+                &canonical_digest()?,
+            ),
+            "exact-entry boundary",
+        )?;
+
+        let duplicate_entry: RemovalPlan = mutated_document("plan_full_removal.json", |value| {
+            value["postconditions"]["verify_preserved"]
+                .as_array_mut()
+                .map(|paths| paths.push(serde_json::json!("notes.txt")));
+        })?;
+        expect_rejected(
+            validate_plan_against_current_manifest(
+                &duplicate_entry,
+                &canonical,
+                &canonical_digest()?,
+            ),
+            "duplicate postcondition path",
+        )?;
+
+        let overlap_with_absent: RemovalPlan =
+            mutated_document("plan_full_removal.json", |value| {
+                value["postconditions"]["verify_preserved"]
+                    .as_array_mut()
+                    .map(|paths| paths.push(serde_json::json!("current")));
+            })?;
+        expect_rejected(
+            validate_plan_against_current_manifest(
+                &overlap_with_absent,
+                &canonical,
+                &canonical_digest()?,
+            ),
+            "must not overlap",
+        )?;
+
+        let running = parse_manifest(&fixture_text("manifest_running_current.json")?)?;
+        let revalidate_row_claimed_preserved: RemovalPlan =
+            mutated_document("plan_blocked_running_all_preserve.json", |value| {
+                value["postconditions"]["verify_preserved"].as_array_mut().map(|paths| {
+                    paths.push(serde_json::json!("candidates/v0.18.0-x86_64-unknown-linux-gnu"))
+                });
+            })?;
+        expect_rejected(
+            validate_plan_against_current_manifest(
+                &revalidate_row_claimed_preserved,
+                &running,
+                &running_digest()?,
+            ),
+            "neither postcondition list",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn result_population_sets_fail_closed() -> Result<()> {
+        let duplicate_removed: UninstallResult =
+            mutated_document("result_partial_failure_retryable.json", |value| {
+                value["removed_entries"]
+                    .as_array_mut()
+                    .map(|paths| paths.push(serde_json::json!("current")));
+            })?;
+        expect_rejected(validate_result(&duplicate_removed), "exact sets")?;
+
+        let duplicate_failure: UninstallResult =
+            mutated_document("result_partial_failure_retryable.json", |value| {
+                let failure = value["failed_entries"][0].clone();
+                value["failed_entries"].as_array_mut().map(|entries| entries.push(failure));
+            })?;
+        expect_rejected(validate_result(&duplicate_failure), "one failure per entry")?;
+
+        let removed_and_preserved: UninstallResult =
+            mutated_document("result_partial_failure_retryable.json", |value| {
+                value["preserved_entries"]
+                    .as_array_mut()
+                    .map(|paths| paths.push(serde_json::json!("receipts/current.json")));
+            })?;
+        expect_rejected(validate_result(&removed_and_preserved), "must not overlap")?;
+
+        let failed_and_still_present: UninstallResult =
+            mutated_document("result_partial_failure_retryable.json", |value| {
+                value["preserved_entries"]
+                    .as_array_mut()
+                    .map(|paths| paths.push(serde_json::json!(".perllsp-path-marker")));
+            })?;
+        expect_rejected(validate_result(&failed_and_still_present), "stay in failed_entries only")?;
+
+        let blocked_claims_preserved: UninstallResult =
+            mutated_document("result_partial_failure_retryable.json", |value| {
+                value["result"] = serde_json::json!("blocked_running");
+                value["removed_entries"] = serde_json::json!([]);
+                value["failed_entries"] = serde_json::json!([]);
+            })?;
+        expect_rejected(
+            validate_result(&blocked_claims_preserved),
+            "preserved_entries must be empty",
+        )?;
+
+        let absent_claims_preserved: UninstallResult =
+            mutated_document("result_already_absent_complete_evidence.json", |value| {
+                value["preserved_entries"] = serde_json::json!(["notes.txt"]);
+            })?;
+        expect_rejected(validate_result(&absent_claims_preserved), "claim preserved rows")?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn results_bind_the_exact_validated_plan_and_manifest() -> Result<()> {
+        let manifest = parse_manifest(canonical_manifest_text())?;
+        let digest = canonical_digest()?;
+        let plan = parse_plan(&fixture_text("plan_full_removal.json")?)?;
+        let outcome = parse_result(&fixture_text("result_partial_failure_retryable.json")?)?;
+        validate_result_against_plan(&outcome, &plan, &manifest, &digest).map_err(|error| {
+            color_eyre::eyre::eyre!("coherent partial result must bind its plan: {error}")
+        })?;
+
+        let foreign_plan_id =
+            UninstallResult { plan_id: "some-other-plan".into(), ..outcome.clone() };
+        expect_rejected(
+            validate_result_against_plan(&foreign_plan_id, &plan, &manifest, &digest),
+            "bind the exact validated plan",
+        )?;
+
+        let foreign_manifest_binding =
+            UninstallResult { bound_manifest_sha256: "f".repeat(64), ..outcome.clone() };
+        expect_rejected(
+            validate_result_against_plan(&foreign_manifest_binding, &plan, &manifest, &digest),
+            "report and its plan disagree",
+        )?;
+
+        let foreign_removed: UninstallResult =
+            mutated_document("result_partial_failure_retryable.json", |value| {
+                value["removed_entries"]
+                    .as_array_mut()
+                    .map(|paths| paths.push(serde_json::json!("outside-the-root.txt")));
+            })?;
+        expect_rejected(
+            validate_result_against_plan(&foreign_removed, &plan, &manifest, &digest),
+            "no destructive action in the bound plan",
+        )?;
+
+        let unplanned_failure: UninstallResult =
+            mutated_document("result_partial_failure_retryable.json", |value| {
+                value["failed_entries"][0]["relative_path"] =
+                    serde_json::json!("outside-the-root.txt");
+            })?;
+        expect_rejected(
+            validate_result_against_plan(&unplanned_failure, &plan, &manifest, &digest),
+            "failures reconcile to admitted actions only",
+        )?;
+
+        let missing_destructive_coverage: UninstallResult =
+            mutated_document("result_partial_failure_retryable.json", |value| {
+                if let Some(paths) = value["removed_entries"].as_array_mut() {
+                    paths.retain(|path| path != "receipts/current.json");
+                }
+            })?;
+        expect_rejected(
+            validate_result_against_plan(&missing_destructive_coverage, &plan, &manifest, &digest),
+            "partial state must stay explicit",
+        )?;
+
+        let preserve_drift: UninstallResult =
+            mutated_document("result_partial_failure_retryable.json", |value| {
+                if let Some(paths) = value["preserved_entries"].as_array_mut() {
+                    paths.retain(|path| path != "notes.txt");
+                }
+            })?;
+        expect_rejected(
+            validate_result_against_plan(&preserve_drift, &plan, &manifest, &digest),
+            "preserve disposition population",
+        )?;
+
+        let stale_plan = parse_plan(&fixture_text("plan_invalid_stale_binding.json")?)?;
+        let outcome_matching_stale_subject = UninstallResult {
+            plan_id: stale_plan.plan_id.clone(),
+            bound_manifest_sha256: "f".repeat(64),
+            ..outcome.clone()
+        };
+        expect_rejected(
+            validate_result_against_plan(
+                &outcome_matching_stale_subject,
+                &stale_plan,
+                &manifest,
+                &digest,
+            ),
+            "root_or_manifest_mismatch",
+        )?;
         Ok(())
     }
 }

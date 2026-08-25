@@ -12,7 +12,8 @@ tests over the committed fixture set, and CLI validation runs.
 | Packet present at `.spec/11470-standalone-owned-state-manifest/` | `context.md`, `acceptance.md`, `checklist.md` exist with required sections | structural check in checklist |
 | Currentness table | every sibling row cites live state verified against pinned main SHA `cce85d167` | context.md Status section |
 | Canonical fixture set validates | all six scenario manifests, three plans, two results pass the checked validator | fixtures below; CLI runs in checklist |
-| Malformed manifests fail named | unknown role, unbounded identity, ambiguous running-state each rejected naming its invariant | negative fixtures + mutation battery |
+| Malformed manifests fail named | unknown role, unbounded identity, ambiguous running-state, and traversing/non-canonical root spellings each rejected naming its invariant | negative fixtures + mutation battery |
+| Result⇔plan⇔manifest binding | combined `--manifest --plan --result` run reconciles identities and per-row populations; foreign plan ids, moved digests, unplanned rows, duplicates, overlaps, and coverage gaps rejected naming their invariant | binding rules R09–R11 + CLI runs |
 | No filesystem mutation anywhere in the lane | validator parses documents only; no walk, no delete, no env/PATH access | diff boundary + code review |
 
 ## §Contracts
@@ -27,14 +28,14 @@ Durable contract rows compiled from #11470. IDs stable for review reference.
 | SOS-C04 | Running-state is unambiguous both directions: `running_or_active` ⇔ non-empty process refs; refs on any other class are malformed; running state blocks destruction (`blocked_running`) | entry rule + plan legality |
 | SOS-C05 | Absence is recorded honestly: absent rows carry unavailable identity and no stale digest; incomplete enumeration requires a reason and blocks every destructive action ("absence from incomplete enumeration is not ownership or safe absence") | enumeration + plan rules |
 | SOS-C06 | User-edited markers are foreign: `user_modified` forces `foreign_or_user_owned`; foreign/package-route/unknown/malformed rows can never receive a destructive action | entry coherence + action legality |
-| SOS-C07 | Root-link substitution cannot escape ownership: install root binds digest + resolved/refused link policy; substitution after planning fails currentness | bound_subject equality checks |
-| SOS-C08 | `standalone_removal_plan.v1` is pure and total: exactly one disposition per manifest row (remove_exact/remove_marker/preserve/revalidate); no actions outside manifest rows; remove_marker ⇔ marker roles | plan totality rules P01–P03 |
+| SOS-C07 | Root-link substitution cannot escape ownership: install root binds its digest over one canonical normalized absolute representation — posix `/seg`, drive `X:\seg`, or unc `\\host\share`, each without dot/parent segments, empty segments, trailing separators, mixed separators, or glob/device metacharacters; an equivalent respelling of the same physical root is invalid so one digest binds exactly one representation; substitution after planning fails currentness | canonical-root rules + bound_subject equality checks |
+| SOS-C08 | `standalone_removal_plan.v1` is pure and total: exactly one disposition per manifest row (remove_exact/remove_marker/preserve/revalidate); no actions outside manifest rows; remove_marker ⇔ marker roles; `order_index` is the enforced execution order — exactly the canonical 0-based sequence matching array position, so duplicates, gaps, permutations, and reversal are invalid and array/index order are one authority | plan totality rules P01–P03 + order rule P04 |
 | SOS-C09 | Destructive actions require exact currentness: complete enumeration, present row, owned class, no process refs, verified_identity_sha256 equal to the recorded digest, and lifecycle policy selected; rollback-retained rows are removed only under `full_removal_selected` (rollback ≠ uninstall) | destructive legality matrix |
 | SOS-C10 | Plan binds subject at planning time: root path/digest plus manifest sha256 must equal current observation; any movement ⇒ refuse with `root_or_manifest_mismatch` semantics | stale-binding test + CLI |
 | SOS-C11 | PATH cleanup composes with #11468/#11469 ownership: cleanup entries must be manifest marker rows paired with remove_marker actions; user-edited or foreign markers are excluded; skipped mode carries nothing | path_cleanup rules |
-| SOS-C12 | Postconditions are mandatory: hosted fresh-process proof required=true always; verify_entries_absent equals the destructive set; every preserved row appears in verify_preserved | postcondition rules |
+| SOS-C12 | Postconditions are mandatory and exact: hosted fresh-process proof required=true always; verify_entries_absent equals the destructive set exactly; verify_preserved equals the preserve-disposition population exactly — no unplanned rows, no duplicates, no overlap with the absent list; revalidate rows belong to neither postcondition list until revalidated | postcondition exact-set rules |
 | SOS-C13 | Running-process policy is explicit and never kills: abort_on_running / wait_external_then_abort / require_manual_confirmation | enum + plan field |
-| SOS-C14 | `standalone_uninstall_result.v1` vocabulary is closed (eleven values from the issue) and coherent: partial_failure ⇔ failed entries; partial failure never becomes success; already_absent_owned_state requires complete evidence; blocked/cancelled/instrument/not_proven/mismatch report zero removals; completed removal is not retryable (idempotent rerun reports already_absent_owned_state) | result rules R01–R08 |
+| SOS-C14 | `standalone_uninstall_result.v1` vocabulary is closed (eleven values from the issue) and coherent: partial_failure ⇔ failed entries; partial failure never becomes success; already_absent_owned_state requires complete evidence; blocked/cancelled/instrument/not_proven/mismatch report zero removals; completed removal is not retryable (idempotent rerun reports already_absent_owned_state). Results bind the exact validated plan and current manifest observation: plan_id and bound_manifest_sha256 must match the plan's identity; removed rows reconcile to planned destructive actions only; preserved rows equal the plan's preserve population exactly for executed outcomes; failures reconcile to admitted actions; reported populations are duplicate-free and pairwise non-overlapping; nothing-executed outcomes claim no preserved rows; a destructive action missing from both removed and failed entries is rejected | result rules R01–R08 + binding rules R09–R11 |
 | SOS-C15 | `not_applicable` exists only under #11417 conditional activation selection; missing manifest is never automatically clean absence | activation gate rule |
 | SOS-C16 | Deterministic serialization: canonical key-sorted JSON output is stable across parses and runs (`--print-canonical`) | canonicalization function + test |
 
@@ -59,9 +60,9 @@ Durable contract rows compiled from #11470. IDs stable for review reference.
 |---|---|---|---|
 | Ownership laundering | class⇒retention total function; no third state | manifest validation | retention-drift mutation test |
 | Silent overwrite of in-use files | running ⇔ refs; running blocks destruction | entry + plan rules | ambiguous-running fixtures/tests |
-| Plan drift | digest-bound subject; totality both directions | plan validation | stale binding, dropped/extra action tests |
+| Plan drift | digest-bound subject; totality both directions; order_index is the enforced canonical sequence | plan validation | stale binding, dropped/extra action, duplicate/gap/permutation/reversal order tests |
 | Vocabulary escape | closed enums everywhere (serde unknown variant errors) | parse layer | unknown-role fixture |
-| Dishonest outcomes | result coherence table | result validation | contradiction battery (six cases) |
+| Dishonest outcomes | result coherence table plus exact result⇔plan⇔manifest binding | result validation | contradiction battery + foreign-plan/foreign-removed/coverage-gap/preserve-drift binding tests |
 
 ## §API-Shape
 
@@ -87,11 +88,12 @@ standalone_owned_state`):
 | `manifest_invalid_unknown_role.json` | negative | closed role vocabulary rejects unknown roles visibly |
 | `manifest_invalid_unbounded_identity.json` | negative | glob/parent targets are unbounded identity |
 | `manifest_invalid_ambiguous_running.json` | negative | removable row carrying a live pid is ambiguous |
+| `manifest_invalid_traversing_root.json` | negative | parent-segment root spelling is non-canonical unbounded identity |
 | `plan_full_removal.json` / `plan_rollback_retained.json` | positive | policy distinction: retained rows removed vs preserved under the two lifecycle policies |
-| `plan_blocked_running_all_preserve.json` | positive | running state yields zero destructive actions |
+| `plan_blocked_running_all_preserve.json` | positive | running state yields zero destructive actions; revalidate row stays out of both postcondition lists |
 | `plan_invalid_stale_binding.json` | negative | moved manifest digest refuses planning (root_or_manifest_mismatch) |
-| `result_partial_failure_retryable.json` / `result_already_absent_complete_evidence.json` | positive | coherent outcome documents |
-| mutation battery (13 manifest cases, 8 plan cases, 6 result cases) | adversarial | each safety invariant fires for the named reason, not incidental parse failure |
+| `result_partial_failure_retryable.json` / `result_already_absent_complete_evidence.json` | positive | coherent outcome documents binding their exact plan and manifest identities |
+| mutation battery + adversarial tests (canonical-root spellings, enforced order sequence, exact postcondition populations, result set laws, result⇔plan⇔manifest reconciliation) | adversarial | each safety invariant fires for the named reason, not incidental parse failure |
 
 ## §Blast-Radius
 

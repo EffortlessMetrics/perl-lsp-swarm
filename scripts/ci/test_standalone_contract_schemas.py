@@ -118,6 +118,51 @@ class StandaloneContractSchemaTests(unittest.TestCase):
                 return entry
         raise AssertionError(f"fixture has no entry with kind in {kinds}")
 
+    # ── owned_state: absolute roots are one canonical representation ─────────
+
+    NON_CANONICAL_ROOTS = [
+        ("/home/alice/.local/share/../etc/perllsp", "posix parent-segment traversal"),
+        ("//home/alice/.local/share/perllsp", "double leading separator"),
+        ("/home/alice/.local/share/perllsp/", "trailing separator"),
+        ("/home/alice/.local/share//perllsp", "empty inner segment"),
+        ("C:\\perllsp\\..\\Windows", "drive parent-segment traversal"),
+        ("C:/perllsp/bin", "drive form with non-canonical separator"),
+        ("/home/alice/.local/share/perllsp\\x", "posix form with backslash"),
+        ("\\\\?\\C:\\perllsp", "dos device path escape"),
+    ]
+
+    CANONICAL_ROOTS = [
+        "/opt/perllsp",
+        "/srv/.perllsp-hidden/x",
+        "C:\\Users\\alice\\.perllsp",
+        "\\\\file.corp\\share\\perllsp",
+    ]
+
+    def test_absolute_root_must_be_one_canonical_representation(self):
+        for root, description in self.NON_CANONICAL_ROOTS:
+            with self.subTest(root=root):
+
+                def set_root(doc, value=root):
+                    doc["install_root"]["absolute_path"] = value
+
+                self._mutated(
+                    self.manifest_validator,
+                    "manifest_canonical_full_install.json",
+                    set_root,
+                    f"{description} must be schema-invalid",
+                )
+
+    def test_canonical_root_forms_stay_schema_valid(self):
+        for root in self.CANONICAL_ROOTS:
+            with self.subTest(root=root):
+                document = _load(FIXTURE_DIR / "manifest_canonical_full_install.json")
+                document["install_root"]["absolute_path"] = root
+                self._expect_accepted(
+                    self.manifest_validator,
+                    document,
+                    f"canonical root {root} must stay valid",
+                )
+
     def test_digest_backed_identity_requires_sha256(self):
         for kind in ("sha256_content", "directory_tree_digest"):
             with self.subTest(kind=kind):
@@ -177,6 +222,39 @@ class StandaloneContractSchemaTests(unittest.TestCase):
                     f"{action_kind} carrying verified_identity_sha256 must be "
                     "schema-invalid",
                 )
+
+    def test_plan_postcondition_lists_are_exact_sets(self):
+        duplicate_preserved = (
+            lambda doc: doc["postconditions"]["verify_preserved"].append(
+                "notes.txt"
+            )
+        )
+        self._mutated(
+            self.plan_validator,
+            "plan_full_removal.json",
+            duplicate_preserved,
+            "duplicate verify_preserved entry must be schema-invalid",
+        )
+
+        duplicate_absent = (
+            lambda doc: doc["postconditions"]["verify_entries_absent"].append("current")
+        )
+        self._mutated(
+            self.plan_validator,
+            "plan_full_removal.json",
+            duplicate_absent,
+            "duplicate verify_entries_absent entry must be schema-invalid",
+        )
+
+        duplicate_cleanup = lambda doc: doc["path_cleanup"]["entries"].append(
+            ".perllsp-path-marker"
+        )
+        self._mutated(
+            self.plan_validator,
+            "plan_full_removal.json",
+            duplicate_cleanup,
+            "duplicate path_cleanup entry must be schema-invalid",
+        )
 
     # ── uninstall_result: terminal coherence laws ────────────────────────────
 
@@ -258,6 +336,42 @@ class StandaloneContractSchemaTests(unittest.TestCase):
             ],
         )
         self._expect_rejected(absent_with_failures, "already_absent with failures")
+
+    def test_nothing_executed_outcomes_claim_no_preserved_rows(self):
+        absent_with_preserved = self._result_case(
+            result="already_absent_owned_state",
+            complete_evidence=True,
+            removed_entries=[],
+            preserved_entries=["notes.txt"],
+        )
+        self._expect_rejected(absent_with_preserved, "already_absent claiming preserved")
+
+        blocked_with_preserved = self._result_case(
+            result="blocked_running",
+            preserved_entries=["notes.txt"],
+        )
+        self._expect_rejected(blocked_with_preserved, "blocked_running claiming preserved")
+
+        not_applicable_with_preserved = self._result_case(
+            result="not_applicable",
+            activation_state="conditional_activation_selected",
+            removed_entries=[],
+            preserved_entries=["notes.txt"],
+        )
+        self._expect_rejected(
+            not_applicable_with_preserved, "not_applicable claiming preserved"
+        )
+
+    def test_reported_entry_populations_are_exact_sets(self):
+        duplicate_removed = self._result_case(
+            removed_entries=["current", "current"]
+        )
+        self._expect_rejected(duplicate_removed, "duplicate removed_entries")
+
+        duplicate_preserved = self._result_case(
+            preserved_entries=["notes.txt", "notes.txt"]
+        )
+        self._expect_rejected(duplicate_preserved, "duplicate preserved_entries")
 
     def test_partial_failure_stays_explicit(self):
         silent = self._result_case(result="partial_failure", failed_entries=[])

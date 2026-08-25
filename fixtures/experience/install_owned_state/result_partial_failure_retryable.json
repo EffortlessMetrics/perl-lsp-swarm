@@ -1,7 +1,7 @@
 {
   "schema_version": "standalone_uninstall_result.v1",
   "result": "partial_failure",
-  "claim_boundary": "Reports one uninstall attempt against one plan (#11470). Owned binaries and receipts were removed; the PATH marker could not be cleaned. Nothing is claimed clean that was not proven.",
+  "claim_boundary": "Reports one uninstall attempt against one plan (#11470). Owned binaries and receipts were removed; the PATH marker could not be cleaned, so it stays in failed_entries only. Nothing is claimed clean that was not proven.",
   "plan_id": "plan-full-removal-canonical",
   "bound_manifest_sha256": "4cd21c03b8bcf7b2ad65d7ecda67695e419dfceb0dfa3197429bfce56b013da4",
   "removed_entries": [
@@ -17,7 +17,6 @@
     "registry/perllsp-uninstall.marker"
   ],
   "preserved_entries": [
-    ".perllsp-path-marker",
     "notes.txt",
     ".cargo-binstall/perllsp-meta.json"
   ],

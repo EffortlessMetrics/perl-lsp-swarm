@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11676 |
+| Total tracked files | 11677 |
 | Rust-family files | 3520 |
-| Non-Rust files | 8156 |
-| Allowlisted | 5831 |
+| Non-Rust files | 8157 |
+| Allowlisted | 5832 |
 | Unclassified | 2325 |
 
 ## Non-Rust files by category
@@ -20,7 +20,7 @@
 | documentation | 2668 |
 | generated | 2 |
 | production | 317 |
-| test | 1951 |
+| test | 1952 |
 | tooling | 480 |
 | unclassified | 2325 |
 
@@ -5895,6 +5895,7 @@
 | `fixtures/experience/install_owned_state/manifest_canonical_full_install.json` | test | `non-rust-install-owned-state-canonical-full-install-manifest` | distribution |
 | `fixtures/experience/install_owned_state/manifest_instrument_failed.json` | test | `non-rust-install-owned-state-instrument-failed-manifest` | distribution |
 | `fixtures/experience/install_owned_state/manifest_invalid_ambiguous_running.json` | test | `non-rust-install-owned-state-invalid-ambiguous-running-manifest` | distribution |
+| `fixtures/experience/install_owned_state/manifest_invalid_traversing_root.json` | test | `non-rust-install-owned-state-invalid-traversing-root-manifest` | distribution |
 | `fixtures/experience/install_owned_state/manifest_invalid_unbounded_identity.json` | test | `non-rust-install-owned-state-invalid-unbounded-identity-manifest` | distribution |
 | `fixtures/experience/install_owned_state/manifest_invalid_unknown_role.json` | test | `non-rust-install-owned-state-invalid-unknown-role-manifest` | distribution |
 | `fixtures/experience/install_owned_state/manifest_partial_deletion_retry.json` | test | `non-rust-install-owned-state-partial-deletion-retry-manifest` | distribution |
