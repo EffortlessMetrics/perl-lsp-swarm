@@ -25,7 +25,12 @@
 //! defaults to `main`, bare `package X;` switches the current package for
 //! following statements, and a lexical block restores the enclosing package
 //! state afterwards. Hook calls inside subroutine bodies are
-//! execution-conditional and mint nothing.
+//! execution-conditional and mint nothing. Hook calls inside control flow
+//! (`if`/`unless`/loops/`try`/statement modifiers, and the short-circuited
+//! right operand of `&&`/`||`-style operators) register only when the
+//! enclosing condition executes at load time: they are likewise
+//! execution-conditional and mint nothing, while `package` statements inside
+//! those blocks stay compile-time effective and keep being tracked.
 
 use crate::analysis::dancer2_handler_targets::{SubroutineTargetIndex, handler_from_node};
 use crate::analysis::dancer2_routes::interpolated_value_is_dynamic;
@@ -48,10 +53,43 @@ pub fn extract_dancer2_hook_declarations(
     let mut declarations = Vec::new();
     let mut current_package: Option<String> = Some("main".to_string());
     let mut next_index: u32 = 0;
-    walk_node(ast, file_id, &mut current_package, &mut declarations, &mut next_index, &targets);
+    walk_node(
+        ast,
+        file_id,
+        &mut current_package,
+        &mut declarations,
+        &mut next_index,
+        &targets,
+        false,
+    );
     declarations
 }
 
+/// Whether a node makes its subtree's execution conditional: control flow
+/// (condition bodies run only when the condition holds) and short-circuit
+/// operators (the right operand runs only when the left does not shortcut).
+/// A bare `do { ... }` block is *not* conditional: it executes whenever its
+/// statement does (a `do { ... } while $c` modifier is caught by the
+/// statement-modifier arm instead).
+fn bounds_execution(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::If { .. }
+            | NodeKind::While { .. }
+            | NodeKind::For { .. }
+            | NodeKind::Foreach { .. }
+            | NodeKind::Defer { .. }
+            | NodeKind::Try { .. }
+            | NodeKind::Ternary { .. }
+            | NodeKind::StatementModifier { .. }
+    )
+}
+
+fn is_short_circuit(op: &str) -> bool {
+    matches!(op, "&&" | "||" | "//" | "and" | "or")
+}
+
+#[allow(clippy::too_many_arguments)]
 fn walk_node(
     node: &Node,
     file_id: FileId,
@@ -59,6 +97,7 @@ fn walk_node(
     declarations: &mut Vec<Dancer2HookDeclaration>,
     next_index: &mut u32,
     targets: &SubroutineTargetIndex,
+    conditional: bool,
 ) {
     match &node.kind {
         NodeKind::Program { statements } | NodeKind::Block { statements } => {
@@ -73,6 +112,7 @@ fn walk_node(
                 declarations,
                 next_index,
                 targets,
+                conditional,
             );
         }
         NodeKind::Package { name, block: Some(block), .. } => {
@@ -85,6 +125,7 @@ fn walk_node(
                     declarations,
                     next_index,
                     targets,
+                    conditional,
                 );
             }
         }
@@ -95,14 +136,38 @@ fn walk_node(
         // executes — statically execution-conditional, never a load-time
         // declaration. Do not descend.
         NodeKind::Subroutine { .. } => {}
+        NodeKind::Binary { op, left, right } if is_short_circuit(op) => {
+            // The left operand executes unconditionally; the right operand is
+            // short-circuited by the left's truthiness.
+            walk_node(
+                left,
+                file_id,
+                current_package,
+                declarations,
+                next_index,
+                targets,
+                conditional,
+            );
+            walk_node(right, file_id, current_package, declarations, next_index, targets, true);
+        }
         _ => {
+            let subtree_is_conditional = conditional || bounds_execution(&node.kind);
             for child in node.children() {
-                walk_node(child, file_id, current_package, declarations, next_index, targets);
+                walk_node(
+                    child,
+                    file_id,
+                    current_package,
+                    declarations,
+                    next_index,
+                    targets,
+                    subtree_is_conditional,
+                );
             }
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_statements(
     statements: &[Node],
     file_id: FileId,
@@ -110,16 +175,26 @@ fn walk_statements(
     declarations: &mut Vec<Dancer2HookDeclaration>,
     next_index: &mut u32,
     targets: &SubroutineTargetIndex,
+    conditional: bool,
 ) {
     for statement in statements {
         if let NodeKind::ExpressionStatement { expression } = &statement.kind
+            && !conditional
             && let Some(declaration) =
                 hook_from_expression(expression, file_id, current_package, *next_index, targets)
         {
             declarations.push(declaration);
             *next_index += 1;
         } else {
-            walk_node(statement, file_id, current_package, declarations, next_index, targets);
+            walk_node(
+                statement,
+                file_id,
+                current_package,
+                declarations,
+                next_index,
+                targets,
+                conditional,
+            );
         }
     }
 }
@@ -351,6 +426,57 @@ hook 'after' => sub { 2 };
 ";
         let found = declarations(code);
         assert_eq!(found.len(), 1, "only the load-time hook mints");
+        assert_eq!(literal_name(&found[0]).literal, "after");
+    }
+
+    #[test]
+    fn hooks_inside_control_flow_mint_nothing() {
+        // A hook under `if`/`unless`/loops registers only when the enclosing
+        // condition executes at load time: statically execution-conditional,
+        // so no hook fact may claim unconditional registration.
+        for code in [
+            "if ($ENV{ENABLE}) { hook 'before' => sub { 1 }; }",
+            "unless ($disabled) { hook 'before' => sub { 1 }; }",
+            "while (my $next = $it->()) { hook 'before' => sub { 1 }; }",
+            "for my $phase (@phases) { hook 'before' => sub { 1 }; }",
+            "foreach my $phase (@phases) { hook 'before' => sub { 1 }; }",
+            "try { hook 'before' => sub { 1 }; } catch ($e) { }",
+            "$enabled && hook 'before' => sub { 1 };",
+            "$enabled || hook 'before' => sub { 1 };",
+            "hook 'before' => sub { 1 } if $enabled;",
+            "hook 'before' => sub { 1 } unless $disabled;",
+            "hook 'before' => sub { 1 } for @phases;",
+        ] {
+            assert!(
+                declarations(code).is_empty(),
+                "an execution-conditional `{code}` must mint no hook fact"
+            );
+        }
+
+        // Straight-line load-time hooks (and a nested block) still mint.
+        let found = declarations(
+            "hook 'before' => sub { 1 };\n{ hook 'after' => sub { 2 }; }\nhook 'init_error' => sub { 3 };",
+        );
+        assert_eq!(found.len(), 3, "unconditional load-time hooks keep minting");
+
+        // A hook embedded in a larger expression (rather than standing as
+        // the whole statement) mints nothing: only statement-form hook
+        // declarations are reviewed grammar.
+        assert!(declarations("hook 'before' => sub { 1 } and warn 'registered';").is_empty());
+    }
+
+    #[test]
+    fn package_state_after_conditional_blocks_follows_block_scoping() {
+        // `package` inside a block (conditional or not) is lexically scoped:
+        // it applies to statements inside that block and reverts afterwards.
+        // The conditional hook inside mints nothing; the following load-time
+        // hook observes the restored enclosing package.
+        let code = "package App;
+if (1) { package Inner; hook 'before' => sub { 1 }; }
+hook 'after' => sub { 2 };";
+        let found = declarations(code);
+        assert_eq!(found.len(), 1, "the conditional hook mints nothing");
+        assert_eq!(found[0].package.as_deref(), Some("App"), "block package state reverts");
         assert_eq!(literal_name(&found[0]).literal, "after");
     }
 

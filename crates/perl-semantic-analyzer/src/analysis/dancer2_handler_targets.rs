@@ -32,16 +32,21 @@
 use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::handler::{FrameworkHandler, FrameworkHandlerBoundary, SubroutineTarget};
 use perl_semantic_facts::{AnchorId, FileId, SourceAnchor};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Index of in-file package-scoped named subroutine declarations.
 ///
-/// Keyed by `(package, name)`; the last declaration of a duplicated name wins
-/// (Perl package symbol semantics: a later `sub name` replaces the earlier
-/// CODE slot entry).
+/// Keyed by `(package, name)`. A later declaration with a body replaces the
+/// earlier entry (Perl package symbol semantics: a redefining `sub name`
+/// replaces the CODE slot), but a later bodyless `sub name;` stub does **not**
+/// replace an existing concrete definition — Perl keeps the defined body.
+/// Slots whose typeglob was reassigned anywhere in the file
+/// (`*name = ...`) are tracked separately and never resolve: the invoked
+/// target may be a different subroutine at runtime.
 #[derive(Debug, Default)]
 pub struct SubroutineTargetIndex {
     targets: HashMap<(String, String), SubroutineTarget>,
+    mutated_slots: HashSet<(String, String)>,
 }
 
 impl SubroutineTargetIndex {
@@ -56,7 +61,8 @@ impl SubroutineTargetIndex {
 
     /// Resolve one coderef target name in `current_package`.
     ///
-    /// `None` means the target is not statically resolvable in-file.
+    /// `None` means the target is not statically resolvable in-file (no
+    /// declaration, or the slot's typeglob was reassigned).
     #[must_use]
     pub fn resolve(
         &self,
@@ -65,9 +71,28 @@ impl SubroutineTargetIndex {
     ) -> Option<SubroutineTarget> {
         let (package, name) = split_qualified_name(written, current_package)?;
         let name = name?;
-        let mut target = self.targets.get(&(package.clone(), name))?.clone();
-        target.package = package;
+        let key = (package, name);
+        if self.mutated_slots.contains(&key) {
+            return None;
+        }
+        let mut target = self.targets.get(&key)?.clone();
+        target.package = key.0;
         Some(target)
+    }
+
+    /// Whether the resolved slot of `written` was typeglob-reassigned in this
+    /// file (`*name = ...`): the CODE slot may alias another subroutine at
+    /// runtime, so an in-file declaration no longer proves the invoked target.
+    #[must_use]
+    pub fn slot_is_typeglob_reassigned(
+        &self,
+        written: &str,
+        current_package: Option<&str>,
+    ) -> bool {
+        let Some((package, Some(name))) = split_qualified_name(written, current_package) else {
+            return false;
+        };
+        self.mutated_slots.contains(&(package, name))
     }
 
     fn walk(&mut self, node: &Node, file_id: FileId, current_package: &mut Option<String>) {
@@ -96,11 +121,37 @@ impl SubroutineTargetIndex {
                         Some(_) => false,
                     };
                     if is_package_scoped {
-                        self.targets.insert(
-                            (package.to_string(), sub_name.clone()),
-                            target_of(node, file_id),
-                        );
+                        let key = (package.to_string(), sub_name.clone());
+                        let candidate = target_of(node, file_id);
+                        // A later bodyless stub does not replace an existing
+                        // concrete definition: Perl keeps the CODE slot's
+                        // defined body. Anything else (a later body, or the
+                        // first sighting of the name) replaces the entry.
+                        let keep_existing = self.targets.get(&key).is_some_and(|existing| {
+                            existing.body_anchor.is_some() && candidate.body_anchor.is_none()
+                        });
+                        if !keep_existing {
+                            self.targets.insert(key, candidate);
+                        }
                     }
+                }
+            }
+            NodeKind::Assignment { lhs, .. } => {
+                // A typeglob assignment to a sub slot (`*name = ...`,
+                // `*Package::name = ...`) can alias the CODE slot to any
+                // other subroutine at runtime: existence of a same-name `sub`
+                // no longer proves which target a `\&name` invokes. Record
+                // the slot and keep it unresolvable.
+                if let NodeKind::Typeglob { name: glob_name } = &lhs.kind {
+                    let (package, name) =
+                        split_qualified_name(glob_name, current_package.as_deref())
+                            .unwrap_or_else(|| ("main".to_string(), None));
+                    if let Some(name) = name {
+                        self.mutated_slots.insert((package, name));
+                    }
+                }
+                for child in node.children() {
+                    self.walk(child, file_id, current_package);
                 }
             }
             _ => {
@@ -162,8 +213,12 @@ fn target_of(node: &Node, file_id: FileId) -> SubroutineTarget {
         .map(|span| anchor(span.start, span.end, file_id))
         .unwrap_or_else(|| anchor(node.location.start, node.location.start + name.len(), file_id));
     let declaration_anchor = anchor(node.location.start, node.location.end, file_id);
+    // Every `Block` with a real source span retains its body anchor — an
+    // empty `{}` body is a body. Only the degenerate zero-width body of a
+    // `sub name;` forward stub records `None`; the spans distinguish the two
+    // because the parser shapes them identically at the node-kind level.
     let body_anchor = match &body.kind {
-        NodeKind::Block { statements } if !statements.is_empty() => {
+        NodeKind::Block { .. } if body.location.start < body.location.end => {
             Some(anchor(body.location.start, body.location.end, file_id))
         }
         _ => None,
@@ -208,10 +263,18 @@ pub fn handler_from_node(
                     None => FrameworkHandler::Bounded {
                         boundary: FrameworkHandlerBoundary::StaticCoderef,
                         anchor: Some(operand_anchor),
-                        reason: format!(
-                            "static coderef `{name}` has no in-file package-scoped \
-                             declaration; the target is not statically provable"
-                        ),
+                        reason: if targets.slot_is_typeglob_reassigned(name, current_package) {
+                            format!(
+                                "static coderef `{name}` targets a slot whose typeglob was \
+                                 reassigned in this file; the invoked subroutine is not \
+                                 statically provable"
+                            )
+                        } else {
+                            format!(
+                                "static coderef `{name}` has no in-file package-scoped \
+                                 declaration; the target is not statically provable"
+                            )
+                        },
                     },
                 }
             }
@@ -413,5 +476,79 @@ mod tests {
             &code[body.start_byte as usize..body.end_byte as usize].contains('2'),
             "the later declaration replaces the earlier CODE slot entry"
         );
+    }
+
+    #[test]
+    fn later_stub_does_not_replace_a_concrete_definition() {
+        // `sub handler;` after a concrete definition declares nothing new:
+        // Perl keeps the defined CODE slot, so the resolved target must keep
+        // the real body and its anchors.
+        let code = "sub handler { return 42; }\nsub handler;\nget '/x' => \\&handler;";
+        let handler = bind(code, "get");
+        let (_, target) = resolved(&handler);
+        let body = must_some(target.body_anchor.as_ref());
+        assert!(
+            &code[body.start_byte as usize..body.end_byte as usize].contains("42"),
+            "the concrete definition survives a later bodyless stub"
+        );
+        // The reverse order still resolves to the later concrete definition.
+        let code = "sub handler;\nsub handler { return 7; }\nget '/x' => \\&handler;";
+        let handler = bind(code, "get");
+        let (_, target) = resolved(&handler);
+        let body = must_some(target.body_anchor.as_ref());
+        assert!(&code[body.start_byte as usize..body.end_byte as usize].contains("7"));
+    }
+
+    #[test]
+    fn empty_sub_body_retains_its_body_anchor() {
+        // `sub handler {}` is a real (empty) body, distinct from the
+        // `sub handler;` forward stub: the braces have a source span.
+        let code = "sub handler {}\nget '/x' => \\&handler;";
+        let handler = bind(code, "get");
+        let (_, target) = resolved(&handler);
+        let body = must_some(target.body_anchor.as_ref());
+        assert_eq!(
+            &code[body.start_byte as usize..body.end_byte as usize],
+            "{}",
+            "an empty body keeps its exact source span"
+        );
+
+        // The stub keeps no body anchor.
+        let code = "sub handler;\nget '/x' => \\&handler;";
+        let handler = bind(code, "get");
+        let (_, target) = resolved(&handler);
+        assert!(target.body_anchor.is_none(), "a forward stub carries no body");
+    }
+
+    #[test]
+    fn typeglob_reassignment_bounds_the_coderef() {
+        // `*handler = \&other` aliases the CODE slot at runtime: Perl invokes
+        // `other`, so existence of `sub handler` no longer proves the target.
+        let code =
+            "sub handler { 1 }\nsub other { 2 }\n*handler = \\&other;\nget '/x' => \\&handler;";
+        let handler = bind(code, "get");
+        let (boundary, reason) = bounded_parts(&handler);
+        assert_eq!(boundary, FrameworkHandlerBoundary::StaticCoderef);
+        assert!(
+            reason.contains("typeglob"),
+            "the boundary names the typeglob reassignment: {reason}"
+        );
+        assert!(!handler.is_exact());
+
+        // A qualified glob assignment bounds the named package's slot.
+        let code = "package App;\nsub handler { 1 }\npackage Other;\n*App::handler = \\&elsewhere;\nget '/x' => \\&App::handler;";
+        let ast = parse(code);
+        let index = SubroutineTargetIndex::build(&ast, FileId(1));
+        let handler =
+            handler_from_node(last_call_operand(&ast, "get"), FileId(1), Some("Other"), &index);
+        assert!(matches!(
+            handler,
+            FrameworkHandler::Bounded { boundary: FrameworkHandlerBoundary::StaticCoderef, .. }
+        ));
+
+        // Control: no typeglob assignment keeps the exact resolution.
+        let code = "sub handler { 1 }\nget '/x' => \\&handler;";
+        let handler = bind(code, "get");
+        assert!(handler.is_exact());
     }
 }

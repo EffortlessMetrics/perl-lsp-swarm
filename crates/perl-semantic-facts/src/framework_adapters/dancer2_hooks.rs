@@ -192,21 +192,22 @@ pub fn dancer2_hook_facts(
         return Vec::new();
     };
 
+    // The activating import's `hook` keyword gates the whole family: without
+    // the imported keyword (`!hook`, or an import list without it) no
+    // declaration of this activation is a hook, so the lookup and exclusion
+    // check are hoisted out of the per-declaration loop.
+    if !keywords.iter().any(|fact| {
+        fact.keyword == DANCER2_HOOK_KEYWORD && fact.state == Dancer2KeywordState::Imported
+    }) {
+        return Vec::new();
+    }
+
     let mut facts = Vec::new();
     for declaration in declarations {
         if declaration.package.as_deref() != package {
             continue;
         }
         if declaration.hook.keyword != DANCER2_HOOK_KEYWORD {
-            continue;
-        }
-        let Some(keyword_fact) = keywords.iter().find(|fact| fact.keyword == DANCER2_HOOK_KEYWORD)
-        else {
-            continue;
-        };
-        if keyword_fact.state == Dancer2KeywordState::Excluded {
-            // `!hook` at the activating import: the hook keyword was never
-            // imported, so this declaration is not a hook of this activation.
             continue;
         }
         facts.push(mint_hook_fact(

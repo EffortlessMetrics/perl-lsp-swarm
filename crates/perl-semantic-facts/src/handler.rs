@@ -65,7 +65,11 @@ impl SubroutineTarget {
     ///
     /// Mirrors the family identity scheme: file, name, package, and minting
     /// generation. Re-resolving the same generation reproduces the identity;
-    /// declarations of different roots/edits never collide.
+    /// declarations of different roots/edits never collide. The name and
+    /// package components are length-framed before hashing so no `(name,
+    /// package)` pair boundary can alias another (`("a", "bc")` and
+    /// `("ab", "c")` never share an identity, including with separator-like
+    /// bytes inside either component).
     #[must_use]
     pub fn entity_id(&self, file_id: FileId, generation: &SourceGeneration) -> EntityId {
         let generation_digest = match generation {
@@ -78,9 +82,13 @@ impl SubroutineTarget {
         };
         let file = file_id.0.wrapping_mul(0x9E37_79B9_7F4A_7C15);
         let mut name_digest = 0x8422_2325_cbf2_9ce4_u64;
-        for byte in self.name.bytes().chain(self.package.bytes()) {
-            name_digest = (name_digest ^ u64::from(byte)).wrapping_mul(0x1000_0000_01b3);
-        }
+        let mut fold = |part: &str| {
+            for byte in part.len().to_be_bytes().into_iter().chain(part.bytes()) {
+                name_digest = (name_digest ^ u64::from(byte)).wrapping_mul(0x1000_0000_01b3);
+            }
+        };
+        fold(&self.name);
+        fold(&self.package);
         EntityId(file ^ name_digest ^ generation_digest)
     }
 
@@ -219,5 +227,36 @@ mod tests {
             first.entity_id(FileId(1), &generation).0,
             "fact and entity identities stay disjoint"
         );
+    }
+
+    #[test]
+    fn target_identities_frame_name_and_package_boundaries() {
+        // Length framing: no `(name, package)` concatenation boundary may
+        // alias another pair — including pairs whose components contain
+        // separator-like bytes (NUL, colons) that a bare chained hash or a
+        // single-separator hash would collide.
+        let generation = SourceGeneration::known("gen-1");
+        let pairs = [
+            ("a", "bc"),
+            ("ab", "c"),
+            ("handler\u{0}x", "App"),
+            ("handler", "\u{0}xApp"),
+            ("App::x", "handler"),
+            ("App", "::xhandler"),
+        ];
+        let ids: Vec<EntityId> = pairs
+            .iter()
+            .map(|(name, package)| target(name, package).entity_id(FileId(1), &generation))
+            .collect();
+        for (left, left_id) in pairs.iter().zip(&ids) {
+            for (right, right_id) in pairs.iter().zip(&ids) {
+                if left != right {
+                    assert_ne!(
+                        left_id, right_id,
+                        "({left:?}) and ({right:?}) must never share an entity identity"
+                    );
+                }
+            }
+        }
     }
 }
