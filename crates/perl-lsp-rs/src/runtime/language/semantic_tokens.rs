@@ -2031,9 +2031,15 @@ struct SemanticTokenLiveSliceTraceSpec {
     claim_boundary: &'static str,
 }
 
-fn semantic_tokens_aggregate_live_slice_trace(mut traces: Vec<Value>) -> Value {
+fn semantic_tokens_aggregate_live_slice_trace(traces: Vec<Value>) -> Value {
     let trace_count = traces.len();
-    let mut primary = traces.remove(0);
+    // The first trace stays the primary top-level projection while the full
+    // vector — primary included — is retained in acted_class_traces, so the
+    // count and the array always describe the same set (#2035).
+    let mut primary = match traces.first().cloned() {
+        Some(first) => first,
+        None => return Value::Array(traces),
+    };
     if let Some(object) = primary.as_object_mut() {
         object.insert("acted_class_trace_count".to_string(), json!(trace_count));
         object.insert("acted_class_traces".to_string(), Value::Array(traces));

@@ -1886,13 +1886,51 @@ fn live_semantic_tokens_request_persists_compiler_token_live_slice_trace()
         acted_classes.len() >= 2,
         "the mixed request must retain multiple matching reviewed classes: {receipt}"
     );
-    assert_eq!(
-        acted_classes[0].get("compiler_token_class").and_then(Value::as_str),
-        Some("subroutine_declaration")
+    let classes: Vec<&str> = acted_classes
+        .iter()
+        .filter_map(|trace| trace.get("compiler_token_class").and_then(Value::as_str))
+        .collect();
+    assert!(
+        classes.contains(&"subroutine_declaration"),
+        "the primary acted class must be retained in the array: {receipt}"
     );
+    assert!(
+        classes.contains(&"state_variable_declaration"),
+        "the state declaration class must be retained in the array: {receipt}"
+    );
+    // Ordering is deterministic by the implementation's fixed evaluation
+    // order, not by slot happenstance: every retained class must be known to
+    // that order and appear in non-decreasing evaluation position.
+    let evaluation_order = [
+        "subroutine_declaration",
+        "method_declaration",
+        "phase_block_declaration",
+        "method_call",
+        "self_method_call",
+        "package_declaration",
+        "field_declaration",
+        "lexical_variable_declaration",
+        "lexical_variable_use",
+        "our_variable_declaration",
+        "state_variable_declaration",
+        "named_function_call",
+    ];
+    for class in &classes {
+        assert!(
+            evaluation_order.contains(class),
+            "acted class {class:?} is outside the pinned evaluation order: {receipt}"
+        );
+    }
+    let positions: Vec<usize> = classes
+        .iter()
+        .map(|class| evaluation_order.iter().position(|ordered| ordered == class))
+        .map(Option::unwrap_or_default)
+        .collect();
+    let mut ordered_positions = positions.clone();
+    ordered_positions.sort_unstable();
     assert_eq!(
-        acted_classes[1].get("compiler_token_class").and_then(Value::as_str),
-        Some("state_variable_declaration")
+        positions, ordered_positions,
+        "acted classes must retain the implementation evaluation order: {classes:?}"
     );
     assert_eq!(receipt.get("live_token_type").and_then(Value::as_str), Some("function"));
     assert_eq!(receipt.get("live_token_match_count").and_then(Value::as_u64), Some(1));
