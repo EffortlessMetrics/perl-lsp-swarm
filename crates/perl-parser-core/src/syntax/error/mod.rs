@@ -404,6 +404,22 @@ pub enum ParseError {
     #[error("Maximum recursion depth exceeded")]
     RecursionLimit,
 
+    /// Expression recursion depth exceeded by the production recursion guard
+    /// (`check_recursion`, the `with_recursion_guard` budget).
+    ///
+    /// Distinct from [`ParseError::NestingTooDeep`], which the structural
+    /// guards (block nesting, postfix chains) emit: both guards terminate the
+    /// parse, but the typed [`ParseStopCause`] must preserve which guard
+    /// produced the error instead of relabeling expression-recursion
+    /// exhaustion as structural nesting.
+    #[error("Recursion depth limit exceeded: {depth} > {max_depth}")]
+    RecursionDepthExhausted {
+        /// Recursion depth at exhaustion.
+        depth: usize,
+        /// Maximum allowed recursion depth.
+        max_depth: usize,
+    },
+
     /// Invalid numeric literal found in Perl script content
     ///
     /// Common when processing malformed configuration values during Analyze stage analysis.
@@ -477,7 +493,9 @@ impl ErrorClass for ParseError {
         match self {
             Self::Advisory { .. } => ErrorCategory::Advisory,
             Self::Cancelled => ErrorCategory::Transient,
-            Self::RecursionLimit | Self::NestingTooDeep { .. } => ErrorCategory::ResourceLimit,
+            Self::RecursionLimit
+            | Self::RecursionDepthExhausted { .. }
+            | Self::NestingTooDeep { .. } => ErrorCategory::ResourceLimit,
             Self::UnexpectedEof
             | Self::UnexpectedToken { .. }
             | Self::SyntaxError { .. }
@@ -553,6 +571,15 @@ pub enum ParseStopCause {
         usage: usize,
     },
 
+    /// The lexer exhausted a per-token budget (regex/heredoc bytes, scan
+    /// steps, or delimiter nesting) and degraded the remainder of the source
+    /// to an `UnknownRest` token.
+    ///
+    /// The parser stops at that token and returns a partial AST; the
+    /// remainder of the source is explicitly unparsed, so consumers must not
+    /// treat the truncated tree as a complete parse.
+    LexerBudgetExhausted,
+
     /// A catastrophic, unrecoverable termination occurred that does not fall
     /// into the above named terminal families.
     ///
@@ -582,6 +609,7 @@ impl ParseStopCause {
     /// |---|---|
     /// | `Cancelled` | `Cancelled` |
     /// | `RecursionLimit` | `RecursionBudgetExhausted { limit: None, usage: None }` |
+    /// | `RecursionDepthExhausted { depth, max_depth }` | `RecursionBudgetExhausted { limit: Some(max_depth), usage: Some(depth) }` |
     /// | `NestingTooDeep { depth, max_depth }` | `NestingOrDepthBudgetExhausted { limit: max_depth, usage: depth }` |
     /// | Any other variant | `CatastrophicTermination` |
     #[must_use]
@@ -590,6 +618,9 @@ impl ParseStopCause {
             ParseError::Cancelled => Self::Cancelled,
             ParseError::RecursionLimit => {
                 Self::RecursionBudgetExhausted { limit: None, usage: None }
+            }
+            ParseError::RecursionDepthExhausted { depth, max_depth } => {
+                Self::RecursionBudgetExhausted { limit: Some(*max_depth), usage: Some(*depth) }
             }
             ParseError::NestingTooDeep { depth, max_depth } => {
                 Self::NestingOrDepthBudgetExhausted { limit: *max_depth, usage: *depth }
@@ -605,12 +636,15 @@ impl ParseStopCause {
     }
 
     /// Whether this cause represents a parser resource or budget limit being
-    /// exceeded (recursion depth, nesting depth, or a governed work budget).
+    /// exceeded (recursion depth, nesting depth, lexer per-token budget, or a
+    /// governed work budget).
     #[must_use]
     pub fn is_budget_exhaustion(&self) -> bool {
         matches!(
             self,
-            Self::RecursionBudgetExhausted { .. } | Self::NestingOrDepthBudgetExhausted { .. }
+            Self::RecursionBudgetExhausted { .. }
+                | Self::NestingOrDepthBudgetExhausted { .. }
+                | Self::LexerBudgetExhausted
         )
     }
 
@@ -622,6 +656,7 @@ impl ParseStopCause {
             Self::Cancelled => "cancelled",
             Self::RecursionBudgetExhausted { .. } => "recursion_budget_exhausted",
             Self::NestingOrDepthBudgetExhausted { .. } => "nesting_or_depth_budget_exhausted",
+            Self::LexerBudgetExhausted => "lexer_budget_exhausted",
             Self::CatastrophicTermination => "catastrophic_termination",
             Self::FutureTypedTerminal => "future_typed_terminal",
         }
@@ -1167,6 +1202,7 @@ impl ParseError {
             | Self::Recovered { location, .. } => ParseDiagnosticAnchor::Exact(*location),
             Self::LexerError { .. }
             | Self::RecursionLimit
+            | Self::RecursionDepthExhausted { .. }
             | Self::InvalidNumber { .. }
             | Self::InvalidString
             | Self::UnclosedDelimiter { .. }

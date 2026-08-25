@@ -138,6 +138,11 @@ pub struct Parser<'a> {
     heredoc_start_time: Option<Instant>,
     /// Collection of parse errors encountered during parsing (for error recovery)
     errors: Vec<ParseError>,
+    /// Terminal stop cause recorded by a parser branch that ends the parse
+    /// early while still returning `Ok` (the lexer-budget `UnknownRest` stop).
+    /// `parse_with_recovery` consumes it on the success path so a truncated
+    /// AST is never reported as a clean completion.
+    ok_path_stop_cause: Option<ParseStopCause>,
     /// Optional cancellation flag for cooperative cancellation from the LSP server.
     cancellation_flag: Option<Arc<AtomicBool>>,
     /// Counter to amortize cancellation checks (only check every 64 statements)
@@ -196,6 +201,7 @@ impl<'a> Parser<'a> {
             heredoc_recovery_tag: None,
             heredoc_start_time: None,
             errors: Vec::new(),
+            ok_path_stop_cause: None,
             cancellation_flag: None,
             cancellation_check_counter: 0,
             #[cfg(test)]
@@ -336,6 +342,7 @@ impl<'a> Parser<'a> {
             heredoc_recovery_tag: None,
             heredoc_start_time: None,
             errors: Vec::new(),
+            ok_path_stop_cause: None,
             cancellation_flag: None,
             cancellation_check_counter: 0,
             #[cfg(test)]
@@ -489,7 +496,11 @@ impl<'a> Parser<'a> {
     /// ```
     pub fn parse_with_recovery(&mut self) -> ParseOutput {
         let (ast, stop_cause) = match self.parse() {
-            Ok(node) => (node, None),
+            // An Ok result is a completed parse unless a parser branch
+            // recorded a terminal stop while returning Ok (the lexer-budget
+            // `UnknownRest` stop leaves a partial AST): consume that recorded
+            // cause here so truncation is never reported as clean completion.
+            Ok(node) => (node, self.ok_path_stop_cause.take()),
             Err(e) => {
                 // If parse() returned Err, it was a non-recoverable error (e.g. cancellation,
                 // recursion limit, or nesting limit). Record the typed stop cause at this branch —

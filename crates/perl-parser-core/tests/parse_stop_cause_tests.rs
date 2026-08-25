@@ -431,3 +431,110 @@ fn repeated_parser_runs_produce_independent_stop_causes() {
     assert_eq!(out2.stop_cause, Some(ParseStopCause::Cancelled));
     assert!(out2.terminated_early);
 }
+
+// ---------------------------------------------------------------------------
+// Production guard fixtures — the typed cause is set at the exact branch
+// ---------------------------------------------------------------------------
+
+/// When the lexer exhausts a per-token budget (regex/heredoc bytes, scan
+/// steps, or delimiter nesting) it degrades to an `UnknownRest` token; the
+/// parser stops early with a partial AST. That truncation must surface as the
+/// typed lexer-budget stop cause — never as a clean `stop_cause = None`
+/// completion that would make consumers treat the truncated AST as whole.
+#[test]
+fn lexer_budget_exhaustion_sets_typed_stop_cause() {
+    // A match-operator regex literal far beyond the lexer's 64 KiB per-token
+    // budget starts a fresh statement, so the degraded `UnknownRest` token is
+    // consumed by the statement-loop budget branch (statements.rs) and the
+    // preceding statements survive in the partial AST.
+    let source = format!("my $ok = 1;\n/{};\n", "a".repeat(70_000));
+    let mut parser = Parser::new(&source);
+    let output = parser.parse_with_recovery();
+
+    assert!(
+        output.terminated_early,
+        "lexer-budget truncation must terminate_early, got stop_cause {:?}",
+        output.stop_cause
+    );
+    assert_eq!(
+        output.stop_cause.as_ref().map(ParseStopCause::as_str),
+        Some("lexer_budget_exhausted"),
+        "lexer-budget truncation must carry the typed lexer cause, got {:?}",
+        output.stop_cause
+    );
+    assert!(
+        output.stop_cause.is_some_and(|cause| cause.is_budget_exhaustion()),
+        "lexer-budget exhaustion is a budget exhaustion"
+    );
+    // The partial AST keeps the statements parsed before the budget stop.
+    assert!(
+        matches!(
+            &output.ast.kind,
+            NodeKind::Program { statements }
+                if statements.iter().any(|stmt| matches!(
+                    &stmt.kind,
+                    NodeKind::VariableDeclaration { variable, .. }
+                        if matches!(&variable.kind, NodeKind::Variable { name, .. } if name.contains("ok"))
+                ))
+        ),
+        "the statement parsed before the budget stop must survive, got {:?}",
+        output.ast.kind
+    );
+
+    // Control: the same shape within the lexer budget parses clean.
+    let bounded = format!("my $ok = 1;\nmy $re = qr/{};/;\n", "a".repeat(1_000));
+    let mut clean = Parser::new(&bounded);
+    let clean_output = clean.parse_with_recovery();
+    assert!(
+        clean_output.stop_cause.is_none() && !clean_output.terminated_early,
+        "within-budget regex must complete cleanly, got {:?}",
+        clean_output.stop_cause
+    );
+}
+
+/// Deep expression recursion trips `check_recursion()` (the production
+/// recursion guard). Its exhaustion must stay typed as
+/// `RecursionBudgetExhausted` carrying the guard's budget values — the same
+/// `NestingTooDeep` shape emitted by the structural block guard must not
+/// relabel expression-recursion exhaustion as structural nesting.
+#[test]
+fn expression_recursion_exhaustion_keeps_recursion_cause() {
+    let source = format!("my $x = {}1;", "not ".repeat(200));
+    let mut parser = Parser::new(&source);
+    let output = parser.parse_with_recovery();
+
+    assert_eq!(
+        output.stop_cause.as_ref().map(ParseStopCause::as_str),
+        Some("recursion_budget_exhausted"),
+        "expression-recursion exhaustion must keep the recursion cause, got {:?}",
+        output.stop_cause
+    );
+    assert!(
+        matches!(
+            output.stop_cause,
+            Some(ParseStopCause::RecursionBudgetExhausted { limit: Some(_), usage: Some(_) })
+        ),
+        "the production recursion guard supplies its limit and usage, got {:?}",
+        output.stop_cause
+    );
+    assert!(output.terminated_early);
+}
+
+/// The structural block guard keeps the nesting/depth cause: deep block
+/// nesting (a different guard) still maps to `NestingOrDepthBudgetExhausted`,
+/// so the two guard families remain distinct after the origin is preserved.
+#[test]
+fn structural_block_nesting_keeps_nesting_cause() {
+    let depth = 600; // beyond MAX_BLOCK_NESTING_DEPTH (512)
+    let source = format!("{}{}", "{".repeat(depth), "}".repeat(depth));
+    let mut parser = Parser::new(&source);
+    let output = parser.parse_with_recovery();
+
+    assert_eq!(
+        output.stop_cause.as_ref().map(ParseStopCause::as_str),
+        Some("nesting_or_depth_budget_exhausted"),
+        "structural block nesting keeps the nesting cause, got {:?}",
+        output.stop_cause
+    );
+    assert!(output.terminated_early);
+}
