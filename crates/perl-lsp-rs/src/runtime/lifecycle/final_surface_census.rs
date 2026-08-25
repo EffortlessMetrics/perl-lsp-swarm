@@ -15,9 +15,8 @@
 //!
 //! Test-only module; no production behavior change.
 //!
-//! Assertions here intentionally use `expect`/`unwrap_or_else(panic!)`;
-//! the production bans do not apply to this cfg(test) module.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+//! Assertions use `perl-test-must` helpers; file-wide panic-family carve-outs
+//! are not accepted on this cfg(test) module.
 
 use std::collections::BTreeSet;
 
@@ -31,27 +30,34 @@ const INVENTORY_ARTIFACT: &str =
     include_str!("../../../../../docs/specs/lsp-final-surface-inventory.json");
 
 fn inventory_artifact() -> Value {
-    serde_json::from_str(INVENTORY_ARTIFACT).expect("checked-in inventory artifact must be JSON")
+    crate::must_with(
+        serde_json::from_str(INVENTORY_ARTIFACT),
+        "checked-in inventory artifact must be JSON",
+    )
 }
 
 fn inventory_rows() -> Vec<Value> {
-    inventory_artifact()
-        .get("rows")
-        .and_then(Value::as_array)
-        .expect("inventory artifact must contain rows")
-        .clone()
+    crate::must_some_with(
+        inventory_artifact().get("rows").and_then(Value::as_array),
+        "inventory artifact must contain rows",
+    )
+    .clone()
 }
 
 fn inventory_static_census() -> BTreeSet<String> {
     let mut pointers = BTreeSet::new();
     let artifact = inventory_artifact();
-    let profiles = artifact
-        .get("static_surface_census")
-        .and_then(Value::as_object)
-        .expect("inventory artifact must contain static_surface_census");
+    let profiles = crate::must_some_with(
+        artifact.get("static_surface_census").and_then(Value::as_object),
+        "inventory artifact must contain static_surface_census",
+    );
     for profile in profiles.values() {
-        for pointer in profile.as_array().expect("census profile must be an array") {
-            pointers.insert(pointer.as_str().expect("census pointer must be a string").to_string());
+        for pointer in crate::must_some_with(profile.as_array(), "census profile must be an array")
+        {
+            pointers.insert(
+                crate::must_some_with(pointer.as_str(), "census pointer must be a string")
+                    .to_string(),
+            );
         }
     }
     pointers
@@ -69,7 +75,8 @@ fn inventory_covered_pointers() -> BTreeSet<String> {
             {
                 for pointer in additional {
                     covered.insert(
-                        pointer.as_str().expect("owned pointer must be a string").to_string(),
+                        crate::must_some_with(pointer.as_str(), "owned pointer must be a string")
+                            .to_string(),
                     );
                 }
             }
@@ -79,16 +86,19 @@ fn inventory_covered_pointers() -> BTreeSet<String> {
 }
 
 fn inventory_row(surface_id: &str) -> Value {
-    inventory_rows()
-        .into_iter()
-        .find(|row| row.get("surface_id").and_then(Value::as_str) == Some(surface_id))
-        .unwrap_or_else(|| panic!("ledger row {surface_id} missing"))
+    crate::must_some_with(
+        inventory_rows()
+            .into_iter()
+            .find(|row| row.get("surface_id").and_then(Value::as_str) == Some(surface_id)),
+        format!("ledger row {surface_id} missing"),
+    )
 }
 
 fn row_string<'a>(row: &'a Value, field: &str) -> &'a str {
-    row.get(field)
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("inventory row is missing string field {field}: {row}"))
+    crate::must_some_with(
+        row.get(field).and_then(Value::as_str),
+        format!("inventory row is missing string field {field}: {row}"),
+    )
 }
 
 fn flatten_surface_pointers(value: &Value) -> BTreeSet<String> {
@@ -229,9 +239,13 @@ fn representative_client_shapes() -> Vec<(&'static str, Value)> {
 }
 
 fn emitted_capabilities(server: &LspServer, shape: &Value) -> Value {
-    let response = server.handle_initialize(Some(shape.clone())).expect("initialize must succeed");
-    let result = response.expect("initialize must return a result");
-    result.get("capabilities").cloned().expect("initialize result must carry serverCapabilities")
+    let response =
+        crate::must_with(server.handle_initialize(Some(shape.clone())), "initialize must succeed");
+    let result = crate::must_some_with(response, "initialize must return a result");
+    crate::must_some_with(
+        result.get("capabilities").cloned(),
+        "initialize result must carry serverCapabilities",
+    )
 }
 
 #[test]
@@ -260,13 +274,15 @@ fn runtime_added_pointers_are_owned_by_mutation_rows() {
         .flat_map(|row| {
             let mut owned = vec![row_string(row, "protocol_field").to_string()];
             owned.extend(
-                row.get("additional_owned_pointers")
-                    .and_then(Value::as_array)
-                    .expect("mutation row must list additional pointers")
-                    .iter()
-                    .map(|pointer| {
-                        pointer.as_str().expect("owned pointer must be a string").to_string()
-                    }),
+                crate::must_some_with(
+                    row.get("additional_owned_pointers").and_then(Value::as_array),
+                    "mutation row must list additional pointers",
+                )
+                .iter()
+                .map(|pointer| {
+                    crate::must_some_with(pointer.as_str(), "owned pointer must be a string")
+                        .to_string()
+                }),
             );
             owned
         })
@@ -318,11 +334,11 @@ fn inline_completion_tri_state_matches_its_row() {
     let static_only = LspServer::new();
     let static_caps = emitted_capabilities(
         &static_only,
-        &representative_client_shapes()
-            .into_iter()
-            .find(|(name, _)| *name == "maximal-static")
-            .expect("maximal-static shape exists")
-            .1,
+        &crate::must_some_with(
+            representative_client_shapes().into_iter().find(|(name, _)| *name == "maximal-static"),
+            "maximal-static shape exists",
+        )
+        .1,
     );
     assert!(
         static_caps.get("inlineCompletionProvider").is_some(),
@@ -333,11 +349,11 @@ fn inline_completion_tri_state_matches_its_row() {
     let dynamic = LspServer::new();
     let dynamic_caps = emitted_capabilities(
         &dynamic,
-        &representative_client_shapes()
-            .into_iter()
-            .find(|(name, _)| *name == "inline-dynamic")
-            .expect("inline-dynamic shape exists")
-            .1,
+        &crate::must_some_with(
+            representative_client_shapes().into_iter().find(|(name, _)| *name == "inline-dynamic"),
+            "inline-dynamic shape exists",
+        )
+        .1,
     );
     assert!(
         dynamic_caps.get("inlineCompletionProvider").is_none(),
@@ -387,11 +403,11 @@ fn registrations_refreshes_and_compat_rows_are_ledgered() {
 
     // Compatibility branches behave exactly as their rows claim.
     let jetbrains = LspServer::new();
-    let params = representative_client_shapes()
-        .into_iter()
-        .find(|(name, _)| *name == "jetbrains")
-        .expect("jetbrains shape exists")
-        .1;
+    let params = crate::must_some_with(
+        representative_client_shapes().into_iter().find(|(name, _)| *name == "jetbrains"),
+        "jetbrains shape exists",
+    )
+    .1;
     let _ = jetbrains.handle_initialize(Some(params));
     assert!(
         !jetbrains.client_capabilities.lock().dynamic_registration_support,

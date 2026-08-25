@@ -1379,10 +1379,6 @@ impl LspServer {
 
 #[cfg(test)]
 mod tests {
-    // Tests are permitted to use `.expect()` on Result/Option per the repo's
-    // coding standards (unlike production code, where it is banned).
-    #![allow(clippy::expect_used)]
-
     use super::*;
 
     #[test]
@@ -1987,8 +1983,12 @@ mod tests {
             make_quickfix(uri, 1, 0, 3, "other", "Other edit", Some("PL102")),
         ];
 
-        let aggregate = build_source_fix_all(&actions, uri).expect("aggregate present");
-        let edits = aggregate["edit"]["changes"][uri].as_array().expect("aggregate has edits");
+        let aggregate =
+            crate::must_some_with(build_source_fix_all(&actions, uri), "aggregate present");
+        let edits = crate::must_some_with(
+            aggregate["edit"]["changes"][uri].as_array(),
+            "aggregate has edits",
+        );
         let new_texts: Vec<&str> =
             edits.iter().filter_map(|edit| edit["newText"].as_str()).collect();
         assert_eq!(new_texts, vec!["replace", "other"]);
@@ -2003,15 +2003,20 @@ mod tests {
             make_quickfix(uri, 3, 2, 5, "fix-c", "Fix C", Some("PL102")),
         ];
 
-        let aggregate = build_source_fix_all(&actions, uri).expect("aggregate present");
+        let aggregate =
+            crate::must_some_with(build_source_fix_all(&actions, uri), "aggregate present");
         assert_eq!(aggregate["title"], "Fix all auto-fixable issues");
         assert_eq!(aggregate["kind"], "source.fixAll");
         assert_eq!(aggregate["isPreferred"], true);
 
-        let edits = aggregate["edit"]["changes"][uri].as_array().expect("aggregate has edits");
+        let edits = crate::must_some_with(
+            aggregate["edit"]["changes"][uri].as_array(),
+            "aggregate has edits",
+        );
         assert_eq!(edits.len(), 3, "three non-conflicting edits were kept");
 
-        let diagnostics = aggregate["diagnostics"].as_array().expect("diagnostics array");
+        let diagnostics =
+            crate::must_some_with(aggregate["diagnostics"].as_array(), "diagnostics array");
         assert_eq!(diagnostics.len(), 3, "one diagnostic per quickfix");
     }
 
@@ -2023,8 +2028,12 @@ mod tests {
             make_document_changes_quickfix(uri, 0, 0, 0, "use warnings;\n", "Add warnings", false),
         ];
 
-        let aggregate = build_source_fix_all(&actions, uri).expect("aggregate present");
-        let edits = aggregate["edit"]["changes"][uri].as_array().expect("aggregate has edits");
+        let aggregate =
+            crate::must_some_with(build_source_fix_all(&actions, uri), "aggregate present");
+        let edits = crate::must_some_with(
+            aggregate["edit"]["changes"][uri].as_array(),
+            "aggregate has edits",
+        );
         assert_eq!(edits.len(), 2, "documentChanges quick fixes should aggregate");
     }
 
@@ -2036,8 +2045,12 @@ mod tests {
             make_document_changes_quickfix(uri, 1, 0, 3, "our", "Fix scope", false),
         ];
 
-        let aggregate = build_source_fix_all(&actions, uri).expect("aggregate present");
-        let edits = aggregate["edit"]["changes"][uri].as_array().expect("aggregate has edits");
+        let aggregate =
+            crate::must_some_with(build_source_fix_all(&actions, uri), "aggregate present");
+        let edits = crate::must_some_with(
+            aggregate["edit"]["changes"][uri].as_array(),
+            "aggregate has edits",
+        );
         assert_eq!(edits.len(), 2, "resource ops must be ignored during aggregation");
     }
 
@@ -2088,8 +2101,12 @@ mod tests {
                 }
             }),
         ];
-        let aggregate = build_source_fix_all(&actions, uri).expect("aggregate present");
-        let edits = aggregate["edit"]["changes"][uri].as_array().expect("aggregate has edits");
+        let aggregate =
+            crate::must_some_with(build_source_fix_all(&actions, uri), "aggregate present");
+        let edits = crate::must_some_with(
+            aggregate["edit"]["changes"][uri].as_array(),
+            "aggregate has edits",
+        );
         assert_eq!(edits.len(), 2, "refactor action must not be merged into fixAll");
     }
 
@@ -2102,8 +2119,12 @@ mod tests {
             make_quickfix(uri, 0, 5, 15, "second", "Fix B", Some("PL101")),
             make_quickfix(uri, 2, 0, 3, "third", "Fix C", Some("PL102")),
         ];
-        let aggregate = build_source_fix_all(&actions, uri).expect("aggregate present");
-        let edits = aggregate["edit"]["changes"][uri].as_array().expect("aggregate has edits");
+        let aggregate =
+            crate::must_some_with(build_source_fix_all(&actions, uri), "aggregate present");
+        let edits = crate::must_some_with(
+            aggregate["edit"]["changes"][uri].as_array(),
+            "aggregate has edits",
+        );
         assert_eq!(edits.len(), 2);
         let new_texts: Vec<&str> =
             edits.iter().filter_map(|edit| edit["newText"].as_str()).collect();
@@ -2123,8 +2144,12 @@ mod tests {
                 "command": {"command": "perl.runFixer", "title": "Run"}
             }),
         ];
-        let aggregate = build_source_fix_all(&actions, uri).expect("aggregate present");
-        let edits = aggregate["edit"]["changes"][uri].as_array().expect("aggregate has edits");
+        let aggregate =
+            crate::must_some_with(build_source_fix_all(&actions, uri), "aggregate present");
+        let edits = crate::must_some_with(
+            aggregate["edit"]["changes"][uri].as_array(),
+            "aggregate has edits",
+        );
         assert_eq!(edits.len(), 2);
     }
 
@@ -2139,8 +2164,12 @@ mod tests {
             make_quickfix(uri, 0, 0, 0, "use strict;\n", "Add strict (B)", Some("PL100")),
             make_quickfix(uri, 0, 0, 0, "use warnings;\n", "Add warnings", Some("PL101")),
         ];
-        let aggregate = build_source_fix_all(&actions, uri).expect("aggregate present");
-        let edits = aggregate["edit"]["changes"][uri].as_array().expect("aggregate has edits");
+        let aggregate =
+            crate::must_some_with(build_source_fix_all(&actions, uri), "aggregate present");
+        let edits = crate::must_some_with(
+            aggregate["edit"]["changes"][uri].as_array(),
+            "aggregate has edits",
+        );
         assert_eq!(edits.len(), 2, "identical edits must dedupe: {edits:#?}");
         let texts: Vec<&str> = edits.iter().filter_map(|edit| edit["newText"].as_str()).collect();
         assert!(texts.contains(&"use strict;\n"));
@@ -2166,8 +2195,12 @@ mod tests {
             ),
         ];
 
-        let aggregate = build_source_fix_all(&actions, uri).expect("aggregate present");
-        let edits = aggregate["edit"]["changes"][uri].as_array().expect("aggregate has edits");
+        let aggregate =
+            crate::must_some_with(build_source_fix_all(&actions, uri), "aggregate present");
+        let edits = crate::must_some_with(
+            aggregate["edit"]["changes"][uri].as_array(),
+            "aggregate has edits",
+        );
         assert_eq!(edits.len(), 2, "semantic pragma duplicates must dedupe: {edits:#?}");
 
         let texts: Vec<&str> = edits.iter().filter_map(|edit| edit["newText"].as_str()).collect();
@@ -2208,8 +2241,10 @@ mod tests {
                 action
             },
         ];
-        let aggregate = build_source_fix_all(&actions, uri).expect("aggregate present");
-        let diagnostics = aggregate["diagnostics"].as_array().expect("diagnostics array");
+        let aggregate =
+            crate::must_some_with(build_source_fix_all(&actions, uri), "aggregate present");
+        let diagnostics =
+            crate::must_some_with(aggregate["diagnostics"].as_array(), "diagnostics array");
         let codes: Vec<&str> = diagnostics.iter().filter_map(|d| d["code"].as_str()).collect();
         assert_eq!(codes, vec!["PL100", "PL200"]);
     }
@@ -2223,8 +2258,12 @@ mod tests {
             make_quickfix(uri, 1, 0, 3, "b", "Fix B", Some("PL101")),
             make_quickfix(other_uri, 0, 0, 3, "c", "Cross-file", Some("PL102")),
         ];
-        let aggregate = build_source_fix_all(&actions, uri).expect("aggregate present");
-        let edits = aggregate["edit"]["changes"][uri].as_array().expect("aggregate has edits");
+        let aggregate =
+            crate::must_some_with(build_source_fix_all(&actions, uri), "aggregate present");
+        let edits = crate::must_some_with(
+            aggregate["edit"]["changes"][uri].as_array(),
+            "aggregate has edits",
+        );
         // Only the two edits targeting `uri` are merged; the cross-file edit
         // is skipped because it has no `changes[uri]` entry.
         assert_eq!(edits.len(), 2);
@@ -2298,7 +2337,10 @@ print $result;
         assert_eq!(aggregate["title"], "Fix all auto-fixable issues");
         assert_eq!(aggregate["isPreferred"], true);
 
-        let edits = aggregate["edit"]["changes"][uri].as_array().expect("aggregate has edits");
+        let edits = crate::must_some_with(
+            aggregate["edit"]["changes"][uri].as_array(),
+            "aggregate has edits",
+        );
         assert!(edits.len() >= 2, "aggregate must combine at least two edits, got {edits:#?}");
     }
 

@@ -27,10 +27,6 @@
 //!     Ok(())
 //! }
 //! ```
-#![expect(
-    clippy::unwrap_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
 #![allow(dead_code)]
 // Integration tests print diagnostic output for CI troubleshooting; this is
 // not the LSP server's stdio transport, so print_stderr doesn't apply the
@@ -428,7 +424,7 @@ mod tests {
 
     #[test]
     fn test_timeout_multiplier_reasonable() {
-        let env = TestEnvironment::validate().unwrap();
+        let env = perl_test_must::must(TestEnvironment::validate());
         let multiplier = env.timeout_multiplier();
         assert!(multiplier >= 1.0);
         assert!(multiplier <= 10.0);

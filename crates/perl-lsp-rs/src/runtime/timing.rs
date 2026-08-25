@@ -353,10 +353,6 @@ pub(crate) mod capture {
 
 #[cfg(test)]
 mod tests {
-    // Tests are permitted to use `.expect()` on Result/Option per the repo's
-    // coding standards (unlike production code, where it is banned).
-    #![allow(clippy::expect_used)]
-
     use super::*;
 
     #[test]
@@ -394,7 +390,7 @@ mod tests {
             TimingSpan::document("didChange.full_parse", 12.3456, "foo.pl".to_string(), 7, 4096, 3);
         let line = format_span_json(&span);
         let value: serde_json::Value =
-            serde_json::from_str(&line).expect("emitted line must be valid JSON");
+            crate::must_with(serde_json::from_str(&line), "emitted line must be valid JSON");
         assert_eq!(value["t"], "perl_lsp_timing");
         assert_eq!(value["span"], "didChange.full_parse");
         assert_eq!(value["detail"], "foo.pl");
@@ -411,7 +407,7 @@ mod tests {
     fn format_span_json_labeled_shape_has_null_context() {
         let span = TimingSpan::labeled("scheduler.read_wait", 0.5, "textDocument/completion");
         let value: serde_json::Value =
-            serde_json::from_str(&format_span_json(&span)).expect("valid JSON");
+            crate::must_with(serde_json::from_str(&format_span_json(&span)), "valid JSON");
         assert_eq!(value["span"], "scheduler.read_wait");
         assert_eq!(value["detail"], "textDocument/completion");
         assert!(value["version"].is_null());

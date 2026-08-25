@@ -18,9 +18,6 @@
 //!         --test slow_operation_timeout_route_tests
 
 #![cfg(feature = "expose_lsp_test_api")]
-// Integration test: `expect()` carries the assertion message. The
-// workspace-wide deny is a production-code rule.
-#![allow(clippy::expect_used)]
 
 use perl_lsp::{JsonRpcRequest, LspServer};
 use serde_json::json;
@@ -49,14 +46,15 @@ fn init_server() -> LspServer {
 }
 
 fn slow_operation(server: &LspServer, params: Option<serde_json::Value>) -> JsonRpcResponseParts {
-    let response = server
-        .handle_request(JsonRpcRequest {
+    let response = perl_test_must::must_some_with(
+        server.handle_request(JsonRpcRequest {
             _jsonrpc: "2.0".to_string(),
             id: Some(perl_lsp::protocol::JsonRpcId::Integer(7_i64)),
             method: "$/test/slowOperation".to_string(),
             params,
-        })
-        .expect("$/test/slowOperation is a request and must produce a response");
+        }),
+        "$/test/slowOperation is a request and must produce a response",
+    );
 
     JsonRpcResponseParts {
         result: response.result,

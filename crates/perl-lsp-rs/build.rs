@@ -1,5 +1,5 @@
 // Build script - panics are idiomatic for failing builds
-#![allow(clippy::pedantic, clippy::panic)]
+#![allow(clippy::pedantic)]
 
 use std::error::Error;
 

@@ -1,12 +1,3 @@
-#![expect(
-    clippy::unwrap_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
-#![expect(
-    clippy::expect_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
-
 use super::*;
 use serde_json::json;
 use std::io::{self, Write};
@@ -69,8 +60,10 @@ fn test_build_incremental_edits_uses_evolving_document_ranges() {
         },
     ];
 
-    let edit_set =
-        build_incremental_edit_set(&original, &changes).expect("expected ranged edit set");
+    let edit_set = crate::must_some_with(
+        build_incremental_edit_set(&original, &changes),
+        "expected ranged edit set",
+    );
     assert_eq!(edit_set.edits.len(), 2);
 
     // Edit 0 is a pure insertion — original-space offsets are 1..1.
@@ -173,8 +166,10 @@ fn test_build_incremental_edits_negative_shift_uses_checked_add() {
         },
     ];
 
-    let edit_set = build_incremental_edit_set(&original, &changes)
-        .expect("deletion batch followed by suffix edit should be mappable");
+    let edit_set = crate::must_some_with(
+        build_incremental_edit_set(&original, &changes),
+        "deletion batch followed by suffix edit should be mappable",
+    );
     assert_eq!(edit_set.edits.len(), 2, "both edits should be in the set");
 
     // Edit 0 maps 1..1 in original space (zero-length deletion start at byte 1 was already
@@ -240,7 +235,7 @@ fn test_incremental_path_taken_on_ranged_change() -> Result<(), Box<dyn std::err
         // "43" in the source, but would not have the version counter bumped from 0.
         // Checking the source text is the strongest behavioral assertion available
         // without mocking the apply_edits call itself.
-        let inc = doc.incremental_doc.as_ref().unwrap();
+        let inc = crate::must_some(doc.incremental_doc.as_ref());
         assert!(
             inc.source.contains("43"),
             "incremental_doc.source must contain the edit result; got: {:?}",
@@ -470,7 +465,7 @@ fn test_incremental_state_wired_into_did_change() -> Result<(), Box<dyn std::err
             doc.incremental_state.is_some(),
             "incremental_state must be initialized on didOpen (Gap A wiring absent)"
         );
-        let state = doc.incremental_state.as_ref().unwrap();
+        let state = crate::must_some(doc.incremental_state.as_ref());
         assert!(
             state.lex_checkpoints.len() > 1,
             "IncrementalState must have lex checkpoints after initial parse, got {}",
@@ -502,7 +497,7 @@ fn test_incremental_state_wired_into_did_change() -> Result<(), Box<dyn std::err
             doc.incremental_state.is_some(),
             "incremental_state must survive a ranged edit (Gap A wiring absent)"
         );
-        let state = doc.incremental_state.as_ref().unwrap();
+        let state = crate::must_some(doc.incremental_state.as_ref());
         assert!(
             state.source.contains("999"),
             "incremental_state.source must reflect edit; got: {:?}",

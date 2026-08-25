@@ -896,10 +896,6 @@ impl LspServer {
 
 #[cfg(test)]
 mod tests {
-    // Tests are permitted to use `.expect()` on Result/Option per the repo's
-    // coding standards (unlike production code, where it is banned).
-    #![allow(clippy::expect_used)]
-
     use super::*;
 
     fn open_doc(server: &LspServer, uri: &str, text: &str) {
@@ -986,9 +982,10 @@ mod tests {
         let script_text = "App->run();\n";
 
         // Index the file (transitions coordinator to Building internally).
-        server
-            .test_index_file_in_building_state(script_uri, script_text)
-            .expect("indexing script.pl");
+        crate::must_with(
+            server.test_index_file_in_building_state(script_uri, script_text),
+            "indexing script.pl",
+        );
         // Transition coordinator to Ready so workspace path is taken.
         server.test_simulate_indexing_complete();
 
@@ -1017,10 +1014,10 @@ mod tests {
         })));
 
         assert!(result.is_ok(), "handle_incoming_calls must not error: {result:?}");
-        let value = result.expect("already checked");
-        let value = value.expect("handler must return Some value");
+        let value = crate::must_with(result, "already checked");
+        let value = crate::must_some_with(value, "handler must return Some value");
         // handle_incoming_calls returns the calls array directly (not wrapped in {"result":...})
-        let calls = value.as_array().expect("result should be an array");
+        let calls = crate::must_some_with(value.as_array(), "result should be an array");
 
         // The reference in script.pl has no enclosing callable, so the workspace
         // path must synthesize a file-level caller with kind=1 (SymbolKind.File).
@@ -1028,7 +1025,7 @@ mod tests {
             .iter()
             .find(|c| c["from"]["uri"].as_str().is_some_and(|u| u.contains("script.pl")));
         assert!(file_caller.is_some(), "expected file-level caller from script.pl, got: {calls:?}");
-        let from = &file_caller.expect("already checked")["from"];
+        let from = &crate::must_some_with(file_caller, "already checked")["from"];
         assert_eq!(
             from["kind"].as_u64(),
             Some(1),
@@ -1146,10 +1143,10 @@ mod tests {
             "textDocument": { "uri": caller_uri },
             "position": { "line": 1, "character": 4 }
         })))?;
-        let item = prepared
-            .and_then(|v| v.as_array().cloned())
-            .and_then(|items| items.first().cloned())
-            .expect("prepareCallHierarchy must return process item");
+        let item = crate::must_some_with(
+            prepared.and_then(|v| v.as_array().cloned()).and_then(|items| items.first().cloned()),
+            "prepareCallHierarchy must return process item",
+        );
 
         let fresh = server.handle_outgoing_calls(Some(json!({ "item": item })))?;
         let fresh_calls = fresh.and_then(|v| v.as_array().cloned()).unwrap_or_default();

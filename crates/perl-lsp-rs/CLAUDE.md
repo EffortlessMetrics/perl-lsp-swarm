@@ -18,9 +18,10 @@ cargo fmt --all
 # Hosted clippy_scoped / clippy_full:
 #   cargo clippy --locked --lib -p perllsp -- -D warnings -A missing_docs
 # Package-local equivalent (same lib; this crate's Cargo package name):
-cargo clippy -p perl-lsp-rs --lib --locked -- -D warnings -A missing_docs
-# `--tests` hides unused imports that exist only inside `#[cfg(test)]` (#9618).
-cargo clippy -p perl-lsp-rs --tests
+cargo clippy -p perl-lsp-rs --lib --locked --no-deps -- -D warnings -A missing_docs
+# `--all-targets` is the product subject (#9600). `--tests` is not a substitute:
+# it omits benches/build and hides --lib unused-import findings (#9618).
+cargo clippy -p perl-lsp-rs --all-targets --locked --no-deps -- -D warnings -A missing_docs
 RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs -- --test-threads=2
 ```
 

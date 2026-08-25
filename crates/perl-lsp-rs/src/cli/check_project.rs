@@ -391,9 +391,6 @@ fn remediation_hint_for_category(category: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    // Test assertions favor `expect()` with a descriptive message over
-    // silent unwraps; the workspace-wide deny is a production-code rule.
-    #![allow(clippy::expect_used)]
     use super::{
         RenderedError, categorize_error, is_vendored_dir_name, remediation_hint_for_category,
     };
@@ -411,10 +408,10 @@ mod tests {
         let result = parser.parse();
         // An unclosed block yields a blocking error (either as the returned
         // Err or in the recovered diagnostics).
-        let err: perl_parser::ParseError = result
-            .err()
-            .or_else(|| parser.errors().iter().next().cloned())
-            .expect("source with an unclosed block must produce a parse error");
+        let err: perl_parser::ParseError = crate::must_some_with(
+            result.err().or_else(|| parser.errors().iter().next().cloned()),
+            "source with an unclosed block must produce a parse error",
+        );
 
         let rendered = RenderedError::from_parse(source, &err);
 

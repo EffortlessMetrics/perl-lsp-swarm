@@ -2,10 +2,6 @@
 //!
 //! This test suite validates that parse errors are enriched with actionable
 //! fix suggestions when converted to LSP diagnostics.
-#![expect(
-    clippy::unwrap_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
 
 use perl_lsp::{JsonRpcRequest, LspServer};
 use serde_json::json;
@@ -158,7 +154,7 @@ fn lsp_diagnostic_structure() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(first["source"], "perl-lsp", "Should have perl-lsp source");
         assert!(first["message"].is_string(), "Should have message");
 
-        let message = first["message"].as_str().unwrap();
+        let message = perl_test_must::must_some(first["message"].as_str());
         // AC8: Clear, consistent formatting
         assert!(!message.is_empty(), "Message should not be empty");
     }

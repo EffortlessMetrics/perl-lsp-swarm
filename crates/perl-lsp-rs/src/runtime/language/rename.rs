@@ -1921,10 +1921,6 @@ impl LspServer {
 
 #[cfg(test)]
 mod tests {
-    // Tests are permitted to use `.expect()` on Result/Option per the repo's
-    // coding standards (unlike production code, where it is banned).
-    #![allow(clippy::expect_used)]
-
     use super::*;
 
     fn position_of(text: &str, needle: &str) -> Result<(u32, u32), Box<dyn std::error::Error>> {
@@ -2316,9 +2312,15 @@ mod tests {
             .map_err(std::io::Error::other)?;
 
         let (line, character) = position_of(request_source, "target {")?;
-        let error = server
-            .handle_rename_workspace(Some(rename_params(request_uri, line, character, "renamed")))
-            .expect_err("partial-index package rename must fail closed");
+        let error = crate::must_err_with(
+            server.handle_rename_workspace(Some(rename_params(
+                request_uri,
+                line,
+                character,
+                "renamed",
+            ))),
+            "partial-index package rename must fail closed",
+        );
 
         assert_eq!(error.code, REQUEST_FAILED);
         assert!(
@@ -2342,9 +2344,15 @@ mod tests {
             .map_err(std::io::Error::other)?;
 
         let (line, character) = position_of(request_source, "target {")?;
-        let error = server
-            .handle_rename_workspace(Some(rename_params(request_uri, line, character, "renamed")))
-            .expect_err("partial-index package rename must fail closed");
+        let error = crate::must_err_with(
+            server.handle_rename_workspace(Some(rename_params(
+                request_uri,
+                line,
+                character,
+                "renamed",
+            ))),
+            "partial-index package rename must fail closed",
+        );
 
         assert_eq!(error.code, REQUEST_FAILED);
         assert!(
@@ -2444,9 +2452,15 @@ mod tests {
         server.pending_index_task_count.store(1, std::sync::atomic::Ordering::Release);
 
         let (line, character) = position_of(request_source, "target {")?;
-        let error = server
-            .handle_rename_workspace(Some(rename_params(request_uri, line, character, "renamed")))
-            .expect_err("package rename must fail closed while index update task is pending");
+        let error = crate::must_err_with(
+            server.handle_rename_workspace(Some(rename_params(
+                request_uri,
+                line,
+                character,
+                "renamed",
+            ))),
+            "package rename must fail closed while index update task is pending",
+        );
 
         assert_eq!(error.code, REQUEST_FAILED);
         assert_eq!(
@@ -2473,9 +2487,15 @@ mod tests {
         server.test_apply_did_open(caller_uri, caller_source, 1)?;
 
         let (line, character) = position_of(request_source, "target {")?;
-        let error = server
-            .handle_rename_workspace(Some(rename_params(request_uri, line, character, "renamed")))
-            .expect_err("missing-index package rename must fail closed");
+        let error = crate::must_err_with(
+            server.handle_rename_workspace(Some(rename_params(
+                request_uri,
+                line,
+                character,
+                "renamed",
+            ))),
+            "missing-index package rename must fail closed",
+        );
 
         assert_eq!(error.code, REQUEST_FAILED);
         assert!(

@@ -515,10 +515,6 @@ pub fn validate_rename(_key: &SymbolKey, new_name: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    // Tests are permitted to use `.expect()` on Result/Option per the repo's
-    // coding standards (unlike production code, where it is banned).
-    #![allow(clippy::expect_used)]
-
     use super::*;
     use std::sync::Arc;
     use url::Url;
@@ -738,8 +734,10 @@ $var;
             kind: SymKind::Sub,
         };
 
-        let refusal = build_rename_edit(&idx, &key, "process_records")
-            .expect_err("workspace rename should refuse ambiguous unqualified cross-package refs");
+        let refusal = crate::must_err_with(
+            build_rename_edit(&idx, &key, "process_records"),
+            "workspace rename should refuse ambiguous unqualified cross-package refs",
+        );
         assert!(
             matches!(refusal, RenameRefusal::AmbiguousIdentity(_)),
             "expected AmbiguousIdentity refusal, got: {refusal:?}"
@@ -770,8 +768,10 @@ $var;
             kind: SymKind::Sub,
         };
 
-        let refusal = build_rename_edit(&idx, &key, "process_records")
-            .expect_err("workspace rename should refuse ambiguous &name cross-package refs");
+        let refusal = crate::must_err_with(
+            build_rename_edit(&idx, &key, "process_records"),
+            "workspace rename should refuse ambiguous &name cross-package refs",
+        );
         assert!(
             matches!(refusal, RenameRefusal::AmbiguousIdentity(_)),
             "expected AmbiguousIdentity refusal for &name cross-package call, got: {refusal:?}"

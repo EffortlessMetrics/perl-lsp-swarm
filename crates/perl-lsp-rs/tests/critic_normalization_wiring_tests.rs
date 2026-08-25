@@ -15,11 +15,6 @@
 //! exclusion/suppression can never leave a second spelling active on a
 //! consumer surface.
 
-#![expect(
-    clippy::panic,
-    reason = "test-only barrier failure is a hard test error, not a production path"
-)]
-
 use std::fs;
 use std::path::Path;
 
@@ -39,18 +34,20 @@ const NATIVE_CONSUMER_SOURCES: [&str; 4] = [
 fn production_source(rel_path: &str) -> String {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let path = manifest_dir.join("src").join(rel_path);
-    fs::read_to_string(&path).unwrap_or_else(|error| {
-        panic!("production source {} must be readable: {error}", path.display())
-    })
+    perl_test_must::must_with(
+        fs::read_to_string(&path),
+        format!("production source {} must be readable", path.display()),
+    )
 }
 
 /// Read one production source file of the `perl-lsp-rs-core` workspace crate.
 fn core_source(rel_path: &str) -> String {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let path = manifest_dir.join("..").join("perl-lsp-rs-core").join("src").join(rel_path);
-    fs::read_to_string(&path).unwrap_or_else(|error| {
-        panic!("production source {} must be readable: {error}", path.display())
-    })
+    perl_test_must::must_with(
+        fs::read_to_string(&path),
+        format!("production source {} must be readable", path.display()),
+    )
 }
 
 /// The reviewed built-in overlap cohort (#11915/#11918): exactly these seven
@@ -204,9 +201,10 @@ fn transport_coincidence_dedup_stays_retired_for_upstream_merged_aliases() {
     // dedup must keep exempting exactly those pairs; restoring the collapse
     // here would silently mask a merge regression as "no duplicates".
     let source = production_source("runtime/diagnostics.rs");
-    let dedup_start = source
-        .find("fn dedup_overlapping_diagnostics")
-        .unwrap_or_else(|| panic!("transport dedup must remain defined for non-migrated pairs"));
+    let dedup_start = perl_test_must::must_some_with(
+        source.find("fn dedup_overlapping_diagnostics"),
+        "transport dedup must remain defined for non-migrated pairs",
+    );
     let dedup_body = &source[dedup_start..dedup_start + 2000];
     assert!(
         dedup_body.contains("is_upstream_merged_alias_pair("),

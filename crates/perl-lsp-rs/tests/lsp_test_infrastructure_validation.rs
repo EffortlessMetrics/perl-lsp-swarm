@@ -7,10 +7,6 @@
 //! - Health checks
 //! - Graceful degradation
 //! - Enhanced error reporting
-#![expect(
-    clippy::unwrap_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
 // Integration tests print diagnostic output for CI troubleshooting; this is
 // not the LSP server's stdio transport, so print_stdout/print_stderr don't
 // apply the way they do to production code.
@@ -79,7 +75,7 @@ fn test_health_check_server_responsiveness() -> Result<(), String> {
 /// Test that resource monitoring tracks operation timing
 #[test]
 fn test_resource_monitoring() {
-    let env = TestEnvironment::validate().unwrap();
+    let env = perl_test_must::must(TestEnvironment::validate());
     let monitor = ResourceMonitor::start("resource_monitoring_test");
 
     // Simulate some work
@@ -161,7 +157,7 @@ fn test_timeout_profiles_are_appropriate() {
 #[test]
 fn test_ci_environment_detection() {
     let is_ci = is_ci_environment();
-    let env = TestEnvironment::validate().unwrap();
+    let env = perl_test_must::must(TestEnvironment::validate());
 
     eprintln!("CI detected: {}", is_ci);
     eprintln!("CI from environment: {}", env.is_ci);
@@ -174,7 +170,7 @@ fn test_ci_environment_detection() {
 #[test]
 fn test_adaptive_timeout_scaling() {
     let timeout = get_adaptive_timeout();
-    let env = TestEnvironment::validate().unwrap();
+    let env = perl_test_must::must(TestEnvironment::validate());
 
     eprintln!("Adaptive timeout: {:?}", timeout);
     eprintln!("Environment: {}", env.summary());
@@ -363,7 +359,7 @@ fn test_infrastructure_overhead_is_minimal() {
     let start = std::time::Instant::now();
 
     for _ in 0..iterations {
-        let _env = TestEnvironment::validate().unwrap();
+        let _env = perl_test_must::must(TestEnvironment::validate());
         let _timeout = get_adaptive_timeout();
     }
 

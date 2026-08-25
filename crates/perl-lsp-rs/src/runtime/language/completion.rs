@@ -2346,18 +2346,6 @@ impl LspServer {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
-    // Tests are permitted to use `.expect()` on Result/Option per the repo's
-    // coding standards (unlike production code, where it is banned).
-    #![allow(clippy::expect_used)]
-    #![expect(
-        clippy::panic,
-        reason = "test-only barrier failure is a hard test error, not a production path"
-    )]
-
     use super::*;
 
     fn explain_provider_decision(
@@ -4327,11 +4315,12 @@ mod tests {
         use serde_json::to_value;
 
         let caps = capabilities_for(BuildFlags::production());
-        let caps_json = to_value(&caps).expect("serialize ServerCapabilities");
+        let caps_json = crate::must_with(to_value(&caps), "serialize ServerCapabilities");
 
-        let completion_item_opt = caps_json
-            .pointer("/completionProvider/completionItem")
-            .expect("completionProvider.completionItem must be present");
+        let completion_item_opt = crate::must_some_with(
+            caps_json.pointer("/completionProvider/completionItem"),
+            "completionProvider.completionItem must be present",
+        );
         assert_eq!(
             completion_item_opt.get("labelDetailsSupport").and_then(|v| v.as_bool()),
             Some(true),
@@ -4790,14 +4779,14 @@ mod tests {
         // Strategy-B keep: symbol from same folder passes the filter.
         let same_folder_symbol_uri = "file:///project/folder-a/lib/Lib.pm";
         assert!(
-            workspace_folder_matches_doc_uri(best.unwrap(), same_folder_symbol_uri),
+            workspace_folder_matches_doc_uri(crate::must_some(best), same_folder_symbol_uri),
             "symbol in folder-a must pass folder-containment filter when doc is in folder-a"
         );
 
         // Strategy-B drop: symbol from other folder is rejected.
         let cross_folder_symbol_uri = "file:///project/folder-b/lib/Other.pm";
         assert!(
-            !workspace_folder_matches_doc_uri(best.unwrap(), cross_folder_symbol_uri),
+            !workspace_folder_matches_doc_uri(crate::must_some(best), cross_folder_symbol_uri),
             "symbol in folder-b must be rejected by folder-containment filter when doc is in folder-a"
         );
     }
@@ -5094,11 +5083,10 @@ our $single_root_var;
             None,
         );
 
-        let (label, insert_text, text_edit_range) = items
-            .iter()
-            .find(|(label, _, _)| label == "$api_token")
-            .cloned()
-            .unwrap_or_else(|| panic!("expected the `$api_token` candidate; got {items:?}"));
+        let (label, insert_text, text_edit_range) = crate::must_some_with(
+            items.iter().find(|(label, _, _)| label == "$api_token").cloned(),
+            format!("expected the `$api_token` candidate; got {items:?}"),
+        );
 
         assert_eq!(label, "$api_token", "the label stays bare so the candidate is still findable");
         assert_eq!(
@@ -5175,10 +5163,10 @@ our $single_root_var;
             Some("package App;\nour $api_local = 1;\n"),
         );
 
-        let (_, insert_text, text_edit_range) =
-            items.iter().find(|(label, _, _)| label == "$api_local").cloned().unwrap_or_else(
-                || panic!("expected the same-document `$api_local`; got {items:?}"),
-            );
+        let (_, insert_text, text_edit_range) = crate::must_some_with(
+            items.iter().find(|(label, _, _)| label == "$api_local").cloned(),
+            format!("expected the same-document `$api_local`; got {items:?}"),
+        );
 
         assert_eq!(
             insert_text.as_deref(),
@@ -5224,13 +5212,10 @@ our $single_root_var;
                 Some("package App;\nour $api_local = 1;\n"),
             );
 
-            let (_, insert_text, text_edit_range) = items
-                .iter()
-                .find(|(label, _, _)| label == "$api_local")
-                .cloned()
-                .unwrap_or_else(|| {
-                    panic!("expected the same-document `$api_local` for {doc_uri}; got {items:?}")
-                });
+            let (_, insert_text, text_edit_range) = crate::must_some_with(
+                items.iter().find(|(label, _, _)| label == "$api_local").cloned(),
+                format!("expected the same-document `$api_local` for {doc_uri}; got {items:?}"),
+            );
             assert_eq!(
                 insert_text.as_deref(),
                 Some("$api_local"),
@@ -5238,10 +5223,10 @@ our $single_root_var;
             );
             assert!(text_edit_range.is_none());
 
-            let (_, cross_file_insert, _) =
-                items.iter().find(|(label, _, _)| label == "$api_token").cloned().unwrap_or_else(
-                    || panic!("vacuity guard: expected `$api_token` for {doc_uri}; got {items:?}"),
-                );
+            let (_, cross_file_insert, _) = crate::must_some_with(
+                items.iter().find(|(label, _, _)| label == "$api_token").cloned(),
+                format!("vacuity guard: expected `$api_token` for {doc_uri}; got {items:?}"),
+            );
             assert_eq!(
                 cross_file_insert.as_deref(),
                 Some("$Secrets::api_token"),
@@ -5260,10 +5245,10 @@ our $single_root_var;
             None,
         );
 
-        let (_, insert_text, text_edit_range) =
-            items.iter().find(|(label, _, _)| label == "$api_token").cloned().unwrap_or_else(
-                || panic!("expected `$api_token` from the qualified route; got {items:?}"),
-            );
+        let (_, insert_text, text_edit_range) = crate::must_some_with(
+            items.iter().find(|(label, _, _)| label == "$api_token").cloned(),
+            format!("expected `$api_token` from the qualified route; got {items:?}"),
+        );
 
         assert_eq!(insert_text.as_deref(), Some("$Secrets::api_token"));
         assert!(text_edit_range.is_some());
