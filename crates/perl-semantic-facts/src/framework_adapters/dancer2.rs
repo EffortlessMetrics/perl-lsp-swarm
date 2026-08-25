@@ -48,8 +48,11 @@ pub const DANCER2_ADAPTER_ID: AdapterId = AdapterId(0x0044_4E43);
 /// contract: `prefix` (global) and `route_parameters` (route-handler-only).
 pub const DANCER2_DSL_CONTRACT_VERSION: &str = "dancer2-dsl.1-1.v2";
 
-/// Reviewed versioned-descriptor schema revision for this adapter.
-pub const DANCER2_DESCRIPTOR_REVISION: u32 = 1;
+/// Reviewed versioned-descriptor schema revision for this adapter. Tracks
+/// [`FRAMEWORK_ADAPTER_SCHEMA_VERSION`](crate::framework_raw::FRAMEWORK_ADAPTER_SCHEMA_VERSION):
+/// the descriptor travels on the adapter SDK wire, whose version 2 carries
+/// the #8921 route-family fact kinds.
+pub const DANCER2_DESCRIPTOR_REVISION: u32 = 2;
 
 /// Reviewed default Dancer2 DSL keyword scope.
 #[non_exhaustive]

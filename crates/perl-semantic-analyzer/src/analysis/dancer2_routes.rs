@@ -54,7 +54,7 @@
 
 use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::framework_adapters::dancer2_routes::{
-    DANCER2_ROUTE_KEYWORDS, Dancer2PrefixDeclaration, Dancer2RouteDeclaration,
+    DANCER2_ROUTE_KEYWORDS, Dancer2PrefixDeclaration, Dancer2RouteDeclaration, RouteRegistration,
     dancer2_keyword_methods, normalize_dancer2_method,
 };
 use perl_semantic_facts::route::{
@@ -264,7 +264,11 @@ fn walk_statements(statements: &[Node], file_id: FileId, state: &mut WalkState) 
                         options: RouteOptions::Map(Vec::new()),
                         handler: handler_from_node(handler_node, file_id),
                     },
+                    // Regex patterns are not scanned for deprecated
+                    // placeholders (their capture shape is already a typed
+                    // unsupported-capture boundary), so this form registers.
                     parameters: parameter_segments_for_regex_pattern(&pattern),
+                    registration: RouteRegistration::Registers,
                 });
                 state.next_route_index += 1;
                 index += 2;
@@ -304,10 +308,7 @@ fn any_list_head(expression: &Node) -> Option<(&Node, &Node, &[Node])> {
     }
 }
 
-fn route_from_expression(
-    expression: &Node,
-    state: &WalkState,
-) -> Option<Dancer2RouteDeclaration> {
+fn route_from_expression(expression: &Node, state: &WalkState) -> Option<Dancer2RouteDeclaration> {
     if let NodeKind::FunctionCall { name, args } = &expression.kind {
         if !DANCER2_ROUTE_KEYWORDS.contains(&name.as_str()) {
             return None;
@@ -467,6 +468,7 @@ fn build_from_operands(
     let pattern = pattern_from_node(pattern_node, file_id);
     let mut parameters = parameter_segments_from_pattern(pattern_node, &pattern, file_id);
     let mut effective = effective_pattern(&pattern, &prefix_state);
+    let mut never_registers = false;
     if pattern.kind == RoutePatternKind::Literal {
         // A literal prefix ending with an open token run merges tokens (or
         // splat shapes) across the prefix/pattern boundary: the composed
@@ -486,16 +488,24 @@ fn build_from_operands(
             }];
         }
         // The upstream route constructor croaks on the deprecated
-        // `:splat`/`:captures` placeholders: such a route never registers, so
-        // it has no effective path.
-        if parameters.iter().any(|segment| {
+        // `:splat`/`:captures` placeholders — in the local pattern *or*
+        // contributed by the composed prefix, because upstream scans the
+        // composed pattern: such a route never registers, so it has no
+        // effective path and no runnable handler context.
+        let local_deprecated = parameters.iter().any(|segment| {
             matches!(segment.kind, RouteParameterKind::Named)
                 && matches!(&segment.name,
                     Some(name) if name == "splat" || name == "captures")
-        }) {
+        });
+        let composed_deprecated = match &effective {
+            RouteEffectivePattern::Composed { value, .. } => contains_deprecated_placeholder(value),
+            _ => false,
+        };
+        if local_deprecated || composed_deprecated {
+            never_registers = true;
             effective = RouteEffectivePattern::Boundary {
-                reason: "deprecated named placeholder `splat`/`captures`; the route fails \
-                         to register upstream"
+                reason: "deprecated named placeholder `splat`/`captures` (local or \
+                         prefix-contributed); the route fails to register upstream"
                     .to_string(),
             };
         }
@@ -517,6 +527,11 @@ fn build_from_operands(
             handler: handler_from_node(handler_node, file_id),
         },
         parameters,
+        registration: if never_registers {
+            RouteRegistration::NeverRegisters
+        } else {
+            RouteRegistration::Registers
+        },
     })
 }
 
@@ -570,10 +585,19 @@ fn handle_prefix_statement(expression: &Node, state: &mut WalkState) -> bool {
                         contributions
                     },
                 },
-                (RoutePrefixSelection::Literal(literal), _) => PrefixState::Literal {
-                    value: literal.value.clone(),
-                    contributions: vec![declaration_index],
-                },
+                // The reviewed upstream `lexical_prefix` concatenates onto
+                // the enclosing app prefix: with no enclosing prefix the
+                // lexical literal stands alone.
+                (RoutePrefixSelection::Literal(literal), PrefixState::None) => {
+                    PrefixState::Literal {
+                        value: literal.value.clone(),
+                        contributions: vec![declaration_index],
+                    }
+                }
+                // A literal lexical prefix under a computed enclosing prefix
+                // concatenates onto an unknown value: the composition stays a
+                // boundary, never the lexical literal alone.
+                (RoutePrefixSelection::Literal(_), PrefixState::Dynamic) => PrefixState::Dynamic,
                 // A lexical `prefix '/'` (or empty) composes nothing: the
                 // enclosing state carries through unchanged.
                 (RoutePrefixSelection::Cleared, _) => enclosing.clone(),
@@ -632,15 +656,22 @@ fn prefix_selection_from_operand(node: &Node, file_id: FileId) -> RoutePrefixSel
         NodeKind::String { value, interpolated }
             if !*interpolated || !interpolated_value_is_dynamic(value) =>
         {
-            match unquote(value) {
+            match static_string(value) {
                 // The reviewed app-level prefix coercion treats `/` (and the
                 // falsy empty string) as no prefix.
-                Some(value) if value == "/" => RoutePrefixSelection::Cleared,
-                Some(value) => RoutePrefixSelection::Literal(RoutePrefixLiteral {
+                StaticString::Exact(value) if value == "/" => RoutePrefixSelection::Cleared,
+                StaticString::Exact(value) => RoutePrefixSelection::Literal(RoutePrefixLiteral {
                     value,
                     anchor: anchor(node.location.start, node.location.end, file_id),
                 }),
-                None => RoutePrefixSelection::Cleared,
+                StaticString::Empty => RoutePrefixSelection::Cleared,
+                // An escaped operand decodes to unknown runtime bytes: the
+                // prefix is a boundary, never cleared (which would claim the
+                // application has no prefix) and never a guessed literal.
+                StaticString::Escaped => RoutePrefixSelection::Dynamic {
+                    reason: "escaped prefix operand; escapes are not evaluated".to_string(),
+                    anchor: Some(anchor(node.location.start, node.location.end, file_id)),
+                },
             }
         }
         _ => RoutePrefixSelection::Dynamic {
@@ -711,6 +742,34 @@ fn prefix_ends_open_token(value: &str) -> bool {
         None => value,
     };
     after_last_terminator.contains(':') || value.ends_with('*')
+}
+
+/// Whether a composed pattern value contains the deprecated `:splat` or
+/// `:captures` placeholder anywhere — upstream scans the composed pattern
+/// (prefix + route pattern) and croaks on it at registration. Token rules
+/// mirror the parameter scanner: `:`-opened runs terminated by `/`, `.`, or
+/// `?`.
+fn contains_deprecated_placeholder(composed: &str) -> bool {
+    let bytes = composed.as_bytes();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        if bytes[cursor] != b':' {
+            cursor += 1;
+            continue;
+        }
+        let mut end = cursor + 1;
+        while end < bytes.len() && !matches!(bytes[end], b'/' | b'.' | b'?') {
+            end += 1;
+        }
+        if end > cursor + 1 {
+            let token = &composed[cursor + 1..end];
+            if token == "splat" || token == "captures" {
+                return true;
+            }
+        }
+        cursor = end.max(cursor + 1);
+    }
+    false
 }
 
 /// Route-local parameter/capture segments of one route pattern operand
@@ -828,12 +887,13 @@ fn token_parameter(
 }
 
 /// Byte padding between a pattern operand's anchor start and its unquoted
-/// value (exactly one pair of quotes when quoted).
+/// value (exactly one pair of quotes when quoted). Only leading whitespace is
+/// measured: trailing whitespace would shift the content start backwards.
 fn quote_padding(node: &Node) -> usize {
     if let NodeKind::String { value, .. } = &node.kind {
-        let trimmed = value.trim();
-        if trimmed.starts_with('\'') || trimmed.starts_with('"') {
-            return 1 + (value.len() - trimmed.len());
+        let trimmed_start = value.trim_start();
+        if trimmed_start.starts_with('\'') || trimmed_start.starts_with('"') {
+            return 1 + (value.len() - trimmed_start.len());
         }
     }
     0
@@ -855,6 +915,30 @@ fn unquote(raw: &str) -> Option<String> {
         .or_else(|| trimmed.strip_prefix('"').and_then(|value| value.strip_suffix('"')))
         .unwrap_or(trimmed);
     if stripped.is_empty() { None } else { Some(stripped.to_string()) }
+}
+
+/// Classification of a quoted string operand's statically claimable value.
+///
+/// The AST string node carries the raw token spelling; escapes are not
+/// evaluated, so any interior backslash means the runtime bytes differ from
+/// the source bytes (`"/u/\x3aid"` is `/u/:id` to Dancer2 at runtime). Such
+/// operands stay typed boundaries — the extractor never guesses the decoded
+/// value — while escape-free interiors map 1:1 onto the source bytes after
+/// the opening quote, keeping parameter anchors exact.
+enum StaticString {
+    /// Exact runtime value, byte-for-byte the unquoted token interior.
+    Exact(String),
+    /// Empty string operand.
+    Empty,
+    /// Interior contains escape sequences this extractor does not evaluate.
+    Escaped,
+}
+
+fn static_string(raw: &str) -> StaticString {
+    let Some(unquoted) = unquote(raw) else {
+        return StaticString::Empty;
+    };
+    if unquoted.contains('\\') { StaticString::Escaped } else { StaticString::Exact(unquoted) }
 }
 
 /// Whether an interpolated string operand is statically a computed value.
@@ -887,10 +971,28 @@ fn pattern_from_node(node: &Node, file_id: FileId) -> RoutePattern {
         NodeKind::String { value, interpolated }
             if !*interpolated || !interpolated_value_is_dynamic(value) =>
         {
-            RoutePattern {
-                kind: RoutePatternKind::Literal,
-                value: unquote(value),
-                anchor: anchor(node.location.start, node.location.end, file_id),
+            match static_string(value) {
+                StaticString::Exact(value) => RoutePattern {
+                    kind: RoutePatternKind::Literal,
+                    value: Some(value),
+                    anchor: anchor(node.location.start, node.location.end, file_id),
+                },
+                // An empty pattern stays a valueless literal: the fact
+                // constructor coerces it to the dynamic boundary.
+                StaticString::Empty => RoutePattern {
+                    kind: RoutePatternKind::Literal,
+                    value: None,
+                    anchor: anchor(node.location.start, node.location.end, file_id),
+                },
+                // Escapes are not evaluated: the runtime pattern bytes are
+                // unknown here, so the operand is a typed boundary rather
+                // than an exact pattern with wrong content and wrong
+                // parameter anchors.
+                StaticString::Escaped => RoutePattern {
+                    kind: RoutePatternKind::Dynamic,
+                    value: None,
+                    anchor: anchor(node.location.start, node.location.end, file_id),
+                },
             }
         }
         NodeKind::Regex { pattern, has_embedded_code, .. }
@@ -915,13 +1017,17 @@ fn name_from_node(node: &Node, file_id: FileId) -> RouteNameSelection {
         NodeKind::String { value, interpolated }
             if !*interpolated || !interpolated_value_is_dynamic(value) =>
         {
-            match unquote(value) {
-                Some(value) => RouteNameSelection::Literal(RouteName {
+            match static_string(value) {
+                StaticString::Exact(value) => RouteNameSelection::Literal(RouteName {
                     value,
                     anchor: anchor(node.location.start, node.location.end, file_id),
                 }),
-                None => RouteNameSelection::Dynamic {
+                StaticString::Empty => RouteNameSelection::Dynamic {
                     reason: "empty route name operand".to_string(),
+                    anchor: anchor(node.location.start, node.location.end, file_id),
+                },
+                StaticString::Escaped => RouteNameSelection::Dynamic {
+                    reason: "escaped route name operand; escapes are not evaluated".to_string(),
                     anchor: anchor(node.location.start, node.location.end, file_id),
                 },
             }
@@ -946,13 +1052,17 @@ fn options_from_node(node: &Node, file_id: FileId) -> RouteOptions {
             NodeKind::String { value: key_value, interpolated }
                 if !*interpolated || !interpolated_value_is_dynamic(key_value) =>
             {
-                unquote(key_value)
+                match static_string(key_value) {
+                    StaticString::Exact(key) => Some(key),
+                    StaticString::Empty | StaticString::Escaped => None,
+                }
             }
             _ => None,
         };
         let Some(key) = literal_key else {
             return RouteOptions::Dynamic {
-                reason: "computed or empty option key is an explicit boundary".to_string(),
+                reason: "computed, empty, or escaped option key is an explicit boundary"
+                    .to_string(),
                 anchor: Some(anchor(node.location.start, node.location.end, file_id)),
             };
         };
@@ -960,9 +1070,14 @@ fn options_from_node(node: &Node, file_id: FileId) -> RouteOptions {
             NodeKind::String { value, interpolated }
                 if !*interpolated || !interpolated_value_is_dynamic(value) =>
             {
-                match unquote(value) {
-                    Some(literal) => RouteOptionValue::Literal(literal),
-                    None => RouteOptionValue::Dynamic { reason: "empty option value".to_string() },
+                match static_string(value) {
+                    StaticString::Exact(literal) => RouteOptionValue::Literal(literal),
+                    StaticString::Empty => {
+                        RouteOptionValue::Dynamic { reason: "empty option value".to_string() }
+                    }
+                    StaticString::Escaped => RouteOptionValue::Dynamic {
+                        reason: "escaped option value; escapes are not evaluated".to_string(),
+                    },
                 }
             }
             NodeKind::String { .. } => {
@@ -1522,6 +1637,84 @@ get '/y' => sub { 2 };
     }
 
     #[test]
+    fn lexical_literal_prefix_under_dynamic_parent_stays_a_boundary() {
+        // The reviewed upstream `lexical_prefix` concatenates onto the
+        // enclosing app prefix: a literal under a computed parent composes
+        // onto an unknown value and must never surface as the literal alone.
+        let code = "prefix $base;\nprefix '/v1' => sub {\n  get '/x' => sub { 1 };\n};\n";
+        let found = contexts(code);
+        assert_eq!(found.routes.len(), 1);
+        assert!(
+            matches!(effective_of(&found.routes[0]), RouteEffectivePattern::Boundary { .. }),
+            "a lexical literal under a computed sticky prefix composes onto an unknown value"
+        );
+        // Control: the same lexical literal with no enclosing prefix stands
+        // alone exactly.
+        let control = contexts("prefix '/v1' => sub {\n  get '/x' => sub { 1 };\n};\n");
+        assert_eq!(composed_value(&control.routes[0]), "/v1/x");
+    }
+
+    #[test]
+    fn escaped_string_operands_stay_boundaries() {
+        // Escapes are not evaluated: the runtime pattern bytes are unknown,
+        // so an escaped pattern operand mints no exact pattern, no parameter
+        // facts, and no exact effective path (`"/u/\x3aid"` is `/u/:id` to
+        // Dancer2 at runtime).
+        let found = declarations(r#"get "/u/\x3aid" => sub { 1 };"#);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].route.pattern.kind, RoutePatternKind::Dynamic);
+        assert!(
+            found[0].parameters.is_empty(),
+            "no parameter keys may be claimed for an escaped pattern"
+        );
+        assert!(matches!(effective_of(&found[0]), RouteEffectivePattern::Boundary { .. }));
+
+        // An escaped prefix operand is a dynamic boundary, never cleared
+        // (which would falsely claim the application has no prefix).
+        let found = contexts(r#"prefix "/api\n"; get '/x' => sub { 1 };"#);
+        assert!(
+            matches!(found.prefixes[0].prefix.selection, RoutePrefixSelection::Dynamic { .. }),
+            "an escaped prefix operand stays a typed boundary"
+        );
+        assert!(matches!(effective_of(&found.routes[0]), RouteEffectivePattern::Boundary { .. }));
+
+        // An escaped route name stays a boundary rather than a guessed
+        // literal.
+        let found = declarations(r#"get "a\x20b", '/x' => sub { 1 };"#);
+        assert!(matches!(&found[0].route.route_name, RouteNameSelection::Dynamic { .. }));
+
+        // Control: escape-free quoted operands keep their exact values.
+        let found = declarations("get '/u/:id' => sub { 1 };");
+        assert_eq!(found[0].route.pattern.value.as_deref(), Some("/u/:id"));
+        assert_eq!(found[0].parameters.len(), 1);
+        assert_eq!(found[0].parameters[0].name.as_deref(), Some("id"));
+    }
+
+    #[test]
+    fn prefix_contributed_deprecated_placeholder_never_registers() {
+        // Upstream scans the composed pattern: a `:splat` contributed by the
+        // prefix croaks registration exactly like a local one, even though
+        // the route-local pattern operand has no parameters of its own.
+        let found = contexts("prefix '/:splat/';\nget '/x' => sub { 1 };\n");
+        assert_eq!(found.routes.len(), 1);
+        assert!(
+            matches!(effective_of(&found.routes[0]), RouteEffectivePattern::Boundary { .. }),
+            "prefix-contributed deprecated placeholders must degrade the composed projection"
+        );
+        assert_eq!(
+            found.routes[0].registration,
+            RouteRegistration::NeverRegisters,
+            "the route never registers, so no handler context may claim DSL availability"
+        );
+
+        // Control: a plain `:id` under the same prefix composes exactly and
+        // registers.
+        let found = contexts("prefix '/api';\nget '/x/:id' => sub { 1 };\n");
+        assert_eq!(composed_value(&found.routes[0]), "/api/x/:id");
+        assert_eq!(found.routes[0].registration, RouteRegistration::Registers);
+    }
+
+    #[test]
     fn prefix_state_is_package_scoped() {
         let code = "package A;\nprefix '/a';\nget '/x' => sub { 1 };\npackage B;\nget '/y' => sub { 1 };\n";
         let found = contexts(code);
@@ -1672,10 +1865,16 @@ get '/y' => sub { 2 };
                 matches!(effective_of(&found[0]), RouteEffectivePattern::Boundary { .. }),
                 "upstream croaks on `{pattern}`; the route has no effective path"
             );
+            assert_eq!(
+                found[0].registration,
+                RouteRegistration::NeverRegisters,
+                "the route never registers upstream"
+            );
         }
         // The typed spelling is not subject to the deprecated-name croak.
         let found = declarations("get '/:splat[Int]' => sub { 1 };");
         assert!(matches!(effective_of(&found[0]), RouteEffectivePattern::Local { .. }));
+        assert_eq!(found[0].registration, RouteRegistration::Registers);
     }
 
     #[test]

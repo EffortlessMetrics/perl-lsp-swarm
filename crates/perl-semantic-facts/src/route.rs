@@ -229,6 +229,19 @@ pub enum RouteEffectivePattern {
     },
 }
 
+/// Deterministic local (unprefixed) projection of one declared pattern
+/// value: string patterns gain the reviewed leading-`/` normalization,
+/// regex patterns are carried as-is. Mirrors the upstream `Dancer2::Core::
+/// Route` BUILDARGS normalization the analyzer composes under no prefix;
+/// [`RouteFact::new`] canonicalizes `Local` values to it.
+fn local_effective_value(pattern_value: &str, kind: RoutePatternKind) -> String {
+    if kind == RoutePatternKind::Literal && !pattern_value.starts_with('/') {
+        format!("/{pattern_value}")
+    } else {
+        pattern_value.to_string()
+    }
+}
+
 /// One literal prefix value with its exact source anchor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutePrefixLiteral {
@@ -724,9 +737,10 @@ impl RouteFact {
     /// are sorted and deduplicated; option maps are sorted by key with the last
     /// occurrence of a duplicated key winning (hash-construction semantics).
     /// The effective-pattern slot is kept coherent with the pattern slot: a
-    /// dynamic pattern forces an effective boundary, and a composed effective
+    /// dynamic pattern forces an effective boundary, a composed effective
     /// pattern requires a literal pattern with at least one contributing
-    /// prefix declaration.
+    /// prefix declaration, and a local projection is canonicalized to the
+    /// deterministic value of the declared pattern.
     #[allow(clippy::too_many_arguments)] // mirrors the fact contract fields
     #[must_use]
     pub fn new(
@@ -767,6 +781,20 @@ impl RouteFact {
                          contributing prefix declaration"
                     .to_string(),
             };
+        }
+        // A local projection is fully determined by the declared pattern —
+        // leading-`/` normalization for string patterns, regex patterns
+        // carried as-is — so a wire payload asserting any other value is
+        // canonicalized back to the deterministic projection: no exact
+        // status can rest on a local value the pattern does not produce
+        // (covers unchecked wire payloads).
+        if let (Some(pattern_value), RouteEffectivePattern::Local { value }) =
+            (&route.pattern.value, &mut route.effective_pattern)
+        {
+            let deterministic = local_effective_value(pattern_value, route.pattern.kind);
+            if *value != deterministic {
+                *value = deterministic;
+            }
         }
         if let RouteMethodSet::Exact(methods) = &mut route.methods {
             methods.sort();
@@ -1234,6 +1262,55 @@ mod tests {
         );
         assert_eq!(decoded.status(), SemanticFactStatus::Degraded);
         Ok(())
+    }
+
+    #[test]
+    fn local_effective_pattern_is_canonicalized_from_the_pattern() {
+        // A forged wire payload: literal pattern `users` with a `Local`
+        // value the pattern does not deterministically produce. The
+        // constructor canonicalizes the projection back to `/users` (the
+        // reviewed leading-`/` normalization), so no exact status rests on a
+        // value the declared pattern cannot generate.
+        let (fact_id, entity_id) =
+            route_fact_identity(FileId(1), 0, &SourceGeneration::known("gen-1"));
+        let mut route = literal_route(0);
+        route.pattern.value = Some("users".to_string());
+        route.effective_pattern = RouteEffectivePattern::Local { value: "/admin".to_string() };
+        let fact = RouteFact::new(
+            envelope_for(fact_id, entity_id, true),
+            "Dancer2",
+            AdapterId(1),
+            "1.1.1",
+            "App",
+            route,
+        );
+        assert!(
+            matches!(&fact.route.effective_pattern,
+                RouteEffectivePattern::Local { value } if value == "/users"),
+            "the local projection is the deterministic value of the declared pattern"
+        );
+
+        // A regex pattern's local projection is carried as-is, still
+        // canonicalized against the declared pattern value.
+        let (fact_id, entity_id) =
+            route_fact_identity(FileId(1), 1, &SourceGeneration::known("gen-1"));
+        let mut route = literal_route(1);
+        route.pattern.kind = RoutePatternKind::Regex;
+        route.pattern.value = Some("^/re/(\\d+)$".to_string());
+        route.effective_pattern = RouteEffectivePattern::Local { value: "/other".to_string() };
+        let fact = RouteFact::new(
+            envelope_for(fact_id, entity_id, true),
+            "Dancer2",
+            AdapterId(1),
+            "1.1.1",
+            "App",
+            route,
+        );
+        assert!(
+            matches!(&fact.route.effective_pattern,
+                RouteEffectivePattern::Local { value } if value == "^/re/(\\d+)$"),
+            "regex local projections carry the declared pattern as-is"
+        );
     }
 
     #[test]

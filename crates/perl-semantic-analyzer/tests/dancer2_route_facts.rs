@@ -677,21 +677,32 @@ fn zero_family_facts_without_registry_activation() {
     assert_eq!(facts, Dancer2RouteFacts::default(), "no detection, no facts of any kind");
 }
 
-// Falsifier: `!prefix` at the activating import suppresses prefix facts only.
+// Falsifier: `!prefix` at the activating import suppresses prefix facts and
+// degrades composed projections — the unimported keyword cannot establish a
+// proven application prefix.
 #[test]
 fn excluded_prefix_keyword_mints_no_prefix_facts() {
     let code = "package App;\nuse Dancer2 qw(!prefix);\nprefix '/api';\nget '/x' => sub { 1 };\n";
     let facts = family_facts(code, "gen-1");
     assert_eq!(facts.routes.len(), 1, "routes still mint");
     assert!(facts.prefixes.is_empty(), "the excluded keyword mints nothing");
-    // Without a minted prefix fact the composition still holds at extraction,
-    // but its dependency references a declaration that minted no fact.
+    // The composition degrades: without the imported keyword the `prefix`
+    // call is not a proven Dancer2 application prefix, so the route must not
+    // retain an exact `/api/x` projection or claim dependencies on the
+    // never-minted prefix declaration.
+    let route = &facts.routes[0];
     assert!(
-        facts.routes[0]
+        matches!(route.route.effective_pattern, RouteEffectivePattern::Boundary { .. }),
+        "composed projections over an excluded prefix keyword degrade"
+    );
+    assert_eq!(route.status(), SemanticFactStatus::Degraded);
+    assert!(
+        !route
             .envelope
             .invalidation_dependencies()
             .iter()
-            .any(|dependency| dependency.dependency_key == "route-prefix:1:0")
+            .any(|dependency| dependency.dependency_key == "route-prefix:1:0"),
+        "no dependency on a prefix declaration that minted no fact"
     );
 }
 

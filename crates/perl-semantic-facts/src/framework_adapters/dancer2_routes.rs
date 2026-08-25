@@ -51,6 +51,21 @@ pub const DANCER2_ANY_DEFAULT_METHODS: &[&str] =
 pub const DANCER2_ROUTE_KEYWORDS: &[&str] =
     &["get", "post", "put", "del", "options", "patch", "any"];
 
+/// Whether the reviewed upstream registration would accept this route
+/// declaration (#8921).
+///
+/// A route carrying a deprecated `:splat`/`:captures` placeholder (local or
+/// contributed by the composed prefix) never registers: the upstream route
+/// constructor croaks before the handler can run, so no handler-context fact
+/// may claim route-handler-only DSL availability for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteRegistration {
+    /// The declaration registers under the reviewed upstream constructor.
+    Registers,
+    /// The declaration is rejected by the reviewed upstream constructor.
+    NeverRegisters,
+}
+
 /// One source-extracted Dancer2 route declaration awaiting minting.
 ///
 /// Produced by the AST extractor in
@@ -71,6 +86,10 @@ pub struct Dancer2RouteDeclaration {
     /// Route-local parameter/capture segments of the pattern operand, in
     /// source order (#8921).
     pub parameters: Vec<RouteParameterSegment>,
+    /// Whether the reviewed upstream registration accepts this declaration
+    /// (#8921): never-registering routes keep their (degraded) route and
+    /// parameter facts but mint no handler-context fact.
+    pub registration: RouteRegistration,
 }
 
 /// One source-extracted Dancer2 prefix declaration awaiting minting (#8921).
@@ -160,13 +179,18 @@ pub fn dancer2_route_facts(
 /// Same registry-activated gating as [`dancer2_route_facts`]: zero facts of
 /// any kind without a detected framework plus an exact activation. A prefix
 /// declaration whose `prefix` keyword the activating import excluded mints
-/// nothing (`!prefix` means the keyword was never imported). Route facts with
-/// a composed effective pattern carry additional invalidation dependencies
-/// over every contributing prefix declaration (`route-prefix:<file>:<index>`),
-/// so a prefix edit invalidates the dependent route projections in the current
-/// generation. Parameter and handler-context facts mint only for minted
-/// routes, share the owning route's entity, and stay route/application
-/// scoped and generation owned.
+/// nothing (`!prefix` means the keyword was never imported), and a route
+/// composed against such a prefix degrades its effective pattern to a
+/// boundary — the unimported keyword cannot establish a proven application
+/// prefix. Route facts with a composed effective pattern carry additional
+/// invalidation dependencies over every contributing prefix declaration
+/// (`route-prefix:<file>:<index>`), so a prefix edit invalidates the
+/// dependent route projections in the current generation. Parameter and
+/// handler-context facts mint only for minted routes, share the owning
+/// route's entity, and stay route/application scoped and generation owned;
+/// handler context additionally requires a registering route (a deprecated
+/// `:splat`/`:captures` placeholder croaks upstream before the handler could
+/// run).
 #[must_use]
 pub fn dancer2_route_family_facts(
     detection: &AdapterDetectionResult,
@@ -192,6 +216,14 @@ pub fn dancer2_route_family_facts(
     let mut route_facts = Vec::new();
     let mut parameter_facts = Vec::new();
     let mut handler_context_facts = Vec::new();
+    // A composed projection is only proven when the activating import
+    // actually imported `prefix`: with `!prefix` (or an import list without
+    // it) the keyword was never established, so a `prefix` call cannot
+    // contribute an exact application prefix and routes composed against it
+    // degrade to a boundary instead of retaining the composed value.
+    let prefix_keyword_imported = keywords
+        .iter()
+        .any(|fact| fact.keyword == "prefix" && fact.state == Dancer2KeywordState::Imported);
     for declaration in declarations {
         if declaration.package.as_deref() != package {
             continue;
@@ -205,6 +237,21 @@ pub fn dancer2_route_family_facts(
             // imported, so this declaration is not a route of this activation.
             continue;
         }
+        let rewritten;
+        let declaration: &Dancer2RouteDeclaration = if !prefix_keyword_imported
+            && matches!(declaration.route.effective_pattern, RouteEffectivePattern::Composed { .. })
+        {
+            let mut minted = declaration.clone();
+            minted.route.effective_pattern = RouteEffectivePattern::Boundary {
+                reason: "prefix keyword not imported by the activating import; the composed \
+                             projection is not proven"
+                    .to_string(),
+            };
+            rewritten = minted;
+            &rewritten
+        } else {
+            declaration
+        };
         let route_fact =
             mint_route_fact(declaration, application_name, framework_version, source_generation);
         // Parameter facts exist only for minted routes: route-local keys of an
@@ -219,10 +266,14 @@ pub fn dancer2_route_family_facts(
                 source_generation,
             ));
         }
-        // Handler context exists only for an exact inline handler: a bounded
-        // handler relation (string/coderef/computed) has no source interval
-        // where route-handler-only DSL is proven available.
-        if let crate::route::RouteHandler::InlineSub { .. } = declaration.route.handler {
+        // Handler context exists only for an exact inline handler of a route
+        // the reviewed upstream constructor accepts: a bounded handler
+        // relation (string/coderef/computed) has no source interval, and a
+        // never-registering route croaks before its handler could run, so
+        // neither may claim route-handler-only DSL availability.
+        if let crate::route::RouteHandler::InlineSub { .. } = declaration.route.handler
+            && declaration.registration == RouteRegistration::Registers
+        {
             handler_context_facts.push(mint_handler_context_fact(
                 declaration,
                 application_name,
@@ -567,6 +618,7 @@ mod tests {
                 },
             },
             parameters: Vec::new(),
+            registration: RouteRegistration::Registers,
         }
     }
 
@@ -805,6 +857,52 @@ mod tests {
     }
 
     #[test]
+    fn handler_context_is_withheld_for_never_registering_routes() {
+        let detection = detect_dancer2(&detected_input("gen-1"));
+        let activation = exact_activation("gen-1");
+
+        // A deprecated local `:splat` placeholder croaks upstream before the
+        // handler could run: the route and parameter facts stay (degraded /
+        // anchored source observations), but no handler context may claim
+        // route-handler-only DSL availability for it.
+        let mut never_registers = literal_get_declaration(0);
+        never_registers.route.pattern.value = Some("/:splat".to_string());
+        never_registers.route.effective_pattern =
+            RouteEffectivePattern::Boundary { reason: "deprecated".to_string() };
+        never_registers.parameters = vec![RouteParameterSegment {
+            kind: RouteParameterKind::Named,
+            name: Some("splat".to_string()),
+            anchor: SourceAnchor::new(Some(AnchorId(6)), FileId(1), 6, 12),
+            limitation: None,
+        }];
+        never_registers.registration = RouteRegistration::NeverRegisters;
+        let family = dancer2_route_family_facts(
+            &detection,
+            &activation,
+            Some("App"),
+            &[never_registers],
+            &[],
+        );
+        assert_eq!(family.routes.len(), 1, "the route fact stays as a degraded observation");
+        assert_eq!(family.parameters.len(), 1, "the anchored parameter observation stays");
+        assert!(
+            family.handler_contexts.is_empty(),
+            "a never-registering route has no runnable handler context"
+        );
+
+        // Control: the same route shape with a registering declaration mints
+        // the handler context.
+        let mut registers = literal_get_declaration(0);
+        registers.route.pattern.value = Some("/:splat[Int]".to_string());
+        registers.route.effective_pattern =
+            RouteEffectivePattern::Local { value: "/:splat[Int]".to_string() };
+        let family =
+            dancer2_route_family_facts(&detection, &activation, Some("App"), &[registers], &[]);
+        assert_eq!(family.handler_contexts.len(), 1);
+        assert_eq!(family.handler_contexts[0].status(), crate::SemanticFactStatus::Exact);
+    }
+
+    #[test]
     fn family_minting_gates_on_activation_and_excluded_prefix() {
         let detection = detect_dancer2(&detected_input("gen-1"));
         let activation = exact_activation("gen-1");
@@ -832,21 +930,44 @@ mod tests {
             "composed route carries a prefix declaration dependency"
         );
 
-        // `!prefix` at the activating import: no prefix fact, and the route
-        // keeps its (already composed) projection — the exclusion only stops
-        // the keyword's own declarations.
+        // `!prefix` at the activating import: no prefix fact, and a route
+        // composed against that prefix degrades its projection — the
+        // unimported keyword cannot establish a proven application prefix,
+        // so the composed value must not survive as exact.
         let args: Vec<String> = ["qw(!prefix)"].iter().map(ToString::to_string).collect();
         let evidence = parse_dancer2_import_args(&args);
         let excluded = dancer2_activation_facts(&detection, Some("App"), &evidence);
+        let mut composed = literal_get_declaration(0);
+        composed.route.effective_pattern = RouteEffectivePattern::Composed {
+            value: "/api/x".to_string(),
+            prefix_declarations: vec![0],
+        };
         let family = dancer2_route_family_facts(
             &detection,
             &excluded,
             Some("App"),
-            &[literal_get_declaration(0)],
+            &[composed],
             &[sticky_prefix_declaration(0)],
         );
         assert_eq!(family.routes.len(), 1);
         assert!(family.prefixes.is_empty());
+        assert!(
+            matches!(
+                family.routes[0].route.effective_pattern,
+                RouteEffectivePattern::Boundary { .. }
+            ),
+            "a composed projection over an excluded prefix keyword must degrade, not survive"
+        );
+        assert_eq!(family.routes[0].status(), crate::SemanticFactStatus::Degraded);
+        // The degraded projection no longer claims prefix-declaration
+        // dependencies it does not prove.
+        assert!(
+            !family.routes[0]
+                .envelope
+                .invalidation_dependencies()
+                .iter()
+                .any(|dependency| dependency.dependency_key.starts_with("route-prefix:"))
+        );
 
         // No activation: nothing of any kind mints.
         let mut inactive = exact_activation("gen-1");
