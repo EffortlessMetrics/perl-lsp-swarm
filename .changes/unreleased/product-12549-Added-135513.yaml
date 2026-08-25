@@ -1,0 +1,5 @@
+component: "Developer experience"
+kind: Added
+body: "Added the machine-owned compiler-critical test-topology inventory, check, and report commands with deterministic committed artifacts (#8437)."
+time: 
+13:55:13
