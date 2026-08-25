@@ -3067,10 +3067,16 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
             output_path.display()
         );
     }
-    if !output.status.success() && !used_direct_runner {
+    let terminal = transition::TerminalProcessOutcome::from_harness_status(
+        output.status.code(),
+        config.runner,
+        config.mode,
+    );
+    if !terminal.is_scoreable() {
         bail!(
-            "upstream harness exited with status {} despite no recorded file failures\nstdout:\n{}\nstderr:\n{}",
+            "upstream harness terminal status {} is not admitted ({}) despite no recorded file failures\nstdout:\n{}\nstderr:\n{}",
             output.status,
+            terminal.not_proven_reason(),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -8630,6 +8636,31 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn run_mode_execute_accepts_the_recognized_scheduler_status() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_base_if_test_and_exit(temp.path(), 1)?;
+        let runner = write_fake_execute_runner(temp.path())?;
+        let output = temp.path().join("execute-report.json");
+
+        run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Execute,
+            profile: HarnessProfile::Base,
+            tests: vec!["base/if.t".into()],
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+        })?;
+
+        let report: RunReport = serde_json::from_str(&fs::read_to_string(output)?)?;
+        assert_eq!(report.harness_status, Some(1));
+        assert_eq!(report.summary.files_failed, 0);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn run_mode_execute_runs_selected_base_subset() -> TestResult {
         let temp = tempfile::tempdir()?;
         let perl_tree = write_fake_perl_tree_with_base_execute_subset(temp.path())?;
@@ -9037,10 +9068,10 @@ exit 7
             output: Some(output.clone()),
             runner_binary: Some(runner),
         }) else {
-            bail!("nonzero harness status should fail even when runner records pass");
+            bail!("unproven nonzero harness status should fail even when runner records pass");
         };
 
-        assert!(err.to_string().contains("upstream harness exited with status"));
+        assert!(err.to_string().contains("terminal status"));
         let raw = fs::read_to_string(output)?;
         let report: RunReport = serde_json::from_str(&raw)?;
         assert_eq!(report.summary.files_passed, 1);
@@ -9063,7 +9094,7 @@ exit 7
         let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
         let output = temp.path().join("parse-report.json");
 
-        run_mode(RunConfig {
+        let Err(err) = run_mode(RunConfig {
             perl_tree,
             host_perl: PathBuf::from("/bin/sh"),
             runner: HarnessRunner::Test,
@@ -9072,8 +9103,11 @@ exit 7
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
-        })?;
+        }) else {
+            bail!("direct-runner fallback must not bypass terminal admission");
+        };
 
+        assert!(err.to_string().contains("terminal status"));
         let raw = fs::read_to_string(output)?;
         let report: RunReport = serde_json::from_str(&raw)?;
         assert_eq!(report.summary.files_total, 1);
@@ -9139,18 +9173,38 @@ fi
 
     #[cfg(unix)]
     fn write_fake_perl_tree_with_base_if_test(root: &Path) -> TestResult<PathBuf> {
+        write_fake_perl_tree_with_base_if_test_and_body(root, "./perl base/if.t\n")
+    }
+
+    #[cfg(unix)]
+    fn write_fake_perl_tree_with_base_if_test_and_exit(
+        root: &Path,
+        status: i32,
+    ) -> TestResult<PathBuf> {
+        write_fake_perl_tree_with_base_if_test_and_body(
+            root,
+            &format!("./perl base/if.t\nexit {status}\n"),
+        )
+    }
+
+    #[cfg(unix)]
+    fn write_fake_perl_tree_with_base_if_test_and_body(
+        root: &Path,
+        run_body: &str,
+    ) -> TestResult<PathBuf> {
         let perl_tree = root.join("prepared-perl-base-if");
         let t_dir = perl_tree.join("t");
         fs::create_dir_all(t_dir.join("base"))?;
         fs::write(t_dir.join("base").join("if.t"), "1;\n")?;
-        let script = r#"#!/bin/sh
+        let script = format!(
+            r#"#!/bin/sh
 set -eu
-if [ "${1:-}" = "--dumptests" ]; then
+if [ "${{1:-}}" = "--dumptests" ]; then
   echo "base/if.t"
   exit 0
 fi
-./perl base/if.t
-"#;
+{run_body}"#
+        );
         fs::write(t_dir.join("TEST"), script)?;
         Ok(perl_tree)
     }
