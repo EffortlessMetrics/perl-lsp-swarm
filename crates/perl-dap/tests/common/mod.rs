@@ -4,6 +4,7 @@
 //! higher-level helpers that chain the request → event → response cycles
 //! required to drive a real `perl -d` debug session in tests.
 
+#![allow(dead_code)] // Shared helpers; each integration target uses a subset.
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};

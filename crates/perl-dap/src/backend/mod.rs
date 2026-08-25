@@ -10,6 +10,8 @@
 //! See [`docs/reference/EXTERNAL_DEBUGGER_PEER_DECISIONS.md`] (decision D1) for
 //! why the contract is model-typed rather than `DapMessage`-typed.
 
+#[cfg(test)]
+use perl_tdd_support::must;
 pub mod capabilities;
 pub mod external_peer;
 pub mod native_perldb;
@@ -401,7 +403,7 @@ mod tests {
     fn trait_is_object_safe() {
         let mut b: Box<dyn DebugBackend> = Box::new(MockBackend::default());
         assert_eq!(b.name(), "mock");
-        b.initialize(InitializeBackendParams::default()).expect("init");
+        must(b.initialize(InitializeBackendParams::default()));
         let events = b.drain_events();
         assert_eq!(events, vec![DebugEvent::Initialized]);
     }
@@ -410,20 +412,18 @@ mod tests {
     fn mock_resolves_breakpoints_from_model() {
         let mut b = MockBackend::default();
         let src = DebugSource::from_path("/work/script.pl");
-        let out = b
-            .set_breakpoints(SetBackendBreakpointsParams {
-                source: src.clone(),
-                breakpoints: vec![DebugBreakpoint {
-                    id: None,
-                    source: src,
-                    line: 42,
-                    column: None,
-                    condition: Some("$x > 10".to_string()),
-                    hit_condition: None,
-                    log_message: None,
-                }],
-            })
-            .expect("set breakpoints");
+        let out = must(b.set_breakpoints(SetBackendBreakpointsParams {
+            source: src.clone(),
+            breakpoints: vec![DebugBreakpoint {
+                id: None,
+                source: src,
+                line: 42,
+                column: None,
+                condition: Some("$x > 10".to_string()),
+                hit_condition: None,
+                log_message: None,
+            }],
+        }));
         assert_eq!(out.len(), 1);
         assert!(out[0].verified);
         assert_eq!(out[0].actual_position.line, 42);

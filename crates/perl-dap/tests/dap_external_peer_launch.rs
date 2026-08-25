@@ -8,6 +8,7 @@
 //! in-repo **fake ptkdb peer** (same pattern as `external_peer_conformance`);
 //! end-to-end editor↔real-`Devel::ptkdb` sessions remain deferred.
 
+use perl_tdd_support::{must, must_some};
 use std::error::Error;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -55,8 +56,8 @@ struct FakePeerScript {
 
 impl FakePeer {
     fn start(script: FakePeerScript) -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
-        let addr = listener.local_addr().expect("addr");
+        let listener = must(TcpListener::bind(("127.0.0.1", 0)));
+        let addr = must(listener.local_addr());
         let breakpoint_lines = Arc::new(Mutex::new(Vec::new()));
         let function_breakpoint_names = Arc::new(Mutex::new(Vec::new()));
         let lines = Arc::clone(&breakpoint_lines);
@@ -72,13 +73,13 @@ fn run_peer(
     breakpoint_lines: Arc<Mutex<Vec<u32>>>,
     function_breakpoint_names: Arc<Mutex<Vec<String>>>,
 ) {
-    let (stream, _) = listener.accept().expect("accept");
-    let mut write = stream.try_clone().expect("clone");
+    let (stream, _) = must(listener.accept());
+    let mut write = must(stream.try_clone());
     let mut read = stream;
     let mut seq = 700i64;
 
     let send = |w: &mut TcpStream, m: &PeerMessage| {
-        let _ = w.write_all(&encode_message(m).expect("encode"));
+        let _ = w.write_all(&must(encode_message(m)));
         let _ = w.flush();
     };
 
@@ -129,13 +130,11 @@ fn run_peer(
                     seq += 1;
                     let body = match req.command.as_str() {
                         command::SET_BREAKPOINTS => {
-                            let args: SetBreakpointsArgs = req
-                                .arguments
-                                .clone()
-                                .and_then(|a| serde_json::from_value(a).ok())
-                                .expect("set bp args");
+                            let args: SetBreakpointsArgs = must_some(
+                                req.arguments.clone().and_then(|a| serde_json::from_value(a).ok()),
+                            );
                             let mut resolved = Vec::new();
-                            let mut lines = breakpoint_lines.lock().expect("lock");
+                            let mut lines = must(breakpoint_lines.lock());
                             for (i, b) in args.breakpoints.iter().enumerate() {
                                 lines.push(b.line);
                                 resolved.push(WireResolvedBreakpoint {
@@ -152,13 +151,11 @@ fn run_peer(
                             .ok()
                         }
                         command::SET_FUNCTION_BREAKPOINTS => {
-                            let args: SetFunctionBreakpointsArgs = req
-                                .arguments
-                                .clone()
-                                .and_then(|a| serde_json::from_value(a).ok())
-                                .expect("set function bp args");
+                            let args: SetFunctionBreakpointsArgs = must_some(
+                                req.arguments.clone().and_then(|a| serde_json::from_value(a).ok()),
+                            );
                             let mut resolved = Vec::new();
-                            let mut names = function_breakpoint_names.lock().expect("lock");
+                            let mut names = must(function_breakpoint_names.lock());
                             for (i, name) in args.names.iter().enumerate() {
                                 names.push(name.clone());
                                 resolved.push(WireResolvedBreakpoint {
@@ -217,9 +214,8 @@ fn full_caps() -> PeerReportedCapabilities {
 
 /// Connect the real peer backend to `peer` and complete the handshake.
 fn live_backend(peer: &FakePeer) -> Box<dyn DebugBackend> {
-    let mut backend = ExternalDebuggerPeerBackend::connect(peer.addr, Duration::from_secs(5))
-        .expect("connect to fake peer");
-    backend.initialize(InitializeBackendParams::default()).expect("handshake");
+    let mut backend = must(ExternalDebuggerPeerBackend::connect(peer.addr, Duration::from_secs(5)));
+    must(backend.initialize(InitializeBackendParams::default()));
     Box::new(backend)
 }
 
@@ -245,7 +241,7 @@ fn dap_external_peer_launch_queues_breakpoints_before_handshake() -> TestResult 
     let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
     let init = bridge.dispatch(1, "initialize", Some(serde_json::json!({ "adapterID": "perl" })));
     // Static conservative capabilities are advertised before any peer exists.
-    let caps = as_response(init.first().ok_or("initialize response missing")?)?.2.expect("caps");
+    let caps = must_some(as_response(init.first().ok_or("initialize response missing")?)?.2);
     assert_eq!(caps["supportsConditionalBreakpoints"], true);
     assert_eq!(caps["supportsLogPoints"], false);
 
@@ -260,7 +256,7 @@ fn dap_external_peer_launch_queues_breakpoints_before_handshake() -> TestResult 
     assert_eq!(bridge.pending_source_count(), 1, "the source's breakpoints are queued");
     let (_, ok, body) = as_response(out.first().ok_or("breakpoint response missing")?)?;
     assert!(ok, "a queued setBreakpoints still returns success");
-    let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
+    let bps = must_some(must_some(body)["breakpoints"].as_array()).clone();
     assert_eq!(bps.len(), 2, "response matches the request positionally");
     assert_eq!(bps[0]["verified"], false, "queued breakpoints are unverified until flush");
     assert_eq!(bps[0]["line"], 42);
@@ -287,7 +283,7 @@ fn dap_external_peer_launch_flushes_breakpoints_after_hello() -> TestResult {
     );
     assert_eq!(bridge.pending_source_count(), 1);
     // Before the peer connects, it has received nothing.
-    assert!(peer.breakpoint_lines.lock().expect("lock").is_empty());
+    assert!(must(peer.breakpoint_lines.lock()).is_empty());
 
     // The peer handshakes; flush sends the queued breakpoints to it.
     let backend = live_backend(&peer);
@@ -297,13 +293,13 @@ fn dap_external_peer_launch_flushes_breakpoints_after_hello() -> TestResult {
 
     // The peer actually received the queued breakpoint over the wire.
     assert_eq!(
-        *peer.breakpoint_lines.lock().expect("lock"),
+        *must(peer.breakpoint_lines.lock()),
         vec![42],
         "the queued breakpoint reached the peer on flush"
     );
 
     // The flush surfaces the resolved breakpoint as a `breakpoint` changed event.
-    let changed = find_event(&flush, "breakpoint").expect("breakpoint changed event");
+    let changed = must_some(find_event(&flush, "breakpoint"));
     if let DapMessage::Event { body: Some(b), .. } = changed {
         assert_eq!(b["reason"], "changed");
         assert_eq!(b["breakpoint"]["verified"], true);
@@ -353,7 +349,7 @@ fn dap_external_peer_stopped_event_reaches_dap_client() -> TestResult {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
-    let stopped = find_event(&acc, "stopped").expect("peer stopped surfaced as a DAP stopped");
+    let stopped = must_some(find_event(&acc, "stopped"));
     if let DapMessage::Event { body: Some(b), .. } = stopped {
         assert_eq!(b["reason"], "breakpoint");
         assert_eq!(b["threadId"], 1);
@@ -396,7 +392,7 @@ fn dap_external_peer_output_event_reaches_dap_client() -> TestResult {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
-    let output = find_event(&acc, "output").expect("peer output surfaced as a DAP output event");
+    let output = must_some(find_event(&acc, "output"));
     if let DapMessage::Event { body: Some(b), .. } = output {
         assert_eq!(b["category"], "stderr");
         assert_eq!(b["output"], "boom\n");
@@ -499,7 +495,7 @@ fn dap_external_peer_launch_queues_function_breakpoints_before_handshake() -> Te
     );
     let (_, ok, body) = as_response(out.first().ok_or("function breakpoint response missing")?)?;
     assert!(ok, "a queued setFunctionBreakpoints still returns success");
-    let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
+    let bps = must_some(must_some(body)["breakpoints"].as_array()).clone();
     assert_eq!(bps.len(), 1);
     assert_eq!(bps[0]["verified"], false, "queued function breakpoints are unverified until flush");
     Ok(())
@@ -525,7 +521,7 @@ fn dap_external_peer_launch_flushes_function_breakpoints_after_hello() -> TestRe
         })),
     );
     assert!(bridge.has_pending_function_breakpoints());
-    assert!(peer.function_breakpoint_names.lock().expect("lock").is_empty());
+    assert!(must(peer.function_breakpoint_names.lock()).is_empty());
 
     let backend = live_backend(&peer);
     let flush = bridge.go_live(backend);
@@ -536,12 +532,12 @@ fn dap_external_peer_launch_flushes_function_breakpoints_after_hello() -> TestRe
     );
 
     assert_eq!(
-        *peer.function_breakpoint_names.lock().expect("lock"),
+        *must(peer.function_breakpoint_names.lock()),
         vec!["My::App::dispatch".to_string()],
         "the queued function breakpoint reached the peer on flush"
     );
 
-    let changed = find_event(&flush, "breakpoint").expect("breakpoint changed event");
+    let changed = must_some(find_event(&flush, "breakpoint"));
     if let DapMessage::Event { body: Some(b), .. } = changed {
         assert_eq!(b["reason"], "changed");
         assert_eq!(b["breakpoint"]["verified"], true);
@@ -585,12 +581,11 @@ fn dap_external_peer_launch_reports_flush_failure_to_editor() -> TestResult {
     assert!(bridge.is_live());
     assert_eq!(bridge.pending_source_count(), 0, "the queue is drained even when the flush fails");
 
-    let changed = find_event(&flush, "breakpoint")
-        .expect("a failed flush must still surface a breakpoint event to the editor");
+    let changed = must_some(find_event(&flush, "breakpoint"));
     if let DapMessage::Event { body: Some(b), .. } = changed {
         assert_eq!(b["reason"], "changed");
         assert_eq!(b["breakpoint"]["verified"], false, "a failed flush is never reported verified");
-        let message = b["breakpoint"]["message"].as_str().expect("failure message");
+        let message = must_some(b["breakpoint"]["message"].as_str());
         assert!(
             message.contains("failed to set breakpoint"),
             "message must explain the flush failure, got: {message}"
@@ -652,12 +647,12 @@ fn dap_external_peer_launch_acceptor_timeout_surfaces_terminated_not_a_hang() {
     // with no live backend. The editor session must be told the session
     // ended (a `terminated` event) instead of hanging forever waiting on a
     // peer that will never arrive (CodeRabbit finding: ~1051).
-    let peer_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind peer listener");
+    let peer_listener = must(TcpListener::bind(("127.0.0.1", 0)));
 
-    let editor_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind editor listener");
-    let editor_addr = editor_listener.local_addr().expect("editor addr");
-    let mut editor_client = TcpStream::connect(editor_addr).expect("connect editor client");
-    let (editor_server, _) = editor_listener.accept().expect("accept editor");
+    let editor_listener = must(TcpListener::bind(("127.0.0.1", 0)));
+    let editor_addr = must(editor_listener.local_addr());
+    let mut editor_client = must(TcpStream::connect(editor_addr));
+    let (editor_server, _) = must(editor_listener.accept());
 
     let bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
     let session = std::thread::spawn(move || {
@@ -683,10 +678,10 @@ fn dap_external_peer_launch_acceptor_timeout_surfaces_terminated_not_a_hang() {
             Ok(n) => {
                 framer.push(&buf[..n]);
                 while let Ok(Some(body)) = framer.try_next() {
-                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body) {
-                        if v.get("event").and_then(|e| e.as_str()) == Some("terminated") {
-                            saw_terminated = true;
-                        }
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body)
+                        && v.get("event").and_then(|e| e.as_str()) == Some("terminated")
+                    {
+                        saw_terminated = true;
                     }
                 }
             }

@@ -18,6 +18,8 @@
 //! connection; [`DapPeerBridge::dispatch`] / [`DapPeerBridge::poll_events`] are
 //! the deterministic, testable core.
 
+#[cfg(test)]
+use perl_tdd_support::{must, must_some};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
@@ -1038,7 +1040,7 @@ mod tests {
         let (cmd, ok, body) = as_response(&out[0])?;
         assert_eq!(cmd, "initialize");
         assert!(ok);
-        let caps = body.expect("capabilities");
+        let caps = must_some(body);
         assert_eq!(caps["supportsConfigurationDoneRequest"], true);
         assert_eq!(caps["supportsBreakpointLocationsRequest"], true);
         // ptkdb v1 negotiated: no logpoints/data breakpoints.
@@ -1058,7 +1060,7 @@ mod tests {
         let out = b.dispatch(2, "setBreakpoints", Some(args));
         let (_, ok, body) = as_response(&out[0])?;
         assert!(ok);
-        let bps = body.expect("body")["breakpoints"].as_array().expect("array");
+        let bps = must_some(must_some(body)["breakpoints"].as_array());
         assert_eq!(bps.len(), 2);
         assert_eq!(bps[0]["verified"], true);
         assert_eq!(bps[0]["line"], 42);
@@ -1076,10 +1078,7 @@ mod tests {
             "breakpoints": [{ "line": 3 }, { "condition": "$x" }, { "line": 9 }],
         });
         let out = b.dispatch(2, "setBreakpoints", Some(args));
-        let bps = as_response(&out[0])?.2.expect("body")["breakpoints"]
-            .as_array()
-            .expect("array")
-            .clone();
+        let bps = must_some(must_some(as_response(&out[0])?.2)["breakpoints"].as_array()).clone();
         assert_eq!(bps.len(), 3, "response length must equal request length: {bps:?}");
         assert_eq!(bps[0]["verified"], true);
         assert_eq!(bps[0]["line"], 3);
@@ -1099,10 +1098,7 @@ mod tests {
         // echoed as its own `verified: false` slot rather than dropped.
         let args = json!({ "breakpoints": [{ "condition": "1" }, { "name": "main::run" }] });
         let out = b.dispatch(2, "setFunctionBreakpoints", Some(args));
-        let bps = as_response(&out[0])?.2.expect("body")["breakpoints"]
-            .as_array()
-            .expect("array")
-            .clone();
+        let bps = must_some(must_some(as_response(&out[0])?.2)["breakpoints"].as_array()).clone();
         assert_eq!(bps.len(), 2, "response length must equal request length: {bps:?}");
         assert_eq!(bps[0]["verified"], false);
         assert_eq!(bps[0]["message"], "name required");
@@ -1143,7 +1139,7 @@ mod tests {
         let (cmd, ok, body) = as_response(&out[0])?;
         assert_eq!(cmd, "continue");
         assert!(ok);
-        assert_eq!(body.expect("body")["allThreadsContinued"], true);
+        assert_eq!(must_some(body)["allThreadsContinued"], true);
         let events: Vec<&str> = out[1..].iter().map(event_name).collect::<Result<_, _>>()?;
         assert_eq!(events, vec!["continued", "stopped"]);
         // The stopped event carries the DAP reason + threadId.
@@ -1161,35 +1157,32 @@ mod tests {
     fn stack_scopes_variables_evaluate_round_trip() -> Result<(), String> {
         let mut b = bridge();
         let st = b.dispatch(4, "stackTrace", Some(json!({ "threadId": 1 })));
-        let frames = as_response(&st[0])?.2.expect("body")["stackFrames"]
-            .as_array()
-            .expect("frames")
-            .clone();
+        let frames = must_some(must_some(as_response(&st[0])?.2)["stackFrames"].as_array()).clone();
         assert_eq!(frames[0]["name"], "main::run");
         assert_eq!(frames[0]["line"], 42);
         assert_eq!(frames[0]["source"]["path"], "/work/script.pl");
 
         let sc = b.dispatch(5, "scopes", Some(json!({ "frameId": 1 })));
-        assert_eq!(as_response(&sc[0])?.2.expect("body")["scopes"][0]["variablesReference"], 1000);
+        assert_eq!(must_some(as_response(&sc[0])?.2)["scopes"][0]["variablesReference"], 1000);
 
         let va = b.dispatch(6, "variables", Some(json!({ "variablesReference": 1000 })));
-        let vars = as_response(&va[0])?.2.expect("body")["variables"].clone();
+        let vars = must_some(as_response(&va[0])?.2)["variables"].clone();
         assert_eq!(vars[0]["name"], "$x");
         assert_eq!(vars[0]["value"], "42");
         assert_eq!(vars[0]["variablesReference"], 0);
 
         let ev = b.dispatch(7, "evaluate", Some(json!({ "expression": "$x", "context": "watch" })));
-        assert_eq!(as_response(&ev[0])?.2.expect("body")["result"], "=$x");
+        assert_eq!(must_some(as_response(&ev[0])?.2)["result"], "=$x");
         Ok(())
     }
 
     #[test]
     fn breakpoint_locations_reports_breakable_lines_from_ast() -> Result<(), String> {
         use std::io::Write;
-        let mut f = tempfile::NamedTempFile::new().expect("tmp");
-        writeln!(f, "# a comment").expect("w"); // line 1 — not breakable
-        writeln!(f, "my $x = 1;").expect("w"); // line 2 — breakable
-        writeln!(f, "print $x;").expect("w"); // line 3 — breakable
+        let mut f = must(tempfile::NamedTempFile::new());
+        must(writeln!(f, "# a comment")); // line 1 — not breakable
+        must(writeln!(f, "my $x = 1;")); // line 2 — breakable
+        must(writeln!(f, "print $x;")); // line 3 — breakable
         let path = f.path().to_string_lossy().to_string();
 
         let mut b = bridge();
@@ -1198,10 +1191,7 @@ mod tests {
             "breakpointLocations",
             Some(json!({ "source": { "path": path }, "line": 1, "endLine": 3 })),
         );
-        let bps = as_response(&out[0])?.2.expect("body")["breakpoints"]
-            .as_array()
-            .expect("array")
-            .clone();
+        let bps = must_some(must_some(as_response(&out[0])?.2)["breakpoints"].as_array()).clone();
         let lines: Vec<i64> = bps.iter().filter_map(|b| b["line"].as_i64()).collect();
         assert!(lines.contains(&2), "line 2 is breakable: {lines:?}");
         assert!(!lines.contains(&1), "comment line 1 is excluded: {lines:?}");
@@ -1211,8 +1201,8 @@ mod tests {
     #[test]
     fn breakpoint_locations_missing_line_returns_empty_not_all_lines() -> Result<(), String> {
         use std::io::Write;
-        let mut f = tempfile::NamedTempFile::new().expect("tmp");
-        writeln!(f, "my $x = 1;").expect("w");
+        let mut f = must(tempfile::NamedTempFile::new());
+        must(writeln!(f, "my $x = 1;"));
         let path = f.path().to_string_lossy().to_string();
 
         let mut b = bridge();
@@ -1223,7 +1213,7 @@ mod tests {
             b.dispatch(20, "breakpointLocations", Some(json!({ "source": { "path": path } })));
         let (_, ok, body) = as_response(&out[0])?;
         assert!(ok, "the request itself still succeeds");
-        let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
+        let bps = must_some(must_some(body)["breakpoints"].as_array()).clone();
         assert!(bps.is_empty(), "missing line yields empty set, not every line: {bps:?}");
         Ok(())
     }
@@ -1231,9 +1221,9 @@ mod tests {
     #[test]
     fn breakpoint_locations_only_end_line_returns_empty_not_all_lines() -> Result<(), String> {
         use std::io::Write;
-        let mut f = tempfile::NamedTempFile::new().expect("tmp");
-        writeln!(f, "my $x = 1;").expect("w"); // line 1 — breakable
-        writeln!(f, "my $y = 2;").expect("w"); // line 2 — breakable
+        let mut f = must(tempfile::NamedTempFile::new());
+        must(writeln!(f, "my $x = 1;")); // line 1 — breakable
+        must(writeln!(f, "my $y = 2;")); // line 2 — breakable
         let path = f.path().to_string_lossy().to_string();
 
         let mut b = bridge();
@@ -1246,7 +1236,7 @@ mod tests {
         );
         let (_, ok, body) = as_response(&out[0])?;
         assert!(ok, "the request itself still succeeds");
-        let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
+        let bps = must_some(must_some(body)["breakpoints"].as_array()).clone();
         assert!(bps.is_empty(), "endLine-only (no line) yields empty set: {bps:?}");
         Ok(())
     }
@@ -1254,9 +1244,9 @@ mod tests {
     #[test]
     fn breakpoint_locations_line_only_defaults_end_to_that_line() -> Result<(), String> {
         use std::io::Write;
-        let mut f = tempfile::NamedTempFile::new().expect("tmp");
-        writeln!(f, "# comment").expect("w"); // line 1 — not breakable
-        writeln!(f, "my $x = 1;").expect("w"); // line 2 — breakable
+        let mut f = must(tempfile::NamedTempFile::new());
+        must(writeln!(f, "# comment")); // line 1 — not breakable
+        must(writeln!(f, "my $x = 1;")); // line 2 — breakable
         let path = f.path().to_string_lossy().to_string();
 
         let mut b = bridge();
@@ -1267,10 +1257,7 @@ mod tests {
             "breakpointLocations",
             Some(json!({ "source": { "path": path }, "line": 2 })),
         );
-        let bps = as_response(&out[0])?.2.expect("body")["breakpoints"]
-            .as_array()
-            .expect("array")
-            .clone();
+        let bps = must_some(must_some(as_response(&out[0])?.2)["breakpoints"].as_array()).clone();
         let lines: Vec<i64> = bps.iter().filter_map(|b| b["line"].as_i64()).collect();
         assert_eq!(lines, vec![2], "line-only query reports just that breakable line: {lines:?}");
         Ok(())
@@ -1279,10 +1266,10 @@ mod tests {
     #[test]
     fn breakpoint_locations_end_line_before_start_line_returns_empty() -> Result<(), String> {
         use std::io::Write;
-        let mut f = tempfile::NamedTempFile::new().expect("tmp");
-        writeln!(f, "my $x = 1;").expect("w"); // line 1
-        writeln!(f, "my $y = 2;").expect("w"); // line 2
-        writeln!(f, "print $x + $y;").expect("w"); // line 3
+        let mut f = must(tempfile::NamedTempFile::new());
+        must(writeln!(f, "my $x = 1;")); // line 1
+        must(writeln!(f, "my $y = 2;")); // line 2
+        must(writeln!(f, "print $x + $y;")); // line 3
         let path = f.path().to_string_lossy().to_string();
 
         let mut b = bridge();
@@ -1291,10 +1278,7 @@ mod tests {
             "breakpointLocations",
             Some(json!({ "source": { "path": path }, "line": 3, "endLine": 1 })),
         );
-        let bps = as_response(&out[0])?.2.expect("body")["breakpoints"]
-            .as_array()
-            .expect("array")
-            .clone();
+        let bps = must_some(must_some(as_response(&out[0])?.2)["breakpoints"].as_array()).clone();
         assert!(bps.is_empty(), "endLine < line is an empty (not inverted) range: {bps:?}");
         Ok(())
     }
@@ -1314,7 +1298,7 @@ mod tests {
         );
         let (_, ok, body) = as_response(&out[0])?;
         assert!(ok, "an unreadable source must not fail the DAP request");
-        let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
+        let bps = must_some(must_some(body)["breakpoints"].as_array()).clone();
         assert!(bps.is_empty(), "unreadable path yields empty set: {bps:?}");
         Ok(())
     }
@@ -1323,10 +1307,7 @@ mod tests {
     fn breakpoint_locations_missing_source_path_returns_empty() -> Result<(), String> {
         let mut b = bridge();
         let out = b.dispatch(23, "breakpointLocations", Some(json!({ "line": 1, "endLine": 3 })));
-        let bps = as_response(&out[0])?.2.expect("body")["breakpoints"]
-            .as_array()
-            .expect("array")
-            .clone();
+        let bps = must_some(must_some(as_response(&out[0])?.2)["breakpoints"].as_array()).clone();
         assert!(bps.is_empty(), "missing source.path yields empty set: {bps:?}");
         Ok(())
     }
@@ -1337,7 +1318,7 @@ mod tests {
         let out = b.dispatch(24, "breakpointLocations", None);
         let (_, ok, body) = as_response(&out[0])?;
         assert!(ok, "even a bodyless breakpointLocations request must get a success response");
-        let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
+        let bps = must_some(must_some(body)["breakpoints"].as_array()).clone();
         assert!(bps.is_empty(), "missing arguments yields empty set: {bps:?}");
         Ok(())
     }
@@ -1374,7 +1355,7 @@ mod tests {
     fn threads_reports_single_main_thread() -> Result<(), String> {
         let mut b = bridge();
         let out = b.dispatch(8, "threads", None);
-        let threads = as_response(&out[0])?.2.expect("body")["threads"].clone();
+        let threads = must_some(as_response(&out[0])?.2)["threads"].clone();
         assert_eq!(threads[0]["id"], 1);
         assert_eq!(threads[0]["name"], "main");
         Ok(())
@@ -1435,7 +1416,7 @@ mod tests {
 
         // Editor input: an initialize request, then disconnect. The driver must
         // respond to both and return once it sees disconnect.
-        let frame_of = |v: Value| frame(&serde_json::to_vec(&v).expect("ser"));
+        let frame_of = |v: Value| frame(&must(serde_json::to_vec(&v)));
         let mut input = frame_of(
             json!({ "seq": 1, "type": "request", "command": "initialize", "arguments": {} }),
         );
@@ -1444,13 +1425,12 @@ mod tests {
         ));
 
         let out_buf = Arc::new(Mutex::new(Vec::new()));
-        run_peer_session_threaded(
+        must(run_peer_session_threaded(
             Cursor::new(input),
             SharedSink(out_buf.clone()),
             bridge(),
             Duration::from_millis(5),
-        )
-        .expect("session ok");
+        ));
 
         // Reparse the framed output stream and collect response commands + events.
         let raw = out_buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -1458,11 +1438,11 @@ mod tests {
         framer.push(&raw);
         let (mut commands, mut events) = (Vec::new(), Vec::new());
         while let Ok(Some(body)) = framer.try_next() {
-            let v: Value = serde_json::from_slice(&body).expect("json");
-            if v.get("type").and_then(Value::as_str) == Some("response") {
-                if let Some(c) = v.get("command").and_then(Value::as_str) {
-                    commands.push(c.to_string());
-                }
+            let v: Value = must(serde_json::from_slice(&body));
+            if v.get("type").and_then(Value::as_str) == Some("response")
+                && let Some(c) = v.get("command").and_then(Value::as_str)
+            {
+                commands.push(c.to_string());
             }
             if let Some(e) = v.get("event").and_then(Value::as_str) {
                 events.push(e.to_string());
@@ -1499,7 +1479,7 @@ mod tests {
             }
         }
 
-        let frame_of = |v: Value| frame(&serde_json::to_vec(&v).expect("ser"));
+        let frame_of = |v: Value| frame(&must(serde_json::to_vec(&v)));
 
         // A header block with an unparseable Content-Length value, followed by
         // a valid initialize + disconnect pair.
@@ -1512,20 +1492,19 @@ mod tests {
         ));
 
         let out_buf = Arc::new(Mutex::new(Vec::new()));
-        run_peer_session_threaded(
+        must(run_peer_session_threaded(
             Cursor::new(input),
             SharedSink(out_buf.clone()),
             bridge(),
             Duration::from_millis(5),
-        )
-        .expect("session ok despite the leading malformed frame");
+        ));
 
         let raw = out_buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let mut framer = ContentLengthFramer::new();
         framer.push(&raw);
         let mut commands = Vec::new();
         while let Ok(Some(body)) = framer.try_next() {
-            let v: Value = serde_json::from_slice(&body).expect("json");
+            let v: Value = must(serde_json::from_slice(&body));
             if v.get("type").and_then(Value::as_str) == Some("response")
                 && let Some(c) = v.get("command").and_then(Value::as_str)
             {
