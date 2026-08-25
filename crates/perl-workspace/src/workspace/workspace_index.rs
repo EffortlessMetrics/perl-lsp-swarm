@@ -10263,8 +10263,21 @@ Utils::process_data();
             }],
         );
 
-        let mut symbol = sample_workspace_symbol("shared", Some("Pkg::shared"));
-        symbol.uri = "file:///a.pm".to_string();
+        let symbol = WorkspaceSymbol {
+            name: "shared".to_string(),
+            kind: SymbolKind::Subroutine,
+            uri: "file:///a.pm".to_string(),
+            range: Range {
+                start: Position { byte: 0, line: 0, column: 0 },
+                end: Position { byte: 1, line: 0, column: 1 },
+            },
+            qualified_name: Some("Pkg::shared".to_string()),
+            documentation: None,
+            container_name: Some("Pkg".to_string()),
+            has_body: true,
+            workspace_folder_uri: None,
+            is_lexical: false,
+        };
         let file_index = FileIndex { symbols: vec![symbol], ..FileIndex::default() };
 
         WorkspaceIndex::incremental_add_symbols(&mut symbols, &file_index);
