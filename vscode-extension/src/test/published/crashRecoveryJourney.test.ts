@@ -291,7 +291,10 @@ function distinctPids(samples: CrashObservationSample[]): number[] {
 const selectedLeg = journeyLeg();
 
 suite('Packaged crash-recovery journey (#7848)', function () {
-  this.timeout(420_000);
+  // Worst-case wait arithmetic (startup + kill/recovery cycles + the real
+  // watchdog interval + bounded observation windows) approaches 8 minutes on
+  // a slow runner; the smoke job budget accommodates one matrix leg per job.
+  this.timeout(600_000);
 
   (selectedLeg === 'transient' ? test : test.skip)(
     'transient leg: one unexpected crash recovers exactly once with replay and clean state',
