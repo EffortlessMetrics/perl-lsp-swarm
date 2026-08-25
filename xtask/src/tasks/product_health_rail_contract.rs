@@ -212,6 +212,7 @@ mod tests {
     #[test]
     fn accepted_source_schema_order_does_not_change_canonical_bytes() {
         let mut registry = fixture_registry();
+        registry.rails[0].source_schema = "a.v1".into();
         registry.adapters[0].accepted_source_schemas =
             vec!["b.v1".into(), "a.v1".into(), "a.v1".into()];
         let mut equivalent = registry.clone();
