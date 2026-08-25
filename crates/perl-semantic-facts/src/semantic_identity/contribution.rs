@@ -272,6 +272,16 @@ impl SemanticDeclarationKey {
     pub fn declaration_digest(&self) -> &str {
         &self.declaration_digest
     }
+
+    /// Canonical labeled-field fingerprint contribution text.
+    #[must_use]
+    pub fn fingerprint_text(&self) -> String {
+        SemanticIdentityFingerprint::new("declaration-key")
+            .field("form", &self.declaration_form)
+            .field("name", &self.declared_name)
+            .field("digest", &self.declaration_digest)
+            .finish()
+    }
 }
 
 /// Kind of dependency one contribution records.
@@ -504,6 +514,20 @@ impl SemanticContributionOwner {
         {
             return Err(SemanticIdentityContractError::MissingCompanion(
                 "scope-local family requires a ScopeOwned disposition",
+            ));
+        }
+        // Fail closed at construction: known-invalid owner records are never
+        // minted, so validity is not opt-in through a later validate() call.
+        if matches!(disposition, SemanticOwnershipDisposition::UnsupportedNotProven { .. })
+            && status.is_complete()
+        {
+            return Err(SemanticIdentityContractError::ContradictoryStatus(
+                "an unsupported/not-proven owner can never claim complete status",
+            ));
+        }
+        if status.is_complete() && !limitations.is_empty() {
+            return Err(SemanticIdentityContractError::ContradictoryStatus(
+                "a complete contribution must record no limitations",
             ));
         }
         Ok(Self {

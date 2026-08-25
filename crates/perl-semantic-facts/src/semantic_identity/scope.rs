@@ -1,5 +1,6 @@
 //! Stable semantic scope identity and its subject generation.
 
+use super::SemanticDeclarationKey;
 use super::{SemanticIdentityContractError, SemanticIdentityFingerprint, SemanticIdentitySchema};
 
 use serde::{Deserialize, Serialize};
@@ -396,7 +397,7 @@ pub struct SemanticScopeIdentity {
     schema: SemanticIdentitySchema,
     subject: SemanticSubjectGeneration,
     kind: SemanticScopeKind,
-    owning_declaration_key: Option<String>,
+    owning_declaration_key: Option<SemanticDeclarationKey>,
     parent_fingerprint: Option<String>,
     anchor: SemanticSourceAnchor,
     package_context: Option<SemanticSourceOrderIdentity>,
@@ -412,7 +413,7 @@ impl SemanticScopeIdentity {
     pub fn new(
         subject: SemanticSubjectGeneration,
         kind: SemanticScopeKind,
-        owning_declaration_key: Option<String>,
+        owning_declaration_key: Option<SemanticDeclarationKey>,
         parent_fingerprint: Option<String>,
         anchor: SemanticSourceAnchor,
         package_context: Option<SemanticSourceOrderIdentity>,
@@ -423,7 +424,11 @@ impl SemanticScopeIdentity {
                 "SemanticScopeIdentity.parent_fingerprint",
             ));
         }
-        if owning_declaration_key.as_deref().is_some_and(|key| key.trim().is_empty()) {
+        if owning_declaration_key.as_ref().is_some_and(|key| {
+            key.declaration_form().trim().is_empty()
+                || key.declared_name().trim().is_empty()
+                || key.declaration_digest().trim().is_empty()
+        }) {
             return Err(SemanticIdentityContractError::EmptyIdentityField(
                 "SemanticScopeIdentity.owning_declaration_key",
             ));
@@ -468,10 +473,10 @@ impl SemanticScopeIdentity {
         self.kind
     }
 
-    /// Owning declaration key text, where a declaration owns the scope.
+    /// Typed owning declaration key, where a declaration owns the scope.
     #[must_use]
-    pub fn owning_declaration_key(&self) -> Option<&str> {
-        self.owning_declaration_key.as_deref()
+    pub fn owning_declaration_key(&self) -> Option<&SemanticDeclarationKey> {
+        self.owning_declaration_key.as_ref()
     }
 
     /// Logical fingerprint of the parent scope, where present.
@@ -504,6 +509,18 @@ impl SemanticScopeIdentity {
     /// contributes its own logical fingerprint (recursively stable) rather
     /// than an ordinal, and the anchor contributes its digest rather than an
     /// offset.
+    ///
+    /// # Parent-fingerprint law
+    ///
+    /// `parent_fingerprint` is opaque by design: it names the parent scope's
+    /// logical fingerprint, and this type cannot prove from the string alone
+    /// which subject generation produced it. Constructors and producers must
+    /// only install a parent fingerprint obtained from a
+    /// [`SemanticScopeIdentity`] of the same [`SemanticSubjectGeneration`]
+    /// (same logical source, source generation, parser snapshot/config, and
+    /// profile); a fingerprint from any other subject is an invalid
+    /// construction. Downstream consumers confirm candidate fingerprint
+    /// matches with structural scope identity before reuse.
     #[must_use]
     pub fn fingerprint(&self) -> String {
         let fp =
@@ -511,7 +528,14 @@ impl SemanticScopeIdentity {
         let fp = fp
             .discriminant("kind", self.kind.tag())
             .field("decl-present", &self.owning_declaration_key.is_some().to_string())
-            .field("decl", self.owning_declaration_key.as_deref().unwrap_or(""));
+            .field(
+                "decl",
+                self.owning_declaration_key
+                    .as_ref()
+                    .map(SemanticDeclarationKey::fingerprint_text)
+                    .as_deref()
+                    .unwrap_or(""),
+            );
         let mut fp = fp;
         if let Some(ctx) = self.package_context.as_ref() {
             fp = fp

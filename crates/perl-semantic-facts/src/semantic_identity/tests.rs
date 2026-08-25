@@ -2,9 +2,9 @@
 
 use super::SemanticIdentityContractError;
 use super::contribution::{
-    SemanticContributionId, SemanticContributionOwner, SemanticDependencyIdentity,
-    SemanticDependencyKind, SemanticFactFamily, SemanticOwnershipDisposition,
-    SemanticSubjectStatus,
+    SemanticContributionId, SemanticContributionOwner, SemanticDeclarationKey,
+    SemanticDependencyIdentity, SemanticDependencyKind, SemanticFactFamily,
+    SemanticOwnershipDisposition, SemanticSubjectStatus,
 };
 use super::scope::{
     SemanticAnchorRole, SemanticScopeIdentity, SemanticScopeKind, SemanticScopeRecovery,
@@ -54,7 +54,7 @@ fn child_scope(
     SemanticScopeIdentity::new(
         subject_gen,
         SemanticScopeKind::NamedSubroutine,
-        Some(format!("sub::{anchor_digest}")),
+        Some(SemanticDeclarationKey::new("sub", anchor_digest, format!("digest-{anchor_digest}"))?),
         Some(parent.fingerprint()),
         SemanticSourceAnchor::new(SemanticAnchorRole::Header, anchor_digest, sibling_ordinal)?,
         None,
@@ -165,8 +165,8 @@ fn producer_identity_never_upgrades_completeness() -> FixtureResult {
         SemanticSubjectStatus::Complete,
         Vec::new(),
         Vec::new(),
-    )?;
-    assert!(owner.validate().is_err());
+    );
+    assert!(owner.is_err());
     Ok(())
 }
 
@@ -182,8 +182,8 @@ fn complete_status_rejects_limitations() -> FixtureResult {
         SemanticSubjectStatus::Complete,
         Vec::new(),
         vec!["recovered region".to_string()],
-    )?;
-    assert!(owner.validate().is_err());
+    );
+    assert!(owner.is_err());
     Ok(())
 }
 
@@ -214,7 +214,7 @@ fn package_scope_requires_source_order_context() -> FixtureResult {
     let scope = SemanticScopeIdentity::new(
         subject_gen,
         SemanticScopeKind::PackageStatement,
-        Some("pkg::App".to_string()),
+        Some(SemanticDeclarationKey::new("package", "App", "package App;")?),
         Some(file.fingerprint()),
         anchor.clone(),
         None,
@@ -224,7 +224,7 @@ fn package_scope_requires_source_order_context() -> FixtureResult {
     let with_context = SemanticScopeIdentity::new(
         subject("doc-1", "gen-1")?,
         SemanticScopeKind::PackageStatement,
-        Some("pkg::App".to_string()),
+        Some(SemanticDeclarationKey::new("package", "App", "package App;")?),
         Some(file.fingerprint()),
         anchor,
         Some(SemanticSourceOrderIdentity::new(0, "package App;")?),
@@ -345,25 +345,14 @@ fn separator_content_cannot_shift_field_boundaries() -> FixtureResult {
     Ok(())
 }
 
-/// A blank `Some("")` owning-declaration key is rejected instead of
-/// fingerprinting identically to `None`.
+/// A blank owning-declaration key is rejected at the typed key
+/// constructor, so no scope can fingerprint a blank key identically to
+/// `None`.
 #[test]
 fn blank_declaration_key_rejected() -> FixtureResult {
-    let subject_gen = subject("doc-1", "gen-1")?;
-    let file = file_scope(subject_gen.clone())?;
-    let anchor = SemanticSourceAnchor::new(SemanticAnchorRole::Header, "h", 0)?;
-    assert!(
-        SemanticScopeIdentity::new(
-            subject_gen,
-            SemanticScopeKind::NamedSubroutine,
-            Some("   ".to_string()),
-            Some(file.fingerprint()),
-            anchor,
-            None,
-            SemanticScopeRecovery::Exact,
-        )
-        .is_err()
-    );
+    assert!(SemanticDeclarationKey::new("sub", "   ", "digest").is_err());
+    assert!(SemanticDeclarationKey::new("", "name", "digest").is_err());
+    assert!(SemanticDeclarationKey::new("sub", "name", " ").is_err());
     Ok(())
 }
 
@@ -488,6 +477,31 @@ fn contribution_id_binds_family_and_ordinal() -> FixtureResult {
         8,
     )?;
     assert_ne!(id.fingerprint(), other_ordinal.fingerprint());
+    Ok(())
+}
+
+/// Deserialization is a wire shape, not an invariant guard: untrusted JSON
+/// can construct records `new()` rejects, and post-transport `validate()`
+/// must catch them before reuse.
+#[test]
+fn deserialized_invalid_records_fail_validation() -> Result<(), Box<dyn std::error::Error>> {
+    let valid = SemanticContributionOwner::new(
+        subject("doc-1", "gen-1")?,
+        SemanticOwnershipDisposition::FileGlobalOwned,
+        SemanticFactFamily::PackageFact,
+        "primary",
+        Vec::new(),
+        SemanticSubjectStatus::Complete,
+        Vec::new(),
+        Vec::new(),
+    )?;
+    let encoded = serde_json::to_string(&valid)?;
+    let mut forged: serde_json::Value = serde_json::from_str(&encoded)?;
+    // Forge `complete` while smuggling a limitation past the constructor.
+    forged["limitations"] = serde_json::json!(["recovered region"]);
+    let decoded: SemanticContributionOwner = serde_json::from_value(forged)?;
+    assert!(decoded.status().is_complete());
+    assert!(decoded.validate().is_err());
     Ok(())
 }
 

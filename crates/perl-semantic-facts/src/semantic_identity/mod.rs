@@ -28,6 +28,16 @@
 //! - Producer identity never upgrades completeness. Empty collections do not
 //!   determine completeness.
 //!
+//! # Transport trust boundary
+//!
+//! `Serialize`/`Deserialize` on these types is a wire shape, not an
+//! invariant guard: deserializing untrusted JSON can produce records that
+//! `new()` would have rejected (contradictory statuses, duplicate relations,
+//! blank payloads). Any consumer accepting identities from a transport must
+//! call the type's `validate()` (and treat a fingerprint match as a
+//! candidate confirmed by structural equality) before reuse. The JSON
+//! round-trip fixture proves `validate()` rejects deserialized garbage.
+//!
 //! # Ownership fence
 //!
 //! This module owns no LSP protocol type, parser type, provider policy,
