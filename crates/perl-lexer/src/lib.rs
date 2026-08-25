@@ -453,7 +453,13 @@ impl<'a> PerlLexer<'a> {
             }
 
             // If nothing else matches, return an error token
-            let ch = self.current_char()?;
+            let Some(ch) = self.current_char() else {
+                // At/past EOF with no handler claiming the input: loop back so
+                // the top-of-loop check emits the EOF token. Returning None
+                // here would end the stream without EOF, violating the
+                // documented next_token contract (#12504).
+                continue;
+            };
             self.advance();
 
             // Optimize error token creation - avoid expensive formatting in hot path
@@ -4224,8 +4230,17 @@ impl<'a> PerlLexer<'a> {
         }
 
         // Unterminated regex - EOF reached before closing /
-        // Parser will emit diagnostic for unterminated literal
-        None
+        // Emit an error token (mirroring unterminated quote-operator handling)
+        // instead of returning None: a bare None ends the token stream before
+        // the EOF token is emitted, so inputs like "/" or "/\0" never reach
+        // EOF (#12504).
+        self.mode = LexerMode::ExpectOperator;
+        Some(Token {
+            token_type: TokenType::Error(Arc::from("unclosed regex delimiter '/'")),
+            text: Arc::from(&self.input[start..self.position]),
+            start,
+            end: self.position,
+        })
     }
 }
 

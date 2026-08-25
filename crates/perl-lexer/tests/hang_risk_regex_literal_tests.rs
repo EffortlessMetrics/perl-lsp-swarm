@@ -433,19 +433,16 @@ fn lexer_regex_literal_malformed_unclosed() {
 
     let result = lexer.next_token();
 
-    // Should handle gracefully - either return token or None
-    match result {
-        Some(tok) => {
-            assert!(
-                matches!(tok.token_type, TokenType::UnknownRest | TokenType::RegexMatch),
-                "Expected error token for malformed regex, got {:?}",
-                tok.token_type
-            );
-        }
-        None => {
-            // Also acceptable - end of input
-        }
-    }
+    // Must emit a graceful recovery token; since #12504 the stream may no
+    // longer end silently without reaching EOF.
+    assert!(
+        matches!(
+            result,
+            Some(ref tok) if matches!(tok.token_type, TokenType::UnknownRest | TokenType::Error(_))
+        ),
+        "unterminated regex must emit a recovery token before EOF, got {:?}",
+        result.as_ref().map(|tok| &tok.token_type)
+    );
 }
 
 /// Test malformed regex (unbalanced groups)
@@ -463,20 +460,21 @@ fn lexer_regex_literal_malformed_unbalanced_groups() {
         let mut lexer = PerlLexer::new(code);
         let result = lexer.next_token();
 
-        // Should handle gracefully
-        match result {
-            Some(tok) => {
-                assert!(
-                    matches!(tok.token_type, TokenType::UnknownRest | TokenType::RegexMatch),
-                    "Expected error handling for malformed regex '{}', got {:?}",
-                    code,
-                    tok.token_type
-                );
-            }
-            None => {
-                // Also acceptable - end of input
-            }
-        }
+        // Must handle gracefully; since #12504 the stream may no longer end
+        // silently without reaching EOF.
+        assert!(
+            matches!(
+                result,
+                Some(ref tok)
+                    if matches!(
+                        tok.token_type,
+                        TokenType::UnknownRest | TokenType::Error(_) | TokenType::RegexMatch
+                    )
+            ),
+            "Expected error handling for malformed regex '{}', got {:?}",
+            code,
+            result.as_ref().map(|tok| &tok.token_type)
+        );
     }
 }
 
