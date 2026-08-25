@@ -1105,7 +1105,10 @@ mod promote_tests {
             .iter()
             .map(|range| (range.start.character as usize, range.end.character as usize))
             .collect::<Vec<_>>();
-        if !mapped.contains(&(4, 9)) {
+        // The foreach binding anchor is the `$i` token (7..9), per the
+        // iterator-binding token-anchor contract merged in #12274 — not the
+        // whole `my $i` span (4..9) this expectation pinned before it.
+        if !mapped.contains(&(7, 9)) {
             return Err(format!("canonical anchor missing: {mapped:?}"));
         }
         if mapped.contains(&(0, 1)) {
