@@ -210,6 +210,8 @@ fn primary_boundary(route: &RouteDeclaration) -> (Option<BoundaryKind>, Semantic
         );
     }
     if matches!(route.options, RouteOptions::Dynamic { .. })
+        || matches!(&route.options, RouteOptions::Map(entries)
+            if entries.iter().any(|entry| matches!(entry.value, crate::route::RouteOptionValue::Dynamic { .. })))
         || matches!(route.route_name, crate::route::RouteNameSelection::Dynamic { .. })
     {
         return (Some(BoundaryKind::DynamicValue), SemanticReasonCode::DynamicValue);
@@ -229,7 +231,10 @@ mod tests {
         Dancer2ActivationState, DslSelection, dancer2_activation_facts, dancer2_descriptor,
         detect_dancer2, parse_dancer2_import_args,
     };
-    use crate::route::{RouteHandlerBoundary, RouteName, RouteNameSelection, RoutePattern};
+    use crate::route::{
+        RouteHandlerBoundary, RouteName, RouteNameSelection, RouteOption, RouteOptionValue,
+        RoutePattern,
+    };
 
     fn detected_input(generation: &str) -> AdapterDetectionInput {
         let activation = ModuleActivationIdentity::new(
@@ -461,6 +466,28 @@ mod tests {
             fact.route.route_name_literal_value().as_deref(),
             fact.route.pattern.value.as_deref(),
             "name and pattern stay distinct fields"
+        );
+    }
+
+    #[test]
+    fn dynamic_option_entry_produces_an_envelope_boundary_link() {
+        // Regression: a Map with one dynamic entry degraded the fact but left
+        // the envelope boundary link absent.
+        let detection = detect_dancer2(&detected_input("gen-1"));
+        let activation = exact_activation("gen-1");
+        let mut declaration = literal_get_declaration(0);
+        declaration.route.options = RouteOptions::Map(vec![RouteOption {
+            key: "agent".to_string(),
+            key_anchor: SourceAnchor::new(Some(AnchorId(9)), FileId(1), 9, 15),
+            value: RouteOptionValue::Dynamic { reason: "computed".to_string() },
+            value_anchor: SourceAnchor::new(Some(AnchorId(16)), FileId(1), 16, 20),
+        }]);
+        let facts = dancer2_route_facts(&detection, &activation, Some("App"), &[declaration]);
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].status(), crate::SemanticFactStatus::Degraded);
+        assert!(
+            facts[0].envelope.boundary.is_some(),
+            "per-entry dynamic options carry an envelope boundary link"
         );
     }
 

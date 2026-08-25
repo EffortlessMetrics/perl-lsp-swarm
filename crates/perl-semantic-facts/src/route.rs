@@ -317,9 +317,12 @@ pub fn route_fact_identity(
     generation: &SourceGeneration,
 ) -> (FactId, EntityId) {
     let generation_digest = match generation {
+        // FNV-1a accumulation: order-sensitive and repetition-sensitive, so
+        // distinct generation identities (including transposed or repeated
+        // spellings like `"11"` vs `"22"`) never collide.
         SourceGeneration::Known(value) => {
             value.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-                hash ^ u64::from(byte).wrapping_mul(0x1000_0000_01b3)
+                (hash ^ u64::from(byte)).wrapping_mul(0x1000_0000_01b3)
             })
         }
         // An unknown generation is still a distinct minting context; it can
@@ -582,6 +585,22 @@ mod tests {
         assert_ne!(fact_a, other_root.0);
         let stale = route_fact_identity(FileId(1), 0, &SourceGeneration::known("gen-2"));
         assert_ne!(fact_a, stale.0);
+    }
+
+    #[test]
+    fn generation_digest_is_order_and_repetition_sensitive() {
+        // Regression: an order-insensitive fold made repeated-byte spellings
+        // collide (both digests cancelled to the seed).
+        assert_ne!(
+            route_fact_identity(FileId(1), 0, &SourceGeneration::known("11")).0,
+            route_fact_identity(FileId(1), 0, &SourceGeneration::known("22")).0,
+            "repeated-byte generations must not collide"
+        );
+        assert_ne!(
+            route_fact_identity(FileId(1), 0, &SourceGeneration::known("gen-ab")).0,
+            route_fact_identity(FileId(1), 0, &SourceGeneration::known("gen-ba")).0,
+            "transposed generations must not collide"
+        );
     }
 
     #[test]

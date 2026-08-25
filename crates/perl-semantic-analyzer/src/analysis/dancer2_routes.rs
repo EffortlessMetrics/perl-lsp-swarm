@@ -368,13 +368,27 @@ fn unquote(raw: &str) -> Option<String> {
     if stripped.is_empty() { None } else { Some(stripped.to_string()) }
 }
 
+/// Whether an interpolated string operand is statically a computed value.
+///
+/// Perl interpolation only occurs through `$`/`@` sigils, so an interpolated
+/// string whose text carries no sigil is still statically literal. Escaped
+/// sigils (`"\\$x"`) stay conservatively dynamic: the boundary is honest even
+/// when the escape would make the value static.
+fn interpolated_value_is_dynamic(value: &str) -> bool {
+    value.contains('$') || value.contains('@')
+}
+
 fn pattern_from_node(node: &Node, file_id: FileId) -> RoutePattern {
     match &node.kind {
-        NodeKind::String { value, .. } => RoutePattern {
-            kind: RoutePatternKind::Literal,
-            value: unquote(value),
-            anchor: anchor(node.location.start, node.location.end, file_id),
-        },
+        NodeKind::String { value, interpolated }
+            if !*interpolated || !interpolated_value_is_dynamic(value) =>
+        {
+            RoutePattern {
+                kind: RoutePatternKind::Literal,
+                value: unquote(value),
+                anchor: anchor(node.location.start, node.location.end, file_id),
+            }
+        }
         NodeKind::Regex { pattern, .. } => RoutePattern {
             kind: RoutePatternKind::Regex,
             value: Some(pattern.clone()),
@@ -390,16 +404,20 @@ fn pattern_from_node(node: &Node, file_id: FileId) -> RoutePattern {
 
 fn name_from_node(node: &Node, file_id: FileId) -> RouteNameSelection {
     match &node.kind {
-        NodeKind::String { value, .. } => match unquote(value) {
-            Some(value) => RouteNameSelection::Literal(RouteName {
-                value,
-                anchor: anchor(node.location.start, node.location.end, file_id),
-            }),
-            None => RouteNameSelection::Dynamic {
-                reason: "empty route name operand".to_string(),
-                anchor: anchor(node.location.start, node.location.end, file_id),
-            },
-        },
+        NodeKind::String { value, interpolated }
+            if !*interpolated || !interpolated_value_is_dynamic(value) =>
+        {
+            match unquote(value) {
+                Some(value) => RouteNameSelection::Literal(RouteName {
+                    value,
+                    anchor: anchor(node.location.start, node.location.end, file_id),
+                }),
+                None => RouteNameSelection::Dynamic {
+                    reason: "empty route name operand".to_string(),
+                    anchor: anchor(node.location.start, node.location.end, file_id),
+                },
+            }
+        }
         _ => RouteNameSelection::Dynamic {
             reason: "computed route name operand".to_string(),
             anchor: anchor(node.location.start, node.location.end, file_id),
@@ -416,23 +434,32 @@ fn options_from_node(node: &Node, file_id: FileId) -> RouteOptions {
     };
     let mut entries = Vec::with_capacity(pairs.len());
     for (key_node, value_node) in pairs {
-        let NodeKind::String { value: key_value, .. } = &key_node.kind else {
-            return RouteOptions::Dynamic {
-                reason: "non-literal option key is an explicit boundary".to_string(),
-                anchor: Some(anchor(node.location.start, node.location.end, file_id)),
-            };
+        let literal_key = match &key_node.kind {
+            NodeKind::String { value: key_value, interpolated }
+                if !*interpolated || !interpolated_value_is_dynamic(key_value) =>
+            {
+                unquote(key_value)
+            }
+            _ => None,
         };
-        let Some(key) = unquote(key_value) else {
+        let Some(key) = literal_key else {
             return RouteOptions::Dynamic {
-                reason: "empty option key is an explicit boundary".to_string(),
+                reason: "computed or empty option key is an explicit boundary".to_string(),
                 anchor: Some(anchor(node.location.start, node.location.end, file_id)),
             };
         };
         let value = match &value_node.kind {
-            NodeKind::String { value, .. } => match unquote(value) {
-                Some(literal) => RouteOptionValue::Literal(literal),
-                None => RouteOptionValue::Dynamic { reason: "empty option value".to_string() },
-            },
+            NodeKind::String { value, interpolated }
+                if !*interpolated || !interpolated_value_is_dynamic(value) =>
+            {
+                match unquote(value) {
+                    Some(literal) => RouteOptionValue::Literal(literal),
+                    None => RouteOptionValue::Dynamic { reason: "empty option value".to_string() },
+                }
+            }
+            NodeKind::String { .. } => {
+                RouteOptionValue::Dynamic { reason: "interpolated option value".to_string() }
+            }
             _ => RouteOptionValue::Dynamic { reason: "computed option value".to_string() },
         };
         entries.push(RouteOption {
@@ -635,6 +662,39 @@ mod tests {
         assert_eq!(&code[anchor.start_byte as usize..anchor.end_byte as usize], "qr{^/re/(\\d+)$}");
         assert!(matches!(found[0].route.handler, RouteHandler::InlineSub { .. }));
         assert_eq!(methods_of(&found[0]), vec!["GET".to_string(), "HEAD".to_string()]);
+    }
+
+    #[test]
+    fn interpolated_pattern_with_sigils_is_a_dynamic_boundary() {
+        // Interpolated strings only compute through $/@ sigils; carrying a
+        // sigil makes the pattern computed, not literal.
+        let found = declarations("get \"$prefix/users\" => sub { 1 };");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].route.pattern.kind, RoutePatternKind::Dynamic);
+        assert!(found[0].route.pattern.value.is_none());
+    }
+
+    #[test]
+    fn interpolated_pattern_without_sigils_stays_literal() {
+        let found = declarations("get \"/static\" => sub { 1 };");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].route.pattern.kind, RoutePatternKind::Literal);
+        assert_eq!(found[0].route.pattern.value.as_deref(), Some("/static"));
+    }
+
+    #[test]
+    fn interpolated_name_and_option_values_are_boundaries() {
+        let found = declarations("get \"$name\", '/x', sub { 1 };");
+        assert_eq!(found.len(), 1);
+        assert!(matches!(found[0].route.route_name, RouteNameSelection::Dynamic { .. }));
+
+        let found = declarations("get '/x' => { agent => \"$agent\" }, sub { 1 };");
+        assert_eq!(found.len(), 1);
+        let entries = must_some(match &found[0].route.options {
+            RouteOptions::Map(entries) => Some(entries),
+            _ => None,
+        });
+        assert!(matches!(entries[0], RouteOption { value: RouteOptionValue::Dynamic { .. }, .. }));
     }
 
     #[test]
