@@ -248,7 +248,9 @@
         "config.accepted-store.publication": "AS1"
       },
       "predecessor_exit": {
-        "predecessor": "Mutable compatibility configuration state read directly by consumers",
+        "predecessor": [
+          "CR2"
+        ],
         "consumers": [
           "CU0",
           "CU1",
@@ -2051,7 +2053,10 @@
         "config.direct-write.retirement-evidence": "RT1"
       },
       "predecessor_exit": {
-        "predecessor": "Direct raw effective-state writers that bypass typed observations",
+        "predecessor": [
+          "AD1",
+          "AD2"
+        ],
         "consumers": [
           "AD1",
           "AD2"

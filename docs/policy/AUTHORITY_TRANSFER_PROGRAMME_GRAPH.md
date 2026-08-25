@@ -20,7 +20,8 @@ Accepted programme topology only:
 - exclusive/shared semantic conflict keys — never file globs alone;
 - operation/evidence profile IDs from the graph registry;
 - claim ceilings, registered first falsifiers, durable artifacts with owners;
-- predecessor identity + exit condition for retirement nodes;
+- predecessor identity (declared stable node IDs, resolved fail-closed) plus
+  exit condition for retirement nodes;
 - downstream handoffs and the terminal relation a leaf may use.
 
 Controllers (`PGC` #11696, `SMC` #10168, `CFG` #6738), fan-in rows
@@ -68,7 +69,9 @@ scripts/check-authority-transfer-graph.sh
 ```
 
 The script runs rustfmt over the validator, the validator test target, and the
-`check` command above.
+`check` command above. The `.github/workflows/authority-transfer-graph.yml`
+lane invokes it on every PR or push touching the manifest, fixtures,
+validator, script, or the workflow itself.
 
 ## Fixtures
 

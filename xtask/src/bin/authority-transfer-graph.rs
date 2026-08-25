@@ -6,9 +6,11 @@
 //! SHAs, proof verdicts, readiness, assignees or leases, completion estimates,
 //! or model routing; those belong to #11698/#11699 projections keyed to this
 //! graph. Validation therefore fails closed on mutable-state leakage, unknown
-//! fields, unknown edge/profile semantics, incomplete denominators, unordered
-//! exclusive writers, hardened optional-live edges, and retirement without an
-//! exit, and normalizes deterministically to byte-identical output.
+//! fields, unknown edge/profile semantics, incomplete or split fan-in
+//! denominators, unordered exclusive writers, hardened optional-live edges,
+//! retirement without a resolvable declared predecessor exit, and controllers
+//! outside the controller class, and normalizes deterministically to
+//! byte-identical output.
 //!
 //! Surfaces:
 //!
@@ -21,7 +23,8 @@
 //!
 //! Exit contract: 0 = valid (and projection current under `check`), 2 = typed
 //! rejection or projection drift, 3 = instrument failure (unreadable or
-//! syntactically malformed input never resolves to a valid graph).
+//! syntactically malformed input never resolves to a valid graph; under
+//! `check` an instrument failure takes precedence over any typed rejection).
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -149,6 +152,7 @@ enum Code {
     DuplicateNodeId,
     UnknownRail,
     ControllerReferenceUnknown,
+    ControllerKindMismatch,
     ControllerMarkedBuildable,
     GovernanceNodeBuildable,
     LeafMissingClaimCeiling,
@@ -165,6 +169,7 @@ enum Code {
     FaninDenominatorIncomplete,
     LiveEnforcementBeforeAdvisoryAuthority,
     RetirementWithoutPredecessorExit,
+    PredecessorIdentityUnresolved,
     PredecessorConsumerUnknown,
     OptionalEdgePromotedHard,
     ParallelExclusiveConflict,
@@ -181,6 +186,7 @@ impl Code {
             Self::DuplicateNodeId => "DUPLICATE_NODE_ID",
             Self::UnknownRail => "UNKNOWN_RAIL",
             Self::ControllerReferenceUnknown => "CONTROLLER_REFERENCE_UNKNOWN",
+            Self::ControllerKindMismatch => "CONTROLLER_KIND_MISMATCH",
             Self::ControllerMarkedBuildable => "CONTROLLER_MARKED_BUILDABLE",
             Self::GovernanceNodeBuildable => "GOVERNANCE_NODE_BUILDABLE",
             Self::LeafMissingClaimCeiling => "LEAF_MISSING_CLAIM_CEILING",
@@ -199,6 +205,7 @@ impl Code {
                 "LIVE_ENFORCEMENT_BEFORE_ADVISORY_AUTHORITY"
             }
             Self::RetirementWithoutPredecessorExit => "RETIREMENT_WITHOUT_PREDECESSOR_EXIT",
+            Self::PredecessorIdentityUnresolved => "PREDECESSOR_IDENTITY_UNRESOLVED",
             Self::PredecessorConsumerUnknown => "PREDECESSOR_CONSUMER_UNKNOWN",
             Self::OptionalEdgePromotedHard => "OPTIONAL_EDGE_PROMOTED_HARD",
             Self::ParallelExclusiveConflict => "PARALLEL_EXCLUSIVE_CONFLICT",
@@ -329,7 +336,9 @@ struct Artifact {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PredecessorExit {
-    predecessor: String,
+    /// Declared stable node identities being retired. Free prose cannot be
+    /// resolved or falsified, so every predecessor identity must name a node.
+    predecessor: Vec<String>,
     consumers: Vec<String>,
     exit_condition: String,
 }
@@ -442,7 +451,7 @@ struct NormalizedConflicts {
 
 #[derive(Debug, Serialize)]
 struct NormalizedPredecessorExit {
-    predecessor: String,
+    predecessor: BTreeSet<String>,
     consumers: BTreeSet<String>,
     exit_condition: String,
 }
@@ -510,34 +519,50 @@ fn reject_or_continue(violations: &[Violation]) {
 
 fn run_check(manifest: PathBuf, fixtures_dir: PathBuf, generated: PathBuf) {
     let mut rejected = false;
+    let mut instrument_failure = false;
 
-    match load_graph_result(&manifest) {
-        Ok(graph) => {
-            let mut violations = validate(&graph);
-            match fs::read(&generated) {
-                Ok(committed) => {
-                    if committed != normalized_bytes(&graph) {
+    match read_bounded(&manifest, MAX_GRAPH_BYTES, "stable programme graph") {
+        Ok(raw) => match parse_graph_document(&raw) {
+            Err(syntax_error) => {
+                rejected = true;
+                instrument_failure = true;
+                println!(
+                    "FAIL stable-programme-graph instrument failure: parsing {}: {syntax_error}",
+                    manifest.display()
+                );
+            }
+            Ok(Err(violations)) => {
+                rejected = true;
+                report_check_rows("stable-programme-graph", &violations);
+            }
+            Ok(Ok(graph)) => {
+                let mut violations = validate(&graph);
+                match fs::read(&generated) {
+                    Ok(committed) => {
+                        if committed != normalized_bytes(&graph) {
+                            violations.push(Violation::new(
+                                Code::ProjectionDrift,
+                                generated.display().to_string(),
+                                "committed normalized projection differs from regenerated bytes"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                    Err(error) => {
                         violations.push(Violation::new(
                             Code::ProjectionDrift,
                             generated.display().to_string(),
-                            "committed normalized projection differs from regenerated bytes"
-                                .to_string(),
+                            format!("committed projection unreadable: {error}"),
                         ));
                     }
                 }
-                Err(error) => {
-                    violations.push(Violation::new(
-                        Code::ProjectionDrift,
-                        generated.display().to_string(),
-                        format!("committed projection unreadable: {error}"),
-                    ));
-                }
+                report_check_rows("stable-programme-graph", &violations);
+                rejected |= !violations.is_empty();
             }
-            report_check_rows("stable-programme-graph", &violations);
-            rejected |= !violations.is_empty();
-        }
+        },
         Err(error) => {
             rejected = true;
+            instrument_failure = true;
             println!("FAIL stable-programme-graph instrument failure: {error}");
         }
     }
@@ -553,6 +578,7 @@ fn run_check(manifest: PathBuf, fixtures_dir: PathBuf, generated: PathBuf) {
                     }
                     Err(FixtureError::Instrument(error)) => {
                         rejected = true;
+                        instrument_failure = true;
                         println!("FAIL {} instrument failure: {error}", path.display());
                     }
                 }
@@ -560,10 +586,14 @@ fn run_check(manifest: PathBuf, fixtures_dir: PathBuf, generated: PathBuf) {
         }
         Err(error) => {
             rejected = true;
+            instrument_failure = true;
             println!("FAIL fixtures inventory: {error}");
         }
     }
 
+    if instrument_failure {
+        exit(EXIT_NOT_PROVEN);
+    }
     if rejected {
         exit(EXIT_REJECTED);
     }
@@ -756,14 +786,25 @@ fn validate(graph: &ProgrammeGraph) -> Vec<Violation> {
                 format!("rail `{}` is not declared", node.rail),
             ));
         }
-        if let Some(controller) = &node.controller
-            && !known(controller)
-        {
-            violations.push(Violation::new(
-                Code::ControllerReferenceUnknown,
-                id,
-                format!("controller `{controller}` is not a declared node"),
-            ));
+        if let Some(controller) = &node.controller {
+            match index.get(controller.as_str()) {
+                None => violations.push(Violation::new(
+                    Code::ControllerReferenceUnknown,
+                    id,
+                    format!("controller `{controller}` is not a declared node"),
+                )),
+                Some(target) if target.kind != NodeKind::Controller => {
+                    violations.push(Violation::new(
+                        Code::ControllerKindMismatch,
+                        id,
+                        format!(
+                            "controller `{controller}` is kind `{}`, not a controller-class node",
+                            target.kind.as_str()
+                        ),
+                    ));
+                }
+                Some(_) => {}
+            }
         }
 
         if node.kind == NodeKind::Controller && node.buildable {
@@ -887,7 +928,7 @@ fn validate(graph: &ProgrammeGraph) -> Vec<Violation> {
                     "retirement requires predecessor identity and an exit condition".to_string(),
                 )),
                 Some(predecessor_exit) => {
-                    if predecessor_exit.predecessor.trim().is_empty()
+                    if predecessor_exit.predecessor.is_empty()
                         || predecessor_exit.exit_condition.trim().is_empty()
                     {
                         violations.push(Violation::new(
@@ -895,6 +936,15 @@ fn validate(graph: &ProgrammeGraph) -> Vec<Violation> {
                             id,
                             "predecessor identity and exit condition must be non-empty".to_string(),
                         ));
+                    }
+                    for predecessor in &predecessor_exit.predecessor {
+                        if !known(predecessor) {
+                            violations.push(Violation::new(
+                                Code::PredecessorIdentityUnresolved,
+                                id,
+                                format!("retired predecessor identity `{predecessor}` is not a declared node"),
+                            ));
+                        }
                     }
                     for consumer in &predecessor_exit.consumers {
                         if !known(consumer) {
@@ -974,7 +1024,9 @@ fn validate(graph: &ProgrammeGraph) -> Vec<Violation> {
         }
     }
 
-    // Every consumer cutover belongs to the exact-process denominator.
+    // Every consumer cutover belongs to the exact-process denominator, and one
+    // single fan-in must own the complete declared denominator: splitting the
+    // rows across partial fan-ins hides an unproven integration point.
     let fanned: BTreeSet<&str> =
         graph.nodes.iter().flat_map(|node| node.edges.fan_in.iter()).map(String::as_str).collect();
     for node in &graph.nodes {
@@ -987,6 +1039,31 @@ fn validate(graph: &ProgrammeGraph) -> Vec<Violation> {
             ));
         }
     }
+    let cutovers: BTreeSet<&str> = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind == NodeKind::ConsumerCutover)
+        .map(|node| node.node_id.as_str())
+        .collect();
+    if !cutovers.is_empty() {
+        let complete_fanin_exists = graph.nodes.iter().any(|node| {
+            node.kind == NodeKind::ExactProcessFanin
+                && cutovers
+                    .iter()
+                    .all(|cutover| node.edges.fan_in.iter().any(|target| target == cutover))
+        });
+        if !complete_fanin_exists {
+            violations.push(Violation::new(
+                Code::FaninDenominatorIncomplete,
+                "consumer_cutover_denominator".to_string(),
+                format!(
+                    "no single exact-process fan-in covers the complete declared \
+                     {}-row consumer_cutover denominator",
+                    cutovers.len()
+                ),
+            ));
+        }
+    }
 
     violations.extend(parallel_exclusive_conflicts(graph, &index, &duplicated));
     if let Some((member, detail)) = hard_cycle(&graph.nodes) {
@@ -994,7 +1071,7 @@ fn validate(graph: &ProgrammeGraph) -> Vec<Violation> {
     }
 
     violations
-        .sort_by(|a, b| (&a.code, &a.subject, &a.detail).cmp(&(&b.code, &b.subject, &a.detail)));
+        .sort_by(|a, b| (&a.code, &a.subject, &a.detail).cmp(&(&b.code, &b.subject, &b.detail)));
     violations.dedup();
     violations
 }
@@ -1164,7 +1241,7 @@ fn normalize(graph: &ProgrammeGraph) -> NormalizedGraph {
                 .collect(),
             predecessor_exit: node.predecessor_exit.as_ref().map(|exit_condition| {
                 NormalizedPredecessorExit {
-                    predecessor: exit_condition.predecessor.clone(),
+                    predecessor: exit_condition.predecessor.iter().cloned().collect(),
                     consumers: exit_condition.consumers.iter().cloned().collect(),
                     exit_condition: exit_condition.exit_condition.clone(),
                 }
@@ -1234,7 +1311,7 @@ fn evaluate_fixture(path: &Path) -> Result<(), FixtureError> {
         Err(parsed) => parsed,
     };
     violations
-        .sort_by(|a, b| (&a.code, &a.subject, &a.detail).cmp(&(&b.code, &b.subject, &a.detail)));
+        .sort_by(|a, b| (&a.code, &a.subject, &a.detail).cmp(&(&b.code, &b.subject, &b.detail)));
 
     if envelope.expected_code == "PASS" {
         if violations.is_empty() {
@@ -1381,8 +1458,8 @@ fn render_explain(graph: &ProgrammeGraph, node_id: &str) -> Option<String> {
     }
     match &node.predecessor_exit {
         Some(predecessor_exit) => lines.push(format!(
-            "predecessor exit: `{}` consumers {{{}}} exit when {}",
-            predecessor_exit.predecessor,
+            "predecessor exit: {{{}}} consumers {{{}}} exit when {}",
+            join_sorted(&predecessor_exit.predecessor),
             join_sorted(&predecessor_exit.consumers),
             predecessor_exit.exit_condition
         )),
@@ -1442,13 +1519,15 @@ mod tests {
         }
     }
 
-    const INVALID_FIXTURES: [(&str, &str); 18] = [
+    const INVALID_FIXTURES: [(&str, &str); 21] = [
         ("invalid-artifact-unowned.json", "ARTIFACT_OWNER_UNKNOWN"),
         ("invalid-consumer-before-accepted-store.json", "CONSUMER_WITHOUT_ACCEPTED_STORE"),
         ("invalid-controller-buildable.json", "CONTROLLER_MARKED_BUILDABLE"),
+        ("invalid-controller-kind-mismatch.json", "CONTROLLER_KIND_MISMATCH"),
         ("invalid-current-state-leak.json", "STATE_LEAKAGE"),
         ("invalid-duplicate-node-id.json", "DUPLICATE_NODE_ID"),
         ("invalid-fanin-denominator-missing-consumer.json", "FANIN_DENOMINATOR_INCOMPLETE"),
+        ("invalid-fanin-denominator-split.json", "FANIN_DENOMINATOR_INCOMPLETE"),
         ("invalid-hard-cycle.json", "HARD_DEPENDENCY_CYCLE"),
         ("invalid-leaf-missing-ceiling.json", "LEAF_MISSING_CLAIM_CEILING"),
         ("invalid-leaf-missing-falsifier.json", "LEAF_MISSING_FIRST_FALSIFIER"),
@@ -1456,6 +1535,7 @@ mod tests {
         ("invalid-multi-owner-authority.json", "AUTHORITY_OUTPUT_MULTI_OWNER"),
         ("invalid-optional-live-hardened.json", "OPTIONAL_EDGE_PROMOTED_HARD"),
         ("invalid-parallel-shared-catalog-writers.json", "PARALLEL_EXCLUSIVE_CONFLICT"),
+        ("invalid-retirement-predecessor-unresolved.json", "PREDECESSOR_IDENTITY_UNRESOLVED"),
         ("invalid-retirement-without-exit.json", "RETIREMENT_WITHOUT_PREDECESSOR_EXIT"),
         ("invalid-unknown-edge-target.json", "UNKNOWN_EDGE_TARGET"),
         ("invalid-unknown-profile.json", "UNKNOWN_PROFILE"),
