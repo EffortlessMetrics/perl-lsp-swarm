@@ -42,6 +42,35 @@ SEND_EVENT_CALL_RE = re.compile(r"\bself\.send_event\s*\(")
 SEND_EVENT_LITERAL_RE = re.compile(r'\s*"([A-Za-z][A-Za-z0-9]*)"')
 DEFINITION_REF_PREFIX = "#/definitions/"
 
+# Closed vocabularies for the versioned custom-family section (#10138).
+FAMILY_CLASSIFICATIONS = {"custom_dap_extension"}
+FAMILY_CAPABILITY_MODES = {"unadvertised-until-r04", "advertised-namespaced"}
+FAMILY_NEGOTIATION_POLICIES = {
+    "unknown_version_policy": {"reject-closed"},
+    "unknown_variant_policy": {"reject-closed"},
+    "unknown_field_policy": {"reject-closed", "tolerate-ignored"},
+}
+FAMILY_BOUND_KEYS = (
+    "max_request_bytes",
+    "max_identity_chars",
+    "max_digest_chars",
+    "max_reasons",
+    "max_reason_chars",
+    "max_detail_chars",
+    "max_retained_operations",
+)
+
+
+def namespaced_family_name(name: str) -> bool:
+    """A custom family name is a non-empty namespace, one `/`, and a
+    non-empty local name — the collision-resistant shape required by
+    ADR-0046 §6 and mirrored in crates/perl-dap/src/reload/surface.rs."""
+    separator = name.find("/")
+    if separator <= 0 or separator == len(name) - 1:
+        return False
+    namespace, local = name.split("/", 1)
+    return bool(namespace.strip()) and bool(local.strip())
+
 
 class AuthorityError(RuntimeError):
     """A fail-closed authority validation error."""
@@ -190,6 +219,105 @@ def validate_manifest(raw: Any, *, require_sha256: bool) -> Mapping[str, Any]:
                 f"project_configuration[{index}] must be classified as adapter-configuration"
             )
         string_value(configuration.get("owner"), f"project_configuration[{index}].owner")
+
+    families = manifest_rows(manifest, "project_families")
+    if not families:
+        raise AuthorityError("custom family inventory must not be empty")
+    extension_identities: set[tuple[str, str]] = set()
+    for index, extension in enumerate(manifest_rows(manifest, "project_extensions")):
+        extension_identities.add(
+            (
+                string_value(extension.get("kind"), f"project_extensions[{index}].kind"),
+                string_value(
+                    extension.get("wire_name"), f"project_extensions[{index}].wire_name"
+                ),
+            )
+        )
+    seen_families: set[str] = set()
+    for index, family in enumerate(families):
+        where = f"project_families[{index}]"
+        name = string_value(family.get("family"), f"{where}.family")
+        if not namespaced_family_name(name):
+            raise AuthorityError(
+                f"{where}.family must be a non-empty 'namespace/name' pair, got {name!r}"
+            )
+        if name in seen_families:
+            raise AuthorityError(f"duplicate project family record: {name}")
+        seen_families.add(name)
+        request_name = string_value(family.get("request_name"), f"{where}.request_name")
+        if not namespaced_family_name(request_name):
+            raise AuthorityError(
+                f"{where}.request_name must be namespaced like the family, got {request_name!r}"
+            )
+        for event_entry in array_value(family.get("event_names"), f"{where}.event_names"):
+            event = string_value(event_entry, f"{where}.event_names entry")
+            if not namespaced_family_name(event):
+                raise AuthorityError(
+                    f"{where} event {event!r} must be namespaced; a bare standard event "
+                    "name can never belong to a custom family"
+                )
+        if ("request", request_name) in extension_identities:
+            raise AuthorityError(
+                f"{where} request {request_name!r} duplicates a project extension identity; "
+                "a registered family request stays here until it is dispatched, at which "
+                "point it must graduate to project_extensions and leave the family record"
+            )
+        if family.get("classification") not in FAMILY_CLASSIFICATIONS:
+            raise AuthorityError(
+                f"{where}.classification must be one of {sorted(FAMILY_CLASSIFICATIONS)}, "
+                f"got {family.get('classification')!r}"
+            )
+        version = family.get("version")
+        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+            raise AuthorityError(f"{where}.version must be an integer >= 1")
+        if family.get("capability_advertisement") not in FAMILY_CAPABILITY_MODES:
+            raise AuthorityError(
+                f"{where}.capability_advertisement must be one of "
+                f"{sorted(FAMILY_CAPABILITY_MODES)}; a standard DAP capability spelling is "
+                "never valid"
+            )
+        if not isinstance(family.get("dispatched"), bool):
+            raise AuthorityError(f"{where}.dispatched must be a boolean")
+        if not isinstance(family.get("backed"), bool):
+            raise AuthorityError(f"{where}.backed must be a boolean")
+        string_value(family.get("owner"), f"{where}.owner")
+        string_value(family.get("contract"), f"{where}.contract")
+        negotiation = object_value(family.get("negotiation"), f"{where}.negotiation")
+        string_value(negotiation.get("mode"), f"{where}.negotiation.mode")
+        string_value(negotiation.get("selection"), f"{where}.negotiation.selection")
+        string_value(negotiation.get("session_binding"), f"{where}.negotiation.session_binding")
+        string_value(negotiation.get("restart_effect"), f"{where}.negotiation.restart_effect")
+        for policy, vocabulary in FAMILY_NEGOTIATION_POLICIES.items():
+            if negotiation.get(policy) not in vocabulary:
+                raise AuthorityError(
+                    f"{where}.negotiation.{policy} must be one of {sorted(vocabulary)}"
+                )
+        identity = object_value(family.get("identity_policy"), f"{where}.identity_policy")
+        for field in (
+            "subject_shape",
+            "raw_client_input",
+            "correlation",
+            "terminal_vocabulary",
+            "possibly_applied_boundary",
+        ):
+            string_value(identity.get(field), f"{where}.identity_policy.{field}")
+        bounds = object_value(family.get("bounds"), f"{where}.bounds")
+        for key in FAMILY_BOUND_KEYS:
+            value = bounds.get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise AuthorityError(f"{where}.bounds.{key} must be a positive integer")
+        string_value(family.get("redaction"), f"{where}.redaction")
+        string_value(family.get("cancellation"), f"{where}.cancellation")
+        if family.get("standard_dap_exclusion") is not True:
+            raise AuthorityError(f"{where}.standard_dap_exclusion must be true")
+        for field in (
+            "schema",
+            "typescript_projection",
+            "rust_contract",
+            "vectors",
+            "generator_check",
+        ):
+            string_value(family.get(field), f"{where}.{field}")
 
     return manifest
 

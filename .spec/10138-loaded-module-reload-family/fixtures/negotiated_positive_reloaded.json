@@ -1,0 +1,37 @@
+{
+  "schema": "perl_dap.loaded_module_reload_family.vector.v1",
+  "name": "negotiated_positive_reloaded",
+  "description": "A same-version negotiated client submits a typed-subject request; the transaction terminates reloaded and the wire body carries the frozen success vocabulary with the advanced generation witness.",
+  "negotiation": {
+    "client": { "family": "perl-lsp/loadedModuleReload", "versions": [1] },
+    "adapter": { "epoch": 7, "backed": true }
+  },
+  "request": {
+    "family": "perl-lsp/loadedModuleReload",
+    "familyVersion": 1,
+    "sessionEpoch": 7,
+    "operationId": 42,
+    "subject": {
+      "moduleIdentity": "opaque-module-token-1a2b",
+      "savedSourceDigest": "sha256:0f12e4d6a9b8c7d5e3f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d",
+      "logicalSourceUri": "perl-lsp-subject:epoch=7;observation=3",
+      "observationGeneration": 3
+    },
+    "deadlineMs": 5000
+  },
+  "outcome": { "kind": "reloaded" },
+  "generation_before": 3,
+  "expect": {
+    "evaluation": "admitted",
+    "kind": "reloaded",
+    "phase": "terminal_projection",
+    "success": true,
+    "possibly_applied": false,
+    "generation": { "previous": 3, "current": 4, "advanced": true },
+    "reconciliation": {
+      "loaded_source_refresh": "deferred",
+      "inspection_invalidation": "deferred",
+      "breakpoint_reconciliation": "deferred"
+    }
+  }
+}
