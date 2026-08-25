@@ -1,0 +1,440 @@
+{
+  "schema_version": "dap_editor_transport_inventory.v1",
+  "conflict_key": "dap.transport.editor_socket",
+  "adr": "docs/adr/0047-dap-stdio-only-editor-transport.md",
+  "ruling_status": "accepted",
+  "tcp_required_supported_client": null,
+  "owner_issue": "#10564",
+  "parent_controller": "#7486",
+  "retirement_children": [
+    "#10565",
+    "#10566"
+  ],
+  "proof_child": "#10567",
+  "invariants": [
+    "DAP attach, external-peer connect/listen, and editor transport remain separate propositions",
+    "a future editor-socket requirement must return through a new evidence-backed architecture decision",
+    "debugger-peer credentials never become editor credentials or vice versa",
+    "external-peer TCP is a debugger-backend transport, not an editor transport",
+    "no product CLI path binds an ambient editor DAP listener as a supported run mode",
+    "no supported editor needs a DAP-to-DAP proxy or socket relay",
+    "removing editor TCP does not change DAP request schemas, native launch, PID-attach honesty, or peer protocol semantics",
+    "stdio is the sole production editor-facing transport",
+    "test-only TCP fixtures cannot enter package help/docs/capability/support claims"
+  ],
+  "first_mile_surfaces": [
+    "book/src/dap/user-guide.md",
+    "crates/perl-dap/README.md",
+    "crates/perl-dap/src/lib.rs",
+    "docs/tutorials/DAP_USER_GUIDE.md"
+  ],
+  "transports": [
+    {
+      "id": "dap-attach",
+      "kind": "dap_attach",
+      "role": "attach_backend",
+      "disposition": "retain",
+      "authority": "product",
+      "owner_issue": "#10564",
+      "paths": [
+        "crates/perl-dap/src/debug_adapter/process.rs"
+      ],
+      "claim_boundary": "DAP attach is a protocol request to a stdio-launched adapter, not editor TCP"
+    },
+    {
+      "id": "dap-to-dap-proxy",
+      "kind": "dap_to_dap_proxy",
+      "role": "dap_proxy",
+      "disposition": "not_product",
+      "authority": "historical",
+      "owner_issue": "#10564",
+      "paths": [
+        "crates/perl-dap/src/tcp_attach/mod.rs"
+      ],
+      "claim_boundary": "legacy PLS TCP-attach proxy is not an editor transport and not a product client route"
+    },
+    {
+      "id": "debugger-peer-tcp",
+      "kind": "debugger_peer_tcp",
+      "role": "debugger_peer",
+      "disposition": "retain",
+      "authority": "product",
+      "owner_issue": "#6949",
+      "paths": [
+        "crates/perl-dap/src/backend/peer_launch.rs"
+      ],
+      "claim_boundary": "authenticated debugger-peer connect/listen TCP stays retained and separate from editor transport"
+    },
+    {
+      "id": "external-peer-editor-stdio",
+      "kind": "external_peer_editor_stdio",
+      "role": "editor",
+      "disposition": "retain",
+      "authority": "product",
+      "owner_issue": "#10564",
+      "paths": [
+        "crates/perl-dap/src/main.rs"
+      ],
+      "claim_boundary": "external-peer modes default to editor stdio; that editor link remains product"
+    },
+    {
+      "id": "external-peer-editor-tcp",
+      "kind": "external_peer_editor_tcp",
+      "role": "editor",
+      "disposition": "retire",
+      "authority": "product",
+      "owner_issue": "#10566",
+      "paths": [
+        "crates/perl-dap/src/main.rs"
+      ],
+      "claim_boundary": "optional --socket wrapper around external-peer editor I/O is retire; peer TCP is not"
+    },
+    {
+      "id": "native-editor-stdio",
+      "kind": "native_editor_stdio",
+      "role": "editor",
+      "disposition": "retain",
+      "authority": "product",
+      "owner_issue": "#10564",
+      "paths": [
+        "crates/perl-dap/src/main.rs"
+      ],
+      "claim_boundary": "inherited stdin/stdout is the sole product editor transport"
+    },
+    {
+      "id": "native-editor-tcp",
+      "kind": "native_editor_tcp",
+      "role": "editor",
+      "disposition": "retire",
+      "authority": "product",
+      "owner_issue": "#10565",
+      "paths": [
+        "crates/perl-dap/src/debug_adapter/transport.rs"
+      ],
+      "claim_boundary": "perl-dap --socket / run_socket is classified retire, not supported; this PR does not remove it"
+    },
+    {
+      "id": "test-only-loopback",
+      "kind": "test_only_loopback",
+      "role": "test_only",
+      "disposition": "not_product",
+      "authority": "test",
+      "owner_issue": "#10564",
+      "paths": [
+        "crates/perl-dap/tests/dap_coverage_audit_tests.rs"
+      ],
+      "claim_boundary": "test loopback run_socket fixtures cannot satisfy a product client row"
+    }
+  ],
+  "bind_sites": [
+    {
+      "id": "debugger-peer-listen",
+      "path": "crates/perl-dap/src/backend/peer_launch.rs",
+      "role": "debugger_peer",
+      "transport_id": "debugger-peer-tcp",
+      "disposition": "retain"
+    },
+    {
+      "id": "external-peer-editor-listener",
+      "path": "crates/perl-dap/src/main.rs",
+      "role": "editor",
+      "transport_id": "external-peer-editor-tcp",
+      "disposition": "retire"
+    },
+    {
+      "id": "native-editor-socket",
+      "path": "crates/perl-dap/src/debug_adapter/transport.rs",
+      "role": "editor",
+      "transport_id": "native-editor-tcp",
+      "disposition": "retire"
+    }
+  ],
+  "cli_flags": [
+    {
+      "id": "perl-dap-port",
+      "flag": "--port",
+      "applies_to": "perl-dap",
+      "disposition": "retire",
+      "source": "TransportArgs flatten; editor bind uses DEFAULT_DAP_PORT 13603"
+    },
+    {
+      "id": "perl-dap-socket",
+      "flag": "--socket",
+      "applies_to": "perl-dap",
+      "disposition": "retire",
+      "source": "TransportArgs flatten on perl-dap Args; still present until #10565"
+    }
+  ],
+  "dap_to_dap_relays": [
+    {
+      "id": "tcp-attach-pls-proxy",
+      "path": "crates/perl-dap/src/tcp_attach/mod.rs",
+      "disposition": "not_product",
+      "authority": "historical"
+    }
+  ],
+  "clients": [
+    {
+      "id": "direct-cli-harness",
+      "evidence_stage": "fixture",
+      "support_status": "supported",
+      "launch_mechanism": "perl-dap --stdio / default stdio",
+      "transport": "stdio",
+      "editor_socket_required": false,
+      "evidence_paths": [
+        "crates/perl-dap/src/main.rs"
+      ],
+      "required_markers": [
+        "Starting DAP server on stdio"
+      ],
+      "forbidden_markers": [],
+      "support_owner": "#7565",
+      "migration": "none; stdio is already the harness contract",
+      "claim_boundary": "exact-process harness is public stdio; --socket remains classified retire in this same file",
+      "blocks_retirement": false
+    },
+    {
+      "id": "docker",
+      "evidence_stage": "package",
+      "support_status": "preview",
+      "launch_mechanism": "image ships perl-dap; compose/docs are stdio",
+      "transport": "stdio",
+      "editor_socket_required": false,
+      "evidence_paths": [
+        ".docker/perl-lsp/Dockerfile"
+      ],
+      "required_markers": [
+        "/usr/local/bin/perl-dap",
+        "no port exposure"
+      ],
+      "forbidden_markers": [
+        "13603"
+      ],
+      "support_owner": "#8999",
+      "migration": "none",
+      "claim_boundary": "image copies perl-dap and documents stdin/stdout; it does not expose a DAP port",
+      "blocks_retirement": false
+    },
+    {
+      "id": "external-peer-ptkdb",
+      "evidence_stage": "package",
+      "support_status": "preview",
+      "launch_mechanism": "perl-dap --external-peer over editor stdio",
+      "transport": "stdio",
+      "editor_socket_required": false,
+      "evidence_paths": [
+        "docs/how-to/EXTERNAL_DEBUGGER_PEER_QUICKSTART.md"
+      ],
+      "required_markers": [
+        "perl-dap --external-peer 127.0.0.1:5000",
+        "The editor speaks DAP over stdio"
+      ],
+      "forbidden_markers": [
+        "perl-dap --socket"
+      ],
+      "support_owner": "#6949",
+      "migration": "keep stdio editor link; retire optional editor --socket wrapper in #10566",
+      "claim_boundary": "debugger-peer TCP is retained; the editor wrapper socket is optional and classified retire",
+      "blocks_retirement": false
+    },
+    {
+      "id": "helix",
+      "evidence_stage": "planned",
+      "support_status": "planned",
+      "launch_mechanism": "declared perl-dap --stdio",
+      "transport": "stdio",
+      "editor_socket_required": false,
+      "evidence_paths": [
+        "docs/EDITORS/HELIX_SETUP.md"
+      ],
+      "required_markers": [
+        "perl-dap --stdio"
+      ],
+      "forbidden_markers": [
+        "perl-dap --socket"
+      ],
+      "support_owner": "#7742",
+      "migration": "none; declared stdio",
+      "claim_boundary": "no actual Helix DAP receipt yet; declared route is stdio and cannot block retirement",
+      "blocks_retirement": false
+    },
+    {
+      "id": "kate",
+      "dap_claimed": false,
+      "evidence_stage": "none",
+      "support_status": "unsupported",
+      "launch_mechanism": "none",
+      "transport": "n/a",
+      "editor_socket_required": false,
+      "evidence_paths": [],
+      "required_markers": [],
+      "forbidden_markers": [],
+      "support_owner": "#10564",
+      "migration": "n/a",
+      "claim_boundary": "Kate has no current DAP claim in this repository",
+      "blocks_retirement": false
+    },
+    {
+      "id": "kubernetes",
+      "evidence_stage": "not_proven",
+      "support_status": "planned",
+      "launch_mechanism": "architecture ruling: in-workspace perl-dap --stdio; no exposed DAP Service",
+      "transport": "stdio",
+      "editor_socket_required": false,
+      "evidence_paths": [],
+      "required_markers": [],
+      "forbidden_markers": [],
+      "support_owner": "#10111",
+      "migration": "none; exposed DAP ports are already rejected by the architecture issue",
+      "claim_boundary": "installed Kubernetes DAP profile is not_proven; the ruling does not require editor TCP",
+      "blocks_retirement": false
+    },
+    {
+      "id": "lite-xl",
+      "dap_claimed": false,
+      "evidence_stage": "none",
+      "support_status": "unsupported",
+      "launch_mechanism": "none",
+      "transport": "n/a",
+      "editor_socket_required": false,
+      "evidence_paths": [],
+      "required_markers": [],
+      "forbidden_markers": [],
+      "support_owner": "#10564",
+      "migration": "n/a",
+      "claim_boundary": "Lite XL has no current DAP claim in this repository",
+      "blocks_retirement": false
+    },
+    {
+      "id": "lsp4ij",
+      "evidence_stage": "not_proven",
+      "support_status": "not_proven",
+      "launch_mechanism": "LSP4IJ DAP template launches perl-dap as an executable command",
+      "transport": "stdio",
+      "editor_socket_required": false,
+      "evidence_paths": [
+        "integrations/lsp4ij/upstream/0.20.1/dap/template.json"
+      ],
+      "required_markers": [
+        "\"id\": \"perl-dap\""
+      ],
+      "forbidden_markers": [
+        "--socket"
+      ],
+      "support_owner": "#7877",
+      "migration": "none unless actual-host proof later requires TCP",
+      "claim_boundary": "upstream snapshot claims DAP via executable launch; attach.tcp.json is a DAP attach config, not editor --socket; actual IntelliJ DAP behavior remains not_proven",
+      "blocks_retirement": false
+    },
+    {
+      "id": "nvim-dap",
+      "evidence_stage": "preview",
+      "support_status": "preview",
+      "launch_mechanism": "nvim-dap type=executable with empty args",
+      "transport": "stdio",
+      "editor_socket_required": false,
+      "evidence_paths": [
+        "scripts/ux/neovim/perl_dap.lua"
+      ],
+      "required_markers": [
+        "type = 'executable'",
+        "command = 'perl-dap'",
+        "args = {}"
+      ],
+      "forbidden_markers": [
+        "--socket"
+      ],
+      "support_owner": "#7773",
+      "migration": "none; default stdio",
+      "claim_boundary": "preview smoke fixture; not installed support promotion",
+      "blocks_retirement": false
+    },
+    {
+      "id": "sublime",
+      "evidence_stage": "package",
+      "support_status": "preview",
+      "launch_mechanism": "StdioTransport \u2192 perl-dap --stdio",
+      "transport": "stdio",
+      "editor_socket_required": false,
+      "evidence_paths": [
+        "clients/sublime/LSP-perllsp/dap_support.py"
+      ],
+      "required_markers": [
+        "\"--stdio\""
+      ],
+      "forbidden_markers": [
+        "--socket"
+      ],
+      "support_owner": "#7711",
+      "migration": "none; already stdio",
+      "claim_boundary": "package code launches stdio; Debugger registration journey completeness remains a separate issue",
+      "blocks_retirement": false
+    },
+    {
+      "id": "vimspector",
+      "evidence_stage": "fixture",
+      "support_status": "preview",
+      "launch_mechanism": "vimspector adapter command with --stdio",
+      "transport": "stdio",
+      "editor_socket_required": false,
+      "evidence_paths": [
+        ".ci/editor-clients/vimspector-perl-dap.v1.json"
+      ],
+      "required_markers": [
+        "\"transport\": \"stdio\""
+      ],
+      "forbidden_markers": [
+        "--socket"
+      ],
+      "support_owner": "#7702",
+      "migration": "none; contract is stdio",
+      "claim_boundary": "editor-client contract declares stdio; not a product TCP consumer",
+      "blocks_retirement": false
+    },
+    {
+      "id": "vscode",
+      "evidence_stage": "shipped",
+      "support_status": "supported",
+      "launch_mechanism": "DebugAdapterExecutable",
+      "transport": "stdio",
+      "editor_socket_required": false,
+      "evidence_paths": [
+        "vscode-extension/src/debugAdapter.ts"
+      ],
+      "required_markers": [
+        "DebugAdapterExecutable",
+        "buildDapExecutableArgs"
+      ],
+      "forbidden_markers": [
+        "DebugAdapterServer",
+        "--socket"
+      ],
+      "support_owner": "#6694",
+      "migration": "none; already stdio",
+      "claim_boundary": "VS Code attach host/port fields are DAP attach configuration, not editor TCP; the descriptor launches a child over stdio",
+      "blocks_retirement": false
+    },
+    {
+      "id": "zed",
+      "evidence_stage": "fixture",
+      "support_status": "preview",
+      "launch_mechanism": "DebugAdapterBinary with empty arguments and connection=None",
+      "transport": "stdio",
+      "editor_socket_required": false,
+      "evidence_paths": [
+        ".ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs"
+      ],
+      "required_markers": [
+        "stdio is the default editor link; no transport arguments."
+      ],
+      "forbidden_markers": [
+        "DebugAdapterServer"
+      ],
+      "support_owner": "#9487",
+      "migration": "none; DAP binary uses stdio. Do not confuse with LSP --socket flags in the same extension file",
+      "claim_boundary": "zed DAP launch is stdio; open #12463 owns official-registry journey receipts, not this inventory",
+      "blocks_retirement": false
+    }
+  ],
+  "digest": "da5d9aae4eda3572277bd529df79591a51c39df717e0fc5618b49e562451f1a9"
+}
