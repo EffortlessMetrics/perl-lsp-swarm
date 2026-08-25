@@ -36,6 +36,13 @@ PUBLIC_STAGE = "public_registry_install"
 ASSET_STAGE = "public_perl_dap_asset"
 EXACT_SOURCE_STAGE = "exact_source_dev_extension"
 
+# The committed #9486 exact-source receipt family: only a file carrying this
+# schema and evidence stage counts as exact-source DAP evidence, so a
+# pass-shaped JSON file from any other stage caught by the receipts glob can
+# never satisfy the D02 gate.
+EXACT_SOURCE_RECEIPT_SCHEMA = "zed_host_compat.v1"
+EXACT_SOURCE_EVIDENCE_STAGE = "exact_source_dev_extension"
+
 CONTRACT_RELATIVE_PATH = ".ci/fixtures/zed-perl-upstream/perl-dap-managed-downloads.v1.json"
 REGISTRY_MANIFEST_RELATIVE_PATH = ".ci/fixtures/zed-perl-upstream/registry/manifest.toml"
 
@@ -154,7 +161,13 @@ def registry_subject(manifest: dict[str, Any]) -> dict[str, Any]:
 
 
 def exact_source_receipt_current(receipts_dir: Path) -> bool:
-    """Whether any committed exact-source Zed receipt currently records a pass."""
+    """Whether a committed exact-source Zed DAP receipt currently records a pass.
+
+    Only a genuine #9486 exact-source observation counts: the file must carry
+    the exact-source receipt schema and evidence stage and a `pass` result. An
+    unrelated LSP host receipt or a malformed pass-shaped JSON file caught by
+    the same glob never satisfies the D02 gate.
+    """
     if not receipts_dir.is_dir():
         return False
     for path in sorted(receipts_dir.glob("exact-source*.json")):
@@ -162,7 +175,12 @@ def exact_source_receipt_current(receipts_dir: Path) -> bool:
             value = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if isinstance(value, dict) and value.get("result") == "pass":
+        if (
+            isinstance(value, dict)
+            and value.get("schema_version") == EXACT_SOURCE_RECEIPT_SCHEMA
+            and value.get("evidence_stage") == EXACT_SOURCE_EVIDENCE_STAGE
+            and value.get("result") == "pass"
+        ):
             return True
     return False
 
@@ -177,10 +195,6 @@ def _nonempty(value: Any, context: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ReceiptError(f"{context} must be a non-empty string")
     return value
-
-
-def _cell(receipt: dict[str, Any], group: str, cell: str) -> dict[str, Any]:
-    return _object(receipt.get(group, {}).get(cell), f"{group}.{cell}")
 
 
 def _require_gate(gates: dict[str, Any], cell: str, expected: str, reason: str) -> None:
@@ -241,7 +255,7 @@ def validate_dap_public_receipt(
 
     journey = _object(receipt.get("journey"), "journey")
     for cell in JOURNEY_CELLS:
-        entry = _cell(receipt, "journey", cell)
+        entry = _object(journey.get(cell), f"journey.{cell}")
         if entry.get("result") not in CELL_RESULTS:
             raise ReceiptError(f"journey cell {cell!r} has an invalid result")
         if result != "pass" and entry.get("result") == "pass":
@@ -257,7 +271,7 @@ def validate_dap_public_receipt(
     if result != "pass":
         return
 
-    _validate_pass(receipt, contract, asset_receipt, manifest, manifest_path)
+    _validate_pass(receipt, contract, asset_receipt, manifest, manifest_path, receipts_dir)
 
 
 def _validate_asset_evidence(
@@ -388,6 +402,24 @@ def _validate_blocked_gates(
         "the bound #9516 aggregate receipt is a current pass; the asset gate "
         "cannot deny it",
     )
+    # The released-build gate is bound to the acceptance manifest, not to the
+    # enum alone: while the manifest records no released build at all the gate
+    # can only be `absent`, and while the manifest does not accept the subject
+    # the gate can never be `current`, so a blocked receipt cannot overclaim
+    # external Zed release progress the manifest denies.
+    if not subject["released_build"]:
+        _require_gate(
+            gates,
+            "released_zed_build",
+            "absent",
+            "gates.released_zed_build cannot claim a released build the "
+            "acceptance manifest does not record",
+        )
+    elif gates.get("released_zed_build") == "current":
+        raise ReceiptError(
+            "gates.released_zed_build cannot be current while the acceptance "
+            "manifest does not accept the subject"
+        )
     if receipts_dir is not None:
         recorded = exact_source_receipt_current(receipts_dir)
         claimed = gates.get("exact_source_zed_dap_receipt")
@@ -415,12 +447,38 @@ def _validate_pass(
     asset_receipt: dict[str, Any],
     manifest: dict[str, Any],
     manifest_path: Path,
+    receipts_dir: Path | None,
 ) -> None:
     subject = registry_subject(manifest)
     if not subject["accepted"]:
         raise ReceiptError(
             "public pass requires an accepted merged-and-released registry subject; "
             f"the acceptance manifest {manifest_path.name} still blocks the journey"
+        )
+
+    # The D05 entry gates are prerequisites of a pass, not decoration: a pass
+    # must record every gate as `current`, and the D02 exact-source gate is
+    # live-bound to the committed receipts directory exactly as a blocked
+    # receipt's is, so the public journey can never outrun an absent or stale
+    # prerequisite and feed downstream projection on unproven gates.
+    gates = _object(receipt.get("gates"), "gates")
+    for cell in GATE_CELLS:
+        _require_gate(
+            gates,
+            cell,
+            "current",
+            f"a public pass requires gates.{cell} to be current; the journey "
+            "cannot outrun an absent or stale entry gate",
+        )
+    if receipts_dir is None:
+        raise ReceiptError(
+            "a public pass must be validated with its exact-source receipts "
+            "directory; the D02 gate cannot be verified without it"
+        )
+    if not exact_source_receipt_current(receipts_dir):
+        raise ReceiptError(
+            "a public pass requires a committed exact-source receipt recording "
+            "a pass; the D02 prerequisite is not current"
         )
 
     registry = _object(receipt.get("registry"), "registry")
@@ -529,8 +587,9 @@ def _validate_pass(
     for cell in ("config_sha256", "driver_sha256", "instrument_sha256"):
         parse_digest(configuration.get(cell), f"configuration.{cell}")
 
+    journey = _object(receipt.get("journey"), "journey")
     for cell in JOURNEY_CELLS:
-        entry = _cell(receipt, "journey", cell)
+        entry = _object(journey.get(cell), f"journey.{cell}")
         if entry.get("result") != "pass" or not str(entry.get("evidence") or "").strip():
             raise ReceiptError(f"required journey cell {cell!r} is not proven")
 

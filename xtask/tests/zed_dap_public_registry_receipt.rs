@@ -75,6 +75,15 @@ fn run(
     receipt: &str,
     manifest: &Path,
 ) -> Result<std::process::Output, Box<dyn Error>> {
+    run_with_receipts_dir(root, receipt, manifest, RECEIPTS_DIR)
+}
+
+fn run_with_receipts_dir(
+    root: &Path,
+    receipt: &str,
+    manifest: &Path,
+    receipts_dir: &str,
+) -> Result<std::process::Output, Box<dyn Error>> {
     Ok(Command::new(python())
         .arg(root.join(SCRIPT))
         .arg("validate-dap-public-receipt")
@@ -87,7 +96,7 @@ fn run(
         .arg("--registry-manifest")
         .arg(manifest)
         .arg("--receipts-dir")
-        .arg(RECEIPTS_DIR)
+        .arg(receipts_dir)
         .current_dir(root)
         .output()?)
 }
@@ -127,7 +136,9 @@ fn load_json(path: &Path) -> Result<Value, Box<dyn Error>> {
 }
 
 fn write_temp(target: &Path, text: &str) -> Result<(), Box<dyn Error>> {
-    if let Some(parent) = target.parent() {
+    // A bare-filename target would hand `create_dir_all` an empty parent
+    // path; skip directory creation for that degenerate case.
+    if let Some(parent) = target.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
     fs::write(target, text)?;
@@ -142,6 +153,22 @@ fn write_temp(target: &Path, text: &str) -> Result<(), Box<dyn Error>> {
 fn pass_control(committed: &Value) -> Result<Value, Box<dyn Error>> {
     let mut receipt = committed.clone();
     receipt["result"] = json!("pass");
+    // A pass records every entry gate as current: the registry gates follow
+    // the synthetic accepted manifest, the asset gate follows the bound #9516
+    // pass, and the D02 exact-source and C01 routing gates record their
+    // prerequisites (the D02 gate is additionally live-bound by the
+    // validator against the receipts directory used for the run).
+    for cell in [
+        "released_zed_build",
+        "official_registry_entry",
+        "extension_upstream_release",
+        "matching_host_asset_receipt",
+        "exact_source_zed_dap_receipt",
+        "routing_final_check_authority",
+    ] {
+        receipt["gates"][cell] = json!("current");
+    }
+    receipt["gates"]["blockers"] = json!([]);
     receipt["registry"] = json!({
         "repository": "zed-industries/extensions",
         "entry": "perl",
@@ -219,6 +246,30 @@ fn pass_control(committed: &Value) -> Result<Value, Box<dyn Error>> {
     });
     receipt["cleanup"] = json!({"adapter_orphans": [], "debuggee_orphans": []});
     Ok(receipt)
+}
+
+/// Materialize a synthetic receipts directory holding one `exact-source*.json`
+/// receipt with the given evidence stage and result, for controls that need a
+/// committed exact-source pass: the D02 prerequisite is live-bound to the
+/// receipts directory the validator sees.
+fn receipts_dir_with_exact_source(
+    target: &Path,
+    name: &str,
+    evidence_stage: &str,
+    result: &str,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let dir = target.join(name);
+    fs::create_dir_all(&dir)?;
+    let receipt = json!({
+        "schema_version": "zed_host_compat.v1",
+        "evidence_stage": evidence_stage,
+        "result": result,
+    });
+    write_temp(
+        &dir.join("exact-source-synthetic.json"),
+        &serde_json::to_string_pretty(&receipt)?,
+    )?;
+    Ok(dir)
 }
 
 #[test]
@@ -328,6 +379,56 @@ fn blocked_gates_are_live_bound_to_the_current_surfaces() -> Result<(), Box<dyn 
     let output = run(&root, path.to_string_lossy().as_ref(), &real_manifest)?;
     assert_rejected(&output, "claiming exact-source gate", "no committed fixture records")?;
 
+    // The D02 gate counts only genuine exact-source receipts: a pass-shaped
+    // file caught by the glob but carrying another evidence stage never
+    // satisfies the gate.
+    let wrong_stage_receipts = receipts_dir_with_exact_source(
+        &target,
+        "receipts-wrong-stage",
+        "public_registry_install",
+        "pass",
+    )?;
+    let output = run_with_receipts_dir(
+        &root,
+        path.to_string_lossy().as_ref(),
+        &real_manifest,
+        wrong_stage_receipts.to_string_lossy().as_ref(),
+    )?;
+    assert_rejected(
+        &output,
+        "claiming exact-source gate vs wrong-stage pass file",
+        "no committed fixture records",
+    )?;
+
+    // Conversely, once a genuine exact-source pass is committed, a blocked
+    // receipt can no longer deny it.
+    let current_receipts = receipts_dir_with_exact_source(
+        &target,
+        "receipts-current",
+        "exact_source_dev_extension",
+        "pass",
+    )?;
+    let output = run_with_receipts_dir(
+        &root,
+        COMMITTED_RECEIPT,
+        &real_manifest,
+        current_receipts.to_string_lossy().as_ref(),
+    )?;
+    assert_rejected(&output, "blocked receipt vs committed exact-source pass", "cannot deny it")?;
+
+    // A blocked receipt cannot claim a released Zed build the acceptance
+    // manifest does not record (the manifest's released_build is empty).
+    let mut build_overclaim = committed.clone();
+    build_overclaim["gates"]["released_zed_build"] = json!("current");
+    let path = target.join("blocked-claiming-released-build.json");
+    write_temp(&path, &serde_json::to_string_pretty(&build_overclaim)?)?;
+    let output = run(&root, path.to_string_lossy().as_ref(), &real_manifest)?;
+    assert_rejected(
+        &output,
+        "claiming released-build gate",
+        "cannot claim a released build the acceptance manifest does not record",
+    )?;
+
     // Blockers are load-bearing: an empty list hides the absent subjects.
     let mut unblocked = committed.clone();
     unblocked["gates"]["blockers"] = json!([]);
@@ -360,12 +461,34 @@ fn pass_journey_requires_an_accepted_registry_subject() -> Result<(), Box<dyn Er
 
     let control_path = target.join("pass-control.json");
     write_temp(&control_path, &serde_json::to_string_pretty(&control)?)?;
+    let current_receipts = receipts_dir_with_exact_source(
+        &target,
+        "receipts-current",
+        "exact_source_dev_extension",
+        "pass",
+    )?;
 
     // The control passes only against an accepted merged-and-released
-    // registry subject.
+    // registry subject and a committed exact-source pass (the D02 gate is
+    // live-bound to the receipts directory).
     assert_success(
-        &run(&root, control_path.to_string_lossy().as_ref(), &published)?,
+        &run_with_receipts_dir(
+            &root,
+            control_path.to_string_lossy().as_ref(),
+            &published,
+            current_receipts.to_string_lossy().as_ref(),
+        )?,
         "synthetic pass control validation",
+    )?;
+
+    // The same control against the real receipts directory has no committed
+    // exact-source pass to bind: the D02 prerequisite is not current, so the
+    // pass must fail closed.
+    let output = run(&root, control_path.to_string_lossy().as_ref(), &published)?;
+    assert_rejected(
+        &output,
+        "pass control without a committed exact-source pass",
+        "D02 prerequisite is not current",
     )?;
 
     // The same receipt against the real (still blocked) manifest is a
@@ -410,6 +533,12 @@ fn pass_mutations_fail_closed_naming_the_exact_defect() -> Result<(), Box<dyn Er
     let control = pass_control(&committed)?;
     let published = target.join("manifest-published.toml");
     write_temp(&published, PUBLISHED_MANIFEST)?;
+    let current_receipts = receipts_dir_with_exact_source(
+        &target,
+        "receipts-current",
+        "exact_source_dev_extension",
+        "pass",
+    )?;
 
     let mutations: Vec<(String, Value, &str, &str)> = vec![
         (
@@ -582,6 +711,18 @@ fn pass_mutations_fail_closed_naming_the_exact_defect() -> Result<(), Box<dyn Er
             "/currentness/invalidators",
             "invalidators",
         ),
+        (
+            "absent D02 exact-source gate".into(),
+            json!("absent"),
+            "/gates/exact_source_zed_dap_receipt",
+            "cannot outrun an absent or stale entry gate",
+        ),
+        (
+            "absent C01 routing authority gate".into(),
+            json!("absent"),
+            "/gates/routing_final_check_authority",
+            "cannot outrun an absent or stale entry gate",
+        ),
     ];
 
     for (label, value, pointer, fragment) in mutations {
@@ -591,7 +732,12 @@ fn pass_mutations_fail_closed_naming_the_exact_defect() -> Result<(), Box<dyn Er
             .ok_or_else(|| io::Error::other(format!("pointer {pointer} missing")))? = value;
         let path = target.join(format!("pass-{}.json", label.replace([' ', '-'], "_")));
         write_temp(&path, &serde_json::to_string_pretty(&mutated)?)?;
-        let output = run(&root, path.to_string_lossy().as_ref(), &published)?;
+        let output = run_with_receipts_dir(
+            &root,
+            path.to_string_lossy().as_ref(),
+            &published,
+            current_receipts.to_string_lossy().as_ref(),
+        )?;
         assert_rejected(&output, &format!("pass mutation: {label}"), fragment)?;
     }
 
