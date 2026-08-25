@@ -32,6 +32,8 @@ pub enum SemanticFactKind {
     /// Route-handler source interval where route-handler-only DSL keywords
     /// are semantically available (canonical route fact family).
     RouteHandlerContext,
+    /// Framework hook declaration (canonical hook fact family).
+    Hook,
 }
 
 /// Source identity for a fact's bytes or compiler input snapshot.

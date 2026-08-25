@@ -45,6 +45,11 @@
 //!   `Dancer2::Core::Route` BUILDARGS does: plain string concatenation under
 //!   a prefix, leading-`/` normalization without one, typed boundaries for
 //!   dynamic operands and regex-under-prefix.
+//! - Handler operands resolve static coderefs against the in-file
+//!   package-scoped subroutine declaration index (#8924 promotion):
+//!   `\&handler` with an in-file `sub handler` - including forward
+//!   declarations and stubs - binds an exact declaration target; anything
+//!   else stays a typed boundary.
 //! - Route-local parameter/capture segments of literal patterns, mirroring
 //!   the upstream `_build_regexp_from_string` scanner: `:name` tokens
 //!   (`[^/.?]+`), typed `:name[Type]` tokens (last `[...]` group stripped),
@@ -52,16 +57,17 @@
 //!   prefix/pattern token boundaries are extracted as unsupported-capture
 //!   boundaries, never guessed keys.
 
+use crate::analysis::dancer2_handler_targets::{SubroutineTargetIndex, handler_from_node};
 use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::framework_adapters::dancer2_routes::{
     DANCER2_ROUTE_KEYWORDS, Dancer2PrefixDeclaration, Dancer2RouteDeclaration, RouteRegistration,
     dancer2_keyword_methods, normalize_dancer2_method,
 };
 use perl_semantic_facts::route::{
-    RouteDeclaration, RouteEffectivePattern, RouteHandler, RouteHandlerBoundary, RouteMethodSet,
-    RouteName, RouteNameSelection, RouteOption, RouteOptionValue, RouteOptions, RouteParameterKind,
-    RouteParameterSegment, RoutePattern, RoutePatternKind, RoutePrefixDeclaration,
-    RoutePrefixLiteral, RoutePrefixScope, RoutePrefixSelection,
+    RouteDeclaration, RouteEffectivePattern, RouteMethodSet, RouteName, RouteNameSelection,
+    RouteOption, RouteOptionValue, RouteOptions, RouteParameterKind, RouteParameterSegment,
+    RoutePattern, RoutePatternKind, RoutePrefixDeclaration, RoutePrefixLiteral, RoutePrefixScope,
+    RoutePrefixSelection,
 };
 use perl_semantic_facts::{AnchorId, FileId, SourceAnchor};
 use std::collections::HashMap;
@@ -114,7 +120,8 @@ pub fn extract_dancer2_route_contexts(ast: &Node, file_id: FileId) -> Dancer2Rou
         routes: Vec::new(),
         prefixes: Vec::new(),
     };
-    walk_node(ast, file_id, &mut state);
+    let targets = SubroutineTargetIndex::build(ast, file_id);
+    walk_node(ast, file_id, &mut state, &targets);
     Dancer2RouteContexts { routes: state.routes, prefixes: state.prefixes }
 }
 
@@ -143,7 +150,7 @@ impl WalkState {
     }
 }
 
-fn walk_node(node: &Node, file_id: FileId, state: &mut WalkState) {
+fn walk_node(node: &Node, file_id: FileId, state: &mut WalkState, targets: &SubroutineTargetIndex) {
     match &node.kind {
         NodeKind::Program { statements } | NodeKind::Block { statements } => {
             // A lexical block scopes statement-form `package X;` declarations:
@@ -151,14 +158,14 @@ fn walk_node(node: &Node, file_id: FileId, state: &mut WalkState) {
             // is restored afterwards (mirrors the #8914 activation walk). The
             // per-package prefix map restores prefix state the same way.
             let saved_package = state.current_package.clone();
-            walk_statements(statements, file_id, state);
+            walk_statements(statements, file_id, state, targets);
             state.current_package = saved_package;
         }
         NodeKind::Package { name, block: Some(block), .. } => {
             let saved_package = state.current_package.clone();
             state.current_package = Some(name.clone());
             if let NodeKind::Block { statements } = &block.kind {
-                walk_statements(statements, file_id, state);
+                walk_statements(statements, file_id, state, targets);
             }
             state.current_package = saved_package;
         }
@@ -175,26 +182,31 @@ fn walk_node(node: &Node, file_id: FileId, state: &mut WalkState) {
         NodeKind::Subroutine { .. } => {}
         _ => {
             for child in node.children() {
-                walk_node(child, file_id, state);
+                walk_node(child, file_id, state, targets);
             }
         }
     }
 }
 
-fn walk_statements(statements: &[Node], file_id: FileId, state: &mut WalkState) {
+fn walk_statements(
+    statements: &[Node],
+    file_id: FileId,
+    state: &mut WalkState,
+    targets: &SubroutineTargetIndex,
+) {
     let mut index = 0;
     while index < statements.len() {
         let statement = &statements[index];
         if let NodeKind::ExpressionStatement { expression } = &statement.kind {
             // Single-statement forms: `VERB ...` call or `any [...] ...` list.
-            if let Some(declaration) = route_from_expression(expression, state) {
+            if let Some(declaration) = route_from_expression(expression, state, targets) {
                 state.routes.push(declaration);
                 state.next_route_index += 1;
                 index += 1;
                 continue;
             }
             // Prefix declaration (sticky or lexical block form).
-            if handle_prefix_statement(expression, state) {
+            if handle_prefix_statement(expression, state, targets) {
                 index += 1;
                 continue;
             }
@@ -262,7 +274,12 @@ fn walk_statements(statements: &[Node], file_id: FileId, state: &mut WalkState) 
                         pattern: pattern.clone(),
                         effective_pattern: effective_pattern(&pattern, &state.prefix_state()),
                         options: RouteOptions::Map(Vec::new()),
-                        handler: handler_from_node(handler_node, file_id),
+                        handler: handler_from_node(
+                            handler_node,
+                            file_id,
+                            state.current_package.as_deref(),
+                            targets,
+                        ),
                     },
                     // Regex patterns are not scanned for deprecated
                     // placeholders (their capture shape is already a typed
@@ -275,7 +292,7 @@ fn walk_statements(statements: &[Node], file_id: FileId, state: &mut WalkState) 
                 continue;
             }
         }
-        walk_node(statement, file_id, state);
+        walk_node(statement, file_id, state, targets);
         index += 1;
     }
 }
@@ -308,7 +325,11 @@ fn any_list_head(expression: &Node) -> Option<(&Node, &Node, &[Node])> {
     }
 }
 
-fn route_from_expression(expression: &Node, state: &WalkState) -> Option<Dancer2RouteDeclaration> {
+fn route_from_expression(
+    expression: &Node,
+    state: &WalkState,
+    targets: &SubroutineTargetIndex,
+) -> Option<Dancer2RouteDeclaration> {
     if let NodeKind::FunctionCall { name, args } = &expression.kind {
         if !DANCER2_ROUTE_KEYWORDS.contains(&name.as_str()) {
             return None;
@@ -325,6 +346,7 @@ fn route_from_expression(expression: &Node, state: &WalkState) -> Option<Dancer2
             methods,
             &operands,
             state,
+            targets,
         );
     }
 
@@ -341,6 +363,7 @@ fn route_from_expression(expression: &Node, state: &WalkState) -> Option<Dancer2
         method_set_from_list(method_list),
         &operands,
         state,
+        targets,
     )
 }
 
@@ -430,6 +453,7 @@ fn build_from_operands(
     methods: RouteMethodSet,
     operands: &[&Node],
     state: &WalkState,
+    targets: &SubroutineTargetIndex,
 ) -> Option<Dancer2RouteDeclaration> {
     let file_id = state.file_id;
     let declaration_index = state.next_route_index;
@@ -524,7 +548,12 @@ fn build_from_operands(
             pattern,
             effective_pattern: effective,
             options,
-            handler: handler_from_node(handler_node, file_id),
+            handler: handler_from_node(
+                handler_node,
+                file_id,
+                state.current_package.as_deref(),
+                targets,
+            ),
         },
         parameters,
         registration: if never_registers {
@@ -541,7 +570,11 @@ fn build_from_operands(
 /// grammar (exact or bounded), so the caller consumes the statement. The
 /// lexical block form walks its load-time callback with the composed prefix
 /// state and restores the enclosing state afterwards.
-fn handle_prefix_statement(expression: &Node, state: &mut WalkState) -> bool {
+fn handle_prefix_statement(
+    expression: &Node,
+    state: &mut WalkState,
+    targets: &SubroutineTargetIndex,
+) -> bool {
     let NodeKind::FunctionCall { name, args } = &expression.kind else {
         return false;
     };
@@ -637,7 +670,7 @@ fn handle_prefix_statement(expression: &Node, state: &mut WalkState) -> bool {
             let saved_state = state.prefix_state();
             state.set_prefix_state(composed);
             if let NodeKind::Subroutine { body, .. } = &args[1].kind {
-                walk_node(body, file_id, state);
+                walk_node(body, file_id, state, targets);
             }
             state.current_package = saved_package;
             state.set_prefix_state(saved_state);
@@ -948,7 +981,7 @@ fn static_string(raw: &str) -> StaticString {
 /// trailing sigil (e.g. the regex anchor `$` in `^/re/(\d+)$`) stays static.
 /// Escaped sigils (`"\\$x"`) stay conservatively dynamic: the boundary is
 /// honest even when the escape would make the value static.
-fn interpolated_value_is_dynamic(value: &str) -> bool {
+pub(crate) fn interpolated_value_is_dynamic(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.iter().enumerate().any(|(index, byte)| {
         matches!(byte, b'$' | b'@')
@@ -1095,31 +1128,6 @@ fn options_from_node(node: &Node, file_id: FileId) -> RouteOptions {
     RouteOptions::Map(entries)
 }
 
-fn handler_from_node(node: &Node, file_id: FileId) -> RouteHandler {
-    match &node.kind {
-        NodeKind::Subroutine { name, .. } if name.is_none() => RouteHandler::InlineSub {
-            anchor: anchor(node.location.start, node.location.end, file_id),
-        },
-        NodeKind::String { value, .. } => RouteHandler::Bounded {
-            boundary: RouteHandlerBoundary::String,
-            anchor: Some(anchor(node.location.start, node.location.end, file_id)),
-            reason: format!("string handler `{value}` is not an exact Dancer2 subroutine target"),
-        },
-        NodeKind::Unary { op, .. } if op == "\\" => RouteHandler::Bounded {
-            boundary: RouteHandlerBoundary::StaticCoderef,
-            anchor: Some(anchor(node.location.start, node.location.end, file_id)),
-            reason: "static coderef handler is anchored but its named subroutine target is \
-                     not proven by the canonical callable fact layer"
-                .to_string(),
-        },
-        _ => RouteHandler::Bounded {
-            boundary: RouteHandlerBoundary::Computed,
-            anchor: Some(anchor(node.location.start, node.location.end, file_id)),
-            reason: "computed handler expression is not an exact handler target".to_string(),
-        },
-    }
-}
-
 /// Single `(pattern, handler)` pair statement of the two-statement route form.
 fn single_pair_pattern_handler(statement: &Node) -> Option<(&Node, &Node)> {
     let NodeKind::ExpressionStatement { expression } = &statement.kind else {
@@ -1135,6 +1143,7 @@ fn single_pair_pattern_handler(statement: &Node) -> Option<(&Node, &Node)> {
 mod tests {
     use super::*;
     use crate::Parser;
+    use perl_semantic_facts::route::{RouteHandler, RouteHandlerBoundary};
     use perl_tdd_support::{must, must_some};
 
     fn declarations(code: &str) -> Vec<Dancer2RouteDeclaration> {
