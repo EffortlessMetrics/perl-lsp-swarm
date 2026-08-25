@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11811 |
-| Rust-family files | 3584 |
-| Non-Rust files | 8227 |
-| Allowlisted | 5902 |
+| Total tracked files | 11856 |
+| Rust-family files | 3599 |
+| Non-Rust files | 8257 |
+| Allowlisted | 5932 |
 | Unclassified | 2325 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 419 |
-| documentation | 2689 |
+| config | 421 |
+| documentation | 2691 |
 | generated | 2 |
-| production | 321 |
-| test | 1940 |
-| tooling | 531 |
+| production | 323 |
+| test | 1941 |
+| tooling | 554 |
 | unclassified | 2325 |
 
 ## Unclassified files
@@ -2414,6 +2414,7 @@
 | `.changes/unreleased/product-12425-Changed-064000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12428-Changed-071500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12489-Changed-095500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12549-Added-135513.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2960,6 +2961,7 @@
 | `.github/workflows/ux-regression-gate.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/validate-ci-lane-history.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/version-bump.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/vim-hermetic-host.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-current-source-linux-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-managed-binary-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-published-extension-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3084,6 +3086,28 @@
 | `.spec/10136-test-runner-client-authority/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10136-test-runner-client-authority/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10136-test-runner-client-authority/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10138-loaded-module-reload-family/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10138-loaded-module-reload-family/fixtures/client_newer_version_unsupported.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/negotiated_positive_reloaded.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/oversized_identity_refused.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/oversized_reasons_clamped.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/raw_command_refused.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/raw_path_refused.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/redacted_detail_projection.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/replayed_operation_stale.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/stale_session_after_replacement.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/terminal_failed_before_mutation_cancelled.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/terminal_failed_before_mutation_prepare.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/terminal_indeterminate_timeout.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/terminal_indeterminate_with_limited_reconciliation.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/terminal_refused_ineligible.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/terminal_refused_not_current.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/terminal_refused_not_stopped.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/terminal_refused_unsupported_runtime.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/unbacked_family_request.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/unknown_field_rejected.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/unknown_mandatory_variant_fail_closed.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10138-loaded-module-reload-family/fixtures/unnegotiated_request.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/10413-semantic-close-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10413-semantic-close-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10413-semantic-close-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3491,6 +3515,7 @@
 | `clients/lite-xl/tests/json_decode_test.lua` | test | `non-rust-litexl-json-decode-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_frame_test.lua` | test | `non-rust-litexl-server-frame-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_logging_test.lua` | test | `non-rust-litexl-server-logging-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/server_message_scheduling_test.lua` | test | `non-rust-litexl-server-message-scheduling-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_config_merge_test.lua` | test | `non-rust-litexl-config-merge-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_file_uri_test.lua` | test | `non-rust-litexl-file-uri-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_show_document_test.lua` | test | `non-rust-litexl-show-document-tests` | editor/lite-xl |
@@ -6107,6 +6132,7 @@
 | `schemas/agent_review_packet.v1.schema.json` | config | `non-rust-agent-review-packet-schema` | tooling/agent-review |
 | `schemas/binary_identity_protocol.v1.schema.json` | config | `non-rust-binary-identity-schema` | identity |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
+| `schemas/loaded_module_reload_family.v1.schema.json` | config | `non-rust-loaded-module-reload-family-schema` | identity |
 | `schemas/perl_builtin_semantics.v1.schema.json` | config | `non-rust-compiler-builtin-semantics-schema` | compiler |
 | `schemas/perl_compiler_concept_proof.v1.schema.json` | config | `non-rust-compiler-concept-proof-schema` | compiler |
 | `schemas/perl_compiler_concepts.v1.schema.json` | config | `non-rust-compiler-concepts-schema` | compiler |
@@ -6442,6 +6468,8 @@
 | `scripts/test/emacs-clients/eglot-released-config.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-clients/eglot-released.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-host-driver.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-clients/vim-lsp-adapter.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_iterative_parser.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -8050,6 +8078,7 @@
 | `vscode-extension/src/languageClientLifecycle.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/languageClientStartupMetrics.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/languageServerHealth.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/loadedModuleReloadFamily.generated.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedCacheProtocol.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedCandidateRuntime.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedCandidateSelection.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -8135,6 +8164,7 @@
 | `vscode-extension/src/test/languageClientLifecycle.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/languageClientStartupMetrics.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/languageServerHealth.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/loadedModuleReloadFamily.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedCacheProtocol.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedCandidateRuntime.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedCandidateSelection.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |

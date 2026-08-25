@@ -191,6 +191,16 @@ enum Commands {
         file: PathBuf,
     },
 
+    /// Editor-compat actual-host execution (#10944): launch, drive, bound,
+    /// and clean one exact editor client subject through the shared hermetic
+    /// Rust host runner. Every exact input is digest-verified before launch;
+    /// an unavailable host is a typed error, never a skip.
+    #[command(name = "editor-compat")]
+    EditorCompat {
+        #[command(subcommand)]
+        command: EditorCompatCommand,
+    },
+
     /// Validate the shared adversarial review-packet, review-finding, and
     /// advisory closure-projection contracts (#10881): the closed schemas,
     /// the programme-neutral fixtures, the fail-closed negative controls,
@@ -2185,6 +2195,16 @@ enum Commands {
         #[arg(long, short)]
         list: bool,
 
+        /// Explain the typed profile expansion and governed gate denominator
+        /// (ci_route_profile.v1) without running anything
+        #[arg(long)]
+        explain_denominator: bool,
+
+        /// Explain the typed gate lifecycle disposition authority
+        /// (gate_disposition.v1) without running anything
+        #[arg(long)]
+        explain_disposition: bool,
+
         /// Output format (default: human)
         #[arg(long, short, value_enum, default_value = "human")]
         format: GatesOutputFormat,
@@ -2582,6 +2602,58 @@ enum CheckFilePolicyCliMode {
     Advisory,
     BlockingAllowlist,
     BlockingStrict,
+}
+
+#[derive(Subcommand)]
+enum EditorCompatCommand {
+    /// Run one exact Vim + vim-lsp actual-host subject through the hermetic
+    /// Rust host runner (#10944). The pinned vim-lsp checkout is verified
+    /// against the #11369 subject manifest (commit, clean worktree, tree and
+    /// entry-file digests) before launch; the registration shape is consumed
+    /// from the #11369 configuration manifest; the root markers are consumed
+    /// from the #7762 activation-root manifest.
+    Vim {
+        #[command(subcommand)]
+        command: VimEditorCompatCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum VimEditorCompatCommand {
+    /// Execute the minimal hermetic host journey: start exact Vim headless,
+    /// load the pinned vim-lsp, register the canonical perllsp --stdio
+    /// server, attach to the fixture through native activation, capture the
+    /// initialize capabilities, stop the server, and prove client/host
+    /// cleanup. Writes the canonical editor-client receipt plus the retained
+    /// client/server/process artifacts.
+    Run {
+        /// Exact client subject id (see
+        /// `xtask::vim_host_run::VimClientSubject::known_ids`).
+        #[arg(long)]
+        subject: String,
+
+        /// Absolute path of the exact Vim executable to run.
+        #[arg(long)]
+        vim: PathBuf,
+
+        /// Absolute path of the pinned vim-lsp git checkout (verified against
+        /// the #11369 subject manifest before launch).
+        #[arg(long)]
+        vim_lsp_dir: PathBuf,
+
+        /// Absolute path of the exact perllsp candidate executable.
+        #[arg(long)]
+        candidate: PathBuf,
+
+        /// Fresh output directory for the hermetic layout, artifacts, and
+        /// receipt (an existing directory refuses the run).
+        #[arg(long)]
+        out: PathBuf,
+
+        /// Host run timeout in milliseconds (default 240000).
+        #[arg(long, default_value_t = 240_000)]
+        timeout_ms: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4592,6 +4664,43 @@ fn run_cli(cli: Cli) -> Result<()> {
             println!("validated {validated} specialized vim/vim-lsp observations");
             Ok(())
         }
+        Commands::EditorCompat { command } => match command {
+            EditorCompatCommand::Vim { command } => match command {
+                VimEditorCompatCommand::Run {
+                    subject,
+                    vim,
+                    vim_lsp_dir,
+                    candidate,
+                    out,
+                    timeout_ms,
+                } => {
+                    let repo_root =
+                        utils::project_root().map_err(|error| eyre!(error.to_string()))?;
+                    let outcome = xtask::vim_host_run::host_run_from_cli(
+                        &repo_root,
+                        &subject,
+                        vim,
+                        vim_lsp_dir,
+                        candidate,
+                        out,
+                        timeout_ms,
+                    )
+                    .map_err(|error| eyre!("{error:#}"))?;
+                    println!(
+                        "vim host run complete: result={:?} cleanup={:?} driver_complete={} \
+                         receipt={}",
+                        outcome.result,
+                        outcome.process_cleanup,
+                        outcome.driver_complete,
+                        outcome.receipt_path.display()
+                    );
+                    if outcome.result != xtask::editor_client_compat::ObservationResult::Pass {
+                        return Err(eyre!("vim host run did not pass: {:?}", outcome.result));
+                    }
+                    Ok(())
+                }
+            },
+        },
         Commands::CheckAgentReviewPacket { update_golden } => {
             agent_review_packet::run(update_golden)
         }
@@ -5754,6 +5863,8 @@ fn run_cli(cli: Cli) -> Result<()> {
             gate,
             base,
             list,
+            explain_denominator,
+            explain_disposition,
             format,
             receipt,
             receipt_path,
@@ -5772,6 +5883,8 @@ fn run_cli(cli: Cli) -> Result<()> {
             receipt_path,
             diff_baseline: diff,
             list_only: list,
+            explain_denominator,
+            explain_disposition,
             fail_fast,
             parallel,
             verbose,
