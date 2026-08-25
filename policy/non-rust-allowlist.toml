@@ -2701,13 +2701,30 @@ language = "lua"
 surface = "editor"
 classification = "production"
 owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp server.lua (base d1432ae, blob 33c8ccae) staged for the Lite XL integration train, carrying the #11151 bounded inbound frame-reader patch: explicit parser state, header/body budgets, strict Content-Length validation, remainder ownership, and typed content-free framing failures."
+reason = "Exact upstream lite-xl-lsp server.lua (base d1432ae, blob 33c8ccae) staged for the Lite XL integration train, carrying the #11151 bounded inbound frame-reader patch (explicit parser state, header/body budgets, strict Content-Length validation, remainder ownership, typed content-free framing failures) and the #10833 backpressure patch (hit-rate enqueue admission removed: notifications always queue with overwrite coalescing, requests queue or coalesce or reject explicitly at a bounded queue with typed not_queued dispositions and no phantom ids, responses are obligation-class and never dropped; pacing lives in the send loops)."
 covered_by = [
   "lua clients/lite-xl/tests/server_frame_test.lua",
+  "lua clients/lite-xl/tests/server_message_scheduling_test.lua",
   "cargo xtask check-file-policy",
 ]
 created = "2026-08-23"
 review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-server-message-scheduling-tests"
+path = "clients/lite-xl/tests/server_message_scheduling_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free admission/scheduling suite proving no silent drops under saturated rate state, overwrite coalescing to latest state, exact lifecycle/watcher ordering, full response-obligation flush, bounded request queues with typed not_queued rejections and stable reasons, and single-send id semantics under a fake clock; runs against the staged module or current main for red-first checks and against single-behavior mutations for falsifier checks."
+covered_by = [
+  "lua clients/lite-xl/tests/server_message_scheduling_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-25"
+review_after = "2026-09-25"
 
 [[allow]]
 id = "non-rust-litexl-init-plugin"

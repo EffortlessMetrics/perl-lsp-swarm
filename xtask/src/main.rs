@@ -2175,6 +2175,11 @@ enum Commands {
         #[arg(long, short)]
         list: bool,
 
+        /// Explain the typed profile expansion and governed gate denominator
+        /// (ci_route_profile.v1) without running anything
+        #[arg(long)]
+        explain_denominator: bool,
+
         /// Explain the typed gate lifecycle disposition authority
         /// (gate_disposition.v1) without running anything
         #[arg(long)]
@@ -5680,6 +5685,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             gate,
             base,
             list,
+            explain_denominator,
             explain_disposition,
             format,
             receipt,
@@ -5699,6 +5705,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             receipt_path,
             diff_baseline: diff,
             list_only: list,
+            explain_denominator,
             explain_disposition,
             fail_fast,
             parallel,

@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11831 |
-| Rust-family files | 3581 |
-| Non-Rust files | 8250 |
-| Allowlisted | 5925 |
+| Total tracked files | 11833 |
+| Rust-family files | 3582 |
+| Non-Rust files | 8251 |
+| Allowlisted | 5926 |
 | Unclassified | 2325 |
 
 ## Non-Rust files by category
@@ -20,7 +20,7 @@
 | documentation | 2688 |
 | generated | 2 |
 | production | 323 |
-| test | 1940 |
+| test | 1941 |
 | tooling | 552 |
 | unclassified | 2325 |
 
@@ -3513,6 +3513,7 @@
 | `clients/lite-xl/tests/json_decode_test.lua` | test | `non-rust-litexl-json-decode-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_frame_test.lua` | test | `non-rust-litexl-server-frame-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_logging_test.lua` | test | `non-rust-litexl-server-logging-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/server_message_scheduling_test.lua` | test | `non-rust-litexl-server-message-scheduling-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_config_merge_test.lua` | test | `non-rust-litexl-config-merge-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_file_uri_test.lua` | test | `non-rust-litexl-file-uri-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/util_show_document_test.lua` | test | `non-rust-litexl-show-document-tests` | editor/lite-xl |
