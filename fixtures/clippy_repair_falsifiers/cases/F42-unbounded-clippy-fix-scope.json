@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "F42-unbounded-clippy-fix-scope",
+  "family": "real_regression_10600_family",
+  "purpose": "cargo clippy --fix applied across an unbounded package/workspace set mutates far beyond the claimed proposition.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "clippy --fix",
+      "--workspace --all-targets"
+    ],
+    "content": "cargo clippy --fix --allow-dirty --allow-staged --workspace --all-targets\n",
+    "sha256": "a5fc879e4e5b35f31c7b417d637c96736936b883af643833f612da7e399b8843"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11228,
+    "unresolved_reason": "Automatic mutation admission law (#11228) open; nothing bounds fix scope automatically today."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "unbounded_auto_fix"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "bounded application pattern",
+      "single item, staged diff"
+    ],
+    "note": "Fixes restricted to proposition-owned sites.",
+    "content": "# bounded application pattern (manual, reviewed): single item, staged diff\n",
+    "sha256": "6c247db3e7fd8f2a4d919d66e30794d6f9fb15bb366c65516ece89c9ebe2479a"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Frozen as the canonical scope-escape identity for suggestion governance."
+}

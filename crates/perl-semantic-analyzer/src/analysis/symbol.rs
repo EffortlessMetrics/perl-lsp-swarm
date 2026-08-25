@@ -422,7 +422,7 @@ pub enum FrameworkKind {
 pub enum WebFrameworkKind {
     /// `use Dancer;`
     Dancer,
-    /// `use Dancer2;` or `use Dancer2::Core;`
+    /// `use Dancer2;` (exact app DSL import only; `Dancer2::Core` does not activate).
     Dancer2,
     /// `use Mojolicious::Lite;`
     MojoliciousLite,
@@ -1845,6 +1845,10 @@ impl SymbolExtractor {
 
     /// Detect Dancer/Dancer2/Mojolicious::Lite route declarations and synthesize route symbols.
     ///
+    /// Legacy temporary path: exact per-package `use` activation is required before
+    /// any route synthesis, and this whole extractor is scheduled for retirement via
+    /// the #8909 provider cutover (#8928).
+    ///
     /// Pattern (two statements):
     /// 1. `ExpressionStatement(Identifier("get"|"post"|"put"|"del"|"patch"|"any"))`
     /// 2. `ExpressionStatement(HashLiteral([ (String("/path"), Subroutine{...}) ]))`
@@ -1893,10 +1897,14 @@ impl SymbolExtractor {
                             attributes: vec![format!("http_method={http_method}")],
                         });
 
-                        if matches!(
-                            web_framework,
-                            Some(WebFrameworkKind::Dancer | WebFrameworkKind::Dancer2)
-                        ) && let Some(target_node) = args.get(1)
+                        // Legacy string-target -> Subroutine reference synthesis is
+                        // Dancer v1 only: upstream Dancer v1 allows an action to be
+                        // the name of a subroutine, while Dancer2 route construction
+                        // requires a CodeRef handler (#8910 containment). This whole
+                        // legacy route path is temporary pending the #8909 provider
+                        // cutover (retirement gated on #8928).
+                        if matches!(web_framework, Some(WebFrameworkKind::Dancer))
+                            && let Some(target_node) = args.get(1)
                         {
                             if let Some(target_name) =
                                 Self::collect_symbol_names(target_node).first().cloned()
@@ -2454,7 +2462,10 @@ impl SymbolExtractor {
 
         let web_kind = match module {
             "Dancer" => Some(WebFrameworkKind::Dancer),
-            "Dancer2" | "Dancer2::Core" => Some(WebFrameworkKind::Dancer2),
+            // `Dancer2::Core` is not DSL activation: core modules do not export the
+            // application keywords (#8910 containment). Only an exact `use Dancer2`
+            // activates the legacy Dancer2 analysis.
+            "Dancer2" => Some(WebFrameworkKind::Dancer2),
             "Mojolicious::Lite" => Some(WebFrameworkKind::MojoliciousLite),
             "Plack::Builder" => Some(WebFrameworkKind::PlackBuilder),
             _ => None,

@@ -262,6 +262,22 @@ pub struct LspArgs {
     #[arg(long, conflicts_with_all = ["check", "check_project"])]
     pub doctor: Option<Option<String>>,
 
+    /// With --doctor: show the registry-driven native-first external tooling report
+    #[arg(
+        long,
+        requires = "doctor",
+        conflicts_with_all = ["critic_compatibility"]
+    )]
+    pub external_tools: bool,
+
+    /// With --doctor: show registry-driven Perl::Critic configuration compatibility
+    #[arg(
+        long,
+        requires = "doctor",
+        conflicts_with_all = ["external_tools"]
+    )]
+    pub critic_compatibility: bool,
+
     /// Output machine-readable JSON (currently affects --doctor only)
     #[arg(long)]
     pub json: bool,
@@ -290,6 +306,8 @@ pub struct LspArgs {
             "check",
             "check_project",
             "doctor",
+            "external_tools",
+            "critic_compatibility",
             "features_json",
             "perltidy_compat_report",
             "perlcritic_compat_report"
@@ -409,6 +427,16 @@ pub enum LaunchAction {
     Doctor {
         /// Directory to inspect (defaults to ".").
         dir: String,
+        /// Output JSON instead of human-readable text.
+        json: bool,
+    },
+    /// Show the registry-driven, native-first external tooling report.
+    DoctorExternalTools {
+        /// Output JSON instead of human-readable text.
+        json: bool,
+    },
+    /// Show registry-driven Perl::Critic configuration compatibility.
+    DoctorCriticCompatibility {
         /// Output JSON instead of human-readable text.
         json: bool,
     },
@@ -674,8 +702,14 @@ where
                 let dir = maybe_dir.unwrap_or_else(|| ".".to_string());
                 LaunchAction::CheckProject { dir }
             } else if let Some(maybe_dir) = parsed_args.doctor {
-                let dir = maybe_dir.unwrap_or_else(|| ".".to_string());
-                LaunchAction::Doctor { dir, json: parsed_args.json }
+                if parsed_args.external_tools {
+                    LaunchAction::DoctorExternalTools { json: parsed_args.json }
+                } else if parsed_args.critic_compatibility {
+                    LaunchAction::DoctorCriticCompatibility { json: parsed_args.json }
+                } else {
+                    let dir = maybe_dir.unwrap_or_else(|| ".".to_string());
+                    LaunchAction::Doctor { dir, json: parsed_args.json }
+                }
             } else if let Some(raw_shell) = parsed_args.completion {
                 let shell = normalize_completion_shell(&raw_shell).ok_or_else(|| {
                     LaunchParseError::InvalidShell { raw_shell: raw_shell.clone() }
@@ -857,6 +891,8 @@ pub fn help_text() -> String {
     out.push_str("       perllsp --check <file.pl> [file2.pm ...]\n");
     out.push_str("       perllsp --check-project [dir]\n");
     out.push_str("       perllsp --doctor [dir]\n");
+    out.push_str("       perllsp --doctor --external-tools\n");
+    out.push_str("       perllsp --doctor --critic-compatibility\n");
     out.push('\n');
     out.push_str("Server options:\n");
     out.push_str("  --stdio              Use stdio for communication (default)\n");
@@ -894,6 +930,13 @@ pub fn help_text() -> String {
     out.push_str("                       Scan project directory for parsability report\n");
     out.push_str("  --doctor [dir]       Explain Perl path, config, and effective @INC roots\n");
     out.push_str(
+        "  --external-tools     With --doctor: native-first external tooling report (registry-driven)\n",
+    );
+    out.push_str("  --critic-compatibility\n");
+    out.push_str(
+        "                       With --doctor: .perlcriticrc compatibility, process-free\n",
+    );
+    out.push_str(
         "  --json               Machine-readable JSON output (currently affects --doctor)\n",
     );
     out.push_str("  --perltidy-compat-report <profile>\n");
@@ -925,6 +968,8 @@ pub fn help_text() -> String {
     out.push_str("  perllsp --check lib/MyModule.pm         # syntax check\n");
     out.push_str("  perllsp --check-project lib/            # project scan\n");
     out.push_str("  perllsp --doctor .                      # first-run setup report\n");
+    out.push_str("  perllsp --doctor --external-tools       # registry-driven tooling report\n");
+    out.push_str("  perllsp --doctor --critic-compatibility # critic config compatibility\n");
     out.push_str("  perllsp --perltidy-compat-report .perltidyrc\n");
     out.push_str("  perllsp --perlcritic-compat-report .perlcriticrc\n");
     out.push_str("  perllsp --info                          # server information\n");
@@ -985,7 +1030,7 @@ const BASH_COMPLETION: &str = r#"_perl_lsp() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    opts="--stdio --socket --port --log --health --info --check --check-project --doctor --json --version --features-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help --runtime-mode --diagnostic-mode --diagnostic-debounce-ms --eager-workspace-indexing --file-watchers --ripr-facts --ripr-schema --ripr-root --ripr-base --ripr-head --ripr-fact-classes --ripr-out"
+    opts="--stdio --socket --port --log --health --info --check --check-project --doctor --external-tools --critic-compatibility --json --version --features-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help --runtime-mode --diagnostic-mode --diagnostic-debounce-ms --eager-workspace-indexing --file-watchers --ripr-facts --ripr-schema --ripr-root --ripr-base --ripr-head --ripr-fact-classes --ripr-out"
 
     case "${prev}" in
         --port)
@@ -1046,6 +1091,8 @@ _perl-lsp() {
         '--check[Validate Perl files]:file:_files -g "*.{pl,pm,t}"' \
         '--check-project[Scan project directory for parsability report]:dir:_directories' \
         '--doctor[Explain Perl path, config, and effective @INC roots]:dir:_directories' \
+        '--external-tools[With --doctor: native-first external tooling report]' \
+        '--critic-compatibility[With --doctor: .perlcriticrc compatibility, process-free]' \
         '--version[Show version information]' \
         '--features-json[Output features catalog as JSON]' \
         '--perltidy-compat-report[Report native formatter compatibility for .perltidyrc]:profile:_files' \
@@ -1114,6 +1161,8 @@ const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -Comma
         [CompletionResult]::new('--check', '--check', 'ParameterName', 'Validate Perl files')
         [CompletionResult]::new('--check-project', '--check-project', 'ParameterName', 'Scan project directory for parsability report')
         [CompletionResult]::new('--doctor', '--doctor', 'ParameterName', 'Explain Perl path, config, and effective @INC roots')
+        [CompletionResult]::new('--external-tools', '--external-tools', 'ParameterName', 'With --doctor: native-first external tooling report')
+        [CompletionResult]::new('--critic-compatibility', '--critic-compatibility', 'ParameterName', 'With --doctor: .perlcriticrc compatibility, process-free')
         [CompletionResult]::new('--version', '--version', 'ParameterName', 'Show version information')
         [CompletionResult]::new('--features-json', '--features-json', 'ParameterName', 'Output features catalog as JSON')
         [CompletionResult]::new('--perltidy-compat-report', '--perltidy-compat-report', 'ParameterName', 'Report native formatter compatibility for .perltidyrc')
@@ -1761,6 +1810,53 @@ mod tests {
         let text = super::help_text();
         assert!(text.contains("--doctor"));
         assert!(text.contains("effective @INC roots"));
+    }
+
+    // -- --doctor --external-tools / --critic-compatibility ------------------
+
+    #[test]
+    fn parse_doctor_external_tools_flag() {
+        let plan = must(parse_args(["perl-lsp", "--doctor", "--external-tools"]));
+        assert_eq!(plan.action, LaunchAction::DoctorExternalTools { json: false });
+    }
+
+    #[test]
+    fn parse_doctor_external_tools_json_flag() {
+        let plan = must(parse_args(["perl-lsp", "--doctor", "--external-tools", "--json"]));
+        assert_eq!(plan.action, LaunchAction::DoctorExternalTools { json: true });
+    }
+
+    #[test]
+    fn parse_doctor_critic_compatibility_flag() {
+        let plan = must(parse_args(["perl-lsp", "--doctor", "--critic-compatibility"]));
+        assert_eq!(plan.action, LaunchAction::DoctorCriticCompatibility { json: false });
+    }
+
+    #[test]
+    fn doctor_mode_flags_require_doctor() {
+        assert!(parse_args(["perl-lsp", "--external-tools"]).is_err());
+        assert!(parse_args(["perl-lsp", "--critic-compatibility"]).is_err());
+    }
+
+    #[test]
+    fn doctor_mode_flags_conflict_with_each_other() {
+        assert!(
+            parse_args(["perl-lsp", "--doctor", "--external-tools", "--critic-compatibility"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn doctor_mode_flags_conflict_with_ripr_facts() {
+        assert!(parse_args(["perl-lsp", "--doctor", "--external-tools", "--ripr-facts"]).is_err());
+    }
+
+    #[test]
+    fn help_mentions_doctor_mode_flags() {
+        let text = super::help_text();
+        assert!(text.contains("--external-tools"));
+        assert!(text.contains("--critic-compatibility"));
+        assert!(text.contains("registry-driven"));
     }
 
     // ── InvalidShell error ────────────────────────────────────────

@@ -6,6 +6,30 @@ All notable changes to the Perl Language Server extension will be documented in 
 
 ### Changed
 
+- **Packaged activation failures are provably cleaned up and recoverable on
+  the installed path.** The published-smoke harness can now fail one
+  deterministic pre-commit activation boundary of the INSTALLED extension —
+  a seam armed only when the private smoke-harness extension is present and a
+  namespaced test variable names a real activation phase — and a new packaged
+  journey proves in the real extension host that the failed attempt rolls
+  every mandatory registration back (command-registry truth), keeps exactly
+  the approved support surfaces, leaves no candidate server process behind,
+  cannot start one from real document demand, and consumes no crash-recovery
+  budget; an explicit retry against the same installed profile then activates
+  the same bundled candidate once — no duplicate servers on new demand —
+  answers a representative provider request, and shuts down cleanly, all
+  recorded in one candidate-bound `vscode_activation_recovery.v1` receipt.
+  (#7856)
+- **Production activation failures are now deterministically injectable at
+  every resource boundary.** The activation owner exposes a test-only
+  phase-boundary failure injector, so a test can fail the real `activate()`
+  composition immediately after a named production resource registers —
+  through the same rollback path any mid-activation exception takes — without
+  monkey-patching module globals. The injected matrix proves reverse-order
+  rollback of every crossed boundary, retained support surfaces, clean retry
+  from baseline without duplicate resources, stale-callback barriers, bounded
+  cleanup-failure receipts, mid-rollback event tolerance, and fallback-path
+  deactivation on the partial state. (#7855)
 - **Extension activation now runs inside one transactional owner with a
   deterministic rollback stack.** Every activation-created resource (status
   and health surfaces, command groups, workspace/configuration listeners,

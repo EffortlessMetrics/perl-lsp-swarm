@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "F41-auto-suggestion-reexport-deletion",
+  "family": "real_regression_10600_family",
+  "purpose": "Automatic suggestions removing locally-unused re-exports break external/path-included consumers (#10600 class).",
+  "incident_reference": "#10600",
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "suggested removing: pub use crate::api::InternalSink",
+      "vscode-extension test harness"
+    ],
+    "content": "// clippy suggested removing: pub use crate::api::InternalSink;\n// downstream vscode-extension test harness imported it via path dependency\n",
+    "sha256": "94160dcbd8f8a94dc4a5309eea2a83b211a871ef3c6104fb00378f7184f67dcd"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11228,
+    "unresolved_reason": "Suggestion-applicability admission (#11228) is open; no gate blocks auto-applied liveness-crossing deletions."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "re_export_deletion_by_suggestion"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "kept with reasoned expectation",
+      "path consumers are inventoried"
+    ],
+    "note": "Re-export retained pending consumer audit.",
+    "content": "// kept with reasoned expectation until external/path consumers are inventoried\n",
+    "sha256": "bdffe40f008a631dfd0e1f806e8b2784aefa25a06ec7d5d004a1543ff9dfa320"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Permanent #10600 discriminator; rejection authority resolves when #11228 lands."
+}

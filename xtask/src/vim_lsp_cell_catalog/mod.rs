@@ -45,16 +45,24 @@
 //!   rejected.
 //!
 //! The baseline catalog compiled into [`baseline`] is the complete #11371
-//! baseline registry consumed by the #10962 fan-in. Later additive family
-//! catalogs (#11381 freshness, #11384 format-on-save, #11386 server-generation
-//! recovery, #11387 host-reopen, #11388 expanded activation) register through
-//! this same API as sibling modules: they declare their own scenario ledger,
-//! fixture substrate, result vocabulary, and stage bound, and they can neither
-//! steal a baseline scenario nor shift a baseline cell's meaning — a family
-//! addition changes the registry digest but leaves every baseline cell digest
-//! and the baseline catalog digest byte-identical.
+//! baseline registry consumed by the #10962 fan-in. Additive family catalogs
+//! (#11381 freshness in [`freshness`], #11384 format-on-save in
+//! [`save_format`]; later #11386 server-generation recovery, #11387
+//! host-reopen, #11388 expanded activation)
+//! register through this same API as sibling modules: they declare their own
+//! scenario ledger, fixture substrate, result vocabulary, and stage bound, and
+//! they can neither steal a baseline scenario nor shift a baseline cell's
+//! meaning — a family addition changes the registry digest but leaves every
+//! baseline cell digest and the baseline catalog digest byte-identical. Each
+//! family module also owns family laws beyond the shared model (its ledger
+//! mirrors its landed #11380 action vocabulary, its observation classes are
+//! landed actions, its vocabulary and stage bounds are pinned);
+//! [`validate_compiled_registry`] runs every registered family's laws so no
+//! consumer can validate the compiled registry without them.
 
 pub mod baseline;
+pub mod freshness;
+pub mod save_format;
 pub mod scenario_ledger;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -254,19 +262,27 @@ pub struct RegistrySummary {
 /// The ledgers current main registers. A family PR appends its landed ledger
 /// constant here and to [`registry`] — rows never leave their own module.
 pub fn scenario_ledgers() -> Vec<ScenarioLedger> {
-    vec![scenario_ledger::vim_bdd_ledger_11371()]
+    vec![
+        scenario_ledger::vim_bdd_ledger_11371(),
+        freshness::freshness_action_ledger(),
+        save_format::save_action_ledger(),
+    ]
 }
 
 /// The catalogs current main registers. The aggregation point is code: each
 /// additive family is one module plus one line here, never a hand-edited
 /// merged row list.
 pub fn registry() -> Vec<CellCatalog> {
-    vec![baseline::baseline_catalog()]
+    vec![baseline::baseline_catalog(), freshness::freshness_catalog(), save_format::save_catalog()]
 }
 
-/// Validate the compiled registry of current main.
+/// Validate the compiled registry of current main: the shared cross-catalog
+/// laws, then every registered family's own laws.
 pub fn validate_compiled_registry() -> Result<RegistrySummary> {
-    validate_registry(&registry(), &scenario_ledgers())
+    let summary = validate_registry(&registry(), &scenario_ledgers())?;
+    freshness::validate_family_laws()?;
+    save_format::validate_family_laws()?;
+    Ok(summary)
 }
 
 /// Validate a whole registry: every catalog against its declared ledger, then
