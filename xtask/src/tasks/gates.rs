@@ -2112,9 +2112,10 @@ pub(crate) struct ShellExecutionResult {
 /// once is a compile-overrun remedy, not a hang hider. A non-zero test
 /// exit (`fail`) is never retried — a real assertion failure must stay red.
 ///
-/// Each attempt truncates the gate log; when more than one attempt ran, a
-/// trailer records the attempt count so receipts stay honest about what the
-/// single visible log represents.
+/// Each attempt truncates the gate log. When more than one attempt ran, the
+/// final trailer retains bounded per-attempt test-reach evidence so the
+/// receipt's legacy final-attempt boolean does not erase why a retry happened
+/// (#11914).
 fn run_shell_command_with_retries(
     command: &str,
     log_path: &Path,
@@ -2125,18 +2126,17 @@ fn run_shell_command_with_retries(
     let total_attempts = 1u32 + retry_count;
     let mut attempt = 1u32;
     let mut timeouts_seen = 0u32;
+    let mut attempt_evidence = Vec::with_capacity(total_attempts as usize);
     loop {
         let mut execution = run_shell_command_with_timeout(command, log_path, timeout_secs)?;
+        let test_execution_reached = log_reaches_test_execution(command, log_path)
+            .or_else(|| parse_test_execution_reached(command, &execution.stdout));
+        attempt_evidence.push(RetryAttemptEvidence {
+            attempt,
+            test_execution_reached,
+        });
         if execution.timed_out {
             timeouts_seen += 1;
-            let trailer = append_retry_trailer(
-                log_path,
-                gate_name,
-                attempt,
-                total_attempts,
-                "watchdog timeout",
-            )?;
-            execution.stdout.push_str(&trailer);
             if attempt < total_attempts {
                 eprintln!(
                     "gate {gate_name} timed out after {timeout_secs}s on attempt {attempt}; \
@@ -2146,41 +2146,73 @@ fn run_shell_command_with_retries(
                 attempt += 1;
                 continue;
             }
-        } else if timeouts_seen > 0 {
+        }
+        if timeouts_seen > 0 {
             // `run_shell_command_with_timeout` reads the log back as `stdout`
             // before this trailer exists, so mirror it into the returned
             // stdout — the receipt's output summary must show the retry. The
             // label reflects the FINAL attempt's own outcome: a nonzero exit
             // after an earlier timeout is still a failure, never "passed".
-            let outcome = if execution.exit_code == 0 {
+            let outcome = if execution.timed_out {
+                "watchdog timeout".to_string()
+            } else if execution.exit_code == 0 {
                 "passed after earlier watchdog timeout(s)".to_string()
             } else {
                 format!("exited {} after earlier watchdog timeout(s)", execution.exit_code)
             };
             let trailer =
-                append_retry_trailer(log_path, gate_name, attempt, total_attempts, &outcome)?;
+                append_retry_trailer(
+                    log_path,
+                    gate_name,
+                    attempt,
+                    total_attempts,
+                    &outcome,
+                    &attempt_evidence,
+                )?;
             execution.stdout.push_str(&trailer);
         }
         return Ok(execution);
     }
 }
 
-/// Append an attempt trailer to the gate log. Each fresh attempt truncates
-/// the file, so the trailer on the FINAL attempt's log is the only durable
-/// record of the retry history that produced it.
+#[derive(Debug, Clone, Copy)]
+struct RetryAttemptEvidence {
+    attempt: u32,
+    test_execution_reached: Option<bool>,
+}
+
+/// Append a bounded attempt history and final-attempt trailer to the gate log.
+/// Each fresh attempt truncates the file, so all history is written only after
+/// the last attempt has completed.
 fn append_retry_trailer(
     log_path: &Path,
     gate_name: &str,
     attempt: u32,
     total_attempts: u32,
     outcome: &str,
+    attempt_evidence: &[RetryAttemptEvidence],
 ) -> Result<String> {
     use std::io::Write as _;
     let mut file = fs::OpenOptions::new().append(true).open(log_path).with_context(|| {
         format!("Failed to open gate log for retry trailer: {}", log_path.display())
     })?;
-    let trailer =
-        format!("\n==== gate {gate_name} attempt {attempt}/{total_attempts}: {outcome} ====\n");
+    let mut trailer = format!(
+        "\n==== gate {gate_name} retry history ({total_attempts} attempts) ====\n"
+    );
+    for evidence in attempt_evidence {
+        let reached = match evidence.test_execution_reached {
+            Some(true) => "yes",
+            Some(false) => "no",
+            None => "not_applicable",
+        };
+        trailer.push_str(&format!(
+            "attempt {}/{}: test_execution_reached={}\n",
+            evidence.attempt, total_attempts, reached
+        ));
+    }
+    trailer.push_str(&format!(
+        "==== gate {gate_name} attempt {attempt}/{total_attempts}: {outcome} ====\n"
+    ));
     file.write_all(trailer.as_bytes()).context("Failed to write gate log retry trailer")?;
     Ok(trailer)
 }
@@ -2664,9 +2696,8 @@ fn parse_test_metrics(output: &str) -> Option<GateMetrics> {
 /// The string variant scans exactly the output it is handed; the receipt
 /// wires `log_reaches_test_execution` first so the verdict covers the full
 /// final-attempt log rather than its retained tail. When retries ran, this
-/// reflects the final recorded attempt: each retry truncates the gate log,
-/// so earlier attempts' reach evidence is not retained in this field (the
-/// final attempt's retry trailer names the earlier timeouts).
+/// remains the final-attempt boolean for backward compatibility; the retry
+/// trailer carries the bounded per-attempt history.
 ///
 /// The "running N tests" line is the libtest harness's own preamble printed
 /// once the linked test binary starts executing; a compile timeout — even
@@ -5009,6 +5040,38 @@ gates:
             log.contains("attempt 2/2: watchdog timeout"),
             "final log must trail the attempt history; got: {log}"
         );
+        assert!(
+            log.contains("attempt 1/2: test_execution_reached=not_applicable")
+                && log.contains("attempt 2/2: test_execution_reached=not_applicable"),
+            "retry history must retain each attempt's reach disposition; got: {log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retry_trailer_retains_mixed_test_execution_reach_evidence()
+    -> color_eyre::eyre::Result<()> {
+        let tmp = tempdir()?;
+        let log_path = tmp.path().join("retry-history.log");
+        fs::write(&log_path, "test result: ok\n")?;
+
+        let evidence = [
+            RetryAttemptEvidence { attempt: 1, test_execution_reached: Some(false) },
+            RetryAttemptEvidence { attempt: 2, test_execution_reached: Some(true) },
+        ];
+        let trailer = append_retry_trailer(
+            &log_path,
+            "synthetic_cargo_test_gate",
+            2,
+            2,
+            "passed after earlier watchdog timeout(s)",
+            &evidence,
+        )?;
+
+        assert!(trailer.contains("attempt 1/2: test_execution_reached=no"));
+        assert!(trailer.contains("attempt 2/2: test_execution_reached=yes"));
+        assert!(trailer.contains("attempt 2/2: passed after earlier watchdog timeout(s)"));
+        assert_eq!(fs::read_to_string(log_path)?, trailer);
         Ok(())
     }
 
