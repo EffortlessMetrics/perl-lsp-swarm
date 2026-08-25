@@ -184,4 +184,58 @@ mod tests {
             "ledger must advance in (generation, sequence): {baseline:?} -> {after_edit:?}"
         );
     }
+
+    /// Barrier test (#11674 review): a didClose eviction completing after the
+    /// boundary validated the ticket but before the store mutation must win
+    /// the serialization. The final index row stays empty, the late callback
+    /// reports a lifecycle rejection instead of a current commit, and the
+    /// closed URI gains no committed sink record.
+    #[test]
+    fn did_close_between_validation_and_install_keeps_index_empty() {
+        let server = make_server();
+        let uri = "file:///sym_close_barrier.pl";
+        open(&server, uri, "sub alpha_barrier {};\n");
+        assert!(has_symbol(&server, "alpha_barrier"), "didOpen must commit its row");
+
+        let identity = identity_for_current(&server, uri);
+        let key = server.normalize_uri_key(uri);
+        let ledger_before_install =
+            server.test_last_committed_document_symbols(&key).expect("didOpen must have recorded");
+
+        // Interpose exactly between boundary validation and the serialized
+        // install, then run the lifecycle-owned eviction: remove the document
+        // map entry first, then clear through the index-only sweep path --
+        // the same lock-free-against-sink order didClose uses.
+        let documents =
+            crate::runtime::parse_worker::DocumentsHandle(std::sync::Arc::clone(&server.documents));
+        let symbol_index = std::sync::Arc::clone(&server.symbol_index);
+        *server.document_symbols_before_install_hook.lock() = Some(Box::new(move || {
+            documents.lock().remove(&key);
+            symbol_index.lock().remove_document(&key);
+        }));
+
+        // The pre-validated candidate now attempts its commit against a
+        // document the lifecycle already evicted.
+        let ast = perl_parser::Parser::new("sub alpha_barrier {};")
+            .parse()
+            .expect("parse should succeed");
+        let outcome =
+            server.commit_document_symbols_from_ast(&identity, &ast, "sub alpha_barrier {};");
+
+        assert_eq!(
+            outcome,
+            ParseEffectCommitOutcomeV1::RejectedLifecycleState,
+            "a callback racing a completed didClose must not report a current commit"
+        );
+        assert!(
+            !has_symbol(&server, "alpha_barrier"),
+            "the closed URI's index row must stay empty once close wins the race"
+        );
+        assert_eq!(
+            server.test_last_committed_document_symbols(&server.normalize_uri_key(uri)),
+            Some(ledger_before_install),
+            "the evicted URI must keep exactly its pre-race record: the late \
+             callback must not advance or reinstate a committed entry"
+        );
+    }
 }
