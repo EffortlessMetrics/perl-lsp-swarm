@@ -109,7 +109,7 @@ impl EmacsClientSubject {
         source_sha256: String,
         package_sha256: Option<String>,
     ) -> Result<emacs_host_runner::ClientSubject> {
-        let (kind, version, source_state, source_ref) = match self {
+        match self {
             Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => {
                 let row = manifest.row_for(self.id()).with_context(|| {
                     format!(
@@ -117,33 +117,25 @@ impl EmacsClientSubject {
                         self.id()
                     )
                 })?;
-                (
-                    EmacsClientKind::BundledEglot,
-                    row.client_version_hint.clone(),
-                    row.source_state,
-                    row.emacs_release_tag.clone(),
-                )
+                // One bundled identity constructor: the manifest module
+                // owns the row-to-subject mapping so the resolver and the
+                // registry cannot drift apart.
+                Ok(crate::emacs_subject_manifest::runner_client_subject(row, source_sha256))
             }
             // The released row predates the subject manifest; its
             // digest-bound package identity arrives with the
             // external-subject rows (#11745), which extend the manifest
             // without changing these landed mechanics.
-            Self::ReleasedEglotGnuElpa123 => (
-                EmacsClientKind::ExternalEglot,
-                "1.23".to_string(),
-                ClientSourceState::Released,
-                "gnu-elpa-eglot-1.23".to_string(),
-            ),
-        };
-        Ok(emacs_host_runner::ClientSubject {
-            client_id: self.id().to_string(),
-            kind,
-            version,
-            source_state,
-            source_ref,
-            source_sha256,
-            package_sha256,
-        })
+            Self::ReleasedEglotGnuElpa123 => Ok(emacs_host_runner::ClientSubject {
+                client_id: self.id().to_string(),
+                kind: EmacsClientKind::ExternalEglot,
+                version: "1.23".to_string(),
+                source_state: ClientSourceState::Released,
+                source_ref: "gnu-elpa-eglot-1.23".to_string(),
+                source_sha256,
+                package_sha256,
+            }),
+        }
     }
 
     /// Checked-in adapter path relative to the repository root.
@@ -366,9 +358,13 @@ fn candidate_commit_identity(repo_root: &Path) -> Result<String> {
 }
 
 /// Build the complete run plan for one client subject over the checked
-/// tree.  Validation (digest verification of every exact input) happens
-/// inside `build_emacs_command`, so a returned plan has already proven its
-/// file identities.
+/// tree.  Bundled subjects are digest-validated through the subject
+/// manifest resolver (#11744) before the plan exists: a modified, ambient,
+/// or cross-generation client file is a typed rejection, never a receipt
+/// labeled as the checked subject over unchecked bytes.  Validation
+/// (digest verification of every exact input) happens inside
+/// `build_emacs_command`, so a returned plan has already proven its file
+/// identities.
 pub fn build_client_subject_run_plan(
     repo_root: &Path,
     subject: EmacsClientSubject,
@@ -376,16 +372,8 @@ pub fn build_client_subject_run_plan(
     commit: &str,
     candidate_version: &str,
     emacs_version: &str,
+    subject_manifest: &crate::emacs_subject_manifest::SubjectManifest,
 ) -> Result<(EmacsHostRunPlan, HermeticLayout)> {
-    let driver = repo_root.join("scripts/test/emacs-host-driver.el");
-    let adapter = repo_root.join(subject.adapter_relative_path());
-    let configuration = repo_root.join(subject.configuration_relative_path());
-    let fixture_root = materialize_client_subject_fixture(&run.out_root.join("fixture"))?;
-    let layout = HermeticLayout::prepare(&run.out_root.join("hermetic"))?;
-    // The checked subject manifest (#11744) is the declared identity
-    // authority for bundled rows; a missing or invalid manifest fails the
-    // plan closed rather than falling back to embedded identity strings.
-    let subject_manifest = crate::emacs_subject_manifest::SubjectManifest::load(repo_root)?;
     let package_sha256 = match (&run.client_package, subject.requires_client_package()) {
         (Some(package), true) => Some(file_sha256(package)?),
         (None, true) => bail!(
@@ -399,6 +387,42 @@ pub fn build_client_subject_run_plan(
         ),
         (None, false) => None,
     };
+    // Bundled rows resolve through the subject manifest resolver so the
+    // plan binds exactly the audited library bytes and the exact Emacs
+    // build; the resolver's bounded cache entry is written under the run's
+    // fresh output root.  The released row predates the subject manifest
+    // and keeps its explicit-input identity until the external-subject
+    // rows (#11745/#11746) extend the manifest.
+    let (client, emacs_build_sha256) = if subject.resolves_client_source_from_installation() {
+        let resolved = crate::emacs_subject_manifest::resolve(
+            subject_manifest,
+            subject.id(),
+            &crate::emacs_subject_manifest::ResolveRequest {
+                emacs_executable: &run.emacs_executable,
+                client_source: Some(&run.client_source),
+                cache_root: &run.out_root.join("subject-input-cache"),
+                probed_emacs_version: Some(emacs_version),
+            },
+        )
+        .map_err(|failure| {
+            anyhow::anyhow!("subject {} failed manifest resolution: {failure}", subject.id())
+        })?;
+        (resolved.client, resolved.emacs_build_sha256)
+    } else {
+        (
+            subject.client_identity(
+                subject_manifest,
+                file_sha256(&run.client_source)?,
+                package_sha256,
+            )?,
+            file_sha256(&run.emacs_executable)?,
+        )
+    };
+    let driver = repo_root.join("scripts/test/emacs-host-driver.el");
+    let adapter = repo_root.join(subject.adapter_relative_path());
+    let configuration = repo_root.join(subject.configuration_relative_path());
+    let fixture_root = materialize_client_subject_fixture(&run.out_root.join("fixture"))?;
+    let layout = HermeticLayout::prepare(&run.out_root.join("hermetic"))?;
     let plan = EmacsHostRunPlan {
         identity: emacs_host_runner::EmacsHostRunIdentity {
             schema_version: emacs_host_runner::RUN_PLAN_SCHEMA_VERSION.to_string(),
@@ -406,12 +430,8 @@ pub fn build_client_subject_run_plan(
             repository: REPOSITORY.to_string(),
             candidate_sha: commit.to_string(),
             emacs_version: emacs_version.to_string(),
-            emacs_build_sha256: file_sha256(&run.emacs_executable)?,
-            client: subject.client_identity(
-                &subject_manifest,
-                file_sha256(&run.client_source)?,
-                package_sha256,
-            )?,
+            emacs_build_sha256,
+            client,
             driver_sha256: file_sha256(&driver)?,
             adapter_sha256: file_sha256(&adapter)?,
             configuration_sha256: file_sha256(&configuration)?,
@@ -558,6 +578,10 @@ pub fn host_run(
     }
     fs::create_dir_all(&run.out_root)
         .with_context(|| format!("creating output root {}", run.out_root.display()))?;
+    // The checked subject manifest (#11744) is the declared identity
+    // authority for bundled rows; a missing or invalid manifest fails the
+    // run closed rather than falling back to embedded identity strings.
+    let subject_manifest = crate::emacs_subject_manifest::SubjectManifest::load(repo_root)?;
     let (plan, layout) = build_client_subject_run_plan(
         repo_root,
         subject,
@@ -565,6 +589,7 @@ pub fn host_run(
         &commit,
         &candidate_version,
         &emacs_version,
+        &subject_manifest,
     )?;
 
     let mut command = build_emacs_command(&plan, &layout)?;

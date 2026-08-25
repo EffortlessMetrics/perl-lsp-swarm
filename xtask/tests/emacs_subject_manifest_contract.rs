@@ -18,6 +18,10 @@
 //! subject identity, and the round-trip through the real shared run-plan
 //! boundary.
 
+// Plain #[test] functions assert through the standard panic-on-failure
+// idiom; these tests are proof, not production paths.
+#![allow(clippy::expect_used, clippy::panic)]
+
 use anyhow::{Context, Result, ensure};
 use flate2::{Compression, write::GzEncoder};
 use sha2::{Digest as ShaDigest, Sha256};
@@ -903,7 +907,9 @@ fn bundled_subjects_round_trip_through_the_run_plan_boundary() -> Result<()> {
         );
 
         // Run-plan boundary round-trip: the resolved inputs are exactly the
-        // landed builder's inputs, over the checked tree.
+        // landed builder's inputs, over the checked tree, and the builder
+        // re-validates the declared digest through the resolver before the
+        // plan exists.
         let run = resolved.host_run_inputs(&candidate, &tree.join("out"), 0);
         let (plan, _layout) = build_client_subject_run_plan(
             &workspace_root()?,
@@ -912,6 +918,7 @@ fn bundled_subjects_round_trip_through_the_run_plan_boundary() -> Result<()> {
             &"0".repeat(40),
             "perllsp fake",
             version_line,
+            &manifest,
         )?;
         plan.validate()?;
         ensure!(
@@ -943,5 +950,111 @@ fn registry_and_manifest_agree_on_both_bundled_generations() -> Result<()> {
     ensure!(identity.version == row.client_version_hint);
     ensure!(identity.source_ref == row.emacs_release_tag);
     ensure!(identity.source_state == row.source_state);
+    Ok(())
+}
+
+/// The run-plan boundary itself refuses unchecked client bytes: a file
+/// whose digest binds no declared row cannot produce a plan labeled as the
+/// checked subject, and the refusal leaves no output state behind. Identity
+/// strings never travel ahead of digest validation (#11744 review
+/// finding).
+#[test]
+fn run_plan_boundary_rejects_client_bytes_that_bind_no_declared_digest() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    // The installation carries the 29.4-generation bytes while the plan
+    // asks for the 30.1 subject of the same fixture manifest.
+    let emacs = fixture_installation(
+        root.path(),
+        "30.1",
+        EMACS_29_EGLOT_BYTES,
+        "eglot.el",
+        b"fake exact emacs 30.1 executable",
+    )?;
+    let candidate_name = if cfg!(windows) { "perllsp.exe" } else { "perllsp" };
+    let candidate = root.path().join(candidate_name);
+    fs::write(&candidate, b"fake exact perllsp candidate bytes")?;
+    let client_source = root.path().join("share/emacs/30.1/lisp/progmodes/eglot.el");
+    let out_root = root.path().join("out");
+    let run = emacs_host_run::EmacsHostRunInputs {
+        emacs_executable: emacs,
+        candidate_executable: candidate,
+        client_source,
+        client_package: None,
+        out_root: out_root.clone(),
+        timeout_ms: 0,
+    };
+    let error = build_client_subject_run_plan(
+        &workspace_root()?,
+        EmacsClientSubject::BundledEglotEmacs301,
+        &run,
+        &"0".repeat(40),
+        "perllsp fake",
+        "GNU Emacs 30.1 (fixture)",
+        &fixture_manifest(),
+    )
+    .err()
+    .context("cross-generation client bytes must not produce a 30.1 plan")?;
+    assert!(
+        error.to_string().contains("identity mismatch"),
+        "the typed rejection must reach the plan boundary: {error}"
+    );
+    assert!(
+        error.to_string().contains("bundled_eglot_emacs_30_1"),
+        "the failure must name the requested subject: {error}"
+    );
+    ensure!(
+        !out_root.exists(),
+        "a rejected resolution must leave no run output state behind: {}",
+        out_root.display()
+    );
+    Ok(())
+}
+
+/// Ambient package state cannot reach the run-plan boundary either: an
+/// explicit client file outside the exact Emacs installation is rejected
+/// before a plan exists, even when its bytes match the declared digest.
+#[test]
+fn run_plan_boundary_rejects_ambient_client_state() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let install = root.path().join("install");
+    let emacs = fixture_installation(
+        &install,
+        "30.1",
+        EMACS_30_EGLOT_BYTES,
+        "eglot.el",
+        b"fake exact emacs 30.1 executable",
+    )?;
+    let candidate_name = if cfg!(windows) { "perllsp.exe" } else { "perllsp" };
+    let candidate = root.path().join(candidate_name);
+    fs::write(&candidate, b"fake exact perllsp candidate bytes")?;
+    // A byte-identical ambient ELPA copy outside the installation.
+    let ambient = root.path().join("home/.emacs.d/elpa/eglot-1.17.30/eglot.el");
+    fs::create_dir_all(ambient.parent().context("elpa parent")?)?;
+    fs::write(&ambient, EMACS_30_EGLOT_BYTES)?;
+    let out_root = root.path().join("out");
+    let run = emacs_host_run::EmacsHostRunInputs {
+        emacs_executable: emacs,
+        candidate_executable: candidate,
+        client_source: ambient,
+        client_package: None,
+        out_root: out_root.clone(),
+        timeout_ms: 0,
+    };
+    let error = build_client_subject_run_plan(
+        &workspace_root()?,
+        EmacsClientSubject::BundledEglotEmacs301,
+        &run,
+        &"0".repeat(40),
+        "perllsp fake",
+        "GNU Emacs 30.1 (fixture)",
+        &fixture_manifest(),
+    )
+    .err()
+    .context("an ambient ELPA copy must not produce a plan")?;
+    assert!(
+        error.to_string().contains("ambient state"),
+        "the typed ambient rejection must reach the plan boundary: {error}"
+    );
+    ensure!(!out_root.exists(), "no run output state may exist after the refusal");
     Ok(())
 }
