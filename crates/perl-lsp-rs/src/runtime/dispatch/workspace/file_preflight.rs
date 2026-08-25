@@ -24,8 +24,10 @@ impl LspServer {
     ) -> Result<Option<Value>, JsonRpcError> {
         #[cfg(feature = "workspace")]
         {
-            let files = match
-                params.as_ref().and_then(|value| value.get("files")).and_then(Value::as_array)
+            let files = match params
+                .as_ref()
+                .and_then(|value| value.get("files"))
+                .and_then(Value::as_array)
             {
                 Some(files) => files,
                 None => return Ok(Some(empty_workspace_edit())),
