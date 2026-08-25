@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11833 |
-| Rust-family files | 3582 |
-| Non-Rust files | 8251 |
-| Allowlisted | 5926 |
+| Total tracked files | 11875 |
+| Rust-family files | 3594 |
+| Non-Rust files | 8281 |
+| Allowlisted | 5956 |
 | Unclassified | 2325 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 420 |
-| documentation | 2688 |
+| config | 446 |
+| documentation | 2689 |
 | generated | 2 |
 | production | 323 |
 | test | 1941 |
-| tooling | 552 |
+| tooling | 555 |
 | unclassified | 2325 |
 
 ## Unclassified files
@@ -2599,6 +2599,30 @@
 | `.changes/unreleased/vscode-8180-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.ci/GATE_REGISTRY.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/README-coverage.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/authority-transfer-programme/fixtures/invalid-artifact-unowned.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-consumer-before-accepted-store.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-controller-buildable.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-controller-kind-mismatch.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-current-state-leak.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-duplicate-node-id.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-fanin-denominator-missing-consumer.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-fanin-denominator-split.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-hard-cycle.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-leaf-missing-ceiling.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-leaf-missing-falsifier.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-live-without-advisory.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-multi-owner-authority.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-optional-live-hardened.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-parallel-shared-catalog-writers.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-retirement-predecessor-unresolved.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-retirement-without-exit.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-unknown-edge-target.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-unknown-profile.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-unknown-schema-field.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-unowned-authority-input.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/valid-mini-graph.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/generated/normalized-graph.v1.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/graph.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/benchmark-thresholds.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/blockers.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/close-proof-contract/corpus_manifest.json` | config | `non-rust-ci-config` | release/ci |
@@ -2897,6 +2921,7 @@
 | `.github/workflows/agent-capability-gate.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/agent-flow-control-plane.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/aggregate-ci-lane-history.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/authority-transfer-graph.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/badge-endpoints.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/brew-bump.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/changelog-advisory.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -2960,6 +2985,7 @@
 | `.github/workflows/ux-regression-gate.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/validate-ci-lane-history.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/version-bump.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/vim-hermetic-host.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-current-source-linux-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-managed-binary-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-published-extension-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -4894,6 +4920,7 @@
 | `docs/learnings/2026-07-workflow-agent-background-wait-death.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/learnings/README.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/learnings/TEMPLATE.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/policy/AUTHORITY_TRANSFER_PROGRAMME_GRAPH.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/policy/FILE_POLICY.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/policy/NON_RUST_INVENTORY.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/policy/NON_RUST_LADDER.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6161,6 +6188,7 @@
 | `scripts/bulk-label-issues.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/cargo-package-workspace-dry-run.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/cargo-safe` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/check-authority-transfer-graph.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/check-coverage-baseline.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/check-doc-claims.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/check-merge-gate-target.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6464,6 +6492,8 @@
 | `scripts/test/emacs-clients/eglot-released-config.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-clients/eglot-released.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-host-driver.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-clients/vim-lsp-adapter.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_iterative_parser.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
