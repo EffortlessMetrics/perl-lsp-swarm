@@ -47,10 +47,11 @@ const MAX_TEXT_CHARS: usize = 512;
 
 macro_rules! closed_enum {
     ($(#[$meta:meta])* $name:ident { $($variant:ident => $text:literal),+ $(,)? }) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-        #[serde(rename_all = "snake_case")]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
         $(#[$meta])*
-        enum $name { $($variant),+ }
+        enum $name {
+            $(#[serde(rename = $text)] $variant),+
+        }
     };
 }
 
@@ -180,6 +181,7 @@ enum ReasonCode {
     PreviousCurrentAlias,
     RevertWithoutRollback,
     RollbackTargetNotGoverned,
+    RollbackWithoutPriorState,
     CrossAttemptTransition,
     PrivateOutputLeakage,
     TransitionDispositionConflict,
@@ -208,6 +210,7 @@ impl ReasonCode {
             Self::PreviousCurrentAlias => "previous_current_alias",
             Self::RevertWithoutRollback => "revert_without_rollback",
             Self::RollbackTargetNotGoverned => "rollback_target_not_governed",
+            Self::RollbackWithoutPriorState => "rollback_without_prior_state",
             Self::CrossAttemptTransition => "cross_attempt_transition",
             Self::PrivateOutputLeakage => "private_output_leakage",
             Self::TransitionDispositionConflict => "transition_disposition_conflict",
@@ -746,6 +749,10 @@ struct Catalog<'a> {
 impl<'a> Catalog<'a> {
     fn build(candidates: &'a [CandidateManifest]) -> ContractResult<Self> {
         let mut by_id = BTreeMap::new();
+        // Generation uniqueness is scoped to one target lineage
+        // (route/platform/triple/libc): a multi-platform catalog legitimately
+        // restarts each target's sequence at 1, while two candidates claiming
+        // the same generation within one lineage is drift.
         let mut generations = BTreeMap::new();
         for candidate in candidates {
             validate_candidate(candidate)?;
@@ -755,15 +762,20 @@ impl<'a> Catalog<'a> {
                     format!("two candidates claim identity {}", head(&candidate.candidate_id)),
                 );
             }
-            if generations
-                .insert(candidate.candidate_generation, candidate.candidate_id.as_str())
-                .is_some()
-            {
+            let lineage = (
+                candidate.route_mode,
+                candidate.target_platform.as_str(),
+                candidate.target_triple.as_str(),
+                candidate.target_libc,
+                candidate.candidate_generation,
+            );
+            if generations.insert(lineage, candidate.candidate_id.as_str()).is_some() {
                 return err(
                     ReasonCode::DuplicateCandidateIdentity,
                     format!(
-                        "candidate_generation {} claimed twice",
-                        candidate.candidate_generation
+                        "candidate_generation {} claimed twice within target lineage {:?}",
+                        candidate.candidate_generation,
+                        (candidate.target_platform.as_str(), candidate.target_triple.as_str())
                     ),
                 );
             }
@@ -987,10 +999,24 @@ fn verify_transition_record(
         hex_sha256(candidate_id, "prior_current_candidate_id")?;
     }
 
-    let route_binding = [prior, next]
-        .into_iter()
-        .flatten()
-        .all(|candidate| candidate.route_mode == transition.route_mode);
+    // Route binding covers every candidate the transition names or
+    // transitions between: the prior/next selections plus the candidates the
+    // transition record itself names, resolved through the catalog. A
+    // publish/verify transition without selection records still binds its
+    // subject's route instead of leaving the check vacuously true.
+    let mut route_witnesses: Vec<&CandidateManifest> =
+        [prior, next].into_iter().flatten().collect();
+    for candidate_id in
+        [&transition.candidate_id, &transition.prior_current_candidate_id].into_iter().flatten()
+    {
+        if let Some(candidate) =
+            packet.candidates.iter().find(|candidate| &candidate.candidate_id == candidate_id)
+        {
+            route_witnesses.push(candidate);
+        }
+    }
+    let route_binding =
+        route_witnesses.iter().all(|candidate| candidate.route_mode == transition.route_mode);
     if !route_binding {
         return err(
             ReasonCode::TransitionDispositionConflict,
@@ -1009,6 +1035,29 @@ fn verify_transition_record(
                 return err(
                     ReasonCode::TransitionDispositionConflict,
                     "rollback_committed requires a rollback operation with a committed selection change",
+                );
+            }
+            let Some(prior_selection) = &packet.prior_selection else {
+                return err(
+                    ReasonCode::RollbackWithoutPriorState,
+                    "a committed rollback must prove the prior state it reverts; packets without prior_selection cannot document rollback_committed",
+                );
+            };
+            if transition.prior_current_candidate_id.as_deref()
+                != Some(prior_selection.selected_candidate_id.as_str())
+            {
+                return err(
+                    ReasonCode::TransitionDispositionConflict,
+                    "rollback_committed must name the demoted candidate as prior_current_candidate_id",
+                );
+            }
+            if !matches!(
+                transition.outcome_dimensions.product_units,
+                ProductTransitionOutcome::RolledBack
+            ) {
+                return err(
+                    ReasonCode::TransitionDispositionConflict,
+                    "a committed rollback must report rolled_back product units",
                 );
             }
         }
@@ -1102,6 +1151,27 @@ fn verify_transition_record(
         }
     }
 
+    // The durable transition record must name exactly the candidate the
+    // committed selection selects: an absent, prior, or unrelated identity
+    // would make the record dishonest about what changed.
+    if let Some(next_selection) = &packet.next_selection {
+        let documents_selection = matches!(
+            transition.disposition,
+            TransitionDisposition::RollbackCommitted
+                | TransitionDisposition::SelectionCommitted
+                | TransitionDisposition::SelectionUnchanged
+        );
+        if documents_selection
+            && transition.candidate_id.as_deref()
+                != Some(next_selection.selected_candidate_id.as_str())
+        {
+            return err(
+                ReasonCode::TransitionDispositionConflict,
+                "transition candidate_id must name the candidate the committed selection selects",
+            );
+        }
+    }
+
     // Attempt freshness: a transition documenting this attempt's effect must
     // not describe a selection written by a different attempt.
     if let Some(next_selection) = &packet.next_selection {
@@ -1148,6 +1218,7 @@ fn parse_reason_code(text: &str) -> Option<ReasonCode> {
         ("previous_current_alias", ReasonCode::PreviousCurrentAlias),
         ("revert_without_rollback", ReasonCode::RevertWithoutRollback),
         ("rollback_target_not_governed", ReasonCode::RollbackTargetNotGoverned),
+        ("rollback_without_prior_state", ReasonCode::RollbackWithoutPriorState),
         ("cross_attempt_transition", ReasonCode::CrossAttemptTransition),
         ("private_output_leakage", ReasonCode::PrivateOutputLeakage),
         ("transition_disposition_conflict", ReasonCode::TransitionDispositionConflict),
@@ -1311,8 +1382,8 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CANDIDATE_ID_DOMAIN, CandidateManifest, ContractResult, MANIFEST_DIGEST_DOMAIN,
-        VectorPacket, canonical_json, check_expectation, domain_digest, privacy_finding,
+        CANDIDATE_ID_DOMAIN, CandidateManifest, ContractResult, LibcDisposition,
+        MANIFEST_DIGEST_DOMAIN, canonical_json, check_expectation, domain_digest, privacy_finding,
         recompute_candidate_identity, verify_document,
     };
     use color_eyre::eyre::{Result, bail, ensure};
@@ -1562,6 +1633,174 @@ mod tests {
         let first = canonical_json(&serialized);
         let reparsed: Value = serde_json::from_str(&first)?;
         ensure!(first == canonical_json(&reparsed), "canonical bytes drifted on regeneration");
+        Ok(())
+    }
+
+    /// The declared literals are the wire vocabulary, not the snake_case of
+    /// the Rust identifiers: `NoneLibc => "none"` must round-trip as "none".
+    #[test]
+    fn closed_enum_literals_are_the_wire_vocabulary() -> Result<()> {
+        ensure!(
+            serde_json::to_string(&LibcDisposition::NoneLibc)? == "\"none\"",
+            "NoneLibc must serialize to its declared literal"
+        );
+        ensure!(
+            serde_json::from_str::<LibcDisposition>("\"none\"").is_ok(),
+            "\"none\" must deserialize as NoneLibc"
+        );
+        ensure!(
+            serde_json::from_str::<LibcDisposition>("\"none_libc\"").is_err(),
+            "the identifier's snake_case spelling is not the declared wire vocabulary"
+        );
+        for (text, value) in [
+            ("\"gnu\"", LibcDisposition::Gnu),
+            ("\"musl\"", LibcDisposition::Musl),
+            ("\"msvc\"", LibcDisposition::Msvc),
+        ] {
+            ensure!(serde_json::from_str::<LibcDisposition>(text)? == value);
+            ensure!(serde_json::to_string(&value)? == text);
+        }
+        Ok(())
+    }
+
+    /// A publish transition without selection records still binds its
+    /// subject's route: the candidate named by the transition must agree with
+    /// the transition's route_mode even when prior/next are absent.
+    #[test]
+    fn publish_transition_route_binds_the_named_candidate() -> Result<()> {
+        let mut value: Value =
+            serde_json::from_str(&fixture_text("05_published_unselected.json")?)?;
+        let Some(object) = value.as_object_mut() else {
+            bail!("05 is not a JSON object");
+        };
+        object.remove("prior_selection");
+        value["transition"]["route_mode"] = Value::String("first_party_powershell".into());
+        let tampered = serde_json::to_string(&value)?;
+        expect_rejected(
+            "05(mutated)",
+            verify_document(&tampered).map(|_| "accept"),
+            "transition_disposition_conflict",
+        )?;
+        Ok(())
+    }
+
+    /// Generation uniqueness is scoped per target lineage: a multi-platform
+    /// catalog may restart each target's sequence at 1, while two candidates
+    /// claiming one generation within a single lineage is still drift.
+    #[test]
+    fn generation_uniqueness_is_scoped_per_target_lineage() -> Result<()> {
+        let mut value: Value =
+            serde_json::from_str(&fixture_text("01_complete_archive_pair.json")?)?;
+        let mut cross_target = candidate_value("01_complete_archive_pair.json", 0)?;
+        cross_target["target_platform"] = Value::String("windows".into());
+        cross_target["target_triple"] = Value::String("x86_64-pc-windows-msvc".into());
+        cross_target["target_libc"] = Value::String("msvc".into());
+        let (id, digest) = recompute_from_value(&cross_target)?;
+        cross_target["candidate_id"] = Value::String(id);
+        cross_target["manifest_sha256"] = Value::String(digest);
+        let Some(candidates) = value["candidates"].as_array_mut() else {
+            bail!("01 candidates missing");
+        };
+        candidates.push(cross_target);
+        let text = serde_json::to_string(&value)?;
+        verify_document(&text)?;
+
+        let mut value: Value =
+            serde_json::from_str(&fixture_text("01_complete_archive_pair.json")?)?;
+        let mut clone = candidate_value("01_complete_archive_pair.json", 0)?;
+        clone["transaction_id"] = Value::String("tx-11179-clone".into());
+        let (id, digest) = recompute_from_value(&clone)?;
+        clone["candidate_id"] = Value::String(id);
+        clone["manifest_sha256"] = Value::String(digest);
+        let Some(candidates) = value["candidates"].as_array_mut() else {
+            bail!("01 candidates missing");
+        };
+        candidates.push(clone);
+        let tampered = serde_json::to_string(&value)?;
+        expect_rejected(
+            "01(mutated)",
+            verify_document(&tampered).map(|_| "accept"),
+            "duplicate_candidate_identity",
+        )?;
+        Ok(())
+    }
+
+    /// A committed rollback must prove the prior state it reverts; a packet
+    /// with only a committed rollback next-selection is partial evidence.
+    #[test]
+    fn rollback_requires_proven_prior_state() -> Result<()> {
+        let mut value: Value = serde_json::from_str(&fixture_text("08_rollback_b_to_a.json")?)?;
+        let Some(object) = value.as_object_mut() else {
+            bail!("08 is not a JSON object");
+        };
+        object.remove("prior_selection");
+        let tampered = serde_json::to_string(&value)?;
+        expect_rejected(
+            "08(mutated)",
+            verify_document(&tampered).map(|_| "accept"),
+            "rollback_without_prior_state",
+        )?;
+        Ok(())
+    }
+
+    /// The transition record must name the candidate the committed selection
+    /// demotes (rollback) and selects (commit): a prior or absent identity is
+    /// dishonest about what changed.
+    #[test]
+    fn rollback_names_the_demoted_current() -> Result<()> {
+        let mut value: Value = serde_json::from_str(&fixture_text("08_rollback_b_to_a.json")?)?;
+        value["transition"]["prior_current_candidate_id"] =
+            value["candidates"][0]["candidate_id"].clone();
+        let tampered = serde_json::to_string(&value)?;
+        expect_rejected(
+            "08(mutated-demoted)",
+            verify_document(&tampered).map(|_| "accept"),
+            "transition_disposition_conflict",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn committed_transition_names_the_selected_candidate() -> Result<()> {
+        let mut value: Value =
+            serde_json::from_str(&fixture_text("07_ab_selection_committed.json")?)?;
+        value["transition"]["candidate_id"] =
+            value["prior_selection"]["selected_candidate_id"].clone();
+        let mismatched = serde_json::to_string(&value)?;
+        expect_rejected(
+            "07(mutated-mismatch)",
+            verify_document(&mismatched).map(|_| "accept"),
+            "transition_disposition_conflict",
+        )?;
+
+        let mut value: Value =
+            serde_json::from_str(&fixture_text("07_ab_selection_committed.json")?)?;
+        let Some(transition) = value["transition"].as_object_mut() else {
+            bail!("07 transition missing");
+        };
+        transition.remove("candidate_id");
+        let absent = serde_json::to_string(&value)?;
+        expect_rejected(
+            "07(mutated-absent)",
+            verify_document(&absent).map(|_| "accept"),
+            "transition_disposition_conflict",
+        )?;
+        Ok(())
+    }
+
+    /// A committed rollback whose independent product-unit outcome says
+    /// installed/updated contradicts itself.
+    #[test]
+    fn rollback_outcome_must_report_rolled_back() -> Result<()> {
+        let mut value: Value = serde_json::from_str(&fixture_text("08_rollback_b_to_a.json")?)?;
+        value["transition"]["outcome_dimensions"]["product_units"] =
+            Value::String("installed".into());
+        let tampered = serde_json::to_string(&value)?;
+        expect_rejected(
+            "08(mutated-outcome)",
+            verify_document(&tampered).map(|_| "accept"),
+            "transition_disposition_conflict",
+        )?;
         Ok(())
     }
 }
