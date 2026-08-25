@@ -860,13 +860,13 @@ fn selects_commit_tier_gate(policy: &GatePolicy, config: &GateRunnerConfig) -> R
 /// tier). `--tier nightly` is *not* one of these paths — `NIGHTLY_EXTRA_TIERS`
 /// is `merge_gate` + `nightly` only, deliberately excluding `commit` — see
 /// [`selects_commit_tier_gate`], the single source of truth this function
-/// defers to. `--list` is exempt: it never executes a gate. `None` means the
-/// run may proceed.
+/// defers to. `--list` and `--explain-disposition` are exempt: neither ever
+/// executes a gate. `None` means the run may proceed.
 fn staged_guard_violation(
     policy: &GatePolicy,
     config: &GateRunnerConfig,
 ) -> Result<Option<String>> {
-    if config.staged || config.list_only {
+    if config.staged || config.list_only || config.explain_disposition {
         return Ok(None);
     }
     if !selects_commit_tier_gate(policy, config)? {
@@ -3519,6 +3519,23 @@ mod tests {
         let config = GateRunnerConfig {
             tier: GateTier::Commit,
             list_only: true,
+            ..GateRunnerConfig::default()
+        };
+
+        assert!(staged_guard_violation(&policy, &config)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn staged_guard_violation_none_in_explain_disposition_mode() -> color_eyre::eyre::Result<()> {
+        // `--explain-disposition` is as read-only as `--list`: it prints the
+        // `gate_disposition.v1` authority (#10176) and never executes a
+        // gate, so even `--tier all` must not demand `--staged` from it
+        // (review finding: the guard previously fired on explain runs).
+        let policy = policy_with_commit_and_pr_fast_gates();
+        let config = GateRunnerConfig {
+            tier: GateTier::All,
+            explain_disposition: true,
             ..GateRunnerConfig::default()
         };
 

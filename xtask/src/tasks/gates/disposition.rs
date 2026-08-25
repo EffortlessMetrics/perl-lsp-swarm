@@ -52,7 +52,7 @@ use color_eyre::eyre::{Result, bail, eyre};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use super::GatePolicy;
+use super::{GatePolicy, QuarantinedGate};
 
 /// Authority identity stamped into every explanation.
 pub const AUTHORITY_NAME: &str = "gate_disposition.v1";
@@ -210,6 +210,16 @@ pub enum DispositionSource {
     FailedReconciliation,
 }
 
+impl DispositionSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DispositionSource::GatePolicyDefault => "gate-policy-default",
+            DispositionSource::GatePolicyBitAndLedger => "gate-policy+debt-ledger",
+            DispositionSource::FailedReconciliation => "failed-reconciliation",
+        }
+    }
+}
+
 /// One closed typed lifecycle result for one governed gate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateDisposition {
@@ -228,14 +238,24 @@ pub struct GateDisposition {
 }
 
 /// The resolved authority: one row per governed gate, plus fail-closed
-/// bookkeeping for ledger rows that name unknown gates.
+/// bookkeeping for quarantine-source rows that cannot be attributed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispositionAuthority {
     pub schema_version: u32,
     /// Sorted by `gate_id`; exactly one row per canonical policy gate.
     pub rows: Vec<GateDisposition>,
-    /// Debt-ledger quarantine rows naming gates the policy does not define.
+    /// Quarantine-source rows that fail closed because they cannot be
+    /// attributed at all: nameless debt-ledger rows, and
+    /// `quarantined_gates` projection entries naming gates the policy does
+    /// not define (that projection is gate-scoped, so an unknown name there
+    /// is an unknown-gate failure, not test-level debt).
     pub unknown_ledger_entries: Vec<String>,
+    /// Debt-ledger quarantine rows naming something that is not a governed
+    /// gate. The ledger's documented format mixes gate-level rows with
+    /// ordinary quarantined *tests* (e.g. `lsp::test_completion_timeout`);
+    /// such rows assert no gate lifecycle, so they are recorded here as
+    /// informational test-level debt and do not invalidate the authority.
+    pub test_level_ledger_rows: Vec<String>,
     /// Canonical source identities this authority was reconciled from
     /// (gate-policy path and the declared debt-ledger path). Empty for the
     /// pure `resolve_from` projection, which receives inputs by value.
@@ -254,9 +274,10 @@ impl DispositionAuthority {
         self.rows.iter().find(|row| row.gate_id == gate_id)
     }
 
-    /// True only when every governed row is `Current` and no ledger row names
-    /// an unknown gate. Expired or invalid evidence is action-required
-    /// non-success — never silently success.
+    /// True only when every governed row is `Current` and no quarantine
+    /// source row is unattributable. Ordinary test-level ledger debt does
+    /// not invalidate the gate authority. Expired or invalid evidence is
+    /// action-required non-success — never silently success.
     #[allow(dead_code)] // consumer seam: #10178 denominator validation, #9156
     pub fn is_current(&self) -> bool {
         self.unknown_ledger_entries.is_empty()
@@ -276,6 +297,12 @@ impl DispositionAuthority {
                 self.unknown_ledger_entries.join(", ")
             ));
         }
+        if !self.test_level_ledger_rows.is_empty() {
+            lines.push(format!(
+                "test-level ledger rows (no gate lifecycle claim): {}",
+                self.test_level_ledger_rows.join(", ")
+            ));
+        }
         for row in &self.rows {
             let mut line = format!(
                 "{} lifecycle={} resolution={} role={} profile={} source={}",
@@ -284,11 +311,7 @@ impl DispositionAuthority {
                 row.resolution,
                 row.policy_role,
                 row.intended_profile,
-                match row.source {
-                    DispositionSource::GatePolicyDefault => "gate-policy-default",
-                    DispositionSource::GatePolicyBitAndLedger => "gate-policy+debt-ledger",
-                    DispositionSource::FailedReconciliation => "failed-reconciliation",
-                },
+                row.source.as_str(),
             );
             if let Some(authority) = &row.quarantine {
                 line.push_str(&format!(
@@ -443,9 +466,16 @@ pub fn resolve_from(
     let projection_by_name = index_flake_projection(policy);
 
     let mut unknown_ledger_entries: BTreeSet<String> = BTreeSet::new();
+    let mut test_level_ledger_rows: BTreeSet<String> = BTreeSet::new();
     for name in ledger_by_name.keys() {
         if !policy.gates.iter().any(|gate| gate.name == *name) {
-            unknown_ledger_entries.insert(name.clone());
+            // The ledger's documented format mixes gate-level quarantine rows
+            // with ordinary quarantined *tests* (e.g. `lsp::test_...`). A row
+            // naming something that is not a governed gate asserts no gate
+            // lifecycle, so it is test-level debt, not an unknown-gate
+            // failure: recording it as invalid would let routine test debt
+            // invalidate the whole gate authority.
+            test_level_ledger_rows.insert(name.clone());
         }
     }
     if let Some(ledger) = ledger {
@@ -453,6 +483,17 @@ pub fn resolve_from(
             if entry.name.as_deref().map(str::trim).filter(|name| !name.is_empty()).is_none() {
                 unknown_ledger_entries.insert(UNNAMED_LEDGER_ROW.to_string());
             }
+        }
+    }
+    // The `quarantined_gates` projection is gate-scoped by name and schema:
+    // an entry naming something the policy does not define is an unknown-gate
+    // failure (control 11), never test-level debt.
+    for projected in projection_by_name.values().flatten() {
+        if !policy.gates.iter().any(|gate| gate.name == *projected.gate) {
+            unknown_ledger_entries.insert(format!(
+                "quarantined_gates projection names unknown gate {:?}",
+                projected.gate
+            ));
         }
     }
 
@@ -466,7 +507,7 @@ pub fn resolve_from(
                 native_tier: gate.tier.as_str(),
                 quarantine_bit: gate.quarantine,
                 ledger_rows: ledger_by_name.get(gate.name.as_str()).map(Vec::as_slice),
-                projected_by_flake_policy: projection_by_name.contains(gate.name.as_str()),
+                projection: projection_by_name.get(gate.name.as_str()).map(Vec::as_slice),
                 duplicate_in_policy: duplicate_gate_ids.contains(gate.name.as_str()),
                 today,
             })
@@ -480,6 +521,7 @@ pub fn resolve_from(
         schema_version: SCHEMA_VERSION,
         rows,
         unknown_ledger_entries: unknown_ledger_entries.into_iter().collect(),
+        test_level_ledger_rows: test_level_ledger_rows.into_iter().collect(),
         source_paths: Vec::new(),
         semantic_digest,
     }
@@ -491,7 +533,7 @@ struct GateInputs<'a> {
     native_tier: &'a str,
     quarantine_bit: bool,
     ledger_rows: Option<&'a [&'a LedgerQuarantineEntry]>,
-    projected_by_flake_policy: bool,
+    projection: Option<&'a [&'a QuarantinedGate]>,
     duplicate_in_policy: bool,
     today: NaiveDate,
 }
@@ -521,14 +563,14 @@ fn index_ledger(
     index
 }
 
-fn index_flake_projection(policy: &GatePolicy) -> BTreeSet<String> {
-    policy
-        .flake_policy
-        .as_ref()
-        .map(|flake| {
-            flake.quarantined_gates.iter().map(|projected| projected.gate.clone()).collect()
-        })
-        .unwrap_or_default()
+fn index_flake_projection(policy: &GatePolicy) -> BTreeMap<String, Vec<&QuarantinedGate>> {
+    let mut index: BTreeMap<String, Vec<&QuarantinedGate>> = BTreeMap::new();
+    if let Some(flake) = policy.flake_policy.as_ref() {
+        for projected in &flake.quarantined_gates {
+            index.entry(projected.gate.clone()).or_default().push(projected);
+        }
+    }
+    index
 }
 
 /// Reconcile one gate row against every canonical quarantine representation.
@@ -539,21 +581,27 @@ fn reconcile_gate(inputs: GateInputs<'_>) -> GateDisposition {
         native_tier,
         quarantine_bit,
         ledger_rows,
-        projected_by_flake_policy,
+        projection,
         duplicate_in_policy,
         today,
     } = inputs;
 
     let ledger_rows = ledger_rows.unwrap_or_default();
+    let projection = projection.unwrap_or_default();
     let mut failures: Vec<String> = Vec::new();
     if duplicate_in_policy {
         failures.push("duplicate gate rows in gate policy claim conflicting dispositions".into());
+    }
+    if projection.len() > 1 {
+        failures.push(
+            "duplicate quarantined_gates projection entries claim competing dispositions".into(),
+        );
     }
 
     // A quarantine claim exists when any canonical source asserts one. The
     // claim keeps lifecycle `Quarantined` even when its evidence is missing,
     // expired, or contradictory — it never silently becomes active.
-    let quarantine_claim = quarantine_bit || !ledger_rows.is_empty() || projected_by_flake_policy;
+    let quarantine_claim = quarantine_bit || !ledger_rows.is_empty() || !projection.is_empty();
 
     match ledger_rows.len() {
         0 => {
@@ -563,7 +611,7 @@ fn reconcile_gate(inputs: GateInputs<'_>) -> GateDisposition {
                      horizon"
                         .into(),
                 );
-            } else if projected_by_flake_policy {
+            } else if !projection.is_empty() {
                 failures.push(
                     "flake_policy.quarantined_gates projection names this gate without a \
                      debt-ledger row (conflicting sources)"
@@ -624,6 +672,48 @@ fn reconcile_gate(inputs: GateInputs<'_>) -> GateDisposition {
                 }
                 _ => None,
             };
+
+            // The `quarantined_gates` projection is declared a projection of
+            // the same ledger evidence: when it is populated, its carried
+            // fields must agree with the corroborating row. A disagreement
+            // is a conflicting source even when the name matches.
+            if let (Some(authority), Some(projected)) = (authority.as_ref(), projection.first()) {
+                if let Some(projected_issue) =
+                    projected.issue.as_deref().map(str::trim).filter(|issue| !issue.is_empty())
+                {
+                    let ledger_issue = authority
+                        .owner_issue
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|issue| !issue.is_empty());
+                    if ledger_issue.is_some_and(|ledger_issue| ledger_issue != projected_issue) {
+                        failures.push(format!(
+                            "quarantined_gates projection issue {projected_issue:?} disagrees \
+                             with debt-ledger issue {:?}",
+                            authority.owner_issue
+                        ));
+                    }
+                }
+                let projected_at = projected.quarantined_at.trim().parse::<NaiveDate>().ok();
+                if let (Some(projected_at), Some(ledger_at)) =
+                    (projected_at, authority.quarantined_at)
+                    && projected_at != ledger_at
+                {
+                    failures.push(format!(
+                        "quarantined_gates projection quarantined_at {} disagrees with \
+                         debt-ledger added {}",
+                        projected_at.format("%Y-%m-%d"),
+                        ledger_at.format("%Y-%m-%d")
+                    ));
+                }
+                if authority.reason_token != projected.reason.trim() {
+                    failures.push(format!(
+                        "quarantined_gates projection reason {:?} disagrees with debt-ledger \
+                         reason token {:?}",
+                        projected.reason, authority.reason_token
+                    ));
+                }
+            }
 
             if failures.is_empty()
                 && let Some(authority) = authority
@@ -718,8 +808,10 @@ fn review_horizon(entry: &LedgerQuarantineEntry) -> Option<NaiveDate> {
     None
 }
 
-/// Semantic digest over canonical row content: rows are sorted by gate id, so
-/// reordering the source cannot move it, while any semantic movement does.
+/// Semantic digest over the complete canonical row content: rows are sorted
+/// by gate id, so reordering the source cannot move it, while any semantic
+/// movement — including closed failure details, source identity, and every
+/// quarantine evidence field — does.
 fn semantic_digest(rows: &[GateDisposition], unknown_ledger_entries: &BTreeSet<String>) -> String {
     let mut hasher = Sha256::new();
     for row in rows {
@@ -733,12 +825,27 @@ fn semantic_digest(rows: &[GateDisposition], unknown_ledger_entries: &BTreeSet<S
         hasher.update([0x1f]);
         hasher.update(row.intended_profile.as_bytes());
         hasher.update([0x1f]);
+        hasher.update(row.source.as_str().as_bytes());
+        hasher.update([0x1f]);
+        hash_option(&mut hasher, row.detail.as_deref());
+        hasher.update([0x1f]);
         if let Some(authority) = &row.quarantine {
             hasher.update(authority.owner.as_bytes());
+            hasher.update([0x1f]);
+            hash_option(&mut hasher, authority.owner_issue.as_deref());
             hasher.update([0x1f]);
             hasher.update(authority.reason_token.as_bytes());
             hasher.update([0x1f]);
             hasher.update(authority.review_after.format("%Y-%m-%d").to_string().as_bytes());
+            hasher.update([0x1f]);
+            hash_option(
+                &mut hasher,
+                authority.quarantined_at.map(|date| date.format("%Y-%m-%d").to_string()).as_deref(),
+            );
+            hasher.update([0x1f]);
+            hash_option(&mut hasher, authority.failure_pattern.as_deref());
+        } else {
+            hasher.update([0x0]);
         }
         hasher.update([0x1e]);
     }
@@ -750,6 +857,17 @@ fn semantic_digest(rows: &[GateDisposition], unknown_ledger_entries: &BTreeSet<S
     // `Sha256::digest` does not implement `LowerHex` under the current
     // sha2/generic-array pair.
     hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Presence-tagged option hashing so `None` and `Some("")` never collide.
+fn hash_option(hasher: &mut Sha256, value: Option<&str>) {
+    match value {
+        Some(text) => {
+            hasher.update([0x1]);
+            hasher.update(text.as_bytes());
+        }
+        None => hasher.update([0x0]),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1266,6 +1384,102 @@ mod gate_disposition_spec {
         assert!(row.detail.as_deref().unwrap().contains("conflicting"));
     }
 
+    /// A projection that mirrors the corroborating ledger evidence leaves the
+    /// row `Current` — the field reconciliation must not false-fire.
+    fn mirroring_projection(gate_id: &str) -> FlakePolicy {
+        FlakePolicy {
+            quarantined_gates: vec![QuarantinedGate {
+                gate: gate_id.to_string(),
+                reason: "timeout waiting for completion".to_string(),
+                quarantined_at: "2026-08-01".to_string(),
+                issue: Some("#10176".to_string()),
+            }],
+            ..flake_with_projection("unused")
+        }
+    }
+
+    #[test]
+    fn mirroring_projection_keeps_the_quarantine_current() {
+        let authority = resolve_from(
+            &policy_with_flake(
+                vec![gate("mirrored", "pr_fast", false, true)],
+                Some(mirroring_projection("mirrored")),
+            ),
+            ledger(vec![entry("mirrored")]).as_ref(),
+            TODAY,
+        );
+        let row = authority.get("mirrored").unwrap();
+        assert_eq!(row.resolution, DispositionResolution::Current);
+        assert_eq!(row.lifecycle, GateLifecycle::Quarantined);
+    }
+
+    #[test]
+    fn projection_field_disagreements_with_ledger_evidence_fail_closed() {
+        // Review finding: reducing `quarantined_gates` entries to their name
+        // let a projection contradict the corroborating ledger evidence in
+        // issue, quarantine date, and reason while still resolving Current.
+        for mutated in [
+            (
+                "issue",
+                QuarantinedGate {
+                    issue: Some("#99999".to_string()),
+                    ..mirroring_projection("drift").quarantined_gates.remove(0)
+                },
+            ),
+            (
+                "quarantined_at",
+                QuarantinedGate {
+                    quarantined_at: "2025-01-01".to_string(),
+                    ..mirroring_projection("drift").quarantined_gates.remove(0)
+                },
+            ),
+            (
+                "reason",
+                QuarantinedGate {
+                    reason: "a different story".to_string(),
+                    ..mirroring_projection("drift").quarantined_gates.remove(0)
+                },
+            ),
+        ] {
+            let flake = FlakePolicy {
+                quarantined_gates: vec![mutated.1],
+                ..mirroring_projection("unused")
+            };
+            let authority = resolve_from(
+                &policy_with_flake(vec![gate("drift", "pr_fast", false, true)], Some(flake)),
+                ledger(vec![entry("drift")]).as_ref(),
+                TODAY,
+            );
+            let row = authority.get("drift").unwrap();
+            assert_eq!(
+                row.resolution,
+                DispositionResolution::Invalid,
+                "projection {} disagreement must fail closed",
+                mutated.0
+            );
+            assert!(row.detail.as_deref().unwrap().contains("disagrees"));
+        }
+    }
+
+    #[test]
+    fn duplicate_projection_entries_fail_closed() {
+        let flake = FlakePolicy {
+            quarantined_gates: vec![
+                mirroring_projection("twins").quarantined_gates.remove(0),
+                mirroring_projection("twins").quarantined_gates.remove(0),
+            ],
+            ..mirroring_projection("unused")
+        };
+        let authority = resolve_from(
+            &policy_with_flake(vec![gate("twins", "pr_fast", false, true)], Some(flake)),
+            ledger(vec![entry("twins")]).as_ref(),
+            TODAY,
+        );
+        let row = authority.get("twins").unwrap();
+        assert_eq!(row.resolution, DispositionResolution::Invalid);
+        assert!(row.detail.as_deref().unwrap().contains("duplicate"));
+    }
+
     #[test]
     fn duplicate_policy_rows_and_duplicate_ledger_rows_fail_closed() {
         let duplicated =
@@ -1284,14 +1498,51 @@ mod gate_disposition_spec {
     }
 
     #[test]
-    fn unknown_gate_and_unsupported_schema_fail_closed() {
-        // Ledger row naming a gate the policy does not define.
+    fn ordinary_quarantined_tests_are_test_level_debt_not_unknown_gates() {
+        // The debt ledger's documented format mixes gate-level quarantine
+        // rows with ordinary quarantined *tests* such as
+        // `lsp::test_completion_timeout`. A test row asserts no gate
+        // lifecycle: it must be recorded as test-level debt without
+        // invalidating the gate authority (review finding: the previous
+        // unknown-gate treatment made routine test debt fail `is_current`).
         let authority = resolve_from(
             &policy(vec![gate("known", "pr_fast", true, false)]),
-            ledger(vec![entry("ghost")]).as_ref(),
+            ledger(vec![entry("lsp::test_completion_timeout")]).as_ref(),
             TODAY,
         );
-        assert_eq!(authority.unknown_ledger_entries, vec!["ghost".to_string()]);
+        assert_eq!(
+            authority.test_level_ledger_rows,
+            vec!["lsp::test_completion_timeout".to_string()]
+        );
+        assert!(authority.unknown_ledger_entries.is_empty());
+        assert!(authority.is_current());
+        assert_eq!(authority.get("known").unwrap().resolution, DispositionResolution::Current);
+        assert!(authority.format_explanation().contains("test-level ledger rows"));
+    }
+
+    #[test]
+    fn unknown_projection_gate_and_unsupported_schema_fail_closed() {
+        // The `quarantined_gates` projection is gate-scoped: naming a gate
+        // the policy does not define is an unknown-gate failure (control 11).
+        let projected_at_unknown = FlakePolicy {
+            quarantined_gates: vec![QuarantinedGate {
+                gate: "ghost".to_string(),
+                reason: "stale projection".to_string(),
+                quarantined_at: "2026-08-01".to_string(),
+                issue: None,
+            }],
+            ..flake_with_projection("unused")
+        };
+        let authority = resolve_from(
+            &policy_with_flake(
+                vec![gate("known", "pr_fast", true, false)],
+                Some(projected_at_unknown),
+            ),
+            ledger(Vec::new()).as_ref(),
+            TODAY,
+        );
+        assert_eq!(authority.unknown_ledger_entries.len(), 1);
+        assert!(authority.unknown_ledger_entries[0].contains("ghost"));
         assert!(!authority.is_current());
 
         // Unsupported source schema versions are refused before reading.
@@ -1353,6 +1604,59 @@ mod gate_disposition_spec {
             TODAY,
         );
         assert_ne!(first.semantic_digest, moved.semantic_digest);
+    }
+
+    #[test]
+    fn digest_covers_every_semantic_field_of_a_row() {
+        // Review finding: the digest previously omitted `detail`, `source`,
+        // `owner_issue`, `quarantined_at`, and `failure_pattern`, so rows
+        // that differ only in those fields kept the same identity. Each
+        // mutation below must move it.
+        let base = resolve_from(
+            &policy(vec![gate("q", "pr_fast", false, true)]),
+            ledger(vec![entry("q")]).as_ref(),
+            TODAY,
+        );
+
+        // Different closed failure detail on an invalid row: a quarantine
+        // bit without ledger evidence versus a projection without one.
+        let bit_without_ledger = resolve_from(
+            &policy(vec![gate("q", "pr_fast", true, true)]),
+            ledger(Vec::new()).as_ref(),
+            TODAY,
+        );
+        let projected_without_ledger = resolve_from(
+            &policy_with_flake(
+                vec![gate("q", "pr_fast", true, false)],
+                Some(flake_with_projection("q")),
+            ),
+            ledger(Vec::new()).as_ref(),
+            TODAY,
+        );
+        assert_ne!(
+            bit_without_ledger.semantic_digest, projected_without_ledger.semantic_digest,
+            "invalid rows with different closed reasons must hash differently"
+        );
+
+        // Same gate/lifecycle/resolution, different quarantine evidence
+        // fields: owner_issue, quarantined_at, failure_pattern.
+        let mut reissued = entry("q");
+        reissued.issue = Some("#424242".to_string());
+        let mut refiled = entry("q");
+        refiled.added = Some("2026-08-15".to_string());
+        let mut repatterned = entry("q");
+        repatterned.failure_pattern = Some("a different failure signature".to_string());
+        for mutated in [reissued, refiled, repatterned] {
+            let authority = resolve_from(
+                &policy(vec![gate("q", "pr_fast", false, true)]),
+                ledger(vec![mutated]).as_ref(),
+                TODAY,
+            );
+            assert_ne!(
+                base.semantic_digest, authority.semantic_digest,
+                "quarantine evidence movement must move the digest"
+            );
+        }
     }
 
     // -------------------------------------------------------------------
