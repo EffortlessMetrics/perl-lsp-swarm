@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11761 |
-| Rust-family files | 3549 |
-| Non-Rust files | 8212 |
-| Allowlisted | 5887 |
+| Total tracked files | 11798 |
+| Rust-family files | 3575 |
+| Non-Rust files | 8223 |
+| Allowlisted | 5898 |
 | Unclassified | 2325 |
 
 ## Non-Rust files by category
@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 419 |
-| documentation | 2676 |
+| documentation | 2686 |
 | generated | 2 |
 | production | 321 |
-| test | 1938 |
+| test | 1939 |
 | tooling | 531 |
 | unclassified | 2325 |
 
@@ -2409,7 +2409,10 @@
 | `.changes/unreleased/product-12024-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12085-Fixed-103000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12094-Fixed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12180-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12185-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12425-Changed-064000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12428-Changed-071500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3167,6 +3170,13 @@
 | `.spec/11770-emacs-train-revisions/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11770-emacs-train-revisions/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11770-emacs-train-revisions/revisions.ledger.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/12121-semantic-identity-contract/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12121-semantic-identity-contract/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12121-semantic-identity-contract/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12186-compiler-profile-identity-closure/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12186-compiler-profile-identity-closure/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12186-compiler-profile-identity-closure/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12186-compiler-profile-identity-closure/inventory.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3475,6 +3485,7 @@
 | `clients/lite-xl/tests/init_configuration_items_test.lua` | test | `non-rust-litexl-init-configuration-items-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_document_session_test.lua` | test | `non-rust-litexl-init-session-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_request_currentness_test.lua` | test | `non-rust-litexl-init-request-currentness-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/init_show_document_outcome_test.lua` | test | `non-rust-litexl-init-show-document-outcome-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/journey_session_test.lua` | test | `non-rust-litexl-journey-session-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/json_decode_test.lua` | test | `non-rust-litexl-json-decode-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/server_frame_test.lua` | test | `non-rust-litexl-server-frame-tests` | editor/lite-xl |

@@ -2699,7 +2699,7 @@ language = "lua"
 surface = "editor"
 classification = "production"
 owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp init.lua (base d1432ae, blob 7b38c3a9) staged for the Lite XL integration train, carrying the #11115 monotonic document-version patch (one structured per-server/per-document open-session record owning versions, pending changes, server generations, and session identities), the #11108 request-subject currentness patch (immutable subjects plus one reusable response-admission guard with typed dispositions), and the #10845 configuration-value patch (presence tracked separately from truthiness through workspace/configuration: found values append verbatim, only genuinely missing sections become the null sentinel)."
+reason = "Exact upstream lite-xl-lsp init.lua (base d1432ae, blob 7b38c3a9) staged for the Lite XL integration train, carrying the #11115 monotonic document-version patch (one structured per-server/per-document open-session record owning versions, pending changes, server generations, and session identities), the #11108 request-subject currentness patch (immutable subjects plus one reusable response-admission guard with typed dispositions), the #10845 configuration-value patch (presence tracked separately from truthiness through workspace/configuration: found values append verbatim, only genuinely missing sections become the null sentinel), and the #10873 truthful showDocument patch (response follows the actual user/open outcome through the async util.show_document contract, generation-owned prompts via the servers_running identity, typed internal open/selection dispositions, exactly one response per request)."
 covered_by = [
   "lua clients/lite-xl/tests/init_document_session_test.lua",
   "lua clients/lite-xl/tests/init_request_currentness_test.lua",
@@ -2844,7 +2844,7 @@ language = "lua"
 surface = "editor"
 classification = "production"
 owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp util.lua (base d1432ae, blob 588c101a) staged for the Lite XL integration train, carrying the #11155 guarded sensitive-trace patch (log_file append failures warn once without recursion, documented source-bearing surface, no automatic retention), the #11162 shell-free external-launch patch (URI classification policy, argv-only platform launchers, testable show_document sequence), the #11143 typed configuration merge patch (deep_merge folds whole typed values: object recursion, atomic array replacement, exact scalar/null overrides, codec-authority container classification, immutable inputs), the #11165 single local file-URI/path conversion authority patch (typed uri_to_path/path_to_uri with Windows drive/UNC/percent/separator semantics; legacy touri/tofilename removed), and the #10845 presence-aware lookup patch (table_get_field returns found separately from value so an explicit false stays distinct from a missing section; traversal recurses only into tables)."
+reason = "Exact upstream lite-xl-lsp util.lua (base d1432ae, blob 588c101a) staged for the Lite XL integration train, carrying the #11155 guarded sensitive-trace patch (log_file append failures warn once without recursion, documented source-bearing surface, no automatic retention), the #11162 shell-free external-launch patch (URI classification policy, argv-only platform launchers, testable show_document sequence), the #11143 typed configuration merge patch (deep_merge folds whole typed values: object recursion, atomic array replacement, exact scalar/null overrides, codec-authority container classification, immutable inputs), the #11165 single local file-URI/path conversion authority patch (typed uri_to_path/path_to_uri with Windows drive/UNC/percent/separator semantics; legacy touri/tofilename removed), the #10845 presence-aware lookup patch (table_get_field returns found separately from value so an explicit false stays distinct from a missing section; traversal recurses only into tables), and the #10873 async truthful-outcome patch (show_document gains a deferred decision mode with an alive generation gate, exactly-one outcome delivery, and typed internal reveal reasons; the synchronous contract is unchanged)."
 covered_by = [
   "lua clients/lite-xl/tests/server_logging_test.lua",
   "lua clients/lite-xl/tests/util_show_document_test.lua",
@@ -2854,6 +2854,22 @@ covered_by = [
 ]
 created = "2026-08-23"
 review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-litexl-init-show-document-outcome-tests"
+path = "clients/lite-xl/tests/init_show_document_outcome_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free showDocument outcome suite proving zero responses before the external user action, truthful accept/decline/cancel outcomes with verbatim request ids, typed internal open and selection-failure dispositions, inert prompts after server replacement, and exactly-once response delivery through the production listener; runs against the staged module or current main for red-first checks and against single-behavior mutations for falsifier checks."
+covered_by = [
+  "lua clients/lite-xl/tests/init_show_document_outcome_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-25"
+review_after = "2026-09-25"
 
 [[allow]]
 id = "non-rust-litexl-server-logging-tests"

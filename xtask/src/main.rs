@@ -2180,6 +2180,11 @@ enum Commands {
         #[arg(long)]
         explain_denominator: bool,
 
+        /// Explain the typed gate lifecycle disposition authority
+        /// (gate_disposition.v1) without running anything
+        #[arg(long)]
+        explain_disposition: bool,
+
         /// Output format (default: human)
         #[arg(long, short, value_enum, default_value = "human")]
         format: GatesOutputFormat,
@@ -5681,6 +5686,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             base,
             list,
             explain_denominator,
+            explain_disposition,
             format,
             receipt,
             receipt_path,
@@ -5700,6 +5706,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             diff_baseline: diff,
             list_only: list,
             explain_denominator,
+            explain_disposition,
             fail_fast,
             parallel,
             verbose,
