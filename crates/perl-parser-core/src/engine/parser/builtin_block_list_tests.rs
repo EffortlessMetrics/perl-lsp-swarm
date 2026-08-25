@@ -40,7 +40,7 @@ mod tests {
     s/MAGIC/42/g;
 };"#;
         let mut parser = Parser::new(code);
-        let mut ast = must(parser.parse());
+        let ast = must(parser.parse());
         assert!(
             parser.errors().is_empty(),
             "should not record parser errors: {:?}",
@@ -61,7 +61,7 @@ mod tests {
     fn grep_block_simple_comparison() {
         let code = "grep { $_ > 5 } @array;";
         let mut parser = Parser::new(code);
-        let mut ast = must(parser.parse());
+        let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(sexp.contains("(call grep"), "should be a grep call: {}", sexp);
         assert!(sexp.contains("(block"), "should contain a block: {}", sexp);

@@ -28,12 +28,20 @@
 //! ```
 
 mod extractor;
+mod lexical_contribution;
 mod lower;
 mod model;
 
 pub use extractor::{
     BodyExtractionResult, LEXICAL_EXTRACTOR_RECEIPT_VERSION, LexicalBindingFact,
     LexicalExtractorReceipt, LexicalRole, extract_lexical_facts,
+};
+pub use lexical_contribution::{
+    BuildKind, CompilerProducerIdentity, ContributionCompleteness, ContributionDraft,
+    ContributionError, ContributionLimitation, ContributionOccurrence, ContributionSubjectIdentity,
+    ContributionWorkShape, FILE_PIR_LEXICAL_CONTRIBUTION_SCHEMA_VERSION,
+    FilePirLexicalContributionV1, LexicalBindingIdentity, LexicalSigil, OccurrenceAnchor,
+    OccurrenceRole, SemanticSnapshotJoinMetadata, TerminalDisposition, WorkObservation,
 };
 pub use lower::{
     lower_hir, lower_hir_bodies, lower_hir_bodies_with_identity, lower_hir_with_identity,

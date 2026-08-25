@@ -6,6 +6,7 @@
 //! (stackTrace/scopes/variables/evaluate). This locks the host side down before
 //! any real ptkdb change is requested.
 
+use perl_tdd_support::{must, must_err, must_some};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread::JoinHandle;
@@ -44,21 +45,21 @@ struct FakePeer {
 
 impl FakePeer {
     fn start(caps: PeerReportedCapabilities, steps: Vec<PeerStep>) -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
-        let addr = listener.local_addr().expect("addr");
+        let listener = must(TcpListener::bind(("127.0.0.1", 0)));
+        let addr = must(listener.local_addr());
         let handle = std::thread::spawn(move || run_peer(listener, caps, steps));
         FakePeer { handle, addr }
     }
 }
 
 fn run_peer(listener: TcpListener, caps: PeerReportedCapabilities, steps: Vec<PeerStep>) {
-    let (stream, _) = listener.accept().expect("accept");
-    let mut write = stream.try_clone().expect("clone");
+    let (stream, _) = must(listener.accept());
+    let mut write = must(stream.try_clone());
     let mut read = stream;
     let mut seq = 500i64;
 
     let send = |w: &mut TcpStream, msg: &PeerMessage| {
-        let _ = w.write_all(&encode_message(msg).expect("encode"));
+        let _ = w.write_all(&must(encode_message(msg)));
         let _ = w.flush();
     };
 
@@ -159,7 +160,7 @@ fn ok_resp(body: Option<serde_json::Value>) -> PeerResponse {
 }
 
 fn connect(peer: &FakePeer) -> ExternalDebuggerPeerBackend {
-    ExternalDebuggerPeerBackend::connect(peer.addr, Duration::from_secs(5)).expect("connect")
+    must(ExternalDebuggerPeerBackend::connect(peer.addr, Duration::from_secs(5)))
 }
 
 /// Poll `drain_events` until it yields something or a deadline passes.
@@ -194,16 +195,15 @@ fn stopped_event_becomes_model_event() {
     };
     let peer = FakePeer::start(full_caps(), vec![PeerStep::Emit(stopped)]);
     let mut backend = connect(&peer);
-    backend.initialize(InitializeBackendParams::default()).expect("handshake");
+    must(backend.initialize(InitializeBackendParams::default()));
 
     let events = wait_for_event(&mut backend);
-    let stopped =
-        events.iter().find(|e| matches!(e, DebugEvent::Stopped { .. })).expect("a stopped event");
+    let stopped = must_some(events.iter().find(|e| matches!(e, DebugEvent::Stopped { .. })));
     match stopped {
         DebugEvent::Stopped { reason, thread_id, position } => {
             assert_eq!(*reason, StopReason::Breakpoint);
             assert_eq!(*thread_id, ThreadId(1));
-            let pos = position.as_ref().expect("position");
+            let pos = must_some(position.as_ref());
             assert_eq!(pos.line, 42);
         }
         _ => unreachable!(),
@@ -225,7 +225,7 @@ fn output_event_forwards_category_and_text() {
     };
     let peer = FakePeer::start(full_caps(), vec![PeerStep::Emit(out)]);
     let mut backend = connect(&peer);
-    backend.initialize(InitializeBackendParams::default()).expect("handshake");
+    must(backend.initialize(InitializeBackendParams::default()));
     let events = wait_for_event(&mut backend);
     let found = events.iter().any(|e| {
         matches!(e, DebugEvent::Output { category, output }
@@ -284,31 +284,31 @@ fn stack_scopes_variables_evaluate_round_trip() {
         ],
     );
     let mut backend = connect(&peer);
-    backend.initialize(InitializeBackendParams::default()).expect("handshake");
+    must(backend.initialize(InitializeBackendParams::default()));
 
-    let frames = backend
-        .stack_trace(StackTraceParams { thread_id: ThreadId(1), start_frame: None, levels: None })
-        .expect("stack trace");
+    let frames = must(backend.stack_trace(StackTraceParams {
+        thread_id: ThreadId(1),
+        start_frame: None,
+        levels: None,
+    }));
     assert_eq!(frames.len(), 1);
     assert_eq!(frames[0].name, "main::run");
     assert_eq!(frames[0].line, 10);
 
-    let scopes = backend.scopes(FrameId(1)).expect("scopes");
+    let scopes = must(backend.scopes(FrameId(1)));
     assert_eq!(scopes.len(), 1);
     assert_eq!(scopes[0].variables_reference, VariablesRef(1000));
 
-    let vars = backend.variables(VariablesRef(1000)).expect("variables");
+    let vars = must(backend.variables(VariablesRef(1000)));
     assert_eq!(vars.len(), 1);
     assert_eq!(vars[0].name, "$x");
     assert_eq!(vars[0].value, "42");
 
-    let eval = backend
-        .evaluate(EvaluateParams {
-            expression: "$x * 2".to_string(),
-            frame_id: Some(FrameId(1)),
-            context: EvaluateContext::Watch,
-        })
-        .expect("evaluate");
+    let eval = must(backend.evaluate(EvaluateParams {
+        expression: "$x * 2".to_string(),
+        frame_id: Some(FrameId(1)),
+        context: EvaluateContext::Watch,
+    }));
     assert_eq!(eval.result, "84");
 
     drop(backend);
@@ -333,7 +333,7 @@ fn source_facts_event_is_translated() {
     };
     let peer = FakePeer::start(full_caps(), vec![PeerStep::Emit(facts)]);
     let mut backend = connect(&peer);
-    backend.initialize(InitializeBackendParams::default()).expect("handshake");
+    must(backend.initialize(InitializeBackendParams::default()));
     let events = wait_for_event(&mut backend);
     let found = events.iter().any(|e| {
         matches!(e, DebugEvent::SourceFacts { facts, .. }
@@ -348,16 +348,18 @@ fn source_facts_event_is_translated() {
 fn peer_crash_surfaces_as_error_not_hang() {
     // Peer says hello, then immediately drops the connection.
     let peer = FakePeer::start(full_caps(), vec![]);
-    let mut backend = ExternalDebuggerPeerBackend::connect(peer.addr, Duration::from_millis(500))
-        .expect("connect");
-    backend.initialize(InitializeBackendParams::default()).expect("handshake");
+    let mut backend =
+        must(ExternalDebuggerPeerBackend::connect(peer.addr, Duration::from_millis(500)));
+    must(backend.initialize(InitializeBackendParams::default()));
     // Let the peer thread finish and close the socket.
     let _ = peer.handle.join();
 
     // A subsequent request must return an error rather than block forever.
-    let err = backend
-        .stack_trace(StackTraceParams { thread_id: ThreadId(1), start_frame: None, levels: None })
-        .expect_err("peer gone");
+    let err = must_err(backend.stack_trace(StackTraceParams {
+        thread_id: ThreadId(1),
+        start_frame: None,
+        levels: None,
+    }));
     // Either NotConnected (reader saw EOF) or Timeout (race) is acceptable.
     let msg = format!("{err}");
     assert!(
@@ -439,7 +441,7 @@ fn output_flood_is_bounded_and_preserves_stop_and_termination() {
 
     let peer = FakePeer::start(full_caps(), steps);
     let mut backend = connect(&peer);
-    backend.initialize(InitializeBackendParams::default()).expect("handshake");
+    must(backend.initialize(InitializeBackendParams::default()));
     let events = collect_until_terminated(&mut backend, Duration::from_secs(5));
 
     // The helper drains repeatedly while the peer is still sending, so the
@@ -465,7 +467,7 @@ fn critical_event_flood_closes_with_typed_resource_limit() {
     let steps = (0..400).map(|index| PeerStep::Emit(stopped_event(index + 1))).collect::<Vec<_>>();
     let peer = FakePeer::start(full_caps(), steps);
     let mut backend = connect(&peer);
-    backend.initialize(InitializeBackendParams::default()).expect("handshake");
+    must(backend.initialize(InitializeBackendParams::default()));
 
     // Do not drain while the peer is flooding critical events: draining is the
     // consumer backpressure relief path. This fixture deliberately models an
@@ -482,9 +484,11 @@ fn critical_event_flood_closes_with_typed_resource_limit() {
         matches!(event, DebugEvent::Output { output, .. } if output.contains("event buffer exhausted"))
     }));
 
-    let error = backend
-        .stack_trace(StackTraceParams { thread_id: ThreadId(1), start_frame: None, levels: None })
-        .expect_err("closed overloaded peer must reject later requests");
+    let error = must_err(backend.stack_trace(StackTraceParams {
+        thread_id: ThreadId(1),
+        start_frame: None,
+        levels: None,
+    }));
     assert!(matches!(error, perl_dap::backend::BackendError::ResourceLimit(_)));
 
     drop(backend);
@@ -552,8 +556,8 @@ impl FloodPeer {
         close_after_burst: bool,
         factory: impl Fn(usize) -> PeerEvent + Send + 'static,
     ) -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
-        let addr = listener.local_addr().expect("addr");
+        let listener = must(TcpListener::bind(("127.0.0.1", 0)));
+        let addr = must(listener.local_addr());
         let handle = std::thread::spawn(move || {
             run_flood_peer(listener, caps, max_events, gap, close_after_burst, &factory)
         });
@@ -569,8 +573,8 @@ fn run_flood_peer(
     close_after_burst: bool,
     factory: &(impl Fn(usize) -> PeerEvent + Send + 'static),
 ) -> FloodReport {
-    let (stream, _) = listener.accept().expect("accept");
-    let mut write = stream.try_clone().expect("clone");
+    let (stream, _) = must(listener.accept());
+    let mut write = must(stream.try_clone());
     let mut read = stream;
     // Bound every write so an editor that stops draining cannot block this
     // thread forever; backpressure ends the burst instead of wedging the test.
@@ -589,7 +593,7 @@ fn run_flood_peer(
         })
         .ok(),
     });
-    if write.write_all(&encode_message(&hello).expect("encode")).is_err() {
+    if write.write_all(&must(encode_message(&hello))).is_err() {
         return FloodReport { sent: 0, saw_host_close: false };
     }
     let _ = write.flush();
@@ -603,7 +607,7 @@ fn run_flood_peer(
         let mut event = factory(index);
         seq += 1;
         event.seq = seq;
-        let encoded = encode_message(&PeerMessage::Event(event)).expect("encode");
+        let encoded = must(encode_message(&PeerMessage::Event(event)));
         if write.write_all(&encoded).is_err() {
             // Either the host went away or it stopped draining long enough to
             // hit the bounded write timeout. The burst is over either way, but
@@ -693,15 +697,16 @@ fn pending_request_wakes_with_typed_resource_limit() {
         stopped_event(u32::try_from(index).unwrap_or(u32::MAX).saturating_add(1))
     });
     let request_timeout = Duration::from_secs(30);
-    let mut backend =
-        ExternalDebuggerPeerBackend::connect(peer.addr, request_timeout).expect("connect");
-    backend.initialize(InitializeBackendParams::default()).expect("handshake");
+    let mut backend = must(ExternalDebuggerPeerBackend::connect(peer.addr, request_timeout));
+    must(backend.initialize(InitializeBackendParams::default()));
     assert!(!backend.is_closed(), "the session must still be live when the request is issued");
 
     let started = Instant::now();
-    let error = backend
-        .stack_trace(StackTraceParams { thread_id: ThreadId(1), start_frame: None, levels: None })
-        .expect_err("overload must fail the in-flight request");
+    let error = must_err(backend.stack_trace(StackTraceParams {
+        thread_id: ThreadId(1),
+        start_frame: None,
+        levels: None,
+    }));
     let elapsed = started.elapsed();
 
     // Two falsifiers this pins down: `Timeout` would mean the pending request
@@ -726,14 +731,13 @@ fn disconnect_and_drop_complete_while_peer_still_writes() {
     let peer = FloodPeer::start(full_caps(), 50_000, Duration::ZERO, |index| {
         output_event(format!("flood line {index}\n"))
     });
-    let mut backend =
-        ExternalDebuggerPeerBackend::connect(peer.addr, Duration::from_secs(5)).expect("connect");
-    backend.initialize(InitializeBackendParams::default()).expect("handshake");
+    let mut backend = must(ExternalDebuggerPeerBackend::connect(peer.addr, Duration::from_secs(5)));
+    must(backend.initialize(InitializeBackendParams::default()));
     // Let the peer get well ahead of the editor before teardown starts.
     assert!(!wait_for_event(&mut backend).is_empty(), "peer must be streaming before teardown");
 
     let started = Instant::now();
-    backend.disconnect(false).expect("disconnect while the peer is still writing");
+    must(backend.disconnect(false));
     let disconnect_elapsed = started.elapsed();
     assert!(backend.is_closed(), "disconnect must mark the session closed");
 
@@ -753,7 +757,7 @@ fn disconnect_and_drop_complete_while_peer_still_writes() {
         "Drop must join the reader thread promptly (took {drop_elapsed:?})"
     );
 
-    let report = peer.handle.join().expect("peer thread");
+    let report = must(peer.handle.join());
     assert!(report.sent > 0, "fixture must actually have flooded the host");
     assert!(report.saw_host_close, "teardown must release the peer socket");
 }
@@ -767,9 +771,9 @@ fn repeated_overload_sessions_release_reader_and_socket() {
         let peer = FloodPeer::start(full_caps(), 4_000, Duration::ZERO, |index| {
             stopped_event(u32::try_from(index).unwrap_or(u32::MAX).saturating_add(1))
         });
-        let mut backend = ExternalDebuggerPeerBackend::connect(peer.addr, Duration::from_secs(5))
-            .expect("connect");
-        backend.initialize(InitializeBackendParams::default()).expect("handshake");
+        let mut backend =
+            must(ExternalDebuggerPeerBackend::connect(peer.addr, Duration::from_secs(5)));
+        must(backend.initialize(InitializeBackendParams::default()));
 
         let deadline = Instant::now() + Duration::from_secs(15);
         while !backend.is_closed() && Instant::now() < deadline {
@@ -798,7 +802,7 @@ fn repeated_overload_sessions_release_reader_and_socket() {
             "session {session} teardown must not hang"
         );
 
-        let report = peer.handle.join().expect("peer thread");
+        let report = must(peer.handle.join());
         assert!(report.saw_host_close, "session {session} must release the peer socket");
     }
 }
@@ -821,7 +825,7 @@ fn aggregate_byte_envelope_bounds_legal_large_frames() {
 
     let peer = FakePeer::start(full_caps(), steps);
     let mut backend = connect(&peer);
-    backend.initialize(InitializeBackendParams::default()).expect("handshake");
+    must(backend.initialize(InitializeBackendParams::default()));
 
     // Deliberately do not drain while the burst is in flight: draining is the
     // backpressure relief path, and relieving it would hide the envelope.
@@ -838,15 +842,12 @@ fn aggregate_byte_envelope_bounds_legal_large_frames() {
         "the critical stop must survive aggregate byte pressure"
     );
 
-    let receipt = events
-        .iter()
-        .find_map(|event| match event {
-            DebugEvent::Output { output, .. } if output.contains("event stream degraded") => {
-                Some(output.clone())
-            }
-            _ => None,
-        })
-        .expect("aggregate byte pressure must produce an observable loss receipt");
+    let receipt = must_some(events.iter().find_map(|event| match event {
+        DebugEvent::Output { output, .. } if output.contains("event stream degraded") => {
+            Some(output.clone())
+        }
+        _ => None,
+    }));
     // Nothing was truncated in place, so the receipt must attribute the loss to
     // whole evicted output events rather than to per-chunk truncation.
     assert!(
@@ -871,9 +872,8 @@ fn oversized_state_frame_closes_session_with_typed_resource_limit() {
     // rather than silently drop the state event.
     let peer =
         FakePeer::start(full_caps(), vec![PeerStep::Emit(oversized_source_facts_event(400_000))]);
-    let mut backend =
-        ExternalDebuggerPeerBackend::connect(peer.addr, Duration::from_secs(5)).expect("connect");
-    backend.initialize(InitializeBackendParams::default()).expect("handshake");
+    let mut backend = must(ExternalDebuggerPeerBackend::connect(peer.addr, Duration::from_secs(5)));
+    must(backend.initialize(InitializeBackendParams::default()));
 
     let deadline = Instant::now() + Duration::from_secs(15);
     while !backend.is_closed() && Instant::now() < deadline {
@@ -891,9 +891,11 @@ fn oversized_state_frame_closes_session_with_typed_resource_limit() {
     );
     assert_eq!(terminated_count(&events), 1, "exactly one terminal transition: {events:?}");
 
-    let error = backend
-        .stack_trace(StackTraceParams { thread_id: ThreadId(1), start_frame: None, levels: None })
-        .expect_err("a closed overloaded session must reject later requests");
+    let error = must_err(backend.stack_trace(StackTraceParams {
+        thread_id: ThreadId(1),
+        start_frame: None,
+        levels: None,
+    }));
     assert!(
         matches!(error, perl_dap::backend::BackendError::ResourceLimit(_)),
         "unexpected error: {error}"
@@ -912,7 +914,7 @@ fn post_terminal_peer_traffic_is_never_exposed() {
 
     let peer = FakePeer::start(full_caps(), steps);
     let mut backend = connect(&peer);
-    backend.initialize(InitializeBackendParams::default()).expect("handshake");
+    must(backend.initialize(InitializeBackendParams::default()));
     let mut events = collect_until_terminated(&mut backend, Duration::from_secs(10));
     assert!(
         events.iter().any(|event| matches!(event, DebugEvent::Terminated { .. })),
@@ -951,9 +953,8 @@ fn overload_racing_peer_eof_yields_one_ordered_terminal_transition() {
     let peer = FloodPeer::start_then_close(full_caps(), 1_000, |index| {
         stopped_event(u32::try_from(index).unwrap_or(u32::MAX).saturating_add(1))
     });
-    let mut backend =
-        ExternalDebuggerPeerBackend::connect(peer.addr, Duration::from_secs(5)).expect("connect");
-    backend.initialize(InitializeBackendParams::default()).expect("handshake");
+    let mut backend = must(ExternalDebuggerPeerBackend::connect(peer.addr, Duration::from_secs(5)));
+    must(backend.initialize(InitializeBackendParams::default()));
 
     let deadline = Instant::now() + Duration::from_secs(15);
     while !backend.is_closed() && Instant::now() < deadline {
@@ -965,17 +966,12 @@ fn overload_racing_peer_eof_yields_one_ordered_terminal_transition() {
     std::thread::sleep(Duration::from_millis(500));
     events.extend(backend.drain_events());
 
-    let notice_index = events
-        .iter()
-        .position(|event| {
-            matches!(event, DebugEvent::Output { output, .. }
+    let notice_index = must_some(events.iter().position(|event| {
+        matches!(event, DebugEvent::Output { output, .. }
             if output.contains("event buffer exhausted"))
-        })
-        .expect("overload must publish its typed cause before the terminal transition");
-    let terminal_index = events
-        .iter()
-        .position(|event| matches!(event, DebugEvent::Terminated { .. }))
-        .expect("a resource-limit notice must be followed by a terminal transition");
+    }));
+    let terminal_index =
+        must_some(events.iter().position(|event| matches!(event, DebugEvent::Terminated { .. })));
     assert!(
         notice_index < terminal_index,
         "the overload notice must precede the terminal transition: {events:?}"
