@@ -24,7 +24,7 @@
 //! # Usage Examples
 //!
 //! ```rust,ignore
-//! use perl_parser::scope_analyzer::{ScopeAnalyzer, IssueKind};
+//! use perl_semantic_analyzer::analysis::scope_analyzer::{ScopeAnalyzer, IssueKind};
 //! use perl_parser::{Parser, ast::Node};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {

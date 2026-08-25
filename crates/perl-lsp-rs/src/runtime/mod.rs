@@ -92,7 +92,6 @@ use perl_lsp_rs_core::tooling::performance::SymbolIndex;
 use perl_parser::{
     Parser,
     ast::{Node, NodeKind},
-    declaration::ParentMap,
 };
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -104,6 +103,7 @@ use perl_tdd_support::{
     tdd_basic::TestGenerator,
     test_runner::{TestKind, TestRunner},
 };
+use perl_semantic_analyzer::analysis::declaration::ParentMap;
 
 use crate::call_hierarchy_provider::CallHierarchyProvider;
 use crate::cancellation::{GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken};

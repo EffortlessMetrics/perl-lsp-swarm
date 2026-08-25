@@ -95,7 +95,7 @@ impl<'a> DeclarationProvider<'a> {
     ///
     /// # Examples
     /// ```rust,ignore
-    /// use perl_parser::declaration::DeclarationProvider;
+    /// use perl_semantic_analyzer::analysis::declaration::DeclarationProvider;
     /// use perl_parser::ast::Node;
     /// use std::sync::Arc;
     ///
@@ -136,7 +136,7 @@ impl<'a> DeclarationProvider<'a> {
     ///
     /// # Examples
     /// ```rust,ignore
-    /// use perl_parser::declaration::{DeclarationProvider, ParentMap};
+    /// use perl_semantic_analyzer::analysis::declaration::{DeclarationProvider, ParentMap};
     /// use perl_parser::ast::Node;
     /// use std::sync::Arc;
     ///
@@ -186,7 +186,7 @@ impl<'a> DeclarationProvider<'a> {
     ///
     /// # Examples
     /// ```rust,ignore
-    /// use perl_parser::declaration::DeclarationProvider;
+    /// use perl_semantic_analyzer::analysis::declaration::DeclarationProvider;
     /// use perl_parser::ast::Node;
     /// use std::sync::Arc;
     ///
@@ -272,7 +272,7 @@ impl<'a> DeclarationProvider<'a> {
     ///
     /// # Examples
     /// ```rust,ignore
-    /// use perl_parser::declaration::{DeclarationProvider, ParentMap};
+    /// use perl_semantic_analyzer::analysis::declaration::{DeclarationProvider, ParentMap};
     /// use perl_parser::ast::Node;
     ///
     /// let ast = Node::new_root();
@@ -1386,7 +1386,7 @@ impl<'a> DeclarationProvider<'a> {
     ///
     /// # Examples
     /// ```rust,ignore
-    /// use perl_parser::declaration::DeclarationProvider;
+    /// use perl_semantic_analyzer::analysis::declaration::DeclarationProvider;
     /// use perl_parser::ast::Node;
     /// use std::sync::Arc;
     ///
@@ -1431,7 +1431,7 @@ impl<'a> DeclarationProvider<'a> {
 ///
 /// # Examples
 /// ```rust,ignore
-/// use perl_parser::declaration::symbol_at_cursor;
+/// use perl_semantic_analyzer::analysis::declaration::symbol_at_cursor;
 /// use perl_parser::ast::Node;
 ///
 /// let ast = Node::new_root();
@@ -2145,7 +2145,7 @@ pub fn symbol_at_cursor(ast: &Node, offset: usize, current_pkg: &str) -> Option<
 ///
 /// # Examples
 /// ```rust,ignore
-/// use perl_parser::declaration::current_package_at;
+/// use perl_semantic_analyzer::analysis::declaration::current_package_at;
 /// use perl_parser::ast::Node;
 ///
 /// let ast = Node::new_root();
@@ -2232,7 +2232,7 @@ pub fn current_package_at(ast: &Node, offset: usize) -> &str {
 ///
 /// # Examples
 /// ```rust,ignore
-/// use perl_parser::declaration::find_node_at_offset;
+/// use perl_semantic_analyzer::analysis::declaration::find_node_at_offset;
 /// use perl_parser::ast::Node;
 ///
 /// let ast = Node::new_root();
@@ -2275,7 +2275,7 @@ pub fn find_node_at_offset(node: &Node, offset: usize) -> Option<&Node> {
 ///
 /// # Examples
 /// ```rust,ignore
-/// use perl_parser::declaration::get_node_children;
+/// use perl_semantic_analyzer::analysis::declaration::get_node_children;
 /// use perl_parser::ast::Node;
 ///
 /// let node = Node::new_root();
