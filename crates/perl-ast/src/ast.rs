@@ -4317,8 +4317,38 @@ mod depth_guard_tests {
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod deep_tree_destruction_tests {
-    use super::node_clone::{CloneObserver, CloneWork, clone_node};
+    use super::node_clone::{CloneObserver, clone_node};
     use super::*;
+
+    /// Operation-local clone work recorded by [`clone_node`].
+    ///
+    /// Counts are the clone operations actually performed for one call, not the
+    /// depth-bounded [`Node::count_nodes`] population of the result. Lives next
+    /// to the tests that read it so field construction is not a production seam.
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    struct CloneWork {
+        nodes_entered: u64,
+        nodes_rebuilt: u64,
+        child_edges: u64,
+        max_explicit_stack_depth: usize,
+    }
+
+    impl CloneObserver for CloneWork {
+        fn on_enter(&mut self, child_count: usize) {
+            self.nodes_entered = self.nodes_entered.saturating_add(1);
+            self.child_edges = self.child_edges.saturating_add(child_count as u64);
+        }
+
+        fn on_rebuild(&mut self) {
+            self.nodes_rebuilt = self.nodes_rebuilt.saturating_add(1);
+        }
+
+        fn on_stack_depth(&mut self, depth: usize) {
+            if depth > self.max_explicit_stack_depth {
+                self.max_explicit_stack_depth = depth;
+            }
+        }
+    }
 
     const SMALL_STACK_BYTES: usize = 256 * 1024;
     const DEEP_DEPTH: usize = 50_000;
@@ -4617,7 +4647,12 @@ mod deep_tree_destruction_tests {
     }
 
     fn clone_and_count(node: &Node) -> (Node, CloneWork) {
-        let mut work = CloneWork::default();
+        let mut work = CloneWork {
+            nodes_entered: 0,
+            nodes_rebuilt: 0,
+            child_edges: 0,
+            max_explicit_stack_depth: 0,
+        };
         let cloned = clone_node(node, &mut work);
         (cloned, work)
     }

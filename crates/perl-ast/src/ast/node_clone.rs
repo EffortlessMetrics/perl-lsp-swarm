@@ -39,19 +39,6 @@ impl Clone for Node {
     }
 }
 
-/// Operation-local clone work recorded by [`clone_node`].
-///
-/// Counts are the clone operations actually performed for one call, not the
-/// depth-bounded [`Node::count_nodes`] population of the result.
-#[cfg(test)]
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(super) struct CloneWork {
-    pub(super) nodes_entered: u64,
-    pub(super) nodes_rebuilt: u64,
-    pub(super) child_edges: u64,
-    pub(super) max_explicit_stack_depth: usize,
-}
-
 pub(super) trait CloneObserver {
     fn on_enter(&mut self, child_count: usize);
     fn on_rebuild(&mut self);
@@ -62,24 +49,6 @@ impl CloneObserver for () {
     fn on_enter(&mut self, _child_count: usize) {}
     fn on_rebuild(&mut self) {}
     fn on_stack_depth(&mut self, _depth: usize) {}
-}
-
-#[cfg(test)]
-impl CloneObserver for CloneWork {
-    fn on_enter(&mut self, child_count: usize) {
-        self.nodes_entered = self.nodes_entered.saturating_add(1);
-        self.child_edges = self.child_edges.saturating_add(child_count as u64);
-    }
-
-    fn on_rebuild(&mut self) {
-        self.nodes_rebuilt = self.nodes_rebuilt.saturating_add(1);
-    }
-
-    fn on_stack_depth(&mut self, depth: usize) {
-        if depth > self.max_explicit_stack_depth {
-            self.max_explicit_stack_depth = depth;
-        }
-    }
 }
 
 struct ShellCloneGuard {
@@ -160,5 +129,199 @@ pub(super) fn clone_node<O: CloneObserver>(root: &Node, observer: &mut O) -> Nod
     match done.pop() {
         Some(cloned) => cloned,
         None => clone_payload_shell(root),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CLONE_PAYLOAD_SHELL, CloneObserver, Node, NodeKind, ShellCloneGuard, SourceLocation,
+        clone_node, clone_payload_shell, clone_slot_placeholder, install_cloned_children,
+        take_last_n_reversed,
+    };
+    use std::cell::Cell;
+
+    fn loc(start: usize, end: usize) -> SourceLocation {
+        SourceLocation { start, end }
+    }
+
+    fn numbered(value: &str, start: usize) -> Node {
+        Node::new(NodeKind::Number { value: value.to_string() }, loc(start, start + 1))
+    }
+
+    fn program(children: Vec<Node>) -> Node {
+        let end = match children.last() {
+            Some(child) => child.location.end,
+            None => 0,
+        };
+        Node::new(NodeKind::Program { statements: children }, loc(0, end))
+    }
+
+    struct Recording {
+        nodes_entered: u64,
+        nodes_rebuilt: u64,
+        child_edges: u64,
+        max_explicit_stack_depth: usize,
+    }
+
+    impl CloneObserver for Recording {
+        fn on_enter(&mut self, child_count: usize) {
+            self.nodes_entered = self.nodes_entered.saturating_add(1);
+            self.child_edges = self.child_edges.saturating_add(child_count as u64);
+        }
+
+        fn on_rebuild(&mut self) {
+            self.nodes_rebuilt = self.nodes_rebuilt.saturating_add(1);
+        }
+
+        fn on_stack_depth(&mut self, depth: usize) {
+            if depth > self.max_explicit_stack_depth {
+                self.max_explicit_stack_depth = depth;
+            }
+        }
+    }
+
+    #[test]
+    fn clone_observer_records_leaf_and_wide_child_work() {
+        let leaf = numbered("7", 0);
+        let mut leaf_work = Recording {
+            nodes_entered: 0,
+            nodes_rebuilt: 0,
+            child_edges: 0,
+            max_explicit_stack_depth: 0,
+        };
+        let cloned_leaf = clone_node(&leaf, &mut leaf_work);
+        assert_eq!(leaf_work.nodes_entered, 1);
+        assert_eq!(leaf_work.nodes_rebuilt, 1);
+        assert_eq!(leaf_work.child_edges, 0);
+        assert!(leaf_work.max_explicit_stack_depth >= 1);
+        assert_eq!(cloned_leaf, leaf);
+
+        let wide = program(vec![numbered("0", 0), numbered("1", 1), numbered("2", 2)]);
+        let mut wide_work = Recording {
+            nodes_entered: 0,
+            nodes_rebuilt: 0,
+            child_edges: 0,
+            max_explicit_stack_depth: 0,
+        };
+        let cloned_wide = clone_node(&wide, &mut wide_work);
+        assert_eq!(wide_work.nodes_entered, 4);
+        assert_eq!(wide_work.nodes_rebuilt, 4);
+        assert_eq!(wide_work.child_edges, 3);
+        assert!(wide_work.max_explicit_stack_depth >= 3);
+        assert_eq!(cloned_wide, wide);
+        assert_eq!(wide.clone(), cloned_wide);
+    }
+
+    #[test]
+    fn shell_clone_guard_saves_and_restores_previous_flag() {
+        assert!(!CLONE_PAYLOAD_SHELL.with(Cell::get));
+        {
+            let _outer = ShellCloneGuard::enter();
+            assert!(CLONE_PAYLOAD_SHELL.with(Cell::get));
+            {
+                let _inner = ShellCloneGuard::enter();
+                assert!(CLONE_PAYLOAD_SHELL.with(Cell::get));
+            }
+            assert!(CLONE_PAYLOAD_SHELL.with(Cell::get));
+        }
+        assert!(!CLONE_PAYLOAD_SHELL.with(Cell::get));
+    }
+
+    #[test]
+    fn clone_slot_placeholder_is_childless_ellipsis_at_zero_range() {
+        let placeholder = clone_slot_placeholder();
+        assert_eq!(placeholder.kind.kind_name(), "Ellipsis");
+        assert_eq!(placeholder.location, loc(0, 0));
+    }
+
+    #[test]
+    fn payload_shell_installs_placeholders_and_restores_tls() {
+        let source = program(vec![numbered("1", 0), numbered("2", 2)]);
+        let shell = clone_payload_shell(&source);
+        match &shell.kind {
+            NodeKind::Program { statements } => {
+                assert_eq!(statements.len(), 2);
+                assert_eq!(statements[0].kind.kind_name(), "Ellipsis");
+                assert_eq!(statements[1].kind.kind_name(), "Ellipsis");
+                assert_eq!(statements[0].location, loc(0, 0));
+                assert_eq!(statements[1].location, loc(0, 0));
+            }
+            other => assert_eq!(other.kind_name(), "Program"),
+        }
+        assert!(!CLONE_PAYLOAD_SHELL.with(Cell::get));
+        let leaf = numbered("9", 10);
+        assert_eq!(leaf.clone(), leaf);
+        match &leaf.clone().kind {
+            NodeKind::Number { value } => assert_eq!(value, "9"),
+            other => assert_eq!(other.kind_name(), "Number"),
+        }
+    }
+
+    #[test]
+    fn take_last_n_reversed_restores_visit_order_and_empty_take() {
+        let mut done = vec![numbered("keep", 9), numbered("1", 1), numbered("0", 0)];
+        let empty = take_last_n_reversed(&mut done, 0);
+        assert!(empty.is_empty());
+        assert_eq!(done.len(), 3);
+
+        // Processing order is LIFO (child 1 rebuilt before child 0). Reverse
+        // restores canonical visit order (child 0, then child 1).
+        let taken = take_last_n_reversed(&mut done, 2);
+        assert_eq!(taken.len(), 2);
+        match (&taken[0].kind, &taken[1].kind) {
+            (NodeKind::Number { value: first }, NodeKind::Number { value: second }) => {
+                assert_eq!(first, "0");
+                assert_eq!(second, "1");
+            }
+            (left, _) => assert_eq!(left.kind_name(), "Number"),
+        }
+        assert_eq!(taken[0].location.start, 0);
+        assert_eq!(taken[1].location.start, 1);
+        assert_eq!(done.len(), 1);
+        match &done[0].kind {
+            NodeKind::Number { value } => assert_eq!(value, "keep"),
+            other => assert_eq!(other.kind_name(), "Number"),
+        }
+    }
+
+    #[test]
+    fn install_cloned_children_replaces_placeholders_in_order() {
+        let source = program(vec![numbered("1", 0), numbered("2", 2), numbered("3", 4)]);
+        let mut shell = clone_payload_shell(&source);
+        install_cloned_children(
+            &mut shell,
+            vec![numbered("1", 0), numbered("2", 2), numbered("3", 4)],
+        );
+        assert_eq!(shell, source);
+        match &shell.kind {
+            NodeKind::Program { statements } => {
+                assert_ne!(statements[0].kind.kind_name(), "Ellipsis");
+                match &statements[1].kind {
+                    NodeKind::Number { value } => assert_eq!(value, "2"),
+                    other => assert_eq!(other.kind_name(), "Number"),
+                }
+            }
+            other => assert_eq!(other.kind_name(), "Program"),
+        }
+    }
+
+    #[test]
+    fn install_cloned_children_keeps_placeholder_when_a_child_is_missing() {
+        let source = program(vec![numbered("1", 0), numbered("2", 2)]);
+        let mut shell = clone_payload_shell(&source);
+        install_cloned_children(&mut shell, vec![numbered("1", 0)]);
+        match &shell.kind {
+            NodeKind::Program { statements } => {
+                assert_eq!(statements.len(), 2);
+                match &statements[0].kind {
+                    NodeKind::Number { value } => assert_eq!(value, "1"),
+                    other => assert_eq!(other.kind_name(), "Number"),
+                }
+                assert_eq!(statements[1].kind.kind_name(), "Ellipsis");
+                assert_eq!(statements[1].location, loc(0, 0));
+            }
+            other => assert_eq!(other.kind_name(), "Program"),
+        }
     }
 }
