@@ -100,11 +100,18 @@ def scan_bind_sites(root: Path, inventory: Mapping[str, Any]) -> list[str]:
     for rust_file in sorted(src_root.rglob("*.rs")):
         relative = rust_file.relative_to(root).as_posix()
         text = production_source(rust_file.read_text(encoding="utf-8"))
-        if not BIND_RE.search(text):
+        bind_count = len(BIND_RE.findall(text))
+        if bind_count == 0:
             continue
-        if relative not in claimed:
+        claimed_count = len(claimed.get(relative, []))
+        if claimed_count == 0:
             errors.append(
                 f"production TcpListener::bind in {relative} has no bind_site owner"
+            )
+        elif claimed_count != bind_count:
+            errors.append(
+                f"production TcpListener::bind count in {relative} is {bind_count} "
+                f"but bind_sites claims {claimed_count}"
             )
 
     return errors
@@ -179,18 +186,30 @@ def scan_clients(root: Path, inventory: Mapping[str, Any]) -> list[str]:
             continue
 
         blobs: list[str] = []
+        product_blobs: list[str] = []
         product_evidence = False
         for relative in evidence_paths:
             if not isinstance(relative, str):
                 errors.append(f"client {ident!r} evidence path is not a string")
                 continue
-            if not is_test_only_path(relative):
-                product_evidence = True
             try:
-                blobs.append(_read_text(root, relative))
+                text = _read_text(root, relative)
             except TransportInventoryError as exc:
                 errors.append(f"client {ident!r}: {exc}")
+                continue
+            blobs.append(text)
+            if not is_test_only_path(relative):
+                product_evidence = True
+                product_blobs.append(text)
         combined = "\n".join(blobs)
+        # Shipped/package transport claims must be true of product evidence.
+        # A listed test fixture cannot supply required markers or hide a stale
+        # product descriptor.
+        marker_haystack = (
+            "\n".join(product_blobs)
+            if row.get("evidence_stage") in {"shipped", "package"} and product_blobs
+            else combined
+        )
 
         if row.get("evidence_stage") in {"shipped", "package"} and not product_evidence:
             errors.append(
@@ -198,17 +217,17 @@ def scan_clients(root: Path, inventory: Mapping[str, Any]) -> list[str]:
             )
 
         for marker in row.get("required_markers") or []:
-            if not isinstance(marker, str) or marker not in combined:
+            if not isinstance(marker, str) or marker not in marker_haystack:
                 errors.append(
                     f"client {ident!r} declared transport disagrees with fixtures: missing {marker!r}"
                 )
         for marker in row.get("forbidden_markers") or []:
-            if isinstance(marker, str) and marker in combined:
+            if isinstance(marker, str) and marker in marker_haystack:
                 errors.append(
                     f"client {ident!r} declared transport disagrees with fixtures: forbidden {marker!r} present"
                 )
 
-        if row.get("transport") == "stdio" and DEBUG_ADAPTER_SERVER_RE.search(combined):
+        if row.get("transport") == "stdio" and DEBUG_ADAPTER_SERVER_RE.search(marker_haystack):
             errors.append(
                 f"client {ident!r} is declared stdio but evidence launches DebugAdapterServer"
             )

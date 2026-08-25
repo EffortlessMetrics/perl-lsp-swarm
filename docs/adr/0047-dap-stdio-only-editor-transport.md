@@ -99,12 +99,14 @@ The inventory at `.ci/dap/editor-transport-inventory.v1.json` and
 `scripts/ci/dap_editor_transport_inventory.py` own recurrence. They consume
 #9532's protocol-authority boundary without duplicating protocol-route
 authority. The check fails closed on unlabeled production `TcpListener::bind`
-sites, public `--socket`/`--port` flags classified as supported, first-mile
-docs that recommend an editor socket run mode, VS Code `DebugAdapterServer`
-launch, a product DAP-to-DAP relay, test-only evidence used as a product
-client row, a debugger-peer listener mislabeled as editor transport, a
-supported-client row whose fixtures disagree, or a current supported client
-that requires editor TCP.
+sites, a second production bind in an already-inventoried file without a
+matching `bind_sites` row, public `--socket`/`--port` flags classified as
+supported, first-mile docs that recommend an editor socket run mode, VS Code
+`DebugAdapterServer` launch, a product DAP-to-DAP relay, test-only evidence
+used as a product client row, product-client required markers satisfied only
+by a listed test fixture, a debugger-peer listener mislabeled as editor
+transport, a supported-client row whose fixtures disagree, or a current
+supported client that requires editor TCP.
 
 ## Consequences
 

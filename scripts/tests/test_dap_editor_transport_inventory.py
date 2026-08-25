@@ -374,6 +374,30 @@ class EditorTransportInventoryTests(unittest.TestCase):
             errors = run_check(root)
             self.assertTrue(any("test-only evidence" in item for item in errors))
 
+    def test_product_client_markers_cannot_be_satisfied_by_a_listed_test_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inventory = valid_inventory()
+            for row in inventory["clients"]:
+                if row["id"] == "vscode":
+                    row["evidence_paths"] = [
+                        "vscode-extension/src/debugAdapter.ts",
+                        "crates/perl-dap/tests/dap_coverage_audit_tests.rs",
+                    ]
+            inventory["digest"] = SCHEMA.inventory_digest(inventory)
+            write_valid_tree(root, inventory)
+            write(
+                root / "vscode-extension/src/debugAdapter.ts",
+                "return new vscode.DebugAdapterServer(13603);\n",
+            )
+            write(
+                root / "crates/perl-dap/tests/dap_coverage_audit_tests.rs",
+                "return new vscode.DebugAdapterExecutable(dapPath, args);\n",
+            )
+            errors = run_check(root)
+            self.assertTrue(any("vscode" in item and "DebugAdapterExecutable" in item for item in errors))
+            self.assertTrue(any("DebugAdapterServer" in item for item in errors))
+
     def test_stale_docs_saying_socket_is_a_run_mode_fail(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -447,6 +471,24 @@ class EditorTransportInventoryTests(unittest.TestCase):
             )
             errors = run_check(root)
             self.assertTrue(any("mystery.rs" in item and "no bind_site owner" in item for item in errors))
+
+    def test_second_production_bind_in_an_owned_file_requires_its_own_bind_site(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_valid_tree(root)
+            write(
+                root / "crates/perl-dap/src/main.rs",
+                "transport: perl_lsp_rs_core::runtime::launcher::TransportArgs\n"
+                "fn bind_editor_listener() { std::net::TcpListener::bind((\"127.0.0.1\", 1)).ok(); }\n"
+                "fn bind_second_listener() { std::net::TcpListener::bind((\"127.0.0.1\", 2)).ok(); }\n",
+            )
+            errors = run_check(root)
+            self.assertTrue(
+                any(
+                    "main.rs" in item and "bind_site" in item and "count" in item
+                    for item in errors
+                )
+            )
 
     def test_cfg_test_binds_are_not_production_owners(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
