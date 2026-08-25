@@ -16,6 +16,7 @@ mod import;
 mod import_match;
 mod name;
 mod path;
+mod provenance;
 mod reference;
 mod rename;
 mod resolution;

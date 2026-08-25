@@ -1,0 +1,20 @@
+{
+  "schema": "perl_dap.loaded_module_reload_family.vector.v1",
+  "name": "terminal_refused_ineligible",
+  "description": "Admission refused for a closed-cohort violation (an active frame executes in the target module); the refusal disposition travels verbatim.",
+  "outcome": { "kind": "refused", "disposition": "active_frame_in_target" },
+  "generation_before": 8,
+  "expect": {
+    "kind": "refused",
+    "phase": "admission",
+    "disposition": "active_frame_in_target",
+    "success": false,
+    "possibly_applied": false,
+    "generation": { "previous": 8, "current": 8, "advanced": false },
+    "reconciliation": {
+      "loaded_source_refresh": "deferred",
+      "inspection_invalidation": "deferred",
+      "breakpoint_reconciliation": "deferred"
+    }
+  }
+}
