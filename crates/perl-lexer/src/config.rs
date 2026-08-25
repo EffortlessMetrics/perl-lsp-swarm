@@ -106,7 +106,7 @@ mod tests {
     use super::LexerConfig;
 
     #[test]
-    fn default_enables_interpolation_and_preserves_position_contract() {
+    fn default_enables_interpolation_and_tracks_positions() {
         let config = LexerConfig::default();
 
         assert!(config.interpolation_enabled());
