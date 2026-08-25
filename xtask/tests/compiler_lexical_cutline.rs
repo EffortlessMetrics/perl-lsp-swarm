@@ -285,6 +285,18 @@ fn rejects_missing_mutation() -> TestResult {
 }
 
 #[test]
+fn rejects_duplicate_occurrence_in_denominator() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    let case = case_mut(&mut manifest, "LX-POS-002").ok_or("missing case")?;
+    let duplicated = case["expected"]["reference_locations"][0].clone();
+    case["expected"]["reference_locations"]
+        .as_array_mut()
+        .ok_or("locations not an array")?
+        .push(duplicated);
+    expect_violation(&manifest, "duplicate occurrence range inflates the exact denominator")
+}
+
+#[test]
 fn rejects_missing_test_target() -> TestResult {
     let mut manifest = canonical_manifest()?;
     let targets =

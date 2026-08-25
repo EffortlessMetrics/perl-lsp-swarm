@@ -46,7 +46,7 @@ Maps the issue's acceptance bullets to the landed artifacts and their checks.
 - [x] **Legacy-assisted anchors, request-time rebuilds, provider-private
   rename plans, subset/superset edits, fictitious protocol continuations,
   false stale refusal, and false zeroes are independently caught.**
-  37 controlled mutations with enforced bidirectional row ownership; 32
+  37 controlled mutations with enforced bidirectional row ownership; 33
   validator tests prove each falsifier class fails for the intended reason
   (forged anchors, UTF-16 drift, ID subset/superset, continuation tokens,
   old-plan reuse, prior-preparation authorization, false zeros, noncanonical

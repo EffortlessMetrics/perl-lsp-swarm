@@ -22,7 +22,7 @@ Parent cut line/controllers: #12075 / #5218 / #8230. Claim-row authority:
   `cargo xtask compiler-lexical-cutline list|validate|explain <case-id>`.
 - `../../xtask/tests/compiler_lexical_cutline.rs` +
   `../../xtask/tests/fixtures/compiler_lexical_cutline/` — the
-  `compiler_lexical_cutline_manifest` proof target (32 tests, nonzero
+  `compiler_lexical_cutline_manifest` proof target (33 tests, nonzero
   execution).
 
 ## Substrate

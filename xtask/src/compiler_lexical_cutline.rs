@@ -1061,6 +1061,11 @@ fn validate_expected(
                         "{location_path}: duplicates the declaration anchor while includeDeclaration=false"
                     ));
                 }
+                if reference_ranges.contains(&(anchor.byte_start, anchor.byte_end)) {
+                    violations.push(format!(
+                        "{location_path}: duplicate occurrence range inflates the exact denominator"
+                    ));
+                }
                 if let (Some(text), Some(anchor_object)) = (&expected_text, location.as_object()) {
                     validate_anchor_geometry(
                         &anchor,

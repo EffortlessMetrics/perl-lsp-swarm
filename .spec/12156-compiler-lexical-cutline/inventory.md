@@ -9,7 +9,7 @@
 | `xtask/src/compiler_lexical_cutline.rs` | Validator library |
 | `xtask/src/tasks/compiler_lexical_cutline.rs` | CLI task (`list` / `validate` / `explain`) |
 | `xtask/src/lib.rs`, `xtask/src/main.rs`, `xtask/src/tasks/mod.rs` | Module/command wiring |
-| `xtask/tests/compiler_lexical_cutline.rs` | `compiler_lexical_cutline_manifest` proof target (32 tests) |
+| `xtask/tests/compiler_lexical_cutline.rs` | `compiler_lexical_cutline_manifest` proof target (33 tests) |
 | `xtask/tests/fixtures/compiler_lexical_cutline/invalid-*.json` | Static invalid fixtures |
 
 ## Fixtures (16)

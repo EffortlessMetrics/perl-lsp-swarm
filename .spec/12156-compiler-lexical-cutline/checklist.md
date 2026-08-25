@@ -46,6 +46,8 @@ that proves each check fires.
   fixtures included) — `rejects_utf16_position_drift`
 - declaration anchor has role `declaration` and never appears in
   `reference_locations`
+- no duplicate occurrence range inflates an exact denominator —
+  `rejects_duplicate_occurrence_in_denominator`
 - request subject lands on the binding's declaration or occurrences —
   `rejects_subject_off_binding`
 
