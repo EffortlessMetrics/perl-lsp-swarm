@@ -1,4 +1,3 @@
-'\n        );\n    }\n}\n'
 //! Corpus-backed parser panic invariant.
 //!
 //! This test deliberately accepts parse errors. The invariant is narrower and
@@ -86,4 +85,3 @@ fn deterministic_malformed_bytes_are_panic_free() {
         );
     }
 }
-
