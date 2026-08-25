@@ -52,16 +52,6 @@ review_after = "2026-10-15"
 next_status = "active"
 
 [[deferred_due]]
-name = "clippy::same_length_and_capacity"
-level = "deny"
-activate_when_msrv = "1.94"
-class = "unsafe-memory"
-owner = "#1804"
-reason = "Activation waits for current all-target proof over raw-parts and allocation-origin boundaries."
-review_after = "2026-10-15"
-next_status = "active"
-
-[[deferred_due]]
 name = "clippy::manual_checked_ops"
 level = "warn"
 activate_when_msrv = "1.95"

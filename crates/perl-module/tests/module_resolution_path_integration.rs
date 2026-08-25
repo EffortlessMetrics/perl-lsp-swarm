@@ -1,4 +1,4 @@
-use perl_module::resolution::path::resolve_module_path;
+use perl_module::resolve_module_path;
 use std::path::PathBuf;
 
 #[test]

@@ -1,0 +1,174 @@
+{
+  "schema_version": "vim_lsp_subject.v1",
+  "artifact_role": "exact content-bound prabirshrestha/vim-lsp subject authority for downstream Vim proof, receipts, and documentation consumers (#11369)",
+  "claim_boundary": "configuration_documented substrate only. This object records which exact upstream bytes are targeted and what upstream metadata says. It claims no host behavior, no support tier, no public artifact, and no current upstream state beyond the recorded observation instant.",
+  "upstream": {
+    "repository": "https://github.com/prabirshrestha/vim-lsp",
+    "repository_owner_project": "prabirshrestha/vim-lsp",
+    "selected_commit": "e10d186452743beb7b43d2b3427020832f930c2b",
+    "tree_digest": {
+      "algorithm": "git-tree-sha1",
+      "value": "dd24cb8e10096c82766143c9fd058105637d72dc"
+    },
+    "commit_author_date": "2026-08-10T16:38:59+09:00",
+    "commit_subject": "Fix respond to client/registerCapability and client/unregisterCapability (#1685)",
+    "selected_ref_note": "The pin is the commit and its tree bytes, never a floating branch name.",
+    "latest_release_tag_observation": {
+      "tag": "v0.1.4",
+      "object": "3bca7e8c8a794fde38075e7df9d14c286d055a84",
+      "object_commit_date": "2021-01-13T15:57:28+09:00",
+      "relation_to_pin": "the pin is not a released tag object: it is the 2026-08-10 master head, while the newest observed release tag points at a 2021-01-13 commit; no released version string corresponds to the pinned bytes"
+    }
+  },
+  "plugin_load_mode": {
+    "mode": "caller_pinned_git_checkout_via_runtimepath_prepend",
+    "description": "The consumer supplies VIM_LSP_DIR pointing at a clean git checkout of exactly selected_commit; the plugin directory is prepended to 'runtimepath' and plugin/lsp.vim is sourced explicitly after global flags are set.",
+    "consumer_example": "scripts/ux/vim_vim_lsp_driver.vim (driven by scripts/ux/vim_vim_lsp_smoke.sh)",
+    "dirty_checkout_policy": "fail_closed_unless_explicitly_overridden_by_the_consumer_receipt_contract"
+  },
+  "expected_content_identity": {
+    "runtimepath_entry_identity": "the exact VIM_LSP_DIR checkout whose HEAD resolves to upstream.selected_commit with a clean worktree",
+    "entry_files": [
+      {
+        "path": "plugin/lsp.vim",
+        "git_blob_sha1": "897466bcffae3f8e9c1c039f50aa927edad05f65",
+        "role": "global flag defaults and plugin entry"
+      },
+      {
+        "path": "autoload/lsp.vim",
+        "git_blob_sha1": "466080ee3a3be84ace86b5c46bdff3665d2ced6d",
+        "role": "registration, request channel, lifecycle events"
+      },
+      {
+        "path": "autoload/lsp/capabilities.vim",
+        "git_blob_sha1": "119e6f0ee4d6bb38b168c8ced333b6f27c5cdc64",
+        "role": "workspace-folder capability helper"
+      },
+      {
+        "path": "autoload/lsp/utils.vim",
+        "git_blob_sha1": "eb6d5baaa1b0780099e92aa445e6a2573cfdf97f",
+        "role": "root discovery and URI helpers"
+      },
+      {
+        "path": "autoload/lsp/utils/text_edit.vim",
+        "git_blob_sha1": "86558b6ac191cfbcf43e157ad068e0243bb3cf70",
+        "role": "formatting edit application"
+      },
+      {
+        "path": "autoload/lsp/utils/workspace_config.vim",
+        "git_blob_sha1": "0304f29fb02cdcb3d9605413c72cabd5ff84b66f",
+        "role": "server workspace_config consumption"
+      },
+      {
+        "path": "autoload/lsp/utils/workspace_edit.vim",
+        "git_blob_sha1": "5dafd26ca2079179410b341e6a6e15651936370b",
+        "role": "rename WorkspaceEdit application"
+      },
+      {
+        "path": "autoload/lsp/omni.vim",
+        "git_blob_sha1": "931b3459476eb03eee7cbfda868141c774cab983",
+        "role": "completion conversion surface"
+      }
+    ],
+    "resolution_rule": "a checkout satisfies this subject only when every listed entry file's git blob SHA1 and the checkout HEAD's commit match this manifest"
+  },
+  "upstream_theoretical_prerequisites": {
+    "status": "upstream_compatibility_metadata_only_never_a_maintained_support_floor",
+    "maintained_floor_authority": "#10966 owns any future maintained/tested Vim version row; nothing here may be projected into support state",
+    "rows": [
+      {
+        "editor": "vim",
+        "theoretical_minimum": "8.1.1035",
+        "source": {
+          "path": "doc/vim-lsp.txt",
+          "line": 593,
+          "git_blob_sha1": "2e8ac90502f9664ae40344b48bf4647d78e2d73d"
+        }
+      },
+      {
+        "editor": "neovim",
+        "theoretical_minimum": "0.3",
+        "source": {
+          "path": "doc/vim-lsp.txt",
+          "line": 959,
+          "git_blob_sha1": "2e8ac90502f9664ae40344b48bf4647d78e2d73d"
+        }
+      }
+    ],
+    "optional_acceleration": {
+      "detail": "g:lsp_use_lua defaults to has('nvim-0.4.0') || (has('lua') && has('patch-8.2.0775')); absence degrades performance, not correctness",
+      "source": {
+        "path": "plugin/lsp.vim",
+        "line": 6,
+        "git_blob_sha1": "897466bcffae3f8e9c1c039f50aa927edad05f65"
+      }
+    },
+    "event_queue_default": {
+      "detail": "g:lsp_use_event_queue defaults to has('nvim') || has('patch-8.1.0889')",
+      "source": {
+        "path": "plugin/lsp.vim",
+        "line": 54,
+        "git_blob_sha1": "897466bcffae3f8e9c1c039f50aa927edad05f65"
+      }
+    },
+    "text_edit_default": {
+      "detail": "g:lsp_text_edit_enabled defaults to has('patch-8.0.1493')",
+      "source": {
+        "path": "plugin/lsp.vim",
+        "line": 56,
+        "git_blob_sha1": "897466bcffae3f8e9c1c039f50aa927edad05f65"
+      }
+    }
+  },
+  "capability_and_limitation_metadata": {
+    "status": "upstream_declared_capability_model_for_the_pinned_bytes_only",
+    "snippets": {
+      "model": "not supported by default; snippet insertion requires a third-party snippet plugin plus a vim-lsp integration plugin",
+      "consequence_for_drivers": "canonical drivers must treat plain-text completion items as the ordinary wire shape and must not require snippetSupport",
+      "sources": [
+        {
+          "path": "README.md",
+          "note": "vim-lsp does not support snippets by default",
+          "git_blob_sha1": "f7d16352c5172715e0e2a924c4d541f061785ef0"
+        }
+      ]
+    },
+    "completion_channel": {
+      "model": "omnifunc lsp#complete; asynchronous completion optional via g:lsp_async_completion",
+      "sources": [
+        {
+          "path": "README.md",
+          "note": "setlocal omnifunc=lsp#complete",
+          "git_blob_sha1": "f7d16352c5172715e0e2a924c4d541f061785ef0"
+        },
+        {
+          "path": "plugin/lsp.vim",
+          "note": "g:lsp_async_completion default",
+          "git_blob_sha1": "897466bcffae3f8e9c1c039f50aa927edad05f65"
+        }
+      ]
+    },
+    "semantic_highlighting": {
+      "model": "unofficial vscode semantic-token extension, requires Neovim highlights or Vim textprop; not exercised by the canonical driver",
+      "classification": "not_exposed_by_canonical_driver"
+    }
+  },
+  "pin_governance": {
+    "replacement_law": "A newer upstream master head or a matching display version does not replace this pin; replacement requires a reviewed manifest update that re-resolves commit and tree bytes.",
+    "floating_branch_policy": "floating branch/master references are invalid anywhere a subject identity is consumed",
+    "current_upstream_comparison": {
+      "method": "git ls-remote https://github.com/prabirshrestha/vim-lsp.git HEAD refs/heads/master refs/tags/*",
+      "observed_date_utc": "2026-08-23",
+      "master_head_at_observation": "e10d186452743beb7b43d2b3427020832f930c2b",
+      "interpretation": "at the observation instant the pin coincided with upstream master; that coincidence carries no forward durability"
+    },
+    "future_refresh_rule": "a separate read-only upstream refresh comparison may detect drift; it cannot mutate this pin or any support state automatically"
+  },
+  "last_deliberate_verification": {
+    "date_utc": "2026-08-23",
+    "method": "git ls-remote ref observation plus depth-1 fetch of selected_commit resolving commit and tree digests locally",
+    "resolved_commit_verified": true,
+    "resolved_tree_verified": true,
+    "verification_boundary": "this verifies byte identity of the pinned subject only; it observed no editor behavior"
+  }
+}

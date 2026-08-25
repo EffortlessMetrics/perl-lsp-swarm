@@ -21,6 +21,9 @@ use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::ast::{Node, NodeKind};
 
 use super::super::internal_types::{Diagnostic, RelatedInformation};
+use crate::tooling::perl_critic::{
+    BuiltInCriticObservation, Severity, is_backtick_string, is_qx_string,
+};
 use perl_diagnostics::codes::DiagnosticSeverity;
 
 /// Check for security anti-patterns
@@ -299,25 +302,37 @@ fn walk_security_node(
             walk_security_node(block, diagnostics, signal_shadowed);
             signal_shadowed
         }
-        // Backtick strings: the parser stores `cmd` and qx(cmd) as
-        // String { value: "`cmd`", interpolated: true }
+        // Backtick strings: the parser stores `cmd` as
+        // String { value: "`cmd`", interpolated: true }. The emitter declares
+        // the reviewed PL601 backtick shape at this branch (#11918).
         NodeKind::String { value, interpolated: true } if is_backtick_string(value) => {
-            diagnostics.push(Diagnostic {
-                range: (node.location.start, node.location.end),
-                severity: DiagnosticSeverity::Warning,
-                code: Some(DiagnosticCode::SecurityBacktickExec.as_str().to_string()),
-                message: "Command execution detected. Ensure input is sanitized.".to_string(),
-                related_information: vec![RelatedInformation {
-                    location: (node.location.start, node.location.end),
-                    message: "Consider using open() with a pipe, or IPC::Run for safer command execution with proper input validation".to_string(),
-                }],
-                tags: Vec::new(),
-                fixable: false,
-                suggestion: Some(
-                    "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution"
-                        .to_string(),
-                ),
-            });
+            push_command_execution_diagnostic(
+                node,
+                |severity, byte_range, message, explanation| {
+                    BuiltInCriticObservation::pl601_backtick(
+                        severity,
+                        byte_range,
+                        message,
+                        explanation,
+                    )
+                },
+                diagnostics,
+            );
+            signal_shadowed
+        }
+        // qx(cmd): the parser keeps the raw `qx(...)` spelling in the string
+        // value. Same PL601 code, different reviewed shape — the emitter
+        // chooses the exact shape at the syntax branch that observed it, so
+        // a qx finding can only merge with the native qx alias, never with
+        // the backtick alias (#11918).
+        NodeKind::String { value, interpolated: true } if is_qx_string(value) => {
+            push_command_execution_diagnostic(
+                node,
+                |severity, byte_range, message, explanation| {
+                    BuiltInCriticObservation::pl601_qx(severity, byte_range, message, explanation)
+                },
+                diagnostics,
+            );
             signal_shadowed
         }
         NodeKind::Return { value: Some(value) } => {
@@ -408,6 +423,7 @@ fn check_global_signal_handler_assignment(
         }],
         tags: Vec::new(),
         fixable: false,
+        critic_observation: None,
         suggestion: Some(format!(
             "Use `local $SIG{{{}}} = ...` if the handler should be scoped",
             signal_handler.signal_name
@@ -496,6 +512,7 @@ fn check_eval_node(block: &Node, eval_node: &Node, diagnostics: &mut Vec<Diagnos
         }],
         tags: Vec::new(),
         fixable: false,
+        critic_observation: None,
         suggestion: Some(
             "Use eval { } for exception handling, or consider safer alternatives like Try::Tiny"
                 .to_string(),
@@ -543,6 +560,7 @@ fn check_two_arg_open(name: &str, args: &[Node], node: &Node, diagnostics: &mut 
         }],
         tags: Vec::new(),
         fixable: false,
+        critic_observation: None,
         suggestion: Some("Replace with 3-arg form: open(my $fh, '>', $file)".to_string()),
     });
 }
@@ -583,6 +601,7 @@ fn check_string_eval(name: &str, args: &[Node], node: &Node, diagnostics: &mut V
         }],
         tags: Vec::new(),
         fixable: false,
+        critic_observation: None,
         suggestion: Some(
             "Use eval { } for exception handling, or consider safer alternatives like Try::Tiny"
                 .to_string(),
@@ -595,26 +614,46 @@ fn check_string_eval(name: &str, args: &[Node], node: &Node, diagnostics: &mut V
 /// `system("cmd")` or `system("cmd", @args)` executes a shell command.
 /// The list form `system($cmd, @args)` is safer (avoids shell injection),
 /// but we flag all uses to prompt developers to consider the security context.
+///
+/// The emitter also declares the reviewed critic identity (`PL603`, system
+/// shape) with its own critic-scale severity while it owns the proposition
+/// (#11918): the ordinary diagnostic keeps its LSP severity; the observation
+/// is what merges with `native.security.system_exec` in the normalized seam.
 fn check_system_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
     if name != "system" {
         return;
     }
 
+    let range = (node.location.start, node.location.end);
+    let message = "system() executes a shell command. Ensure input is sanitized.".to_string();
+    let explanation =
+        "Use the list form system($cmd, @args) to avoid shell injection when arguments come from user input".to_string();
+    const SYSTEM_LIST_FORM_SUGGESTION: &str = "Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection";
     diagnostics.push(Diagnostic {
-        range: (node.location.start, node.location.end),
+        range,
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::SecuritySystemCall.as_str().to_string()),
-        message: "system() executes a shell command. Ensure input is sanitized.".to_string(),
+        message: message.clone(),
         related_information: vec![RelatedInformation {
-            location: (node.location.start, node.location.end),
-            message: "Use the list form system($cmd, @args) to avoid shell injection when arguments come from user input".to_string(),
+            location: range,
+            message: explanation.clone(),
         }],
         tags: Vec::new(),
         fixable: false,
-        suggestion: Some(
-            "Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection"
-                .to_string(),
+        critic_observation: Some(
+            BuiltInCriticObservation::pl603_system(
+                Severity::Harsh,
+                range,
+                message,
+                Some(explanation.clone()),
+            )
+            // #12004: the observation carries the ordinary row's exact
+            // user-visible remediation so retirement cannot drop it. The
+            // binding keeps the two copies from drifting apart.
+            .with_suggestion(SYSTEM_LIST_FORM_SUGGESTION)
+            .with_related_information(range, explanation),
         ),
+        suggestion: Some(SYSTEM_LIST_FORM_SUGGESTION.to_string()),
     });
 }
 
@@ -623,26 +662,43 @@ fn check_system_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>)
 /// `exec("cmd")` replaces the current process with a shell command.
 /// The list form `exec($cmd, @args)` is safer (avoids shell injection),
 /// but we flag all uses to prompt developers to consider the security context.
+///
+/// The emitter also declares the reviewed critic identity (`PL604`, exec
+/// shape) with its own critic-scale severity (#11918).
 fn check_exec_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
     if name != "exec" {
         return;
     }
 
+    let range = (node.location.start, node.location.end);
+    let message =
+        "exec() replaces the current process with a shell command. Ensure input is sanitized."
+            .to_string();
+    let explanation =
+        "Use the list form exec($cmd, @args) to avoid shell injection when arguments come from user input".to_string();
+    const EXEC_LIST_FORM_SUGGESTION: &str = "Use the list form: exec($cmd, @args) instead of exec(\"$cmd @args\") to avoid shell injection";
     diagnostics.push(Diagnostic {
-        range: (node.location.start, node.location.end),
+        range,
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::SecurityExecCall.as_str().to_string()),
-        message: "exec() replaces the current process with a shell command. Ensure input is sanitized.".to_string(),
+        message: message.clone(),
         related_information: vec![RelatedInformation {
-            location: (node.location.start, node.location.end),
-            message: "Use the list form exec($cmd, @args) to avoid shell injection when arguments come from user input".to_string(),
+            location: range,
+            message: explanation.clone(),
         }],
         tags: Vec::new(),
         fixable: false,
-        suggestion: Some(
-            "Use the list form: exec($cmd, @args) instead of exec(\"$cmd @args\") to avoid shell injection"
-                .to_string(),
+        critic_observation: Some(
+            BuiltInCriticObservation::pl604_exec(
+                Severity::Harsh,
+                range,
+                message,
+                Some(explanation.clone()),
+            )
+            .with_suggestion(EXEC_LIST_FORM_SUGGESTION)
+            .with_related_information(range, explanation),
         ),
+        suggestion: Some(EXEC_LIST_FORM_SUGGESTION.to_string()),
     });
 }
 
@@ -703,6 +759,7 @@ fn check_pipe_open(name: &str, args: &[Node], node: &Node, diagnostics: &mut Vec
         }],
         tags: Vec::new(),
         fixable: false,
+        critic_observation: None,
         suggestion: Some(
             "Use the list form: open(my $fh, '-|', $cmd, @args) for safer command execution"
                 .to_string(),
@@ -734,41 +791,87 @@ fn is_pipe_two_arg_string(node: &Node) -> bool {
     }
 }
 
+/// Shared remediation text for the command-execution family (PL601/PL606):
+/// one binding keeps the ordinary diagnostic and the critic observation
+/// from drifting apart (#12004).
+const OPEN_LIST_FORM_SUGGESTION: &str =
+    "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution";
+
 /// Detect `readpipe()` function calls.
 ///
 /// `readpipe("cmd")` is functionally identical to backticks/qx//,
 /// executing a shell command. Backtick strings are already caught via
 /// the `NodeKind::String` branch (PL601); this check covers the explicit
 /// function call form.
+///
+/// The emitter also declares the reviewed critic identity (`PL606`,
+/// readpipe shape) with its own critic-scale severity (#11918).
 fn check_readpipe(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
     if name != "readpipe" {
         return;
     }
 
+    let range = (node.location.start, node.location.end);
+    let message =
+        "readpipe() executes a shell command (equivalent to qx//). Ensure input is sanitized."
+            .to_string();
+    let explanation =
+        "Use open(my $fh, '-|', $cmd, @args) or IPC::Run for safer command execution with proper input validation".to_string();
     diagnostics.push(Diagnostic {
-        range: (node.location.start, node.location.end),
+        range,
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::SecurityReadpipe.as_str().to_string()),
-        message: "readpipe() executes a shell command (equivalent to qx//). Ensure input is sanitized.".to_string(),
+        message: message.clone(),
         related_information: vec![RelatedInformation {
-            location: (node.location.start, node.location.end),
-            message: "Use open(my $fh, '-|', $cmd, @args) or IPC::Run for safer command execution with proper input validation".to_string(),
+            location: range,
+            message: explanation.clone(),
         }],
         tags: Vec::new(),
         fixable: false,
-        suggestion: Some(
-            "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution"
-                .to_string(),
+        critic_observation: Some(
+            BuiltInCriticObservation::pl606_readpipe(
+                Severity::Harsh,
+                range,
+                message,
+                Some(explanation.clone()),
+            )
+            .with_suggestion(OPEN_LIST_FORM_SUGGESTION)
+            .with_related_information(range, explanation),
         ),
+        suggestion: Some(OPEN_LIST_FORM_SUGGESTION.to_string()),
     });
 }
 
-/// Check if a string value represents a backtick command execution.
-///
-/// The parser stores backtick literals (`` `cmd` ``) and qx(cmd) as
-/// `String { value: "`cmd`", interpolated: true }`.
-fn is_backtick_string(value: &str) -> bool {
-    value.starts_with('`') && value.ends_with('`') && value.len() >= 2
+/// Emit one PL601 command-execution diagnostic for a backtick or `qx`
+/// string form, declaring the exact reviewed shape through the supplied
+/// observation constructor (#11918).
+fn push_command_execution_diagnostic(
+    node: &Node,
+    observe: impl Fn(Severity, (usize, usize), String, Option<String>) -> BuiltInCriticObservation,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let range = (node.location.start, node.location.end);
+    let message = "Command execution detected. Ensure input is sanitized.".to_string();
+    let explanation =
+        "Consider using open() with a pipe, or IPC::Run for safer command execution with proper input validation".to_string();
+    diagnostics.push(Diagnostic {
+        range,
+        severity: DiagnosticSeverity::Warning,
+        code: Some(DiagnosticCode::SecurityBacktickExec.as_str().to_string()),
+        message: message.clone(),
+        related_information: vec![RelatedInformation {
+            location: range,
+            message: explanation.clone(),
+        }],
+        tags: Vec::new(),
+        fixable: false,
+        critic_observation: Some(
+            observe(Severity::Harsh, range, message, Some(explanation.clone()))
+                .with_suggestion(OPEN_LIST_FORM_SUGGESTION)
+                .with_related_information(range, explanation),
+        ),
+        suggestion: Some(OPEN_LIST_FORM_SUGGESTION.to_string()),
+    });
 }
 
 fn shadows_signal_table(node: &Node) -> bool {
@@ -1010,6 +1113,123 @@ mod tests {
         assert!(
             diags.is_empty(),
             "deeply nested variable list should not produce security diagnostics: {diags:?}"
+        );
+    }
+
+    // --- producer-owned critic overlap observations (#11918) ---
+
+    use crate::tooling::perl_critic::{CriticFindingOrigin, CriticFindingShape};
+
+    fn observation_of<'a>(
+        diags: &'a [Diagnostic],
+        code: &str,
+    ) -> Option<&'a crate::tooling::perl_critic::BuiltInCriticObservation> {
+        diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some(code))
+            .and_then(|d| d.critic_observation.as_ref())
+    }
+
+    #[test]
+    fn command_execution_emitters_declare_reviewed_critic_identities() {
+        for (source, code, shape) in [
+            (r#"system("ls");"#, "PL603", CriticFindingShape::SystemCall),
+            (r#"exec("ls");"#, "PL604", CriticFindingShape::ExecCall),
+            (r#"my $out = readpipe("ls");"#, "PL606", CriticFindingShape::Readpipe),
+            ("my $out = `ls`;", "PL601", CriticFindingShape::Backtick),
+            ("my $out = qx(ls);", "PL601", CriticFindingShape::Qx),
+        ] {
+            let diags = security_diags(source);
+            let observation = observation_of(&diags, code)
+                .unwrap_or_else(|| panic!("{code} must carry a critic observation: {diags:?}"));
+
+            assert_eq!(observation.identity().origin(), CriticFindingOrigin::BuiltInDiagnostic);
+            assert_eq!(observation.identity().code(), code);
+            assert_eq!(observation.identity().shape(), shape);
+            assert_eq!(observation.severity(), crate::tooling::perl_critic::Severity::Harsh);
+            assert!(
+                observation.message().contains("input is sanitized"),
+                "producer message travels with the observation"
+            );
+            assert!(observation.explanation().is_some());
+        }
+    }
+
+    /// #12004: the observation's remediation copy must stay identical to the
+    /// ordinary diagnostic fields it mirrors, or merged rows silently serve
+    /// stale text after the ordinary row retires.
+    #[test]
+    fn observation_remediation_copies_match_the_ordinary_diagnostic_fields() {
+        for (source, code) in [
+            (r#"system("ls");"#, "PL603"),
+            (r#"exec("ls");"#, "PL604"),
+            (r#"my $out = readpipe("ls");"#, "PL606"),
+            ("my $out = `ls`;", "PL601"),
+            ("my $out = qx(ls);", "PL601"),
+        ] {
+            let diags = security_diags(source);
+            let diagnostic = diags
+                .iter()
+                .find(|d| d.code.as_deref() == Some(code))
+                .unwrap_or_else(|| panic!("{code} must be emitted for {source}"));
+            let suggestion = diagnostic
+                .suggestion
+                .as_deref()
+                .unwrap_or_else(|| panic!("{code} must carry an ordinary suggestion"));
+            let observation = observation_of(&diags, code)
+                .unwrap_or_else(|| panic!("{code} must carry a critic observation: {diags:?}"));
+
+            assert_eq!(
+                observation.suggestion(),
+                Some(suggestion),
+                "{code}: observation suggestion drifted from the ordinary diagnostic"
+            );
+
+            let ordinary_related: Vec<_> =
+                diagnostic.related_information.iter().map(|r| r.message.as_str()).collect();
+            let observation_related: Vec<_> = observation
+                .related_information()
+                .iter()
+                .map(|(_, message)| message.as_str())
+                .collect();
+            assert_eq!(
+                observation_related, ordinary_related,
+                "{code}: observation related information drifted from the ordinary diagnostic"
+            );
+        }
+    }
+
+    #[test]
+    fn qx_form_fires_pl601_and_single_quoted_qx_text_does_not() {
+        let diags = security_diags("my $date = qx(date);");
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("PL601")),
+            "qx command execution is the reviewed second PL601 shape: {diags:?}"
+        );
+
+        let quoted = security_diags("my $text = 'qx(date)';");
+        assert!(
+            quoted.iter().all(|d| d.code.as_deref() != Some("PL601")),
+            "an ordinary single-quoted string is not command execution: {quoted:?}"
+        );
+    }
+
+    #[test]
+    fn command_execution_observations_cover_exact_emitter_ranges() {
+        let source = "my $out = `ls`;";
+        let diags = security_diags(source);
+        let observation = observation_of(&diags, "PL601")
+            .unwrap_or_else(|| panic!("backtick must carry an observation: {diags:?}"));
+        let (start, end) = observation.byte_range();
+        assert_eq!(&source[start..end], "`ls`", "byte range is the exact observed syntax");
+    }
+
+    #[test]
+    fn unrelated_security_diagnostics_carry_no_observation() {
+        let diags = security_diags(r#"open(FH, "<", "file.txt");"#);
+        assert!(
+            diags.iter().all(|d| d.critic_observation.is_none()),
+            "only the reviewed overlap cohort declares observations: {diags:?}"
         );
     }
 }

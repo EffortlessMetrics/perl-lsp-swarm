@@ -11,26 +11,29 @@ const CLIENT_GLOBAL: &[Source] = &[
     Source::ProjectFile,
     Source::GlobalClientSettings,
 ];
-/// User-channel AI inputs with the project file removed (issues #4955, #4997):
-/// `.perl-lsp.toml` may only opt out of AI completions; it may never arm the
-/// backend or select provider/model, so it is not an input source for any AI
-/// arm/select field. InitializationOptions/GlobalClientSettings remain listed
-/// because the current runtime still honours them via `update_from_value`;
-/// tightening that provenance is the remaining #4997 server-side slice.
-const AI_USER_CHANNEL: &[Source] =
+/// Arm/select AI fields (#4997): only compiled defaults plus a trusted
+/// user/operator observation may write these. Every current client channel
+/// (`initializationOptions`, `didChangeConfiguration`, generic
+/// workspace/configuration results) is rejected by `update_from_value`, so
+/// production values stay at their defaults until the server-owned operator
+/// adapter lands (#10817). `.perl-lsp.toml` never had arm/select authority
+/// (issues #4955, #4997).
+const AI_TRUSTED_OPERATOR_CHANNEL: &[Source] =
+    &[Source::CompiledDefault, Source::TrustedUserSettings];
+/// Envelope fields remain genuinely client-settable through
+/// `initializationOptions`/global client settings via `update_from_value`
+/// (issue #4955 review): they shape requests but can neither arm egress nor
+/// select its destination or identity.
+const AI_CLIENT_ENVELOPE_CHANNEL: &[Source] =
     &[Source::CompiledDefault, Source::InitializationOptions, Source::GlobalClientSettings];
-/// Sources of the DERIVED `ai.effective_enabled` value: the user channel plus
-/// `ProjectFile`, because `.perl-lsp.toml enabled = false` feeds
-/// `project_opt_out` and recomputes
+/// Sources of the DERIVED `ai.effective_enabled` value: trusted user/operator
+/// enablement reduced by the project file, because `.perl-lsp.toml enabled =
+/// false` feeds `project_opt_out` and recomputes
 /// `enabled = user_enabled && !project_opt_out`. The project file contributes
 /// here only as a reducer into that derivation; it still has no arm/select
 /// authority over any direct AI activation row (issues #4955, #4997).
-const AI_EFFECTIVE_ENABLED_SOURCES: &[Source] = &[
-    Source::CompiledDefault,
-    Source::InitializationOptions,
-    Source::ProjectFile,
-    Source::GlobalClientSettings,
-];
+const AI_EFFECTIVE_ENABLED_SOURCES: &[Source] =
+    &[Source::CompiledDefault, Source::ProjectFile, Source::TrustedUserSettings];
 const CLIENT_FOLDER: &[Source] = &[
     Source::CompiledDefault,
     Source::InitializationOptions,
@@ -59,6 +62,19 @@ const WORKSPACE_SYSTEM: &[Source] = &[
     Source::SystemProbe,
 ];
 const PROJECT_METADATA: &[Source] = &[Source::CompiledDefault, Source::ProjectMetadata];
+/// Channels that feed the process-global `LSP_LIMITS` singleton today: compiled
+/// defaults, `initializationOptions.perl.limits.*`
+/// (`runtime/lifecycle/capabilities.rs`), global
+/// `workspace/didChangeConfiguration` (`runtime/workspace.rs`), and the
+/// settings layer re-applied after the per-folder pull
+/// (`runtime/workspace/configuration_response.rs`). `.perl-lsp.toml` carries no
+/// limits section, so `ProjectFile` is deliberately absent.
+const LIMITS_CHANNELS: &[Source] = &[
+    Source::CompiledDefault,
+    Source::InitializationOptions,
+    Source::GlobalClientSettings,
+    Source::WorkspaceConfiguration,
+];
 
 const AI: &[Consumer] = &[Consumer::InlineCompletion, Consumer::AiTransport];
 const AI_SCHEDULER: &[Consumer] = &[Consumer::InlineCompletion, Consumer::AiScheduler];
@@ -72,6 +88,8 @@ const RESOLUTION: &[Consumer] =
     &[Consumer::ModuleResolver, Consumer::WorkspaceIndex, Consumer::DependencyGraph];
 const DISCOVERY: &[Consumer] =
     &[Consumer::WorkspaceDiscovery, Consumer::WorkspaceIndex, Consumer::DependencyGraph];
+const RESULT_CAPS: &[Consumer] = &[Consumer::ResultCaps];
+const BOUNDED_EXECUTION: &[Consumer] = &[Consumer::BoundedExecution];
 
 macro_rules! authority {
     (
@@ -100,6 +118,20 @@ macro_rules! authority {
 
 /// Canonical effective-field authority, sorted by stable ID.
 pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
+    authority!(
+        "ai.activation_authority",
+        AiCompletion.activation_authority,
+        Global,
+        Enum,
+        AI_TRUSTED_OPERATOR_CHANNEL,
+        Validation::KnownEnum,
+        RejectSource,
+        Ordinary,
+        SafeValue,
+        InlineCompletion,
+        AI,
+        ["activation_authority"]
+    ),
     authority!(
         "ai.api_key_env",
         AiCompletion.api_key_env,
@@ -175,7 +207,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         AiCompletion.fallback,
         Global,
         Boolean,
-        AI_USER_CHANNEL,
+        AI_CLIENT_ENVELOPE_CHANNEL,
         Validation::Boolean,
         KeepLastValid,
         Ordinary,
@@ -189,7 +221,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         AiCompletion.local_model_mode,
         Global,
         Boolean,
-        AI_USER_CHANNEL,
+        AI_CLIENT_ENVELOPE_CHANNEL,
         Validation::Boolean,
         KeepLastValid,
         Ordinary,
@@ -203,7 +235,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         AiCompletion.max_inflight,
         Global,
         Unsigned,
-        AI_USER_CHANNEL,
+        AI_CLIENT_ENVELOPE_CHANNEL,
         Validation::UnsignedRange { minimum: 1, maximum: 64 },
         KeepLastValid,
         Ordinary,
@@ -217,7 +249,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         AiCompletion.max_output_tokens,
         Global,
         Unsigned,
-        AI_USER_CHANNEL,
+        AI_CLIENT_ENVELOPE_CHANNEL,
         Validation::UnsignedRange { minimum: 1, maximum: 4096 },
         KeepLastValid,
         Ordinary,
@@ -231,7 +263,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         AiCompletion.model,
         Global,
         String,
-        AI_USER_CHANNEL,
+        AI_TRUSTED_OPERATOR_CHANNEL,
         Validation::NonEmptyString,
         KeepLastValid,
         Ordinary,
@@ -259,7 +291,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         AiCompletion.provider,
         Global,
         String,
-        AI_USER_CHANNEL,
+        AI_TRUSTED_OPERATOR_CHANNEL,
         Validation::KnownEnum,
         KeepLastValid,
         Ordinary,
@@ -273,7 +305,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         AiCompletion.rate_limit_rps,
         Global,
         Float,
-        AI_USER_CHANNEL,
+        AI_CLIENT_ENVELOPE_CHANNEL,
         Validation::PositiveFloat,
         KeepLastValid,
         Ordinary,
@@ -287,7 +319,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         AiStreaming.enabled,
         DerivedGlobal,
         Boolean,
-        AI_USER_CHANNEL,
+        AI_TRUSTED_OPERATOR_CHANNEL,
         Validation::Derived,
         RecomputeDerived,
         Ordinary,
@@ -301,7 +333,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         AiStreaming.update_debounce_ms,
         Global,
         Unsigned,
-        AI_USER_CHANNEL,
+        AI_CLIENT_ENVELOPE_CHANNEL,
         Validation::UnsignedRange { minimum: 0, maximum: 10_000 },
         KeepLastValid,
         Ordinary,
@@ -315,7 +347,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         AiStreaming.user_enabled,
         Global,
         Boolean,
-        AI_USER_CHANNEL,
+        AI_TRUSTED_OPERATOR_CHANNEL,
         Validation::Boolean,
         KeepLastValid,
         Ordinary,
@@ -329,7 +361,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         AiCompletion.timeout_ms,
         Global,
         Unsigned,
-        AI_USER_CHANNEL,
+        AI_CLIENT_ENVELOPE_CHANNEL,
         Validation::UnsignedRange { minimum: 1, maximum: 120_000 },
         KeepLastValid,
         Ordinary,
@@ -343,7 +375,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         AiCompletion.user_enabled,
         Global,
         Boolean,
-        AI_USER_CHANNEL,
+        AI_TRUSTED_OPERATOR_CHANNEL,
         Validation::Boolean,
         KeepLastValid,
         Ordinary,
@@ -745,18 +777,256 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         ["inlayHints.typeHints"]
     ),
     authority!(
-        "next_edit.enabled",
-        NextEdit.enabled,
+        "limits.ast_cache_max_entries",
+        Limits.ast_cache_max_entries,
         Global,
-        Boolean,
-        CLIENT_GLOBAL,
-        Validation::Boolean,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
         KeepLastValid,
         Ordinary,
         SafeValue,
-        None,
-        &[Consumer::NextEditGate],
-        ["nextEdit.enabled"]
+        RuntimeScheduling,
+        BOUNDED_EXECUTION,
+        ["astCacheMaxEntries"]
+    ),
+    authority!(
+        "limits.ast_cache_memory_bytes",
+        Limits.ast_cache_max_bytes,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        BOUNDED_EXECUTION,
+        ["astCacheMaxMemoryBytes"]
+    ),
+    authority!(
+        "limits.ast_cache_ttl_secs",
+        Limits.ast_cache_ttl_secs,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        BOUNDED_EXECUTION,
+        ["astCacheTtlSecs"]
+    ),
+    authority!(
+        "limits.code_lens_cap",
+        Limits.code_lens_cap,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        RESULT_CAPS,
+        ["codeLensCap"]
+    ),
+    authority!(
+        "limits.completion_cap",
+        Limits.completion_cap,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        RESULT_CAPS,
+        ["completionCap"]
+    ),
+    authority!(
+        "limits.critical_memory_threshold_bytes",
+        Limits.critical_threshold_bytes,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        BOUNDED_EXECUTION,
+        ["memoryCriticalThresholdBytes"]
+    ),
+    authority!(
+        "limits.diagnostics_per_file_cap",
+        Limits.diagnostics_per_file_cap,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        RESULT_CAPS,
+        ["diagnosticsPerFileCap"]
+    ),
+    authority!(
+        "limits.document_symbol_cap",
+        Limits.document_symbol_cap,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        RESULT_CAPS,
+        ["documentSymbolCap"]
+    ),
+    authority!(
+        "limits.file_size_bytes",
+        Limits.max_file_size_bytes,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        BOUNDED_EXECUTION,
+        ["maxFileSizeBytes"]
+    ),
+    authority!(
+        "limits.indexed_files",
+        Limits.max_indexed_files,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        BOUNDED_EXECUTION,
+        ["maxIndexedFiles"]
+    ),
+    authority!(
+        "limits.inlay_hints_cap",
+        Limits.inlay_hints_cap,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        RESULT_CAPS,
+        ["inlayHintsCap"]
+    ),
+    authority!(
+        "limits.reference_search_deadline_ms",
+        Limits.reference_search_deadline,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        BOUNDED_EXECUTION,
+        ["referenceSearchDeadlineMs"]
+    ),
+    authority!(
+        "limits.references_cap",
+        Limits.references_cap,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        RESULT_CAPS,
+        ["referencesCap"]
+    ),
+    authority!(
+        "limits.symbol_cache_max_entries",
+        Limits.symbol_cache_max_entries,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        BOUNDED_EXECUTION,
+        ["symbolCacheMaxEntries"]
+    ),
+    authority!(
+        "limits.total_symbols",
+        Limits.max_total_symbols,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        BOUNDED_EXECUTION,
+        ["maxTotalSymbols"]
+    ),
+    authority!(
+        "limits.warning_memory_threshold_bytes",
+        Limits.warning_threshold_bytes,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        BOUNDED_EXECUTION,
+        ["memoryWarningThresholdBytes"]
+    ),
+    authority!(
+        "limits.workspace_scan_deadline_ms",
+        Limits.workspace_scan_deadline,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        BOUNDED_EXECUTION,
+        ["workspaceScanDeadlineMs"]
+    ),
+    authority!(
+        "limits.workspace_symbol_cap",
+        Limits.workspace_symbol_cap,
+        Global,
+        Unsigned,
+        LIMITS_CHANNELS,
+        Validation::Unsigned,
+        KeepLastValid,
+        Ordinary,
+        SafeValue,
+        RuntimeScheduling,
+        RESULT_CAPS,
+        ["workspaceSymbolCap"]
     ),
     authority!(
         "telemetry.enabled",

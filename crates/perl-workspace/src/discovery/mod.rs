@@ -214,6 +214,14 @@ fn try_git_discovery(
     let mut child = std::process::Command::new("git")
         .args(GIT_LS_FILES_ARGS)
         .current_dir(root)
+        // `git ls-files` never reads standard input; without an explicit
+        // null stdin the child inherits the server's transport pipe. On
+        // Windows a spawned git that inherits an open, non-console stdin
+        // pipe blocks instead of exiting (observed: `git ls-files` outside
+        // a repository stays alive until the next client write on that
+        // pipe), coupling background scan completion to unrelated client
+        // traffic and stalling the index coordinator in a Building state.
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()?;
@@ -263,6 +271,7 @@ fn try_git_discovery(
     Ok(GitDiscoveryOutcome::Complete(result))
 }
 
+#[derive(Debug)]
 enum GitDiscoveryOutcome {
     Complete(DiscoveryResult),
     Cancelled,
@@ -660,6 +669,148 @@ mod tests {
         assert_eq!(result.files.len(), 1);
         assert!(result.files[0].ends_with("lib/Foo.pm"));
         assert_eq!(result.excluded_count, 3);
+
+        Ok(())
+    }
+
+    fn git_on_path() -> bool {
+        std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
+
+    /// Call-observation for the discovery git spawn: on a root outside any
+    /// git repository, `git ls-files` fails fast and discovery returns the
+    /// error variant that triggers the caller's walk fallback. The spawned
+    /// git gets an explicit null stdin — a git inheriting an open,
+    /// non-console stdin pipe blocks instead of exiting on Windows, which
+    /// stalled background workspace scans until unrelated client input
+    /// arrived. The bounded-time assertion observes that completion contract
+    /// end to end through the spawn.
+    #[test]
+    fn try_git_discovery_errors_promptly_on_non_repo_root_without_caller_stdin() -> TestResult {
+        if !git_on_path() {
+            return Ok(());
+        }
+        let tmp = tempfile::tempdir()?;
+        create_file(tmp.path(), "lib/One.pm")?;
+
+        let started = Instant::now();
+        let outcome = super::try_git_discovery(
+            tmp.path(),
+            started,
+            &DiscoveryIncludeAllowlist::default(),
+            &DiscoveryConfig::default(),
+            &|| false,
+        );
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(30),
+            "git discovery must complete without waiting on caller input; took {elapsed:?}"
+        );
+        assert!(
+            outcome.is_err(),
+            "git ls-files outside a repository must surface the error variant that selects the walk fallback, got {outcome:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Call-observation for the success arm: inside a git repository the
+    /// spawned `git ls-files` reports tracked files with `DiscoveryMethod::Git`.
+    #[test]
+    fn try_git_discovery_completes_from_git_repository() -> TestResult {
+        if !git_on_path() {
+            return Ok(());
+        }
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+        create_file(root, "lib/One.pm")?;
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root)
+            .status()?;
+        assert!(init.success(), "git init must succeed for the fixture");
+        let add = std::process::Command::new("git")
+            .args(["add", "lib/One.pm"])
+            .current_dir(root)
+            .status()?;
+        assert!(add.success(), "git add must succeed for the fixture");
+
+        let outcome = super::try_git_discovery(
+            root,
+            Instant::now(),
+            &DiscoveryIncludeAllowlist::default(),
+            &DiscoveryConfig::default(),
+            &|| false,
+        );
+
+        match outcome {
+            Ok(super::GitDiscoveryOutcome::Complete(result)) => {
+                assert_eq!(result.method, DiscoveryMethod::Git);
+                assert!(result.files.iter().any(|path| path.ends_with("lib/One.pm")));
+            }
+            other => panic!("expected a complete git discovery, got {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    /// Exact boundary variant for the pre-spawn cancellation checkpoint: a
+    /// `should_cancel()` observer that is already cancelled returns the
+    /// Cancelled outcome without spawning the git child.
+    #[test]
+    fn try_git_discovery_cancelled_before_spawn_returns_cancelled() -> TestResult {
+        if !git_on_path() {
+            return Ok(());
+        }
+        let tmp = tempfile::tempdir()?;
+        create_file(tmp.path(), "lib/One.pm")?;
+
+        let outcome = super::try_git_discovery(
+            tmp.path(),
+            Instant::now(),
+            &DiscoveryIncludeAllowlist::default(),
+            &DiscoveryConfig::default(),
+            &|| true,
+        );
+
+        assert!(
+            matches!(outcome, Ok(super::GitDiscoveryOutcome::Cancelled)),
+            "pre-spawn cancellation must return the Cancelled variant, got {outcome:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Exact boundary variant for the child-wait checkpoint: cancelling
+    /// after the spawn kills the git child and still returns Cancelled
+    /// instead of blocking on the child or falling through to success.
+    #[test]
+    fn try_git_discovery_cancelled_during_child_wait_returns_cancelled() -> TestResult {
+        if !git_on_path() {
+            return Ok(());
+        }
+        let tmp = tempfile::tempdir()?;
+        create_file(tmp.path(), "lib/One.pm")?;
+
+        // First should_cancel() check (pre-spawn) passes; the next
+        // checkpoint — the child wait loop — cancels.
+        let checks = AtomicUsize::new(0);
+        let outcome = super::try_git_discovery(
+            tmp.path(),
+            Instant::now(),
+            &DiscoveryIncludeAllowlist::default(),
+            &DiscoveryConfig::default(),
+            &|| checks.fetch_add(1, Ordering::SeqCst) > 0,
+        );
+
+        assert!(
+            matches!(outcome, Ok(super::GitDiscoveryOutcome::Cancelled)),
+            "wait-loop cancellation must return the Cancelled variant, got {outcome:?}"
+        );
 
         Ok(())
     }

@@ -1,9 +1,9 @@
 {
-  "schema_version": 1,
-  "owner_issue": 7276,
-  "reason": "#7276 ptkdb claim-boundary candidate: package.json grows 58306->58690 bytes (external-peer manifest copy) and out/extension.js grows 1462804->1465391 bytes (fail-closed dangling externalDebugger rejection); every other packaged entry is byte-identical after normalizing vsce archive asset names.",
-  "base_baseline_file_sha256": "7d24b2a9cc9653790b955a84124949a15d0f1cfa2e1994964f8e0c818d76f71c",
-  "candidate_baseline_file_sha256": "86d37aec8d47610d247c297a2b9c1592419fb8e6ea301de42318006a93c8d690",
-  "base_inventory_sha256": "a18d9dc92dec8337e1885300530d30f3b179044e648da7c9b7df3cc24f2a8a13",
-  "candidate_inventory_sha256": "9ffef8327470dc624893f58b6ca0ac5b04262acebc7ea9d6eaed77fed657373e"
+  "base_baseline_file_sha256": "4a662d41a6f80249245b526e89b6b706d1b847195c16231fe0d303cbd44a5011",
+  "base_inventory_sha256": "3087c97c983e74fbc5d814d8739e985dbacc26a54e7ad32c43f1e3f9dae7c19e",
+  "candidate_baseline_file_sha256": "8a20c2b29c57b1baad098d658e385e2a8f32b92cbd9637b6681aa51aefcd119e",
+  "candidate_inventory_sha256": "77366544182581a948a34d8f7701f7388f1384f0d1efb539c3221fe0e93e5895",
+  "owner_issue": 9842,
+  "reason": "#9842 renames the extension build/watch command surface and routes every public tsc path through the governed seam. Only shipped package.json script metadata changes (58406->58886, +480 measured from the packaged VSIX: the governed-tsc rewiring, the build/bundle/watch:bundle contract, and the check:tsconfig-inventory + governed test wiring). No file added, removed, or loosened; out/extension.js is byte-identical (Rolldown re-run under the new command names); total recomputed ->1696163.",
+  "schema_version": 1
 }

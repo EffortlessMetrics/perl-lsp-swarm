@@ -12,7 +12,14 @@ pub enum LexRestartStrategy {
     /// Lex the complete current source from byte zero.
     FullRelex,
     /// Restore one complete live lexer checkpoint and re-lex from there to EOF.
+    ///
+    /// Bounded fallback for generations without a qualifying stored checkpoint.
+    /// The receipt then reports the replayed old-prefix length honestly.
     LiveCheckpointToEof,
+    /// Restore a persisted generation-bound checkpoint and re-lex to EOF
+    /// without replaying old bytes. Canonical restart path; the receipt reports
+    /// zero replayed prefix bytes.
+    StoredCheckpointToEof,
 }
 
 /// Truthful lexer restart and token-retention receipt.
@@ -26,12 +33,20 @@ pub struct LexRestartReport {
     /// For [`LexRestartStrategy::Unchanged`], this is the current source length:
     /// the complete old token stream is retained and no byte is freshly lexed.
     pub restart_byte: usize,
+    /// Number of old-source prefix bytes replayed only to reconstruct state.
+    ///
+    /// [`LexRestartStrategy::StoredCheckpointToEof`] restores persisted state
+    /// directly and reports zero; [`LexRestartStrategy::LiveCheckpointToEof`]
+    /// replays the prefix up to its restart boundary and reports that length.
+    pub old_prefix_bytes_replayed: usize,
     /// Number of source bytes lexed from the restart boundary to EOF.
     pub relexed_bytes: usize,
     /// Tokens before the restart boundary retained without re-lexing.
     pub reused_prefix_tokens: usize,
     /// Tokens after a synchronization boundary retained from the old suffix.
     pub reused_suffix_tokens: usize,
+    /// Complete generation-bound checkpoints retained in the resulting state.
+    pub stored_checkpoint_count: usize,
 }
 
 impl LexRestartReport {
@@ -108,9 +123,11 @@ mod tests {
             lex_restart: LexRestartReport {
                 strategy: LexRestartStrategy::Unchanged,
                 restart_byte: source.len(),
+                old_prefix_bytes_replayed: 0,
                 relexed_bytes: 0,
                 reused_prefix_tokens: 0,
                 reused_suffix_tokens: 0,
+                stored_checkpoint_count: 0,
             },
             reparsed_bytes: 0,
             reused_tokens: 0,

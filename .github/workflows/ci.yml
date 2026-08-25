@@ -137,6 +137,74 @@ jobs:
             echo "::notice::Superseded by $LATEST — skipping remaining jobs to save cost"
           fi
 
+  # Resolve platform widening once on Linux so the Windows job is allocated
+  # only when ci-scope identifies a known portability seam.
+  platform-overrides:
+    name: CI scope platform overrides
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    needs: [draft-pr-check, preflight-latest-check]
+    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    outputs:
+      windows_runner: ${{ steps.scope.outputs.windows_runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+          shared-key: ci-platform-scope-${{ hashFiles('Cargo.lock') }}
+      - name: Classify platform overrides
+        id: scope
+        shell: bash
+        env:
+          SCOPE_BASE: ${{ github.event_name == 'pull_request' && 'origin/main' || github.event.before || 'origin/main' }}
+        run: |
+          set -euo pipefail
+          cargo run -p xtask --locked -- ci-scope --base "$SCOPE_BASE" --format json > "$RUNNER_TEMP/ci-scope.json"
+          windows_runner=$(jq -r 'if .platform_overrides.windows_runner == null then true else .platform_overrides.windows_runner end' "$RUNNER_TEMP/ci-scope.json")
+          windows_test_crates=$(jq -r '.platform_overrides.windows_test_crates[]? | "-p \(.)"' "$RUNNER_TEMP/ci-scope.json" | paste -sd' ' -)
+          case "$windows_runner" in
+            true|false) ;;
+            *) echo "::error::ci-scope returned invalid windows_runner=$windows_runner"; exit 1 ;;
+          esac
+          echo "windows_runner=$windows_runner" >> "$GITHUB_OUTPUT"
+          echo "windows_test_crates=$windows_test_crates" >> "$GITHUB_OUTPUT"
+
+  windows-platform-smoke:
+    name: Windows platform smoke
+    runs-on: windows-2025
+    timeout-minutes: 20
+    needs: [platform-overrides]
+    if: needs.platform-overrides.outputs.windows_runner == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+          shared-key: ci-windows-platform-${{ hashFiles('Cargo.lock') }}
+      - name: Run Windows portability smoke
+        shell: bash
+        env:
+          WINDOWS_TEST_CRATES: ${{ needs.platform-overrides.outputs.windows_test_crates }}
+        run: cargo test $WINDOWS_TEST_CRATES --locked --lib
+
   # ── Conflict-marker guard: <1s, no toolchain needed ─────────────────
   # Prevents committed conflict markers reaching master (see #7183).
   # Two incidents on 2026-04-28 each cost 1-3h of orchestrator + builder time.
@@ -397,6 +465,26 @@ jobs:
           esac
           exit "$status"
 
+      - name: Capture PR-fast disk pressure
+        if: always()
+        shell: bash
+        run: |
+          # #11943: capture setup and gate failures, including ENOSPC -> ld SIGBUS,
+          # before the runner is discarded. This is advisory evidence only.
+          set +e
+          mkdir -p target/receipts/logs
+          {
+            echo "== $(date -u '+%Y-%m-%dT%H:%M:%SZ') PR-fast disk pressure snapshot =="
+            echo "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-<unset>}"
+            echo "GITHUB_SHA=${GITHUB_SHA:-<unset>}"
+            echo "GITHUB_RUN_ID=${GITHUB_RUN_ID:-<unset>}"
+            echo "GITHUB_RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT:-<unset>}"
+            df -h . "${CARGO_TARGET_DIR:-target}" || true
+            timeout --signal=TERM --kill-after=5s 30s \
+              bash -c 'du -h --max-depth=1 -- "$1" 2>/dev/null | sort -rh | head -n 20' \
+              _ "${CARGO_TARGET_DIR:-target}" || true
+          } >> target/receipts/logs/pr-fast-disk-pressure.log || true
+
       - name: Upload PR-fast receipt
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
@@ -551,6 +639,7 @@ jobs:
               --receipt-dir target/receipts/shards \
               --summary "target/receipts/shard-summaries/${SHARD_NAME}.json" \
               --subject-sha "$subject_sha" \
+              --clean-restored-receipts \
               $SHARD_GATES
           status=$?
           case "$status" in

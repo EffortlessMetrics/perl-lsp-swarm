@@ -16,8 +16,10 @@ mod client_requests;
 mod constructors;
 pub(crate) mod diagnostic_debounce;
 pub(crate) mod diagnostics;
+mod diagnostics_sink;
 mod dispatch;
 mod document_access;
+mod document_symbols_sink;
 /// File discovery abstraction for workspace scanning
 pub mod file_discovery;
 /// File watcher change debouncer for bulk operation handling
@@ -29,6 +31,7 @@ mod notebook;
 pub(crate) mod outbound;
 #[allow(unused_imports)]
 use outbound::OutboundSink;
+pub(crate) mod parse_effect_contract;
 pub(crate) mod parse_worker;
 #[cfg(feature = "workspace")]
 pub(crate) mod readiness;
@@ -38,6 +41,7 @@ mod resolve_session;
 pub mod routing;
 pub(crate) mod scheduler;
 mod serving;
+mod session_warning_dedup;
 pub(crate) mod stream_session;
 mod symbol_extraction;
 mod test_api;
@@ -53,7 +57,19 @@ mod workspace_folder;
 mod workspace_progress;
 
 #[cfg(test)]
+mod active_document_readiness_tests;
+#[cfg(test)]
+mod diagnostics_sink_tests;
+#[cfg(test)]
+mod document_symbols_sink_tests;
+#[cfg(test)]
 mod open_buffer_authority_tests;
+#[cfg(test)]
+mod session_warning_dedup_tests;
+
+// Test/pressure observation of the bounded session-warning dedup store (#9769).
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub use session_warning_dedup::{SessionWarningDedupSnapshot, SessionWarningFamilyCounters};
 
 // Re-export protocol types for backward compatibility
 // Tests and external code import these from perl_lsp::
@@ -90,7 +106,6 @@ use crate::features::{
     code_lens_provider::{CodeLensProvider, get_shebang_lens, resolve_code_lens},
     diagnostics::{DiagnosticSeverity as InternalDiagnosticSeverity, DiagnosticsProvider},
     document_highlight::DocumentHighlightProvider,
-    formatting::{CodeFormatter, FormattingOptions},
     implementation_provider::ImplementationProvider,
     type_hierarchy::TypeHierarchyProvider,
 };
@@ -230,6 +245,12 @@ pub struct LspServer {
     refresh_controller: refresh::RefreshController,
     /// Diagnostic publication debouncer (installed after Arc wrapping in Scheduler::new)
     diagnostic_debouncer: Mutex<Option<diagnostic_debounce::DiagnosticDebouncer>>,
+    /// Accepted-ticket push-diagnostics sink (#11673): per-URI record of the
+    /// last committed `publishDiagnostics` ticket + monotonic sequence. The
+    /// irreversible outbound enqueue for parser-triggered replacements/clears
+    /// happens inside this sink's critical section -- see
+    /// [`diagnostics_sink`].
+    push_diagnostics_sink: diagnostics_sink::PushDiagnosticsSink,
     /// Off-lock async parse worker (#3396 Phase 3), installed after Arc
     /// wrapping in `Scheduler::new` (production) or explicitly by tests
     /// that want to exercise the real async gap. `None` means the
@@ -397,25 +418,37 @@ pub struct LspServer {
     /// set this flag so unavailable-binary tests do not depend on PATH.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) force_perlcritic_command_unavailable: AtomicBool,
-    /// Deduplication set for workspace-scoped Perl::Critic warning notifications.
+    /// Typed, bounded dedup state for user-facing session warnings (#9769).
     ///
-    /// Keys are stable identifiers (for example, `missing-binary` or
-    /// `missing-profile:/abs/path`) so repeated diagnostic cycles do not spam
-    /// users with identical `window/showMessage` warnings.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) critic_workspace_warnings_sent: Mutex<std::collections::HashSet<String>>,
-    /// Deduplication set for invalid enum warnings from editor-provided settings.
-    ///
-    /// The same client payload can arrive through initialization, configuration
-    /// pulls, and repeated `didChangeConfiguration` notifications. Warn once per
-    /// setting/value pair per server session so a typo is visible without toast spam.
-    pub(crate) client_setting_warnings_sent: Mutex<std::collections::HashSet<String>>,
+    /// Governs whether a repeated Perl::Critic, invalid-client-setting, or AI
+    /// backend warning should be suppressed for the same reviewed subject.
+    /// Retains only fixed-size fingerprint identities under an explicit
+    /// per-family hard cap; it never holds semantic state and never
+    /// influences configuration, diagnostics, provider, or readiness truth.
+    pub(crate) session_warning_dedup: session_warning_dedup::SessionWarningDedupStore,
     /// Test-only hook invoked after push diagnostics capture their document
     /// snapshot and before the stale-generation guard decides whether to
     /// publish. This keeps concurrency boundary tests deterministic without
     /// adding production synchronization.
     #[cfg(test)]
     pub(crate) diagnostic_after_snapshot_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Accepted-ticket document-symbol sink (#11674): per-URI record of the
+    /// last committed local symbol ticket + monotonic sequence. The
+    /// irreversible `symbol_index` replacement/clear for parser-triggered
+    /// paths happens inside this sink's critical section -- see
+    /// [`document_symbols_sink`]. The committed identity is also the anchor
+    /// #6729's document-symbol result-ID row must consume.
+    document_symbols_sink: document_symbols_sink::DocumentSymbolsSink,
+    /// Accepted-ticket active-document parser readiness (#11675): one
+    /// generation-owned state per open document, minted only when the exact
+    /// accepted ticket plus every required core effect outcome is current.
+    /// The `perl-lsp/active-document-ready` notification is a projection of
+    /// this state -- see [`readiness`].
+    pub(crate) active_document_readiness: readiness::ActiveDocumentParserReadiness,
+    /// Test-only barrier between symbol extraction and the sink-boundary
+    /// mutation (#11674 falsifiers).
+    #[cfg(test)]
+    document_symbols_before_commit_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Optional AI inline-completion backend.
     ///
     /// When `Some`, the `handle_inline_completion` handler will attempt
@@ -424,12 +457,6 @@ pub struct LspServer {
     pub(crate) ai_inline_backend: Mutex<
         Option<Arc<dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend>>,
     >,
-    /// Deduplication set for user-facing AI backend warnings.
-    ///
-    /// Authentication failures are actionable but can recur on every
-    /// completion request. Keep the notification session-scoped so a broken
-    /// credential does not spam the editor while preserving one clear signal.
-    pub(crate) ai_backend_warnings_sent: Mutex<HashSet<String>>,
     /// When `true`, eagerly maintain the per-document incremental parsing state
     /// (`incremental_doc` / `incremental_state`) inside the `didChange` mutation
     /// critical section.
@@ -617,35 +644,45 @@ impl LspServer {
     /// The provider error is intentionally not included in the editor-facing
     /// message: provider responses may contain sensitive or noisy details.
     /// The detailed error remains available to the debug log at the call site.
+    /// Suppression identity is the reviewed auth code alone, retained in the
+    /// bounded session-warning dedup store (#9769) and cleared when a
+    /// configuration notification starts a new user-visible session.
     pub(crate) fn notify_ai_auth_failure(&self) {
-        let mut warnings = self.ai_backend_warnings_sent.lock();
-        if warnings.contains("auth") {
-            return;
-        }
-        warnings.insert("auth".to_string());
-
-        if let Err(error) = self.show_message(
-            MessageType::Warning,
-            "AI inline completion authentication failed. Check the configured API key and provider settings.",
-        ) {
-            warnings.remove("auth");
-            tracing::warn!(%error, "failed to notify client about AI authentication failure");
+        let identity = session_warning_dedup::SessionWarningIdentity::subjectless(
+            session_warning_dedup::SessionWarningCode::AiBackendAuthFailure,
+        );
+        // Decide + send + rollback under one family-lock hold (#9769): a
+        // concurrent auth failure must never suppress against an identity
+        // whose send has not succeeded yet.
+        let decision = self.session_warning_dedup.emit_once_with(
+            session_warning_dedup::SessionWarningFamily::AiBackend,
+            identity,
+            || {
+                self.show_message(
+                    MessageType::Warning,
+                    "AI inline completion authentication failed. Check the configured API key and provider settings.",
+                )
+                .is_ok()
+            },
+        );
+        if !matches!(decision, session_warning_dedup::SessionWarningDecision::Suppress) {
+            tracing::debug!(?decision, "AI auth failure warning emission decided");
         }
     }
 
-    /// Runtime feature gate for future next-edit suggestions.
+    /// Runtime feature gate for the internal next-edit scaffold.
     ///
-    /// This boundary is intentionally default-off. Even when explicit config
-    /// enables the gate, the current runtime still reports that no editor-visible
-    /// next-edit provider is registered.
+    /// Structurally default-off (#8311): the next-edit setting is no longer
+    /// public configuration and no editor-visible next-edit provider is
+    /// registered, so the runtime gate has no enabling input. Legacy
+    /// `nextEdit` configuration payloads are ignored with a bounded
+    /// deprecation reason by the config layer and can never report ready or
+    /// enabled. Dev harnesses exercise the explicit gate directly against the
+    /// provider (xtask `semantic-inline-next-edit`), never through this path.
     pub(crate) fn next_edit_feature_gate(
         &self,
     ) -> perl_lsp_rs_core::providers::inline_completion::NextEditFeatureGate {
-        if self.config.lock().next_edit.enabled {
-            perl_lsp_rs_core::providers::inline_completion::NextEditFeatureGate::explicit_enabled()
-        } else {
-            perl_lsp_rs_core::providers::inline_completion::NextEditFeatureGate::default()
-        }
+        perl_lsp_rs_core::providers::inline_completion::NextEditFeatureGate::default()
     }
 
     /// Evaluate the next-edit scaffold against runtime configuration.
@@ -664,16 +701,29 @@ impl LspServer {
 
     /// Refresh the AI inline-completion backend based on current configuration.
     ///
-    /// When `ai_completion.enabled` is `true` and the API key environment variable
-    /// resolves to a non-empty string, constructs an `OpenAiProvider` and stores it.
-    /// Otherwise clears the backend to `None`, disabling AI completions.
+    /// Construction requires BOTH an effective enabled flag and an accepted
+    /// [`perl_lsp_rs_core::config::AiActivationAuthority::TrustedUserOperator`]
+    /// activation (#4997): a raw `ai_completion.enabled` bit alone is not
+    /// authority, because generic client channels could previously reach it.
+    /// When the API key environment variable resolves to a non-empty string,
+    /// constructs an `OpenAiProvider` and stores it. Otherwise clears the
+    /// backend to `None`, disabling AI completions.
+    ///
+    /// No production channel currently admits trusted activation (the
+    /// server-owned operator adapter is #10817), so remote construction fails
+    /// closed in production; tests admit activation through
+    /// `AiCompletionConfig::admit_trusted_user_operator_activation`.
     ///
     /// Called during initialization (after project config is loaded) and on every
     /// `didChangeConfiguration` notification that touches the `aiCompletion` section.
     pub(crate) fn refresh_ai_backend(&self) {
         let ai_config = self.config.lock().ai_completion.clone();
 
-        if !ai_config.enabled {
+        let trusted_activation = matches!(
+            ai_config.activation_authority,
+            perl_lsp_rs_core::config::AiActivationAuthority::TrustedUserOperator
+        );
+        if !ai_config.enabled || !trusted_activation {
             *self.ai_inline_backend.lock() = None;
             return;
         }
@@ -850,6 +900,8 @@ impl LspServer {
         for key in &uri_keys {
             self.stream_sessions().cancel_for_uri(key);
             self.clear_document_symbols(key);
+            // A closed document has no live readiness claim (#11675).
+            self.remove_active_document_readiness(key);
         }
 
         {
@@ -1562,6 +1614,7 @@ mod tests {
             current_package: Some("Demo".to_string()),
             variables: vec!["$got".to_string()],
             imports: vec!["strict".to_string(), "warnings".to_string()],
+            ..PreparedInlineCompletionContext::default()
         }
     }
 
@@ -1729,9 +1782,13 @@ mod tests {
     }
 
     #[test]
-    fn next_edit_runtime_boundary_honors_explicit_config_without_provider_registration() {
+    fn next_edit_runtime_boundary_ignores_legacy_config_key() {
         let server = LspServer::new();
 
+        // #8311: the legacy `nextEdit` key must fail closed on the live
+        // configuration channel. Supplying it cannot enable the gate, change
+        // its source, or move the scaffold response out of Disabled, so it
+        // can never report ready or enabled.
         server.handle_did_change_configuration(Some(json!({
             "settings": {
                 "perl": {
@@ -1743,28 +1800,12 @@ mod tests {
         })));
 
         let gate = server.next_edit_feature_gate();
-        assert!(gate.enabled);
-        assert_eq!(gate.source, NextEditGateSource::ExplicitConfig);
+        assert!(!gate.enabled);
+        assert_eq!(gate.source, NextEditGateSource::DefaultOff);
 
         let response = server.next_edit_scaffold_response(next_edit_test_context());
-        assert_eq!(response.status, NextEditStatus::RuntimeProviderNotRegistered);
+        assert_eq!(response.status, NextEditStatus::Disabled);
         assert!(response.suggestions.is_empty());
-    }
-
-    #[test]
-    fn next_edit_runtime_boundary_can_be_disabled_after_explicit_config() {
-        let server = LspServer::new();
-
-        server.handle_did_change_configuration(Some(json!({
-            "settings": {
-                "perl": {
-                    "nextEdit": {
-                        "enabled": true
-                    }
-                }
-            }
-        })));
-        assert!(server.next_edit_feature_gate().enabled);
 
         server.handle_did_change_configuration(Some(json!({
             "settings": {
@@ -2220,6 +2261,115 @@ model = "gpt-4"
         Ok(())
     }
 
+    /// Security regression (issue #4997): generic client channels —
+    /// `workspace/didChangeConfiguration` and `initializationOptions` — must
+    /// not arm remote AI egress even when a complete, usable transport
+    /// (endpoint + resolvable credential) is already configured. The oracle
+    /// is zero backend construction with the destination and secret present,
+    /// so the assertion cannot pass for the wrong reason. Provider/model
+    /// payloads must likewise fail to select anything.
+    #[test]
+    fn generic_client_channels_cannot_arm_or_select_ai_backend()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const KEY_ENV: &str = "PERL_LSP_TEST_GENERIC_CHANNEL_KEY";
+        let _env_guard = AiTestEnvGuard::set(KEY_ENV, "generic-channel-key")?;
+
+        let server = LspServer::new();
+        // Preconfigure the transport exactly as a legitimate user-level
+        // setup would, so the only thing that can prevent construction is
+        // missing activation authority.
+        {
+            let mut config = server.config.lock();
+            config.ai_completion.endpoint =
+                "https://connector.example/v1/chat/completions".to_string();
+            config.ai_completion.model = "custom-code-model".to_string();
+            config.ai_completion.api_key_env = KEY_ENV.to_string();
+        }
+
+        let hostile_shapes: Vec<serde_json::Value> = vec![
+            json!({
+                "aiCompletion": {
+                    "enabled": true,
+                    "provider": "openai",
+                    "model": "attacker-model",
+                    "streaming": { "enabled": true }
+                }
+            }),
+            json!({ "aiCompletion": { "enabled": true } }),
+            json!({ "aiCompletion": { "provider": "openai", "model": "attacker-model" } }),
+        ];
+
+        for shape in &hostile_shapes {
+            // didChangeConfiguration shape.
+            server.config.lock().update_from_value(shape);
+            // initializationOptions shape uses the same parser; exercise it
+            // through a fresh payload application to keep both entry points
+            // covered by one matrix.
+            server.refresh_ai_backend();
+
+            let config = server.config.lock();
+            assert!(
+                server.ai_backend().is_none(),
+                "generic payload {shape} must not construct an outbound backend",
+            );
+            assert_eq!(
+                config.ai_completion.activation_authority,
+                perl_lsp_rs_core::config::AiActivationAuthority::Unavailable,
+                "generic payload {shape} must not admit activation authority",
+            );
+            assert!(
+                !config.ai_completion.enabled && !config.ai_completion.user_enabled,
+                "generic payload {shape} must not arm effective or user flags",
+            );
+            assert_eq!(
+                config.ai_completion.provider, "openai_compat",
+                "generic payload {shape} must not select provider",
+            );
+            assert_eq!(
+                config.ai_completion.model, "custom-code-model",
+                "generic payload {shape} must not move the accepted model",
+            );
+        }
+
+        // Hostile traffic must also not clear accepted trusted state.
+        {
+            let mut config = server.config.lock();
+            config.ai_completion.user_enabled = true;
+            config.ai_completion.admit_trusted_user_operator_activation();
+        }
+        server.config.lock().update_from_value(&json!({
+            "aiCompletion": {
+                "enabled": false,
+                "provider": "openai",
+                "model": "attacker-model",
+                "streaming": { "enabled": false }
+            }
+        }));
+        {
+            let config = server.config.lock();
+            assert_eq!(
+                config.ai_completion.activation_authority,
+                perl_lsp_rs_core::config::AiActivationAuthority::TrustedUserOperator,
+                "unauthorized disable traffic must not clear accepted activation",
+            );
+            assert!(
+                config.ai_completion.user_enabled,
+                "unauthorized traffic must not clear the accepted user enable",
+            );
+        }
+        server.refresh_ai_backend();
+        assert!(
+            server.ai_backend().is_some(),
+            "accepted trusted activation with usable transport must still construct",
+        );
+        Ok(())
+    }
+
+    /// Positive control for #4997: a legitimate trusted user/operator
+    /// activation plus a fully configured transport (endpoint + resolvable
+    /// credential) must still construct the backend. Without this companion,
+    /// the hostile-input regressions could be green merely because remote
+    /// construction is impossible in every direction.
     #[test]
     fn refresh_ai_backend_installs_connector_auth_backend() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -2239,6 +2389,7 @@ model = "gpt-4"
                 api_key_prefix: None,
                 ..AiCompletionConfig::default()
             };
+            config.ai_completion.admit_trusted_user_operator_activation();
         }
 
         server.refresh_ai_backend();

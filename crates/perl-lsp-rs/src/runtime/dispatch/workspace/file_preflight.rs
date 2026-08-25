@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 #[cfg(feature = "workspace")]
 use crate::runtime::workspace::{module_name_appears_in_text, path_to_module_name};
 #[cfg(feature = "workspace")]
-use perl_module::rename::{apply_module_rename_edits, plan_module_rename_edits};
+use perl_module::{apply_module_rename_edits, plan_module_rename_edits};
 #[cfg(feature = "workspace")]
 use std::collections::{BTreeMap, HashSet};
 

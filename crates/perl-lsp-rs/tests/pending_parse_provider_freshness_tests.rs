@@ -152,8 +152,9 @@ fn sub_foo_to_bar_cross_provider_freshness_canary() -> TestResult {
         "baseline: `foo` declaration must decode as function; decoded={decoded0:?}"
     );
     assert!(
-        decoded0.contains(&(1, 0, 5, "function".to_string())),
-        "baseline: `foo()` call must decode as function; decoded={decoded0:?}"
+        decoded0.contains(&(1, 0, 3, "function".to_string())),
+        "baseline: `foo` call-site name must decode as function (identifier-only \
+         span per #5077); decoded={decoded0:?}"
     );
     assert!(
         !decoded0
@@ -289,8 +290,9 @@ fn sub_foo_to_bar_cross_provider_freshness_canary() -> TestResult {
         "post-publish: `bar` declaration must decode as function; decoded={decoded1:?}"
     );
     assert!(
-        decoded1.contains(&(1, 0, 5, "function".to_string())),
-        "post-publish: `bar()` call must decode as function; decoded={decoded1:?}"
+        decoded1.contains(&(1, 0, 3, "function".to_string())),
+        "post-publish: `bar` call-site name must decode as function (identifier-only \
+         span per #5077); decoded={decoded1:?}"
     );
     // NOTE: there is deliberately no "`decoded1` must not contain `foo`"
     // assertion here. `decode_semantic_tokens` resolves `type_name` from the
@@ -723,8 +725,9 @@ fn providers_answer_normally_with_no_pending_parse_gap() -> TestResult {
     let sem = server.test_handle_semantic_tokens(Some(json!({"textDocument": {"uri": uri}})))?;
     let decoded = decode_semantic_tokens(&sem, &legend)?;
     assert!(
-        decoded.contains(&(1, 0, 5, "function".to_string())),
-        "no gap: semantic tokens must answer fresh; decoded={decoded:?}"
+        decoded.contains(&(1, 0, 3, "function".to_string())),
+        "no gap: semantic tokens must answer fresh (identifier-only call-site \
+         span per #5077); decoded={decoded:?}"
     );
 
     let refs = server.test_handle_references(Some(json!({

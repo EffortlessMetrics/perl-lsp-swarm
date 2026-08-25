@@ -43,11 +43,16 @@ pub use result_identity::{
     DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
 };
 pub use semantic::{
-    NativeCriticPolicy, UnresolvedNativeFindingIdentity, account_unresolved_native_identities,
+    BuiltInCriticObservation, NativeCriticPolicy, UnresolvedNativeFindingIdentity,
+    account_unresolved_native_identities, built_in_observation_candidates,
     critic_source_identity_for_uri, native_finding_candidates,
     native_finding_candidates_with_accounting, normalize_with_native_policy,
 };
 pub use types::{CriticConfig, Severity, Violation};
+
+/// String-surface form classifiers shared by the native critic rules and the
+/// core lint emitters so both producers observe identical syntax shapes.
+pub(crate) use native::{is_backtick_string, is_qx_string};
 
 /// Error returned when an external native-critic profile token is not recognized.
 ///

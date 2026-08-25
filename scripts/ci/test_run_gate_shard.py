@@ -252,6 +252,7 @@ def run_direct(
     gates: list[str],
     *,
     dependencies: dict[str, list[str]] | None = None,
+    clean_restored_receipts: bool = False,
 ) -> tuple[int, dict[str, object], list[str], list[dict[str, object]]]:
     policy = write_policy(root, dependencies or {gate: [] for gate in gates})
     receipt_schema = write_receipt_schema(root)
@@ -266,6 +267,7 @@ def run_direct(
         gates=gates,
         dependency_rules=rules,
         receipt_contract=contract,
+        clean_restored_receipts=clean_restored_receipts,
     )
     invoked: list[str] = []
     options: list[dict[str, object]] = []
@@ -299,6 +301,21 @@ def fake_sleeping_xtask(root: Path, marker: Path) -> Path:
     )
     path.chmod(0o755)
     return path
+
+
+def extract_gate_shard_runner_step(workflow_text: str) -> str:
+    """Return the body of the "Run merge-gate shard with receipts" step.
+
+    A missing guarded step raises, so callers fail visibly instead of
+    skipping.  A terminal runner step has no subsequent named step; its body
+    then extends to end-of-file (#11950).
+    """
+    start = workflow_text.index("      - name: Run merge-gate shard with receipts")
+    try:
+        end = workflow_text.index("      - name:", start + 1)
+    except ValueError:
+        return workflow_text[start:]
+    return workflow_text[start:end]
 
 
 class RunningFakeProcess:
@@ -608,9 +625,7 @@ class GateShardTests(unittest.TestCase):
             ["meta"],
             [name for name, gates in lanes.items() if "source_commit_api_check" in gates],
         )
-        run_start = workflow.index("      - name: Run merge-gate shard with receipts")
-        run_end = workflow.index("      - name:", run_start + 1)
-        runner_step = workflow[run_start:run_end]
+        runner_step = extract_gate_shard_runner_step(workflow)
         invocation_start = runner_step.index("python3 scripts/ci/run_gate_shard.py")
         invocation_end = runner_step.index("          status=$?", invocation_start)
         runner_invocation = runner_step[invocation_start:invocation_end]
@@ -1567,25 +1582,21 @@ class GateShardTests(unittest.TestCase):
             self.skipTest("ci.yml not present in this checkout")
 
         text = workflow.read_text(encoding="utf-8")
-        # Locate the runner step in the workflow.
-        try:
-            run_start = text.index("      - name: Run merge-gate shard with receipts")
-            run_end = text.index("      - name:", run_start + 1)
-        except ValueError:
-            self.skipTest("runner step not found in ci.yml")
+        # A missing runner step must fail here rather than skip: a checkout
+        # that ships ci.yml is expected to run the merge-gate shard (#11950).
+        runner_step = extract_gate_shard_runner_step(text)
+        self.assert_runner_step_gate_policy_contract(runner_step)
 
-        runner_step = text[run_start:run_end]
-
-        # Extract the --gate-policy value from the workflow invocation.
+    def assert_runner_step_gate_policy_contract(self, runner_step: str) -> None:
+        """Feed the step's exact --gate-policy value into build_parser()."""
         match = re.search(r"--gate-policy\s+(\S+)", runner_step)
         self.assertIsNotNone(
             match,
-            "ci.yml runner step must pass --gate-policy to run_gate_shard.py",
+            "runner step must pass --gate-policy to run_gate_shard.py",
         )
         assert match is not None
         workflow_policy_path = match.group(1)
 
-        # Feed the workflow's exact --gate-policy value into the parser.
         parser = shard.build_parser()
         _, unknown = parser.parse_known_args(
             [
@@ -1599,8 +1610,143 @@ class GateShardTests(unittest.TestCase):
         self.assertEqual(
             [],
             unknown,
-            f"--gate-policy {workflow_policy_path!r} from ci.yml is not accepted by build_parser()",
+            f"--gate-policy {workflow_policy_path!r} from the runner step"
+            " is not accepted by build_parser()",
         )
+
+    def test_terminal_runner_step_keeps_gate_policy_contract_checked(self) -> None:
+        """A terminal runner step extends to end-of-file and stays checked.
+
+        Regression control for the combined index() lookup (#11950): when the
+        guarded step is the last named step in the file, the next-step search
+        raised ValueError and the old code skipped as if the step were
+        absent, silently unloading the --gate-policy guard.
+        """
+        terminal_workflow = (
+            "jobs:\n"
+            "  merge-gate-shards:\n"
+            "    steps:\n"
+            "      - name: meta\n"
+            "        run: echo meta\n"
+            "      - name: Run merge-gate shard with receipts\n"
+            "        run: >-\n"
+            "          python3 scripts/ci/run_gate_shard.py\n"
+            "          --gate-policy .ci/gate-policy.yaml\n"
+            "          gate1\n"
+        )
+        runner_step = extract_gate_shard_runner_step(terminal_workflow)
+        self.assertIn("--gate-policy .ci/gate-policy.yaml", runner_step)
+        self.assert_runner_step_gate_policy_contract(runner_step)
+
+    def test_missing_runner_step_fails_instead_of_skipping(self) -> None:
+        """Removing the guarded step must fail extraction visibly (#11950)."""
+        with self.assertRaises(ValueError):
+            extract_gate_shard_runner_step(
+                "jobs:\n  other:\n    steps:\n      - name: meta\n        run: echo meta\n"
+            )
+
+
+class RestoredReceiptCleanupTests(unittest.TestCase):
+    """Cache-restored receipt state from unrelated SHAs must not leak into
+    this run's gate-receipt artifact (#12085)."""
+
+    @staticmethod
+    def _seed_foreign_state(root: Path) -> None:
+        receipts = root / "receipts"
+        shards = receipts / "shards"
+        summaries = receipts / "shard-summaries"
+        logs = receipts / "logs"
+        artifacts = receipts / "artifacts"
+        for directory in (shards, summaries, logs, artifacts):
+            directory.mkdir(parents=True, exist_ok=True)
+        (shards / "alpha.json").write_text('{"foreign": true}', encoding="utf-8")
+        # A summary for a shard that never runs in this invocation.
+        (summaries / "other-shard.json").write_text(
+            '{"subject": "0000000000000000000000000000000000000000"}',
+            encoding="utf-8",
+        )
+        (logs / "stale.log").write_text("foreign log", encoding="utf-8")
+        (artifacts / "stale.bin").write_bytes(b"\x00\x01")
+        # A stale shard summary at this run's exact summary path.
+        (summaries / "meta.json").write_text('{"stale": true}', encoding="utf-8")
+
+    def test_clean_flag_purges_foreign_state_before_gates_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_foreign_state(root)
+            status, summary, invoked, _ = run_direct(
+                Path(tmp),
+                {"alpha": {"status": "pass", "exit": 0}},
+                ["alpha"],
+                clean_restored_receipts=True,
+            )
+            self.assertEqual(0, status)
+            self.assertEqual(["alpha"], invoked)
+            receipts = root / "receipts"
+            # Every cache-restored artifact is gone...
+            self.assertFalse((receipts / "logs" / "stale.log").exists())
+            self.assertFalse((receipts / "artifacts" / "stale.bin").exists())
+            self.assertFalse((receipts / "shards" / "alpha.json").exists())
+            self.assertFalse((receipts / "shard-summaries" / "other-shard.json").exists())
+            self.assertFalse((receipts / "shard-summaries" / "meta.json").exists())
+            # ...and only this run's outputs remain: the fresh summary at
+            # this run's summary path plus the gate's freshly written,
+            # subject-stamped receipt.
+            self.assertTrue((root / "summary.json").exists())
+            fresh_receipt = json.loads(
+                (receipts / "alpha.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(SUBJECT, fresh_receipt["metadata"]["git_sha"])
+            self.assertEqual(
+                ["success"], [row["result"] for row in summary["gates"]]
+            )
+
+    def test_without_flag_foreign_sibling_summaries_persist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_foreign_state(root)
+            status, _, _, _ = run_direct(
+                Path(tmp),
+                {"alpha": {"status": "pass", "exit": 0}},
+                ["alpha"],
+            )
+            self.assertEqual(0, status)
+            receipts = root / "receipts"
+            # Opt-in flag: without it the runner keeps pre-existing state so
+            # callers relying on resume-style reuse are unaffected.
+            self.assertTrue((receipts / "logs" / "stale.log").exists())
+            self.assertTrue(
+                (receipts / "shard-summaries" / "other-shard.json").exists()
+            )
+
+    def test_cleanup_refuses_symlinked_receipt_dir(self) -> None:
+        if os.name == "nt":
+            self.skipTest("directory symlinks require elevated Windows privileges")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "keep.txt").write_text("survivor", encoding="utf-8")
+            (root / "receipts").symlink_to(outside, target_is_directory=True)
+            policy = write_policy(root, {"alpha": []})
+            receipt_schema = write_receipt_schema(root)
+            rules = shard.load_execution_policy(policy, ["alpha"])
+            contract = shard.load_receipt_contract(receipt_schema)
+            runner = shard.ShardRunner(
+                xtask=Path("target/debug/xtask"),
+                gate_policy=policy,
+                receipt_dir=root / "receipts" / "shards",
+                summary_path=root / "receipts" / "shard-summaries" / "meta.json",
+                subject_sha=SUBJECT,
+                gates=["alpha"],
+                dependency_rules=rules,
+                receipt_contract=contract,
+                clean_restored_receipts=True,
+            )
+            with self.assertRaises(ValueError):
+                runner.run()
+            # Fail-closed means fail-closed: nothing behind the link was touched.
+            self.assertTrue((outside / "keep.txt").exists())
 
 
 if __name__ == "__main__":

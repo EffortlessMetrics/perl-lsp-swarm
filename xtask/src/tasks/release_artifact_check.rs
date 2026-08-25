@@ -1176,7 +1176,9 @@ mod tests {
     // `cargo binstall <crate>` obeys. Nothing else in CI reads it, so it can
     // drift from .github/workflows/release.yml silently and the only signal is
     // a user getting a 404 or "could not find binary in package". These tests
-    // pin it against the workflow text.
+    // pin it against the workflow text — and the per-target override set is
+    // *derived* from the build matrix (#8338), not hand-listed, so a target
+    // entering or leaving the release topology moves the expectation with it.
 
     fn release_workflow() -> Result<String> {
         Ok(fs::read_to_string(project_root()?.join(".github/workflows/release.yml"))?)
@@ -1190,6 +1192,48 @@ mod tests {
             .and_then(|p| p.get("metadata"))
             .and_then(|m| m.get("binstall"))
             .cloned())
+    }
+
+    /// Target triples declared in the `build` job's matrix include list.
+    ///
+    /// This is the declared release topology: the set of archives the "Package
+    /// binaries" step produces. An empty parse is an error, not a pass — a
+    /// matrix the parser can no longer see would make every derived assertion
+    /// below vacuous.
+    fn release_matrix_targets() -> Result<Vec<String>> {
+        let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str(&release_workflow()?)?;
+        let include = yaml
+            .get("jobs")
+            .and_then(|j| j.get("build"))
+            .and_then(|b| b.get("strategy"))
+            .and_then(|s| s.get("matrix"))
+            .and_then(|m| m.get("include"))
+            .and_then(|i| i.as_sequence())
+            .ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "release.yml no longer declares jobs.build.strategy.matrix.include"
+                )
+            })?;
+        let targets = include
+            .iter()
+            .filter_map(|entry| entry.get("target"))
+            .filter_map(|t| t.as_str())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if targets.is_empty() {
+            color_eyre::eyre::bail!("release.yml matrix include has no target entries");
+        }
+        Ok(targets)
+    }
+
+    /// Matrix targets that ship a flat `.zip`, derived by the same rule the
+    /// "Package binaries" step uses (`[[ "$TARGET" == *"windows"* ]]`): those
+    /// get `7z a ... "${PKG_NAME}"/*` with no top-level directory, so they are
+    /// exactly the targets that need a binstall `pkg-fmt`/`bin-dir` override.
+    /// Every other target ships the nested `.tar.gz` the binstall defaults
+    /// describe.
+    fn flat_zip_matrix_targets() -> Result<Vec<String>> {
+        Ok(release_matrix_targets()?.into_iter().filter(|t| t.contains("windows")).collect())
     }
 
     #[test]
@@ -1211,7 +1255,15 @@ mod tests {
         assert!(
             workflow.contains(r#"7z a "${PKG_NAME}${EXT}" "${PKG_NAME}"/*"#),
             "release.yml no longer flattens the zip; update the \
-             x86_64-pc-windows-msvc bin-dir override in crates/perllsp/Cargo.toml"
+             windows bin-dir overrides in crates/perllsp/Cargo.toml"
+        );
+        // The zip/tar split must stay keyed on the target name containing
+        // "windows": flat_zip_matrix_targets() derives the expected override
+        // set from that rule.
+        assert!(
+            workflow.contains(r#"if [[ "$TARGET" == *"windows"* ]]; then"#),
+            "release.yml no longer selects the archive format by target name; \
+             update flat_zip_matrix_targets() in xtask/src/tasks/release_artifact_check.rs"
         );
         Ok(())
     }
@@ -1234,17 +1286,91 @@ mod tests {
             bin_dir, "perllsp-{ version }-{ target }/{ bin }{ binary-ext }",
             "default bin-dir must point inside the tarball's top-level directory"
         );
-
-        // Windows is the one target shipping a .zip, and its archive is flat.
-        let win = binstall
-            .get("overrides")
-            .and_then(|o| o.get("x86_64-pc-windows-msvc"))
-            .expect("windows ships .zip, so it needs a pkg-fmt/bin-dir override");
-        assert_eq!(win.get("pkg-fmt").and_then(|v| v.as_str()), Some("zip"));
         assert_eq!(
-            win.get("bin-dir").and_then(|v| v.as_str()),
-            Some("{ bin }{ binary-ext }"),
-            "the windows zip has no top-level directory"
+            binstall.get("pkg-fmt").and_then(|v| v.as_str()),
+            Some("tgz"),
+            "default pkg-fmt must match the .tar.gz the packaging step writes for \
+             every non-windows matrix target"
+        );
+        Ok(())
+    }
+
+    /// The per-target override table must be an exact projection of the
+    /// release topology (#8338): every flat-zip matrix target carries the
+    /// zip/flat override, nothing else does, and no override may name a target
+    /// the matrix does not build (fail closed on both sides).
+    #[test]
+    fn binstall_overrides_derive_from_release_topology() -> Result<()> {
+        let binstall = binstall_table("crates/perllsp/Cargo.toml")?
+            .ok_or_else(|| color_eyre::eyre::eyre!("perllsp must declare binstall"))?;
+        let overrides = binstall
+            .get("overrides")
+            .cloned()
+            .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()));
+        let declared: Vec<&str> = overrides
+            .as_table()
+            .map(|t| t.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        let declared_set: std::collections::BTreeSet<&str> = declared.iter().copied().collect();
+
+        let expected = flat_zip_matrix_targets()?;
+        let expected_set: std::collections::BTreeSet<&str> =
+            expected.iter().map(String::as_str).collect();
+
+        let missing: Vec<&str> = expected_set.difference(&declared_set).copied().collect();
+        assert!(
+            missing.is_empty(),
+            "release matrix ships a flat .zip for {missing:?} but \
+             crates/perllsp/Cargo.toml declares no binstall override for them — \
+             `cargo binstall perllsp --target <target>` would resolve the wrong \
+             archive format and member layout"
+        );
+
+        let extra: Vec<&str> = declared_set.difference(&expected_set).copied().collect();
+        assert!(
+            extra.is_empty(),
+            "binstall overrides name targets the release matrix does not build \
+             ({extra:?}) — remove them, or add the target to the matrix first"
+        );
+
+        for target in &expected {
+            let entry = overrides
+                .get(target.as_str())
+                .ok_or_else(|| color_eyre::eyre::eyre!("{target} must have an override entry"))?;
+            assert_eq!(
+                entry.get("pkg-fmt").and_then(|v| v.as_str()),
+                Some("zip"),
+                "{target} ships a .zip, so its override must set pkg-fmt = zip"
+            );
+            assert_eq!(
+                entry.get("bin-dir").and_then(|v| v.as_str()),
+                Some("{ bin }{ binary-ext }"),
+                "{target}'s zip is flat (no top-level directory), so its bin-dir \
+                 must not name one"
+            );
+            // `archive-suffix` follows pkg-fmt, so an override-local pkg-url is
+            // how a stale asset spelling could hide behind a correct pkg-fmt.
+            assert!(
+                entry.get("pkg-url").is_none(),
+                "{target}'s override must inherit the default pkg-url (pinned \
+                 above); an override-local pkg-url would bypass the \
+                 asset-name agreement"
+            );
+        }
+
+        // Set equality above already pins the table exactly: a non-windows
+        // target with an override would surface in `extra`, a windows target
+        // without one in `missing`. The count check makes a vacuous pass
+        // (empty matrix parse is rejected earlier) impossible to miss.
+        assert_eq!(
+            declared_set.len(),
+            expected_set.len(),
+            "override count must equal the flat-zip target count exactly"
+        );
+        assert!(
+            !expected.is_empty(),
+            "release matrix has no windows targets; the override table should be \
+             removed together with the matrix entry that made it necessary"
         );
         Ok(())
     }

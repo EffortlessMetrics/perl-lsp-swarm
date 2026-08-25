@@ -155,8 +155,11 @@ impl LspServer {
 
     /// Test-only helper that forces the pending-parse generation gap (#3396 PR4).
     ///
-    /// Updates a document's rope/text/version and bumps its generation counter
-    /// -- exactly like a real `didChange` -- but deliberately does **not**
+    /// Updates a document's full text state (rope, canonical `text_arc`,
+    /// `text`, version, line starts) via
+    /// [`crate::state::DocumentState::update_content`] and bumps its
+    /// generation counter -- exactly like a real `didChange` -- but
+    /// deliberately does **not**
     /// re-parse or publish a new [`crate::state::ParsedSnapshot`]. Immediately
     /// after this call, [`crate::state::DocumentState::current_parsed`] returns
     /// `None` (the last published snapshot's generation now trails the text
@@ -180,18 +183,19 @@ impl LspServer {
         version: i32,
     ) -> Result<(), String> {
         let normalized_uri = self.normalize_uri_key(uri);
-        let rope = ropey::Rope::from_str(new_text);
-        let line_starts = perl_parser::position::LineStartsCache::new(new_text);
 
         let mut documents = self.documents.lock();
         let doc = documents
             .get_mut(&normalized_uri)
             .ok_or_else(|| format!("document not open: {uri}"))?;
-        doc.rope = rope;
-        doc.text = new_text.to_string();
-        doc.version = version;
-        doc.line_starts = line_starts;
-        doc.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Route through `DocumentState::update_content` so *every* text
+        // surface moves together, including the canonical `text_arc` copy
+        // (#4999). Writing a subset of the fields by hand left `text_arc`
+        // holding the pre-edit text while the gap was open, and providers
+        // that read `text_arc` (hover, symbols) answered from stale source
+        // text (#11933) even though the gap contract only tolerates a stale
+        // *parse snapshot*, never stale text.
+        doc.update_content(new_text, version);
         // Deliberately do NOT call `publish_parsed_if_current` here: the whole
         // point of this helper is to leave the previously published snapshot
         // stale relative to the bumped generation, forcing `current_parsed()`
@@ -739,9 +743,21 @@ impl LspServer {
     /// Configure AI completion settings directly for test purposes.
     ///
     /// Avoids direct access to `self.config` from integration tests.
+    ///
+    /// Enabling here also admits a trusted user/operator activation (#4997):
+    /// this test-only API stands in for the future server-owned operator
+    /// adapter (#10817), because no client channel can arm remote egress
+    /// anymore. Disabling revokes the activation so tests observe the same
+    /// fail-closed construction gate production uses.
     pub fn test_configure_ai_completion(&self, enabled: bool, fallback: bool) {
         let mut cfg = self.config.lock();
         cfg.ai_completion.user_enabled = enabled;
+        if enabled {
+            cfg.ai_completion.admit_trusted_user_operator_activation();
+        } else {
+            cfg.ai_completion.activation_authority =
+                perl_lsp_rs_core::config::AiActivationAuthority::Unavailable;
+        }
         cfg.ai_completion.fallback = fallback;
         recompute_ai_completion_effective(&mut cfg.ai_completion);
     }
