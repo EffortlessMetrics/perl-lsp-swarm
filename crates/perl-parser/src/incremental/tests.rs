@@ -1,7 +1,7 @@
 use super::*;
 use crate::Parser;
 use anyhow::Result;
-use perl_ast::NodeKind;
+use perl_ast::{Node, NodeKind, SourceLocation};
 use proptest::prelude::*;
 
 #[derive(Clone, Debug)]
@@ -151,13 +151,28 @@ fn parse_checkpoints_capture_scalar_and_list_locals_before_nested_blocks() -> Re
 
 #[test]
 fn parse_checkpoints_accumulate_nested_scalar_locals_in_source_order() -> Result<()> {
-    let source = "sub run { my $first = 1; if (1) { my $second = 2; } }";
-    let state = IncrementalState::new(source.to_string());
-
-    let nested_block_start =
-        source.rfind('{').ok_or_else(|| anyhow::anyhow!("nested block not found in source"))?;
-    let checkpoint = state
-        .find_parse_checkpoint(nested_block_start)
+    let location = |start, end| SourceLocation { start, end };
+    let first = Node::new(
+        NodeKind::VariableDeclaration {
+            declarator: "my".to_string(),
+            variable: Box::new(Node::new(
+                NodeKind::Variable { sigil: "$".to_string(), name: "first".to_string() },
+                location(1, 7),
+            )),
+            attributes: vec![],
+            initializer: None,
+        },
+        location(1, 7),
+    );
+    let nested_block = Node::new(NodeKind::Block { statements: vec![] }, location(20, 22));
+    let outer_block = Node::new(
+        NodeKind::Block { statements: vec![first, nested_block] },
+        location(0, 23),
+    );
+    let checkpoints = IncrementalState::create_parse_checkpoints(&outer_block);
+    let checkpoint = checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.byte == 20)
         .ok_or_else(|| anyhow::anyhow!("nested block must create a checkpoint"))?;
     assert_eq!(
         checkpoint.scope_snapshot.locals,
