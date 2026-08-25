@@ -13,6 +13,7 @@
 //! consumes the current cleanup semantics without weakening or widening them.
 
 use anyhow::{Context, Result, bail, ensure};
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -233,6 +234,47 @@ pub fn materialize_client_subject_fixture(root: &Path) -> Result<PathBuf> {
 /// `.el.gz`.
 const BUNDLED_LIBRARY_FORMS: [&str; 3] = ["eglot.el", "eglot.elc", "eglot.el.gz"];
 
+/// Typed failure of resolving the bundled client library inside one exact
+/// Emacs installation. The producer stays typed (#11744 review): consumers
+/// must never reclassify a formatted error string to recover the kind,
+/// because a message reword would silently change the rejection's type.
+#[derive(Debug)]
+pub enum BundledClientResolutionError {
+    /// The exact Emacs executable could not be canonicalized into an
+    /// installation root. An instrument failure, never a subject verdict.
+    ExecutableUnresolvable { path: PathBuf, source: std::io::Error },
+    /// No library of any declared form exists inside the installation.
+    NoLibrary { installation: PathBuf },
+    /// Two libraries of the same form exist: an identity defect of the
+    /// build, never a silent choice.
+    Ambiguous { form: &'static str, candidates: usize, installation: PathBuf },
+}
+
+impl fmt::Display for BundledClientResolutionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ExecutableUnresolvable { path, source } => write!(
+                formatter,
+                "resolving the exact Emacs executable {}: {source}",
+                path.display()
+            ),
+            Self::NoLibrary { installation } => write!(
+                formatter,
+                "no bundled Eglot library {:?} found inside the exact Emacs installation {}",
+                BUNDLED_LIBRARY_FORMS,
+                installation.display()
+            ),
+            Self::Ambiguous { form, candidates, installation } => write!(
+                formatter,
+                "ambiguous bundled {form} identity: {candidates} candidate libraries inside {}",
+                installation.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BundledClientResolutionError {}
+
 /// Resolve the bundled Eglot library inside the exact Emacs installation.
 ///
 /// The executable path is canonicalized first so a symlinked `emacs` (for
@@ -240,12 +282,27 @@ const BUNDLED_LIBRARY_FORMS: [&str; 3] = ["eglot.el", "eglot.elc", "eglot.el.gz"
 /// Two libraries of the *same* form inside one build is an identity defect
 /// and a typed error; different forms of one library are normal shipping
 /// and resolved by the fixed preference order.
-pub fn resolve_bundled_client_source(emacs_executable: &Path) -> Result<PathBuf> {
-    let canonical = fs::canonicalize(emacs_executable).with_context(|| {
-        format!("resolving the exact Emacs executable {}", emacs_executable.display())
+pub fn resolve_bundled_client_source(
+    emacs_executable: &Path,
+) -> std::result::Result<PathBuf, BundledClientResolutionError> {
+    let canonical = fs::canonicalize(emacs_executable).map_err(|source| {
+        BundledClientResolutionError::ExecutableUnresolvable {
+            path: emacs_executable.to_path_buf(),
+            source,
+        }
     })?;
-    let bin = canonical.parent().context("Emacs executable has no parent directory")?;
-    let root = bin.parent().context("Emacs executable has no installation root")?;
+    let Some(bin) = canonical.parent() else {
+        return Err(BundledClientResolutionError::ExecutableUnresolvable {
+            path: emacs_executable.to_path_buf(),
+            source: std::io::Error::other("Emacs executable has no parent directory"),
+        });
+    };
+    let Some(root) = bin.parent() else {
+        return Err(BundledClientResolutionError::ExecutableUnresolvable {
+            path: emacs_executable.to_path_buf(),
+            source: std::io::Error::other("Emacs executable has no installation root"),
+        });
+    };
     for form in BUNDLED_LIBRARY_FORMS {
         let mut matches: Vec<PathBuf> = WalkDir::new(root)
             .max_depth(7)
@@ -259,17 +316,16 @@ pub fn resolve_bundled_client_source(emacs_executable: &Path) -> Result<PathBuf>
         match matches.len() {
             0 => continue,
             1 => return Ok(matches.remove(0)),
-            count => bail!(
-                "ambiguous bundled {form} identity: {count} candidate libraries inside {}",
-                root.display()
-            ),
+            count => {
+                return Err(BundledClientResolutionError::Ambiguous {
+                    form,
+                    candidates: count,
+                    installation: root.to_path_buf(),
+                });
+            }
         }
     }
-    bail!(
-        "no bundled Eglot library {:?} found inside the exact Emacs installation {}",
-        BUNDLED_LIBRARY_FORMS,
-        root.display()
-    )
+    Err(BundledClientResolutionError::NoLibrary { installation: root.to_path_buf() })
 }
 
 fn bounded_diagnostic(bytes: &[u8]) -> String {

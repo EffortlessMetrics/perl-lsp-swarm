@@ -19,8 +19,9 @@
 //! boundary.
 
 // Plain #[test] functions assert through the standard panic-on-failure
-// idiom; these tests are proof, not production paths.
-#![allow(clippy::expect_used, clippy::panic)]
+// idiom; these tests are proof, not production paths. `expect` (not
+// `allow`) so Clippy flags the suppression once the idiom moves on.
+#![expect(clippy::expect_used, clippy::panic)]
 
 use anyhow::{Context, Result, ensure};
 use flate2::{Compression, write::GzEncoder};

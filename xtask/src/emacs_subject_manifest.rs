@@ -867,23 +867,30 @@ pub fn runner_client_subject(
 
 fn classify_installation_resolution_error(
     subject_id: &str,
-    error: &anyhow::Error,
+    error: &crate::emacs_host_run::BundledClientResolutionError,
 ) -> ResolveFailure {
-    let message = format!("{error:#}");
-    if message.contains("no bundled Eglot library") {
-        ResolveFailure::Rejected(SubjectRejection::UnavailableSubject {
-            subject_id: subject_id.to_string(),
-            reason: "no bundled client library of any declared form was found inside the \
-                     exact Emacs installation"
-                .to_string(),
-        })
-    } else if message.contains("ambiguous") {
-        ResolveFailure::Rejected(SubjectRejection::IdentityMismatch {
-            subject_id: subject_id.to_string(),
-            reason: message,
-        })
-    } else {
-        ResolveFailure::Instrument(format!("resolving the bundled client source: {message}"))
+    match error {
+        // The producer is typed (#11744 review): the rejection kind comes
+        // from the variant, never from matching formatted error text, so a
+        // message reword cannot silently reclassify a typed refusal as an
+        // instrument failure.
+        crate::emacs_host_run::BundledClientResolutionError::NoLibrary { .. } => {
+            ResolveFailure::Rejected(SubjectRejection::UnavailableSubject {
+                subject_id: subject_id.to_string(),
+                reason: "no bundled client library of any declared form was found inside the \
+                         exact Emacs installation"
+                    .to_string(),
+            })
+        }
+        crate::emacs_host_run::BundledClientResolutionError::Ambiguous { .. } => {
+            ResolveFailure::Rejected(SubjectRejection::IdentityMismatch {
+                subject_id: subject_id.to_string(),
+                reason: error.to_string(),
+            })
+        }
+        crate::emacs_host_run::BundledClientResolutionError::ExecutableUnresolvable { .. } => {
+            ResolveFailure::Instrument(format!("resolving the bundled client source: {error}"))
+        }
     }
 }
 
