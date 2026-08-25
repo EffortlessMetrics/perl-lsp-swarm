@@ -151,7 +151,7 @@ fn parse_checkpoints_capture_scalar_and_list_locals_before_nested_blocks() -> Re
 
 #[test]
 fn parse_checkpoints_accumulate_nested_scalar_locals_in_source_order() -> Result<()> {
-    let source = "sub run { my $first = 1; { my $second = 2; } }";
+    let source = "sub run { my $first = 1; if (1) { my $second = 2; } }";
     let state = IncrementalState::new(source.to_string());
 
     let nested_block_start =
