@@ -35,10 +35,11 @@
 //!
 //! Boundary: #8941 owns only whether ONE local binding is visible/admissible.
 //! The shared candidate envelope, final rank, cap, runtime route, and protocol
-//! outcome belong to #11002/#10229/#10914/#10230. This surface deliberately
-//! exposes typed per-binding decisions and identity selection — no synthetic
-//! semantic IDs — so #11002 can project canonical candidates without re-running
-//! lexical analysis.
+//! outcome belong to #11002/#10229/#10914/#10230. The admission decision and
+//! identity selection are exposed crate-internally as pure functions over the
+//! generation-current SymbolTable; #11002 consumes this API within
+//! perl-lsp-rs-core and owns any cross-crate projection requiring generation
+//! handles.
 
 use perl_semantic_analyzer::symbol::{ScopeId, Symbol, SymbolKind, SymbolTable};
 use std::collections::HashMap;
@@ -59,6 +60,17 @@ pub(crate) enum VisibilityReason {
     DeclaredAfterCursor,
     /// Declaring scope is neither the cursor scope nor an ancestor of it:
     /// sibling, child, or otherwise already-ended scope.
+    ///
+    /// Conservative fallback (#8941): this reason is overloaded with the
+    /// bounded/unknown case. When the cursor scope id or the declaring scope id
+    /// is not resolvable in the generation-current SymbolTable — or the
+    /// bounded-hop guard in `scope_chain_contains` exhausts — containment
+    /// cannot be proven, and admission falls back to
+    /// `NotVisible(ScopeNotVisibleFromCursor)` rather than carrying a separate
+    /// variant. Readers (#11002) must therefore treat this reason as
+    /// "proven-invisible OR unresolved-scope", never as standalone proof of
+    /// invisibility; separating the two requires generation-stable scope
+    /// handles owned by the #11002 projection.
     ScopeNotVisibleFromCursor,
 }
 
