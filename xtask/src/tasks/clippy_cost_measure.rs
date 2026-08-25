@@ -21,9 +21,19 @@
 //!
 //! Every pass records argv, wall duration, exit code, and Clippy finding
 //! counts parsed from `--message-format=json` stdout. Non-zero Clippy exits
-//! are recorded, not treated as instrument failure: current-main
-//! `--all-targets` carries known deny-level tranche debt (#11736 census), so
-//! the measurement must survive it to observe the cost.
+//! are recorded, not treated as instrument failure, only when they carry the
+//! known lint-debt shape: current-main `--all-targets` carries known
+//! deny-level tranche debt (#11736 census), so the measurement must survive
+//! it to observe the cost. A non-zero exit whose stderr shows a non-lint
+//! command failure (`--locked` lock-file conflicts, build-script failures,
+//! manifest load failures, rustc internal compiler errors) aborts loudly
+//! before any receipt is written instead of recording a partial runtime as
+//! a completed measurement.
+//!
+//! Each warm pass is preceded by an unmeasured priming pass of the same
+//! scope, so both warm timings measure steady-state re-check cost of their
+//! own scope from self-consistent cache states instead of the second scope
+//! inheriting compilation performed by the first.
 //!
 //! Failures are loud and typed: missing `cargo`/`cargo-clippy`, unusable
 //! `git`, failed `cargo metadata`, spawn errors, and watchdog timeouts all
@@ -280,24 +290,49 @@ fn is_member_fingerprint_dir(dir_name: &str, member: &str) -> bool {
     }
 }
 
-fn invalidate_member_fingerprints(target_dir: &Path, members: &[String]) -> Result<u32> {
-    let fp_dir = target_dir.join("debug").join(".fingerprint");
-    let entries = match fs::read_dir(&fp_dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", fp_dir.display())),
+/// All fingerprint roots that can hold relevant member units: the base
+/// `target/debug/.fingerprint` plus one root per platform subdirectory
+/// (`target/<triple>/debug/.fingerprint`). Cargo writes cross-compilation
+/// artifacts under `CARGO_BUILD_TARGET` / `[build] target` triples while
+/// `cargo metadata` still reports the base target directory, so invalidating
+/// only the base would miss every configured-triple unit and silently label
+/// a warm run `members-cold`. A directory qualifies as a platform
+/// subdirectory structurally — an immediate child of the target dir holding
+/// its own `debug/.fingerprint` — which covers env-var and config-file
+/// configuration without parsing cargo configuration.
+fn fingerprint_roots(target_dir: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![target_dir.join("debug").join(".fingerprint")];
+    let mut platform_dirs: Vec<PathBuf> = match fs::read_dir(target_dir) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|path| path.is_dir() && path.join("debug").join(".fingerprint").is_dir())
+            .collect(),
+        Err(_) => Vec::new(),
     };
+    platform_dirs.sort();
+    roots.extend(platform_dirs.into_iter().map(|dir| dir.join("debug").join(".fingerprint")));
+    roots
+}
+
+fn invalidate_member_fingerprints(target_dir: &Path, members: &[String]) -> Result<u32> {
     let mut removed = 0u32;
-    for entry in entries {
-        let entry = entry.with_context(|| format!("reading entry in {}", fp_dir.display()))?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let owned = members.iter().any(|m| is_member_fingerprint_dir(&name, m));
-        if owned {
-            fs::remove_dir_all(entry.path()).with_context(|| {
-                format!("removing fingerprint directory {}", entry.path().display())
-            })?;
-            removed += 1;
+    for fp_dir in fingerprint_roots(target_dir) {
+        let entries = match fs::read_dir(&fp_dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", fp_dir.display())),
+        };
+        for entry in entries {
+            let entry = entry.with_context(|| format!("reading entry in {}", fp_dir.display()))?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let owned = members.iter().any(|m| is_member_fingerprint_dir(&name, m));
+            if owned {
+                fs::remove_dir_all(entry.path()).with_context(|| {
+                    format!("removing fingerprint directory {}", entry.path().display())
+                })?;
+                removed += 1;
+            }
         }
     }
     Ok(removed)
@@ -397,8 +432,13 @@ fn fold_counts(stdout_jsonl: &str) -> MessageCounts {
         match classify_line(line) {
             JsonLine::CompilerMessage { code } => {
                 counts.compiler_messages += 1;
-                if let Some(code) = code {
-                    *counts.by_lint.entry(code).or_insert(0) += 1;
+                // Only `clippy::`-coded diagnostics are Clippy findings.
+                // Plain rustc lint codes (`unused_variables`) and compiler
+                // error codes would otherwise mislabel the observed
+                // diagnostic population; the broader compiler-message count
+                // above retains them separately.
+                if let Some(clippy_code) = code.filter(|c| c.starts_with("clippy::")) {
+                    *counts.by_lint.entry(clippy_code).or_insert(0) += 1;
                     counts.clippy_findings_total += 1;
                 }
             }
@@ -416,6 +456,36 @@ fn read_log(path: &Path) -> Result<String> {
         .read_to_string(&mut buf)
         .with_context(|| format!("reading {}", path.display()))?;
     Ok(buf)
+}
+
+// ---------------------------------------------------------------------------
+// Non-lint command-failure discrimination
+// ---------------------------------------------------------------------------
+
+/// Cargo/rustc top-level failure texts that identify a non-lint command
+/// failure: `--locked` lock-file conflicts, custom-build-command failures,
+/// workspace manifest load failures, rustc internal compiler errors, and the
+/// generic cargo orchestration form. A non-zero clippy exit carrying one of
+/// these is NOT lint debt; recording it would present a partial runtime as a
+/// completed measurement, so the driver aborts instead.
+const HARD_FAILURE_SIGNATURES: [&str; 5] = [
+    "the lock file",
+    "failed to run custom build command",
+    "failed to load manifest",
+    "internal compiler error",
+    "error: failed to",
+];
+
+/// First hard-failure signature present in `stderr_text`, if any.
+fn hard_command_failure(stderr_text: &str) -> Option<&'static str> {
+    HARD_FAILURE_SIGNATURES.into_iter().find(|signature| stderr_text.contains(signature))
+}
+
+/// Warm passes need an unmeasured same-scope priming pass so their timed run
+/// measures steady-state re-check cost of its own scope; cold passes already
+/// share one canonical starting state through fresh invalidation.
+fn pass_is_primed(state: ClippyCacheState) -> bool {
+    state == ClippyCacheState::Warm
 }
 
 // ---------------------------------------------------------------------------
@@ -458,6 +528,31 @@ pub fn run(args: ClippyCostMeasureArgs) -> Result<()> {
             };
 
             let label = format!("{}/{}", state.label(), scope.label());
+
+            // Warm passes are primed with an unmeasured run of the same
+            // scope first: without it, warm/all-targets inherits compilation
+            // performed by the earlier warm/lib pass and the two timings do
+            // not start from comparable cache states. Cold passes already
+            // share one canonical starting state via the fresh invalidation
+            // above, so priming them would only double their cost.
+            if pass_is_primed(state) {
+                println!("==> priming [{label}] (unmeasured)");
+                let prime_argv = clippy_argv(scope);
+                let prime_stdout =
+                    logs_dir.join(format!("{}.prime.stdout.jsonl", label.replace('/', "_")));
+                let prime_stderr =
+                    logs_dir.join(format!("{}.prime.stderr.log", label.replace('/', "_")));
+                run_with_watchdog(
+                    &cargo,
+                    &prime_argv,
+                    &root,
+                    &prime_stdout,
+                    &prime_stderr,
+                    timeout,
+                )
+                .with_context(|| format!("priming pass [{label}] failed"))?;
+            }
+
             println!("==> measuring [{label}]");
             let argv = clippy_argv(scope);
             let stdout_log = logs_dir.join(format!("{}.stdout.jsonl", label.replace('/', "_")));
@@ -470,6 +565,18 @@ pub fn run(args: ClippyCostMeasureArgs) -> Result<()> {
                     .with_context(|| format!("measurement pass [{label}] failed"))?;
             let duration_ms = start.elapsed().as_millis();
             let finished_at = Utc::now();
+
+            if exit_code != 0 {
+                let stderr_text = read_log(&stderr_log)?;
+                if let Some(signature) = hard_command_failure(&stderr_text) {
+                    bail!(
+                        "measurement pass [{label}] exited {exit_code} but stderr reports a \
+                         non-lint command failure ({signature:?}); refusing to record a partial \
+                         runtime as a completed measurement — see {}",
+                        stderr_log.display()
+                    );
+                }
+            }
 
             let counts = fold_counts(&read_log(&stdout_log)?);
             println!(
@@ -525,10 +632,12 @@ pub fn run(args: ClippyCostMeasureArgs) -> Result<()> {
         summary,
         notes: vec![
             "Instrument for the #11736 decision-1 prerequisite: time workspace clippy by target-kind scope before any gate-flag change.",
-            "members-cold removes workspace-member fingerprint dirs only; dependency artifacts stay cached.",
+            "members-cold removes workspace-member fingerprint dirs only; dependency artifacts stay cached (base and configured-triple roots both invalidated).",
             "Each members-cold pass is preceded by a fresh invalidation so cold measurements share one canonical starting state.",
+            "Each warm pass is preceded by an unmeasured same-scope priming pass so both warm timings start from comparable steady-state cache states.",
             "--keep-going is mandatory on all-targets so a failing crate cannot mask downstream timing (#11736 census method).",
-            "Non-zero clippy exits are recorded, not fatal: current main carries known deny-level all-targets tranche debt.",
+            "Non-zero clippy exits are recorded as lint debt only when stderr carries no non-lint command-failure signature; lock-file conflicts, build-script failures, manifest load failures, and internal compiler errors abort without a receipt.",
+            "clippy_findings_total and by_lint count only clippy::-coded diagnostics; plain rustc lint/error codes are retained separately in compiler_messages.",
             "Finding counts are contextual observability, not the census method (governed lints are not downgraded here).",
         ],
     };
@@ -650,18 +759,54 @@ mod tests {
             "{\"reason\":\"compiler-message\",\"message\":{\"level\":\"warning\",\"code\":{\"code\":\"clippy::print_stdout\"}}}\n",
             "{\"reason\":\"compiler-message\",\"message\":{\"level\":\"warning\",\"code\":{\"code\":\"clippy::print_stdout\"}}}\n",
             "{\"reason\":\"compiler-message\",\"message\":{\"level\":\"error\",\"code\":{\"code\":\"clippy::expect_used\"}}}\n",
+            "{\"reason\":\"compiler-message\",\"message\":{\"level\":\"warning\",\"code\":{\"code\":\"unused_variables\"}}}\n",
+            "{\"reason\":\"compiler-message\",\"message\":{\"level\":\"error\",\"code\":{\"code\":\"E0382\"}}}\n",
             "{\"reason\":\"compiler-message\",\"message\":{\"level\":\"error\"}}\n",
             "{\"reason\":\"build-finished\",\"success\":true}\n",
             "garbage\n",
             "\n"
         );
         let counts = fold_counts(input);
-        assert_eq!(counts.compiler_messages, 4);
+        // Every compiler message is retained in the broad count...
+        assert_eq!(counts.compiler_messages, 6);
+        // ...but only clippy::-coded diagnostics are Clippy findings: plain
+        // rustc lint codes (unused_variables) and compiler error codes
+        // (E0382) must not mislabel the finding population.
         assert_eq!(counts.clippy_findings_total, 3);
         assert_eq!(counts.unparsed_lines, 1);
         assert_eq!(counts.by_lint.get("clippy::print_stdout"), Some(&2));
         assert_eq!(counts.by_lint.get("clippy::expect_used"), Some(&1));
         assert_eq!(counts.by_lint.len(), 2);
+        assert!(!counts.by_lint.contains_key("unused_variables"));
+        assert!(!counts.by_lint.contains_key("E0382"));
+    }
+
+    #[test]
+    fn hard_failure_signatures_reject_non_lint_command_failures() {
+        let lockfile_conflict = "error: the lock file E:\\repo\\Cargo.lock needs to be updated \
+                                 but --locked was passed to prevent updating it";
+        let build_script = "error: failed to run custom build command for `tree-sitter-perl-rs`";
+        let manifest_load = "error: failed to load manifest for workspace member `xtask`";
+        let ice = "error: internal compiler error: compiler/rustc_middle/src/thir.rs:99: not yet implemented";
+        assert_eq!(hard_command_failure(lockfile_conflict), Some("the lock file"));
+        assert_eq!(hard_command_failure(build_script), Some("failed to run custom build command"));
+        assert_eq!(hard_command_failure(manifest_load), Some("failed to load manifest"));
+        assert_eq!(hard_command_failure(ice), Some("internal compiler error"));
+
+        // Deny-level lint debt keeps its recorded-not-fatal treatment.
+        let lint_debt = concat!(
+            "error: use of `expect` is not allowed\n",
+            "  --> xtask\\src\\main.rs:12:10\n",
+            "error: could not compile `perl-lsp-rs-core` (lib) due to 5 previous errors\n"
+        );
+        assert_eq!(hard_command_failure(lint_debt), None);
+        assert_eq!(hard_command_failure(""), None);
+    }
+
+    #[test]
+    fn only_warm_passes_are_primed() {
+        assert!(pass_is_primed(ClippyCacheState::Warm));
+        assert!(!pass_is_primed(ClippyCacheState::MembersCold));
     }
 
     #[test]
@@ -807,6 +952,55 @@ mod tests {
         let members = [member("perl-token")];
         let removed = invalidate_member_fingerprints(target.path(), &members)?;
         assert_eq!(removed, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn invalidation_covers_configured_triple_roots() -> Result<()> {
+        let target = tempfile::tempdir()?;
+        let base_fp = target.path().join("debug").join(".fingerprint");
+        let triple_fp =
+            target.path().join("x86_64-unknown-linux-gnu").join("debug").join(".fingerprint");
+        for root in [&base_fp, &triple_fp] {
+            fs::create_dir_all(root)?;
+        }
+        // Member units under both the base and the configured-triple roots.
+        fs::create_dir_all(base_fp.join("perl-token-1a2b3c4d"))?;
+        fs::create_dir_all(triple_fp.join("perl-token-99ff00aa11223344"))?;
+        // A dependency unit under the triple must survive.
+        fs::create_dir_all(triple_fp.join("serde-deadbeefdeadbeef"))?;
+
+        let members = [member("perl-token")];
+        let removed = invalidate_member_fingerprints(target.path(), &members)?;
+        assert_eq!(removed, 2);
+        assert!(!base_fp.join("perl-token-1a2b3c4d").exists());
+        assert!(!triple_fp.join("perl-token-99ff00aa11223344").exists());
+        assert!(triple_fp.join("serde-deadbeefdeadbeef").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn fingerprint_roots_list_base_then_structural_platform_dirs() -> Result<()> {
+        let target = tempfile::tempdir()?;
+        // Without any platform subdirectory there is exactly the base root.
+        assert_eq!(
+            fingerprint_roots(target.path()),
+            vec![target.path().join("debug").join(".fingerprint")]
+        );
+
+        // Structural qualification: an immediate child holding its own
+        // debug/.fingerprint counts as a platform dir; plain dirs do not.
+        let linux = target.path().join("aarch64-apple-darwin");
+        fs::create_dir_all(linux.join("debug").join(".fingerprint"))?;
+        fs::create_dir_all(target.path().join("not-a-triple"))?;
+        let mut roots = fingerprint_roots(target.path());
+        roots.sort();
+        let mut expected = vec![
+            target.path().join("debug").join(".fingerprint"),
+            linux.join("debug").join(".fingerprint"),
+        ];
+        expected.sort();
+        assert_eq!(roots, expected);
         Ok(())
     }
 }
