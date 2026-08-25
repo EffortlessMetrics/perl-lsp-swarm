@@ -527,6 +527,7 @@ fn projected_native_range(
         native_slice,
         options,
         admitted.end_byte == content.len(),
+        admitted_end_is_line_end(formatted, formatted_end),
     );
     let mut updated = String::with_capacity(formatted.len() - native_slice.len() + projected.len());
     updated.push_str(&formatted[..admitted.start_byte]);
@@ -537,7 +538,7 @@ fn projected_native_range(
 
 /// Apply LSP whitespace options strictly inside the admitted bytes.
 ///
-/// The replacement covers exactly the admitted interval â€” endpoints and end
+/// The replacement covers exactly the admitted interval — endpoints and end
 /// exclusivity are honored, no line is widened into the edit, and final-newline
 /// options act only when the admitted target reaches true EOF. Returns the
 /// replacement text and the fully spliced document when anything changed.
@@ -552,7 +553,10 @@ fn whitespace_within_admitted(
     let slice = content.get(admitted.start_byte..admitted.end_byte)?;
     let mut projected = String::with_capacity(slice.len());
     if options.trim_trailing_whitespace.unwrap_or(false) {
-        projected.push_str(&trim_trailing_whitespace(slice));
+        projected.push_str(&trim_trailing_whitespace_in_slice(
+            slice,
+            admitted_end_is_line_end(content, admitted.end_byte),
+        ));
     } else {
         projected.push_str(slice);
     }
@@ -737,18 +741,19 @@ fn native_edit_to_format_edit(edit: crate::tooling::perltidy::TextEdit) -> Forma
 }
 
 fn apply_lsp_whitespace_options(content: &str, options: &FormattingOptions) -> String {
-    apply_lsp_whitespace_options_with_eof(content, options, true)
+    apply_lsp_whitespace_options_with_eof(content, options, true, true)
 }
 
 fn apply_lsp_whitespace_options_with_eof(
     content: &str,
     options: &FormattingOptions,
     allow_final_newline: bool,
+    trim_tail: bool,
 ) -> String {
     let mut output = content.to_string();
 
     if options.trim_trailing_whitespace.unwrap_or(false) {
-        output = trim_trailing_whitespace(&output);
+        output = trim_trailing_whitespace_in_slice(&output, trim_tail);
     }
     if allow_final_newline && options.trim_final_newlines.unwrap_or(false) {
         output.truncate(output.trim_end_matches(['\r', '\n']).len());
@@ -763,7 +768,15 @@ fn apply_lsp_whitespace_options_with_eof(
     output
 }
 
-fn trim_trailing_whitespace(content: &str) -> String {
+/// Trim trailing spaces and tabs before every line separator fully contained
+/// in the slice.
+///
+/// The residual tail after the last contained separator counts as trailing
+/// only when `trim_tail` holds — that is, when the admitted interval ends at
+/// a true document line boundary (EOF or directly before a separator).
+/// Otherwise the tail continues mid-line in the surrounding document and its
+/// whitespace is interior content that must survive.
+fn trim_trailing_whitespace_in_slice(content: &str, trim_tail: bool) -> String {
     let mut result = String::with_capacity(content.len());
     let bytes = content.as_bytes();
     let mut line_start = 0;
@@ -777,8 +790,21 @@ fn trim_trailing_whitespace(content: &str) -> String {
         result.push_str(&content[newline..newline + ending_len]);
         line_start = newline + ending_len;
     }
-    result.push_str(content[line_start..].trim_end_matches([' ', '\t']));
+    if trim_tail {
+        result.push_str(content[line_start..].trim_end_matches([' ', '\t']));
+    } else {
+        result.push_str(&content[line_start..]);
+    }
     result
+}
+
+/// True when `end_byte` ends the last line's content of `content`: either the
+/// offset is EOF or the next byte begins a line separator.
+fn admitted_end_is_line_end(content: &str, end_byte: usize) -> bool {
+    match content.as_bytes().get(end_byte) {
+        None => true,
+        Some(byte) => matches!(byte, b'\r' | b'\n'),
+    }
 }
 
 fn unchanged_document(content: &str) -> FormattedDocument {
@@ -1084,6 +1110,74 @@ mod decision_projection_tests {
         assert_eq!(decision.document.edits[0].range.end.character, 13);
         assert_eq!(decision.document.edits[0].new_text, "# trailing");
         assert_eq!(decision.document.text, "# trailing\nsecond\n");
+    }
+
+    #[test]
+    fn trim_trailing_whitespace_treats_only_true_line_boundaries_as_trailing() {
+        // A mid-line admitted boundary continues the surrounding line, so
+        // the spaces it selects are interior document whitespace, not
+        // trailing; a boundary at the line-content end still trims exactly
+        // like the whole-document option contract.
+        let source = "ab  \ncd\n";
+        let geometry = SourceGeometry::new(source);
+        let mut options = range_options();
+        options.trim_trailing_whitespace = Some(true);
+
+        let mid_line = admitted_fixture(source, 0, 0, 0, 3);
+        let decision =
+            project_native_range(source, &geometry, &mid_line, &options, no_change_typed(source))
+                .expect("projection must not error");
+        assert_eq!(decision.outcome.disposition, FormatDisposition::NoChange);
+        assert!(
+            decision.document.edits.is_empty(),
+            "interior whitespace must survive a mid-line boundary"
+        );
+        assert_eq!(decision.document.text, source);
+
+        let line_end = admitted_fixture(source, 0, 0, 0, 4);
+        let decision =
+            project_native_range(source, &geometry, &line_end, &options, no_change_typed(source))
+                .expect("projection must not error");
+        assert_eq!(decision.outcome.disposition, FormatDisposition::Applied);
+        assert_eq!(decision.document.text, "ab\ncd\n");
+        assert_eq!(decision.document.edits.len(), 1);
+        assert_eq!(decision.document.edits[0].new_text, "ab");
+    }
+
+    #[test]
+    fn applied_native_projection_respects_the_same_interior_boundary() {
+        let source = "abc   def\nzzz\n";
+        let geometry = SourceGeometry::new(source);
+        let mut options = range_options();
+        options.trim_trailing_whitespace = Some(true);
+        let edit = |new_text: &str, ec: u32| crate::tooling::perltidy::TextEdit {
+            range: crate::tooling::perltidy::TextRange::new(
+                crate::tooling::perltidy::TextPosition::new(0, 0),
+                crate::tooling::perltidy::TextPosition::new(0, ec),
+            ),
+            new_text: new_text.to_string(),
+        };
+
+        // The fabricated applied edit keeps trailing spaces before the
+        // admitted mid-line end; trimming them would delete live line
+        // content beyond the boundary.
+        let mid_line = admitted_fixture(source, 0, 0, 0, 6);
+        let typed = applied_typed("abZ   def\nzzz\n", edit("abZ   ", 6));
+        let decision = project_native_range(source, &geometry, &mid_line, &options, typed)
+            .expect("projection must not error");
+        assert_eq!(decision.outcome.disposition, FormatDisposition::Applied);
+        assert_eq!(decision.document.text, "abZ   def\nzzz\n");
+        assert_eq!(decision.document.edits.len(), 1);
+        assert_eq!(decision.document.edits[0].new_text, "abZ   ");
+
+        // At a true line-content boundary the same option still trims the tail.
+        let line_end = admitted_fixture(source, 0, 0, 0, 9);
+        let typed = applied_typed("abc   X  \nzzz\n", edit("abc   X  ", 9));
+        let decision = project_native_range(source, &geometry, &line_end, &options, typed)
+            .expect("projection must not error");
+        assert_eq!(decision.outcome.disposition, FormatDisposition::Applied);
+        assert_eq!(decision.document.text, "abc   X\nzzz\n");
+        assert_eq!(decision.document.edits[0].new_text, "abc   X");
     }
 
     #[test]
