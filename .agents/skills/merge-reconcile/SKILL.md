@@ -124,12 +124,14 @@ integration dimensions affected by the new commit. Never use administrative bypa
 discover what is failing or to outrun unresolved review/integration evidence.
 
 If an armed auto-merge has not fired, one manual probe merge through the REST endpoint
-(`gh api -X PUT repos/{owner}/{repo}/pulls/<n>/merge -f merge_method=squash`) is the
-sanctioned next step, not polling churn — but it is the same administrator bypass of
-legacy branch-protection checks and merges past a still-pending required context:
-probe ONLY once `ripr+ New Gap Gate` reports green on the head SHA, or an explicit
-waiver is recorded on the PR or issue naming the reason (#12289's probe merged 42
-minutes before the required check failed; #12565 confirmed the mechanism).
+(`gh api -X PUT repos/{owner}/{repo}/pulls/<n>/merge -f merge_method=squash -f
+sha=<current-head-sha>`, the compare-and-swap equivalent of `--match-head-commit`) is
+the sanctioned next step, not polling churn — but it is the same administrator bypass
+of legacy branch-protection checks and merges past a still-pending required context:
+probe ONLY once the required union is green on the head SHA — `ripr+ New Gap Gate` is
+its last reporter — or an explicit waiver is recorded on the PR or issue naming every
+unmet requirement (#12289's probe merged 42 minutes before the required check failed;
+#12565 confirmed the mechanism).
 
 ## Reconciliation
 
