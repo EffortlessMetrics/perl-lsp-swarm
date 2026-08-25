@@ -70,7 +70,7 @@ class RcIntakeValidationTests(unittest.TestCase):
                 "note": "an observed-open PR cannot already be landed",
             }
         )
-        self.assert_invalid(receipt, "omitted from every disposition")
+        self.assert_invalid(receipt, "squash subject does not close that PR")
 
     def test_rejects_open_pr_listed_as_both_open_and_already_included(self) -> None:
         receipt = copy.deepcopy(self.receipt)
@@ -81,7 +81,12 @@ class RcIntakeValidationTests(unittest.TestCase):
                 "note": "still-open #12290 cannot simultaneously be landed tree state",
             }
         )
-        self.assert_invalid(receipt, "disjoint from the observed open queue")
+        self.assert_invalid(receipt, "squash subject does not close that PR")
+
+    def test_rejects_number_rebound_to_unrelated_landed_sha(self) -> None:
+        receipt = copy.deepcopy(self.receipt)
+        receipt["already_included"][0]["landed_sha"] = "35ada84dc64c881151671bfbe2076ebd0cb0d5ca"
+        self.assert_invalid(receipt, "squash subject does not close that PR")
 
     def test_rejects_count_drift_when_queue_entry_is_dropped(self) -> None:
         receipt = copy.deepcopy(self.receipt)
@@ -133,7 +138,11 @@ class RcIntakeValidationTests(unittest.TestCase):
         receipt = copy.deepcopy(self.receipt)
         receipt["not_proven"] = [{"number": 12320, "reason": "relevance could not be determined"}]
         receipt["included_prs"] = [
-            {"number": 12320, "reason": "unproven work smuggled into the RC"}
+            {
+                "number": 12320,
+                "observed_head_sha": "c" * 40,
+                "reason": "unproven work smuggled into the RC",
+            }
         ]
         self.assert_invalid(receipt, "overlaps an earlier disposition")
 
@@ -162,7 +171,7 @@ class RcIntakeValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             receipt_path = Path(directory) / "receipt.json"
             receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-            self.assertEqual(MODULE.main(["--receipt", str(receipt_path)]), 1)
+            self.assertEqual(MODULE.main(["--receipt", str(receipt_path), "--root", str(ROOT)]), 1)
 
     def test_canonical_round_trip_is_stable(self) -> None:
         first = MODULE.canonical_bytes(self.receipt)

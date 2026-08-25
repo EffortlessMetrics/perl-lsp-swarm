@@ -70,7 +70,48 @@ DISPOSITION_LISTS = [
     "not_proven",
 ]
 
+RECEIPT_KEYS = {
+    "schema_version",
+    "release",
+    "track",
+    "observation_sha",
+    "observed_at_utc",
+    "frozen_product_sha",
+    "release_branch",
+    "queue_snapshot",
+    "included_prs",
+    "already_included",
+    "required_blockers",
+    "excluded_post_rc",
+    "superseded_for_release",
+    "not_release_relevant",
+    "not_proven",
+    "known_limitations",
+    "public_claim_boundary",
+    "allowed_change_classes",
+    "invalidation",
+    "feature_intake_closed",
+    "issue_closures_required",
+}
+SNAPSHOT_KEYS = {
+    "query",
+    "query_limit",
+    "observed_open_count",
+    "receipt_count",
+    "observed_numbers",
+    "set_equality",
+    "classification_basis",
+}
+ALREADY_KEYS = {"number", "landed_sha", "note"}
+INCLUDED_ROW_KEYS = {"number", "observed_head_sha", "reason"}
+BLOCKER_ROW_KEYS = {"number", "owner", "repair_or_withdrawal", "proof_path"}
+REASON_ROW_KEYS = {"number", "reason"}
+CLASSIFICATION_BASIS_KEYS = {"surfaces_consulted", "queries", "raw_response_retention"}
+
+REMOTE_URL = "https://github.com/EffortlessMetrics/perl-lsp-swarm.git"
+
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+SQUASH_SUBJECT_PATTERN = re.compile(r"\(#(\d+)\)\s*$")
 
 
 def _require(condition: bool, message: str) -> None:
@@ -111,24 +152,47 @@ def _landed_sha_is_ancestor(repository_root: Path, landed_sha: str, observation_
     )
 
 
-def _number_entries(value: Any, name: str) -> list[dict[str, Any]]:
+def _git(repository_root: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ["git", *arguments],
+        cwd=repository_root,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"git {' '.join(arguments[:3])} failed; cannot prove receipt bindings")
+    return result.stdout.decode("utf-8", errors="strict").strip()
+
+
+def _number_entries(value: Any, name: str, row_keys: set[str]) -> list[dict[str, Any]]:
     _require(isinstance(value, list), f"{name} must be a list")
     for index, entry in enumerate(value):
         entry_object = _object(entry, f"{name}[{index}]")
+        _exact_keys(entry_object, row_keys, f"{name}[{index}]")
         number = entry_object.get("number")
         _require(
             isinstance(number, int) and not isinstance(number, bool) and number > 0,
             f"{name}[{index}].number must be a positive integer",
         )
+        if "observed_head_sha" in row_keys:
+            _sha(entry_object.get("observed_head_sha"), f"{name}[{index}].observed_head_sha")
         _require("reason" in entry_object, f"{name}[{index}] requires reason")
         _string(entry_object.get("reason"), f"{name}[{index}].reason")
     return value
+
+
+def _exact_keys(value: Any, expected: set[str], name: str) -> None:
+    _object(value, name)
+    unexpected = sorted(set(value) - expected)
+    missing = sorted(expected - set(value))
+    _require(not unexpected, f"{name} has unexpected keys {unexpected}; the schema is closed")
+    _require(not missing, f"{name} is missing keys {missing}")
 
 
 def validate_intake(receipt: Any, repository_root: Path | None = None) -> None:
     """Raise ``ValueError`` unless the RC intake receipt holds together."""
 
     data = _object(receipt, "receipt")
+    _exact_keys(data, RECEIPT_KEYS, "receipt")
     _require(data.get("schema_version") == SCHEMA_VERSION, "schema_version must be v0.18_rc_intake.v1")
     _require(data.get("release") == RELEASE, "release must be 0.18.0-rc.1")
     _require(data.get("track") == TRACK, "track must be public-alpha-release-candidate")
@@ -139,12 +203,25 @@ def validate_intake(receipt: Any, repository_root: Path | None = None) -> None:
         isinstance(data.get("observed_at_utc"), str) and data["observed_at_utc"].endswith("Z"),
         "observed_at_utc must be a UTC timestamp ending in Z",
     )
+    if repository_root is not None:
+        remote = _git(repository_root, "remote", "get-url", "origin")
+        _require(
+            remote.rstrip("/").endswith("EffortlessMetrics/perl-lsp-swarm") or remote.endswith("EffortlessMetrics/perl-lsp-swarm.git"),
+            f"origin remote is not the canonical repository: {remote!r}",
+        )
+        _landed_sha_is_ancestor(
+            repository_root,
+            data["observation_sha"],
+            _git(repository_root, "rev-parse", "HEAD"),
+            "observation_sha",
+        )
     _require(
         data.get("frozen_product_sha") is None,
         "admission receipts cannot record a frozen product SHA; the denominator is the merge commit that introduces this receipt",
     )
 
     snapshot = _object(data.get("queue_snapshot"), "queue_snapshot")
+    _exact_keys(snapshot, SNAPSHOT_KEYS, "queue_snapshot")
     _require(snapshot.get("query") == OBSERVATION_QUERY, "queue_snapshot.query must pin the repository and bounded query")
     _require(snapshot.get("query_limit") == QUERY_LIMIT, "queue_snapshot.query_limit must be 100")
     observed_count = snapshot.get("observed_open_count")
@@ -163,11 +240,28 @@ def validate_intake(receipt: Any, repository_root: Path | None = None) -> None:
         "observed_open_count, receipt_count, and len(observed_numbers) must agree",
     )
 
+    basis = _object(snapshot.get("classification_basis"), "queue_snapshot.classification_basis")
+    _exact_keys(basis, CLASSIFICATION_BASIS_KEYS, "queue_snapshot.classification_basis")
+    surfaces = basis.get("surfaces_consulted")
+    _require(isinstance(surfaces, list) and surfaces, "classification_basis.surfaces_consulted must be a non-empty list")
+    for index, surface in enumerate(surfaces):
+        _string(surface, f"classification_basis.surfaces_consulted[{index}]")
+    queries = basis.get("queries")
+    _require(isinstance(queries, list) and queries, "classification_basis.queries must be a non-empty list")
+    for index, query in enumerate(queries):
+        _string(query, f"classification_basis.queries[{index}]")
+    retention = basis.get("raw_response_retention")
+    _require(
+        isinstance(retention, str) and retention,
+        "classification_basis.raw_response_retention must disclose whether raw observation bytes were retained",
+    )
+
     already = data.get("already_included")
     _require(isinstance(already, list), "already_included must be a list")
     already_numbers: list[int] = []
     for index, entry in enumerate(already):
         entry_object = _object(entry, f"already_included[{index}]")
+        _exact_keys(entry_object, ALREADY_KEYS, f"already_included[{index}]")
         number = entry_object.get("number")
         _require(isinstance(number, int) and number > 0, f"already_included[{index}].number must be a positive integer")
         already_numbers.append(number)
@@ -181,14 +275,26 @@ def validate_intake(receipt: Any, repository_root: Path | None = None) -> None:
                 data["observation_sha"],
                 f"already_included[{index}].landed_sha",
             )
+            subject = _git(repository_root, "log", "-1", "--format=%s", entry["landed_sha"])
+            subject_match = SQUASH_SUBJECT_PATTERN.search(subject)
+            _require(
+                subject_match is not None and int(subject_match.group(1)) == number,
+                f"already_included[{index}] binds number {number} to landed_sha whose squash subject does not close that PR: {subject!r}",
+            )
     _require(len(already_numbers) == len(set(already_numbers)), "already_included.numbers must be unique")
+    already_set = set(already_numbers)
+    _require(
+        already_set.isdisjoint(set(numbers)),
+        f"already_included must stay disjoint from the observed open queue: {sorted(already_set & set(numbers))}",
+    )
 
-    included = _number_entries(data.get("included_prs"), "included_prs")
+    included = _number_entries(data.get("included_prs"), "included_prs", INCLUDED_ROW_KEYS)
     blockers = data.get("required_blockers")
     _require(isinstance(blockers, list), "required_blockers must be a list")
     blocker_numbers: list[int] = []
     for index, entry in enumerate(blockers):
         entry_object = _object(entry, f"required_blockers[{index}]")
+        _exact_keys(entry_object, BLOCKER_ROW_KEYS, f"required_blockers[{index}]")
         number = entry_object.get("number")
         _require(isinstance(number, int) and number > 0, f"required_blockers[{index}].number must be a positive integer")
         blocker_numbers.append(number)
@@ -199,10 +305,10 @@ def validate_intake(receipt: Any, repository_root: Path | None = None) -> None:
         )
         _string(entry_object.get("proof_path"), f"required_blockers[{index}].proof_path")
 
-    excluded = _number_entries(data.get("excluded_post_rc"), "excluded_post_rc")
-    superseded = _number_entries(data.get("superseded_for_release"), "superseded_for_release")
-    irrelevant = _number_entries(data.get("not_release_relevant"), "not_release_relevant")
-    unproven = _number_entries(data.get("not_proven"), "not_proven")
+    excluded = _number_entries(data.get("excluded_post_rc"), "excluded_post_rc", REASON_ROW_KEYS)
+    superseded = _number_entries(data.get("superseded_for_release"), "superseded_for_release", REASON_ROW_KEYS)
+    irrelevant = _number_entries(data.get("not_release_relevant"), "not_release_relevant", REASON_ROW_KEYS)
+    unproven = _number_entries(data.get("not_proven"), "not_proven", REASON_ROW_KEYS)
 
     buckets: dict[str, list[int]] = {
         "included_prs": [entry["number"] for entry in included],
@@ -224,7 +330,6 @@ def validate_intake(receipt: Any, repository_root: Path | None = None) -> None:
         overlap = covered & member_set
         _require(not overlap, f"{name} overlaps an earlier disposition for PRs {sorted(overlap)}")
         covered |= member_set
-    already_set = set(already_numbers)
     _require(
         covered.isdisjoint(already_set),
         f"already_included must stay disjoint from the observed open queue: {sorted(covered & already_set)}",

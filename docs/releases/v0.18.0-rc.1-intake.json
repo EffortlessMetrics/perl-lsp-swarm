@@ -185,7 +185,8 @@
     "frozen_product_sha is null at admission by construction: the product denominator is exactly the squash-merge commit that introduces this receipt onto main. The concrete SHA and the release/0.18 ref read-back are recorded on issue #12228 immediately after merge.",
     "Classification observes title, body, draft state, and touched files of the 68 open PRs at observation_sha; later main movement does not move this RC.",
     "PR #12290 is release-affecting but was red (Rust formatting, CI Gate shard parser_stack) at observation, so it cannot deterministically land before the immediate pin and is excluded_post_rc rather than included_rc.",
-    "No open PR was admitted into the RC; included_prs is empty because the freeze is immediate and deterministic, not because the queue was empty."
+    "No open PR was admitted into the RC; included_prs is empty because the freeze is immediate and deterministic, not because the queue was empty.",
+    "classification_basis records the exact surfaces and bounded queries consulted; raw per-PR responses were not retained as bytes, so reproduction requires re-running those pinned queries at observation_sha."
   ],
   "not_proven": [],
   "not_release_relevant": [
@@ -332,6 +333,21 @@
     "remote_ai": "fail-closed-without-trusted-adapter"
   },
   "queue_snapshot": {
+    "classification_basis": {
+      "queries": [
+        "gh pr list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 100 --json number,title,headRefName,updatedAt,isDraft",
+        "gh pr diff <number> --name-only ambiguity spot-checks: 12246 12333 12313 12213 12182 12185 12180 12087 12065 12272 12255 12059 11995 12002 12040",
+        "git merge-base --is-ancestor and git log --grep landed-state verification of 11983/11999/12004"
+      ],
+      "raw_response_retention": "Per-PR head OIDs and file lists were consulted live but not byte-captured into this receipt; dispositions carry the decisive reason per PR. Later re-derivation must re-run the pinned queries at observation_sha.",
+      "surfaces_consulted": [
+        "title",
+        "body",
+        "is_draft",
+        "touched files (gh pr diff --name-only where surface was ambiguous)",
+        "checks state where landing likelihood mattered (#12290)"
+      ]
+    },
     "observed_numbers": [
       7332,
       7948,
