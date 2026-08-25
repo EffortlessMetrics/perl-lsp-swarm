@@ -52,7 +52,7 @@ jobs:
           pinned_commit="$(jq -r '.upstream.selected_commit' "${VIM_LSP_SUBJECT_MANIFEST}")"
           echo "pinned vim-lsp commit: ${pinned_commit}"
           git clone --quiet --no-checkout https://github.com/prabirshrestha/vim-lsp.git target/vim-lsp-subject
-          git -C target/vim-lsp-subject fetch --quiet --depth 1 "origin ${pinned_commit}"
+          git -C target/vim-lsp-subject fetch --quiet --depth 1 origin "${pinned_commit}"
           git -C target/vim-lsp-subject checkout --quiet FETCH_HEAD
           # The runner re-verifies commit, tree, and entry-file digests
           # against the manifest before launch; a fetch of the wrong bytes
