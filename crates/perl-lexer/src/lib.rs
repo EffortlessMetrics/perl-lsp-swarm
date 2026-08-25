@@ -619,7 +619,6 @@ impl<'a> PerlLexer<'a> {
 
     // Token-specific parsing methods
 
-    #[inline]
     fn emit_eof(&mut self) -> Option<Token> {
         if self.eof_emitted {
             return None;
@@ -633,6 +632,7 @@ impl<'a> PerlLexer<'a> {
         })
     }
 
+    #[inline]
     fn skip_whitespace_and_comments(&mut self) {
         // Don't reset after_newline if we're at the start of a line
         if self.position > 0 && self.position != self.line_start_offset {
