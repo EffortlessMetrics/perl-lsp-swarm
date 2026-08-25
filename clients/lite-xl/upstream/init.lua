@@ -1784,11 +1784,12 @@ function lsp.update_document(doc, request_completion)
       goto continue
     end
     local sync_kind = server.capabilities.textDocumentSync.change
-    if
-      sync_kind ~= Server.text_document_sync_kind.None
-      and
-      server:can_push() -- ensure we don't loose incremental changes
-    then
+    -- Local patch (#10833): no enqueue admission gate. The former
+    -- server:can_push() hit-rate probe delayed batch emission under unrelated
+    -- provider traffic and could starve document truth; batches now always
+    -- queue (overwriting the unsent predecessor) and the send loop paces
+    -- delivery.
+    if sync_kind ~= Server.text_document_sync_kind.None then
       local completion_callback = nil
       if request_completion then
         completion_callback = function() request_signature_completion(doc) end
