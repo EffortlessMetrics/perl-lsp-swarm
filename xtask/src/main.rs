@@ -4616,6 +4616,11 @@ fn run_cli(cli: Cli) -> Result<()> {
                     let repo_root =
                         utils::project_root().map_err(|error| eyre!(error.to_string()))?;
                     if journey == "bootstrap-diagnostics" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
                         let variant =
                             xtask::vim_host_diagnostics_run::DiagnosticsFixtureVariant::from_id(
                                 &fixture_variant,

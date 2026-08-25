@@ -810,12 +810,7 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                     .get("candidate_sha256")
                     .context("registration_selected omitted candidate_sha256")?;
                 validate_sha256(digest, "registration candidate_sha256")?;
-                let rank = lifecycle_rank(event.kind);
-                ensure!(
-                    rank >= last_lifecycle_rank,
-                    "driver lifecycle events arrived out of order"
-                );
-                last_lifecycle_rank = rank;
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::BufferEnabled => {
                 ensure!(
@@ -850,6 +845,7 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                     event.details.get("mode") == Some(&"push".to_string()),
                     "diagnostics_observed must bind the observed push update path"
                 );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::DefectStateObserved => {
                 ensure!(
@@ -864,6 +860,7 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                     event.details.get("errors").is_some_and(|value| value.parse::<u32>().is_ok()),
                     "defect_state_observed must report the client-state error count"
                 );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::DefectFixApplied => {
                 ensure!(
@@ -874,6 +871,7 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                     event.details.get("edit_path") == Some(&"buffer_did_change".to_string()),
                     "defect_fix_applied must bind the real buffer didChange flush path"
                 );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::CurrentStateObserved => {
                 ensure!(
@@ -892,6 +890,7 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                     event.details.get("barrier") == Some(&"diagnostics_event_and_wire".to_string()),
                     "current_state_observed must bind the deterministic currentness barrier"
                 );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             kind => {
                 ensure!(singleton.insert(kind), "duplicate singleton driver event");
@@ -939,17 +938,29 @@ fn lifecycle_rank(kind: DriverEventKind) -> u8 {
         DriverEventKind::BufferEnabled => 6,
         DriverEventKind::InitializeObserved => 7,
         DriverEventKind::RootSelected => 8,
-        DriverEventKind::DiagnosticsObserved => 9,
-        // The #10946 diagnostics-lifecycle barriers extend the diagnostics
-        // tier: they may interleave with `diagnostics_observed` but must all
-        // precede shutdown.
-        DriverEventKind::DefectStateObserved => 9,
-        DriverEventKind::DefectFixApplied => 9,
-        DriverEventKind::CurrentStateObserved => 9,
-        DriverEventKind::ShutdownStarted => 10,
-        DriverEventKind::ShutdownCompleted => 11,
-        DriverEventKind::DriverFailed => 11,
+        // The #10946 diagnostics tier carries its own strict order: wire push
+        // observed, then the client-state defect observation, then the fix
+        // edit, then the post-edit current state — all strictly before
+        // shutdown. Ranks are internal; only their order is contractual.
+        DriverEventKind::DiagnosticsObserved => 40,
+        DriverEventKind::DefectStateObserved => 41,
+        DriverEventKind::DefectFixApplied => 42,
+        DriverEventKind::CurrentStateObserved => 43,
+        DriverEventKind::ShutdownStarted => 50,
+        DriverEventKind::ShutdownCompleted => 51,
+        DriverEventKind::DriverFailed => 51,
     }
+}
+
+/// Advance the observed lifecycle rank, rejecting any event that arrives out
+/// of order. Used by every dedicated match arm so no event kind can bypass
+/// the ordering law (#10946 review finding: the dedicated arms must enforce
+/// the same ordering the fallback arm enforces).
+fn update_lifecycle_rank(kind: DriverEventKind, last_lifecycle_rank: &mut u8) -> Result<()> {
+    let rank = lifecycle_rank(kind);
+    ensure!(rank >= *last_lifecycle_rank, "driver lifecycle events arrived out of order");
+    *last_lifecycle_rank = rank;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

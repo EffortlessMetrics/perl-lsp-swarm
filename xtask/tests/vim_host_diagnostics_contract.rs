@@ -124,6 +124,15 @@ fn detail_event(sequence: u64, kind: DriverEventKind, details: &[(&str, &str)]) 
     observation
 }
 
+/// Re-number a mutated stream's sequence field after reordering so the
+/// ordering law is tested on lifecycle order alone, not on sequence
+/// contiguity (which is validated first).
+fn renumber(events: &mut [DriverEvent]) {
+    for (index, item) in events.iter_mut().enumerate() {
+        item.sequence = (index + 1) as u64;
+    }
+}
+
 fn complete_diagnostics_events(digest: &str) -> Vec<DriverEvent> {
     vec![
         event(1, DriverEventKind::HostStarted),
@@ -347,6 +356,27 @@ fn complete_diagnostics_event_stream_validates_and_laws_reject_forgeries() -> Re
     ensure!(
         validate_driver_events(&events, true).is_ok(),
         "the complete diagnostics journey must validate under the shared driver contract"
+    );
+
+    // The diagnostics lifecycle tier carries a strict order: a fix edit
+    // before the defect observation, or a lifecycle barrier after shutdown,
+    // is rejected (#10946 review repair: dedicated match arms enforce the
+    // same ordering law the fallback arm enforces).
+    let mut reordered = complete_diagnostics_events(&digest);
+    let fix = reordered.remove(10);
+    reordered.insert(9, fix);
+    renumber(&mut reordered);
+    ensure!(
+        validate_driver_events(&reordered, true).is_err(),
+        "a fix edit before the defect state observation must be rejected"
+    );
+    let mut after_shutdown = complete_diagnostics_events(&digest);
+    let current = after_shutdown.remove(11);
+    after_shutdown.push(current);
+    renumber(&mut after_shutdown);
+    ensure!(
+        validate_driver_events(&after_shutdown, true).is_err(),
+        "a currentness observation after shutdown must be rejected"
     );
 
     // A defect-state claim that does not come from the client's own state is
