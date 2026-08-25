@@ -151,12 +151,26 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
         }
         NodeKind::For { init, condition, update, body, continue_block, .. } => {
             // Registry execution order (issue #10844): init, condition, body,
-            // continue block, update.
+            // continue block, update. The initializer and the initial
+            // condition evaluation run exactly once before the first
+            // iteration, so a terminal transfer in either means control never
+            // reaches this loop or anything after it in the enclosing list:
+            // every field still receives local analysis, but the first such
+            // transfer becomes this statement's summary.
+            let mut entry_gate = None;
             if let Some(init) = init {
-                let _ = summarize_expression(init, diagnostics);
+                let summary = summarize_expression(init, diagnostics);
+                if !summary.can_fall_through {
+                    entry_gate = Some(summary);
+                }
             }
-            if let Some(condition) = condition {
-                let _ = summarize_expression(condition, diagnostics);
+            if entry_gate.is_none()
+                && let Some(condition) = condition
+            {
+                let summary = summarize_expression(condition, diagnostics);
+                if !summary.can_fall_through {
+                    entry_gate = Some(summary);
+                }
             }
             let _ = summarize_node(body, diagnostics);
             if let Some(continue_block) = continue_block {
@@ -165,7 +179,7 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
             if let Some(update) = update {
                 let _ = summarize_expression(update, diagnostics);
             }
-            FlowSummary::falls_through()
+            entry_gate.unwrap_or_else(FlowSummary::falls_through)
         }
         NodeKind::Foreach { variable, list, body, continue_block } => {
             // The loop variable is a binding alias (analyzed locally, never
@@ -221,8 +235,15 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
         NodeKind::StatementModifier { statement, condition, .. } => {
             // Perl evaluates the modifier condition before the controlled
             // statement; visit in that registered order (issue #10844).
-            let _ = summarize_expression(condition, diagnostics);
+            let condition_summary = summarize_expression(condition, diagnostics);
             let statement_summary = summarize_node(statement, diagnostics);
+            // A terminal condition never reaches the controlled statement and
+            // control exits before the next sibling, so the condition's
+            // summary is the whole statement's summary (nested diagnostics in
+            // the controlled statement were still emitted above).
+            if !condition_summary.can_fall_through {
+                return condition_summary;
+            }
             // Without an accepted constant-value fact, a statement modifier
             // always retains a path that skips the controlled statement. Keep
             // the controlled transfer as an alternative so a later terminal
@@ -343,7 +364,12 @@ fn summarize_statement_list(stmts: &[Node], diagnostics: &mut Vec<Diagnostic>) -
 
             if restores_fallthrough {
                 can_fall_through = true;
-                pending_goto_labels.clear();
+                // Only the consumed label leaves the pending set: other live
+                // goto targets recorded on earlier fallthrough statements
+                // stay restorable by their own labeled statements.
+                if let Some(consumed) = labeled_statement_name(stmt) {
+                    pending_goto_labels.retain(|target| target != consumed);
+                }
             } else {
                 emit_unreachable(stmt, diagnostics);
                 // Nested callables and blocks still deserve their own local

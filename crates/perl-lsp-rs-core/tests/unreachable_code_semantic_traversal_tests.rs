@@ -17,7 +17,8 @@ use perl_ast::{AstNodeClassification, NodeKind, ast_node_policy, node_kind_fixtu
 use perl_lsp_rs_core::providers::diagnostics::Diagnostic;
 use perl_lsp_rs_core::providers::diagnostics::unreachable_code::check_unreachable_code;
 use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::{
-    PL406_DISPOSITION_SCHEMA_VERSION, Pl406ProofCeiling, Pl406SemanticClass, all_pl406_dispositions,
+    PL406_DISPOSITION_SCHEMA_VERSION, Pl406ProofCeiling, Pl406SemanticClass,
+    all_pl406_dispositions, pl406_disposition_of,
 };
 use perl_parser::Parser;
 
@@ -96,11 +97,22 @@ fn every_node_kind_has_exactly_one_in_order_disposition() {
 }
 
 /// Every disposition resolves from its enum-derived token.
+///
+/// Exercises the public `pl406_disposition_of` accessor over fully populated
+/// fixture samples, so a lookup that always returned `None` or mismatched
+/// rows fails here rather than passing on a raw-vec scan alone.
 #[test]
 fn every_kind_resolves_its_disposition_from_the_enum_token() {
-    for name in NodeKind::ALL_KIND_NAMES {
-        let row = all_pl406_dispositions().iter().find(|row| row.kind_name == *name);
-        assert!(row.is_some(), "{name} must resolve its PL406 disposition");
+    for fixture in node_kind_fixtures() {
+        let resolved = pl406_disposition_of(&fixture.sample.kind);
+        let expected_name = fixture.sample.kind.kind_name();
+        let row = resolved.unwrap_or_else(|| {
+            panic!("{expected_name} must resolve its PL406 disposition from the enum token")
+        });
+        assert_eq!(
+            row.kind_name, expected_name,
+            "pl406_disposition_of resolved the wrong row for {expected_name}"
+        );
     }
 }
 
@@ -644,6 +656,69 @@ fn package_level_units_keep_conservative_fallthrough() -> Result<(), Box<dyn std
         assert_pl406_count(source, 1, context)?;
     }
     Ok(())
+}
+
+// ── terminal loop-entry and modifier conditions close the enclosing list ──────
+
+#[test]
+fn terminal_for_entry_gates_close_the_enclosing_list() -> Result<(), Box<dyn std::error::Error>> {
+    // The C-style-for initializer runs exactly once before the first
+    // iteration: a terminal transfer there means neither the loop body nor
+    // anything after the loop executes.
+    assert_pl406_count(
+        r#"sub f { for (die "stop"; ; ) { work(); } print "dead"; }"#,
+        1,
+        "a terminal for initializer makes following siblings unreachable",
+    )?;
+    // The initial condition evaluation gates the first iteration; dying there
+    // leaves post-loop statements unreachable.
+    assert_pl406_count(
+        r#"sub f { my $i = 0; for ($i = 1; die "stop"; ) { work(); } print "dead"; }"#,
+        1,
+        "a terminal initial condition makes following siblings unreachable",
+    )?;
+    // Ordinary entry conditions keep the loop's conservative fallthrough.
+    assert_pl406_count(
+        r#"sub f { for (my $i = 0; $i < 2; $i = $i + 1) { work($i); } print "alive"; }"#,
+        0,
+        "an ordinary for loop never closes its parent",
+    )
+}
+
+#[test]
+fn terminal_modifier_condition_skips_statement_and_sibling()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The modifier condition evaluates first: dying there means the
+    // controlled statement never runs and control exits before the sibling.
+    assert_pl406_count(
+        r#"sub f { print "side" if die "stop"; print "dead"; }"#,
+        1,
+        "a terminal modifier condition makes the next sibling unreachable",
+    )?;
+    // A fall-through condition keeps both the skip path and the sibling live.
+    assert_pl406_count(
+        r#"sub f { print "side" if $c; print "alive"; }"#,
+        0,
+        "an ordinary modifier condition preserves the skip path",
+    )
+}
+
+#[test]
+fn restoring_one_goto_label_keeps_other_targets_restorable()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Consuming label A must not discard pending target B: B stays reachable
+    // through its own conditional goto recorded on an earlier live statement.
+    assert_pl406_count(
+        r#"sub f { goto A if $a; goto B if $b; return; A: return; B: print "live"; }"#,
+        0,
+        "pending goto targets survive consumption of a different label",
+    )?;
+    // Without a second live target the stranded sibling stays flagged.
+    assert_pl406_count(
+        r#"sub f { goto A if $a; return; print "stranded"; A: print "live"; }"#,
+        1,
+        "only labels with a live goto restore reachability",
+    )
 }
 
 // ── recovery fails closed ─────────────────────────────────────────────────────
