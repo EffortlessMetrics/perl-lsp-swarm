@@ -687,14 +687,15 @@ sub modify_it {
 
 #[test]
 fn scope_local_typeglob_alias_keeps_rhs_target_visible() -> Result<(), Box<dyn std::error::Error>> {
-    let issues = scope_issues_strict("use strict;\nlocal *ALIAS = *TARGET;\n");
+    let issues = scope_issues_strict(
+        "use strict;\nmy $target = 'TARGET';\nlocal *ALIAS = *{$target};\n",
+    );
 
     assert!(
         issues.iter().all(|issue| {
-            !(issue.kind == IssueKind::UndeclaredVariable
-                && (issue.variable_name == "*TARGET" || issue.variable_name == "TARGET"))
+            !(issue.kind == IssueKind::UnusedVariable && issue.variable_name == "$target")
         }),
-        "typeglob alias target should be recognized by scope analysis: {issues:?}"
+        "dynamic typeglob target should retain its lexical dependency: {issues:?}"
     );
     Ok(())
 }
