@@ -258,3 +258,43 @@ mod tests {
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
         assert!(sexp.contains("(call grep"), "outer should be grep: {}", sexp);
         assert!(sexp.contains("(call map"), "inner should be map: {}", sexp);
+    }
+
+    #[test]
+    fn chained_sort_map() {
+        let code = r#"my @result = sort { $a cmp $b } map { lc } @strings;"#;
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let sexp = ast.to_sexp();
+        assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
+        assert!(sexp.contains("(call sort"), "outer should be sort: {}", sexp);
+        assert!(sexp.contains("(call map"), "inner should be map: {}", sexp);
+    }
+
+    // ---- edge cases ----
+
+    #[test]
+    fn grep_block_with_comma_before_list() {
+        // Perl also allows a comma: grep { ... }, @array
+        let code = "grep { $_ > 5 }, @array;";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let sexp = ast.to_sexp();
+        assert!(sexp.contains("(call grep"), "should be a grep call: {}", sexp);
+        assert!(
+            sexp.contains("(variable @ array)"),
+            "trailing list with comma should work: {}",
+            sexp
+        );
+    }
+
+    #[test]
+    fn sort_block_empty_block() {
+        // sort {} @array -- empty block comparison
+        let code = "sort {} @array;";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let sexp = ast.to_sexp();
+        assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
+    }
+}
