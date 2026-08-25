@@ -1,0 +1,81 @@
+{
+  "schema_version": "v0.18_release_preparation.v1",
+  "release": "0.18.0-rc.1",
+  "track": "public-alpha-release-candidate",
+  "frozen_product_sha": "ef03daf44cc3dc46cec2126d2d58a54f9bed3c7e",
+  "prepared_swarm_sha": "228c04b00cd998232ec6fbf3d103bb4722433fb2",
+  "prepared_swarm_sha_representation": "candidate-content-head pre-merge; the exact merged S is recorded in the post-merge receipt on EffortlessMetrics/perl-lsp-swarm#12229",
+  "frozen_topology_digest": "sha256:da57da13d6091f19964eb17d06a9c355cc5d08abd2667f5340b8a002aa44447e",
+  "frozen_topology_digest_semantics": "sha256 of canonical JSON (sort_keys, indent=2) mapping each release_topology.v1 source path to its sha256 at frozen_product_sha",
+  "frozen_topology_sources": {
+    "Cargo.toml": "e94ba80e6e7dd8b1e127fe9918e8ee5411207500ed5ec5213bd7fc657c5bf1fb",
+    "Cargo.lock": "5113bceaec1592f26bf4da29c814f5b7b257e28ab41a7e313bd9eb8c97df35ea",
+    ".github/workflows/release.yml": "8570239209acb9e992f46c48b41cdf9b3d895b56f73bcd33f382280518474f8f",
+    "vscode-extension/package.json": "b8b442a7746fd08bf4446d41f06a3e1a71cdd794aff75c9c533064729258f6a6",
+    "docs/reference/downstream-dap-integrations.json": "2c94c45bbbd6c2ab46479d23f41ce1bb0828ed081b8f80325999aa60053eef47",
+    "vscode-extension/src/downloader.ts": "20679ae68c3c9d76e47480ff3807db7850f91ebf7ae8b03a410e91a6f72c871c",
+    "scripts/inject-sha-assets.sh": "7b56f78a5b46bda1a62c2f2da476de1031650b9b5dd20d6a0e2b35f4221c1f29"
+  },
+  "prepared_topology_digest": "sha256:9d94109ae626b2529f3ec2090aa568abb4427bdb4acfd3a633e5521f10887a97",
+  "notes_hash": "sha256:45bcf4c33cfcbea15cfcd1303023ed3238015f5eb209ea89c3ca1be4ca2a1355",
+  "lockfile_hashes": [
+    {
+      "path": "Cargo.lock",
+      "sha256": "25f3c7613105aa177613dea8005f69aa7fd0eed2be78fff04d56c0db93f621e9"
+    },
+    {
+      "path": "vscode-extension/package-lock.json",
+      "sha256": "74d9755381c4bd42004cb0c800547c13bdcf9e5c4c6696acf93c2cf5a33e0978"
+    }
+  ],
+  "generated_paths": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "crates/perl-tree-sitter-compat/Cargo.toml",
+    "crates/perl-workspace-core/Cargo.toml",
+    "docs/project/ROADMAP.md",
+    "features.toml",
+    "crates/perl-dap/features_sot.toml",
+    "crates/perl-lsp-rs-core/features_sot.toml",
+    "crates/perl-lsp-rs/features_sot.toml",
+    "crates/perl-parser/features_sot.toml",
+    "flake.nix",
+    "vscode-extension/package.json",
+    "vscode-extension/package-lock.json",
+    "RELEASE_HISTORY.md",
+    "release_topology.v1.json"
+  ],
+  "curated_paths": [
+    "docs/releases/v0.18.0-rc.1.md",
+    "CHANGELOG.md",
+    "vscode-extension/CHANGELOG.md",
+    "scripts/generate_release_topology.py",
+    "scripts/test_generate_release_topology.py"
+  ],
+  "public_claim_boundary": {
+    "primary_editor": "vscode",
+    "lsp": "daily-driver-public-alpha",
+    "dap": "preview",
+    "formatting": "whole-document-only",
+    "remote_ai": "fail-closed-without-trusted-adapter"
+  },
+  "channel_state": "pending",
+  "product_diff": [],
+  "issue_closures_required": [],
+  "known_limitations": [
+    "prepared_swarm_sha records the candidate content head pre-merge (the manifest commit itself sits on top); the exact merged prepared_swarm_sha S is recorded in the post-merge receipt on #12229, never guessed from a branch name.",
+    "release_topology.v1.json carries the generator-hardcoded train-level field track: public-beta and prepared_swarm_sha: null; the authoritative RC track public-alpha-release-candidate is carried by this manifest, the intake receipt, and docs/releases/v0.18.0-rc.1.md frontmatter. Changing the generator constant is out of scope for a product-inert preparation.",
+    "release_topology.v1.json validates only at generation time on the frozen checkout (the generator requires git HEAD == frozen_product_sha); reviewers reproduce it by applying this diff at P and re-running the generator, which is byte-identical (second-generation no-diff retained).",
+    "The topology generator required two disclosed tooling repairs to read the CURRENT production authorities: constant-bound Windows target recognition in derive_downloader_targets, and dev-dependency exclusion in publish-order derivation. Neither weakens an invariant; both are covered by new tests in scripts/test_generate_release_topology.py.",
+    "cargo xtask sync-release-docs --write refuses pre-release versions by design (it writes shipped-release posture prose); README.md, book, and docs/project/CURRENT_STATUS.md shipped-release narrative intentionally remains at 0.17.0, which stays true until the RC actually publishes.",
+    "flake.nix perllsp package version is a governed version-identity site owned by the canonical bump generator (cargo xtask bump-version / check-version-sync); it moved 0.17.0 -> 0.18.0-rc.1 with every other identity. Backward-looking shipped-0.17.0 actuals (policy/release-*-actuals.json, mason-registry package.yaml, NOW_NEXT_LATER.md, deprecation since attributes, test literals) were not touched.",
+    "Oracle fixtures under fixtures/publication_drift/ and fixtures/experience/install_transition/ retain 0.17.0 historical/comparison identities by design: their consumers are self-contained classifier/schema tests that never compare against the live workspace version, and 0.17.0 remains the shipped previous release. .ci/fixtures/zed-perl-upstream managed-download fixtures likewise pin the currently shipped 0.17.0 public assets.",
+    "docs/project/status/** was already stale at P (generated at f87de5c9a); regenerating would inject unrelated environment-measured metric churn into the RC denominator, so it is left frozen for its owning status-docs lane (update-status runs post-merge upstream).",
+    "Pre-existing drift at P, outside this claim: ci/check_doc_paths.sh absolute-path citations in docs/articles/research/** and docs/reference/archive/**; cargo xtask features verify notebook_cell_execution/notebook_document_sync catalog-vs-capability drift; verify-publication-facts ledger metric staleness (last refresh 2026-03-25, non-strict). None are touched by this diff; none may be rewritten as shipped proof.",
+    "v0.18.0-rc.1 tag, GitHub Release, crates.io, marketplace, and container channels are all pending; nothing in this PR publishes or mutates a public channel."
+  ],
+  "not_proven": [
+    "Exact merged prepared_swarm_sha S (recorded post-merge on #12229).",
+    "All publication channels (github_release, crates_io, vscode_marketplace, open_vsx, docker): pending."
+  ]
+}

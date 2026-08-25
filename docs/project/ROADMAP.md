@@ -22,7 +22,7 @@ in [features.toml](../../features.toml).
 
 ## Release Surface
 
-- Workspace version line: `v0.17.0`
+- Workspace version line: `v0.18.0-rc.1`
 - Current release train: `v0.17.0` shipped public beta; channel receipts remain independently verified
 - Published crate surface target: 34 crates from `[workspace.metadata.publish.allow]`
 Publication discipline: `v0.17.0` uses a normal SemVer package version while the human-facing product posture remains public beta, not stable/GA. See [RELEASE_HISTORY.md](../../RELEASE_HISTORY.md) for independently verified channel receipts.

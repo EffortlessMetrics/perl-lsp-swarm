@@ -1,6 +1,6 @@
 [package]
 name = "perl-tree-sitter-compat"
-version = "0.17.0"
+version = "0.18.0-rc.1"
 edition = "2024"
 description = "Tree-sitter-compatible node/capture output over the native Perl parser — an adapter, not a re-implementation (PLSP-ADR-0006 PR 9)."
 license = "MIT OR Apache-2.0"
