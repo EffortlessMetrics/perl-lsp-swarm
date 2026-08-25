@@ -5,6 +5,7 @@
 extern crate self as xtask;
 
 pub mod actual_host_receipt;
+pub mod authority_transfer_closeout;
 pub mod client_compat_fixture;
 pub mod clippy_repair_corpus;
 pub mod close_proof;
