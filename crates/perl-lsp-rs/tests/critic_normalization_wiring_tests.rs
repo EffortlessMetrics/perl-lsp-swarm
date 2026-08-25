@@ -80,7 +80,7 @@ fn built_in_identity_constructors_admit_exactly_the_reviewed_overlap_cohort() {
                 return None;
             }
             let name = trimmed
-                .split(|c: char| c == '(' || c == '<' || c == ':' || c == ' ')
+                .split(['(', '<', ':', ' '])
                 .find_map(|token| token.strip_prefix("built_in_"))?;
             Some(name.to_string())
         })
