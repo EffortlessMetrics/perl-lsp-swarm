@@ -1,0 +1,1653 @@
+//! Hermetic actual-Vim host runner substrate (#10944).
+//!
+//! This substrate is the Vim-side sibling of the Emacs host runner substrate
+//! (`emacs_host_runner.rs`, landed with #8024/#7778). It owns what must never
+//! be owned by Vimscript: the exact-subject run plan and its fail-closed
+//! validation, the hermetic isolation layout, the headless Vim command, the
+//! bounded owned-process supervision with a deterministic process-set
+//! comparison, the pinned-subject checkout verification, and the composition
+//! of the repository's generic `editor_client_compat.v1` receipt.
+//!
+//! Ownership split (mirrors the issue contract):
+//!
+//! - Rust here owns orchestration, identity, boundedness, process ledgers,
+//!   cleanup policy, and receipt policy. A Vimscript file is only a thin
+//!   editor-native adapter (`scripts/test/vim-clients/vim-lsp-adapter.vim`)
+//!   plus a bounded driver (`scripts/test/vim-host-driver.vim`).
+//! - `.ci/editor-clients/vim-vim-lsp-subject.v1.json` (#11369) owns the exact
+//!   upstream vim-lsp subject bytes; [`VimLspSubjectManifest`] parses it and
+//!   [`verify_vim_lsp_checkout`] refuses any checkout that is not exactly the
+//!   pinned commit with the pinned entry-file blob identities.
+//! - `.ci/editor-clients/vim-vim-lsp-configuration.v1.json` (#11369) owns the
+//!   client registration shape; the values this substrate forwards to the
+//!   adapter are read from that manifest, never re-derived here.
+//! - `.ci/editor-clients/vim-vim-lsp-activation-root.v1.json` (#7762) owns
+//!   root markers and filetype policy; the driver observes native Vim
+//!   detection and this substrate rejects pre-forced filetypes.
+//! - The generic process-tree cleanup boundary (#8734) and the shared
+//!   fail-closed host primitives (#10894, open) stay consumed-not-duplicated:
+//!   this substrate keeps the same fail-closed semantics the Emacs runner
+//!   landed, and #10894 may extract them unchanged later.
+//!
+//! Fail-closed laws:
+//!
+//! - every identity input is digest-verified before launch; a missing or
+//!   wrong Vim/vim-lsp/candidate is a typed error, never a skipped pass;
+//! - the output root must be fresh; a stale receipt directory refuses the run;
+//! - the deadline is parent-owned; a hung Vim is killed and reported;
+//! - cleanup compares a deterministic before/after process set for the exact
+//!   candidate executable and fails (survivor observed) or stays not-proven
+//!   (probe unavailable), never silently passes;
+//! - adapter events are validated (contiguous sequence, singleton lifecycle
+//!   ordering, no dangling actions) before any receipt claims attach identity;
+//! - a receipt whose registration detail does not bind the planned candidate
+//!   digest, or whose buffer attachment was pre-forced, cannot pass.
+
+use anyhow::{Context, Result, bail, ensure};
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::{OsStr, OsString};
+use std::fmt::Write as _;
+use std::fs;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+use xtask::editor_client_compat::{
+    ArtifactKind, CANONICAL_EXPECTATION_SET_ID, CapabilityIdentity, CleanupResult,
+    ClientSourceState, DiagnosticMode, DiagnosticsIdentity, EditorClientCompatReceipt,
+    EvidenceArtifact, EvidenceStage, FailureClass, HostIdentity, IntegrationIdentity,
+    IntegrationMode, JourneyCell, ObservationResult, PlatformIdentity, PositionEncodingBasis,
+    RegistrationState, SCHEMA_VERSION as RECEIPT_SCHEMA_VERSION, ServerIdentity,
+    WorkspaceFixtureIdentity, canonical_expectation_set_digest, fixture_digest,
+};
+
+pub const RUN_PLAN_SCHEMA_VERSION: &str = "vim_host_run_plan.v1";
+pub const DRIVER_SCHEMA_VERSION: &str = "vim_host_driver.v1";
+const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
+
+/// The one exact client subject this runner can execute today: the pinned
+/// `prabirshrestha/vim-lsp` upstream commit selected by #11369. A newer
+/// upstream head is a different subject, never a silent edit of this row.
+pub const VIM_LSP_CLIENT_ID: &str = "vim-lsp";
+
+// ---------------------------------------------------------------------------
+// Pinned-subject manifest (#11369) parsing and checkout verification
+// ---------------------------------------------------------------------------
+
+/// The #11369 subject-manifest fields this substrate consumes. Parsing is
+/// deliberately strict: unknown schema versions refuse the run instead of
+/// being interpreted loosely.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VimLspSubjectManifest {
+    pub schema_version: String,
+    pub upstream: VimLspUpstream,
+    pub expected_content_identity: VimLspExpectedContent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VimLspUpstream {
+    pub selected_commit: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree_digest: Option<VimLspTreeDigest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VimLspTreeDigest {
+    pub algorithm: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VimLspExpectedContent {
+    /// Required: the plugin entry this runtime must source (`plugin/lsp.vim`).
+    pub entry_files: Vec<VimLspEntryFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VimLspEntryFile {
+    pub path: String,
+    pub git_blob_sha1: String,
+}
+
+impl VimLspSubjectManifest {
+    /// Parse and structurally validate the #11369 manifest bytes.
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
+        let manifest: VimLspSubjectManifest =
+            serde_json::from_slice(bytes).context("parsing the vim-lsp subject manifest")?;
+        ensure!(
+            manifest.schema_version == "vim_lsp_subject.v1",
+            "unexpected vim-lsp subject manifest schema {}",
+            manifest.schema_version
+        );
+        ensure!(
+            is_lower_hex(&manifest.upstream.selected_commit, 40),
+            "pinned vim-lsp commit must be 40 lowercase hex chars"
+        );
+        if let Some(tree) = &manifest.upstream.tree_digest {
+            ensure!(
+                tree.algorithm == "git-tree-sha1",
+                "unsupported vim-lsp tree digest algorithm {}",
+                tree.algorithm
+            );
+            ensure!(
+                is_lower_hex(&tree.value, 40),
+                "vim-lsp tree digest must be 40 lowercase hex chars"
+            );
+        }
+        ensure!(
+            !manifest.expected_content_identity.entry_files.is_empty(),
+            "subject manifest pins no vim-lsp entry files"
+        );
+        let mut paths = BTreeSet::new();
+        for entry in &manifest.expected_content_identity.entry_files {
+            ensure!(
+                is_reason_token(&entry.path.replace('/', "_")),
+                "entry path is not a governed relative path: {}",
+                entry.path
+            );
+            ensure!(
+                !entry.path.starts_with('/') && !entry.path.contains(".."),
+                "entry path escapes the checkout: {}",
+                entry.path
+            );
+            ensure!(paths.insert(entry.path.as_str()), "duplicate entry path {}", entry.path);
+            ensure!(
+                is_lower_hex(&entry.git_blob_sha1, 40),
+                "entry {} blob digest must be 40 lowercase hex chars",
+                entry.path
+            );
+        }
+        Ok(manifest)
+    }
+
+    /// Load and parse the manifest from disk.
+    pub fn load(path: &Path) -> Result<Self> {
+        let bytes = fs::read(path)
+            .with_context(|| format!("reading vim-lsp subject manifest {}", path.display()))?;
+        Self::parse(&bytes)
+    }
+}
+
+/// The verified identity of one vim-lsp checkout, produced only by
+/// [`verify_vim_lsp_checkout`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VimLspCheckoutIdentity {
+    pub pinned_commit: String,
+    pub resolved_commit: String,
+    pub tree_digest: String,
+    /// `plugin/lsp.vim` sha256 — the client source identity the generic
+    /// receipt carries as the loaded-client attestation target.
+    pub plugin_entry_sha256: String,
+    pub verified_entry_count: usize,
+}
+
+/// Verify that `checkout` is exactly the pinned #11369 subject: HEAD is the
+/// selected commit, the worktree is clean, the resolved tree digest matches
+/// the manifest observation, and every pinned entry file's git blob SHA1
+/// matches. Any drift is a typed error before anything is launched; this is
+/// the fail-closed consumption edge of the pin authority (never
+/// latest-is-fine).
+pub fn verify_vim_lsp_checkout(
+    checkout: &Path,
+    manifest: &VimLspSubjectManifest,
+) -> Result<VimLspCheckoutIdentity> {
+    ensure!(
+        checkout.is_absolute() && checkout.is_dir(),
+        "vim-lsp checkout must be an absolute directory: {}",
+        checkout.display()
+    );
+    ensure!(
+        checkout.join(".git").exists(),
+        "vim-lsp subject must be a real git checkout: {}",
+        checkout.display()
+    );
+    let resolved_commit = git_line(checkout, &["rev-parse", "HEAD"])
+        .context("resolving the vim-lsp checkout HEAD")?;
+    ensure!(is_lower_hex(&resolved_commit, 40), "vim-lsp checkout HEAD is not a commit identity");
+    ensure!(
+        resolved_commit == manifest.upstream.selected_commit,
+        "vim-lsp checkout is {resolved_commit} but the pinned subject is {}; a drifting \
+         checkout is a different subject, never this run",
+        manifest.upstream.selected_commit
+    );
+    let status = git_output(checkout, &["status", "--porcelain"])
+        .context("checking the vim-lsp checkout worktree state")?;
+    ensure!(
+        status.trim().is_empty(),
+        "vim-lsp checkout has uncommitted changes; a dirty checkout is not the pinned subject"
+    );
+    let tree_digest =
+        git_line(checkout, &["rev-parse", "HEAD^{tree}"]).context("resolving the checkout tree")?;
+    if let Some(expected) = &manifest.upstream.tree_digest {
+        ensure!(
+            tree_digest == expected.value,
+            "vim-lsp checkout tree {tree_digest} does not match the pinned tree {}",
+            expected.value
+        );
+    }
+    let mut verified = 0;
+    for entry in &manifest.expected_content_identity.entry_files {
+        let path = checkout.join(&entry.path);
+        ensure!(
+            path.is_file(),
+            "pinned vim-lsp entry file {} is missing from the checkout",
+            entry.path
+        );
+        let blob = git_line(checkout, &["hash-object", "--", &entry.path])
+            .with_context(|| format!("hashing pinned entry {}", entry.path))?;
+        ensure!(
+            blob == entry.git_blob_sha1,
+            "pinned vim-lsp entry {} has blob {blob}, expected {}",
+            entry.path,
+            entry.git_blob_sha1
+        );
+        verified += 1;
+    }
+    let plugin_entry = checkout.join("plugin/lsp.vim");
+    ensure!(plugin_entry.is_file(), "vim-lsp checkout has no plugin/lsp.vim entry");
+    Ok(VimLspCheckoutIdentity {
+        pinned_commit: manifest.upstream.selected_commit.clone(),
+        resolved_commit,
+        tree_digest,
+        plugin_entry_sha256: file_sha256(&plugin_entry)?,
+        verified_entry_count: verified,
+    })
+}
+
+fn git_output(dir: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("running git {}", args.join(" ")))?;
+    ensure!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        bounded_first_line(&output.stderr)
+    );
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn git_line(dir: &Path, args: &[&str]) -> Result<String> {
+    let out = git_output(dir, args)?;
+    let line = out.lines().next().unwrap_or_default().trim().to_lowercase();
+    ensure!(!line.is_empty(), "git {} produced no output", args.join(" "));
+    Ok(line)
+}
+
+fn bounded_first_line(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(300)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Run plan
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VimHostPaths {
+    pub vim_executable: PathBuf,
+    pub vim_lsp_checkout: PathBuf,
+    pub driver: PathBuf,
+    pub adapter: PathBuf,
+    pub candidate_executable: PathBuf,
+    pub fixture_root: PathBuf,
+    pub artifact_root: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VimHostRunIdentity {
+    pub schema_version: String,
+    pub stage: EvidenceStage,
+    pub repository: String,
+    pub candidate_sha: String,
+    pub vim_version: String,
+    pub vim_build_sha256: String,
+    /// Digest of the full `vim --version` build-feature output: the compiled
+    /// feature identity of the exact host, separate from the binary bytes.
+    pub vim_feature_digest: String,
+    pub vim_lsp_commit: String,
+    pub vim_lsp_tree_digest: String,
+    pub vim_lsp_plugin_entry_sha256: String,
+    pub driver_sha256: String,
+    pub adapter_sha256: String,
+    pub configuration_sha256: String,
+    pub activation_root_sha256: String,
+    pub subject_manifest_sha256: String,
+    pub candidate_version: String,
+    pub candidate_build_revision: String,
+    pub candidate_artifact_sha256: String,
+    pub candidate_identity_packet_sha256: String,
+    pub fixture: WorkspaceFixtureIdentity,
+    pub journey_selector: String,
+    pub platform: PlatformIdentity,
+    pub registration_state: RegistrationState,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VimHostRunPlan {
+    pub identity: VimHostRunIdentity,
+    pub paths: VimHostPaths,
+}
+
+impl VimHostRunPlan {
+    /// Fail-closed plan validation: every typed identity field, every exact
+    /// input file digest, the fixture digest, and the canonical expectation
+    /// set are verified before any launch is allowed.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.identity.schema_version == RUN_PLAN_SCHEMA_VERSION,
+            "unexpected Vim host run-plan schema"
+        );
+        validate_safe_identity(&self.identity.repository, "repository")?;
+        ensure!(
+            is_lower_hex(&self.identity.candidate_sha, 40),
+            "candidate_sha must be 40 lowercase hex chars"
+        );
+        validate_safe_identity(&self.identity.vim_version, "vim_version")?;
+        validate_sha256(&self.identity.vim_build_sha256, "vim_build_sha256")?;
+        validate_sha256(&self.identity.vim_feature_digest, "vim_feature_digest")?;
+        ensure!(
+            is_lower_hex(&self.identity.vim_lsp_commit, 40),
+            "vim_lsp_commit must be 40 lowercase hex chars"
+        );
+        ensure!(
+            is_lower_hex(&self.identity.vim_lsp_tree_digest, 40),
+            "vim_lsp_tree_digest must be 40 lowercase hex chars"
+        );
+        validate_sha256(&self.identity.vim_lsp_plugin_entry_sha256, "vim_lsp_plugin_entry_sha256")?;
+        validate_sha256(&self.identity.driver_sha256, "driver_sha256")?;
+        validate_sha256(&self.identity.adapter_sha256, "adapter_sha256")?;
+        validate_sha256(&self.identity.configuration_sha256, "configuration_sha256")?;
+        validate_sha256(&self.identity.activation_root_sha256, "activation_root_sha256")?;
+        validate_sha256(&self.identity.subject_manifest_sha256, "subject_manifest_sha256")?;
+        validate_safe_identity(&self.identity.candidate_version, "candidate_version")?;
+        ensure!(
+            is_lower_hex(&self.identity.candidate_build_revision, 40),
+            "candidate_build_revision must be 40 lowercase hex chars"
+        );
+        validate_sha256(&self.identity.candidate_artifact_sha256, "candidate_artifact_sha256")?;
+        validate_sha256(
+            &self.identity.candidate_identity_packet_sha256,
+            "candidate_identity_packet_sha256",
+        )?;
+        validate_fixture_identity(&self.identity.fixture)?;
+        ensure!(
+            is_reason_token(&self.identity.journey_selector),
+            "journey_selector must be a stable reason token"
+        );
+        validate_platform(&self.identity.platform)?;
+        ensure!(
+            (1..=600_000).contains(&self.identity.timeout_ms),
+            "timeout_ms must be between 1 and 600000"
+        );
+
+        for (label, path) in [
+            ("vim executable", &self.paths.vim_executable),
+            ("driver", &self.paths.driver),
+            ("adapter", &self.paths.adapter),
+            ("candidate executable", &self.paths.candidate_executable),
+        ] {
+            ensure!(path.is_absolute(), "{label} path must be absolute");
+            ensure!(path.is_file(), "{label} path is not a file: {}", path.display());
+        }
+        ensure!(
+            self.paths.vim_lsp_checkout.is_absolute()
+                && self.paths.vim_lsp_checkout.join(".git").exists(),
+            "vim-lsp checkout must be an absolute git checkout"
+        );
+        ensure!(
+            self.paths.fixture_root.is_absolute() && self.paths.fixture_root.is_dir(),
+            "fixture_root must be an absolute directory"
+        );
+        ensure!(self.paths.artifact_root.is_absolute(), "artifact_root must be absolute");
+        ensure!(
+            is_perllsp_filename(&self.paths.candidate_executable),
+            "candidate executable file name must be perllsp or perllsp.exe"
+        );
+        ensure!(
+            self.paths.vim_lsp_checkout.join("plugin/lsp.vim").is_file(),
+            "vim-lsp checkout has no plugin/lsp.vim; a missing client is a typed failure, \
+             never a skip"
+        );
+
+        verify_file_sha256(
+            &self.paths.vim_executable,
+            &self.identity.vim_build_sha256,
+            "Vim executable",
+        )?;
+        verify_file_sha256(
+            &self.paths.vim_lsp_checkout.join("plugin/lsp.vim"),
+            &self.identity.vim_lsp_plugin_entry_sha256,
+            "vim-lsp plugin entry",
+        )?;
+        verify_file_sha256(&self.paths.driver, &self.identity.driver_sha256, "driver")?;
+        verify_file_sha256(&self.paths.adapter, &self.identity.adapter_sha256, "adapter")?;
+        verify_file_sha256(
+            &self.paths.candidate_executable,
+            &self.identity.candidate_artifact_sha256,
+            "candidate executable",
+        )?;
+        ensure!(
+            fixture_digest(&self.paths.fixture_root)? == self.identity.fixture.digest,
+            "fixture digest mismatch"
+        );
+        ensure!(
+            self.identity.fixture.expectation_set_id == CANONICAL_EXPECTATION_SET_ID,
+            "unexpected expectation-set identity"
+        );
+        ensure!(
+            canonical_expectation_set_digest()? == self.identity.fixture.expectation_set_digest,
+            "expectation-set digest mismatch"
+        );
+        Ok(())
+    }
+
+    /// The receipt-side client identity for the pinned subject. `source_ref`
+    /// binds the pinned commit and tree so a receipt names its exact upstream
+    /// bytes without a second pin table.
+    pub fn client_source_ref(&self) -> String {
+        format!(
+            "{VIM_LSP_CLIENT_ID}/{}/{}",
+            self.identity.vim_lsp_commit, self.identity.vim_lsp_tree_digest
+        )
+    }
+}
+
+fn validate_fixture_identity(fixture: &WorkspaceFixtureIdentity) -> Result<()> {
+    ensure!(is_reason_token(&fixture.id), "fixture id must be a stable reason token");
+    validate_sha256(&fixture.digest, "fixture digest")?;
+    ensure!(
+        is_reason_token(&fixture.expectation_set_id),
+        "expectation set id must be a stable reason token"
+    );
+    validate_sha256(&fixture.expectation_set_digest, "expectation set digest")?;
+    Ok(())
+}
+
+fn validate_platform(platform: &PlatformIdentity) -> Result<()> {
+    validate_safe_identity(&platform.os, "platform.os")?;
+    validate_safe_identity(&platform.os_version, "platform.os_version")?;
+    validate_safe_identity(&platform.arch, "platform.arch")?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Hermetic isolation layout
+// ---------------------------------------------------------------------------
+
+/// Render an absolute path in the form Vim accepts everywhere: forward
+/// slashes on every host. Windows Vim builds (including Git-for-Windows vim)
+/// silently refuse backslash-qualified `-S`/`source`/`runtime` targets — the
+/// editor exits 1 having sourced nothing — so every path the supervisor
+/// hands to the editor side crosses this boundary normalized.
+pub fn vim_path(path: &Path) -> OsString {
+    let text = path.to_string_lossy().replace('\\', "/");
+    OsString::from(text)
+}
+
+/// The isolated run root: the run consumes no user vimrc, plugins, viminfo,
+/// swap/backup/session files, cache, or tags, and the only LSP client loaded
+/// is the pinned checkout. Every target the run needs lives under `root`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HermeticVimLayout {
+    pub root: PathBuf,
+    pub home: PathBuf,
+    pub xdg_config_home: PathBuf,
+    pub xdg_cache_home: PathBuf,
+    pub xdg_data_home: PathBuf,
+    pub temp_directory: PathBuf,
+    pub raw_directory: PathBuf,
+    pub artifact_directory: PathBuf,
+}
+
+impl HermeticVimLayout {
+    pub fn prepare(root: &Path) -> Result<Self> {
+        ensure!(root.is_absolute(), "hermetic root must be absolute");
+        let layout = Self {
+            root: root.to_path_buf(),
+            home: root.join("home"),
+            xdg_config_home: root.join("xdg/config"),
+            xdg_cache_home: root.join("xdg/cache"),
+            xdg_data_home: root.join("xdg/data"),
+            temp_directory: root.join("tmp"),
+            raw_directory: root.join("raw"),
+            artifact_directory: root.join("artifacts"),
+        };
+        for directory in [
+            &layout.home,
+            &layout.xdg_config_home,
+            &layout.xdg_cache_home,
+            &layout.xdg_data_home,
+            &layout.temp_directory,
+            &layout.raw_directory,
+            &layout.artifact_directory,
+        ] {
+            fs::create_dir_all(directory)
+                .with_context(|| format!("creating hermetic directory {}", directory.display()))?;
+        }
+        Ok(layout)
+    }
+
+    pub fn event_file(&self) -> PathBuf {
+        self.raw_directory.join("driver-events.jsonl")
+    }
+
+    /// The vim-lsp client protocol log (`g:lsp_log_file`). Kept strictly
+    /// separate from the server trace so client and server evidence cannot be
+    /// conflated.
+    pub fn client_log(&self) -> PathBuf {
+        self.raw_directory.join("vim-lsp-client.log")
+    }
+
+    /// The server-side trace (`PERL_LSP_LOG_FILE` delivered through the
+    /// registration `env` channel): perllsp's own log target.
+    pub fn server_trace(&self) -> PathBuf {
+        self.raw_directory.join("perllsp.log")
+    }
+
+    /// The initialize capability snapshot written by the driver from
+    /// `lsp#get_server_capabilities`.
+    pub fn capability_snapshot(&self) -> PathBuf {
+        self.raw_directory.join("initialize.json")
+    }
+
+    pub fn process_snapshot_before(&self) -> PathBuf {
+        self.raw_directory.join("processes-before.txt")
+    }
+
+    pub fn process_snapshot_after(&self) -> PathBuf {
+        self.raw_directory.join("processes-after.txt")
+    }
+
+    /// The hermetic environment for the Vim process. The inherited allowlist
+    /// is the same minimal OS-load-bearing set the Emacs runner admits; HOME,
+    /// XDG state, and temp targets are redirected into the run root, and the
+    /// run-bound variables the adapter contract requires are injected with
+    /// exact absolute values resolved by Rust — including the exact candidate
+    /// executable, so ambient PATH can never select another `perllsp`. Every
+    /// path value is Vim-normalized through [`vim_path`].
+    pub fn environment(
+        &self,
+        plan: &VimHostRunPlan,
+        server_name: &str,
+        root_markers: &[String],
+    ) -> Result<BTreeMap<OsString, OsString>> {
+        let mut environment = BTreeMap::new();
+        for key in [
+            "PATH",
+            "SYSTEMROOT",
+            "WINDIR",
+            "COMSPEC",
+            "PATHEXT",
+            "LD_LIBRARY_PATH",
+            "DYLD_LIBRARY_PATH",
+        ] {
+            if let Some(value) = std::env::var_os(key) {
+                environment.insert(OsString::from(key), value);
+            }
+        }
+        environment.insert(OsString::from("HOME"), vim_path(&self.home));
+        environment.insert(OsString::from("USERPROFILE"), vim_path(&self.home));
+        environment.insert(OsString::from("XDG_CONFIG_HOME"), vim_path(&self.xdg_config_home));
+        environment.insert(OsString::from("XDG_CACHE_HOME"), vim_path(&self.xdg_cache_home));
+        environment.insert(OsString::from("XDG_DATA_HOME"), vim_path(&self.xdg_data_home));
+        for key in ["TMPDIR", "TEMP", "TMP"] {
+            environment.insert(OsString::from(key), vim_path(&self.temp_directory));
+        }
+        environment
+            .insert(OsString::from("PERLLSP_VIM_HOST_EVENT_FILE"), vim_path(&self.event_file()));
+        environment
+            .insert(OsString::from("PERLLSP_VIM_HOST_CLIENT_LOG"), vim_path(&self.client_log()));
+        environment.insert(
+            OsString::from("PERLLSP_VIM_HOST_SERVER_TRACE"),
+            vim_path(&self.server_trace()),
+        );
+        environment.insert(
+            OsString::from("PERLLSP_VIM_HOST_CAPABILITY_SNAPSHOT"),
+            vim_path(&self.capability_snapshot()),
+        );
+        environment.insert(
+            OsString::from("PERLLSP_VIM_HOST_CANDIDATE"),
+            vim_path(&plan.paths.candidate_executable),
+        );
+        environment.insert(
+            OsString::from("PERLLSP_VIM_HOST_CANDIDATE_SHA256"),
+            OsString::from(&plan.identity.candidate_artifact_sha256),
+        );
+        environment.insert(
+            OsString::from("PERLLSP_VIM_HOST_VIM_LSP_DIR"),
+            vim_path(&plan.paths.vim_lsp_checkout),
+        );
+        environment
+            .insert(OsString::from("PERLLSP_VIM_HOST_ADAPTER"), vim_path(&plan.paths.adapter));
+        environment.insert(
+            OsString::from("PERLLSP_VIM_HOST_FIXTURE_ROOT"),
+            vim_path(&plan.paths.fixture_root),
+        );
+        environment
+            .insert(OsString::from("PERLLSP_VIM_HOST_SERVER_NAME"), OsString::from(server_name));
+        environment.insert(
+            OsString::from("PERLLSP_VIM_HOST_ROOT_MARKERS"),
+            OsString::from(root_markers.join(",")),
+        );
+        // Per-barrier budget for the editor-side waits. Sized for a cold debug
+        // candidate: the initialize handshake (including perllsp's workspace
+        // indexing/configuration round trip) measured ~30-40s on a local Windows
+        // debug build and CI runners are slower; 90s keeps every barrier honest
+        // while the parent-owned run deadline still bounds the whole journey.
+        environment.insert(OsString::from("PERLLSP_VIM_HOST_BUDGET_MS"), OsString::from("90000"));
+        Ok(environment)
+    }
+}
+
+/// Build the headless hermetic Vim command for one validated plan.
+///
+/// `-Nu NONE` skips every user and system vimrc, `-U NONE` skips gvimrc, `-n`
+/// disables swap files, `-i NONE` disables viminfo, and `-es` runs the
+/// headless silent-ex driver mode. The only sourced files are the repository
+/// driver and, through it, the thin adapter and the pinned plugin checkout.
+pub fn build_vim_command(
+    plan: &VimHostRunPlan,
+    layout: &HermeticVimLayout,
+    server_name: &str,
+    root_markers: &[String],
+) -> Result<Command> {
+    plan.validate()?;
+    let mut command = Command::new(&plan.paths.vim_executable);
+    command.env_clear();
+    for (key, value) in layout.environment(plan, server_name, root_markers)? {
+        command.env(key, value);
+    }
+    command
+        .arg("-Nu")
+        .arg("NONE")
+        .arg("-U")
+        .arg("NONE")
+        .arg("-n")
+        .arg("-i")
+        .arg("NONE")
+        .arg("-es")
+        .arg("-S")
+        .arg(vim_path(&plan.paths.driver))
+        .stdin(Stdio::null());
+    Ok(command)
+}
+
+// ---------------------------------------------------------------------------
+// Driver events
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DriverEventKind {
+    HostStarted,
+    ClientLoaded,
+    RegistrationSelected,
+    ServerInitialized,
+    BufferEnabled,
+    InitializeObserved,
+    RootSelected,
+    FixtureOpened,
+    ShutdownStarted,
+    ShutdownCompleted,
+    DriverFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriverEvent {
+    pub schema_version: String,
+    pub sequence: u64,
+    #[serde(rename = "event")]
+    pub kind: DriverEventKind,
+    #[serde(default)]
+    pub details: BTreeMap<String, String>,
+}
+
+pub fn parse_driver_events(bytes: &[u8], require_complete: bool) -> Result<Vec<DriverEvent>> {
+    let text = std::str::from_utf8(bytes).context("driver event stream is not UTF-8")?;
+    let mut events = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let event: DriverEvent = serde_json::from_str(line)
+            .with_context(|| format!("invalid driver event at line {}", index + 1))?;
+        events.push(event);
+    }
+    validate_driver_events(&events, require_complete)?;
+    Ok(events)
+}
+
+/// Validate one driver event stream. Laws beyond the Emacs-shared shape:
+///
+/// - `registration_selected` must bind the exact candidate digest and the
+///   canonical `perllsp --stdio` argv token, so a run whose client registered
+///   anything else (for example an ambient PATH `perllsp`) is rejected here;
+/// - `buffer_enabled` must report native filetype detection; a pre-forced or
+///   manual filetype (`detection` detail not `native_vim`) is a hard failure,
+///   because #7762 activation may not be manufactured by the driver.
+pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) -> Result<()> {
+    ensure!(!events.is_empty(), "driver emitted no events");
+    let mut singleton = BTreeSet::new();
+    let mut last_lifecycle_rank = 0_u8;
+
+    for (index, event) in events.iter().enumerate() {
+        ensure!(event.schema_version == DRIVER_SCHEMA_VERSION, "unexpected driver event schema");
+        ensure!(event.sequence == (index + 1) as u64, "driver event sequence is not contiguous");
+        for (key, value) in &event.details {
+            ensure!(is_reason_token(key), "driver detail key is not a reason token");
+            validate_safe_identity(value, "driver detail value")?;
+        }
+        match event.kind {
+            DriverEventKind::RegistrationSelected => {
+                ensure!(
+                    singleton.insert(DriverEventKind::RegistrationSelected),
+                    "duplicate singleton driver event"
+                );
+                ensure!(
+                    event.details.get("cmd") == Some(&"perllsp--stdio".to_string()),
+                    "registration did not bind the canonical perllsp --stdio command identity"
+                );
+                let digest = event
+                    .details
+                    .get("candidate_sha256")
+                    .context("registration_selected omitted candidate_sha256")?;
+                validate_sha256(digest, "registration candidate_sha256")?;
+            }
+            DriverEventKind::BufferEnabled => {
+                ensure!(
+                    singleton.insert(DriverEventKind::BufferEnabled),
+                    "duplicate singleton driver event"
+                );
+                let filetype =
+                    event.details.get("filetype").context("buffer_enabled omitted filetype")?;
+                ensure!(
+                    filetype == "perl",
+                    "buffer_enabled attached a non-Perl filetype: {filetype}"
+                );
+                ensure!(
+                    event.details.get("detection") == Some(&"native_vim".to_string()),
+                    "buffer_enabled filetype was not natively detected; a pre-forced filetype \
+                     cannot manufacture #7762 activation"
+                );
+            }
+            DriverEventKind::DriverFailed => {
+                ensure!(
+                    singleton.insert(DriverEventKind::DriverFailed),
+                    "duplicate driver_failed event"
+                );
+                ensure!(event.details.contains_key("reason"), "driver_failed omitted reason");
+            }
+            kind => {
+                ensure!(singleton.insert(kind), "duplicate singleton driver event");
+                let rank = lifecycle_rank(kind);
+                ensure!(
+                    rank >= last_lifecycle_rank,
+                    "driver lifecycle events arrived out of order"
+                );
+                last_lifecycle_rank = rank;
+            }
+        }
+    }
+
+    if require_complete {
+        ensure!(
+            !singleton.contains(&DriverEventKind::DriverFailed),
+            "complete host run reported driver failure"
+        );
+        for required in [
+            DriverEventKind::HostStarted,
+            DriverEventKind::ClientLoaded,
+            DriverEventKind::RegistrationSelected,
+            DriverEventKind::ServerInitialized,
+            DriverEventKind::BufferEnabled,
+            DriverEventKind::InitializeObserved,
+            DriverEventKind::RootSelected,
+            DriverEventKind::FixtureOpened,
+            DriverEventKind::ShutdownStarted,
+            DriverEventKind::ShutdownCompleted,
+        ] {
+            ensure!(singleton.contains(&required), "complete host run omitted {required:?}");
+        }
+    }
+    Ok(())
+}
+
+fn lifecycle_rank(kind: DriverEventKind) -> u8 {
+    match kind {
+        DriverEventKind::HostStarted => 1,
+        DriverEventKind::ClientLoaded => 2,
+        DriverEventKind::RegistrationSelected => 3,
+        DriverEventKind::FixtureOpened => 4,
+        DriverEventKind::ServerInitialized => 5,
+        DriverEventKind::BufferEnabled => 6,
+        DriverEventKind::InitializeObserved => 7,
+        DriverEventKind::RootSelected => 8,
+        DriverEventKind::ShutdownStarted => 9,
+        DriverEventKind::ShutdownCompleted => 10,
+        DriverEventKind::DriverFailed => 10,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic process-set comparison
+// ---------------------------------------------------------------------------
+
+/// One observed process line from the platform probe.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProcessProbeLine {
+    pub pid: u32,
+    pub args: String,
+}
+
+/// Parse a `ps -eo pid=,args=` style snapshot into deterministic lines.
+/// Lines not matching the `pid args` shape are rejected: an unparseable
+/// process probe is evidence failure, not a silent empty set.
+pub fn parse_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine>> {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mut split = trimmed.splitn(2, char::is_whitespace);
+        let pid = split.next().unwrap_or_default();
+        let args = split.next().unwrap_or_default().trim();
+        let pid: u32 = pid
+            .parse()
+            .with_context(|| format!("process snapshot line is not `pid args`: {trimmed:?}"))?;
+        lines.push(ProcessProbeLine { pid, args: args.to_string() });
+    }
+    lines.sort();
+    Ok(lines)
+}
+
+/// Probe the current process table through the platform command. `None` means
+/// the platform probe is unavailable — a typed limitation, never a pass.
+pub fn probe_process_table() -> Option<Result<String>> {
+    let output = if cfg!(windows) {
+        Command::new("tasklist").arg("/FO").arg("CSV").arg("/NH").stdin(Stdio::null()).output()
+    } else {
+        Command::new("ps").args(["-eo", "pid=,args="]).stdin(Stdio::null()).output()
+    };
+    match output {
+        Ok(output) if output.status.success() => {
+            Some(Ok(String::from_utf8_lossy(&output.stdout).into_owned()))
+        }
+        Ok(output) => {
+            Some(Err(anyhow::anyhow!("process probe failed with status {}", output.status)))
+        }
+        Err(error) => Some(Err(anyhow::Error::new(error))),
+    }
+}
+
+/// Parse a Windows `tasklist /FO CSV /NH` snapshot into the same
+/// `pid args` lines.
+pub fn parse_windows_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine>> {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = trimmed.split("\",\"").collect();
+        if fields.len() < 2 {
+            bail!("windows process snapshot row is not CSV: {trimmed:?}");
+        }
+        let image = fields[0].trim_start_matches('"');
+        let pid: u32 = fields[1]
+            .trim_end_matches('"')
+            .parse()
+            .with_context(|| format!("windows process snapshot pid is not numeric: {trimmed:?}"))?;
+        lines.push(ProcessProbeLine { pid, args: image.to_string() });
+    }
+    lines.sort();
+    Ok(lines)
+}
+
+/// The deterministic comparison: which `after` probe lines matching `needle`
+/// were not present in the `before` probe. A survivor means the run leaked a
+/// process it was responsible for.
+pub fn surviving_processes(
+    before: &[ProcessProbeLine],
+    after: &[ProcessProbeLine],
+    needle: &str,
+) -> Vec<ProcessProbeLine> {
+    let before_matching: BTreeSet<&ProcessProbeLine> =
+        before.iter().filter(|line| line.args.contains(needle)).collect();
+    after
+        .iter()
+        .filter(|line| line.args.contains(needle) && !before_matching.contains(line))
+        .cloned()
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Owned-process supervision
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ProcessLedger {
+    pid: u32,
+    timed_out: bool,
+    kill_requested: bool,
+    exit_code: Option<i32>,
+    cleanup: CleanupResult,
+    cleanup_detail: String,
+    event_count: usize,
+    driver_complete: bool,
+    process_probe: String,
+    surviving_processes: Vec<ProcessProbeLineLedger>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ProcessProbeLineLedger {
+    pid: u32,
+    args: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcessObservation {
+    pub status_code: Option<i32>,
+    pub timed_out: bool,
+    pub kill_requested: bool,
+    pub cleanup: CleanupResult,
+    pub cleanup_detail: String,
+    pub events: Vec<DriverEvent>,
+    pub driver_complete: bool,
+    pub artifacts: Vec<EvidenceArtifact>,
+}
+
+impl ProcessObservation {
+    pub fn passed_process_boundary(&self) -> bool {
+        self.status_code == Some(0)
+            && !self.timed_out
+            && self.cleanup == CleanupResult::Pass
+            && self.driver_complete
+    }
+}
+
+/// Execute one owned host process under a parent-owned hard deadline with a
+/// deterministic before/after process-set comparison for the exact candidate
+/// executable. Missing process probes degrade the cleanup judgment to
+/// `not_proven` with a typed detail — never to `pass`.
+pub fn run_owned_process(
+    command: &mut Command,
+    plan: &VimHostRunPlan,
+    layout: &HermeticVimLayout,
+) -> Result<ProcessObservation> {
+    // The needle binds the exact candidate: full executable path on platforms
+    // whose probe reports full command lines, file name where only the image
+    // name is observable.
+    let needle = plan
+        .paths
+        .candidate_executable
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or("perllsp")
+        .to_string();
+    let probe_before = probe_process_table();
+    let before_lines = match &probe_before {
+        Some(Ok(text)) => {
+            let parsed = if cfg!(windows) {
+                parse_windows_process_snapshot(text)
+            } else {
+                parse_process_snapshot(text)
+            };
+            parsed.unwrap_or_default()
+        }
+        _ => Vec::new(),
+    };
+
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().context("spawning the Vim host subject")?;
+    let pid = child.id();
+    let mut stdout = child.stdout.take().context("capturing host stdout")?;
+    let mut stderr = child.stderr.take().context("capturing host stderr")?;
+    let stdout_reader = thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    });
+    let stderr_reader = thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    });
+
+    let deadline = Instant::now() + Duration::from_millis(plan.identity.timeout_ms);
+    let mut timed_out = false;
+    let mut kill_requested = false;
+    let status: ExitStatus = loop {
+        if let Some(status) = child.try_wait().context("polling the Vim host process")? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            timed_out = true;
+            child.kill().context("killing the timed-out Vim host process")?;
+            kill_requested = true;
+            break child.wait().context("reaping the timed-out Vim host process")?;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+
+    let stdout = join_reader(stdout_reader, "host stdout")?;
+    let stderr = join_reader(stderr_reader, "host stderr")?;
+
+    // Deterministic cleanup comparison. A survivor that matches the exact
+    // candidate needle and was absent before the run is an observed leak:
+    // `fail`. An unavailable or unparseable probe leaves the judgment
+    // `not_proven` with the typed detail naming the missing evidence.
+    let probe_after = probe_process_table();
+    let (mut cleanup, mut cleanup_detail, survivors) = match (&probe_before, &probe_after) {
+        (Some(Ok(_)), Some(Ok(after_text))) => {
+            let parsed = if cfg!(windows) {
+                parse_windows_process_snapshot(after_text)
+            } else {
+                parse_process_snapshot(after_text)
+            };
+            match parsed {
+                Ok(after_lines) => {
+                    let survivors = surviving_processes(&before_lines, &after_lines, &needle);
+                    if survivors.is_empty() {
+                        (CleanupResult::Pass, "process-set comparison clean".to_string(), survivors)
+                    } else {
+                        (
+                            CleanupResult::Fail,
+                            format!(
+                                "process-set comparison observed {} surviving candidate process(es) \
+                                 after the run",
+                                survivors.len()
+                            ),
+                            survivors,
+                        )
+                    }
+                }
+                Err(error) => (
+                    CleanupResult::NotProven,
+                    format!("after-process probe unparseable: {error}"),
+                    Vec::new(),
+                ),
+            }
+        }
+        _ => (
+            CleanupResult::NotProven,
+            "process probe unavailable on this platform; cleanup not observed".to_string(),
+            Vec::new(),
+        ),
+    };
+    // Retain both raw snapshots as run evidence even when the comparison
+    // itself could not be made.
+    let _ = fs::write(layout.process_snapshot_before(), render_process_snapshot(&before_lines));
+    let _ = fs::write(
+        layout.process_snapshot_after(),
+        match &probe_after {
+            Some(Ok(text)) => text.clone(),
+            _ => String::new(),
+        },
+    );
+    if (timed_out || kill_requested || status.code() != Some(0)) && cleanup == CleanupResult::Pass {
+        // A forced kill or abnormal exit skipped the driver's own shutdown
+        // path; even a clean process-set cannot attest the client's own
+        // orderly LSP shutdown, so the judgment degrades to not-proven.
+        cleanup = CleanupResult::NotProven;
+        cleanup_detail =
+            "host exit skipped the driver shutdown path; orderly client shutdown not observed"
+                .to_string();
+    }
+
+    let event_bytes = fs::read(layout.event_file()).unwrap_or_default();
+    let events = parse_driver_events(&event_bytes, false).unwrap_or_default();
+    let driver_complete = validate_driver_events(&events, true).is_ok();
+
+    let mut artifacts = Vec::new();
+    artifacts.push(write_sanitized_artifact(
+        &layout.artifact_directory,
+        "vim/driver-stdout.log",
+        ArtifactKind::DriverOutput,
+        &stdout,
+        plan,
+        layout,
+    )?);
+    artifacts.push(write_sanitized_artifact(
+        &layout.artifact_directory,
+        "vim/driver-stderr.log",
+        ArtifactKind::DriverOutput,
+        &stderr,
+        plan,
+        layout,
+    )?);
+    artifacts.push(write_sanitized_artifact(
+        &layout.artifact_directory,
+        "vim/driver-events.jsonl",
+        ArtifactKind::DriverOutput,
+        &event_bytes,
+        plan,
+        layout,
+    )?);
+
+    for (path, id, kind) in [
+        (layout.client_log(), "vim/vim-lsp-client.log", ArtifactKind::ClientLog),
+        (layout.server_trace(), "vim/perllsp.log", ArtifactKind::ServerStderr),
+        (layout.capability_snapshot(), "vim/initialize.json", ArtifactKind::CapabilitySnapshot),
+    ] {
+        if path.is_file() {
+            let bytes = fs::read(&path)
+                .with_context(|| format!("reading host artifact {}", path.display()))?;
+            artifacts.push(write_sanitized_artifact(
+                &layout.artifact_directory,
+                id,
+                kind,
+                &bytes,
+                plan,
+                layout,
+            )?);
+        }
+    }
+
+    let ledger = ProcessLedger {
+        pid,
+        timed_out,
+        kill_requested,
+        exit_code: status.code(),
+        cleanup,
+        cleanup_detail: cleanup_detail.clone(),
+        event_count: events.len(),
+        driver_complete,
+        process_probe: if probe_before.is_some() && probe_after.is_some() {
+            "available".to_string()
+        } else {
+            "unavailable".to_string()
+        },
+        surviving_processes: survivors
+            .iter()
+            .map(|line| ProcessProbeLineLedger { pid: line.pid, args: line.args.clone() })
+            .collect(),
+    };
+    let ledger_bytes = serde_json::to_vec_pretty(&ledger)?;
+    artifacts.push(write_sanitized_artifact(
+        &layout.artifact_directory,
+        "vim/process-ledger.json",
+        ArtifactKind::ProcessLedger,
+        &ledger_bytes,
+        plan,
+        layout,
+    )?);
+
+    Ok(ProcessObservation {
+        status_code: status.code(),
+        timed_out,
+        kill_requested,
+        cleanup,
+        cleanup_detail,
+        events,
+        driver_complete,
+        artifacts,
+    })
+}
+
+fn render_process_snapshot(lines: &[ProcessProbeLine]) -> String {
+    let mut text = String::new();
+    for line in lines {
+        let _ = writeln!(text, "{} {}", line.pid, line.args);
+    }
+    text
+}
+
+fn join_reader(
+    handle: thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    label: &str,
+) -> Result<Vec<u8>> {
+    handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("{label} reader thread panicked"))?
+        .with_context(|| format!("reading {label}"))
+}
+
+fn write_sanitized_artifact(
+    artifact_root: &Path,
+    id: &str,
+    kind: ArtifactKind,
+    bytes: &[u8],
+    plan: &VimHostRunPlan,
+    layout: &HermeticVimLayout,
+) -> Result<EvidenceArtifact> {
+    validate_safe_identity(id, "artifact id")?;
+    let sanitized = sanitize_text(bytes, plan, layout);
+    let bounded = bound_capture(sanitized.as_bytes());
+    let destination = artifact_root.join(id);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&destination, bounded)
+        .with_context(|| format!("writing sanitized artifact {}", destination.display()))?;
+    Ok(EvidenceArtifact { kind, id: id.to_string(), sha256: file_sha256(&destination)? })
+}
+
+fn sanitize_text(bytes: &[u8], plan: &VimHostRunPlan, layout: &HermeticVimLayout) -> String {
+    let mut text = String::from_utf8_lossy(bytes).into_owned();
+    // Every absolute path the run plan accepts must appear here: captures are
+    // written as sanitized artifacts that may be uploaded, and an omitted
+    // path leaks the checkout or user directory it came from.
+    let mut replacements = vec![
+        (&layout.root, "<RUN_ROOT>"),
+        (&plan.paths.artifact_root, "<ARTIFACT_ROOT>"),
+        (&plan.paths.fixture_root, "<WORKSPACE>"),
+        (&plan.paths.candidate_executable, "<CANDIDATE>"),
+        (&plan.paths.vim_executable, "<VIM>"),
+        (&plan.paths.vim_lsp_checkout, "<VIM_LSP_CHECKOUT>"),
+        (&plan.paths.driver, "<DRIVER>"),
+        (&plan.paths.adapter, "<ADAPTER>"),
+    ];
+    replacements.sort_by_key(|(path, _)| std::cmp::Reverse(path.as_os_str().len()));
+    for (path, token) in replacements {
+        if let Some(value) = path.to_str() {
+            text = text.replace(value, token);
+            text = text.replace(&value.replace('\\', "/"), token);
+        }
+    }
+    text
+}
+
+fn bound_capture(bytes: &[u8]) -> &[u8] {
+    if bytes.len() <= MAX_CAPTURE_BYTES { bytes } else { &bytes[..MAX_CAPTURE_BYTES] }
+}
+
+// ---------------------------------------------------------------------------
+// Wire-evidence extraction from the vim-lsp client log
+// ---------------------------------------------------------------------------
+
+/// The minimal LSP wire facts mined from the vim-lsp client log
+/// (`g:lsp_log_file`), the same proven extraction surface the #7810 shell
+/// harness used, now owned by Rust so the receipt rests on parsed evidence
+/// rather than a shell pipeline.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WireEvidence {
+    pub saw_initialize: bool,
+    pub saw_initialized: bool,
+    pub saw_shutdown: bool,
+    pub saw_exit: bool,
+    pub saw_publish_diagnostics: bool,
+    /// The whole first `initialize` request envelope, if the log carried one.
+    pub initialize_request: Option<serde_json::Value>,
+    /// The client capabilities object of the first `initialize` request, if
+    /// the log carried one.
+    pub client_capabilities: Option<serde_json::Value>,
+}
+
+/// Extract the wire facts from client-log bytes. Each log line may carry a
+/// timestamp or label prefix (including earlier bracketed fields, exactly
+/// like the real vim-lsp client log); the JSON payload is found by trying
+/// every `[`/`{` start until one parses. The payload may be an object or an
+/// envelope array; method fields are walked recursively, like the heritage
+/// extraction.
+pub fn extract_wire_evidence(log: &[u8]) -> WireEvidence {
+    let text = String::from_utf8_lossy(log);
+    let mut evidence = WireEvidence::default();
+    for line in text.lines() {
+        let Some(value) = parse_first_json_value(line) else {
+            continue;
+        };
+        let mut first_initialize: Option<serde_json::Value> = None;
+        walk_wire_value(&value, &mut evidence, &mut first_initialize);
+        if let (Some(request), None) = (&first_initialize, &evidence.initialize_request) {
+            evidence.initialize_request = Some(request.clone());
+            evidence.client_capabilities =
+                request.get("params").and_then(|params| params.get("capabilities")).cloned();
+        }
+    }
+    evidence
+}
+
+fn parse_first_json_value(line: &str) -> Option<serde_json::Value> {
+    for (index, byte) in line.bytes().enumerate() {
+        if (byte == b'[' || byte == b'{')
+            && let Ok(value) = serde_json::from_str::<serde_json::Value>(&line[index..])
+        {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn walk_wire_value(
+    value: &serde_json::Value,
+    evidence: &mut WireEvidence,
+    first_initialize: &mut Option<serde_json::Value>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::String(method)) = map.get("method") {
+                match method.as_str() {
+                    "initialize" => {
+                        evidence.saw_initialize = true;
+                        if first_initialize.is_none() {
+                            *first_initialize = Some(serde_json::Value::Object(map.clone()));
+                        }
+                    }
+                    "initialized" => evidence.saw_initialized = true,
+                    "shutdown" => evidence.saw_shutdown = true,
+                    "exit" => evidence.saw_exit = true,
+                    "textDocument/publishDiagnostics" => evidence.saw_publish_diagnostics = true,
+                    _ => {}
+                }
+            }
+            for child in map.values() {
+                walk_wire_value(child, evidence, first_initialize);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                walk_wire_value(child, evidence, first_initialize);
+            }
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Receipt
+// ---------------------------------------------------------------------------
+
+/// Retain the mined wire evidence as separately identified artifacts: the
+/// first `initialize` request, its client-capabilities object, and the
+/// lifecycle notification summary. These are the initialize/attach artifacts
+/// the canonical receipt references; they are sanitized and digest-bound like
+/// every other capture.
+pub fn retain_wire_evidence_artifacts(
+    plan: &VimHostRunPlan,
+    layout: &HermeticVimLayout,
+    evidence: &WireEvidence,
+) -> Result<Vec<EvidenceArtifact>> {
+    let mut artifacts = Vec::new();
+    if let Some(request) = &evidence.initialize_request {
+        let bytes = serde_json::to_vec_pretty(request)?;
+        artifacts.push(write_sanitized_artifact(
+            &layout.artifact_directory,
+            "vim/initialize-request.json",
+            ArtifactKind::Other,
+            &bytes,
+            plan,
+            layout,
+        )?);
+    }
+    if let Some(capabilities) = &evidence.client_capabilities {
+        let bytes = serde_json::to_vec_pretty(capabilities)?;
+        artifacts.push(write_sanitized_artifact(
+            &layout.artifact_directory,
+            "vim/client-capabilities.json",
+            ArtifactKind::Other,
+            &bytes,
+            plan,
+            layout,
+        )?);
+    }
+    let lifecycle = serde_json::json!({
+        "schema_version": "vim_host_wire_lifecycle.v1",
+        "saw_initialize": evidence.saw_initialize,
+        "saw_initialized": evidence.saw_initialized,
+        "saw_shutdown": evidence.saw_shutdown,
+        "saw_exit": evidence.saw_exit,
+        "saw_publish_diagnostics": evidence.saw_publish_diagnostics,
+    });
+    artifacts.push(write_sanitized_artifact(
+        &layout.artifact_directory,
+        "vim/wire-lifecycle.json",
+        ArtifactKind::Other,
+        &serde_json::to_vec_pretty(&lifecycle)?,
+        plan,
+        layout,
+    )?);
+    Ok(artifacts)
+}
+
+/// Derive the receipt capability identity from the mined wire evidence: the
+/// client's offered position encodings come from its own `initialize`
+/// capabilities; an absent offer selects the protocol default utf-16 (LSP
+/// 3.17). An absent initialize request leaves the basis not-proven.
+pub fn capabilities_from_wire_evidence(
+    evidence: &WireEvidence,
+    snapshot_sha256: Option<String>,
+) -> Result<CapabilityIdentity> {
+    let offered = evidence
+        .client_capabilities
+        .as_ref()
+        .and_then(|capabilities| capabilities.get("positionEncoding"))
+        .and_then(|value| value.as_str())
+        .map(|encoding| vec![encoding.to_string()]);
+    match (offered, snapshot_sha256) {
+        (Some(encodings), Some(digest)) => Ok(CapabilityIdentity {
+            initialize_snapshot_sha256: digest,
+            position_encodings_offered: encodings.clone(),
+            position_encoding_basis: PositionEncodingBasis::Offered,
+            position_encoding_selected: encodings.first().cloned(),
+        }),
+        (None, Some(digest)) => Ok(CapabilityIdentity {
+            initialize_snapshot_sha256: digest,
+            position_encodings_offered: Vec::new(),
+            position_encoding_basis: PositionEncodingBasis::ProtocolDefault,
+            position_encoding_selected: Some("utf-16".to_string()),
+        }),
+        (_, None) => Ok(CapabilityIdentity {
+            // Hash of zero bytes: the snapshot is absent, and the receipt's
+            // limitation says so. It never stands in for content.
+            initialize_snapshot_sha256: bytes_sha256(&[])?,
+            position_encodings_offered: Vec::new(),
+            position_encoding_basis: PositionEncodingBasis::NotProven,
+            position_encoding_selected: None,
+        }),
+    }
+}
+
+/// Derive the diagnostics identity from the mined wire evidence: observed
+/// `textDocument/publishDiagnostics` notifications prove the push path; an
+/// unobserved path stays not-proven.
+pub fn diagnostics_from_wire_evidence(evidence: &WireEvidence) -> DiagnosticsIdentity {
+    if evidence.saw_publish_diagnostics {
+        DiagnosticsIdentity {
+            advertised_mode: DiagnosticMode::Push,
+            observed_messages: vec!["publish_diagnostics".to_string()],
+        }
+    } else {
+        DiagnosticsIdentity {
+            advertised_mode: DiagnosticMode::NotProven,
+            observed_messages: Vec::new(),
+        }
+    }
+}
+
+/// Compose the canonical generic editor-client receipt. The Vim-specific
+/// detail rides inside the shared schema (host identity, journey cells,
+/// limitations); there is no second outer support schema.
+#[allow(clippy::too_many_arguments)]
+pub fn build_receipt(
+    plan: &VimHostRunPlan,
+    observation: &ProcessObservation,
+    capabilities: CapabilityIdentity,
+    diagnostics: DiagnosticsIdentity,
+    journey: Vec<JourneyCell>,
+    result: ObservationResult,
+    failure_class: Option<FailureClass>,
+    limitations: Vec<String>,
+    claim_boundary: String,
+) -> EditorClientCompatReceipt {
+    EditorClientCompatReceipt {
+        schema_version: RECEIPT_SCHEMA_VERSION.to_string(),
+        observed_at: Utc::now().to_rfc3339(),
+        stage: plan.identity.stage,
+        repository: plan.identity.repository.clone(),
+        candidate_sha: plan.identity.candidate_sha.clone(),
+        platform: plan.identity.platform.clone(),
+        host: HostIdentity {
+            client_id: VIM_LSP_CLIENT_ID.to_string(),
+            product: "vim".to_string(),
+            version: plan.identity.vim_lsp_commit.clone(),
+            source_state: ClientSourceState::UpstreamSource,
+            source_ref: plan.client_source_ref(),
+            executable_sha256: plan.identity.vim_build_sha256.clone(),
+        },
+        integration: IntegrationIdentity {
+            mode: IntegrationMode::GenericLsp,
+            registration_state: plan.identity.registration_state,
+            configuration_sha256: plan.identity.configuration_sha256.clone(),
+            driver_sha256: plan.identity.driver_sha256.clone(),
+        },
+        server: ServerIdentity {
+            executable: "perllsp".to_string(),
+            version: plan.identity.candidate_version.clone(),
+            build_revision: plan.identity.candidate_build_revision.clone(),
+            artifact_sha256: plan.identity.candidate_artifact_sha256.clone(),
+            protocol_version: "3.17".to_string(),
+            launch_command: vec!["perllsp".to_string(), "--stdio".to_string()],
+        },
+        workspace_fixture: plan.identity.fixture.clone(),
+        capabilities,
+        diagnostics,
+        journey,
+        protocol_evidence: None,
+        process_cleanup: observation.cleanup,
+        result,
+        failure_class,
+        limitations,
+        artifacts: observation.artifacts.clone(),
+        claim_boundary,
+    }
+}
+
+pub fn default_not_proven_diagnostics() -> DiagnosticsIdentity {
+    DiagnosticsIdentity {
+        advertised_mode: DiagnosticMode::NotProven,
+        observed_messages: Vec::new(),
+    }
+}
+
+/// Validate that a receipt is fresh for `plan`: a receipt produced by another
+/// run (different candidate, fixture, client bytes, or host build) cannot
+/// satisfy the current run's obligations. This is the stale-receipt law; it
+/// composes with the fresh-output-root refusal that prevents a prior run's
+/// artifacts from being inherited at all.
+pub fn validate_receipt_binding(
+    receipt: &EditorClientCompatReceipt,
+    plan: &VimHostRunPlan,
+) -> Result<()> {
+    receipt.validate()?;
+    ensure!(
+        receipt.host.product == "vim" && receipt.host.client_id == VIM_LSP_CLIENT_ID,
+        "receipt subject is not the vim/vim-lsp host runner subject"
+    );
+    ensure!(
+        receipt.host.version == plan.identity.vim_lsp_commit,
+        "receipt binds vim-lsp {} but the run plan pins {}",
+        receipt.host.version,
+        plan.identity.vim_lsp_commit
+    );
+    ensure!(
+        receipt.host.executable_sha256 == plan.identity.vim_build_sha256,
+        "receipt binds a different Vim executable build"
+    );
+    ensure!(
+        receipt.candidate_sha == plan.identity.candidate_sha,
+        "receipt binds a different repository candidate commit"
+    );
+    ensure!(
+        receipt.server.artifact_sha256 == plan.identity.candidate_artifact_sha256,
+        "receipt binds a different perllsp candidate artifact"
+    );
+    ensure!(
+        receipt.workspace_fixture.digest == plan.identity.fixture.digest,
+        "receipt binds a different workspace fixture"
+    );
+    ensure!(
+        receipt.integration.driver_sha256 == plan.identity.driver_sha256,
+        "receipt binds a different driver"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers (mirroring the Emacs substrate contracts)
+// ---------------------------------------------------------------------------
+
+pub fn file_sha256(path: &Path) -> Result<String> {
+    let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    bytes_sha256(&bytes)
+}
+
+fn verify_file_sha256(path: &Path, expected: &str, label: &str) -> Result<()> {
+    let actual = file_sha256(path)?;
+    ensure!(actual == expected, "{label} hash mismatch");
+    Ok(())
+}
+
+pub fn bytes_sha256(bytes: &[u8]) -> Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let mut identity = String::with_capacity("sha256:".len() + 64);
+    identity.push_str("sha256:");
+    for byte in hasher.finalize() {
+        write!(&mut identity, "{byte:02x}")?;
+    }
+    Ok(identity)
+}
+
+fn validate_sha256(value: &str, field: &str) -> Result<()> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        bail!("{field} must use sha256:<64 lowercase hex> identity");
+    };
+    ensure!(is_lower_hex(hex, 64), "{field} must use sha256:<64 lowercase hex> identity");
+    Ok(())
+}
+
+fn validate_safe_identity(value: &str, field: &str) -> Result<()> {
+    let value = value.trim();
+    ensure!(!value.is_empty(), "{field} cannot be empty");
+    ensure!(!value.starts_with('/'), "{field} must not expose an absolute path");
+    ensure!(!value.starts_with('~'), "{field} must not expose a home-relative path");
+    ensure!(!value.contains('\\'), "{field} must use normalized separators");
+    ensure!(!value.contains("://"), "{field} must not expose a URI-qualified path");
+    ensure!(
+        !(value.len() >= 3
+            && value.as_bytes()[0].is_ascii_alphabetic()
+            && value.as_bytes()[1] == b':'
+            && value.as_bytes()[2] == b'/'),
+        "{field} must not expose a drive-qualified path"
+    );
+    ensure!(
+        !value.split('/').any(|component| component == ".."),
+        "{field} must not contain parent traversal"
+    );
+    Ok(())
+}
+
+pub fn is_lower_hex(value: &str, len: usize) -> bool {
+    value.len() == len && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+pub fn is_reason_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'.' | b'-')
+        })
+        && value.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+}
+
+fn is_perllsp_filename(path: &Path) -> bool {
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name == "perllsp" || name == "perllsp.exe")
+}
