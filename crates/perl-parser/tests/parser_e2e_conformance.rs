@@ -84,7 +84,7 @@ fn assert_clean_parser_output(
         output.recovered_count, 0,
         "parser recovered from syntax for {name} despite clean Perl oracle acceptance\nAST: {sexp}"
     );
-    assert!(!output.terminated_early, "parser terminated early for {name}\nAST: {sexp}");
+    assert!(!output.terminated_early(), "parser terminated early for {name}\nAST: {sexp}");
     assert!(!sexp.contains("ERROR"), "parser produced ERROR nodes for {name}\nAST: {sexp}");
 
     for fragment in expected_fragments {

@@ -33,8 +33,8 @@ fn finish_preserves_all_fields() -> Result<(), Box<dyn std::error::Error>> {
     assert!(output.has_errors());
     assert!(!output.is_ok());
     // terminated_early is derived from stop_cause.is_some()
-    assert!(output.terminated_early);
-    assert!(output.stop_cause.is_some());
+    assert!(output.terminated_early());
+    assert!(output.stop_cause().is_some());
     assert_eq!(output.budget_usage.errors_emitted, 7);
     assert_eq!(output.budget_usage.tokens_skipped, 33);
     assert_eq!(output.budget_usage.recoveries_attempted, 4);
@@ -49,8 +49,8 @@ fn success_output_is_clean() -> Result<(), Box<dyn std::error::Error>> {
     assert!(output.is_ok());
     assert!(!output.has_errors());
     assert_eq!(output.error_count(), 0);
-    assert!(!output.terminated_early);
-    assert!(output.stop_cause.is_none());
+    assert!(!output.terminated_early());
+    assert!(output.stop_cause().is_none());
     assert_eq!(output.budget_usage.errors_emitted, 0);
     assert_eq!(output.budget_usage.tokens_skipped, 0);
     Ok(())
@@ -65,6 +65,6 @@ fn with_errors_sets_error_count_in_tracker() -> Result<(), Box<dyn std::error::E
     ];
     let output = ParseOutput::with_errors(make_empty_program(), errors);
     assert_eq!(output.budget_usage.errors_emitted, 3);
-    assert!(!output.terminated_early);
+    assert!(!output.terminated_early());
     Ok(())
 }

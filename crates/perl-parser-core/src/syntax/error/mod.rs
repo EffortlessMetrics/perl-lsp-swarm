@@ -535,11 +535,14 @@ use perl_ast::Node;
 ///
 /// # Invariant
 ///
-/// `stop_cause.is_some() == terminated_early` on every [`ParseOutput`] produced
-/// by a public parser entry point. This invariant is enforced by the
-/// [`ParseOutput`] constructors; consumers that mutate fields directly are
-/// responsible for keeping them consistent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `stop_cause().is_some() == terminated_early()` on every [`ParseOutput`],
+/// forever. The invariant is enforced by construction: the cause is the only
+/// stored terminal state, the boolean is a derived accessor over it, and both
+/// are private. Contradictory state (a cause without early termination, or a
+/// boolean that disagrees with the cause) is unrepresentable for every
+/// consumer, internal or external; the only mutation path is the checked
+/// [`ParseOutput::set_stop_cause`], which re-derives the projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ParseStopCause {
     /// Cooperative cancellation was triggered via an external cancellation token
@@ -709,17 +712,6 @@ pub struct ParseOutput {
     /// Useful for diagnosing pathological inputs.
     pub budget_usage: BudgetTracker,
 
-    /// Whether parsing completed normally or was terminated early.
-    ///
-    /// This field is a checked projection of [`ParseOutput::stop_cause`]:
-    /// `terminated_early == stop_cause.is_some()` on every [`ParseOutput`]
-    /// produced by a public parser entry point.
-    ///
-    /// Prefer reading [`ParseOutput::stop_cause`] when you need to distinguish
-    /// the exact terminal cause; use `terminated_early` only as a quick boolean
-    /// guard or for backward compatibility.
-    pub terminated_early: bool,
-
     /// Number of recovery operations applied during this parse.
     ///
     /// Counts the [`ParseError::Recovered`] variants in `diagnostics`.
@@ -729,17 +721,63 @@ pub struct ParseOutput {
 
     /// The exact typed cause that stopped parsing early, if any.
     ///
-    /// `None` for completed (clean or recovered) parses; `Some(cause)` when
-    /// `parse()` returned an error and `terminated_early` is `true`.
+    /// Private terminal authority: the derived [`ParseOutput::terminated_early`]
+    /// projection and the checked [`ParseOutput::set_stop_cause`] mutation are
+    /// the only external surface, so the documented invariant is unbreakable
+    /// after construction.
+    stop_cause: Option<ParseStopCause>,
+}
+
+impl ParseOutput {
+    /// Whether parsing completed normally or was terminated early.
     ///
-    /// This field is set at the parser branch that terminates the operation.
-    /// It must not be inferred from `diagnostics` order, content, or severity.
+    /// This is a *derived accessor*, not a stored field: it answers
+    /// `self.stop_cause().is_some()`. Because the terminal cause is the only
+    /// stored state and both are private, the documented invariant
+    /// (`terminated_early() == stop_cause().is_some()`) cannot be broken by
+    /// any consumer — there is no mutable boolean to leave behind.
+    ///
+    /// Prefer [`ParseOutput::stop_cause`] when you need to distinguish the
+    /// exact terminal cause; use [`ParseOutput::terminated_early`] only as a
+    /// quick boolean guard.
+    pub fn terminated_early(&self) -> bool {
+        self.stop_cause.is_some()
+    }
+
+    /// The exact typed cause that stopped parsing early, if any.
+    ///
+    /// `None` for completed (clean or recovered) parses; `Some(cause)` when
+    /// `parse()` returned an error and `terminated_early()` is `true`.
+    ///
+    /// The cause is the single stored terminal authority; it must not be
+    /// inferred from `diagnostics` order, content, or severity.
     ///
     /// # Invariant
     ///
-    /// `stop_cause.is_some() == terminated_early` on every [`ParseOutput`]
-    /// produced by a public parser entry point.
-    pub stop_cause: Option<ParseStopCause>,
+    /// `stop_cause().is_some() == terminated_early()` on every [`ParseOutput`],
+    /// enforced by construction (private storage + derived projection).
+    pub fn stop_cause(&self) -> Option<ParseStopCause> {
+        self.stop_cause
+    }
+
+    /// Replace the terminal stop cause (checked compatibility mutation).
+    ///
+    /// This is the only mutation path for terminal state. The derived
+    /// [`ParseOutput::terminated_early`] projection follows automatically, so
+    /// callers can never express a cause and a boolean that disagree.
+    ///
+    /// ```
+    /// # use perl_parser_core::Parser;
+    /// let mut parser = Parser::new("my $x = 1;");
+    /// let mut output = parser.parse_with_recovery();
+    /// assert_eq!(output.terminated_early(), output.stop_cause().is_some());
+    /// // The only mutation path keeps that equation true by construction.
+    /// output.set_stop_cause(output.stop_cause());
+    /// assert_eq!(output.terminated_early(), output.stop_cause().is_some());
+    /// ```
+    pub fn set_stop_cause(&mut self, cause: Option<ParseStopCause>) {
+        self.stop_cause = cause;
+    }
 }
 
 /// Closeout classification for a parsed file.
@@ -849,13 +887,12 @@ pub(crate) fn count_blocking_non_recovered(diagnostics: &[ParseError]) -> usize 
 impl ParseOutput {
     /// Create a successful parse output with no errors.
     ///
-    /// Sets `terminated_early = false` and `stop_cause = None`.
+    /// Terminal state is `None`: `terminated_early()` answers `false`.
     pub fn success(ast: Node) -> Self {
         Self {
             ast,
             diagnostics: Vec::new(),
             budget_usage: BudgetTracker::new(),
-            terminated_early: false,
             recovered_count: 0,
             stop_cause: None,
         }
@@ -873,14 +910,7 @@ impl ParseOutput {
         budget_usage.errors_emitted = diagnostics.len();
         let recovered_count =
             diagnostics.iter().filter(|e| matches!(e, ParseError::Recovered { .. })).count();
-        Self {
-            ast,
-            diagnostics,
-            budget_usage,
-            terminated_early: false,
-            recovered_count,
-            stop_cause: None,
-        }
+        Self { ast, diagnostics, budget_usage, recovered_count, stop_cause: None }
     }
 
     /// Create a parse output with full budget tracking and an optional stop cause.
@@ -890,8 +920,8 @@ impl ParseOutput {
     ///
     /// The `stop_cause` argument should be `Some(cause)` when `parse()` returned
     /// `Err` and `None` for completed (clean or recovered) operations.
-    /// `terminated_early` is derived from `stop_cause.is_some()` to maintain the
-    /// documented invariant.
+    /// `terminated_early()` is derived from `stop_cause.is_some()` to maintain
+    /// the documented invariant.
     pub fn finish(
         ast: Node,
         diagnostics: Vec<ParseError>,
@@ -900,8 +930,7 @@ impl ParseOutput {
     ) -> Self {
         let recovered_count =
             diagnostics.iter().filter(|e| matches!(e, ParseError::Recovered { .. })).count();
-        let terminated_early = stop_cause.is_some();
-        Self { ast, diagnostics, budget_usage, terminated_early, recovered_count, stop_cause }
+        Self { ast, diagnostics, budget_usage, recovered_count, stop_cause }
     }
 
     /// Check if parse completed without any errors.
@@ -1344,7 +1373,7 @@ mod tests {
         assert!(output.is_ok());
         assert!(!output.has_errors());
         assert_eq!(output.error_count(), 0);
-        assert!(!output.terminated_early);
+        assert!(!output.terminated_early());
     }
 
     #[test]
@@ -1393,8 +1422,8 @@ mod tests {
         assert_eq!(output.budget_usage.recoveries_attempted, 3);
         assert_eq!(output.budget_usage.max_depth_reached, 10);
         // terminated_early is derived from stop_cause.is_some()
-        assert!(output.terminated_early);
-        assert!(output.stop_cause.is_some());
+        assert!(output.terminated_early());
+        assert!(output.stop_cause().is_some());
         assert_eq!(output.error_count(), 1);
     }
 
@@ -1556,8 +1585,8 @@ mod tests {
         let output = ParseOutput::finish(ast, errors, tracker, None);
 
         assert_eq!(output.recovered_count, 1);
-        assert!(!output.terminated_early);
-        assert!(output.stop_cause.is_none());
+        assert!(!output.terminated_early());
+        assert!(output.stop_cause().is_none());
     }
 
     #[test]

@@ -443,6 +443,14 @@ impl<'a> Parser<'a> {
     /// # Ok::<(), perl_parser_core::ParseError>(())
     /// ```
     pub fn parse(&mut self) -> ParseResult<Node> {
+        // Clear operation-scoped terminal state at entry: a previous
+        // operation on this same parser instance (for example a `parse()`
+        // that returned `Ok` after a lexer-budget `UnknownRest` stop) may
+        // have left its cause stored. Without this reset, the *next*
+        // operation would consume the previous operation's cause through
+        // `parse_with_recovery`'s success arm and report a clean, already-
+        // at-EOF parse as truncated.
+        self.ok_path_stop_cause = None;
         // Check cancellation before starting — handles pre-set flags immediately.
         if let Some(ref flag) = self.cancellation_flag {
             if flag.load(Ordering::Relaxed) {
@@ -504,8 +512,11 @@ impl<'a> Parser<'a> {
             Err(e) => {
                 // If parse() returned Err, it was a non-recoverable error (e.g. cancellation,
                 // recursion limit, or nesting limit). Record the typed stop cause at this branch —
-                // the cause is not reconstructed from diagnostics later.
+                // the cause is not reconstructed from diagnostics later. Any operation-scoped
+                // cause stored before the terminal error is superseded by it and dropped, so
+                // nothing leaks into a later operation on this same parser.
                 let cause = ParseStopCause::from_parse_error(&e);
+                let _ = self.ok_path_stop_cause.take();
 
                 // Ensure the terminal error is recorded in the diagnostic vector, but only
                 // once — `Cancelled` in particular can already be present from prior work.

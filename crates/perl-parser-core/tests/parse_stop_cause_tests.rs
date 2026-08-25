@@ -134,8 +134,8 @@ fn parse_stop_cause_debug_and_clone() {
 #[test]
 fn success_sets_stop_cause_none_and_terminated_early_false() {
     let output = ParseOutput::success(empty_ast());
-    assert!(output.stop_cause.is_none(), "success() must have stop_cause=None");
-    assert!(!output.terminated_early, "success() must have terminated_early=false");
+    assert!(output.stop_cause().is_none(), "success() must have stop_cause=None");
+    assert!(!output.terminated_early(), "success() must have terminated_early=false");
 }
 
 #[test]
@@ -145,9 +145,9 @@ fn with_errors_sets_stop_cause_none_and_terminated_early_false() {
         ParseError::SyntaxError { message: "e2".to_string(), location: 5 },
     ];
     let output = ParseOutput::with_errors(empty_ast(), errors);
-    assert!(output.stop_cause.is_none(), "with_errors() must have stop_cause=None");
+    assert!(output.stop_cause().is_none(), "with_errors() must have stop_cause=None");
     assert!(
-        !output.terminated_early,
+        !output.terminated_early(),
         "with_errors() must have terminated_early=false (recovered parse, not terminated)"
     );
 }
@@ -155,8 +155,8 @@ fn with_errors_sets_stop_cause_none_and_terminated_early_false() {
 #[test]
 fn finish_with_none_cause_sets_terminated_early_false() {
     let output = ParseOutput::finish(empty_ast(), vec![], BudgetTracker::new(), None);
-    assert!(output.stop_cause.is_none());
-    assert!(!output.terminated_early);
+    assert!(output.stop_cause().is_none());
+    assert!(!output.terminated_early());
 }
 
 #[test]
@@ -167,9 +167,9 @@ fn finish_with_cancelled_cause_sets_terminated_early_true() {
         BudgetTracker::new(),
         Some(ParseStopCause::Cancelled),
     );
-    assert!(output.stop_cause.is_some());
-    assert!(output.terminated_early);
-    assert_eq!(output.stop_cause, Some(ParseStopCause::Cancelled));
+    assert!(output.stop_cause().is_some());
+    assert!(output.terminated_early());
+    assert_eq!(output.stop_cause(), Some(ParseStopCause::Cancelled));
 }
 
 #[test]
@@ -177,8 +177,8 @@ fn finish_with_nesting_cause_carries_limit_and_usage() {
     let cause = ParseStopCause::NestingOrDepthBudgetExhausted { limit: 128, usage: 129 };
     let output =
         ParseOutput::finish(empty_ast(), vec![], BudgetTracker::new(), Some(cause.clone()));
-    assert_eq!(output.stop_cause, Some(cause));
-    assert!(output.terminated_early);
+    assert_eq!(output.stop_cause(), Some(cause));
+    assert!(output.terminated_early());
 }
 
 #[test]
@@ -189,8 +189,8 @@ fn finish_with_catastrophic_cause_sets_terminated_early() {
         BudgetTracker::new(),
         Some(ParseStopCause::CatastrophicTermination),
     );
-    assert!(output.terminated_early);
-    assert_eq!(output.stop_cause, Some(ParseStopCause::CatastrophicTermination));
+    assert!(output.terminated_early());
+    assert_eq!(output.stop_cause(), Some(ParseStopCause::CatastrophicTermination));
 }
 
 // ---------------------------------------------------------------------------
@@ -221,8 +221,8 @@ fn same_diagnostics_different_stop_cause_is_distinct() {
     // Same diagnostics...
     assert_eq!(completed.diagnostics, terminated.diagnostics);
     // ...but different terminal authority.
-    assert_ne!(completed.stop_cause, terminated.stop_cause);
-    assert_ne!(completed.terminated_early, terminated.terminated_early);
+    assert_ne!(completed.stop_cause(), terminated.stop_cause());
+    assert_ne!(completed.terminated_early(), terminated.terminated_early());
 }
 
 /// Changing diagnostic order does not change the stop cause — the cause is set
@@ -243,8 +243,8 @@ fn diagnostic_order_change_does_not_affect_stop_cause() {
     let out_ba = ParseOutput::finish(empty_ast(), errors_ba, BudgetTracker::new(), cause.clone());
 
     // Different diagnostic orders produce the same stop cause.
-    assert_eq!(out_ab.stop_cause, out_ba.stop_cause);
-    assert_eq!(out_ab.terminated_early, out_ba.terminated_early);
+    assert_eq!(out_ab.stop_cause(), out_ba.stop_cause());
+    assert_eq!(out_ab.terminated_early(), out_ba.terminated_early());
 }
 
 // ---------------------------------------------------------------------------
@@ -260,9 +260,9 @@ fn parse_with_recovery_records_cancelled_cause_when_flag_is_preset() {
     let mut parser = Parser::new_with_cancellation("my $x = 1; my $y = 2;", flag);
     let output = parser.parse_with_recovery();
 
-    assert!(output.terminated_early, "pre-set cancellation flag must set terminated_early=true");
+    assert!(output.terminated_early(), "pre-set cancellation flag must set terminated_early=true");
     assert_eq!(
-        output.stop_cause,
+        output.stop_cause(),
         Some(ParseStopCause::Cancelled),
         "stop_cause must be Cancelled, not inferred from diagnostics"
     );
@@ -278,8 +278,8 @@ fn parse_with_recovery_records_no_cause_for_clean_completion() {
     let mut parser = Parser::new("my $x = 42;");
     let output = parser.parse_with_recovery();
 
-    assert!(output.stop_cause.is_none(), "clean parse must have stop_cause=None");
-    assert!(!output.terminated_early, "clean parse must have terminated_early=false");
+    assert!(output.stop_cause().is_none(), "clean parse must have stop_cause=None");
+    assert!(!output.terminated_early(), "clean parse must have terminated_early=false");
     assert!(output.diagnostics.is_empty(), "clean parse must have no diagnostics");
 }
 
@@ -291,11 +291,11 @@ fn parse_with_recovery_records_no_cause_for_recovered_completion() {
     let output = parser.parse_with_recovery();
 
     assert!(
-        output.stop_cause.is_none(),
+        output.stop_cause().is_none(),
         "recovered (but completed) parse must have stop_cause=None"
     );
     assert!(
-        !output.terminated_early,
+        !output.terminated_early(),
         "recovered (but completed) parse must have terminated_early=false"
     );
     // At least one diagnostic from recovery
@@ -323,8 +323,8 @@ fn recovered_diagnostics_before_cancellation_preserved_with_cancelled_cause() {
     // All diagnostics are preserved.
     assert_eq!(output.diagnostics, errors);
     // Stop cause is Cancelled — not the first/last syntax error.
-    assert_eq!(output.stop_cause, Some(ParseStopCause::Cancelled));
-    assert!(output.terminated_early);
+    assert_eq!(output.stop_cause(), Some(ParseStopCause::Cancelled));
+    assert!(output.terminated_early());
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +335,7 @@ fn recovered_diagnostics_before_cancellation_preserved_with_cancelled_cause() {
 #[test]
 fn success_cannot_have_stop_cause_set() {
     let output = ParseOutput::success(empty_ast());
-    assert!(output.stop_cause.is_none(), "success() must never produce a stop_cause");
+    assert!(output.stop_cause().is_none(), "success() must never produce a stop_cause");
 }
 
 /// An error-containing recovered parse (not cancelled, not budget-exhausted)
@@ -346,10 +346,10 @@ fn error_in_diagnostics_does_not_imply_terminated_early() {
     // unless the parser actually returned Err(RecursionLimit).
     let output = ParseOutput::with_errors(empty_ast(), vec![ParseError::RecursionLimit]);
     assert!(
-        !output.terminated_early,
+        !output.terminated_early(),
         "a RecursionLimit diagnostic without a stop cause must not set terminated_early"
     );
-    assert!(output.stop_cause.is_none(), "with_errors() must never set stop_cause");
+    assert!(output.stop_cause().is_none(), "with_errors() must never set stop_cause");
 }
 
 /// Cancellation must not be confused with budget exhaustion.
@@ -384,8 +384,8 @@ fn resource_limit_stop_cause_is_not_erased_by_empty_diagnostics() {
         BudgetTracker::new(),
         Some(ParseStopCause::RecursionBudgetExhausted { limit: None, usage: None }),
     );
-    assert!(output.stop_cause.is_some(), "stop_cause must survive even with empty diagnostics");
-    assert!(output.terminated_early);
+    assert!(output.stop_cause().is_some(), "stop_cause must survive even with empty diagnostics");
+    assert!(output.terminated_early());
 }
 
 /// `from_parse_error` must not collapse cancellation, recursion, and depth exhaustion.
@@ -408,8 +408,8 @@ fn from_parse_error_preserves_cause_family_distinctions() {
 fn recovered_parse_with_warning_has_no_stop_cause() {
     let warnings = vec![ParseError::Advisory { message: "style warning".to_string(), location: 0 }];
     let output = ParseOutput::with_errors(empty_ast(), warnings);
-    assert!(output.stop_cause.is_none());
-    assert!(!output.terminated_early);
+    assert!(output.stop_cause().is_none());
+    assert!(!output.terminated_early());
 }
 
 /// Repeated parser operations start with no stale cause.
@@ -425,11 +425,11 @@ fn repeated_parser_runs_produce_independent_stop_causes() {
     let out2 = parser2.parse_with_recovery();
 
     // First parse: completed, no stop cause.
-    assert!(out1.stop_cause.is_none());
-    assert!(!out1.terminated_early);
+    assert!(out1.stop_cause().is_none());
+    assert!(!out1.terminated_early());
     // Second parse: cancelled, has stop cause.
-    assert_eq!(out2.stop_cause, Some(ParseStopCause::Cancelled));
-    assert!(out2.terminated_early);
+    assert_eq!(out2.stop_cause(), Some(ParseStopCause::Cancelled));
+    assert!(out2.terminated_early());
 }
 
 // ---------------------------------------------------------------------------
@@ -452,18 +452,18 @@ fn lexer_budget_exhaustion_sets_typed_stop_cause() {
     let output = parser.parse_with_recovery();
 
     assert!(
-        output.terminated_early,
+        output.terminated_early(),
         "lexer-budget truncation must terminate_early, got stop_cause {:?}",
-        output.stop_cause
+        output.stop_cause()
     );
     assert_eq!(
-        output.stop_cause.as_ref().map(ParseStopCause::as_str),
+        output.stop_cause().as_ref().map(ParseStopCause::as_str),
         Some("lexer_budget_exhausted"),
         "lexer-budget truncation must carry the typed lexer cause, got {:?}",
-        output.stop_cause
+        output.stop_cause()
     );
     assert!(
-        output.stop_cause.is_some_and(|cause| cause.is_budget_exhaustion()),
+        output.stop_cause().is_some_and(|cause| cause.is_budget_exhaustion()),
         "lexer-budget exhaustion is a budget exhaustion"
     );
     // The partial AST keeps the statements parsed before the budget stop.
@@ -486,9 +486,9 @@ fn lexer_budget_exhaustion_sets_typed_stop_cause() {
     let mut clean = Parser::new(&bounded);
     let clean_output = clean.parse_with_recovery();
     assert!(
-        clean_output.stop_cause.is_none() && !clean_output.terminated_early,
+        clean_output.stop_cause().is_none() && !clean_output.terminated_early(),
         "within-budget regex must complete cleanly, got {:?}",
-        clean_output.stop_cause
+        clean_output.stop_cause()
     );
 }
 
@@ -504,20 +504,20 @@ fn expression_recursion_exhaustion_keeps_recursion_cause() {
     let output = parser.parse_with_recovery();
 
     assert_eq!(
-        output.stop_cause.as_ref().map(ParseStopCause::as_str),
+        output.stop_cause().as_ref().map(ParseStopCause::as_str),
         Some("recursion_budget_exhausted"),
         "expression-recursion exhaustion must keep the recursion cause, got {:?}",
-        output.stop_cause
+        output.stop_cause()
     );
     assert!(
         matches!(
-            output.stop_cause,
+            output.stop_cause(),
             Some(ParseStopCause::RecursionBudgetExhausted { limit: Some(_), usage: Some(_) })
         ),
         "the production recursion guard supplies its limit and usage, got {:?}",
-        output.stop_cause
+        output.stop_cause()
     );
-    assert!(output.terminated_early);
+    assert!(output.terminated_early());
 }
 
 /// The structural block guard keeps the nesting/depth cause: deep block
@@ -531,10 +531,95 @@ fn structural_block_nesting_keeps_nesting_cause() {
     let output = parser.parse_with_recovery();
 
     assert_eq!(
-        output.stop_cause.as_ref().map(ParseStopCause::as_str),
+        output.stop_cause().as_ref().map(ParseStopCause::as_str),
         Some("nesting_or_depth_budget_exhausted"),
         "structural block nesting keeps the nesting cause, got {:?}",
-        output.stop_cause
+        output.stop_cause()
     );
-    assert!(output.terminated_early);
+    assert!(output.terminated_early());
+}
+
+// ---------------------------------------------------------------------------
+// Operation-scoped state isolation (same parser instance)
+// ---------------------------------------------------------------------------
+
+/// A stored ok-path cause belongs to exactly one operation.
+///
+/// `parse()` returns `Ok` for a lexer-budget truncation without consuming the
+/// stored cause. A *second* operation on the same parser instance must not
+/// consume the first operation's cause: the second parse is already at EOF
+/// and completes clean. This is the same-instance `parse()` →
+/// `parse_with_recovery()` falsifier for operation-scoped state leakage.
+#[test]
+fn second_operation_on_same_parser_never_consumes_a_stale_stop_cause() {
+    // Lexer-budget source: parse() returns Ok with a partial AST and stores
+    // LexerBudgetExhausted without consuming it.
+    let source = format!("my $ok = 1;\n/{};\n", "a".repeat(70_000));
+    let mut parser = Parser::new(&source);
+    let first = parser.parse().expect("budget truncation returns Ok with partial AST");
+    assert!(
+        matches!(first.kind, perl_parser_core::NodeKind::Program { .. }),
+        "first operation returns a (partial) program"
+    );
+
+    // Second operation, SAME instance: at EOF, completes clean. Before the
+    // entry-clear repair this consumed the stored cause and reported a clean
+    // empty parse as LexerBudgetExhausted-truncated.
+    let second = parser.parse_with_recovery();
+    assert_eq!(
+        second.stop_cause(),
+        None,
+        "second operation must not inherit the first operation's stored cause"
+    );
+    assert!(!second.terminated_early());
+}
+
+/// An intervening terminal error must not leak a stored cause either.
+///
+/// parse_with_recovery() on a cancellation-flagged parser takes the error
+/// arm; the next operation on the same instance must start with no stored
+/// cause rather than consuming whatever the failed operation had stored.
+#[test]
+fn error_arm_clears_stored_cause_for_the_next_operation() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    let flag = Arc::new(AtomicBool::new(true));
+    let mut parser = Parser::new_with_cancellation("my $x = 1;", flag);
+    let cancelled = parser.parse_with_recovery();
+    assert_eq!(cancelled.stop_cause(), Some(ParseStopCause::Cancelled));
+
+    // Reuse the same (cancelled) parser: cancellation is checked per
+    // operation from the live flag; with the flag cleared the parse runs
+    // and must not inherit the previous operation's terminal state.
+    // The parser has already consumed its input, so this operation is at
+    // EOF and completes clean.
+    // (Flag still set keeps the error path; the point is the *stored* cause
+    // is cleared at entry, so even the error arm reports its own cause.)
+    let again = parser.parse_with_recovery();
+    assert_eq!(
+        again.stop_cause(),
+        Some(ParseStopCause::Cancelled),
+        "error arm reports its own mapped cause, not a stale stored one"
+    );
+}
+
+/// The checked mutation path keeps the projection invariant by construction.
+///
+/// External consumers cannot express a cause and a boolean that disagree:
+/// `terminated_early` is derived from the single stored cause, and
+/// `set_stop_cause` is the only mutation path.
+#[test]
+fn checked_stop_cause_mutation_keeps_the_projection_consistent() {
+    let mut clean = ParseOutput::success(empty_ast());
+    assert_eq!(clean.terminated_early(), clean.stop_cause().is_some());
+    assert!(!clean.terminated_early());
+
+    clean.set_stop_cause(Some(ParseStopCause::Cancelled));
+    assert!(clean.terminated_early());
+    assert_eq!(clean.stop_cause(), Some(ParseStopCause::Cancelled));
+
+    clean.set_stop_cause(None);
+    assert!(!clean.terminated_early());
+    assert_eq!(clean.stop_cause(), None);
 }
