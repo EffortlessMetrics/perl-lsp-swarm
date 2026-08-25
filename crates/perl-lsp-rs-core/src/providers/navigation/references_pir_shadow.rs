@@ -1111,15 +1111,11 @@ mod promote_tests {
             .collect::<Vec<_>>();
         // The foreach binding anchor is the `$i` token (7..9), per the
         // iterator-binding token-anchor contract merged in #12274 — not the
-        // whole `my $i` span (4..9) this expectation pinned before it.
-        if !mapped.contains(&(7, 9)) {
-            return Err(format!("canonical anchor missing: {mapped:?}"));
-        }
-        if mapped.contains(&(0, 1)) {
-            return Err(format!("forged anchor leaked: {mapped:?}"));
-        }
-        if mapped.contains(&(4, 9)) {
-            return Err(format!("obsolete widened anchor present: {mapped:?}"));
+        // whole `my $i` span (4..9) this expectation pinned before it. Assert
+        // the complete result so exact promotion cannot emit unrelated ranges.
+        let expected = vec![(7, 9), (27, 29)];
+        if mapped != expected {
+            return Err(format!("expected only canonical anchors {expected:?}, got {mapped:?}"));
         }
         Ok(())
     }
