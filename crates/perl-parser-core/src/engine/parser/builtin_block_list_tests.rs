@@ -14,9 +14,10 @@ mod tests {
 
     fn function_call_shape(node: &mut Node, target: &str) -> Option<(usize, bool)> {
         let shape = match &node.kind {
-            NodeKind::FunctionCall { name, args } if name == target => {
-                Some((args.len(), matches!(args.first().map(|arg| &arg.kind), Some(NodeKind::Block { .. }))))
-            }
+            NodeKind::FunctionCall { name, args } if name == target => Some((
+                args.len(),
+                matches!(args.first().map(|arg| &arg.kind), Some(NodeKind::Block { .. })),
+            )),
             _ => None,
         };
         if shape.is_some() {
