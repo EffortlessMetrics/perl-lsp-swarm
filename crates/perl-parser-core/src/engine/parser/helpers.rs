@@ -130,7 +130,10 @@ impl<'a> Parser<'a> {
         self.recursion_depth += 1;
         // Fast path: avoid expensive comparisons in the common case
         if self.recursion_depth > MAX_RECURSION_DEPTH {
-            return Err(ParseError::NestingTooDeep {
+            // The recursion guard keeps its own error identity so the typed
+            // stop cause preserves which guard terminated the parse instead of
+            // relabeling expression recursion as structural nesting.
+            return Err(ParseError::RecursionDepthExhausted {
                 depth: self.recursion_depth,
                 max_depth: MAX_RECURSION_DEPTH,
             });
