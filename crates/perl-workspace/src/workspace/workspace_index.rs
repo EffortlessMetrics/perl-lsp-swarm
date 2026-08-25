@@ -1500,6 +1500,14 @@ impl WorkspaceIndex {
         )
     }
 
+    fn sort_and_dedup_definition_candidates(entries: &mut Vec<DefinitionCandidate>) {
+        entries.sort_by(|left, right| {
+            Self::definition_candidate_sort_key(left)
+                .cmp(&Self::definition_candidate_sort_key(right))
+        });
+        entries.dedup();
+    }
+
     fn rebuild_symbol_cache(
         files: &HashMap<String, FileIndex>,
         symbols: &mut HashMap<String, Vec<DefinitionCandidate>>,
@@ -1521,11 +1529,7 @@ impl WorkspaceIndex {
             }
         }
         for entries in symbols.values_mut() {
-            entries.sort_by(|left, right| {
-                Self::definition_candidate_sort_key(left)
-                    .cmp(&Self::definition_candidate_sort_key(right))
-            });
-            entries.dedup();
+            Self::sort_and_dedup_definition_candidates(entries);
         }
     }
 
@@ -1563,24 +1567,27 @@ impl WorkspaceIndex {
         symbols: &mut HashMap<String, Vec<DefinitionCandidate>>,
         file_index: &FileIndex,
     ) {
+        let mut touched_keys = HashSet::new();
         for sym in &file_index.symbols {
             if let Some(ref qname) = sym.qualified_name {
-                symbols.entry(qname.clone()).or_default().push(DefinitionCandidate {
+                let key = qname.clone();
+                symbols.entry(key.clone()).or_default().push(DefinitionCandidate {
                     location: Location { uri: sym.uri.clone(), range: sym.range },
                     kind: sym.kind,
                 });
+                touched_keys.insert(key);
             }
-            symbols.entry(sym.name.clone()).or_default().push(DefinitionCandidate {
+            let key = sym.name.clone();
+            symbols.entry(key.clone()).or_default().push(DefinitionCandidate {
                 location: Location { uri: sym.uri.clone(), range: sym.range },
                 kind: sym.kind,
             });
+            touched_keys.insert(key);
         }
-        for entries in symbols.values_mut() {
-            entries.sort_by(|left, right| {
-                Self::definition_candidate_sort_key(left)
-                    .cmp(&Self::definition_candidate_sort_key(right))
-            });
-            entries.dedup();
+        for key in touched_keys {
+            if let Some(entries) = symbols.get_mut(&key) {
+                Self::sort_and_dedup_definition_candidates(entries);
+            }
         }
     }
 
@@ -10214,6 +10221,58 @@ Utils::process_data();
 
         assert!(index.find_definition("A::a_func_v2").is_some());
         assert!(index.find_definition("B::b_func").is_some());
+    }
+
+    #[test]
+    fn incremental_add_symbols_only_normalizes_touched_name_buckets() {
+        let mut symbols = HashMap::new();
+        let untouched = vec![
+            DefinitionCandidate {
+                location: Location {
+                    uri: "file:///z.pm".to_string(),
+                    range: Range {
+                        start: Position { byte: 0, line: 0, column: 0 },
+                        end: Position { byte: 1, line: 0, column: 1 },
+                    },
+                },
+                kind: SymbolKind::Subroutine,
+            },
+            DefinitionCandidate {
+                location: Location {
+                    uri: "file:///a.pm".to_string(),
+                    range: Range {
+                        start: Position { byte: 0, line: 0, column: 0 },
+                        end: Position { byte: 1, line: 0, column: 1 },
+                    },
+                },
+                kind: SymbolKind::Subroutine,
+            },
+        ];
+        symbols.insert("untouched".to_string(), untouched.clone());
+        symbols.insert(
+            "shared".to_string(),
+            vec![DefinitionCandidate {
+                location: Location {
+                    uri: "file:///z.pm".to_string(),
+                    range: Range {
+                        start: Position { byte: 0, line: 0, column: 0 },
+                        end: Position { byte: 1, line: 0, column: 1 },
+                    },
+                },
+                kind: SymbolKind::Subroutine,
+            }],
+        );
+
+        let mut symbol = sample_workspace_symbol("shared", Some("Pkg::shared"));
+        symbol.uri = "file:///a.pm".to_string();
+        let file_index = FileIndex { symbols: vec![symbol], ..FileIndex::default() };
+
+        WorkspaceIndex::incremental_add_symbols(&mut symbols, &file_index);
+
+        assert_eq!(symbols["untouched"], untouched);
+        assert_eq!(symbols["shared"][0].location.uri, "file:///a.pm");
+        assert_eq!(symbols["shared"].len(), 2);
+        assert_eq!(symbols["Pkg::shared"].len(), 1);
     }
 
     #[test]
