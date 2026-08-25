@@ -76,8 +76,11 @@ fn chain_past_legacy_ceiling_returns_exact_count_not_truncated_512() {
             assert_eq!(work.nodes_visited, expected);
             assert_eq!(work.edges_visited, expected - 1);
         }
-        AstReadExact::InstrumentFailure { cause } => {
-            panic!("exact count must complete, got {cause:?}")
+        other => {
+            assert!(
+                matches!(other, AstReadExact::Complete { .. }),
+                "exact count must complete, got {other:?}"
+            );
         }
     }
 }
@@ -108,8 +111,9 @@ fn later_shallow_overlap_cannot_beat_deeper_match() {
     let shallow = Node::new(NodeKind::Identifier { name: "later".to_string() }, span);
     let program = Node::new(NodeKind::Program { statements: vec![deep, shallow] }, span);
 
-    let found = program.find_deepest_containing_offset(5).expect("offset 5 is inside 0..10");
-    assert_eq!(found.kind.kind_name(), "Number");
+    let found = program.find_deepest_containing_offset(5);
+    assert!(found.is_some(), "offset 5 is inside 0..10");
+    assert_eq!(found.map(|node| node.kind.kind_name()), Some("Number"));
 
     match program.find_deepest_containing_offset_exact(5) {
         AstReadExact::Complete { value: Some(matched), work } => {
@@ -128,7 +132,12 @@ fn later_shallow_overlap_cannot_beat_deeper_match() {
                 work.nodes_visited
             );
         }
-        other => panic!("expected complete Number match, got {other:?}"),
+        other => {
+            assert!(
+                matches!(other, AstReadExact::Complete { value: Some(_), .. }),
+                "expected complete Number match, got {other:?}"
+            );
+        }
     }
 }
 
@@ -138,10 +147,10 @@ fn equal_depth_overlap_keeps_earliest_canonical_path() {
     let first = number_leaf(0, 10);
     let second = Node::new(NodeKind::Identifier { name: "later".to_string() }, span);
     let program = Node::new(NodeKind::Program { statements: vec![first, second] }, span);
-    let found = program.find_deepest_containing_offset(4).expect("contained");
+    let found = program.find_deepest_containing_offset(4);
     assert_eq!(
-        found.kind.kind_name(),
-        "Number",
+        found.map(|node| node.kind.kind_name()),
+        Some("Number"),
         "last-writer lookup would return the later Identifier"
     );
 
@@ -154,10 +163,11 @@ fn equal_depth_overlap_keeps_earliest_canonical_path() {
         },
         span,
     );
-    let swapped_found = swapped.find_deepest_containing_offset(4).expect("contained");
+    let found = swapped.find_deepest_containing_offset(4);
+    assert!(found.is_some(), "contained");
     assert_eq!(
-        swapped_found.kind.kind_name(),
-        "Identifier",
+        found.map(|node| node.kind.kind_name()),
+        Some("Identifier"),
         "canonical tie follows visit-table order, not node kind"
     );
 }
@@ -193,11 +203,11 @@ fn bounded_count_must_not_return_ordinary_usize_after_truncation() {
                 "a wrapper that returns Truncated.partial as usize preserves the defect"
             );
         }
-        AstReadResult::Complete { value, .. } => {
-            panic!("bounded depth-512 walk on a 513-deep chain must not be Complete({value})")
-        }
-        AstReadResult::InstrumentFailure { cause } => {
-            panic!("bounded count failed: {cause:?}")
+        other => {
+            assert!(
+                matches!(other, AstReadResult::Truncated { .. }),
+                "bounded depth-512 walk on a 513-deep chain must be Truncated, got {other:?}"
+            );
         }
     }
 }
@@ -221,14 +231,11 @@ fn bounded_lookup_must_not_return_ordinary_some_after_truncation() {
             );
             assert_eq!(kind, Some("ExpressionStatement"));
         }
-        AstReadResult::Complete { value, .. } => {
-            panic!(
-                "bounded lookup must not return Complete(Some({:?})) after truncation",
-                value.map(|matched| matched.node.kind.kind_name())
-            )
-        }
-        AstReadResult::InstrumentFailure { cause } => {
-            panic!("bounded lookup failed: {cause:?}")
+        other => {
+            assert!(
+                matches!(other, AstReadResult::Truncated { .. }),
+                "bounded lookup must be Truncated, got {other:?}"
+            );
         }
     }
 }
@@ -298,6 +305,11 @@ fn bounded_node_limit_is_independent_of_depth_limit() {
             assert_eq!(partial, 3);
             assert_eq!(work.nodes_visited, 3);
         }
-        other => panic!("expected node-limit truncation, got {other:?}"),
+        other => {
+            assert!(
+                matches!(other, AstReadResult::Truncated { .. }),
+                "expected node-limit truncation, got {other:?}"
+            );
+        }
     }
 }

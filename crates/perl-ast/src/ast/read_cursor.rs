@@ -211,7 +211,7 @@ impl AstReadPath {
 }
 
 /// Exact deepest containing-offset match, with depth and canonical path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DeepestContainingMatch<'a> {
     /// The selected node.
     pub node: &'a Node,
@@ -235,6 +235,7 @@ struct AstReadCursor<'a> {
     work: AstReadWork,
 }
 
+#[derive(Debug)]
 enum Step<'a> {
     Node(&'a Node),
     Truncated(AstReadTruncation),
@@ -306,15 +307,13 @@ impl<'a> AstReadCursor<'a> {
             };
 
             if !yielded {
-                if let Some(limit) = limits.max_nodes {
-                    if self.work.nodes_visited >= limit {
-                        return Ok(Step::Truncated(AstReadTruncation::NodeLimit { limit }));
-                    }
+                if let Some(limit) =
+                    limits.max_nodes.filter(|&limit| self.work.nodes_visited >= limit)
+                {
+                    return Ok(Step::Truncated(AstReadTruncation::NodeLimit { limit }));
                 }
-                if let Some(limit) = limits.max_depth {
-                    if self.depth() > limit {
-                        return Ok(Step::Truncated(AstReadTruncation::DepthLimit { limit }));
-                    }
+                if let Some(limit) = limits.max_depth.filter(|&limit| self.depth() > limit) {
+                    return Ok(Step::Truncated(AstReadTruncation::DepthLimit { limit }));
                 }
                 self.work.nodes_visited = self
                     .work
@@ -349,22 +348,20 @@ impl<'a> AstReadCursor<'a> {
                     if !should_descend(child) {
                         continue;
                     }
-                    if let Some(limit) = limits.max_nodes {
-                        if self.work.nodes_visited >= limit {
-                            return Ok(Step::Truncated(AstReadTruncation::NodeLimit { limit }));
-                        }
+                    if let Some(limit) =
+                        limits.max_nodes.filter(|&limit| self.work.nodes_visited >= limit)
+                    {
+                        return Ok(Step::Truncated(AstReadTruncation::NodeLimit { limit }));
                     }
-                    if let Some(limit) = limits.max_edges {
-                        if self.work.edges_visited >= limit {
-                            return Ok(Step::Truncated(AstReadTruncation::EdgeLimit { limit }));
-                        }
+                    if let Some(limit) =
+                        limits.max_edges.filter(|&limit| self.work.edges_visited >= limit)
+                    {
+                        return Ok(Step::Truncated(AstReadTruncation::EdgeLimit { limit }));
                     }
                     // Child depth equals the current stack length (root occupies slot 0).
                     let child_depth = self.stack.len();
-                    if let Some(limit) = limits.max_depth {
-                        if child_depth > limit {
-                            return Ok(Step::Truncated(AstReadTruncation::DepthLimit { limit }));
-                        }
+                    if let Some(limit) = limits.max_depth.filter(|&limit| child_depth > limit) {
+                        return Ok(Step::Truncated(AstReadTruncation::DepthLimit { limit }));
                     }
                     self.work.edges_visited = self
                         .work
@@ -593,13 +590,20 @@ mod tests {
             match cursor.advance(AstReadLimits::default(), |_| true) {
                 Ok(Step::Node(current)) => {
                     if !std::ptr::eq(current, node) {
-                        let frame = cursor.stack.last().expect("entered node has a frame");
-                        fields.push((frame.field, current.kind.kind_name()));
+                        let frame = cursor.stack.last();
+                        assert!(frame.is_some(), "entered node has a frame");
+                        if let Some(frame) = frame {
+                            fields.push((frame.field, current.kind.kind_name()));
+                        }
                     }
                 }
                 Ok(Step::Done) => break,
-                Ok(Step::Truncated(_)) | Err(_) => {
-                    panic!("unbounded representative walk must complete")
+                other => {
+                    assert!(
+                        matches!(other, Ok(Step::Done)),
+                        "unbounded representative walk must complete: {other:?}"
+                    );
+                    break;
                 }
             }
         }
@@ -638,8 +642,12 @@ mod tests {
                         assert_eq!(work.edges_visited, expected - 1);
                     }
                 }
-                AstReadExact::InstrumentFailure { cause } => {
-                    panic!("{}: exact count failed: {cause:?}", fixture.sample.kind.kind_name());
+                other => {
+                    assert!(
+                        matches!(other, AstReadExact::Complete { .. }),
+                        "{}: exact count failed: {other:?}",
+                        fixture.sample.kind.kind_name()
+                    );
                 }
             }
         }
