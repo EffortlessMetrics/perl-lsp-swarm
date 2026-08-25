@@ -537,7 +537,7 @@ fn projected_native_range(
 
 /// Apply LSP whitespace options strictly inside the admitted bytes.
 ///
-/// The replacement covers exactly the admitted interval — endpoints and end
+/// The replacement covers exactly the admitted interval â€” endpoints and end
 /// exclusivity are honored, no line is widened into the edit, and final-newline
 /// options act only when the admitted target reaches true EOF. Returns the
 /// replacement text and the fully spliced document when anything changed.
@@ -559,7 +559,7 @@ fn whitespace_within_admitted(
     if admitted.end_byte == content.len() {
         if options.trim_final_newlines.unwrap_or(false) {
             // A bare CR ends a line under the shared geometry, so strip the
-            // complete trailing terminator — never leave a dangling CR after
+            // complete trailing terminator â€” never leave a dangling CR after
             // popping an LF from a CRLF pair.
             while projected.ends_with(['\r', '\n']) {
                 projected.pop();
@@ -948,6 +948,15 @@ fn line_ending_kind(source: &str) -> (bool, bool, bool) {
     (has_lf, has_crlf, has_cr)
 }
 
+const fn formatter_mode_name(mode: FormatterMode) -> &'static str {
+    match mode {
+        FormatterMode::Native => "native",
+        FormatterMode::Compat => "compat",
+        FormatterMode::ExternalLegacy => "external-legacy",
+        FormatterMode::Off => "off",
+    }
+}
+
 #[cfg(test)]
 mod decision_projection_tests {
     #![allow(clippy::expect_used)]
@@ -1119,8 +1128,8 @@ mod decision_projection_tests {
     #[test]
     fn trim_final_newlines_at_true_eof_strips_the_complete_terminator() {
         // Under the shared geometry a bare CR ends a line, so trimming the
-        // final newline at true EOF must remove the complete terminator —
-        // including any directly preceding carriage return — exactly like the
+        // final newline at true EOF must remove the complete terminator â€”
+        // including any directly preceding carriage return â€” exactly like the
         // replaced legacy fallback. A dangling CR would keep a separator in
         // the user document while the outcome claims Applied.
         for (label, source, expected) in
@@ -1172,14 +1181,5 @@ mod decision_projection_tests {
             },
             outcome: base_outcome(FormatDisposition::NoChange, FormatReasonCode::AlreadyFormatted),
         }
-    }
-}
-
-const fn formatter_mode_name(mode: FormatterMode) -> &'static str {
-    match mode {
-        FormatterMode::Native => "native",
-        FormatterMode::Compat => "compat",
-        FormatterMode::ExternalLegacy => "external-legacy",
-        FormatterMode::Off => "off",
     }
 }

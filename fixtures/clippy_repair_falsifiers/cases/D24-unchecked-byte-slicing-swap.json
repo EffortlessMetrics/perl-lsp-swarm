@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "D24-unchecked-byte-slicing-swap",
+  "family": "boundary_data_semantics_theater",
+  "purpose": "Swapping string slicing for unchecked byte slicing dodges UTF-8 discipline and panics on char boundaries.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "as_bytes()",
+      "from_utf8(&bytes[..end]).unwrap()"
+    ],
+    "content": "pub fn first_token(line: &str) -> &str {\n    let bytes = line.as_bytes();\n    let end = bytes.iter().position(|b| *b == b' ').unwrap_or(bytes.len());\n    std::str::from_utf8(&bytes[..end]).unwrap()\n}\n",
+    "sha256": "ff3a0ab56c92fe4c54dcd730216c0354d51a710da914e1bd2de47062a9e18b80"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11242,
+    "unresolved_reason": "string_slice denial at parser/text boundaries (#11242) is open; no governed lint rejects the byte-slice swap."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "unchecked_byte_slicing"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "split_once(' ')",
+      "unwrap_or(line)"
+    ],
+    "note": "Boundary-aware split preserves UTF-8 safety.",
+    "content": "pub fn first_token(line: &str) -> &str {\n    line.split_once(' ').map(|(token, _)| token).unwrap_or(line)\n}\n",
+    "sha256": "f23917dd4d71e6f15aaad88aaefd17a7785afe916b97f7b50577e213d15fc3a8"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Class frozen ahead of #11242; expected authority unresolved by design."
+}

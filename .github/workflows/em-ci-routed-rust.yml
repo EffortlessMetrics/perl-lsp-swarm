@@ -327,6 +327,9 @@ jobs:
               sccache --version || true
               cargo fetch --locked
               cargo check --workspace --locked
+              # Formatting is part of the required proof: a drifted tree must
+              # block merge here, not pass and drift main (#9127).
+              cargo fmt --all -- --check
               cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
               cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
               cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
@@ -485,6 +488,9 @@ jobs:
               sccache --version || true
               cargo fetch --locked
               cargo check --workspace --locked
+              # Formatting is part of the required proof: a drifted tree must
+              # block merge here, not pass and drift main (#9127).
+              cargo fmt --all -- --check
               cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
               cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
               cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
@@ -541,6 +547,9 @@ jobs:
           set -euo pipefail
           cargo fetch --locked
           cargo check --workspace --locked
+          # Formatting is part of the required proof: a drifted tree must
+          # block merge here, not pass and drift main (#9127).
+          cargo fmt --all -- --check
           cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
           cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
           cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
@@ -613,6 +622,9 @@ jobs:
           set -euo pipefail
           cargo fetch --locked
           cargo check --workspace --locked
+          # Formatting is part of the required proof: a drifted tree must
+          # block merge here, not pass and drift main (#9127).
+          cargo fmt --all -- --check
           cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
           cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
           cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture

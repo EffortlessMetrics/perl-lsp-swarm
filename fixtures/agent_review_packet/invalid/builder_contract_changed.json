@@ -1,0 +1,76 @@
+{
+  "schema": "stage_closure_projection.v1",
+  "schema_version": 1,
+  "projection_id": "example-train/R_service_marker/N_service_marker_probe/closure/2026-08-24T00:00:00Z",
+  "reviewed": {
+    "packet_id": "example-train/R_service_marker/N_service_marker_probe/2026-08-24T00:00:00Z",
+    "packet_digest": "sha256:77aa",
+    "builder_packet_digest": "sha256:1c0f",
+    "reviewed_head": "b31d5e9a2",
+    "reviewed_base": "a277266c5",
+    "claim_ceiling": "Establishes only the service-marker probe and its focused test; no frontier, scheduler, packet-selection, or live-observation semantics."
+  },
+  "currentness": {
+    "head": "b31d5e9a2",
+    "base": "a277266c5",
+    "tree": "b31d5e9a2^{tree}",
+    "packet_digest": "sha256:77aa",
+    "builder_packet_digest": "sha256:changed",
+    "claim_ceiling": "Establishes only the service-marker probe and its focused test; no frontier, scheduler, packet-selection, or live-observation semantics."
+  },
+  "review_state": {
+    "roles": [
+      {
+        "role": "builder_self_review",
+        "required": true,
+        "state": "terminal",
+        "reference": "builder self-review receipt@b31d5e9a2"
+      },
+      {
+        "role": "adversarial_challenger",
+        "required": true,
+        "state": "terminal",
+        "reference": "challenger review FIND-marker-tree-comparison@b31d5e9a2"
+      },
+      {
+        "role": "specialist",
+        "required": false,
+        "state": "not_applicable",
+        "reason": "The probe does not touch shared edge vocabulary; the train-graph specialist is not required by this profile."
+      },
+      {
+        "role": "evidence_worker",
+        "required": false,
+        "state": "not_applicable",
+        "reason": "No bounded evidence gathering was needed for this review."
+      }
+    ],
+    "findings": [
+      {
+        "finding_id": "example-train/R_service_marker/N_service_marker_probe/FIND-marker-tree-comparison",
+        "material": true,
+        "outcome": "resolved_current_head",
+        "state": "resolved_on_current_head"
+      }
+    ]
+  },
+  "controls": {
+    "negative_controls_load_bearing": true,
+    "old_paths_dispositioned": true,
+    "generated_outputs_current": true,
+    "generated_identities": [
+      "docs/policy/NON_RUST_INVENTORY.md second-run no-diff@b31d5e9a2"
+    ]
+  },
+  "external_stage": {
+    "claimed": false,
+    "observed": false
+  },
+  "lifecycle": {
+    "graceful_cleanup_claimed": false,
+    "force_path_excluded": false
+  },
+  "eligibility": "closure_eligible",
+  "authorization": "advisory_only",
+  "merge_authorized": false
+}

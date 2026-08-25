@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 4998,
-  "reason": "#4998 fail-closed external include roots: one actionable sentence added to the perl-lsp.externalIncludePaths markdownDescription stating that server-side application is pending a trusted configuration transport. Only package.json grows (58170 -> 58306 bytes); every other packaged entry is byte-identical.",
-  "base_baseline_file_sha256": "5fd137d8d989b9ae457d765ce001ea77dc5bfeec6161b4b814e60e9c5d71e517",
-  "candidate_baseline_file_sha256": "7d24b2a9cc9653790b955a84124949a15d0f1cfa2e1994964f8e0c818d76f71c",
-  "base_inventory_sha256": "86bdbcda8099542244f4ab88121dd7c913bb4d06b6de6c733e0a0756daa0a227",
-  "candidate_inventory_sha256": "a18d9dc92dec8337e1885300530d30f3b179044e648da7c9b7df3cc24f2a8a13"
+  "owner_issue": 7856,
+  "reason": "#7856 adds the harness-gated packaged activation-failure seam to activate() (out/extension.js 1516689->1519372 archive-measured on top of the #11983 package.json withdrawal) and the packaged cleanup/retry journey plus its changelog entry (changelog.md 22224->23221 after the vsce markdown processor). No file added, removed, or loosened; total recomputed ->1695683.",
+  "base_baseline_file_sha256": "a4f9360c51a5d263c45628c1b4ec2da9e6861a7a4d8912aa55e7e66e57dbc6b5",
+  "candidate_baseline_file_sha256": "4a662d41a6f80249245b526e89b6b706d1b847195c16231fe0d303cbd44a5011",
+  "base_inventory_sha256": "d70d8236a4363008fab2965595c2add0b79a5161c705017283141a44d9fe1521",
+  "candidate_inventory_sha256": "3087c97c983e74fbc5d814d8739e985dbacc26a54e7ad32c43f1e3f9dae7c19e"
 }

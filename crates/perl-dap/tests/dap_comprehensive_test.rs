@@ -528,7 +528,7 @@ fn test_dap_scopes_missing_frame() {
 }
 
 #[test]
-fn test_dap_scopes_valid_frame() {
+fn test_dap_scopes_noncurrent_frame_returns_empty() {
     let mut adapter = DebugAdapter::new();
 
     let scope_args = json!({
@@ -539,16 +539,15 @@ fn test_dap_scopes_valid_frame() {
 
     match response {
         DapMessage::Response { success, command, body, .. } => {
+            // Since #10563 (PR #11806) scopes serves only the exact current
+            // stopped frame; a frame id without a live suspended state is
+            // answered with an honest empty list, not synthetic scopes.
             assert!(success);
             assert_eq!(command, "scopes");
 
             let body = must_some(body);
             let scopes = must_some(body.get("scopes").and_then(|s| s.as_array()));
-            assert_eq!(scopes.len(), 3);
-
-            let scope = &scopes[0];
-            assert_eq!(must_some(scope.get("name").and_then(|n| n.as_str())), "Locals");
-            assert_eq!(must_some(scope.get("variablesReference").and_then(|v| v.as_i64())), 11);
+            assert!(scopes.is_empty());
         }
         _ => must(Err::<(), _>("Expected response message")),
     }

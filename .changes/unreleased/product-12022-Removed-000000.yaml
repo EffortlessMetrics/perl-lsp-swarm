@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Removed
+body: Deleted the orphaned perl-parser IDE surface — src/ide.rs re-exported the perl-lsp-providers crate removed in Wave G1b, and the undeclared src/ide/lsp_compat provider tree duplicated live providers now owned by perl-lsp-rs-core; neither path was declared in lib.rs, compiled, or had any consumer.
+time: 2026-08-23T00:00:00Z
+custom:
+  PR: "12022"
+  Slug: remove-orphaned-parser-ide-surface
+  Breaking: "no"

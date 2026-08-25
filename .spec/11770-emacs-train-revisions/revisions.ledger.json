@@ -1,0 +1,521 @@
+{
+  "schema": "emacs_train_revision.v1",
+  "schema_version": 1,
+  "programme": {
+    "parent_programme_issue": 7979,
+    "controller_issue": 8706,
+    "home_programme": "emacs-support",
+    "governing_issue": 11770,
+    "method_authority": "#3983",
+    "reference_contract": "#11375",
+    "consumed_manifest": {
+      "bundle": ".spec/10918-emacs-train-graph",
+      "schema": "emacs_train.v1",
+      "node_count": 55,
+      "consumption_rule": "the ledger cross-validates every reference against the stable manifest as data; it never rewrites, re-derives or supersedes the manifest bytes, and the manifest never rewrites itself to pass"
+    }
+  },
+  "revision_kind_vocabulary": [
+    { "kind": "decompose", "owns": "one accepted node splits into focused successors with the parent retained as a non-executing fan-in; every acceptance cell and unique work item maps to exactly one successor or an explicit retirement" },
+    { "kind": "insert", "owns": "a new node or external authority enters the accepted graph before existing work; the affected manifest nodes carry the declared wiring edges with exact classes" },
+    { "kind": "incorporate", "owns": "an external train is consumed as a separate documented train; no Emacs node is added, merged or blocked by the incorporation" },
+    { "kind": "retarget", "owns": "an accepted node moves role, stage or authority; unique work and historical evidence are preserved and the manifest after-state must match exactly" },
+    { "kind": "supersede", "owns": "an accepted contract version is replaced by an exact successor version; supersession drains every acceptance cell and unique work item to the successor or explicit retirement" }
+  ],
+  "semantic_class_vocabulary": [
+    { "class": "metadata_only", "owns": "harmless metadata movement; semantic identity is preserved and nothing invalidates" },
+    { "class": "nonsemantic_prose", "owns": "wording movement with no contract effect; semantic identity is preserved and nothing invalidates" },
+    { "class": "contract_clarification", "owns": "an accepted contract is restated without changing obligations" },
+    { "class": "contract_strengthening", "owns": "an accepted contract obligation becomes stricter" },
+    { "class": "contract_weakening", "owns": "an accepted contract obligation becomes weaker and needs a reviewed ruling" },
+    { "class": "one_pr_outcome_change", "owns": "the assignable one-PR proposition of a node changes" },
+    { "class": "node_split", "owns": "one node decomposes into focused successor nodes with the parent retained as fan-in" },
+    { "class": "node_merge", "owns": "nodes merge only when the result stays one reviewable proposition with one rollback" },
+    { "class": "node_add", "owns": "a new node enters the accepted graph" },
+    { "class": "node_remove", "owns": "a node leaves the accepted graph only through explicit retirement with drain" },
+    { "class": "controller_leaf_reclassification", "owns": "a controller becomes a leaf or a leaf becomes a controller" },
+    { "class": "dependency_add", "owns": "a new dependency changes the blocker denominator" },
+    { "class": "dependency_remove", "owns": "a dependency leaves without producing ready state while another exact blocker remains" },
+    { "class": "dependency_reclassify", "owns": "a dependency changes class between hard, evidence, optional and external" },
+    { "class": "writer_or_conflict_change", "owns": "the writer or conflict identity of a node changes" },
+    { "class": "authority_owner_change", "owns": "authority or implementation ownership moves between nodes or external authorities" },
+    { "class": "subject_or_evidence_stage_change", "owns": "a subject moves between live work, completed substrate and historical evidence stages" },
+    { "class": "claim_ceiling_change", "owns": "the claim ceiling of a node moves" },
+    { "class": "spec_or_journey_schema_change", "owns": "the checked spec or governed journey schema changes" },
+    { "class": "proof_or_falsifier_change", "owns": "a proof obligation or falsifier becomes stronger or weaker" },
+    { "class": "documentation_or_generator_owner_change", "owns": "documentation or generator ownership moves" },
+    { "class": "supersession_or_transfer_change", "owns": "scope transfers to a successor node, version or separate train" },
+    { "class": "external_gate_change", "owns": "an external-gate authorization or scope changes" }
+  ],
+  "invalidation_surface_vocabulary": [
+    { "surface": "spec_disposition", "owns": "checked leaf spec dispositions of affected nodes become stale and re-derive; they are never patched valid" },
+    { "surface": "exact_tree_context", "owns": "bounded exact-tree context re-derives for the affected nodes" },
+    { "surface": "live_packet", "owns": "shared builder, reviewer and reconciliation packets re-derive from the revised graph" },
+    { "surface": "builder_candidate", "owns": "candidates claiming the old proposition stop; their unique work is preserved, never discarded" },
+    { "surface": "proof_currentness", "owns": "affected proof obligations re-run against the revised contract; stale proof is never current" },
+    { "surface": "review_currentness", "owns": "reviews of the old proposition no longer cover the successor contract" },
+    { "surface": "journey_cell", "owns": "governed journey and receipt cells re-bind to the revised owners" },
+    { "surface": "fixture", "owns": "affected fixtures re-derive without deleting unique evidence" },
+    { "surface": "receipt", "owns": "receipts remain immutable historical evidence; they never re-execute and never promote" },
+    { "surface": "registry_row", "owns": "client support registry rows re-derive from new evidence only" },
+    { "surface": "docs_projection", "owns": "generated documentation projections re-derive from the revised graph" },
+    { "surface": "certification", "owns": "certification fan-ins recompute exact denominators" },
+    { "surface": "external_gate", "owns": "external-gate impact is reported as a required collaboration action only" }
+  ],
+  "sync_action_vocabulary": [
+    { "action": "update_issue_body", "owns": "record the revised contract fact in the exact affected issue body" },
+    { "action": "close_superseded_issue", "owns": "close an issue only through an exact supersession mapping" },
+    { "action": "record_decomposition_ceiling", "owns": "record the fan-in-only ceiling on the decomposed parent issue" },
+    { "action": "record_authority_chain", "owns": "record an inserted authority chain before the adopting leaf" },
+    { "action": "record_child_train_boundary", "owns": "record the separate-train boundary on the child-train controller" },
+    { "action": "record_historical_adoption", "owns": "record completed-substrate status and the canonical adoption rule" }
+  ],
+  "ledger_laws": {
+    "manifest_reference": "every node, issue and external reference in the ledger resolves against the consumed emacs_train.v1 manifest; a reference that resolves nowhere fails closed",
+    "decomposition_wiring": "a decompose entry lists exactly the split children: the successor set equals the hard dependency children of the subject minus the declared retained prerequisites, so a revision can never silently drop or invent a node",
+    "fan_in_reachability": "every split child reaches its parent fan-in: the child's manifest successor set contains the decomposed subject, so decomposition preserves the fan-in denominator path",
+    "cell_exclusivity": "every acceptance cell maps to exactly one declared owner or an explicit retirement; cross-owner drift such as one client family satisfying another family's cell is rejected",
+    "work_drain": "every unique work item is preserved to a declared node or external authority or explicitly retired with a reason; supersession and transfer never let unique reviewed work disappear",
+    "insert_wiring": "an insert entry declares its wiring edges and the manifest carries each edge with exactly the declared class; insertion without wiring is rejected",
+    "incorporate_boundary": "an incorporate entry adds no node, declares the separate-train boundary and resolves its external authority; a separate train stays separate",
+    "retarget_state_match": "a retarget entry's declared after-state matches the manifest bytes exactly, including the canonical candidate-adoption rule where one exists",
+    "metadata_neutrality": "a metadata_only or nonsemantic_prose entry carries zero invalidations; harmless movement never churns specs, contexts or packets",
+    "material_invalidation": "every material semantic class carries at least one typed invalidation with a basis, a reason and a ruling evidence trail",
+    "append_only": "the ledger is append-only: sequences are contiguous from one, entry identifiers match their sequence, and no entry is ever edited or removed",
+    "movement_coverage": "the initial ledger records exactly the ten frozen material movements of the governing issue; removing, duplicating or reordering one fails closed",
+    "sync_explicitness": "every material entry names its required synchronization controllers exactly with a typed action; no free-form related-work instruction is accepted",
+    "no_automatic_mutation": "every entry forbids automatic execution; the ledger performs and triggers no GitHub mutation, live observation or host proof",
+    "canonical_determinism": "the ledger digest is a pure function of order-canonical content; serialization is invariant under input order and two checker runs print byte-identical output"
+  },
+  "revisions": [
+    {
+      "entry_id": "REV-001",
+      "sequence": 1,
+      "revision_kind": "insert",
+      "semantic_class": "authority_owner_change",
+      "subject": { "kind": "external_authority", "external_id": "#10894" },
+      "reason": "Generic implementation ownership for the host-run chain moved off the Emacs leaf: a generic spec leaf and the generic editor-host reliability mechanics now precede Emacs adoption and conformance.",
+      "ruling_evidence": "E00 context.md authority and ownership",
+      "graph_effect": {
+        "added_nodes": [ "RELY" ],
+        "wiring": [
+          { "from": "#10894", "to": "RELY", "class": "evidence" },
+          { "from": "RELY", "to": "RUNCONF", "class": "evidence" },
+          { "from": "#10894", "to": "RUNCONF", "class": "evidence" }
+        ]
+      },
+      "successors": [],
+      "identity_preservation": {
+        "proposition_before": "#8734 owned generic host-run implementation directly, combining generic mechanics with Emacs adoption.",
+        "acceptance_cells": [
+          { "cell": "generic host-run reliability spec leaf", "owner": "RELY" },
+          { "cell": "generic host-run reliability mechanics", "owner": "#10894" },
+          { "cell": "Emacs adoption and conformance", "owner": "RUNCONF" }
+        ],
+        "unique_work": [
+          { "work": "generic reliability rulings and shared receipt law", "kind": "review", "preserved_to": "#10894" },
+          { "work": "host-run reliability spec packet", "kind": "packet", "preserved_to": "RELY" },
+          { "work": "Emacs host-run conformance drafts", "kind": "candidate", "preserved_to": "RUNCONF" }
+        ]
+      },
+      "invalidations": [
+        { "surface": "proof_currentness", "subjects": [ "RUNCONF" ], "basis": "Emacs conformance proof now routes through the generic mechanics; direct-conformance proof is stale" },
+        { "surface": "spec_disposition", "subjects": [ "RELY" ], "basis": "the inserted spec leaf needs its fresh checked disposition" },
+        { "surface": "live_packet", "subjects": [ "#11719" ], "basis": "packets re-derive with the generic authority chain before the Emacs leaf" }
+      ],
+      "required_sync": [
+        { "controller": "#8706", "action": "record_authority_chain", "detail": "#8734 body records the generic ownership chain: generic spec, generic mechanics, then Emacs adoption and conformance" }
+      ],
+      "automatic_execution": "forbidden",
+      "rollback": "remove the inserted authority wiring only through a supersede entry with full cell and work drain; never edit this entry"
+    },
+    {
+      "entry_id": "REV-002",
+      "sequence": 2,
+      "revision_kind": "decompose",
+      "semantic_class": "node_split",
+      "subject": { "kind": "node", "node_id": "SUBJ_FAN", "issue": 8755 },
+      "reason": "A single giant subject leaf is not one reviewable one-PR proposition; the reviewed decomposition keeps the parent as a reference fan-in over three focused children.",
+      "ruling_evidence": "#10918 comment stable-graph additions",
+      "graph_effect": {
+        "added_nodes": [ "SUBJ_CORE", "SUBJ_E", "SUBJ_L" ],
+        "retained_prerequisites": [ "RUNCONF" ],
+        "subject_after_role": "fan_in"
+      },
+      "successors": [
+        { "node_id": "SUBJ_CORE", "issue": 11744, "owns": "subject manifest resolver and bundled Eglot subject binding" },
+        { "node_id": "SUBJ_E", "issue": 11745, "owns": "Emacs-generation subject materialization" },
+        { "node_id": "SUBJ_L", "issue": 11746, "owns": "Linux-generation subject materialization" }
+      ],
+      "identity_preservation": {
+        "proposition_before": "One combined leaf owned the immutable subject manifests and exact client materialization for every generation.",
+        "acceptance_cells": [
+          { "cell": "subject manifest resolver", "owner": "SUBJ_CORE" },
+          { "cell": "bundled Eglot subject binding", "owner": "SUBJ_CORE" },
+          { "cell": "Emacs-generation subject materialization", "owner": "SUBJ_E" },
+          { "cell": "Linux-generation subject materialization", "owner": "SUBJ_L" },
+          { "cell": "subject denominator fan-in validation", "owner": "SUBJ_FAN" }
+        ],
+        "unique_work": [
+          { "work": "reviewed decomposition ruling", "kind": "review", "preserved_to": "SUBJ_FAN" },
+          { "work": "subject manifest resolver drafts", "kind": "packet", "preserved_to": "SUBJ_CORE" },
+          { "work": "generation row builder packets", "kind": "packet", "preserved_to": "SUBJ_E" }
+        ]
+      },
+      "invalidations": [
+        { "surface": "builder_candidate", "subjects": [ "#8755" ], "basis": "candidates against the combined leaf stop; the combined proposition is no longer assignable" },
+        { "surface": "spec_disposition", "subjects": [ "SUBJ_CORE", "SUBJ_E", "SUBJ_L" ], "basis": "the split children need fresh checked dispositions" },
+        { "surface": "exact_tree_context", "subjects": [ "#11718" ], "basis": "bounded context must cover the three new nodes" },
+        { "surface": "live_packet", "subjects": [ "#11719" ], "basis": "packets re-derive from the revised subject lane" }
+      ],
+      "required_sync": [
+        { "controller": "#8706", "action": "record_decomposition_ceiling", "detail": "#8755 body records the fan-in-only ceiling over the three children" }
+      ],
+      "automatic_execution": "forbidden",
+      "rollback": "re-combine only through a supersede entry draining every cell and work item; never edit this entry"
+    },
+    {
+      "entry_id": "REV-003",
+      "sequence": 3,
+      "revision_kind": "decompose",
+      "semantic_class": "node_split",
+      "subject": { "kind": "node", "node_id": "ROOT_OBS_FAN", "issue": 8834 },
+      "reason": "Stock-root observation is one reviewable proposition per client family; the parent stays an observation-only fan-in and never requires completed semantic verdicts.",
+      "ruling_evidence": "#10918 body corrected functional DAG",
+      "graph_effect": {
+        "added_nodes": [ "ROOT_E_OBS", "ROOT_L_OBS" ],
+        "retained_prerequisites": [],
+        "subject_after_role": "fan_in"
+      },
+      "successors": [
+        { "node_id": "ROOT_E_OBS", "issue": 11747, "owns": "Eglot stock project-root observation" },
+        { "node_id": "ROOT_L_OBS", "issue": 11748, "owns": "lsp-mode stock project-root observation" }
+      ],
+      "identity_preservation": {
+        "proposition_before": "One combined leaf recorded stock Eglot and lsp-mode project-root observations.",
+        "acceptance_cells": [
+          { "cell": "Eglot stock project-root observation", "owner": "ROOT_E_OBS" },
+          { "cell": "lsp-mode stock project-root observation", "owner": "ROOT_L_OBS" },
+          { "cell": "observation denominator fan-in validation", "owner": "ROOT_OBS_FAN" }
+        ],
+        "unique_work": [
+          { "work": "observation separation ruling", "kind": "review", "preserved_to": "ROOT_OBS_FAN" },
+          { "work": "stock-root observation drafts", "kind": "packet", "preserved_to": "ROOT_E_OBS" }
+        ]
+      },
+      "invalidations": [
+        { "surface": "builder_candidate", "subjects": [ "#8834" ], "basis": "candidates against the combined observation leaf stop" },
+        { "surface": "spec_disposition", "subjects": [ "ROOT_E_OBS", "ROOT_L_OBS" ], "basis": "the split children need fresh checked dispositions" },
+        { "surface": "journey_cell", "subjects": [ "#11768" ], "basis": "governed journey cells re-bind to the per-family observation owners" }
+      ],
+      "required_sync": [
+        { "controller": "#8706", "action": "record_decomposition_ceiling", "detail": "#8834 body records the observation-only fan-in ceiling without semantic verdicts" }
+      ],
+      "automatic_execution": "forbidden",
+      "rollback": "re-combine only through a supersede entry draining every cell and work item; never edit this entry"
+    },
+    {
+      "entry_id": "REV-004",
+      "sequence": 4,
+      "revision_kind": "decompose",
+      "semantic_class": "node_split",
+      "subject": { "kind": "node", "node_id": "ROOT_SEM_FAN", "issue": 8838 },
+      "reason": "Root-sensitive semantics are one reviewable proposition per client family; the parent stays a validation-only fan-in that proves nothing beyond its children.",
+      "ruling_evidence": "#10918 comment stable-graph additions",
+      "graph_effect": {
+        "added_nodes": [ "ROOT_E_SEM", "ROOT_L_SEM" ],
+        "retained_prerequisites": [],
+        "subject_after_role": "fan_in"
+      },
+      "successors": [
+        { "node_id": "ROOT_E_SEM", "issue": 11749, "owns": "Eglot root-sensitive semantics" },
+        { "node_id": "ROOT_L_SEM", "issue": 11750, "owns": "lsp-mode root-sensitive semantics" }
+      ],
+      "identity_preservation": {
+        "proposition_before": "One combined leaf proved root-sensitive semantics, isolation, configuration and standalone behavior for both families.",
+        "acceptance_cells": [
+          { "cell": "Eglot root-sensitive semantics", "owner": "ROOT_E_SEM" },
+          { "cell": "lsp-mode root-sensitive semantics", "owner": "ROOT_L_SEM" },
+          { "cell": "semantics denominator fan-in validation", "owner": "ROOT_SEM_FAN" }
+        ],
+        "unique_work": [
+          { "work": "semantic separation ruling", "kind": "review", "preserved_to": "ROOT_SEM_FAN" },
+          { "work": "root-sensitive proof drafts", "kind": "packet", "preserved_to": "ROOT_E_SEM" }
+        ]
+      },
+      "invalidations": [
+        { "surface": "builder_candidate", "subjects": [ "#8838" ], "basis": "candidates against the combined semantics leaf stop" },
+        { "surface": "spec_disposition", "subjects": [ "ROOT_E_SEM", "ROOT_L_SEM" ], "basis": "the split children need fresh checked dispositions" },
+        { "surface": "proof_currentness", "subjects": [ "ROOT_SEM_FAN" ], "basis": "fan-in validation re-runs against the split denominators" }
+      ],
+      "required_sync": [
+        { "controller": "#8706", "action": "record_decomposition_ceiling", "detail": "#8838 body records the validation-only fan-in ceiling over the two children" }
+      ],
+      "automatic_execution": "forbidden",
+      "rollback": "re-combine only through a supersede entry draining every cell and work item; never edit this entry"
+    },
+    {
+      "entry_id": "REV-005",
+      "sequence": 5,
+      "revision_kind": "decompose",
+      "semantic_class": "node_split",
+      "subject": { "kind": "node", "node_id": "E02", "issue": 11717 },
+      "reason": "Checked leaf specifications compile through one spec engine plus a bounded population per lane; the parent stays a spec-plane-only fan-in.",
+      "ruling_evidence": "#10918 comment stable-graph additions",
+      "graph_effect": {
+        "added_nodes": [ "SPECENG", "SPEC_SUB", "SPEC_HOST", "SPEC_PUB", "SPEC_CTRL" ],
+        "retained_prerequisites": [],
+        "subject_after_role": "fan_in"
+      },
+      "successors": [
+        { "node_id": "SPECENG", "issue": 11751, "owns": "spec engine" },
+        { "node_id": "SPEC_SUB", "issue": 11752, "owns": "subject-lane spec population" },
+        { "node_id": "SPEC_HOST", "issue": 11753, "owns": "host-lane spec population" },
+        { "node_id": "SPEC_PUB", "issue": 11754, "owns": "public and projection-lane spec population" },
+        { "node_id": "SPEC_CTRL", "issue": 11755, "owns": "controller and checklist spec population" }
+      ],
+      "identity_preservation": {
+        "proposition_before": "One combined leaf compiled every checked leaf specification and exact spec disposition.",
+        "acceptance_cells": [
+          { "cell": "spec engine", "owner": "SPECENG" },
+          { "cell": "subject-lane spec population", "owner": "SPEC_SUB" },
+          { "cell": "host-lane spec population", "owner": "SPEC_HOST" },
+          { "cell": "public and projection-lane spec population", "owner": "SPEC_PUB" },
+          { "cell": "controller and checklist spec population", "owner": "SPEC_CTRL" },
+          { "cell": "spec denominator fan-in validation", "owner": "E02" }
+        ],
+        "unique_work": [
+          { "work": "engine-first decomposition ruling", "kind": "review", "preserved_to": "E02" },
+          { "work": "spec compilation drafts", "kind": "packet", "preserved_to": "SPECENG" }
+        ]
+      },
+      "invalidations": [
+        { "surface": "builder_candidate", "subjects": [ "#11717" ], "basis": "candidates against the combined spec leaf stop" },
+        { "surface": "spec_disposition", "subjects": [ "SPECENG", "SPEC_SUB", "SPEC_HOST", "SPEC_PUB", "SPEC_CTRL" ], "basis": "the engine and population children need fresh checked dispositions" },
+        { "surface": "docs_projection", "subjects": [ "#11717" ], "basis": "generated spec projections re-derive from the engine and population split" },
+        { "surface": "live_packet", "subjects": [ "#11719" ], "basis": "packets re-derive from the revised spec plane" }
+      ],
+      "required_sync": [
+        { "controller": "#8706", "action": "record_decomposition_ceiling", "detail": "#11717 body records the engine-plus-population fan-in ceiling" }
+      ],
+      "automatic_execution": "forbidden",
+      "rollback": "re-combine only through a supersede entry draining every cell and work item; never edit this entry"
+    },
+    {
+      "entry_id": "REV-006",
+      "sequence": 6,
+      "revision_kind": "decompose",
+      "semantic_class": "node_split",
+      "subject": { "kind": "node", "node_id": "E04", "issue": 11718 },
+      "reason": "Bounded exact-tree context compiles through one context engine plus a bounded population; the parent stays a context-plane-only fan-in and live state stays with the overlay plane.",
+      "ruling_evidence": "#10918 comment stable-graph additions",
+      "graph_effect": {
+        "added_nodes": [ "CTXENG", "CTX_SUB", "CTX_PUB" ],
+        "retained_prerequisites": [ "E01R" ],
+        "subject_after_role": "fan_in"
+      },
+      "successors": [
+        { "node_id": "CTXENG", "issue": 11756, "owns": "context engine" },
+        { "node_id": "CTX_SUB", "issue": 11757, "owns": "subject-lane context population" },
+        { "node_id": "CTX_PUB", "issue": 11758, "owns": "public and projection-lane context population" }
+      ],
+      "identity_preservation": {
+        "proposition_before": "One combined leaf compiled bounded exact-tree implementation context for every node.",
+        "acceptance_cells": [
+          { "cell": "context engine", "owner": "CTXENG" },
+          { "cell": "subject-lane context population", "owner": "CTX_SUB" },
+          { "cell": "public and projection-lane context population", "owner": "CTX_PUB" },
+          { "cell": "context denominator fan-in validation", "owner": "E04" }
+        ],
+        "unique_work": [
+          { "work": "context decomposition ruling", "kind": "review", "preserved_to": "E04" },
+          { "work": "context compilation drafts", "kind": "packet", "preserved_to": "CTXENG" }
+        ]
+      },
+      "invalidations": [
+        { "surface": "builder_candidate", "subjects": [ "#11718" ], "basis": "candidates against the combined context leaf stop" },
+        { "surface": "spec_disposition", "subjects": [ "CTXENG", "CTX_SUB", "CTX_PUB" ], "basis": "the engine and population children need fresh checked dispositions" },
+        { "surface": "exact_tree_context", "subjects": [ "#11718" ], "basis": "existing combined context re-derives through the engine and population split" },
+        { "surface": "live_packet", "subjects": [ "#11719" ], "basis": "derived packets re-derive from the revised context plane" }
+      ],
+      "required_sync": [
+        { "controller": "#8706", "action": "record_decomposition_ceiling", "detail": "#11718 body records the engine-plus-population fan-in ceiling" }
+      ],
+      "automatic_execution": "forbidden",
+      "rollback": "re-combine only through a supersede entry draining every cell and work item; never edit this entry"
+    },
+    {
+      "entry_id": "REV-007",
+      "sequence": 7,
+      "revision_kind": "decompose",
+      "semantic_class": "node_split",
+      "subject": { "kind": "node", "node_id": "DOG", "issue": 10936 },
+      "reason": "Dogfood evidence splits into deterministic packet routing and real agent cohorts; the parent stays a dogfood fan-in that creates no routing policy and executes no missing work.",
+      "ruling_evidence": "#10918 comment stable-graph additions",
+      "graph_effect": {
+        "added_nodes": [ "ROUTE", "COHORT" ],
+        "retained_prerequisites": [],
+        "subject_after_role": "dogfood"
+      },
+      "successors": [
+        { "node_id": "ROUTE", "issue": 11759, "owns": "deterministic dogfood packet routing" },
+        { "node_id": "COHORT", "issue": 11760, "owns": "real agent cohorts" }
+      ],
+      "identity_preservation": {
+        "proposition_before": "One combined leaf dogfooded train packets across start, resume, repair, review and merge journeys.",
+        "acceptance_cells": [
+          { "cell": "deterministic dogfood packet routing", "owner": "ROUTE" },
+          { "cell": "real agent cohorts", "owner": "COHORT" },
+          { "cell": "dogfood denominator fan-in validation", "owner": "DOG" }
+        ],
+        "unique_work": [
+          { "work": "dogfood decomposition ruling", "kind": "review", "preserved_to": "DOG" },
+          { "work": "journey observation drafts", "kind": "packet", "preserved_to": "ROUTE" }
+        ]
+      },
+      "invalidations": [
+        { "surface": "builder_candidate", "subjects": [ "#10936" ], "basis": "candidates against the combined dogfood leaf stop" },
+        { "surface": "spec_disposition", "subjects": [ "ROUTE", "COHORT" ], "basis": "the routing and cohort children need fresh checked dispositions" },
+        { "surface": "fixture", "subjects": [ "ROUTE", "COHORT" ], "basis": "dogfood fixtures re-derive per child without deleting unique evidence" }
+      ],
+      "required_sync": [
+        { "controller": "#8706", "action": "record_decomposition_ceiling", "detail": "#10936 body records the deterministic-versus-real-cohort fan-in ceiling" }
+      ],
+      "automatic_execution": "forbidden",
+      "rollback": "re-combine only through a supersede entry draining every cell and work item; never edit this entry"
+    },
+    {
+      "entry_id": "REV-008",
+      "sequence": 8,
+      "revision_kind": "insert",
+      "semantic_class": "node_add",
+      "subject": { "kind": "node", "node_id": "JOURNEYS", "issue": 11768 },
+      "reason": "Governed host journeys, fixture expectations and receipt-cell ceilings need one stable contract authority before actual-host promotion-eligible journeys; scattered leaf prose is not a governed catalog.",
+      "ruling_evidence": "#10918 comment stable-graph additions 2",
+      "graph_effect": {
+        "added_nodes": [ "JOURNEYS" ],
+        "wiring": [
+          { "from": "JOURNEYS", "to": "ADP_E", "class": "evidence" },
+          { "from": "JOURNEYS", "to": "ADP_L", "class": "evidence" },
+          { "from": "JOURNEYS", "to": "HOST_E29", "class": "hard" },
+          { "from": "JOURNEYS", "to": "HOST_E30", "class": "hard" },
+          { "from": "JOURNEYS", "to": "HOST_E_REL", "class": "hard" },
+          { "from": "JOURNEYS", "to": "HOST_E_SRC", "class": "hard" },
+          { "from": "JOURNEYS", "to": "HOST_L_REL", "class": "hard" },
+          { "from": "JOURNEYS", "to": "HOST_L_SRC", "class": "hard" },
+          { "from": "JOURNEYS", "to": "OBS", "class": "evidence" },
+          { "from": "JOURNEYS", "to": "PROD", "class": "evidence" },
+          { "from": "JOURNEYS", "to": "PUB_E_B", "class": "evidence" },
+          { "from": "JOURNEYS", "to": "PUB_E_R", "class": "evidence" },
+          { "from": "JOURNEYS", "to": "PUB_L_R", "class": "evidence" },
+          { "from": "JOURNEYS", "to": "ROOT_E_SEM", "class": "hard" },
+          { "from": "JOURNEYS", "to": "ROOT_L_SEM", "class": "hard" }
+        ]
+      },
+      "successors": [],
+      "identity_preservation": {
+        "proposition_before": "Journey, fixture and receipt-cell expectations lived as scattered prose inside leaf bodies without a governed catalog.",
+        "acceptance_cells": [
+          { "cell": "governed host journeys catalog", "owner": "JOURNEYS" },
+          { "cell": "governed fixture expectations", "owner": "JOURNEYS" },
+          { "cell": "receipt-cell ceiling", "owner": "JOURNEYS" }
+        ],
+        "unique_work": [
+          { "work": "journey catalog rulings", "kind": "spec", "preserved_to": "JOURNEYS" },
+          { "work": "scattered journey prose in leaf bodies", "kind": "docs", "preserved_to": "JOURNEYS" }
+        ]
+      },
+      "invalidations": [
+        { "surface": "journey_cell", "subjects": [ "#11768" ], "basis": "all actual-host, observation, producer and public leaves must re-bind cells to the governed catalog" },
+        { "surface": "builder_candidate", "subjects": [ "HOST_E29", "HOST_E30", "HOST_E_REL", "HOST_E_SRC", "HOST_L_REL", "HOST_L_SRC" ], "basis": "actual-host packets without governed journey cells are stale until re-bound" },
+        { "surface": "certification", "subjects": [ "CERT" ], "basis": "certification denominators recompute against the governed journey cells" }
+      ],
+      "required_sync": [
+        { "controller": "#8706", "action": "update_issue_body", "detail": "#11768 records the governed catalog contract before actual-host promotion-eligible journeys" }
+      ],
+      "automatic_execution": "forbidden",
+      "rollback": "remove the governed catalog only through a supersede entry with full cell and work drain; never edit this entry"
+    },
+    {
+      "entry_id": "REV-009",
+      "sequence": 9,
+      "revision_kind": "incorporate",
+      "semantic_class": "supersession_or_transfer_change",
+      "subject": { "kind": "external_authority", "external_id": "#9413" },
+      "reason": "Documented feature-depth breadth is incorporated as a separate child train; the Emacs train references it as an external child-train controller without merging, adopting or blocking on its nodes.",
+      "ruling_evidence": "E00 context.md platform section",
+      "graph_effect": {
+        "added_nodes": [],
+        "separate_train": true,
+        "boundary": "formatting and documented feature-depth breadth stays owned by the child-train controller; the Emacs train consumes documented depth without adopting child-train nodes"
+      },
+      "successors": [],
+      "identity_preservation": {
+        "proposition_before": "Feature-depth breadth sat adjacent to the Emacs train without an explicit incorporation boundary.",
+        "acceptance_cells": [
+          { "cell": "documented feature-depth breadth", "owner": "#9413" }
+        ],
+        "unique_work": [
+          { "work": "feature-depth inventory reviews", "kind": "review", "preserved_to": "#9413" }
+        ]
+      },
+      "invalidations": [
+        { "surface": "docs_projection", "subjects": [ "#9413" ], "basis": "documentation projections must cite the child train as separate, never as Emacs nodes" },
+        { "surface": "certification", "subjects": [ "CERT" ], "basis": "the certification denominator excludes child-train breadth unless an exact dependency exists" }
+      ],
+      "required_sync": [
+        { "controller": "#9413", "action": "record_child_train_boundary", "detail": "the child-train controller records the separate-train boundary and the documented-depth contract" }
+      ],
+      "automatic_execution": "forbidden",
+      "rollback": "drop the external reference only through a supersede entry; the child train keeps its own evidence and this entry stays immutable"
+    },
+    {
+      "entry_id": "REV-010",
+      "sequence": 10,
+      "revision_kind": "retarget",
+      "semantic_class": "subject_or_evidence_stage_change",
+      "subject": { "kind": "node", "node_id": "FIXT", "issue": 11366 },
+      "reason": "#11366 moved from live work to completed current-tree substrate: landed fixture evidence is consumed as historical substrate and is never re-executed or recreated as new work.",
+      "ruling_evidence": "#10918 existing-candidate adoption rule",
+      "graph_effect": {
+        "added_nodes": [],
+        "after_state": {
+          "role": "historical",
+          "adoption_rule": {
+            "node": "FIXT",
+            "candidate_pull": 8026,
+            "confirm_with": "#10930"
+          }
+        }
+      },
+      "successors": [],
+      "identity_preservation": {
+        "proposition_before": "The canonical discriminating project fixture and stock-project discovery were tracked as live work.",
+        "acceptance_cells": [
+          { "cell": "canonical discriminating project fixture", "owner": "FIXT" },
+          { "cell": "stock-project discovery substrate", "owner": "FIXT" }
+        ],
+        "unique_work": [
+          { "work": "landed fixture commits and observations", "kind": "receipt", "preserved_to": "FIXT" },
+          { "work": "live candidate for the substrate leaf", "kind": "candidate", "preserved_to": "FIXT" }
+        ]
+      },
+      "invalidations": [
+        { "surface": "builder_candidate", "subjects": [ "FIXT" ], "basis": "no new builder candidates against the completed substrate; reuse flows only through the adoption rule confirmed by the live overlay plane" },
+        { "surface": "live_packet", "subjects": [ "#11719" ], "basis": "packets stop treating the substrate as open work" },
+        { "surface": "receipt", "subjects": [ "FIXT" ], "basis": "landed receipts stay immutable historical evidence; current-tree truth stays with the exact-tree plane" }
+      ],
+      "required_sync": [
+        { "controller": "#8706", "action": "record_historical_adoption", "detail": "#11366 body records completed-substrate status and the canonical adoption rule for its existing candidate" }
+      ],
+      "automatic_execution": "forbidden",
+      "rollback": "reopen only through a new retarget entry with fresh evidence; never edit this entry"
+    }
+  ],
+  "limitations": [
+    "the ledger classifies and governs movements of the accepted Emacs train contract; it observes nothing live and performs no GitHub mutation, host proof or support decision",
+    "the offline diff, change-check and impact operations named by the governing issue remain unbuilt tooling; this bundle lands the typed model, the initial ledger and the embedded checker, and records the absent validator as not_proven",
+    "the initial ledger records the ten frozen material movements that already happened; future movements append new entries and never edit these",
+    "impact beyond the typed invalidation surfaces stays with the owning planes: exact-tree state, the live overlay, the support registry and the external gates"
+  ]
+}
