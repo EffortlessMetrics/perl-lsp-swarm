@@ -272,7 +272,7 @@ fn test_evaluate_equality_operators_are_safe() -> TestResult {
 }
 
 fn evaluate_fixture_script() -> &'static str {
-    "use strict;\nuse warnings;\n\nour $MAIN_GLOBAL = 77;\npackage EvalFixture;\nour $PKG_GLOBAL = 101;\npackage main;\n\nmy $scalar = 7;\nmy @arr = (11, 22, 33);\nmy %hash = (name => 'dap', nested => {answer => 42});\nmy $ref = {nested => {answer => 42}, arr => \\@arr};\nmy $stop = 1; # breakpoint here\nprint qq($scalar\\n) if $stop;\n"
+    "use strict;\nuse warnings;\n\nour $MAIN_GLOBAL = 77;\npackage EvalFixture;\nour $PKG_GLOBAL = 101;\nsub make_object { bless {name => 'Ada', score => 9}, shift }\npackage main;\n\nmy $scalar = 7;\nmy $string = 'hover';\nmy $undef;\nmy @arr = (11, 22, 33);\nmy %hash = (name => 'dap', nested => {answer => 42});\nmy $ref = {nested => {answer => 42}, arr => \\@arr};\nmy $object = EvalFixture::make_object('EvalFixture');\nmy $stop = 1; # breakpoint here\nprint qq($scalar\\n) if $stop;\n"
 }
 
 fn live_session() -> Result<(DapWorkflowSession, i64), Box<dyn std::error::Error>> {
@@ -286,7 +286,7 @@ fn live_session() -> Result<(DapWorkflowSession, i64), Box<dyn std::error::Error
 
     let mut session = DapWorkflowSession::new(workflow_timeout())?;
     session.launch(&script_str)?;
-    session.set_breakpoints(&script_str, &[13])?;
+    session.set_breakpoints(&script_str, &[17])?;
     session.configuration_done()?;
     let stopped = session.wait_stopped()?;
     let (frame_id, _, _) = session.stack_trace(stopped.thread_id)?;
@@ -349,6 +349,44 @@ fn test_live_session_evaluate_safe_subscript_and_deref() -> TestResult {
         Some(json!({"expression":"$ref->{nested}->{answer}","frameId":frame_id,"allowSideEffects":false})),
     ))?;
     assert!(nested_value.contains("42"));
+
+    session.disconnect()?;
+    Ok(())
+}
+
+#[test]
+fn test_live_session_hover_evaluates_variable_families_in_frame_context() -> TestResult {
+    if !perl_available() {
+        return Ok(());
+    }
+
+    let (mut session, frame_id) = live_session()?;
+    let cases = [
+        ("$scalar", "7"),
+        ("$string", "hover"),
+        ("$undef", "undef"),
+        ("@arr", "11"),
+        ("%hash", "name"),
+        ("$ref", "HASH"),
+        ("$object", "EvalFixture"),
+    ];
+
+    for (expression, expected) in cases {
+        let response = session.request(
+            "evaluate",
+            Some(json!({
+                "expression": expression,
+                "frameId": frame_id,
+                "context": "hover",
+                "allowSideEffects": false
+            })),
+        );
+        let (result, _) = assert_evaluate_succeeded(response)?;
+        assert!(
+            result.contains(expected),
+            "hover evaluation of {expression} returned {result:?}, expected {expected:?}"
+        );
+    }
 
     session.disconnect()?;
     Ok(())
