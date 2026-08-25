@@ -346,14 +346,34 @@ fn validate_ledger_identity(ledger: &Ledger, shas: &ResolvedShas) -> Result<()> 
     Ok(())
 }
 
+/// Resolve every subject independently so a failure receipt records each
+/// subject's actual outcome; a receipt must never record `commit: null` for a
+/// subject whose resolution was never attempted.
 fn resolve_subjects(subjects: &mut Subjects, directory: Option<&Path>) -> Result<ResolvedShas> {
-    let source = resolve_subject("source", &subjects.source, directory)?;
-    subjects.source.commit = Some(source.clone());
-    let boundary = resolve_subject("boundary", &subjects.boundary, directory)?;
-    subjects.boundary.commit = Some(boundary.clone());
-    let target = resolve_subject("target", &subjects.target, directory)?;
-    subjects.target.commit = Some(target.clone());
-    Ok(ResolvedShas { source, boundary, target })
+    let mut attempt = |label: &str, state: &mut SubjectState| -> Result<String> {
+        let resolved = resolve_subject(label, state, directory)?;
+        state.commit = Some(resolved.clone());
+        Ok(resolved)
+    };
+    let source = attempt("source", &mut subjects.source);
+    let boundary = attempt("boundary", &mut subjects.boundary);
+    let target = attempt("target", &mut subjects.target);
+
+    let mut errors = Vec::new();
+    let source = record_outcome(source, &mut errors);
+    let boundary = record_outcome(boundary, &mut errors);
+    let target = record_outcome(target, &mut errors);
+
+    match (source, boundary, target) {
+        (Some(source), Some(boundary), Some(target)) => {
+            Ok(ResolvedShas { source, boundary, target })
+        }
+        _ => Err(eyre!(errors.join("; "))),
+    }
+}
+
+fn record_outcome(outcome: Result<String>, errors: &mut Vec<String>) -> Option<String> {
+    outcome.map_err(|error| errors.push(format!("{error:#}"))).ok()
 }
 
 fn resolve_subject(label: &str, state: &SubjectState, directory: Option<&Path>) -> Result<String> {
@@ -981,10 +1001,43 @@ mod tests {
         assert!(check(config).is_err());
         let receipt: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(path.join("receipt.json"))?)?;
+        // Every subject is resolved independently: the failed source records
+        // null, while the valid boundary and target record their resolved
+        // immutable commits rather than a never-attempted null.
         assert_eq!(receipt["subjects"]["source"]["commit"], serde_json::Value::Null);
-        assert_eq!(receipt["subjects"]["boundary"]["commit"], serde_json::Value::Null);
+        assert_eq!(receipt["subjects"]["boundary"]["commit"], fixture.base.as_str());
+        assert_eq!(receipt["subjects"]["target"]["commit"], fixture.release_tip.as_str());
         assert_eq!(receipt["subjects"]["target"]["input"], fixture.release_tip.as_str());
         assert_eq!(receipt["errors"].as_array().map(Vec::len), Some(1));
+        Ok(())
+    }
+
+    /// Multiple invalid subjects are all reported, and the one valid subject
+    /// still records its resolved commit.
+    #[test]
+    fn every_subject_resolution_is_attempted_and_recorded() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        let config = CheckConfig {
+            source: "refs/heads/nope-source-7968".to_string(),
+            boundary: "refs/heads/nope-boundary-7968".to_string(),
+            target: fixture.release_tip.clone(),
+            ledger: path.join("missing.json"),
+            receipt: path.join("receipt.json"),
+            working_directory: Some(path.to_path_buf()),
+        };
+        let error = match check(config) {
+            Err(error) => error,
+            Ok(()) => return Err(eyre!("invalid subjects must fail closed")),
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("nope-source-7968"), "{message}");
+        assert!(message.contains("nope-boundary-7968"), "{message}");
+        let receipt: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path.join("receipt.json"))?)?;
+        assert_eq!(receipt["subjects"]["source"]["commit"], serde_json::Value::Null);
+        assert_eq!(receipt["subjects"]["boundary"]["commit"], serde_json::Value::Null);
+        assert_eq!(receipt["subjects"]["target"]["commit"], fixture.release_tip.as_str());
         Ok(())
     }
 
