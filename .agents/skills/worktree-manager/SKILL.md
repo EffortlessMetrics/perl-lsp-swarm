@@ -47,10 +47,12 @@ periodically and after landing waves:
 2. remove a tree only when it holds no state existing elsewhere — no untracked files,
    no unpushed commits, no detached HEAD outside the base — or when the owning lane was
    explicitly abandoned;
-3. `bash scripts/cleanup-completed-worktrees.sh --dry-run` applies exactly this
-   predicate; review its plan before acting, and re-read each worktree immediately
+3. `bash scripts/cleanup-completed-worktrees.sh --dry-run` approximates this predicate,
+   but its landed test accepts any merged PR on the branch *name*, so a reused or
+   locally-advanced branch can be planned for removal with its only reference —
+   verify the plan against step 2 yourself and re-read each worktree immediately
    before deletion (same rule as slot removal).
 
 The sweep composes with the per-slot safety rules above rather than replacing them.
-Durable tooling for verified orphan reaping and checkout/capacity integrity is owned by
-#11606 and #3957; this skill carries only the guidance.
+Durable tooling for verified orphan reaping and checkout/capacity integrity is owned
+by issues #11606 and #3957; this skill carries only the guidance.
