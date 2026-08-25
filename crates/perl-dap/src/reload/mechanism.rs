@@ -220,25 +220,28 @@ impl MechanismRecordError {
 /// Verify a set of mechanism claims against the frozen laws.
 ///
 /// Availability alone is legitimate; every forbidden claim fails with its
-/// exact code, in frozen precedence order (compile success first).
+/// exact code. The frozen precedence order (compile success, package
+/// replacement, availability-as-authority, prompt-as-acknowledgement —
+/// [`MechanismRecordError::ALL`]) decides which violation is reported, so
+/// the result never depends on the caller's claim order.
 pub fn verify_mechanism_claims(claims: &MechanismClaims) -> Result<(), MechanismRecordError> {
-    for claim in &claims.claims {
-        let violation = match claim {
-            MechanismClaim::Available => None,
-            MechanismClaim::CompileSuccessImpliesReloadSuccess => {
-                Some(MechanismRecordError::CompileSuccessAsReloadSuccess)
-            }
-            MechanismClaim::ProvesPackageReplacement => {
-                Some(MechanismRecordError::PackageReplacementClaimedWithoutProof)
-            }
-            MechanismClaim::AvailabilityGrantsProductAuthority => {
-                Some(MechanismRecordError::AvailabilityAsProductAuthority)
-            }
-            MechanismClaim::PromptIsAcknowledgement => {
-                Some(MechanismRecordError::PromptAsAcknowledgement)
-            }
-        };
-        if let Some(error) = violation {
+    let forbidden: [(MechanismClaim, MechanismRecordError); 4] = [
+        (
+            MechanismClaim::CompileSuccessImpliesReloadSuccess,
+            MechanismRecordError::CompileSuccessAsReloadSuccess,
+        ),
+        (
+            MechanismClaim::ProvesPackageReplacement,
+            MechanismRecordError::PackageReplacementClaimedWithoutProof,
+        ),
+        (
+            MechanismClaim::AvailabilityGrantsProductAuthority,
+            MechanismRecordError::AvailabilityAsProductAuthority,
+        ),
+        (MechanismClaim::PromptIsAcknowledgement, MechanismRecordError::PromptAsAcknowledgement),
+    ];
+    for (claim, error) in forbidden {
+        if claims.claims.contains(&claim) {
             return Err(error);
         }
     }
@@ -308,6 +311,34 @@ mod tests {
                 expected.code()
             );
         }
+    }
+
+    #[test]
+    fn claim_precedence_is_independent_of_input_order() {
+        let reversed = MechanismClaims {
+            mechanism: ReloadMechanism::ClassRefreshCompatibilitySubject,
+            claims: vec![
+                MechanismClaim::PromptIsAcknowledgement,
+                MechanismClaim::AvailabilityGrantsProductAuthority,
+                MechanismClaim::ProvesPackageReplacement,
+                MechanismClaim::CompileSuccessImpliesReloadSuccess,
+            ],
+        };
+        assert_eq!(
+            verify_mechanism_claims(&reversed),
+            Err(MechanismRecordError::CompileSuccessAsReloadSuccess)
+        );
+        let without_compile = MechanismClaims {
+            mechanism: ReloadMechanism::IncDeletionAndRequire,
+            claims: vec![
+                MechanismClaim::PromptIsAcknowledgement,
+                MechanismClaim::ProvesPackageReplacement,
+            ],
+        };
+        assert_eq!(
+            verify_mechanism_claims(&without_compile),
+            Err(MechanismRecordError::PackageReplacementClaimedWithoutProof)
+        );
     }
 
     #[test]

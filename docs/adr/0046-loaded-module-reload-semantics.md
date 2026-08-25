@@ -145,7 +145,11 @@ process monotonic authority, the module-reload analogue of
 `indeterminate_possibly_applied`, never on refusals or pre-mutation
 failures, saturates without rollover at exhaustion (everything observed
 before exhaustion is stale), and resets only when the process/session is
-replaced. Retained per-generation observations are bounded at 128 (W8)
+replaced. The advancement law fails closed on malformed outcomes: a
+`failed_before_mutation` outcome carrying a phase at or after the
+mutation boundary violates the frozen phase/kind pairing, and the
+generation authority treats it as an advance — an invalid construction
+can never leave old references current. Retained per-generation observations are bounded at 128 (W8)
 and fail closed (unknown or evicted ⇒ stale). It is **independent** of
 `stopped_generation` — one advances for module mutations, the other for
 suspensions — but composes with it in the invalidation table (#8703/#10102
@@ -171,10 +175,15 @@ failures:
 | thread references | **adapter projection, re-projected** — never treated as runtime fact (W6) |
 | durable desired client breakpoint configuration | **preserved**, reconciled later by #10102 |
 
-Old frame/value/breakpoint identities surviving a possibly-applied
-outcome are a contract violation detected by `verify_invalidation_plan`
-(`stale_identity_survives_possibly_applied`), as are invalidating durable
-configuration and treating thread references as runtime facts.
+`verify_invalidation_plan` enforces the table **exactly**: for a
+mutating outcome a claimed plan must match the frozen disposition of
+every enumerated kind — preserving positional module ids,
+loaded-source observations, source reads, applied installations,
+exception/stop facts, or retained query results is
+`stale_identity_survives_possibly_applied`, invalidating durable
+configuration is `durable_configuration_invalidated`, and treating
+thread references as runtime facts is `thread_reference_not_projection`.
+For non-mutating outcomes the only valid plan is empty.
 
 ### 6. Protocol requirements (not wire)
 

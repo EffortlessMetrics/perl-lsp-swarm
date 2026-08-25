@@ -275,11 +275,18 @@ impl InvalidationPlanError {
 /// Verify a claimed invalidation table against the frozen semantics for
 /// one outcome.
 ///
-/// For a mutating outcome the table must cover every kind, must mark the
-/// four inspection-reference kinds and the applied installations stale
-/// (directly or via generation composition), must keep the durable client
-/// configuration preserved, and must keep thread references projections.
-/// For a non-mutating outcome the only valid table is empty.
+/// For a mutating outcome the table must equal the frozen per-kind table
+/// ([`invalidation_plan_for`]) for **every** enumerated kind — a plan that
+/// preserves positional module ids, loaded-source observations, source
+/// content reads, applied installations, exception/stop facts, or retained
+/// query results after a terminal mutation outcome is exactly the
+/// forbidden old-state-survives shape. Mismatches are reported with the
+/// most specific code: durable configuration →
+/// [`InvalidationPlanError::DurableConfigurationInvalidated`], thread
+/// references → [`InvalidationPlanError::ThreadReferenceNotProjection`],
+/// and every other kind (including missing coverage) →
+/// [`InvalidationPlanError::StaleIdentitySurvivesPossiblyApplied`]. For a
+/// non-mutating outcome the only valid table is empty.
 pub fn verify_invalidation_plan(
     plan: &ReloadInvalidationPlan,
     outcome: &LoadedModuleReloadOutcome,
@@ -295,37 +302,19 @@ pub fn verify_invalidation_plan(
         }
         return Err(InvalidationPlanError::StaleIdentitySurvivesPossiblyApplied);
     }
-    if !plan.covers_every_kind() {
-        return Err(InvalidationPlanError::StaleIdentitySurvivesPossiblyApplied);
-    }
-    let must_be_stale = [
-        DapObjectKind::FrameReference,
-        DapObjectKind::ScopeReference,
-        DapObjectKind::VariableReference,
-        DapObjectKind::EvaluateReference,
-        DapObjectKind::AppliedBreakpointInstallation,
-    ];
-    for kind in must_be_stale {
-        let stale = matches!(
-            plan.disposition_for(kind),
-            Some(
-                InvalidationDisposition::AlwaysStale
-                    | InvalidationDisposition::StaleWhenGenerationAdvanced
-            )
-        );
-        if !stale {
-            return Err(InvalidationPlanError::StaleIdentitySurvivesPossiblyApplied);
+    let frozen = invalidation_plan_for(outcome);
+    for kind in DapObjectKind::ALL {
+        if plan.disposition_for(kind) != frozen.disposition_for(kind) {
+            return Err(match kind {
+                DapObjectKind::DurableClientBreakpointConfiguration => {
+                    InvalidationPlanError::DurableConfigurationInvalidated
+                }
+                DapObjectKind::ThreadReference => {
+                    InvalidationPlanError::ThreadReferenceNotProjection
+                }
+                _ => InvalidationPlanError::StaleIdentitySurvivesPossiblyApplied,
+            });
         }
-    }
-    if plan.disposition_for(DapObjectKind::DurableClientBreakpointConfiguration)
-        != Some(InvalidationDisposition::PreservedForLaterReconciliation)
-    {
-        return Err(InvalidationPlanError::DurableConfigurationInvalidated);
-    }
-    if plan.disposition_for(DapObjectKind::ThreadReference)
-        != Some(InvalidationDisposition::ProjectionReprojected)
-    {
-        return Err(InvalidationPlanError::ThreadReferenceNotProjection);
     }
     Ok(())
 }
@@ -503,6 +492,49 @@ mod tests {
         assert_eq!(
             verify_invalidation_plan(&wrong_threads, &indeterminate()),
             Err(InvalidationPlanError::ThreadReferenceNotProjection)
+        );
+    }
+
+    #[test]
+    fn preserved_module_observation_or_retained_result_is_rejected() {
+        // Wrong candidate: positional module ids kept valid under
+        // indeterminate — every kind must match the frozen table exactly.
+        let honest = invalidation_plan_for(&indeterminate());
+        let wrong = ReloadInvalidationPlan::from_dispositions(
+            &DapObjectKind::ALL
+                .into_iter()
+                .map(|kind| {
+                    let disposition = if kind == DapObjectKind::ModuleId {
+                        InvalidationDisposition::PreservedForLaterReconciliation
+                    } else {
+                        honest.disposition_for(kind).unwrap_or(InvalidationDisposition::AlwaysStale)
+                    };
+                    (kind, disposition)
+                })
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            verify_invalidation_plan(&wrong, &indeterminate()),
+            Err(InvalidationPlanError::StaleIdentitySurvivesPossiblyApplied)
+        );
+        // A diverging-but-stronger disposition is still drift from the
+        // frozen table and must be reported.
+        let strengthened = ReloadInvalidationPlan::from_dispositions(
+            &DapObjectKind::ALL
+                .into_iter()
+                .map(|kind| {
+                    let disposition = if kind == DapObjectKind::ExceptionAndCurrentStopFacts {
+                        InvalidationDisposition::AlwaysStale
+                    } else {
+                        honest.disposition_for(kind).unwrap_or(InvalidationDisposition::AlwaysStale)
+                    };
+                    (kind, disposition)
+                })
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            verify_invalidation_plan(&strengthened, &indeterminate()),
+            Err(InvalidationPlanError::StaleIdentitySurvivesPossiblyApplied)
         );
     }
 

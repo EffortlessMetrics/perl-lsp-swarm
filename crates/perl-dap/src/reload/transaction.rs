@@ -192,14 +192,27 @@ impl LoadedModuleReloadOutcome {
     /// Generation effect required by the frozen semantics: `reloaded` and
     /// `indeterminate_possibly_applied` advance the runtime-module
     /// generation; refusals and pre-mutation failures advance nothing.
+    ///
+    /// Fail-closed for malformed outcomes: a `FailedBeforeMutation`
+    /// carrying a phase at or after the mutation boundary violates the
+    /// contract's phase/kind pairing (`phase_permits_outcome`) — the
+    /// boundary was crossed, so the runtime may have mutated and the
+    /// generation **must** advance rather than leaving old references
+    /// current.
     pub fn generation_effect(&self) -> GenerationEffect {
         match self {
             LoadedModuleReloadOutcome::Reloaded
             | LoadedModuleReloadOutcome::IndeterminatePossiblyApplied { .. } => {
                 GenerationEffect::Advance
             }
-            LoadedModuleReloadOutcome::Refused { .. }
-            | LoadedModuleReloadOutcome::FailedBeforeMutation { .. } => GenerationEffect::None,
+            LoadedModuleReloadOutcome::Refused { .. } => GenerationEffect::None,
+            LoadedModuleReloadOutcome::FailedBeforeMutation { phase, .. } => {
+                if phase.is_mutation_begun() {
+                    GenerationEffect::Advance
+                } else {
+                    GenerationEffect::None
+                }
+            }
         }
     }
 
@@ -356,6 +369,7 @@ pub fn plan_reload(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reload::RuntimeModuleGenerationClock;
 
     #[test]
     fn phase_vocabulary_is_closed_and_ordered() {
@@ -444,6 +458,27 @@ mod tests {
             IndeterminateCause::TimeoutAfterMutationBegan,
         );
         assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn malformed_post_boundary_pre_mutation_failure_advances_fail_closed() {
+        // A FailedBeforeMutation carrying a post-boundary phase violates
+        // the phase/kind pairing; the boundary was crossed, so the clock
+        // must advance rather than leaving old references current.
+        let malformed = LoadedModuleReloadOutcome::FailedBeforeMutation {
+            phase: ReloadTransactionPhase::RuntimeMutationBegins,
+            cause: PreMutationFailureCause::PrepareFailed,
+        };
+        assert!(!phase_permits_outcome(ReloadTransactionPhase::RuntimeMutationBegins, &malformed));
+        assert_eq!(malformed.generation_effect(), GenerationEffect::Advance);
+        let mut clock = RuntimeModuleGenerationClock::new();
+        assert!(clock.apply(&malformed).advanced());
+        // The well-formed pre-boundary shape still advances nothing.
+        let well_formed = LoadedModuleReloadOutcome::FailedBeforeMutation {
+            phase: ReloadTransactionPhase::Prepare,
+            cause: PreMutationFailureCause::PrepareFailed,
+        };
+        assert_eq!(well_formed.generation_effect(), GenerationEffect::None);
     }
 
     #[test]
