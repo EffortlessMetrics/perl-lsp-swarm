@@ -44,7 +44,9 @@
 //! - registration order cannot change adapter identity, selection, or
 //!   normalized bytes (`semantic_fingerprint`), and envelope identity is
 //!   order-insensitive but content-sensitive
-//!   ([`CompilerProfileObservationV1::identity`]).
+//!   ([`CompilerProfileObservationV1::identity`]);
+//! - an observation must carry every currentness input its adapter requires
+//!   ([`ObservationAdapterRegistry::validate_observation`]).
 
 use crate::compiler_profile_contract::{
     ClaimCeiling, ClaimFamily, InvalidationInput, InvalidationKind, ProofClass,
@@ -1333,9 +1335,11 @@ impl ObservationAdapterRegistry {
 
     /// Validate one observation against the registry: the producing adapter
     /// must be registered at the exact version, own the receipt's family and
-    /// schema, be allowed to emit the observation's class, be able to prove
-    /// every bound subject dimension, and the observation may narrow but
-    /// never strengthen the adapter's declared observation ceiling.
+    /// schema, be allowed to emit the observation's class, have every
+    /// required currentness input carried by the observation's invalidation
+    /// evidence, be able to prove every bound subject dimension, and the
+    /// observation may narrow but never strengthen the adapter's declared
+    /// observation ceiling.
     pub fn validate_observation(&self, observation: &CompilerProfileObservationV1) -> Result<()> {
         observation.validate()?;
         let descriptor = self.adapters.get(&observation.adapter.id).ok_or_else(|| {
@@ -1376,6 +1380,16 @@ impl ObservationAdapterRegistry {
                 observation.class.family.tag(),
                 observation.class.proof_class.tag()
             );
+        }
+        for required in &descriptor.required_currentness_inputs {
+            if !observation.invalidation.inputs.iter().any(|input| input.kind == *required) {
+                bail!(
+                    "adapter {:?} requires currentness input {} that observation {:?} does not carry",
+                    descriptor.id.as_str(),
+                    required.tag(),
+                    observation.receipt.id.as_str()
+                );
+            }
         }
         for kind in observation.subject.proven_dimensions() {
             if !descriptor.provable_dimensions.contains(&kind) {
@@ -1812,6 +1826,29 @@ mod tests {
             Ok(()) => unreachable!("an observation above the adapter ceiling must be rejected"),
         };
         assert!(error.to_string().contains("strengthens"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    // Registry law: an observation must carry every currentness input its
+    // adapter requires; a declared-but-unchecked input would be decorative.
+    #[test]
+    fn registry_required_currentness_inputs_are_enforced() -> Result<()> {
+        let registry = registry_with(adapter());
+        let mut lacking = observation();
+        lacking.invalidation = InvalidationEvidence::new(vec![InvalidationInput::new(
+            InvalidationKind::Oracle,
+            "the oracle basis changed",
+        )?])?;
+        let error = match registry.validate_observation(&lacking) {
+            Err(error) => error,
+            Ok(()) => unreachable!("a missing required currentness input must fail"),
+        };
+        assert!(
+            error.to_string().contains("requires currentness input"),
+            "unexpected error: {error}"
+        );
+        // Carrying the required input validates.
+        registry.validate_observation(&observation())?;
         Ok(())
     }
 

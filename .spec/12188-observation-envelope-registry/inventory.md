@@ -65,9 +65,10 @@ module and its tests are the executable authority.
   fails closed; a migration relation deterministically selects the
   superseding adapter.
 - `validate_observation`: registered adapter at exact version, owns the
-  receipt family, accepts the schema, may emit the class, can prove every
-  bound subject dimension, and the observation never strengthens the
-  adapter's declared ceiling.
+  receipt family, accepts the schema, may emit the class, has every required
+  currentness input carried by the observation's invalidation evidence, can
+  prove every bound subject dimension, and the observation never strengthens
+  the adapter's declared ceiling.
 - `semantic_fingerprint`: registration-order independent.
 
 ## Synthetic fixtures (representability only, no real adapter)
@@ -95,6 +96,7 @@ module and its tests are the executable authority.
 
 Additional closure/acceptance tests:
 `closure_identity_is_order_insensitive_and_content_sensitive`,
+`registry_required_currentness_inputs_are_enforced`,
 `acceptance_source_vocabulary_is_preserved_not_flattened`,
 `acceptance_successor_lanes_can_consume_the_public_surface`,
 `acceptance_registry_ships_empty_and_no_evaluation_lands`.
