@@ -39,15 +39,19 @@
 -- Single-behavior mutation falsifiers of the PATCHED module (each verified
 -- caught):
 --   1. restore immediate application of the raw original in onselect ->
---      direct-select, deferred, and stale-held cases fail;
+--      the deferred/join cases fail;
 --   2. restore the completion_item.data gate in the resolve begin path ->
 --      every no-data case fails;
---   3. delete the admission guard in the resolve response callback ->
---      edit-while-held and restart-while-held cases fail;
+--   3. delete BOTH admission layers (resolve response callback AND the
+--      apply-time round-subject revalidation) -> edit-while-held and
+--      restart-while-held fail; deleting either layer alone leaves the
+--      other as defense in depth, which is itself pinned by staying green;
 --   4. delete the applied exactly-once flag -> the repeat-selection case
 --      fails;
 --   5. drop the overlay so resolved fields lose to original fields -> the
---      resolved-fields-win case fails.
+--      resolved-fields-win cases fail;
+--   6. delete the document-binding guard in the apply terminal -> the
+--      wrong-active-document case fails.
 --
 -- No framework: plain soft asserts, one process, deterministic, exit code
 -- carries the result. Compatible with the Lite XL Lua runtime family
@@ -402,11 +406,6 @@ local function play_response(server, method, response)
   return false
 end
 
-local INCREMENTAL_CAPS = {
-  textDocumentSync = { openClose = true, change = 2, save = { includeText = false } },
-  positionEncoding = "utf-16",
-}
-
 local RESOLVE_CAPS = {
   textDocumentSync = { openClose = true, change = 2, save = { includeText = false } },
   positionEncoding = "utf-16",
@@ -447,9 +446,23 @@ end
 local function open_completion(lsp, server, doc, result_items)
   open_admitted(lsp, doc, server)
   lsp.request_completion(doc, 1, 6, true)
-  local held = table.remove(server.outbound, 1)
+  local held
+  for index, entry in ipairs(server.outbound) do
+    if entry.method == "textDocument/completion" then held = entry end
+  end
+  if not held then
+    ok(false, "open_completion: completion request was queued")
+    return {}
+  end
+  for index, entry in ipairs(server.outbound) do
+    if entry == held then table.remove(server.outbound, index) end
+  end
   held.callback(server, { result = { items = result_items } })
   local symbols = autocomplete_calls[#autocomplete_calls]
+  if not symbols or not symbols.items then
+    ok(false, "open_completion: completion populated the autocomplete box")
+    return {}
+  end
   return symbols.items
 end
 
@@ -620,7 +633,7 @@ do
         newText = "import foo;\n" } },
   } }), "caseD: resolve played")
 
-  ok(has_insert(doc, "foobar()") and not has_insert(doc, "foo\n") and not has_insert(doc, "foo()"),
+  ok(has_insert(doc, "foobar()") and not has_insert(doc, "foo"),
     "caseD: final bytes carry the resolved main edit, not the original")
   ok(has_insert(doc, "import foo;\n"), "caseD: resolve-supplied auto-import edit is applied")
 end
@@ -660,10 +673,12 @@ do
 end
 
 -- ===========================================================================
--- Case F: timeout/failure terminals are explicit. An item whose application
--- surface is not provably complete (no additionalTextEdits known) refuses
--- without partial mutation; a self-complete original falls back.
--- Red on main: main either never resolves (data-less) or applies regardless.
+-- Case F: timeout/failure terminals are explicit under the declared
+-- completeness policy. An original whose application bytes are its own
+-- (textEdit) falls back; an item with no self-owned application surface
+-- (label only, nothing resolution-independent to apply) refuses without
+-- partial mutation. Red on main: main either never resolves (data-less) or
+-- applies regardless.
 -- ===========================================================================
 do
   local lsp = fresh_module_load()
@@ -674,6 +689,7 @@ do
   local dv = setmetatable({ doc = doc }, require "core.docview")
   activate(dv)
 
+  -- Self-complete fallback: the original carries its own application bytes.
   local items = open_completion(lsp, server, doc, {
     { label = "bar", kind = 3,
       textEdit = { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 2 } },
@@ -688,7 +704,7 @@ do
   end
   if resolve_entry == nil then
     ok(false, "caseF: resolve request carries its timeout disposition seam")
-    ok(false, "caseF: timed-out resolution with unknown extras refuses without partial mutation")
+    ok(false, "caseF: timed-out self-complete original falls back")
   else
     ok(resolve_entry.timeout_callback ~= nil,
       "caseF: resolve request carries its timeout disposition seam")
@@ -698,25 +714,25 @@ do
       end
     end
     resolve_entry.timeout_callback(resolve_entry)
-    ok(count_edits(doc) == 0,
-      "caseF: timed-out resolution with unknown extras refuses without partial mutation")
+    ok(has_insert(doc, "bar()"),
+      "caseF: timed-out resolution falls back to the provably self-complete original")
   end
+  local edits_after_fallback = count_edits(doc)
 
-  -- Self-complete fallback: original carries bytes AND known-empty extras.
+  -- Label-only item: nothing self-owned to apply, so a terminal without
+  -- resolution refuses instead of guessing.
   local items2 = open_completion(lsp, server, doc, {
-    { label = "baz", kind = 3,
-      textEdit = { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 2 } },
-                   newText = "baz()" },
-      additionalTextEdits = {} },
+    { label = "qux", kind = 3 },
   })
-  local item2 = items2["baz"]
-  ok(item2.onselect(1, item2) == false, "caseF: second item defers too")
+  local item2 = items2["qux"]
+  ok(item2 ~= nil, "caseF: label-only item populated")
+  ok(item2.onselect(1, item2) == false, "caseF: label-only selection defers too")
   local entry2
   for _, entry in ipairs(server.outbound) do
     if entry.method == "completionItem/resolve" then entry2 = entry end
   end
   if entry2 == nil then
-    ok(false, "caseF: timed-out resolution falls back to the provably self-complete original")
+    ok(false, "caseF: label-only timeout refuses without partial mutation")
   else
     for index = #server.outbound, 1, -1 do
       if server.outbound[index].method == "completionItem/resolve" then
@@ -724,8 +740,8 @@ do
       end
     end
     entry2.timeout_callback(entry2)
-    ok(has_insert(doc, "baz()"),
-      "caseF: timed-out resolution falls back to the provably self-complete original")
+    ok(count_edits(doc) == edits_after_fallback,
+      "caseF: label-only timeout refuses; earlier fallback edits untouched")
   end
 end
 
@@ -874,6 +890,123 @@ do
     if entry.method == "completionItem/resolve" then resolves = resolves + 1 end
   end
   ok(resolves == 0, "caseJ: no resolve request left for a non-resolving server")
+end
+
+-- ===========================================================================
+-- Case K: JSON-RPC error and null-result resolves are failed terminals under
+-- the completeness policy, never silent confirmations of the original.
+-- ===========================================================================
+do
+  local lsp = fresh_module_load()
+  local server = make_server("perllsp", RESOLVE_CAPS)
+  register(lsp, "perllsp", server)
+  local doc = make_doc("C:/proj/k.pl", { "fo\n" }, 1, 6)
+
+  local dv = setmetatable({ doc = doc }, require "core.docview")
+  activate(dv)
+
+  -- Error response: a self-complete original still falls back, but through
+  -- the guarded terminal - and a label-only original refuses outright.
+  local items = open_completion(lsp, server, doc, {
+    { label = "err_fn", kind = 3 },
+  })
+  local item = items["err_fn"]
+  ok(item.onselect(1, item) == false, "caseK: selection defers")
+  ok(play_response(server, "completionItem/resolve",
+    { error = { code = -32603, message = "resolve exploded" } }),
+    "caseK: resolve request reached the wire")
+  ok(count_edits(doc) == 0,
+    "caseK: an errored resolve refuses a non-self-complete original without mutation")
+
+  -- Null result on a self-complete original: guarded fallback applies it.
+  local items2 = open_completion(lsp, server, doc, {
+    { label = "nul_fn", kind = 3,
+      textEdit = { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 2 } },
+                   newText = "nul_fn()" } },
+  })
+  local item2 = items2["nul_fn"]
+  ok(item2.onselect(1, item2) == false, "caseK: null-result selection defers")
+  ok(play_response(server, "completionItem/resolve", { result = nil }),
+    "caseK: null resolve response played")
+  ok(has_insert(doc, "nul_fn()"),
+    "caseK: null result falls back to the self-complete original, not silence")
+end
+
+-- ===========================================================================
+-- Case L: queue rejection is a terminal. A fake server rejecting
+-- push_request drives the pending selection through the same guarded
+-- fallback/refuse path instead of leaving it pending forever.
+-- ===========================================================================
+do
+  local lsp = fresh_module_load()
+  local server = make_server("perllsp", RESOLVE_CAPS)
+  register(lsp, "perllsp", server)
+  function server:push_request(method, entry)
+    entry.method = method
+    entry.kind = "request"
+    self.outbound[#self.outbound + 1] = entry
+    return "not_queued"
+  end
+  local doc = make_doc("C:/proj/l.pl", { "fo\n" }, 1, 6)
+
+  local dv = setmetatable({ doc = doc }, require "core.docview")
+  activate(dv)
+
+  local items = open_completion(lsp, server, doc, {
+    { label = "q_fn", kind = 3,
+      textEdit = { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 2 } },
+                   newText = "q_fn()" } },
+  })
+  local item = items["q_fn"]
+  ok(item.onselect(1, item) == true,
+    "caseL: queue-rejected resolve falls back to the self-complete original immediately")
+  ok(has_insert(doc, "q_fn()"), "caseL: the fallback bytes were applied")
+
+  -- Label-only item under queue rejection: explicit refusal, no mutation.
+  local edits_before = count_edits(doc)
+  local items2 = open_completion(lsp, server, doc, {
+    { label = "q_bare", kind = 3 },
+  })
+  local item2 = items2["q_bare"]
+  ok(item2.onselect(1, item2) == false,
+    "caseL: queue-rejected resolve refuses a non-self-complete original explicitly")
+  ok(count_edits(doc) == edits_before, "caseL: refusal mutated nothing")
+end
+
+-- ===========================================================================
+-- Case M: deferred application binds to the captured document. A resolve
+-- answered while another document view is active must refuse instead of
+-- writing file A's ranges into file B (#12547 review repair).
+-- ===========================================================================
+do
+  local lsp = fresh_module_load()
+  local server = make_server("perllsp", RESOLVE_CAPS)
+  register(lsp, "perllsp", server)
+  local doc_a = make_doc("C:/proj/ma.pl", { "fo\n" }, 1, 6)
+  local doc_b = make_doc("C:/proj/mb.pl", { "other\n" }, 1, 6)
+
+  local dv_a = setmetatable({ doc = doc_a }, require "core.docview")
+  activate(dv_a)
+
+  local items = open_completion(lsp, server, doc_a, {
+    { label = "foo", kind = 3,
+      textEdit = { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 2 } },
+                   newText = "foo()" } },
+  })
+  local item = items["foo"]
+  ok(item.onselect(1, item) == false, "caseM: selection defers")
+
+  local dv_b = setmetatable({ doc = doc_b }, require "core.docview")
+  activate(dv_b)
+
+  ok(play_response(server, "completionItem/resolve", { result = {
+    label = "foo",
+    textEdit = { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 2 } },
+                 newText = "cross_doc()" },
+  } }), "caseM: late resolve arrived while another document is active")
+
+  ok(#doc_b.edits == 0, "caseM: the wrong active document was never touched")
+  ok(#doc_a.edits == 0, "caseM: the resolved edit did not silently cross documents")
 end
 
 print(string.format("%d passed, %d failed", passed, failed))

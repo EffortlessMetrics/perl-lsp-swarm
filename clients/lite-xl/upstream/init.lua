@@ -843,12 +843,26 @@ end
 ---Apply the selected item exactly once from its final effective fields
 ---(#11188). Resolution outcomes decide the effective item: a resolved item
 ---overlays the original; a not_needed item applies as received; failed,
----timed_out, and stale terminals fall back only when the original proves its
----own complete application surface (bytes plus known-empty-or-present
----additional edits) and otherwise refuse without partial mutation.
+---timed_out, and stale terminals fall back only when the original alone
+---proves its own application surface (its own textEdit or LSP-snippet
+---insertText - fields resolution would only enrich) and otherwise refuse
+---without partial mutation. Every application revalidates the captured
+---round subject before any effect, so a terminal that arrives after edits,
+---session transitions, or server replacement can never touch newer bytes,
+---and the edit lands only in the exact document the round was computed for.
 local function apply_selected_completion(item, rstate)
   if rstate.applied then return true end
   local original = item.data.completion_item
+  local round_subject = rstate.round_subject or item.data.subject
+  if round_subject then
+    local admitted, disposition = lsp.admit_response(round_subject)
+    if not admitted then
+      core.log_quiet(
+        "[LSP] completion apply refused (%s)", disposition or "stale"
+      )
+      return false
+    end
+  end
   local effective = nil
   if rstate.state == "resolved" then
     effective = rstate.resolved_item
@@ -857,7 +871,7 @@ local function apply_selected_completion(item, rstate)
   elseif rstate.state == "not_needed" then
     effective = original
   else
-    if completion_self_complete(original) and original.additionalTextEdits then
+    if completion_self_complete(original) then
       effective = original
     else
       core.log_quiet(
@@ -869,6 +883,18 @@ local function apply_selected_completion(item, rstate)
   end
 
   local dv = get_active_docview()
+  -- Deferred terminals re-fetch the active view: applying a completion to a
+  -- different document than the one its ranges were computed for is refusal,
+  -- not adaptation (#11188).
+  if
+    dv
+    and round_subject
+    and round_subject.doc
+    and dv.doc ~= round_subject.doc
+  then
+    core.log_quiet("[LSP] completion apply refused (%s)", "document_mismatch")
+    return false
+  end
   local edit_applied = false
   if effective.textEdit then
     if dv then
@@ -946,10 +972,21 @@ local function on_completion_resolve_response(item, rstate, response)
     return
   end
   local result = response.result
-  rstate.state = "resolved"
-  rstate.resolved_item = result
-  if result then
+  if response.error then
+    -- A JSON-RPC error is a failed terminal, not an empty resolution: the
+    -- pending selection must hit the completeness-guarded fallback instead
+    -- of treating the original as confirmed (#11188).
+    rstate.state = "failed"
+    rstate.disposition = "server_error"
+  elseif result then
+    rstate.state = "resolved"
+    rstate.resolved_item = result
     merge_resolve_description(item, result)
+  else
+    -- Null result: the server supplied nothing new; the application falls
+    -- back through the same guarded original-item terminal.
+    rstate.state = "failed"
+    rstate.disposition = "empty_result"
   end
   if rstate.pending_apply then
     rstate.pending_apply = false
@@ -969,8 +1006,12 @@ local function begin_completion_resolve(item, rstate)
   if not subject then
     rstate.state = "stale"
     rstate.disposition = "no_session"
-    rstate.pending_apply = false
-    core.log_quiet("[LSP] completion apply refused (%s)", "no_session")
+    if rstate.pending_apply then
+      rstate.pending_apply = false
+      apply_selected_completion(item, rstate)
+    else
+      core.log_quiet("[LSP] completion apply refused (%s)", "no_session")
+    end
     return rstate
   end
   rstate.state = "in_flight"
@@ -993,8 +1034,12 @@ local function begin_completion_resolve(item, rstate)
   if queued == "not_queued" then
     rstate.state = "failed"
     rstate.disposition = "not_queued"
-    rstate.pending_apply = false
-    core.log_quiet("[LSP] completion apply refused (%s)", "not_queued")
+    if rstate.pending_apply then
+      rstate.pending_apply = false
+      apply_selected_completion(item, rstate)
+    else
+      core.log_quiet("[LSP] completion apply refused (%s)", "not_queued")
+    end
   end
   return rstate
 end
@@ -1072,6 +1117,12 @@ local function autocomplete_onselect(index, item)
   -- unresolved: selection triggers the exact pre-apply resolution itself.
   rstate.pending_apply = true
   begin_completion_resolve(item, rstate)
+  if not rstate.pending_apply then
+    -- The operation terminated synchronously (typed queue rejection or a
+    -- missing session): its guarded terminal already fell back or refused,
+    -- so selection surfaces that real outcome instead of a deferral.
+    return rstate.applied
+  end
   return false
 end
 
