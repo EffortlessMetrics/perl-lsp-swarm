@@ -25,6 +25,9 @@
             "include": "#regex"
         },
         {
+            "include": "#readline"
+        },
+        {
             "include": "#operators"
         },
             {
@@ -234,7 +237,7 @@
             "patterns": [
                 {
                     "name": "keyword.operator.comparison.perl",
-                    "match": "(==|!=|<=>|<=|>=|<|>|eq|ne|cmp|le|ge|lt|gt|~~)"
+                    "match": "(==|!=|<=>|<=|>=|(?<!<)<(?![=A-Za-z_])|(?<!>)>(?![=])|\\b(eq|ne|cmp|le|ge|lt|gt)\\b|~~)"
                 },
                 {
                     "name": "keyword.operator.assignment.perl",
@@ -332,6 +335,14 @@
                             "match": "\\\\."
                         }
                     ]
+                }
+            ]
+        },
+        "readline": {
+            "patterns": [
+                {
+                    "name": "string.other.readline.perl",
+                    "match": "<(?:STDIN|STDOUT|STDERR)>"
                 }
             ]
         },
