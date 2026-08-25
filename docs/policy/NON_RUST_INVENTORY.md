@@ -9,20 +9,20 @@
 | Total tracked files | 11902 |
 | Rust-family files | 3608 |
 | Non-Rust files | 8294 |
-| Allowlisted | 5969 |
-| Unclassified | 2325 |
+| Allowlisted | 5988 |
+| Unclassified | 2306 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
 | config | 427 |
-| documentation | 2692 |
+| documentation | 2711 |
 | generated | 2 |
 | production | 324 |
 | test | 1966 |
 | tooling | 558 |
-| unclassified | 2325 |
+| unclassified | 2306 |
 
 ## Unclassified files
 
@@ -61,25 +61,6 @@
 | `.editorconfig` | `` |
 | `.typos.toml` | `toml` |
 | `aqua.yaml` | `yaml` |
-| `archive/crates/tree-sitter-perl-rs/benchmark_results/comparison_results.json` | `json` |
-| `archive/crates/tree-sitter-perl-rs/edge_case_test_output.txt` | `txt` |
-| `archive/crates/tree-sitter-perl-rs/src/bin/benchmark_parsers.rs.disabled` | `disabled` |
-| `archive/crates/tree-sitter-perl-rs/src/bsearch.h` | `h` |
-| `archive/crates/tree-sitter-perl-rs/src/grammar.js` | `js` |
-| `archive/crates/tree-sitter-perl-rs/src/grammar.json` | `json` |
-| `archive/crates/tree-sitter-perl-rs/src/grammar.pest` | `pest` |
-| `archive/crates/tree-sitter-perl-rs/src/grammar_heredoc_fix.pest` | `pest` |
-| `archive/crates/tree-sitter-perl-rs/src/grammar_optimized.pest` | `pest` |
-| `archive/crates/tree-sitter-perl-rs/src/lib/primitives.js` | `js` |
-| `archive/crates/tree-sitter-perl-rs/src/lib/unicode_ranges.js` | `js` |
-| `archive/crates/tree-sitter-perl-rs/src/node-types.json` | `json` |
-| `archive/crates/tree-sitter-perl-rs/src/parser.c` | `c` |
-| `archive/crates/tree-sitter-perl-rs/src/scanner.c` | `c` |
-| `archive/crates/tree-sitter-perl-rs/src/tree_sitter/alloc.h` | `h` |
-| `archive/crates/tree-sitter-perl-rs/src/tree_sitter/array.h` | `h` |
-| `archive/crates/tree-sitter-perl-rs/src/tree_sitter/parser.h` | `h` |
-| `archive/crates/tree-sitter-perl-rs/src/tsp_unicode.h` | `h` |
-| `archive/crates/tree-sitter-perl-rs/test_output.sexp` | `sexp` |
 | `benchmarks/baselines/v0.10.0.json` | `json` |
 | `benchmarks/baselines/v0.9.0.json` | `json` |
 | `benchmarks/results/2026-01-22-ryzen9-9950x3d-parser.json` | `json` |
@@ -3419,9 +3400,28 @@
 | `archive/crates/tree-sitter-perl-rs/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `archive/crates/tree-sitter-perl-rs/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `archive/crates/tree-sitter-perl-rs/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `archive/crates/tree-sitter-perl-rs/benchmark_results/comparison_results.json` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/edge_case_test_output.txt` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/proptest-regressions/fuzz_tests.txt` | test | `non-rust-proptest-default-layout-regressions` | parser/property-tests |
 | `archive/crates/tree-sitter-perl-rs/proptest-regressions/tests.txt` | test | `non-rust-proptest-default-layout-regressions` | parser/property-tests |
+| `archive/crates/tree-sitter-perl-rs/src/bin/benchmark_parsers.rs.disabled` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/bsearch.h` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/grammar.js` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/grammar.json` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/grammar.pest` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/grammar_heredoc_fix.pest` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/grammar_optimized.pest` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/lib/primitives.js` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/lib/unicode_ranges.js` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/node-types.json` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/parser.c` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/scanner.c` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/tree_sitter/alloc.h` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/tree_sitter/array.h` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/tree_sitter/parser.h` | documentation | `non-rust-archive-tree` | parser/legacy |
+| `archive/crates/tree-sitter-perl-rs/src/tsp_unicode.h` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/test.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `archive/crates/tree-sitter-perl-rs/test_output.sexp` | documentation | `non-rust-archive-tree` | parser/legacy |
 | `archive/crates/tree-sitter-perl-rs/tests/fixtures/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `archive/crates/tree-sitter-perl-rs/tests/fixtures/anti_patterns/begin_heredoc.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `archive/crates/tree-sitter-perl-rs/tests/fixtures/anti_patterns/dynamic_delimiter.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |

@@ -53,7 +53,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"expected recovery for {input:?}; tokens={tokens:?}\"));",
       "selector_identity": "invocation:61c6d955c2ec5091:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lexer/tests/lexer_robustness_tests.rs",
@@ -62,7 +62,7 @@
       "normalized_snippet": "panic!( \"expected recovery covering unterminated `/' for {input:?}; tokens={tokens:?}\" )",
       "selector_identity": "invocation:19870ad73fa012ed:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lexer/tests/lexer_robustness_tests.rs",
@@ -71,7 +71,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"expected unterminated-regex recovery; tokens={tokens:?}\"));",
       "selector_identity": "invocation:efce44f2010a4f41:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
