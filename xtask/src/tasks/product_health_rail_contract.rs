@@ -80,6 +80,7 @@ pub fn validate_registry(registry: &Registry) -> Result<()> {
         ensure!(!rail.rail_id.is_empty(), "rail id must not be empty");
         ensure!(rail_ids.insert(&rail.rail_id), "duplicate rail id {}", rail.rail_id);
         ensure!(!rail.source_schema.is_empty(), "rail {} has no source schema", rail.rail_id);
+        ensure!(!rail.source_digest.is_empty(), "rail {} has no source digest", rail.rail_id);
         ensure!(!rail.subject.is_empty(), "rail {} has no exact subject", rail.rail_id);
         ensure!(!rail.currentness.is_empty(), "rail {} has no currentness relation", rail.rail_id);
         ensure!(!rail.claim_ceiling.is_empty(), "rail {} has no claim ceiling", rail.rail_id);
@@ -97,6 +98,7 @@ pub fn validate_registry(registry: &Registry) -> Result<()> {
     let mut adapter_ids = std::collections::BTreeSet::new();
     for adapter in &registry.adapters {
         ensure!(adapter.schema == "product_health_rail_adapter.v1", "unsupported adapter schema");
+        ensure!(!adapter.adapter_id.is_empty(), "adapter id must not be empty");
         ensure!(
             adapter_ids.insert(&adapter.adapter_id),
             "duplicate adapter id {}",
@@ -111,6 +113,16 @@ pub fn validate_registry(registry: &Registry) -> Result<()> {
             !adapter.validator_id.is_empty(),
             "adapter {} has no validator",
             adapter.adapter_id
+        );
+    }
+    for rail in &registry.rails {
+        ensure!(
+            registry.adapters.iter().any(|adapter| {
+                adapter.accepted_source_schemas.iter().any(|schema| schema == &rail.source_schema)
+            }),
+            "rail {} has no adapter for source schema {}",
+            rail.rail_id,
+            rail.source_schema
         );
     }
     Ok(())
