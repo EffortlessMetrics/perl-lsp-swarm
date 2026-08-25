@@ -589,12 +589,18 @@ impl LoadedModuleReloadRejectionBody {
     }
 }
 
-/// One family response: the DAP success flag plus the typed body.
+/// One family response: the DAP success flag, the correlated operation
+/// identity, and the typed body. The operation identity is carried on
+/// every request/response pair (ADR-0046 §6 correlation requirement and
+/// the registry's `operation-id-on-every-request-response-pair` rule).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoadedModuleReloadWireResponse {
     /// DAP-level success. Only `reloaded` is success; an indeterminate
     /// outcome is never success even though its body is fully typed.
     pub success: bool,
+    /// The correlated client request and reload operation identity.
+    pub operation_id: u64,
     /// The typed body.
     pub body: LoadedModuleReloadResponseBody,
 }
@@ -626,18 +632,20 @@ pub enum WireTerminalClassification {
     UnknownFailClosed,
 }
 
-/// Classify a response kind the way a conforming client must.
+/// Classify a response kind the way a conforming client must. The kind and
+/// the `possibly_applied` flag must agree: a body claiming a clean
+/// refusal/pre-mutation failure while asserting `possibly_applied` is
+/// contradictory and fails closed, exactly like an unknown kind. The
+/// indeterminate kind stays authoritative on its own (the flag is
+/// redundant there by construction), so it can never be demoted to an
+/// ordinary failure by a lying field.
 pub fn classify_wire_terminal(kind: &str, possibly_applied: bool) -> WireTerminalClassification {
     match kind {
-        "reloaded" => {
-            if possibly_applied {
-                WireTerminalClassification::UnknownFailClosed
-            } else {
-                WireTerminalClassification::ReloadedClean
-            }
+        "reloaded" if !possibly_applied => WireTerminalClassification::ReloadedClean,
+        "refused" if !possibly_applied => WireTerminalClassification::RefusedCleanFailure,
+        "failed_before_mutation" if !possibly_applied => {
+            WireTerminalClassification::FailedBeforeMutationCleanFailure
         }
-        "refused" => WireTerminalClassification::RefusedCleanFailure,
-        "failed_before_mutation" => WireTerminalClassification::FailedBeforeMutationCleanFailure,
         "indeterminate_possibly_applied" => WireTerminalClassification::PossiblyApplied,
         _ => WireTerminalClassification::UnknownFailClosed,
     }
@@ -737,9 +745,18 @@ impl ReloadFamilySession {
     /// family version, negotiated presence, session epoch, key set, shape,
     /// subject identity, operation identity, deadline, mechanism backing.
     pub fn evaluate(&mut self, raw: &Value) -> ReloadRequestEvaluation {
-        let reject = |code: WireRejectionCode| {
+        // The operation identity travels on every rejection too (0 when the
+        // request carried nothing parseable — such requests correlate via
+        // the DAP request sequence instead).
+        let operation_id = raw
+            .as_object()
+            .and_then(|object| object.get("operationId"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let reject = move |code: WireRejectionCode| {
             ReloadRequestEvaluation::Response(LoadedModuleReloadWireResponse {
                 success: false,
+                operation_id,
                 body: LoadedModuleReloadResponseBody::Rejected(
                     LoadedModuleReloadRejectionBody::new(code),
                 ),
@@ -875,15 +892,12 @@ pub enum ReloadRequestEvaluation {
 /// `detail_redacted` code before publication.
 pub fn project_outcome(
     outcome: &LoadedModuleReloadOutcome,
+    operation_id: u64,
     clock: &mut RuntimeModuleGenerationClock,
     reasons: &[String],
     remediation: Option<&str>,
-) -> LoadedModuleReloadWireResponse {
+) -> Result<LoadedModuleReloadWireResponse, WireProjectionRefusal> {
     let kind = WireOutcomeKind::from(outcome);
-    let previous = generation_value(clock.current());
-    let advance = clock.apply(outcome);
-    let current = generation_value(advance.generation());
-
     let phase = match outcome {
         LoadedModuleReloadOutcome::Reloaded => WirePhase::TerminalProjection,
         LoadedModuleReloadOutcome::Refused { .. } => WirePhase::Admission,
@@ -892,6 +906,26 @@ pub fn project_outcome(
             WirePhase::from(*phase)
         }
     };
+
+    // Fail closed before the clock moves: an outcome whose phase/kind
+    // pairing the frozen contract does not permit (for example a
+    // `failed_before_mutation` carrying a phase at or after the mutation
+    // boundary) can never be published as a clean pre-mutation failure.
+    if !crate::reload::phase_permits_outcome(
+        match outcome {
+            LoadedModuleReloadOutcome::Reloaded => ReloadTransactionPhase::TerminalProjection,
+            LoadedModuleReloadOutcome::Refused { .. } => ReloadTransactionPhase::Admission,
+            LoadedModuleReloadOutcome::FailedBeforeMutation { phase, .. } => *phase,
+            LoadedModuleReloadOutcome::IndeterminatePossiblyApplied { phase, .. } => *phase,
+        },
+        outcome,
+    ) {
+        return Err(WireProjectionRefusal::OutcomePhaseKindMismatch);
+    }
+
+    let previous = generation_value(clock.current());
+    let advance = clock.apply(outcome);
+    let current = generation_value(advance.generation());
 
     let disposition = match outcome {
         LoadedModuleReloadOutcome::Refused { disposition } => {
@@ -923,11 +957,33 @@ pub fn project_outcome(
         reasons: clamp_reasons(reasons),
         remediation: redact_remediation(remediation),
     };
-    LoadedModuleReloadWireResponse {
+    Ok(LoadedModuleReloadWireResponse {
         success: kind.permits_success(),
+        operation_id,
         body: LoadedModuleReloadResponseBody::Outcome(body),
+    })
+}
+
+/// Why an outcome cannot be projected onto the wire at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireProjectionRefusal {
+    /// The outcome's phase/kind pairing is not permitted by the frozen
+    /// contract (`phase_permits_outcome`); publishing it would serialize a
+    /// contradictory terminal body.
+    OutcomePhaseKindMismatch,
+}
+
+impl std::fmt::Display for WireProjectionRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WireProjectionRefusal::OutcomePhaseKindMismatch => {
+                formatter.write_str("outcome_phase_kind_mismatch")
+            }
+        }
     }
 }
+
+impl std::error::Error for WireProjectionRefusal {}
 
 /// Read the numeric value of an opaque generation without assuming its
 /// representation beyond the contract's monotonic origin.
@@ -935,23 +991,47 @@ fn generation_value(generation: RuntimeModuleGeneration) -> u64 {
     RuntimeModuleGeneration::INITIAL.distance_to(generation).unwrap_or_default()
 }
 
-/// Clamp a reason list to the registry bound, carrying the truncation
-/// marker instead of silently dropping the overflow.
+/// Whether a bounded code satisfies the registry grammar (lowercase
+/// snake_case, non-empty): the only shape a reason or remediation may
+/// travel in.
+fn is_bounded_code(code: &str, max_chars: usize) -> bool {
+    !code.is_empty()
+        && code.chars().count() <= max_chars
+        && code.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        })
+}
+
+/// Clamp a reason list to the registry bound and grammar, carrying the
+/// truncation marker instead of silently dropping overflow, and redacting
+/// any entry that is not a bounded code (a raw path, free text, or an
+/// over-long value never reaches the wire).
 fn clamp_reasons(reasons: &[String]) -> Vec<String> {
-    if reasons.len() <= MAX_REASONS {
-        return reasons.to_vec();
+    let bounded: Vec<String> = reasons
+        .iter()
+        .map(|reason| {
+            if is_bounded_code(reason, MAX_REASON_CHARS) {
+                reason.clone()
+            } else {
+                DETAIL_REDACTED_MARKER.to_string()
+            }
+        })
+        .collect();
+    if bounded.len() <= MAX_REASONS {
+        return bounded;
     }
-    let kept = reasons.iter().take(MAX_REASONS.saturating_sub(1)).cloned();
+    let kept = bounded.into_iter().take(MAX_REASONS.saturating_sub(1));
     let mut clamped: Vec<String> = kept.collect();
     clamped.push(REASONS_TRUNCATED_MARKER.to_string());
     clamped
 }
 
-/// Redact an over-bound remediation detail to the content-free marker; the
-/// code surface never echoes private paths, source text, or runtime output.
+/// Redact a remediation detail to the content-free marker unless it is a
+/// bounded code; the code surface never echoes private paths, source
+/// text, or runtime output, however short.
 fn redact_remediation(remediation: Option<&str>) -> Option<String> {
     match remediation {
-        Some(detail) if detail.chars().count() > MAX_DETAIL_CHARS => {
+        Some(detail) if !is_bounded_code(detail, MAX_DETAIL_CHARS) => {
             Some(DETAIL_REDACTED_MARKER.to_string())
         }
         other => other.map(str::to_string),
@@ -1266,7 +1346,7 @@ mod tests {
         for disposition in refusal_dispositions() {
             let outcome = LoadedModuleReloadOutcome::Refused { disposition };
             let mut clock = RuntimeModuleGenerationClock::new();
-            let response = project_outcome(&outcome, &mut clock, &[], None);
+            let response = project_outcome(&outcome, 42, &mut clock, &[], None)?;
             assert!(!response.success, "a refusal is never success");
             let LoadedModuleReloadResponseBody::Outcome(body) = response.body else {
                 return Err("a refusal must project an outcome body".into());
@@ -1298,7 +1378,7 @@ mod tests {
             for cause in PreMutationFailureCause::ALL {
                 let outcome = LoadedModuleReloadOutcome::FailedBeforeMutation { phase, cause };
                 let mut clock = RuntimeModuleGenerationClock::new();
-                let response = project_outcome(&outcome, &mut clock, &[], None);
+                let response = project_outcome(&outcome, 42, &mut clock, &[], None)?;
                 assert!(!response.success);
                 let LoadedModuleReloadResponseBody::Outcome(body) = response.body else {
                     return Err("a pre-mutation failure must project an outcome body".into());
@@ -1329,7 +1409,7 @@ mod tests {
                 let outcome =
                     LoadedModuleReloadOutcome::IndeterminatePossiblyApplied { phase, cause };
                 let mut clock = RuntimeModuleGenerationClock::new();
-                let response = project_outcome(&outcome, &mut clock, &[], None);
+                let response = project_outcome(&outcome, 42, &mut clock, &[], None)?;
                 assert!(
                     !response.success,
                     "an indeterminate outcome is never DAP success ({cause:?} at {phase:?})"
@@ -1377,7 +1457,7 @@ mod tests {
         ];
         for outcome in advancing {
             let mut clock = RuntimeModuleGenerationClock::new();
-            let response = project_outcome(&outcome, &mut clock, &[], None);
+            let response = project_outcome(&outcome, 42, &mut clock, &[], None)?;
             let LoadedModuleReloadResponseBody::Outcome(body) = response.body else {
                 return Err("advancing outcomes must project outcome bodies".into());
             };
@@ -1394,7 +1474,7 @@ mod tests {
         ];
         for outcome in static_outcomes {
             let mut clock = RuntimeModuleGenerationClock::new();
-            let response = project_outcome(&outcome, &mut clock, &[], None);
+            let response = project_outcome(&outcome, 42, &mut clock, &[], None)?;
             let LoadedModuleReloadResponseBody::Outcome(body) = response.body else {
                 return Err("static outcomes must project outcome bodies".into());
             };
@@ -1413,6 +1493,16 @@ mod tests {
             classify_wire_terminal("reloaded", true),
             WireTerminalClassification::UnknownFailClosed,
             "a contradictory reloaded+possibly_applied body must fail closed"
+        );
+        assert_eq!(
+            classify_wire_terminal("refused", true),
+            WireTerminalClassification::UnknownFailClosed,
+            "a contradictory refused+possibly_applied body must fail closed"
+        );
+        assert_eq!(
+            classify_wire_terminal("failed_before_mutation", true),
+            WireTerminalClassification::UnknownFailClosed,
+            "a contradictory failed+possibly_applied body must fail closed"
         );
         assert_eq!(
             classify_wire_terminal("runtime_rejected", false),
@@ -1439,7 +1529,7 @@ mod tests {
         let reasons: Vec<String> = (0..20).map(|index| format!("reason_{index:02}")).collect();
         let outcome = LoadedModuleReloadOutcome::Reloaded;
         let mut clock = RuntimeModuleGenerationClock::new();
-        let response = project_outcome(&outcome, &mut clock, &reasons, None);
+        let response = project_outcome(&outcome, 42, &mut clock, &reasons, None)?;
         let LoadedModuleReloadResponseBody::Outcome(body) = response.body else {
             return Err("expected an outcome body".into());
         };
@@ -1455,13 +1545,92 @@ mod tests {
             disposition: LoadedModuleReloadEligibility::OutsideLaunchAuthority,
         };
         let mut clock = RuntimeModuleGenerationClock::new();
-        let response = project_outcome(&outcome, &mut clock, &[], Some(&private_detail));
+        let response = project_outcome(&outcome, 42, &mut clock, &[], Some(&private_detail))?;
         let LoadedModuleReloadResponseBody::Outcome(body) = &response.body else {
             return Err("expected an outcome body".into());
         };
         assert_eq!(body.remediation.as_deref(), Some(DETAIL_REDACTED_MARKER));
         let wire = serde_json::to_string(&response)?;
         assert!(!wire.contains("/private/path/"), "private detail must not reach the wire");
+        Ok(())
+    }
+
+    #[test]
+    fn non_code_reasons_and_short_non_code_remediation_are_redacted() -> TestResult {
+        // Grammar enforcement, not just length: a raw path or free text in
+        // the reason list is redacted to the bounded marker before
+        // publication, whatever its length.
+        let reasons = vec![
+            "valid_reason".to_string(),
+            "/private/path/App.pm".to_string(),
+            "Has-Uppercase".to_string(),
+            format!("over_long_{}", "x".repeat(MAX_REASON_CHARS)),
+        ];
+        let outcome = LoadedModuleReloadOutcome::IndeterminatePossiblyApplied {
+            phase: ReloadTransactionPhase::RuntimeAcknowledgementReadBack,
+            cause: IndeterminateCause::TimeoutAfterMutationBegan,
+        };
+        let mut clock = RuntimeModuleGenerationClock::new();
+        let response = project_outcome(&outcome, 7, &mut clock, &reasons, None)?;
+        let LoadedModuleReloadResponseBody::Outcome(body) = &response.body else {
+            return Err("expected an outcome body".into());
+        };
+        assert_eq!(body.reasons.first().map(String::as_str), Some("valid_reason"));
+        for redacted in body.reasons.iter().skip(1) {
+            assert_eq!(redacted, DETAIL_REDACTED_MARKER);
+        }
+        let wire = serde_json::to_string(&response)?;
+        assert!(!wire.contains("/private/path/"), "a raw path reason must not reach the wire");
+
+        // A short but non-code remediation is redacted too: the surface
+        // carries bounded codes only.
+        let outcome = LoadedModuleReloadOutcome::Refused {
+            disposition: LoadedModuleReloadEligibility::OutsideLaunchAuthority,
+        };
+        let mut clock = RuntimeModuleGenerationClock::new();
+        let response =
+            project_outcome(&outcome, 7, &mut clock, &[], Some("/private/path/secret.pm"))?;
+        let LoadedModuleReloadResponseBody::Outcome(body) = &response.body else {
+            return Err("expected an outcome body".into());
+        };
+        assert_eq!(body.remediation.as_deref(), Some(DETAIL_REDACTED_MARKER));
+        Ok(())
+    }
+
+    #[test]
+    fn a_post_boundary_pre_mutation_outcome_refuses_projection_and_moves_nothing() -> TestResult {
+        // The frozen contract treats this shape as malformed-but-advancing
+        // in its clock; the wire must not serialize it as a clean
+        // pre-mutation failure at all — it refuses before the clock moves.
+        let outcome = LoadedModuleReloadOutcome::FailedBeforeMutation {
+            phase: ReloadTransactionPhase::RuntimeMutationBegins,
+            cause: PreMutationFailureCause::PrepareFailed,
+        };
+        let mut clock = RuntimeModuleGenerationClock::new();
+        let refusal =
+            project_outcome(&outcome, 42, &mut clock, &[], None).expect_err("must refuse");
+        assert_eq!(refusal, WireProjectionRefusal::OutcomePhaseKindMismatch);
+        assert_eq!(
+            project_outcome(
+                &LoadedModuleReloadOutcome::FailedBeforeMutation {
+                    phase: ReloadTransactionPhase::TerminalProjection,
+                    cause: PreMutationFailureCause::CancelledBeforeMutationBegan,
+                },
+                42,
+                &mut clock,
+                &[],
+                None
+            )
+            .expect_err("any post-boundary pairing must refuse"),
+            WireProjectionRefusal::OutcomePhaseKindMismatch
+        );
+        // Nothing was published and the clock never moved.
+        let outcome = LoadedModuleReloadOutcome::Reloaded;
+        let response = project_outcome(&outcome, 42, &mut clock, &[], None)?;
+        let LoadedModuleReloadResponseBody::Outcome(body) = response.body else {
+            return Err("expected an outcome body".into());
+        };
+        assert_eq!(body.generation.ok_or("witness required")?.previous, 0);
         Ok(())
     }
 
@@ -1934,10 +2103,20 @@ mod tests {
                 })
                 .unwrap_or_default();
             let remediation = document["oversized_remediation_input"].as_str();
-            let response = project_outcome(&outcome, &mut clock, &reasons, remediation);
+            let operation_id = document["request"]["operationId"].as_u64().unwrap_or(1);
+            let response =
+                project_outcome(&outcome, operation_id, &mut clock, &reasons, remediation)
+                    .map_err(|refusal| format!("{name}: projection refused: {refusal:?}"))?;
             let wire = serde_json::to_value(&response)?;
 
             assert_eq!(wire["success"], expect["success"], "{name}: DAP success mismatch");
+            if let Some(operation_id) = document["request"]["operationId"].as_u64() {
+                assert_eq!(
+                    wire["operationId"],
+                    Value::from(operation_id),
+                    "{name}: the operation identity must travel on the response"
+                );
+            }
             let body = &wire["body"];
             assert_eq!(body["kind"], expect["kind"], "{name}: kind mismatch");
             if let Some(phase) = expect["phase"].as_str() {

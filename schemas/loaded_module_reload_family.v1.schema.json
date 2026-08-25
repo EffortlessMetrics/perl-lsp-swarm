@@ -171,7 +171,7 @@
     "outcomeBody": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "phase", "possiblyApplied", "reconciliation", "reasons"],
+      "required": ["kind", "phase", "possiblyApplied", "reconciliation"],
       "properties": {
         "kind": { "$ref": "#/$defs/outcomeKind" },
         "phase": { "$ref": "#/$defs/transactionPhase" },
@@ -217,7 +217,7 @@
     "rejectionBody": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "code", "reasons"],
+      "required": ["kind", "code"],
       "properties": {
         "kind": { "const": "request_rejected" },
         "code": { "$ref": "#/$defs/rejectionCode" },
@@ -227,11 +227,29 @@
           "items": { "$ref": "#/$defs/reasonCode" }
         }
       }
+    },
+    "responseEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["success", "operationId", "body"],
+      "properties": {
+        "success": { "type": "boolean" },
+        "operationId": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The correlated operation identity; 0 only when the request carried nothing parseable (such requests correlate via the DAP request sequence)."
+        },
+        "body": {
+          "oneOf": [
+            { "$ref": "#/$defs/outcomeBody" },
+            { "$ref": "#/$defs/rejectionBody" }
+          ]
+        }
+      }
     }
   },
   "oneOf": [
     { "$ref": "#/$defs/request" },
-    { "$ref": "#/$defs/outcomeBody" },
-    { "$ref": "#/$defs/rejectionBody" }
+    { "$ref": "#/$defs/responseEnvelope" }
   ]
 }

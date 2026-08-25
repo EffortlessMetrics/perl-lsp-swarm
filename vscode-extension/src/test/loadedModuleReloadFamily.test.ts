@@ -158,6 +158,12 @@ describe('loadedModuleReloadFamily generated projection', () => {
     expect(classifyReloadTerminal({ kind: 'reloaded', possiblyApplied: true })).toBe(
       'unknown_fail_closed',
     );
+    expect(classifyReloadTerminal({ kind: 'refused', possiblyApplied: true })).toBe(
+      'unknown_fail_closed',
+    );
+    expect(classifyReloadTerminal({ kind: 'failed_before_mutation', possiblyApplied: true })).toBe(
+      'unknown_fail_closed',
+    );
     expect(classifyReloadTerminal({ kind: 'runtime_rejected' })).toBe('unknown_fail_closed');
   });
 

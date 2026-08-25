@@ -143,15 +143,29 @@ export interface LoadedModuleReloadRejectionBody {
   reasons?: string[];
 }
 
+/**
+ * One family response: the DAP success flag, the correlated operation
+ * identity (0 only when the request carried nothing parseable), and the
+ * typed body. The operation identity travels on every request/response
+ * pair.
+ */
+export interface LoadedModuleReloadResponse {
+  success: boolean;
+  operationId: number;
+  body: LoadedModuleReloadResponseBody;
+}
+
 export type LoadedModuleReloadResponseBody =
   | LoadedModuleReloadOutcomeBody
   | LoadedModuleReloadRejectionBody;
 
 /**
- * Fail-closed client-side classification of a response body. Only
- * `reloaded` without `possiblyApplied` is clean; an indeterminate outcome
- * is its own terminal class and is never flattened to an ordinary
- * failure; unknown or contradictory bodies fail closed.
+ * Fail-closed client-side classification of a response body. The kind and
+ * the `possiblyApplied` flag must agree: a body claiming a clean refusal
+ * or pre-mutation failure while asserting `possiblyApplied` is
+ * contradictory and fails closed, exactly like an unknown kind. The
+ * indeterminate kind stays authoritative on its own so it can never be
+ * demoted to an ordinary failure by a lying field.
  */
 export type ReloadTerminalClassification =
   | 'reloaded_clean'
@@ -164,15 +178,16 @@ export function classifyReloadTerminal(body: {
   kind: string;
   possiblyApplied?: boolean;
 }): ReloadTerminalClassification {
+  const possiblyApplied = body.possiblyApplied === true;
   switch (body.kind) {
     case 'reloaded':
-      return body.possiblyApplied === true
-        ? 'unknown_fail_closed'
-        : 'reloaded_clean';
+      return possiblyApplied ? 'unknown_fail_closed' : 'reloaded_clean';
     case 'refused':
-      return 'refused_clean_failure';
+      return possiblyApplied ? 'unknown_fail_closed' : 'refused_clean_failure';
     case 'failed_before_mutation':
-      return 'failed_before_mutation_clean_failure';
+      return possiblyApplied
+        ? 'unknown_fail_closed'
+        : 'failed_before_mutation_clean_failure';
     case 'indeterminate_possibly_applied':
       return 'possibly_applied';
     default:

@@ -2387,6 +2387,12 @@ pub fn perl_dap::reload_family::WirePhase::from(phase: perl_dap::reload::ReloadT
 pub fn perl_dap::reload_family::WirePhase::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::reload_family::WirePhase::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::reload_family::WirePhase::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_dap::reload_family::WireProjectionRefusal
+pub perl_dap::reload_family::WireProjectionRefusal::OutcomePhaseKindMismatch
+pub fn perl_dap::reload_family::WireProjectionRefusal::clone(&self) -> perl_dap::reload_family::WireProjectionRefusal
+pub fn perl_dap::reload_family::WireProjectionRefusal::eq(&self, other: &perl_dap::reload_family::WireProjectionRefusal) -> bool
+pub fn perl_dap::reload_family::WireProjectionRefusal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::WireProjectionRefusal::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::reload_family::WireReconciliationDisposition
 pub perl_dap::reload_family::WireReconciliationDisposition::Deferred
 pub fn perl_dap::reload_family::WireReconciliationDisposition::clone(&self) -> perl_dap::reload_family::WireReconciliationDisposition
@@ -2477,6 +2483,7 @@ pub fn perl_dap::reload_family::LoadedModuleReloadWireRequest::serialize<__S>(&s
 pub fn perl_dap::reload_family::LoadedModuleReloadWireRequest::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::reload_family::LoadedModuleReloadWireResponse
 pub perl_dap::reload_family::LoadedModuleReloadWireResponse::body: perl_dap::reload_family::LoadedModuleReloadResponseBody
+pub perl_dap::reload_family::LoadedModuleReloadWireResponse::operation_id: u64
 pub perl_dap::reload_family::LoadedModuleReloadWireResponse::success: bool
 pub fn perl_dap::reload_family::LoadedModuleReloadWireResponse::clone(&self) -> perl_dap::reload_family::LoadedModuleReloadWireResponse
 pub fn perl_dap::reload_family::LoadedModuleReloadWireResponse::eq(&self, other: &perl_dap::reload_family::LoadedModuleReloadWireResponse) -> bool
@@ -2531,7 +2538,7 @@ pub const perl_dap::reload_family::MAX_RETAINED_OPERATIONS: usize
 pub const perl_dap::reload_family::MIN_DEADLINE_MS: u64
 pub const perl_dap::reload_family::REASONS_TRUNCATED_MARKER: &str
 pub fn perl_dap::reload_family::classify_wire_terminal(kind: &str, possibly_applied: bool) -> perl_dap::reload_family::WireTerminalClassification
-pub fn perl_dap::reload_family::project_outcome(outcome: &perl_dap::reload::LoadedModuleReloadOutcome, clock: &mut perl_dap::reload::RuntimeModuleGenerationClock, reasons: &[alloc::string::String], remediation: core::option::Option<&str>) -> perl_dap::reload_family::LoadedModuleReloadWireResponse
+pub fn perl_dap::reload_family::project_outcome(outcome: &perl_dap::reload::LoadedModuleReloadOutcome, operation_id: u64, clock: &mut perl_dap::reload::RuntimeModuleGenerationClock, reasons: &[alloc::string::String], remediation: core::option::Option<&str>) -> core::result::Result<perl_dap::reload_family::LoadedModuleReloadWireResponse, perl_dap::reload_family::WireProjectionRefusal>
 pub mod perl_dap::security
 pub enum perl_dap::security::SecurityError
 pub perl_dap::security::SecurityError::ExcessiveTimeout(u32)
