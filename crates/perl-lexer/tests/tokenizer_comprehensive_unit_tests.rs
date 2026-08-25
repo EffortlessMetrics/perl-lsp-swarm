@@ -1819,15 +1819,15 @@ fn trivia_lexer_whitespace_only_source() -> Result<(), Box<dyn std::error::Error
 fn trivia_lexer_comment_only_source() -> Result<(), Box<dyn std::error::Error>> {
     let source = "# just a comment\n".to_string();
     let mut lexer = TriviaLexer::new(&source);
-    let result = lexer.next_token_with_trivia();
-    // Should either return None or EOF with the comment in trivia
-    if let Some((tok, trivia)) = result {
-        if !matches!(tok.token_type, perl_lexer::TokenType::EOF) {
-            // If not EOF, the trivia should have the comment
-            let has_comment = trivia.iter().any(|t| matches!(&t.trivia, Trivia::LineComment(_)));
-            assert!(has_comment, "comment should be in trivia");
-        }
-    }
+    let (tok, trivia) = must_some(lexer.next_token_with_trivia());
+    assert!(
+        matches!(tok.token_type, perl_lexer::TokenType::EOF),
+        "comment-only source should yield EOF"
+    );
+    assert!(
+        trivia.iter().any(|t| matches!(&t.trivia, Trivia::LineComment(_))),
+        "comment should be in trivia"
+    );
     Ok(())
 }
 
