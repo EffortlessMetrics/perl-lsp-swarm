@@ -1453,7 +1453,12 @@ pub fn fix_parse_error(
         }
         "PL003" => {
             // Unexpected EOF has no interior delimiter location. Offer the
-            // bounded fallback for the common unclosed-block case at EOF.
+            // bounded fallback only when source evidence supports an
+            // unclosed block; PL003 also covers incomplete strings and other
+            // delimiters where adding a brace would be unrelated.
+            if !has_unclosed_brace(source) {
+                return actions;
+            }
             actions.push(CodeAction {
                 title: "Add closing brace at end of file".to_string(),
                 kind: CodeActionKind::QuickFix,
@@ -1540,6 +1545,57 @@ pub fn fix_parse_error(
     }
 
     actions
+}
+
+/// Conservatively detect an unmatched block opener without treating braces in
+/// ordinary quoted strings or comments as block structure. False negatives are
+/// intentional: PL003 does not carry delimiter-kind metadata, so uncertainty
+/// must suppress the edit rather than authorize an unrelated token.
+fn has_unclosed_brace(source: &str) -> bool {
+    let mut depth = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut in_comment = false;
+
+    for ch in source.chars() {
+        if in_comment {
+            if ch == '\n' {
+                in_comment = false;
+            }
+            continue;
+        }
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if (in_single || in_double) && ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if !in_double && ch == '\'' {
+            in_single = !in_single;
+            continue;
+        }
+        if !in_single && ch == '"' {
+            in_double = !in_double;
+            continue;
+        }
+        if !in_single && !in_double && ch == '#' {
+            in_comment = true;
+            continue;
+        }
+        if in_single || in_double {
+            continue;
+        }
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    depth > 0
 }
 
 /// Fix unused parameter by adding underscore prefix

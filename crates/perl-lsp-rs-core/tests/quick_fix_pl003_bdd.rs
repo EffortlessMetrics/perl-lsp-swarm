@@ -76,6 +76,14 @@ fn pl003_missing_semicolon_fix_preserves_trailing_newline() {
 }
 
 #[test]
+fn pl003_does_not_add_a_brace_for_an_unclosed_parenthesis() {
+    let source = "if ($ok";
+    let actions = actions_for(source, "Unexpected end of input");
+
+    assert!(actions.is_empty());
+}
+
+#[test]
 fn other_parse_codes_do_not_receive_the_pl003_eof_fallback() {
     let source = "my $value = 1;\n";
     let mut parser = Parser::new(source);
