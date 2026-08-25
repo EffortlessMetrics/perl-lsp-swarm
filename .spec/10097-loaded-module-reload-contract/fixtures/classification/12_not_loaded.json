@@ -1,0 +1,17 @@
+{
+  "name": "12_not_loaded.json",
+  "fixture_class": "presence reachability; subject absent from the current %INC observation",
+  "observation": {
+  "stopped_and_command_ready": true,
+  "runtime_supported": true,
+  "loaded_in_runtime": false,
+  "within_launch_authority": true,
+  "runtime_mapping_unambiguous": true,
+  "identity_binding_complete": true,
+  "identity_current": true,
+  "client_source_matches_saved": true,
+  "module_classification": "source_backed_perl_module",
+  "active_frame_in_target": false
+},
+  "expected_disposition": "not_loaded"
+}

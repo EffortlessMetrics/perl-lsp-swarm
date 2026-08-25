@@ -1,7 +1,7 @@
 use perl_ast::ast::Node;
 use std::ops::Range;
 
-use crate::{PragmaSnapshot, PragmaState, range_builder};
+use crate::{ImportIntoCall, PragmaSnapshot, PragmaState, find_import_into_calls, range_builder};
 
 /// Query object describing compile-time pragma state at a byte offset.
 #[derive(Debug, Clone, PartialEq)]
@@ -29,6 +29,7 @@ impl PragmaStateQuery {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CompileTimePragmaEnvironment {
     map: PragmaMap,
+    import_into_calls: Box<[ImportIntoCall]>,
 }
 
 /// One effective pragma-state transition over a source byte range.
@@ -66,7 +67,10 @@ impl CompileTimePragmaEnvironment {
             .collect::<Vec<_>>()
             .into_boxed_slice();
 
-        Self { map: PragmaMap { entries } }
+        Self {
+            map: PragmaMap { entries },
+            import_into_calls: find_import_into_calls(ast).into_boxed_slice(),
+        }
     }
 
     /// Return a position query object with immutable state snapshot.
@@ -85,6 +89,15 @@ impl CompileTimePragmaEnvironment {
     #[must_use]
     pub fn map(&self) -> &PragmaMap {
         &self.map
+    }
+
+    /// Observed `->import::into(...)` calls in source order.
+    ///
+    /// These facts are deliberately separate from lexical pragma state: an
+    /// import may target a dynamic caller or execute arbitrary module code.
+    #[must_use]
+    pub fn import_into_calls(&self) -> &[ImportIntoCall] {
+        &self.import_into_calls
     }
 
     /// Access the underlying range map for advanced consumers.

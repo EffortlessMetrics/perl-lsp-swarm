@@ -76,6 +76,35 @@ fn git_discovery_finds_committed_and_untracked_perl_files() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn git_discovery_expands_tracked_symlinked_library_directory() -> TestResult {
+    if !git_available() {
+        return Ok(());
+    }
+
+    let tmp = TempDir::new()?;
+    let root = tmp.path();
+    create_file(root, "shared/Module.pm")?;
+    create_file(root, "shared/ignored/Hidden.pm")?;
+    fs::write(root.join(".gitignore"), "linked_lib/ignored/\n")?;
+
+    run_git(root, &["init", "--quiet"])?;
+    run_git(root, &["config", "user.email", "test@example.com"])?;
+    run_git(root, &["config", "user.name", "Test"])?;
+    std::os::unix::fs::symlink(root.join("shared"), root.join("linked_lib"))?;
+    run_git(root, &["add", "linked_lib"])?;
+    run_git(root, &["commit", "-m", "linked library", "--quiet"])?;
+
+    let result = discover_perl_files(root);
+
+    assert_eq!(result.method, DiscoveryMethod::Git);
+    assert!(result.files.iter().any(|path| path.ends_with("linked_lib/Module.pm")));
+    assert!(!result.files.iter().any(|path| path.ends_with("linked_lib/ignored/Hidden.pm")));
+
+    Ok(())
+}
+
 #[test]
 fn git_discovery_excludes_gitignored_perl_files() -> TestResult {
     if !git_available() {
@@ -429,12 +458,12 @@ fn extension_filtering_rejects_double_extensions() -> TestResult {
 }
 
 // ============================================================
-// Symlink handling (should NOT follow)
+// Symlink handling
 // ============================================================
 
 #[cfg(unix)]
 #[test]
-fn symlink_to_directory_is_not_followed() -> TestResult {
+fn symlink_to_directory_is_followed() -> TestResult {
     let tmp = TempDir::new()?;
     let root = tmp.path();
 
@@ -446,11 +475,11 @@ fn symlink_to_directory_is_not_followed() -> TestResult {
 
     let result = discover_perl_files(root);
 
-    // Should find the file in real_lib but NOT via the symlink
+    // Both the source tree and the linked library path are visible to the workspace.
     let linked_files: Vec<_> =
         result.files.iter().filter(|p| p.to_string_lossy().contains("linked_lib")).collect();
 
-    assert!(linked_files.is_empty(), "symlinked directory should not be followed");
+    assert_eq!(linked_files.len(), 1, "symlinked directory should be followed");
     assert!(result.files.iter().any(|p| p.ends_with("real_lib/Module.pm")));
 
     Ok(())
@@ -458,7 +487,7 @@ fn symlink_to_directory_is_not_followed() -> TestResult {
 
 #[cfg(unix)]
 #[test]
-fn symlink_to_file_is_not_counted_as_regular_file() -> TestResult {
+fn symlink_to_file_is_counted_as_regular_file() -> TestResult {
     let tmp = TempDir::new()?;
     let root = tmp.path();
 
@@ -471,10 +500,10 @@ fn symlink_to_file_is_not_counted_as_regular_file() -> TestResult {
     // The real file should be found
     assert!(result.files.iter().any(|p| p.ends_with("real/Original.pm")));
 
-    // The symlink should NOT be treated as a regular file
+    // The symlink should be treated as a discoverable regular file.
     let linked: Vec<_> =
         result.files.iter().filter(|p| p.to_string_lossy().contains("links/Linked.pm")).collect();
-    assert!(linked.is_empty(), "symlink to file should not be followed");
+    assert_eq!(linked.len(), 1, "symlink to file should be followed");
 
     Ok(())
 }

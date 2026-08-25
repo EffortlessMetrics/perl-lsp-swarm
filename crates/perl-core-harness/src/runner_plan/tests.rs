@@ -9,7 +9,7 @@ use crate::compare::{
 };
 use crate::io::read_matrix;
 use crate::runner_model::{
-    MembershipParityStatus, RunnerKind, RunnerPlan, RunnerScheduling, SourceForm,
+    DiscoveryFrame, MembershipParityStatus, RunnerKind, RunnerPlan, RunnerScheduling, SourceForm,
 };
 use color_eyre::eyre::{Result, bail};
 use std::collections::BTreeMap;
@@ -75,6 +75,46 @@ fn test_and_harness_membership_can_match_with_different_order() -> Result<()> {
     assert!(parity.limitations.iter().any(|value| {
         value == "scheduling_equality_compares_declared_inputs_not_observed_runner_state"
     }));
+    Ok(())
+}
+
+#[test]
+fn frame_and_normalization_schema_are_part_of_plan_identity() -> Result<()> {
+    let matrix = matrix()?;
+    let from_t = crate::build::build_runner_plan_with_frame(
+        &matrix,
+        "component_base",
+        RunnerKind::Test,
+        b"base/if.t\n",
+        DiscoveryFrame::RunnerTDirectoryRelative,
+        RunnerScheduling::default(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let from_root = crate::build::build_runner_plan_with_frame(
+        &matrix,
+        "component_base",
+        RunnerKind::Test,
+        b"t/base/if.t\n",
+        DiscoveryFrame::CanonicalRepositoryPath,
+        RunnerScheduling::default(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert_ne!(from_t.discovery_frame, from_root.discovery_frame);
+    let from_t_digest =
+        runner_plan_digest(&from_t).map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let from_root_digest =
+        runner_plan_digest(&from_root).map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert_ne!(from_t_digest, from_root_digest);
+    assert_eq!(from_t.normalization_schema, "perl_core_harness.source_identity.v2");
+    let mut historical = from_t.clone();
+    historical.schema_version = crate::runner_model::RUNNER_PLAN_V1_SCHEMA_VERSION.to_string();
+    let Err(v1_error) = crate::build::validate_runner_plan(&historical) else {
+        bail!("retired runner_plan.v1 must be rejected");
+    };
+    assert!(
+        v1_error.contains(crate::runner_model::RUNNER_PLAN_V1_SCHEMA_VERSION),
+        "unexpected schema error: {v1_error}"
+    );
     Ok(())
 }
 
