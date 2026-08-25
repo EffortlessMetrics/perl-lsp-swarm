@@ -22,8 +22,9 @@
 //! - Location tracking for precise error reporting in large files
 //!
 //! Ownership stays recursively owned (`Box`, `Vec`, optional children). [`Node`]
-//! destruction is iterative and depth-independent; derived [`Clone`], [`Debug`],
-//! and [`PartialEq`] remain recursive. See [`Node`] for the depth-safety contract.
+//! destruction and [`Clone`] are iterative and depth-independent; derived
+//! [`Debug`] and [`PartialEq`] remain recursive. See [`Node`] for the
+//! depth-safety contract.
 //!
 //! # Usage Examples
 //!
@@ -124,12 +125,12 @@ use strum::VariantNames as _;
 /// 512 provides a comfortable safety margin while staying well within
 /// Rust's default 8 MB stack.
 ///
-/// This constant does **not** bound destruction. [`Node`]'s [`Drop`]
-/// implementation is iterative and does not consult this limit. Derived
-/// [`Clone`], [`Debug`], and [`PartialEq`] also ignore it: they remain
-/// recursive and are only a supported operation on trees whose nesting stays
-/// within ordinary parser-produced depth. See [`Node`] for the full
-/// depth-safety disposition.
+/// This constant does **not** bound destruction or clone. [`Node`]'s [`Drop`]
+/// and [`Clone`] implementations are iterative and do not consult this limit.
+/// Derived [`Debug`] and [`PartialEq`] also ignore it: they remain recursive
+/// and are only a supported operation on trees whose nesting stays within
+/// ordinary parser-produced depth. See [`Node`] for the full depth-safety
+/// disposition.
 pub const MAX_AST_DEPTH: usize = 512;
 
 thread_local! {
@@ -138,6 +139,16 @@ thread_local! {
     /// Incremented on entry and decremented on exit, so interleaved calls on
     /// separate trees (e.g. in the same thread between tests) always start from 0.
     static TO_SEXP_DEPTH: Cell<usize> = const { Cell::new(0) };
+
+    /// When true, [`Node`]'s [`Clone`] implementation returns a childless placeholder.
+    ///
+    /// Derived [`NodeKind`] clone copies every non-child payload and every child
+    /// slot. The iterative [`Node`] clone needs that payload/shape copy without
+    /// recursively cloning descendants, so child `Node::clone` calls made while
+    /// this flag is set become placeholders that `for_each_child_mut` then
+    /// replaces with already-cloned children. The flag is operation-scoped
+    /// (saved/restored, including on unwind) and is not a work counter.
+    static CLONE_PAYLOAD_SHELL: Cell<bool> = const { Cell::new(false) };
 }
 
 struct ToSexpDepthGuard;
@@ -278,29 +289,35 @@ define_field_ids! {
 /// - `NodeKind` enum variants minimize memory overhead for common constructs
 /// - Child relationships stay recursively owned (`Box<Node>`, `Vec<Node>`,
 ///   optional children, pair/clause records). Public node geometry is unchanged
-///   from that model; destruction, not representation, is iterative.
+///   from that model; destruction and clone, not representation, are iterative.
 ///
 /// # Depth safety
 ///
 /// - **[`Drop`]**: iterative. Children are detached through
 ///   [`Node::for_each_child_mut`] into a heap work stack before each node's
-///   remaining fields are released. A 50,000-node chain completes without
-///   overflowing the thread stack and without leaking the tree.
-/// - **[`Clone`]**: derived recursive implementation. Supported for ordinary
-///   parser-produced trees whose nesting stays within [`MAX_AST_DEPTH`] and
-///   the parser's own recursion limit. Not stack-safe for adversarial or
-///   hand-built chains of destruction-test depth. Replacement:
-///   <https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8837>.
-/// - **[`PartialEq`]**: same derived-recursive precondition as [`Clone`].
-///   Replacement: <https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8839>.
-/// - **[`Debug`]**: same derived-recursive precondition as [`Clone`], and
+///   remaining fields are released. A 50,000-node chain on a 256 KiB worker
+///   completes without overflowing the thread stack. Construct/destroy
+///   equality is proven at 10,000-node cycle depth, not on the overflow
+///   fixture.
+/// - **[`Clone`]**: iterative. Canonical child fields are cloned on an
+///   explicit heap stack and each parent is rebuilt only after its children
+///   exist. A 50,000-node chain on a 256 KiB worker completes without
+///   overflowing the thread stack. This is a full owned duplication, not a
+///   cheap share.
+/// - **[`PartialEq`]**: derived recursive implementation. Supported for
+///   ordinary parser-produced trees whose nesting stays within
+///   [`MAX_AST_DEPTH`] and the parser's own recursion limit. Not stack-safe
+///   for adversarial or hand-built chains of destruction-test depth.
+///   Replacement:
+///   <https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8839>.
+/// - **[`Debug`]**: same derived-recursive precondition as [`PartialEq`], and
 ///   additionally unbounded in output size. Replacement:
 ///   <https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8840>.
 ///
-/// There is no runtime enforcement of that Clone/Debug/PartialEq precondition:
-/// a too-deep call overflows the stack rather than returning a typed error.
+/// There is no runtime enforcement of the Debug/PartialEq precondition: a
+/// too-deep call overflows the stack rather than returning a typed error.
 /// Whole-tree reads such as [`Node::count_nodes`] stay separately depth-guarded
-/// and may truncate; that is not a destruction concern.
+/// and may truncate; that is not a destruction or clone concern.
 ///
 /// # Examples
 ///
@@ -336,9 +353,9 @@ define_field_ids! {
 /// println!("AST: {}", ast.to_sexp());
 /// ```
 ///
-/// Derived `Clone`/`Debug`/`PartialEq` stay recursive; see the depth-safety
-/// table above. Replacements are tracked as issues 8837, 8839, and 8840.
-#[derive(Debug, Clone, PartialEq)]
+/// [`Clone`] is iterative. Derived `Debug`/`PartialEq` stay recursive; see the
+/// depth-safety table above. Remaining replacements are issues 8839 and 8840.
+#[derive(Debug, PartialEq)]
 #[non_exhaustive]
 pub struct Node {
     /// The specific type and semantic content of this AST node
@@ -1912,6 +1929,143 @@ impl Drop for Node {
     }
 }
 
+/// Duplicate an owned [`Node`] tree without unbounded stack growth.
+///
+/// Cloning walks canonical child fields iteratively and rebuilds each parent
+/// only after its cloned children are available. Non-child payloads, ranges,
+/// child order, optional/repeated cardinality, and recovery state follow the
+/// ordinary derived [`NodeKind`] clone. The public [`Clone`] contract is
+/// unchanged: `node.clone()` still returns an independent owned tree.
+///
+/// Cloning is a full structural duplication, not a cheap shared projection.
+impl Clone for Node {
+    fn clone(&self) -> Self {
+        if CLONE_PAYLOAD_SHELL.with(Cell::get) {
+            return clone_slot_placeholder();
+        }
+        clone_node(self, &mut ())
+    }
+}
+
+/// Operation-local clone work recorded by [`clone_node`].
+///
+/// Counts are the clone operations actually performed for one call, not the
+/// depth-bounded [`Node::count_nodes`] population of the result.
+#[cfg(test)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct CloneWork {
+    nodes_entered: u64,
+    nodes_rebuilt: u64,
+    child_edges: u64,
+    max_explicit_stack_depth: usize,
+}
+
+trait CloneObserver {
+    fn on_enter(&mut self, child_count: usize);
+    fn on_rebuild(&mut self);
+    fn on_stack_depth(&mut self, depth: usize);
+}
+
+impl CloneObserver for () {
+    fn on_enter(&mut self, _child_count: usize) {}
+    fn on_rebuild(&mut self) {}
+    fn on_stack_depth(&mut self, _depth: usize) {}
+}
+
+#[cfg(test)]
+impl CloneObserver for CloneWork {
+    fn on_enter(&mut self, child_count: usize) {
+        self.nodes_entered = self.nodes_entered.saturating_add(1);
+        self.child_edges = self.child_edges.saturating_add(child_count as u64);
+    }
+
+    fn on_rebuild(&mut self) {
+        self.nodes_rebuilt = self.nodes_rebuilt.saturating_add(1);
+    }
+
+    fn on_stack_depth(&mut self, depth: usize) {
+        if depth > self.max_explicit_stack_depth {
+            self.max_explicit_stack_depth = depth;
+        }
+    }
+}
+
+struct ShellCloneGuard {
+    previous: bool,
+}
+
+impl ShellCloneGuard {
+    fn enter() -> Self {
+        Self { previous: CLONE_PAYLOAD_SHELL.with(|flag| flag.replace(true)) }
+    }
+}
+
+impl Drop for ShellCloneGuard {
+    fn drop(&mut self) {
+        CLONE_PAYLOAD_SHELL.with(|flag| flag.set(self.previous));
+    }
+}
+
+fn clone_slot_placeholder() -> Node {
+    Node { kind: NodeKind::Ellipsis, location: SourceLocation { start: 0, end: 0 } }
+}
+
+fn clone_payload_shell(source: &Node) -> Node {
+    let _guard = ShellCloneGuard::enter();
+    Node { kind: source.kind.clone(), location: source.location }
+}
+
+fn take_last_n_reversed(done: &mut Vec<Node>, n: usize) -> Vec<Node> {
+    let start = done.len().saturating_sub(n);
+    let mut children = done.split_off(start);
+    children.reverse();
+    children
+}
+
+fn install_cloned_children(shell: &mut Node, children: Vec<Node>) {
+    let mut next = children.into_iter();
+    shell.for_each_child_mut(|slot| {
+        if let Some(child) = next.next() {
+            *slot = child;
+        }
+    });
+}
+
+fn clone_node<O: CloneObserver>(root: &Node, observer: &mut O) -> Node {
+    enum Work<'a> {
+        Enter(&'a Node),
+        Assemble { source: &'a Node, child_count: usize },
+    }
+
+    let mut work = vec![Work::Enter(root)];
+    let mut done: Vec<Node> = Vec::new();
+    observer.on_stack_depth(work.len());
+
+    while let Some(item) = work.pop() {
+        match item {
+            Work::Enter(source) => {
+                let child_count = source.child_count();
+                observer.on_enter(child_count);
+                work.push(Work::Assemble { source, child_count });
+                source.for_each_child(|child| work.push(Work::Enter(child)));
+                observer.on_stack_depth(work.len());
+            }
+            Work::Assemble { source, child_count } => {
+                let cloned_children = take_last_n_reversed(&mut done, child_count);
+                let mut cloned = clone_payload_shell(source);
+                install_cloned_children(&mut cloned, cloned_children);
+                observer.on_rebuild();
+                done.push(cloned);
+            }
+        }
+    }
+
+    match done.pop() {
+        Some(cloned) => cloned,
+        None => clone_payload_shell(root),
+    }
+}
+
 #[cfg(test)]
 mod drop_audit {
     use std::cell::Cell;
@@ -1986,12 +2140,15 @@ mod drop_audit {
 /// The enum design optimizes for large codebases:
 /// - Box pointers minimize stack usage for recursive structures
 /// - Vector storage enables efficient bulk operations on child nodes
+/// - [`Node`] clone duplicates the owned tree iteratively; [`NodeKind`] clone
+///   still goes through [`Node::clone`] for child slots
 /// - Pattern matching performance tuned for common Perl constructs
 ///
 /// Dropping a [`NodeKind`] that still owns [`Node`] children is stack-safe
-/// because each child uses [`Node`]'s iterative [`Drop`]. Derived [`Clone`],
-/// [`Debug`], and [`PartialEq`] on this enum recurse through those children
-/// under the same bounded-depth precondition documented on [`Node`].
+/// because each child uses [`Node`]'s iterative [`Drop`]. Derived [`Clone`]
+/// on this enum goes through those same iterative [`Node::clone`] child slots.
+/// Derived [`Debug`] and [`PartialEq`] still recurse through children under
+/// the bounded-depth precondition documented on [`Node`].
 #[derive(Debug, Clone, PartialEq, strum::VariantNames)]
 #[non_exhaustive]
 pub enum NodeKind {
@@ -4049,6 +4206,33 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn every_variant_clone_preserves_equality_and_kind_clone() {
+        for fixture in crate::invariant_policy::node_kind_fixtures() {
+            let kind_name = fixture.sample.kind.kind_name().to_string();
+            let cloned = fixture.sample.clone();
+            assert_eq!(
+                fixture.sample, cloned,
+                "{kind_name}: Node::clone must preserve public equality"
+            );
+            let cloned_kind = fixture.sample.kind.clone();
+            assert_eq!(
+                fixture.sample.kind, cloned_kind,
+                "{kind_name}: NodeKind::clone must preserve public equality"
+            );
+            let mut mutated = cloned;
+            mutated.location.end = mutated.location.end.saturating_add(17);
+            assert_ne!(
+                fixture.sample.location, mutated.location,
+                "{kind_name}: cloned location must be independent"
+            );
+            assert_eq!(
+                fixture.sample.location.end, 0,
+                "{kind_name}: mutating the clone must not change the original location"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4251,7 +4435,7 @@ mod depth_guard_tests {
 }
 
 // ---------------------------------------------------------------------------
-// Iterative deep-tree destruction regression tests (#8836)
+// Iterative deep-tree destruction (#8836) and clone (#8837) regression tests
 // ---------------------------------------------------------------------------
 //
 // `Node` owns its descendants through boxed, optional, repeated, pair-record,
@@ -4260,13 +4444,20 @@ mod depth_guard_tests {
 // fields are dropped, so destructor stack depth no longer grows with tree
 // depth.
 //
-// The small-stack harness (256 KiB worker threads) discriminates the naive
-// recursive drop glue from the iterative drain: destroying a 50 000-node chain
-// recursively needs multiple megabytes of frames and aborts the process, while
-// the iterative drain runs in constant stack space. `into_parts` returns the
-// original `NodeKind` payload, so dropping that extracted kind must stay
-// stack-safe as well. A mutation that restores recursive drop glue, or that
-// drops a detached child recursively, overflows these same tests.
+// Clone is likewise iterative: it walks those same canonical child fields,
+// clones payloads through a one-level `NodeKind` shell, and rebuilds each
+// parent only after cloned children are available. Derived `Clone` glue would
+// recurse through `Node`/`NodeKind` and overflow the small-stack harness.
+//
+// The small-stack harness (256 KiB worker threads) discriminates naive
+// recursive drop/clone glue from the iterative paths: a 50 000-node chain
+// recursively needs multiple megabytes of frames and aborts the process.
+// `into_parts` returns the original `NodeKind` payload, so dropping that
+// extracted kind must stay stack-safe as well. A mutation that restores
+// recursive drop glue, omits one registered child field from
+// `for_each_child_mut`, drops a detached child recursively, clones through
+// `self.kind.clone()` before detaching children, or drops/reorders a cloned
+// child overflows or fails these same tests.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod deep_tree_destruction_tests {
@@ -4553,5 +4744,459 @@ mod deep_tree_destruction_tests {
             "mutable child traversal must reach every child in the broad control fixture"
         );
         Ok(())
+    }
+
+    fn clone_and_count(node: &Node) -> (Node, CloneWork) {
+        let mut work = CloneWork::default();
+        let cloned = clone_node(node, &mut work);
+        (cloned, work)
+    }
+
+    fn assert_boxed_chain_eq(original: &Node, cloned: &Node, depth: usize) {
+        let mut left = original;
+        let mut right = cloned;
+        for layer in 0..depth {
+            match (&left.kind, &right.kind) {
+                (
+                    NodeKind::ExpressionStatement { expression: left_inner },
+                    NodeKind::ExpressionStatement { expression: right_inner },
+                ) => {
+                    assert_eq!(
+                        left.location, right.location,
+                        "boxed wrapper location diverged at layer {layer}"
+                    );
+                    left = left_inner;
+                    right = right_inner;
+                }
+                (left_kind, right_kind) => {
+                    panic!(
+                        "boxed chain expected ExpressionStatement at layer {layer}, got {} vs {}",
+                        left_kind.kind_name(),
+                        right_kind.kind_name()
+                    );
+                }
+            }
+        }
+        match (&left.kind, &right.kind) {
+            (NodeKind::Number { value: left_value }, NodeKind::Number { value: right_value }) => {
+                assert_eq!(left.location, right.location, "boxed leaf locations");
+                assert_eq!(left_value, right_value, "boxed leaf values");
+            }
+            (left_kind, right_kind) => panic!(
+                "boxed chain expected Number leaf, got {} vs {}",
+                left_kind.kind_name(),
+                right_kind.kind_name()
+            ),
+        }
+    }
+
+    fn spine_child_index(family: &str) -> usize {
+        match family {
+            "boxed" | "repeated" | "recovery" => 0,
+            "optional_boxed" | "pair_record" | "try_catch_pair_and_finally" => 1,
+            "clause_pair" => 3,
+            other => panic!("unknown family {other}"),
+        }
+    }
+
+    fn assert_family_chain_eq(family: &str, original: &Node, cloned: &Node, depth: usize) {
+        let mut left = original;
+        let mut right = cloned;
+        let spine = spine_child_index(family);
+        for layer in 0..depth {
+            assert_eq!(
+                left.kind.kind_name(),
+                right.kind.kind_name(),
+                "{family} kind diverged at layer {layer}"
+            );
+            assert_eq!(
+                left.location, right.location,
+                "{family} location diverged at layer {layer}"
+            );
+            match family {
+                "optional_boxed" => match (&left.kind, &right.kind) {
+                    (
+                        NodeKind::VariableDeclaration {
+                            declarator: left_decl,
+                            attributes: left_attrs,
+                            ..
+                        },
+                        NodeKind::VariableDeclaration {
+                            declarator: right_decl,
+                            attributes: right_attrs,
+                            ..
+                        },
+                    ) => {
+                        assert_eq!(left_decl, right_decl, "{family} declarator at layer {layer}");
+                        assert_eq!(left_attrs, right_attrs, "{family} attributes at layer {layer}");
+                    }
+                    _ => panic!("{family} expected VariableDeclaration at layer {layer}"),
+                },
+                "clause_pair" => match (&left.kind, &right.kind) {
+                    (
+                        NodeKind::If { keyword: left_kw, .. },
+                        NodeKind::If { keyword: right_kw, .. },
+                    ) => {
+                        assert_eq!(left_kw, right_kw, "{family} keyword at layer {layer}");
+                    }
+                    _ => panic!("{family} expected If at layer {layer}"),
+                },
+                "try_catch_pair_and_finally" => match (&left.kind, &right.kind) {
+                    (
+                        NodeKind::Try { catch_blocks: left_catches, .. },
+                        NodeKind::Try { catch_blocks: right_catches, .. },
+                    ) => {
+                        assert_eq!(
+                            left_catches.len(),
+                            right_catches.len(),
+                            "{family} catch count at layer {layer}"
+                        );
+                        let left_binding =
+                            left_catches.first().and_then(|(binding, _)| binding.as_ref());
+                        let right_binding =
+                            right_catches.first().and_then(|(binding, _)| binding.as_ref());
+                        assert_eq!(
+                            left_binding, right_binding,
+                            "{family} catch binding at layer {layer}"
+                        );
+                    }
+                    _ => panic!("{family} expected Try at layer {layer}"),
+                },
+                "recovery" => match (&left.kind, &right.kind) {
+                    (
+                        NodeKind::Error {
+                            message: left_message,
+                            expected: left_expected,
+                            found: left_found,
+                            ..
+                        },
+                        NodeKind::Error {
+                            message: right_message,
+                            expected: right_expected,
+                            found: right_found,
+                            ..
+                        },
+                    ) => {
+                        assert_eq!(
+                            left_message, right_message,
+                            "{family} message at layer {layer}"
+                        );
+                        assert_eq!(
+                            left_expected, right_expected,
+                            "{family} expected tokens at layer {layer}"
+                        );
+                        assert_eq!(
+                            left_found, right_found,
+                            "{family} found token at layer {layer}"
+                        );
+                    }
+                    _ => panic!("{family} expected Error at layer {layer}"),
+                },
+                _ => {}
+            }
+
+            let mut left_children = Vec::new();
+            left.for_each_child(|child| left_children.push(child));
+            let mut right_children = Vec::new();
+            right.for_each_child(|child| right_children.push(child));
+            assert_eq!(
+                left_children.len(),
+                right_children.len(),
+                "{family} child count diverged at layer {layer}"
+            );
+            assert!(
+                spine < left_children.len(),
+                "{family} spine index {spine} out of range at layer {layer}"
+            );
+            for (index, (left_child, right_child)) in
+                left_children.iter().zip(right_children.iter()).enumerate()
+            {
+                if index == spine {
+                    continue;
+                }
+                assert_eq!(
+                    *left_child, *right_child,
+                    "{family} non-spine child {index} diverged at layer {layer}"
+                );
+            }
+            left = left_children[spine];
+            right = right_children[spine];
+        }
+        assert_eq!(left, right, "{family} leaf diverged");
+    }
+
+    #[test]
+    fn deep_boxed_chain_clones_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let original = chain_of(DEEP_DEPTH, wrap_boxed);
+            let cloned = original.clone();
+            let (counted, work) = clone_and_count(&original);
+            assert_eq!(work.nodes_entered, (DEEP_DEPTH + 1) as u64);
+            assert_eq!(work.nodes_rebuilt, (DEEP_DEPTH + 1) as u64);
+            assert_eq!(work.child_edges, DEEP_DEPTH as u64);
+            assert!(
+                work.max_explicit_stack_depth >= DEEP_DEPTH,
+                "explicit clone stack must grow with chain depth, got {}",
+                work.max_explicit_stack_depth
+            );
+            let bounded_population = cloned.count_nodes() as u64;
+            assert!(
+                bounded_population < work.nodes_rebuilt,
+                "work must record performed clone operations ({}) rather than depth-bounded population ({bounded_population})",
+                work.nodes_rebuilt
+            );
+            assert_boxed_chain_eq(&original, &cloned, DEEP_DEPTH);
+            assert_boxed_chain_eq(&original, &counted, DEEP_DEPTH);
+            drop(counted);
+            drop(cloned);
+            drop(original);
+        })
+    }
+
+    #[test]
+    fn deep_boxed_chain_kind_clones_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let original = chain_of(DEEP_DEPTH, wrap_boxed);
+            let cloned_kind = original.kind.clone();
+            let cloned = Node::new(cloned_kind, original.location);
+            assert_boxed_chain_eq(&original, &cloned, DEEP_DEPTH);
+            drop(cloned);
+            drop(original);
+        })
+    }
+
+    #[test]
+    fn cloned_deep_tree_is_independent() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let original = chain_of(DEEP_DEPTH, wrap_boxed);
+            let mut cloned = original.clone();
+            let mut cursor = &mut cloned;
+            for _ in 0..DEEP_DEPTH {
+                match &mut cursor.kind {
+                    NodeKind::ExpressionStatement { expression } => cursor = expression,
+                    other => panic!("expected ExpressionStatement, got {}", other.kind_name()),
+                }
+            }
+            match &mut cursor.kind {
+                NodeKind::Number { value } => value.push_str("-cloned"),
+                other => panic!("expected Number leaf, got {}", other.kind_name()),
+            }
+
+            let mut original_cursor = &original;
+            for _ in 0..DEEP_DEPTH {
+                match &original_cursor.kind {
+                    NodeKind::ExpressionStatement { expression } => original_cursor = expression,
+                    other => {
+                        panic!("original expected ExpressionStatement, got {}", other.kind_name())
+                    }
+                }
+            }
+            match &original_cursor.kind {
+                NodeKind::Number { value } => {
+                    assert_eq!(value, "1", "mutating the clone must not change the original leaf");
+                }
+                other => panic!("original expected Number leaf, got {}", other.kind_name()),
+            }
+            drop(cloned);
+            drop(original);
+        })
+    }
+
+    #[test]
+    fn deep_chains_through_every_child_family_clone_on_small_stack() -> Result<(), String> {
+        for (name, wrap) in all_family_wrappers() {
+            run_on_small_stack(move || {
+                let original = chain_of(FAMILY_DEPTH, wrap);
+                let cloned = original.clone();
+                let (counted, work) = clone_and_count(&original);
+                let children_per_layer = original.child_count() as u64;
+                let expected_nodes =
+                    (FAMILY_DEPTH as u64).saturating_mul(children_per_layer).saturating_add(1);
+                let expected_edges = (FAMILY_DEPTH as u64).saturating_mul(children_per_layer);
+                assert_eq!(work.nodes_entered, expected_nodes, "family {name}: entered nodes");
+                assert_eq!(work.nodes_rebuilt, expected_nodes, "family {name}: rebuilt nodes");
+                assert_eq!(work.child_edges, expected_edges, "family {name}: child edges");
+                assert_family_chain_eq(name, &original, &cloned, FAMILY_DEPTH);
+                assert_family_chain_eq(name, &original, &counted, FAMILY_DEPTH);
+                drop(counted);
+                drop(cloned);
+                drop(original);
+            })
+            .map_err(|error| format!("family {name}: {error}"))?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn child_shapes_clone_with_exact_structure() {
+        for (name, wrap) in all_family_wrappers() {
+            let original = chain_of(3, wrap);
+            let cloned = original.clone();
+            assert_eq!(
+                original, cloned,
+                "{name} shallow family clone must preserve public equality"
+            );
+        }
+
+        let loc = loc();
+        let first = Node::new(
+            NodeKind::Number { value: "same".to_string() },
+            SourceLocation { start: 0, end: 1 },
+        );
+        let second = Node::new(
+            NodeKind::Number { value: "same".to_string() },
+            SourceLocation { start: 4, end: 5 },
+        );
+        let array = Node::new(NodeKind::ArrayLiteral { elements: vec![first, second] }, loc);
+        let cloned_array = array.clone();
+        match (&array.kind, &cloned_array.kind) {
+            (
+                NodeKind::ArrayLiteral { elements: original_elements },
+                NodeKind::ArrayLiteral { elements: cloned_elements },
+            ) => {
+                assert_eq!(original_elements.len(), 2);
+                assert_eq!(cloned_elements.len(), 2);
+                assert_eq!(cloned_elements[0].location.start, 0);
+                assert_eq!(cloned_elements[1].location.start, 4);
+                assert_ne!(
+                    cloned_elements[0].location, cloned_elements[1].location,
+                    "equal-looking repeated children must keep source order"
+                );
+            }
+            _ => panic!("expected ArrayLiteral"),
+        }
+
+        let present = wrap_optional_boxed(number_leaf("init"));
+        let absent = Node::new(
+            NodeKind::VariableDeclaration {
+                declarator: "my".to_string(),
+                variable: Box::new(number_leaf("v")),
+                attributes: Vec::new(),
+                initializer: None,
+            },
+            loc,
+        );
+        assert_eq!(present.clone(), present);
+        assert_eq!(absent.clone(), absent);
+        assert_ne!(present, absent, "optional child presence is part of clone equality");
+
+        let empty = Node::new(NodeKind::Program { statements: vec![] }, loc);
+        let one = wrap_repeated(number_leaf("1"));
+        let many = Node::new(
+            NodeKind::Program {
+                statements: vec![number_leaf("1"), number_leaf("2"), number_leaf("3")],
+            },
+            loc,
+        );
+        assert_eq!(empty.clone(), empty);
+        assert_eq!(one.clone(), one);
+        assert_eq!(many.clone(), many);
+        match many.clone().kind {
+            NodeKind::Program { statements } => {
+                assert_eq!(statements[0].kind.kind_name(), "Number");
+                match (&statements[0].kind, &statements[2].kind) {
+                    (NodeKind::Number { value: first }, NodeKind::Number { value: last }) => {
+                        assert_eq!(first, "1");
+                        assert_eq!(last, "3");
+                    }
+                    _ => panic!("expected Number statements"),
+                }
+            }
+            _ => panic!("expected Program"),
+        }
+    }
+
+    #[test]
+    fn clone_work_is_operation_local_and_concurrent() {
+        let tree = broad_multi_family_tree(3);
+        let (_, expected) = clone_and_count(&tree);
+
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| clone_and_count(&tree));
+            let second = scope.spawn(|| clone_and_count(&tree));
+            let (first_clone, first_work) =
+                first.join().unwrap_or_else(|_| panic!("first clone thread"));
+            let (second_clone, second_work) =
+                second.join().unwrap_or_else(|_| panic!("second clone thread"));
+            assert_eq!(first_work, expected);
+            assert_eq!(second_work, expected);
+            assert_eq!(first_clone, tree);
+            assert_eq!(second_clone, tree);
+        });
+    }
+
+    #[test]
+    fn observer_panic_during_clone_is_stack_safe_and_leaves_original() -> Result<(), String> {
+        struct PanicAfter {
+            inner: CloneWork,
+            remaining_rebuilds: u64,
+        }
+
+        impl CloneObserver for PanicAfter {
+            fn on_enter(&mut self, child_count: usize) {
+                self.inner.on_enter(child_count);
+            }
+
+            fn on_rebuild(&mut self) {
+                self.inner.on_rebuild();
+                self.remaining_rebuilds = self.remaining_rebuilds.saturating_sub(1);
+                if self.remaining_rebuilds == 0 {
+                    panic!("clone observer panic");
+                }
+            }
+
+            fn on_stack_depth(&mut self, depth: usize) {
+                self.inner.on_stack_depth(depth);
+            }
+        }
+
+        run_on_small_stack(|| {
+            let original = chain_of(DEEP_DEPTH, wrap_boxed);
+            let mut observer = PanicAfter { inner: CloneWork::default(), remaining_rebuilds: 8 };
+            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _cloned = clone_node(&original, &mut observer);
+            }));
+            assert!(panicked.is_err(), "observer panic must unwind");
+            let (cloned, work) = clone_and_count(&original);
+            assert_eq!(work.nodes_rebuilt, (DEEP_DEPTH + 1) as u64);
+            assert_boxed_chain_eq(&original, &cloned, DEEP_DEPTH);
+            drop(cloned);
+            drop(original);
+        })
+    }
+
+    #[test]
+    fn nested_payload_clone_is_independent() {
+        let original = wrap_try(number_leaf("caught"));
+        let mut cloned = original.clone();
+        match &mut cloned.kind {
+            NodeKind::Try { catch_blocks, finally_block, .. } => {
+                if let Some((binding, _)) = catch_blocks.first_mut()
+                    && let Some((name, _)) = binding.as_mut()
+                {
+                    name.push_str("-mutated");
+                }
+                if let Some(finally) = finally_block.as_mut()
+                    && let NodeKind::Number { value } = &mut finally.kind
+                {
+                    value.push_str("-mutated");
+                }
+            }
+            other => panic!("expected Try, got {}", other.kind_name()),
+        }
+        match &original.kind {
+            NodeKind::Try { catch_blocks, finally_block, .. } => {
+                let name = catch_blocks
+                    .first()
+                    .and_then(|(binding, _)| binding.as_ref())
+                    .map(|(name, _)| name.as_str());
+                assert_eq!(name, Some("error"));
+                match finally_block.as_ref().map(|node| &node.kind) {
+                    Some(NodeKind::Number { value }) => assert_eq!(value, "finally"),
+                    other => panic!("expected Number finally, got {other:?}"),
+                }
+            }
+            other => panic!("expected Try, got {}", other.kind_name()),
+        }
     }
 }
