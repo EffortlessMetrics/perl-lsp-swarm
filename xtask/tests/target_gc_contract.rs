@@ -70,3 +70,24 @@ fn target_gc_self_test_discriminates_stale_from_fresh() -> Result<(), Box<dyn st
     );
     Ok(())
 }
+
+#[test]
+fn target_gc_self_test_plumbing_requires_an_injected_root() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = project_root()?;
+    let script = root.join("scripts/target-gc.sh");
+    let output = Command::new("bash")
+        .arg(script)
+        .arg("--self-test-apply")
+        .env_remove("TARGET_GC_SELFTEST_ROOT")
+        .env_remove("TARGET_GC_SELFTEST_DRY_RUN")
+        .output()?;
+
+    assert!(!output.status.success(), "self-test apply must not fall back to the real repository");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("requires its injected fixture root"),
+        "missing fixture-root refusal must be explicit: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}

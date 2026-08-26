@@ -55,8 +55,9 @@ refuse_if_build_lock_held() {
   # flock(1) is Linux-only; where it is absent there is no flock contract to
   # violate (cargo-safe degrades the same way), so the check is skipped.
   command -v flock >/dev/null 2>&1 || return 0
-  [ -e "$build_lock" ] || return 0
-  if ! flock -n "$build_lock" -c true 2>/dev/null; then
+  mkdir -p "$(dirname "$build_lock")"
+  exec {build_lock_fd}>"$build_lock"
+  if ! flock -n "$build_lock_fd"; then
     echo "REFUSING: devplane build flock is held ($build_lock) — a build may be in progress; rerun when it finishes." >&2
     exit 75
   fi
@@ -65,9 +66,13 @@ refuse_if_build_lock_held() {
 # is_stale_target DIR — succeeds when no entry inside DIR is newer than $days.
 is_stale_target() {
   local dir="$1"
+  local fresh_entries
   # -print -quit stops at the first fresh entry, so fresh trees cost ~nothing;
   # only genuinely stale trees pay the full walk (and they are the point).
-  if find "$dir" -newermt "$days days ago" -print -quit 2>/dev/null | grep -q .; then
+  if ! fresh_entries=$(find "$dir" -newermt "$days days ago" -print -quit 2>/dev/null); then
+    return 2
+  fi
+  if [ -n "$fresh_entries" ]; then
     return 1
   fi
   return 0
@@ -91,6 +96,12 @@ run_gc() {
   while IFS= read -r candidate; do
     if is_stale_target "$candidate"; then
       stale+=("$candidate")
+    else
+      local scan_rc=$?
+      if [ "$scan_rc" -eq 2 ]; then
+        echo "REFUSING: freshness scan failed for candidate: $candidate" >&2
+        return 75
+      fi
     fi
   done < <(collect_candidates "$root")
 
@@ -190,7 +201,15 @@ self_test() {
 
 # Self-test plumbing: run the GC against an injected root instead of the repo.
 if [ -n "$plumbing" ]; then
-  repo_root="${TARGET_GC_SELFTEST_DRY_RUN:-${TARGET_GC_SELFTEST_ROOT:-$repo_root}}"
+  if [ "$plumbing" = "dry" ]; then
+    repo_root="${TARGET_GC_SELFTEST_DRY_RUN:-}"
+  else
+    repo_root="${TARGET_GC_SELFTEST_ROOT:-}"
+  fi
+  if [ -z "$repo_root" ]; then
+    echo "error: $plumbing self-test plumbing requires its injected fixture root" >&2
+    exit 64
+  fi
   [ "$plumbing" = "apply" ] && apply=1
   run_gc "$repo_root"
   exit 0
