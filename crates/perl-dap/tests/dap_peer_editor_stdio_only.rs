@@ -192,9 +192,9 @@ fn assert_no_child_listeners(pid: u32) -> Result<()> {
 
 struct StdioAdapter {
     child: Child,
-    stdin: std::process::ChildStdin,
+    stdin: Option<std::process::ChildStdin>,
     rx: Receiver<std::result::Result<DapMessage, String>>,
-    stderr: thread::JoinHandle<String>,
+    stderr: Option<thread::JoinHandle<String>>,
 }
 
 impl StdioAdapter {
@@ -209,7 +209,7 @@ impl StdioAdapter {
         let stdin = child.stdin.take().context("child stdin was not piped")?;
         let stdout = child.stdout.take().context("child stdout was not piped")?;
         let stderr = drain_pipe(child.stderr.take());
-        Ok(Self { child, stdin, rx: spawn_frame_reader(stdout), stderr })
+        Ok(Self { child, stdin: Some(stdin), rx: spawn_frame_reader(stdout), stderr: Some(stderr) })
     }
 
     fn pid(&self) -> u32 {
@@ -223,9 +223,10 @@ impl StdioAdapter {
             "command": command,
             "arguments": arguments,
         }))?;
-        write!(self.stdin, "Content-Length: {}\r\n\r\n", payload.len())?;
-        self.stdin.write_all(&payload)?;
-        self.stdin.flush()?;
+        let stdin = self.stdin.as_mut().ok_or_else(|| anyhow!("child stdin already closed"))?;
+        write!(stdin, "Content-Length: {}\r\n\r\n", payload.len())?;
+        stdin.write_all(&payload)?;
+        stdin.flush()?;
         Ok(())
     }
 
@@ -248,13 +249,17 @@ impl StdioAdapter {
     }
 
     fn close_stdin(mut self) -> Result<(Option<ExitStatus>, String)> {
-        drop(self.stdin);
+        drop(self.stdin.take());
         let status = wait_for_exit(&mut self.child, STDIO_TIMEOUT)?;
         if status.is_none() {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
-        let stderr = self.stderr.join().unwrap_or_else(|_| "<stderr reader panicked>".to_owned());
+        let stderr = self
+            .stderr
+            .take()
+            .and_then(|handle| handle.join().ok())
+            .unwrap_or_else(|| "<stderr reader panicked>".to_owned());
         // Prevent Drop from killing a process we already reaped.
         let _ = self.child.try_wait();
         Ok((status, stderr))
@@ -353,7 +358,7 @@ where
 
 /// Fake debugger peer that *listens* so `perl-dap --external-peer` can connect.
 struct ListeningFakePeer {
-    handle: JoinHandle<()>,
+    handle: Option<JoinHandle<()>>,
     addr: std::net::SocketAddr,
 }
 
@@ -364,7 +369,7 @@ impl ListeningFakePeer {
         let handle = thread::spawn(move || {
             run_listening_fake_peer(listener, token, emit_stopped, drop_after_hello);
         });
-        Ok(Self { handle, addr })
+        Ok(Self { handle: Some(handle), addr })
     }
 
     fn addr_arg(&self) -> String {
@@ -374,7 +379,8 @@ impl ListeningFakePeer {
 
 impl Drop for ListeningFakePeer {
     fn drop(&mut self) {
-        let _ = self.handle.join();
+        // Detach: joining `accept()` hangs if no client connected.
+        drop(self.handle.take());
     }
 }
 
@@ -498,6 +504,13 @@ fn dap_text(message: &DapMessage) -> String {
     serde_json::to_string(message).unwrap_or_else(|_| format!("{message:?}"))
 }
 
+fn assert_no_token_canary(surface: &str, text: &str) -> Result<()> {
+    if text.contains(TOKEN_CANARY) {
+        return Err(anyhow!("{surface} leaked the debugger-peer token canary"));
+    }
+    Ok(())
+}
+
 #[test]
 fn peer_connect_serves_dap_only_on_stdio() -> Result<()> {
     let peer = ListeningFakePeer::start(Some(TOKEN_CANARY.to_owned()), true, false)?;
@@ -515,9 +528,7 @@ fn peer_connect_serves_dap_only_on_stdio() -> Result<()> {
             return Err(anyhow!("peer-connect initialize must succeed over stdio, got {other:?}"));
         }
     }
-    if dap_text(&initialize).contains(TOKEN_CANARY) {
-        return Err(anyhow!("initialize response leaked the debugger-peer token"));
-    }
+    assert_no_token_canary("initialize response", &dap_text(&initialize))?;
 
     let stopped = adapter.wait_for_event("stopped")?;
     match &stopped {
@@ -528,12 +539,12 @@ fn peer_connect_serves_dap_only_on_stdio() -> Result<()> {
         }
         other => return Err(anyhow!("expected DAP stopped event, got {other:?}")),
     }
-    if dap_text(&stopped).contains(TOKEN_CANARY) {
-        return Err(anyhow!("stopped event leaked the debugger-peer token"));
-    }
+    assert_no_token_canary("stopped event", &dap_text(&stopped))?;
 
     assert_no_child_listeners(adapter.pid())?;
     adapter.send_request(2, "disconnect", Some(json!({})))?;
+    let (_, stderr) = adapter.close_stdin()?;
+    assert_no_token_canary("DAP stderr", &stderr)?;
     Ok(())
 }
 
@@ -560,7 +571,8 @@ fn peer_listen_serves_dap_only_on_stdio_and_keeps_peer_listener() -> Result<()> 
     match adapter.wait_for_response(1, "initialize")? {
         DapMessage::Response { success: true, body: Some(body), .. } => {
             let rendered = body.to_string();
-            if rendered.contains(TOKEN_CANARY) || rendered.contains("PERL_DAP_PEER_TOKEN") {
+            assert_no_token_canary("initialize body", &rendered)?;
+            if rendered.contains("PERL_DAP_PEER_TOKEN") {
                 return Err(anyhow!("initialize body leaked a peer token: {body}"));
             }
         }
@@ -571,6 +583,8 @@ fn peer_listen_serves_dap_only_on_stdio_and_keeps_peer_listener() -> Result<()> 
         }
     }
     adapter.send_request(2, "disconnect", Some(json!({})))?;
+    let (_, stderr) = adapter.close_stdin()?;
+    assert_no_token_canary("DAP stderr", &stderr)?;
     Ok(())
 }
 
@@ -658,6 +672,7 @@ fn stdio_eof_settles_a_peer_connect_session() -> Result<()> {
     let adapter = StdioAdapter::spawn(&["--external-peer", &addr, "--log-level", "error"])?;
     thread::sleep(Duration::from_millis(150));
     let (status, stderr) = adapter.close_stdin()?;
+    assert_no_token_canary("DAP stderr", &stderr)?;
     match status {
         Some(_) => {}
         None => {
@@ -677,6 +692,7 @@ fn peer_crash_settles_dap_without_an_editor_listener() -> Result<()> {
     thread::sleep(Duration::from_millis(200));
     assert_no_child_listeners(adapter.pid())?;
     let (status, stderr) = adapter.close_stdin()?;
+    assert_no_token_canary("DAP stderr", &stderr)?;
     if status.is_none() {
         return Err(anyhow!(
             "peer close/crash must settle DAP boundedly without an editor listener; stderr={stderr:?}"

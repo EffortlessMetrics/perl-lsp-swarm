@@ -28,7 +28,7 @@
 use perl_tdd_support::{must, must_err, must_some};
 use std::fmt;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -1347,6 +1347,7 @@ mod tests {
     use crate::peer_protocol::message::{PeerEvent, PeerMessage, PeerRequest, command, event};
     use crate::peer_protocol::payloads::HelloArgs;
     use crate::peer_protocol::{PROTOCOL_VERSION, PeerReportedCapabilities, encode_message};
+    use std::net::TcpStream;
 
     fn spawn_hello_peer(
         addr: SocketAddr,
