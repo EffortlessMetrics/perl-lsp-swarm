@@ -333,31 +333,4 @@ impl TraceFixture {
             trace_truncated: false,
         }
     }
-
-    /// Decoded-header/terminal view retained by a receipt, for comparisons.
-    pub fn decoded_header(&self, expected_row_count: u32) -> TraceHeader {
-        TraceHeader {
-            schema_version:
-                crate::invocation_trace::model::UPSTREAM_INVOCATION_TRACE_SCHEMA_VERSION.to_string(),
-            trace_session_id: self.session.clone(),
-            parent_process_nonce: self.subject.parent_process_nonce.clone(),
-            parent_receipt_digest: self.parent.payload_digest.clone(),
-            expected_row_count,
-            encoding: "utf-8".to_string(),
-            newline: "lf".to_string(),
-        }
-    }
-
-    pub fn decoded_terminal(
-        &self,
-        row_lines: &[String],
-        completion: ProcessCompletion,
-    ) -> TraceTerminal {
-        let frame = self.terminal_frame(row_lines, completion);
-        TraceTerminal {
-            row_count: frame.row_count,
-            integrity_sha256: frame.integrity_sha256,
-            completion: frame.completion,
-        }
-    }
 }
