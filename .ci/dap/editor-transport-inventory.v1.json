@@ -122,7 +122,8 @@
       "owner_issue": "#10564",
       "paths": [
         "crates/perl-dap/tests/dap_native_editor_socket_retirement.rs",
-        "crates/perl-dap/tests/dap_peer_editor_stdio_only.rs"
+        "crates/perl-dap/tests/dap_peer_editor_stdio_only.rs",
+        "crates/perl-dap/tests/dap_editor_transport_security.rs"
       ],
       "claim_boundary": "test loopback helpers cannot satisfy a product client row; native editor listener is gone from production"
     }
@@ -423,5 +424,5 @@
       "blocks_retirement": false
     }
   ],
-  "digest": "f5514854df6bf51ea5b10e2fc8d3e74dd36b5763fa4c9b6bb788b286dcfbe06e"
+  "digest": "1b2b2b647f69ac41b5801620ed2b84164ba151dae1c3dcf6f5bab3e2c0a8c0c1"
 }
