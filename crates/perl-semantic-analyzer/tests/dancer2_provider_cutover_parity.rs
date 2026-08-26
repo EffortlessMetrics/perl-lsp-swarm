@@ -306,6 +306,28 @@ fn retirement_boundary_keeps_unadmitted_forms_on_legacy_path() {
 }
 
 #[test]
+fn retirement_boundary_regex_route_form() {
+    // The parser produces a two-statement shape for regex patterns; the
+    // canonical extractor admits it and the retirement gate must match the
+    // keyword anchor at the first statement's start.
+    let source = "package App;\nuse Dancer2;\nget qr{^/re/(\\d+)$} => sub { 1 };\n";
+    let mut parser = Parser::new(source);
+    let ast = must(parser.parse());
+    let admitted = canonical_admission(&ast);
+    assert!(
+        admitted.iter().any(|(package, pattern, keyword)| {
+            package == "App" && keyword == "get" && pattern.contains("/re")
+        }),
+        "the regex route form is admitted: {admitted:?}"
+    );
+    let table = SymbolExtractor::new_with_source(source).extract(&ast);
+    assert!(
+        table.symbols.keys().all(|name| !name.starts_with('/')),
+        "the admitted regex route form retires the legacy synthesis"
+    );
+}
+
+#[test]
 fn skeleton_corpus_parity_and_retirement() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
