@@ -299,6 +299,14 @@ impl DapWorkflowSession {
     }
 
     /// Retrieve the `variablesReference` for the `Globals` scope in `frame_id`.
+    ///
+    /// #10563 retired Package/Globals from the advertised scope contract —
+    /// `handle_scopes` intentionally never advertises them at a live stopped
+    /// frame — so against a live session this always fails with `No Globals
+    /// scope found in scopes response`. It remains only as the compilation
+    /// contract of the ignored aspirational journeys (genuine globals
+    /// enumeration, #10162) and of the compiled-out `real_session_fixture_tests`
+    /// module. Live journeys must inspect through `scopes_locals_ref`.
     pub fn scopes_globals_ref(&mut self, frame_id: i64) -> Result<i64, String> {
         let args = json!({"frameId": frame_id});
         let resp = self.request("scopes", Some(args));
