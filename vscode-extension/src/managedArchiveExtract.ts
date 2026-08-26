@@ -283,7 +283,6 @@ async function walkTar(
       onEntry(entry);
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error));
-      entry.resume();
       parser.abort(failure);
     }
   });
