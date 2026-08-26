@@ -330,6 +330,10 @@ pub enum InstrumentationState {
     TerminalDisagreement,
     /// Cleanup left the disposable copy, trace file, or run directory behind.
     CleanupFailed,
+    /// The instrumented parent discovery receipt is not `observed_complete`
+    /// (truncated output, partial membership, malformed stream, subject
+    /// mismatch): the trace alone can never complete the observation.
+    ParentIncomplete,
     /// Missing terminal evidence; nothing else can be claimed.
     NotProven,
 }
@@ -614,10 +618,21 @@ pub fn observe_invocations(config: &ObserveInvocationsConfig) -> Result<Instrume
     let receipt_destinations =
         [config.output.clone(), config.trace_output.clone(), config.work_output.clone()];
     reject_output_aliases(
-        &[perl_tree.join("t").join("TEST"), host_perl.clone()],
+        &[
+            perl_tree.join("t").join("TEST"),
+            host_perl.clone(),
+            config.matrix.clone(),
+            config.patch.clone(),
+        ],
         &receipt_destinations,
     )?;
     reject_subject_destinations(&host_perl, &perl_tree, &receipt_destinations)?;
+    for destination in &receipt_destinations {
+        crate::observed_discovery::capture::reject_matrix_output_alias(
+            &config.matrix,
+            destination,
+        )?;
+    }
 
     // Reviewed patch subject: the spec must pin the exact ordinary artifact.
     let patch_bytes = fs::read(&config.patch)
@@ -1013,6 +1028,12 @@ fn derive_instrumentation_state(
     {
         return InstrumentationState::RunnerFailed;
     }
+    // The parent discovery receipt is the denominator of the observation: no
+    // trace-only completion is possible while the parent is truncated,
+    // partial, malformed, or subject-mismatched.
+    if !matches!(parent_state, Some(DiscoveryObservationState::ObservedComplete)) {
+        return InstrumentationState::ParentIncomplete;
+    }
     if trace_decode.as_ref().is_none_or(|outcome| !outcome.is_complete()) {
         return InstrumentationState::TraceMalformed;
     }
@@ -1090,6 +1111,26 @@ pub fn validate_instrumentation_work(
             "instrumentation may only change the runner artifact; manifest delta: {changes:?}"
         ));
     }
+    // The recorded specification must be the exact supplied specification:
+    // another spec with equal patched bytes never validates this receipt.
+    let serialized = serde_json::to_vec(spec)
+        .map_err(|error| format!("serializing the supplied patch specification: {error}"))?;
+    let supplied_digest = sha256_bytes(&serialized);
+    if payload.patch.spec_sha256 != supplied_digest {
+        return Err(
+            "patch specification digest does not bind the supplied specification".to_string()
+        );
+    }
+    let supplied_labels =
+        spec.operations.iter().map(|operation| operation.label.clone()).collect::<Vec<_>>();
+    if payload.patch.operations_applied != supplied_labels {
+        return Err("patch operation labels disagree with the supplied specification".to_string());
+    }
+    if payload.patch.exact_anchor_matches != spec.operations.len() as u64 {
+        return Err(
+            "patch anchor-match count disagrees with the supplied specification".to_string()
+        );
+    }
     if payload.work.fields_synthesized != 0 {
         return Err("instrumented capture synthesizes no fields".to_string());
     }
@@ -1124,6 +1165,10 @@ pub(crate) fn required_limitations() -> Vec<String> {
 /// terminal disposition. Every non-complete state is a typed failure exit.
 pub fn observe_invocations_command(config: &ObserveInvocationsConfig) -> Result<()> {
     let observation = observe_invocations(config)?;
+    // Absent receipts must not leave a previous run's successful evidence in
+    // place: file-based consumers would ingest stale proof for this run.
+    clear_stale_output(&config.output, observation.parent.is_none())?;
+    clear_stale_output(&config.trace_output, observation.trace.is_none())?;
     if let Some(parent) = &observation.parent {
         write_json(&config.output, parent)?;
     }
@@ -1210,6 +1255,16 @@ pub(crate) fn observe_invocations_from_options(mut options: Options) -> Result<(
     };
     options.finish()?;
     observe_invocations_command(&config)
+}
+
+/// Remove one output file when its receipt is absent from the current run so
+/// a stale success can never survive a typed failure.
+fn clear_stale_output(path: &Path, absent: bool) -> Result<()> {
+    if absent && path.exists() {
+        fs::remove_file(path)
+            .with_context(|| format!("removing stale receipt {}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn parse_runner(value: &str) -> Result<RunnerKind> {
