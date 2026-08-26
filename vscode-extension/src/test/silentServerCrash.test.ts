@@ -150,7 +150,7 @@ function injectedLifecycle(
   return lifecycle as unknown as ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent>;
 }
 
-/** Drain the recovery continuation chain (pure microtask/immmediate cascades). */
+/** Drain the recovery continuation chain (pure microtask/immediate cascades). */
 async function drain(rounds = 40): Promise<void> {
   for (let round = 0; round < rounds; round += 1) {
     await new Promise((resolve) => setImmediate(resolve));
