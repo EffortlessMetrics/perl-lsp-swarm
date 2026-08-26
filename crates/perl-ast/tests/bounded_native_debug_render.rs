@@ -16,9 +16,9 @@ use helpers::all_nodekind_instances;
 use perl_ast::{
     FieldId, NATIVE_DEBUG_SEXP_DEPTH_LIMIT_MARKER, NativeDebugSexpInstrumentCause,
     NativeDebugSexpLimits, NativeDebugSexpOmitted, NativeDebugSexpResult,
-    NativeDebugSexpTruncation, Node, NodeKind, SourceLocation,
+    NativeDebugSexpTruncation, NativeDebugSexpWork, Node, NodeKind, SourceLocation,
 };
-use std::fmt::{self, Write as _};
+use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -304,8 +304,15 @@ fn node_depth_byte_and_work_limits_trip_independently() {
     let complete_len = GOLDEN_CHAIN3.len();
     let (complete_out, complete) = render_unbounded(&chain);
     assert_eq!(complete_out, GOLDEN_CHAIN3);
-    let NativeDebugSexpResult::Complete { work: complete_work } = complete else {
-        panic!("unbounded chain must Complete, got {complete:?}");
+    let complete_work = match complete {
+        NativeDebugSexpResult::Complete { work } => work,
+        other => {
+            assert!(
+                matches!(other, NativeDebugSexpResult::Complete { .. }),
+                "unbounded chain must Complete, got {other:?}"
+            );
+            NativeDebugSexpWork::default()
+        }
     };
 
     match chain.render_debug_sexp(
@@ -320,7 +327,16 @@ fn node_depth_byte_and_work_limits_trip_independently() {
             assert_eq!(work.nodes_visited, 2);
             assert!(work.nodes_visited < complete_work.nodes_visited);
         }
-        other => panic!("node limit 2 must trip NodeLimit, got {other:?}"),
+        other => assert!(
+            matches!(
+                other,
+                NativeDebugSexpResult::Truncated {
+                    reason: NativeDebugSexpTruncation::NodeLimit { limit: 2 },
+                    ..
+                }
+            ),
+            "node limit 2 must trip NodeLimit, got {other:?}"
+        ),
     }
 
     match chain.render_debug_sexp(
@@ -335,7 +351,16 @@ fn node_depth_byte_and_work_limits_trip_independently() {
             assert_eq!(work.nodes_visited, 2);
             assert_eq!(work.max_depth, 1);
         }
-        other => panic!("depth limit 1 must trip DepthLimit, got {other:?}"),
+        other => assert!(
+            matches!(
+                other,
+                NativeDebugSexpResult::Truncated {
+                    reason: NativeDebugSexpTruncation::DepthLimit { limit: 1 },
+                    ..
+                }
+            ),
+            "depth limit 1 must trip DepthLimit, got {other:?}"
+        ),
     }
 
     match chain.render_debug_sexp(
@@ -354,7 +379,16 @@ fn node_depth_byte_and_work_limits_trip_independently() {
             assert!(work.bytes_written <= limit);
             assert!(work.bytes_written < complete_work.bytes_written);
         }
-        other => panic!("byte limit-1 must trip ByteLimit, got {other:?}"),
+        other => assert!(
+            matches!(
+                other,
+                NativeDebugSexpResult::Truncated {
+                    reason: NativeDebugSexpTruncation::ByteLimit { .. },
+                    ..
+                }
+            ),
+            "byte limit-1 must trip ByteLimit, got {other:?}"
+        ),
     }
 
     match chain.render_debug_sexp(
@@ -367,7 +401,10 @@ fn node_depth_byte_and_work_limits_trip_independently() {
         NativeDebugSexpResult::Complete { work } => {
             assert_eq!(work.bytes_written, complete_len);
         }
-        other => panic!("byte limit exact must Complete, got {other:?}"),
+        other => assert!(
+            matches!(other, NativeDebugSexpResult::Complete { .. }),
+            "byte limit exact must Complete, got {other:?}"
+        ),
     }
 
     match chain.render_debug_sexp(
@@ -380,7 +417,10 @@ fn node_depth_byte_and_work_limits_trip_independently() {
         NativeDebugSexpResult::Complete { work } => {
             assert_eq!(work.bytes_written, complete_len);
         }
-        other => panic!("byte limit+1 must Complete, got {other:?}"),
+        other => assert!(
+            matches!(other, NativeDebugSexpResult::Complete { .. }),
+            "byte limit+1 must Complete, got {other:?}"
+        ),
     }
 
     match chain.render_debug_sexp(
@@ -395,7 +435,16 @@ fn node_depth_byte_and_work_limits_trip_independently() {
             assert_eq!(work.work_units, 1);
             assert_eq!(work.nodes_visited, 1);
         }
-        other => panic!("work limit 1 must trip WorkLimit, got {other:?}"),
+        other => assert!(
+            matches!(
+                other,
+                NativeDebugSexpResult::Truncated {
+                    reason: NativeDebugSexpTruncation::WorkLimit { limit: 1 },
+                    ..
+                }
+            ),
+            "work limit 1 must trip WorkLimit, got {other:?}"
+        ),
     }
 
     match chain.render_debug_sexp(
@@ -417,7 +466,10 @@ fn node_depth_byte_and_work_limits_trip_independently() {
                 "first selected bound must be node or depth, got {reason:?}"
             );
         }
-        other => panic!("tight node+depth bounds must Truncate, got {other:?}"),
+        other => assert!(
+            matches!(other, NativeDebugSexpResult::Truncated { .. }),
+            "tight node+depth bounds must Truncate, got {other:?}"
+        ),
     }
 
     for (limit, expect_complete) in [(0usize, false), (1, false), (2, false), (3, true), (4, true)]
@@ -497,7 +549,16 @@ fn output_never_exceeds_declared_byte_limit() {
                 assert!(work.bytes_written <= limit);
                 assert_ne!(out, GOLDEN_NUMBER_1);
             }
-            other => panic!("byte limit {limit} produced {other:?}"),
+            other => assert!(
+                matches!(
+                    other,
+                    NativeDebugSexpResult::Truncated {
+                        reason: NativeDebugSexpTruncation::ByteLimit { .. },
+                        ..
+                    }
+                ),
+                "byte limit {limit} produced {other:?}"
+            ),
         }
     }
 }
@@ -516,7 +577,10 @@ fn fifty_thousand_node_chain_renders_on_small_stack() -> Result<(), String> {
                 assert_eq!(work.bytes_written, writer.bytes);
                 assert!(work.bytes_written > 0);
             }
-            other => panic!("50k chain must Complete on a small stack, got {other:?}"),
+            other => assert!(
+                matches!(other, NativeDebugSexpResult::Complete { .. }),
+                "50k chain must Complete on a small stack, got {other:?}"
+            ),
         }
         drop(tree);
     })
@@ -673,7 +737,16 @@ fn writer_failure_is_instrument_failure() {
             cause: NativeDebugSexpInstrumentCause::WriterError,
             ..
         } => {}
-        other => panic!("immediate writer failure must be InstrumentFailure, got {other:?}"),
+        other => assert!(
+            matches!(
+                other,
+                NativeDebugSexpResult::InstrumentFailure {
+                    cause: NativeDebugSexpInstrumentCause::WriterError,
+                    ..
+                }
+            ),
+            "immediate writer failure must be InstrumentFailure, got {other:?}"
+        ),
     }
 
     match node
@@ -684,15 +757,17 @@ fn writer_failure_is_instrument_failure() {
             work,
         } => {
             assert!(work.bytes_written <= 3);
-            assert!(!matches!(
+        }
+        other => assert!(
+            matches!(
+                other,
                 NativeDebugSexpResult::InstrumentFailure {
                     cause: NativeDebugSexpInstrumentCause::WriterError,
-                    work,
-                },
-                NativeDebugSexpResult::Truncated { .. } | NativeDebugSexpResult::Complete { .. }
-            ));
-        }
-        other => panic!("mid-stream writer failure must be InstrumentFailure, got {other:?}"),
+                    ..
+                }
+            ),
+            "mid-stream writer failure must be InstrumentFailure, got {other:?}"
+        ),
     }
 }
 
@@ -725,7 +800,10 @@ fn render_streams_without_requiring_an_intermediate_string() {
             assert_eq!(work.bytes_written, GOLDEN_EXPR_STMT_42.len());
             assert_eq!(writer.bytes, GOLDEN_EXPR_STMT_42.len());
         }
-        other => panic!("streamed unbounded render must Complete, got {other:?}"),
+        other => assert!(
+            matches!(other, NativeDebugSexpResult::Complete { .. }),
+            "streamed unbounded render must Complete, got {other:?}"
+        ),
     }
 }
 
@@ -744,6 +822,11 @@ fn omitted_count_is_unknown_when_subtree_was_not_walked() {
                 "must not fabricate an omitted count from unvisited descendants"
             );
         }
-        other => panic!("max_nodes=1 must Truncate, got {other:?}"),
+        other => {
+            assert!(
+                matches!(other, NativeDebugSexpResult::Truncated { .. }),
+                "max_nodes=1 must Truncate, got {other:?}"
+            )
+        }
     }
 }
