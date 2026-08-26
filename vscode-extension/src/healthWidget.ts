@@ -84,6 +84,7 @@ export class HealthWidget {
   private _indexingPercentage: number | undefined = undefined;
   private _activeTokens = new Set<ProgressToken>();
   private _version: string | undefined = undefined;
+  private _name: string | undefined = undefined;
   private _readinessState: IndexReadinessState = 'ready';
   private _readinessReason: string | undefined = undefined;
   private _enhancedReadinessAvailable = false;
@@ -228,6 +229,12 @@ export class HealthWidget {
     this._render();
   }
 
+  /** Set the server self-reported name from the initialize handshake. */
+  setName(name: string): void {
+    this._name = name;
+    this._render();
+  }
+
   /** Current compatibility display mode. */
   get mode(): WidgetMode {
     return this._mode;
@@ -268,6 +275,11 @@ export class HealthWidget {
   /** Server version from the initialize handshake (undefined until set). */
   get version(): string | undefined {
     return this._version;
+  }
+
+  /** Server self-reported name from the initialize handshake (undefined until set). */
+  get name(): string | undefined {
+    return this._name;
   }
 
   /** Current canonical index readiness state from the server. */
@@ -328,6 +340,7 @@ export class HealthWidget {
 
   private _render(): void {
     const presentation = presentWorkspaceExperience(this._experience, {
+      name: this._name,
       version: this._version,
       fileCount: this._fileCount,
       errorCount: this._errorCount,

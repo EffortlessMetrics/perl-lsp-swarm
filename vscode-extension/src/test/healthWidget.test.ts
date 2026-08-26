@@ -317,6 +317,34 @@ describe('HealthWidget — version display', () => {
     expect(widget.version).toBe('0.12.0');
   });
 
+  test('name accessor is undefined before setName', () => {
+    const { widget } = makeWidget();
+    expect(widget.name).toBeUndefined();
+  });
+
+  test('setName updates the accessor and renders immediately while running', () => {
+    const { item, widget } = makeWidget();
+    widget.onStateChange(ClientState.Running);
+    widget.setName('acme-perl-wrapper');
+    expect(widget.name).toBe('acme-perl-wrapper');
+    expect(item.text).toBe('$(check) acme-perl-wrapper');
+  });
+
+  test('setName plus setVersion shows the reported identity, not perl-lsp (#12705)', () => {
+    const { item, widget } = makeWidget();
+    widget.setName('acme-perl-wrapper');
+    widget.setVersion('1.2.3');
+    widget.onStateChange(ClientState.Running);
+    expect(item.text).toBe('$(check) acme-perl-wrapper v1.2.3');
+  });
+
+  test('absent server name keeps the perl-lsp fallback identity', () => {
+    const { item, widget } = makeWidget();
+    widget.setVersion('0.12.0');
+    widget.onStateChange(ClientState.Running);
+    expect(item.text).toBe('$(check) perl-lsp v0.12.0');
+  });
+
   test('running state without version shows plain "perl-lsp"', () => {
     const { item, widget } = makeWidget();
     widget.onStateChange(ClientState.Running);
