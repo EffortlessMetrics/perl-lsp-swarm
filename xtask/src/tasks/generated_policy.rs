@@ -157,10 +157,10 @@ fn validate_entries(entries: &[Entry]) -> Vec<String> {
                 errors.push(format!("{} has a backslash path", entry.id));
             }
         }
-        if let Some(pattern) = entry.glob.as_deref() {
-            if Pattern::new(pattern).is_err() {
-                errors.push(format!("{} has an invalid glob", entry.id));
-            }
+        if let Some(pattern) = entry.glob.as_deref()
+            && Pattern::new(pattern).is_err()
+        {
+            errors.push(format!("{} has an invalid glob", entry.id));
         }
         for value in [&entry.id, &entry.kind, &entry.generated_by, &entry.owner, &entry.reason] {
             if value.is_empty() {
