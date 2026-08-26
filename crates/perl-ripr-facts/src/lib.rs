@@ -26,6 +26,7 @@
 //! semantic-backed extraction (using leaf crates like `perl-parser-core` /
 //! `perl-symbol` that carry no forbidden dependencies — not `perl-workspace`,
 //! which pulls `lsp-types`); this crate is the home for that work.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 mod emitter;
 

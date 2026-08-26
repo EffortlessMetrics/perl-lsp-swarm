@@ -5,6 +5,7 @@
 //! `add_symbol` idempotency, `replace_document_symbols` removing stale
 //! entries, `remove_document` reference-counting, and consistency between
 //! prefix and fuzzy views.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_symbol::index::SymbolIndex;
 use proptest::prelude::*;

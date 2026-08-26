@@ -12,6 +12,7 @@
 //! - Equality reflexivity for `TokenSpan`
 //! - `TokenKind::from_keyword` / `from_operator` / `from_delimiter` / `from_sigil` round-trip:
 //!   each spelled entry maps back to the correct kind
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_token::{
     DELIMITER_SPELLINGS, KEYWORD_SPELLINGS, OPERATOR_SPELLINGS, SIGIL_SPELLINGS, TokenKind,
