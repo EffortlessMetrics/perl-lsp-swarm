@@ -9,7 +9,7 @@
 //! behavior, or promote M04/M07/provider/exact-process rows.
 
 use crate::utils::project_root;
-use color_eyre::eyre::{bail, Context, Result};
+use color_eyre::eyre::{Context, Result, bail};
 use std::fs;
 
 pub const MODULE_RESOLUTION_STATUS: &str = "docs/project/status/module_resolution.md";

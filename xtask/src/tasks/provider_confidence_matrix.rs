@@ -1,7 +1,7 @@
 //! Validate Real Perl Editor Trust provider claim matrices.
 
 use crate::utils::project_root;
-use color_eyre::eyre::{bail, eyre, Context, Result};
+use color_eyre::eyre::{Context, Result, bail, eyre};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
