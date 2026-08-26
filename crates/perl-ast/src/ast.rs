@@ -118,9 +118,10 @@ use strum::VariantNames as _;
 /// Maximum AST traversal depth for recursive *read* operations that still
 /// use a call-stack guard.
 ///
-/// Guards [`Node::to_sexp`] against stack-overflow panics on pathologically
-/// deep ASTs. Configured complete/truncated rendering of that projection is
-/// owned by issue 8832.
+/// Historical recursive-render ceiling. [`Node::to_sexp`] and
+/// [`Node::render_debug_sexp`] no longer consult it; those walks are iterative
+/// and use caller-selected [`NativeDebugSexpLimits`]. Exact whole-tree reads
+/// also ignore this constant.
 ///
 /// Chosen at 512: typical Perl code nests fewer than 100 levels deep;
 /// 512 provides a comfortable safety margin while staying well within
@@ -301,13 +302,15 @@ define_field_ids! {
 ///   worker completes without overflowing the thread stack, and the
 ///   rendering stays at or under the byte bound. This is not machine
 ///   identity, equality, serialization, or a durable metric oracle.
-///   Callers that need configured complete or truncated state use the
-///   typed renderer tracked by issue 8832.
+///   Configured complete/truncated native debug rendering is
+///   [`Node::render_debug_sexp`].
 ///
 /// Exact whole-tree reads such as [`Node::count_nodes`] and
 /// [`Node::find_deepest_containing_offset`] are iterative over the canonical
 /// child visit table and do not silently truncate. Bounded variants return
-/// [`AstReadResult`]. [`Node::to_sexp`] remains separately depth-guarded.
+/// [`AstReadResult`]. [`Node::render_debug_sexp`] is iterative and returns
+/// [`NativeDebugSexpResult`]. [`Node::to_sexp`] is a `String` wrapper over that
+/// engine and cannot prove completeness.
 ///
 /// # Examples
 ///
@@ -389,9 +392,9 @@ impl Node {
         (kind, self.location)
     }
 
-    // Native debug S-expression projection (`to_sexp`, `to_sexp_inner`,
-    // `Display`) lives in `node_sexp`. The recursive depth guard remains
-    // issue 8832 debt and is not part of the one-root grammar.
+    // Native debug S-expression projection (`to_sexp`, `render_debug_sexp`,
+    // `Display`) lives in `node_sexp`. Typed terminality is
+    // `NativeDebugSexpResult`; `to_sexp` cannot prove completeness.
 
     /// Collect direct child nodes into a vector for convenience APIs.
     ///
@@ -545,7 +548,11 @@ pub use node_debug::{
     NODE_DEBUG_MAX_BYTES, NODE_DEBUG_MAX_CHILDREN, NODE_DEBUG_MAX_DEPTH, NODE_DEBUG_MAX_NODES,
     NODE_DEBUG_MAX_PAYLOAD_CHARS, NODE_DEBUG_TRUNCATION_MARKER,
 };
-pub use node_sexp::{NATIVE_DEBUG_SEXP_DEPTH_LIMIT_MARKER, NATIVE_DEBUG_SEXP_GRAMMAR};
+pub use node_sexp::{
+    NATIVE_DEBUG_SEXP_DEPTH_LIMIT_MARKER, NATIVE_DEBUG_SEXP_GRAMMAR,
+    NativeDebugSexpInstrumentCause, NativeDebugSexpLimits, NativeDebugSexpOmitted,
+    NativeDebugSexpResult, NativeDebugSexpTruncation, NativeDebugSexpWork,
+};
 pub use read_cursor::{
     AstReadExact, AstReadInstrumentCause, AstReadLimits, AstReadPath, AstReadPathStep,
     AstReadResult, AstReadTruncation, AstReadWork, DeepestContainingMatch,
@@ -2704,7 +2711,7 @@ mod tests {
 // Depth-guard regression tests (--lib coverage for Codecov/Patch 95)
 // ---------------------------------------------------------------------------
 //
-// These tests verify that `to_sexp` stays depth-guarded (#8832) and that
+// These tests verify that `to_sexp` stays iterative (#8832) and that
 // exact whole-tree reads (`count_nodes`, `find_deepest_containing_offset`)
 // complete iteratively on a pathologically deep input (50 000 levels).
 //
@@ -2765,34 +2772,56 @@ mod depth_guard_tests {
 
     #[test]
     fn to_sexp_does_not_overflow_on_deep_input() -> TestResult {
-        // 50 000 levels deep: without the depth guard this stack-overflows.
+        // 50 000 levels deep: the iterative engine must complete without a fake node.
+        struct CountingWriter(usize);
+        impl std::fmt::Write for CountingWriter {
+            fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                self.0 = self.0.saturating_add(s.len());
+                Ok(())
+            }
+        }
+
         let deep = deep_chain(50_000);
-        // Must return without panicking.
-        let sexp = deep.to_sexp();
+        let mut writer = CountingWriter(0);
+        match deep.render_debug_sexp(&mut writer, NativeDebugSexpLimits::unbounded()) {
+            NativeDebugSexpResult::Complete { work } => {
+                assert_eq!(work.nodes_visited, 50_001);
+                assert_eq!(work.bytes_written, writer.0);
+                assert!(work.bytes_written > 0);
+            }
+            other => {
+                return Err(format!("deep unbounded render must Complete, got {other:?}").into());
+            }
+        }
         drop(deep);
-        assert!(!sexp.is_empty(), "must produce non-empty output");
-        // The truncation marker must appear somewhere in the output.
-        assert!(
-            sexp.contains("depth_limit_exceeded"),
-            "expected depth-limit truncation marker in sexp output, got: {sexp:.120}..."
-        );
         Ok(())
     }
 
     #[test]
-    fn to_sexp_depth_counter_resets_between_calls() -> TestResult {
-        // Calling to_sexp on a deep tree must not permanently raise the thread-local
-        // counter, so a second independent call returns a fresh result.
+    fn to_sexp_nested_calls_do_not_share_renderer_state() -> TestResult {
+        struct CountingWriter(usize);
+        impl std::fmt::Write for CountingWriter {
+            fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                self.0 = self.0.saturating_add(s.len());
+                Ok(())
+            }
+        }
+
         let deep = deep_chain(50_000);
-        let _ = deep.to_sexp();
+        let mut writer = CountingWriter(0);
+        let first = deep.render_debug_sexp(&mut writer, NativeDebugSexpLimits::unbounded());
+        assert!(
+            matches!(first, NativeDebugSexpResult::Complete { .. }),
+            "deep render must Complete before the nested shallow call"
+        );
         drop(deep);
 
-        // Second call: shallow tree, must NOT see the depth_limit_exceeded marker.
         let shallow = Node::new(NodeKind::Number { value: "7".to_string() }, loc());
         let sexp2 = shallow.to_sexp();
+        assert_eq!(sexp2, "(number (value 7))");
         assert!(
             !sexp2.contains("depth_limit_exceeded"),
-            "depth counter must reset after the first call; got: {sexp2}"
+            "nested/sequential renders must be isolated; got: {sexp2}"
         );
         Ok(())
     }
