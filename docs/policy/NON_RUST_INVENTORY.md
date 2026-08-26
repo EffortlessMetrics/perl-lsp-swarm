@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11833 |
-| Rust-family files | 3582 |
-| Non-Rust files | 8251 |
-| Allowlisted | 5926 |
+| Total tracked files | 11851 |
+| Rust-family files | 3594 |
+| Non-Rust files | 8257 |
+| Allowlisted | 5932 |
 | Unclassified | 2325 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 420 |
+| config | 421 |
 | documentation | 2688 |
 | generated | 2 |
-| production | 323 |
-| test | 1941 |
-| tooling | 552 |
+| production | 324 |
+| test | 1943 |
+| tooling | 554 |
 | unclassified | 2325 |
 
 ## Unclassified files
@@ -2960,6 +2960,7 @@
 | `.github/workflows/ux-regression-gate.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/validate-ci-lane-history.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/version-bump.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/vim-hermetic-host.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-current-source-linux-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-managed-binary-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-published-extension-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -6465,6 +6466,8 @@
 | `scripts/test/emacs-clients/eglot-released-config.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-clients/eglot-released.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-host-driver.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-clients/vim-lsp-adapter.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_iterative_parser.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -8246,6 +8249,8 @@
 | `vscode-extension/test/grammar/fixtures/keywords_control.pl.snap` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/test/grammar/fixtures/numbers.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `vscode-extension/test/grammar/fixtures/numbers.pl.snap` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/test/grammar/fixtures/operator_boundaries.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `vscode-extension/test/grammar/fixtures/operator_boundaries.pl.snap` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/test/grammar/fixtures/operators.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `vscode-extension/test/grammar/fixtures/operators.pl.snap` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/test/grammar/fixtures/pod.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
