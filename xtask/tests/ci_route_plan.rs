@@ -9,8 +9,8 @@ use xtask::ci_route_plan::{
     Applicability, CI_ROUTE_PLAN_PRODUCER, CI_ROUTE_PLAN_SCHEMA, CiRoutePlanV1,
     CompileRoutePlanInput, ExpansionStatus, GateSelectorInput, LifecycleDisposition,
     LifecycleState, PlannedOutcome, PolicyRole, Resolution, RouteDispositionInput,
-    RouteExecutionIdentity, RouteProfileExpansionInput, RouteSelectionEvidence, RouteSubjectRef,
-    SelectorPlacement, SelectorProof, SelectorRole,
+    RouteExecutionIdentity, RouteProfileExpansionInput, RouteScopeEvidence, RouteSelectionEvidence,
+    RouteSubjectRef, ScopedIdentity, SelectorPlacement, SelectorProof, SelectorRole,
 };
 
 const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -456,4 +456,47 @@ fn selection_evidence_shape_is_enforced() {
     input.selection.selector_digest = "AB".to_string();
     let error = CiRoutePlanV1::compile(input).expect_err("digest shape must fail");
     assert!(error.contains("selector_digest"), "{error}");
+}
+
+// Scope evidence produced for another subject cannot back this subject's
+// selector-proved outcomes, even when every field is individually
+// well-formed: a `scoped_noop` must never be built from stale evidence.
+#[test]
+fn stale_scope_evidence_from_another_subject_refuses() {
+    let mut input = baseline_input();
+    // Scope computed for head SHA B while the route subject is head SHA A.
+    input.selection.scope = Some(RouteScopeEvidence {
+        head_sha: SHA_B.to_string(),
+        diff_class: "rust".to_string(),
+        direct_crates: vec![ScopedIdentity {
+            name: "perl-parser".to_string(),
+            reason: "direct".to_string(),
+        }],
+        reverse_dependencies: vec![],
+        architecture_wideners: vec![],
+        risk_tags: vec![],
+    });
+    input.selectors[1] = skipped("unit_gate", Some(SelectorProof::NotApplicableToSubject));
+    let error = CiRoutePlanV1::compile(input).expect_err("stale scope must refuse");
+    assert!(
+        error.contains("scope head SHA") && error.contains("route subject head SHA"),
+        "{error}"
+    );
+
+    // The same scope bound to the exact subject validates.
+    let mut input = baseline_input();
+    input.selection.scope = Some(RouteScopeEvidence {
+        head_sha: SHA_A.to_string(),
+        diff_class: "rust".to_string(),
+        direct_crates: vec![ScopedIdentity {
+            name: "perl-parser".to_string(),
+            reason: "direct".to_string(),
+        }],
+        reverse_dependencies: vec![],
+        architecture_wideners: vec![],
+        risk_tags: vec![],
+    });
+    input.selectors[1] = skipped("unit_gate", Some(SelectorProof::NotApplicableToSubject));
+    let plan = CiRoutePlanV1::compile(input).expect("bound scope validates");
+    assert!(matches!(&plan.rows[1].outcome, PlannedOutcome::ScopedNoop { .. }));
 }

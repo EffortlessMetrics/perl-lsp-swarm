@@ -146,17 +146,25 @@ pub(super) fn route_selector_inputs(plan: &GatePlan) -> Vec<GateSelectorInput> {
 }
 
 /// A selection is positively applicable when the planning role applies by
-/// its own contract (always-on, tier-static, or fallback role) or when the
-/// scope selector selected the gate without fallback.
+/// its own contract (always-on or tier-static — these apply to every
+/// subject by policy) or when the scope selector selected the gate without
+/// fallback. A fallback firing is a policy decision, not an exact-subject
+/// selector decision: it projects no positive proof, so the domain
+/// compiles the row as a typed `selector_evidence_missing` error rather
+/// than a proof-backed run.
 fn selected_proof(role: GatePlanningRole, fallback_used: bool) -> Option<SelectorProof> {
     match role {
-        GatePlanningRole::AlwaysOn | GatePlanningRole::Static | GatePlanningRole::RustFallback => {
+        GatePlanningRole::AlwaysOn | GatePlanningRole::Static => Some(SelectorProof::Applicable),
+        GatePlanningRole::RustFallback
+        | GatePlanningRole::RustScoped
+        | GatePlanningRole::RustPackageScoped
+            if !fallback_used =>
+        {
             Some(SelectorProof::Applicable)
         }
-        GatePlanningRole::RustScoped | GatePlanningRole::RustPackageScoped if !fallback_used => {
-            Some(SelectorProof::Applicable)
-        }
-        GatePlanningRole::RustScoped | GatePlanningRole::RustPackageScoped => None,
+        GatePlanningRole::RustFallback
+        | GatePlanningRole::RustScoped
+        | GatePlanningRole::RustPackageScoped => None,
     }
 }
 
@@ -652,8 +660,10 @@ mod route_plan_seam_tests {
             Some(Some(SelectorProof::NotApplicableToSubject))
         );
 
-        // Under fallback: a fallback-selected scoped gate and a fallback
-        // skip both lose their positive proof.
+        // Under fallback: a fallback-selected scoped gate, a
+        // fallback-role gate, and a fallback skip all lose their positive
+        // proof — a fallback firing is a policy decision, not an
+        // exact-subject selector decision.
         plan.fallback_used = true;
         plan.fallback_reason = Some("scope unavailable".to_string());
         plan.selected.clear();
@@ -668,5 +678,88 @@ mod route_plan_seam_tests {
             Some(None),
             "fallback decisions carry no positive selector proof"
         );
+
+        // The fallback role itself, selected by the scope selector without
+        // a fallback firing, keeps its positive proof.
+        let mut no_fallback = plan.clone();
+        no_fallback.fallback_used = false;
+        no_fallback.fallback_reason = None;
+        no_fallback.selected = vec![PlannedGate {
+            gate: gate("rust_fallback_gate", "pr_fast", true, false),
+            role: GatePlanningRole::RustFallback,
+            reason: "scope selected the fallback gate".to_string(),
+        }];
+        no_fallback.skipped.clear();
+        let inputs = route_selector_inputs(&no_fallback);
+        assert_eq!(
+            find(&inputs, "rust_fallback_gate").map(|input| input.proof),
+            Some(Some(SelectorProof::Applicable))
+        );
+
+        // A fallback firing selects the fallback-role gate without proof.
+        let mut fired = no_fallback.clone();
+        fired.fallback_used = true;
+        fired.fallback_reason = Some("scope unavailable".to_string());
+        fired.selected[0].reason = "rust fallback selected".to_string();
+        let inputs = route_selector_inputs(&fired);
+        assert_eq!(
+            find(&inputs, "rust_fallback_gate").map(|input| input.proof),
+            Some(None),
+            "a fallback firing carries no positive selector proof"
+        );
+    }
+
+    /// A fallback-fired selection never becomes a proof-backed `run`: the
+    /// row compiles as a typed `selector_evidence_missing` error, keeping
+    /// exact-subject proof and policy fallback distinct.
+    #[test]
+    fn fallback_fired_selection_never_becomes_a_proof_backed_run() {
+        let policy = policy(vec![gate("rust_fallback_gate", "pr_fast", true, false)]);
+        let expansion = expand(&policy, RequestedProfile::PrFast, None);
+        let authority = resolve_from(&policy, None, TODAY);
+
+        // The adapter projects a fallback-fired RustFallback selection
+        // with no positive proof.
+        let plan = GatePlan {
+            tier: GateTier::PrFast,
+            base: SHA.to_string(),
+            scope: None,
+            scope_ok: false,
+            fallback_used: true,
+            fallback_reason: Some("scope unavailable".to_string()),
+            package_args: Vec::new(),
+            selected: vec![PlannedGate {
+                gate: gate("rust_fallback_gate", "pr_fast", true, false),
+                role: GatePlanningRole::RustFallback,
+                reason: "rust fallback selected".to_string(),
+            }],
+            skipped: vec![],
+            staged_tree_oid: None,
+        };
+        let selector = route_selector_inputs(&plan).into_iter().next().expect("one selector input");
+        assert_eq!(selector.proof, None);
+
+        let input = compile_input(&policy, &expansion, &authority, vec![selector]);
+        let compiled = CiRoutePlanV1::compile(input).expect("compile");
+        assert_eq!(compiled.summary.run, 0);
+        assert_eq!(compiled.summary.error, 1);
+        match &compiled.rows[0].outcome {
+            PlannedOutcome::Error { code, .. } => {
+                assert_eq!(code, "selector_evidence_missing");
+            }
+            other => panic!("expected typed error outcome, got {other:?}"),
+        }
+
+        // Contrast: the same gate selected by the scope selector (no
+        // fallback) is a proof-backed run.
+        let selected_proof_input = compile_input(
+            &policy,
+            &expansion,
+            &authority,
+            vec![selected("rust_fallback_gate", GatePlanningRole::RustFallback, "scope decided")],
+        );
+        let compiled = CiRoutePlanV1::compile(selected_proof_input).expect("compile");
+        assert_eq!(compiled.summary.run, 1);
+        assert!(compiled.rows[0].applicability == Applicability::Applicable);
     }
 }

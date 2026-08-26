@@ -29,6 +29,20 @@ pub(super) fn validate(plan: &CiRoutePlanV1) -> Result<(), String> {
     validate_digest("workflow_digest", &plan.workflow_digest)?;
     validate_selection(&plan.selection)?;
 
+    // Scope evidence is bound to the exact route subject: a scope computed
+    // for another head SHA is stale evidence and cannot back any
+    // selector-proved outcome of this subject, even though both values are
+    // individually well-formed.
+    if let Some(scope) = &plan.selection.scope
+        && scope.head_sha != plan.subject.head_sha
+    {
+        return Err(format!(
+            "selection scope head SHA {} does not match the route subject head SHA {}; stale \
+             scope evidence cannot back selector-proved outcomes",
+            scope.head_sha, plan.subject.head_sha
+        ));
+    }
+
     validate_tiers(&plan.included_native_tiers)?;
     validate_denominator(&plan.denominator)?;
 
