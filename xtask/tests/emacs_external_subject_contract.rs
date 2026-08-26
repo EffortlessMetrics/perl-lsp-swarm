@@ -857,10 +857,26 @@ fn checked_manifest_pins_the_audited_external_eglot_subjects() -> Result<()> {
         "the released row's ref is the archive-attested source commit"
     );
     ensure!(
-        package.minimum_emacs == "26.3"
-            && package.package_requires.iter().any(|entry| entry == "emacs 26.3")
-            && package.package_requires.len() == 8,
-        "the released row carries the audited dependency metadata (emacs floor included)"
+        package.minimum_emacs == "26.3",
+        "the released row pins the audited minimum Emacs floor"
+    );
+    // Pin the complete audited dependency list, not a count plus one entry
+    // (same review finding as the lsp-mode rows): a silently swapped
+    // dependency must fail this assertion.
+    let audited_requires = [
+        "emacs 26.3",
+        "eldoc 1.16.0",
+        "external-completion 0.1",
+        "flymake 1.4.5",
+        "jsonrpc 1.0.29",
+        "project 0.11.2",
+        "seq 2.23",
+        "xref 1.7.0",
+    ];
+    ensure!(
+        package.package_requires.iter().map(String::as_str).collect::<Vec<_>>() == audited_requires,
+        "the released row must pin the exact audited dependency list in audit order: {:?}",
+        package.package_requires
     );
     ensure!(released.source_tree.is_none());
 
