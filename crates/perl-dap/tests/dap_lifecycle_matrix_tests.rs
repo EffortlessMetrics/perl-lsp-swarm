@@ -261,15 +261,16 @@ fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
     Ok(())
 }
 
-// ─── Test 3: scopes returns Locals AND Globals ─────────────────────────────────
+// ─── Test 3: scopes advertises the #10563 contract (Locals only) ─────────────
 
-/// Validates that `scopes` returns BOTH Locals and Globals scopes, and that the
-/// Locals scope contains a REAL named lexical variable from the user script.
+/// Validates that `scopes` advertises the current scope contract — Locals, with
+/// the retired Package/Globals scopes absent — and that the Locals scope
+/// contains a REAL named lexical variable from the user script.
 ///
-/// The DAP spec requires a `scopes` response for each frame; editors typically
-/// render Locals and Globals as separate expandable trees.  This test asserts
-/// that both scope references are positive and distinct, indicating non-empty,
-/// separate scope buckets.
+/// The DAP spec requires a `scopes` response for each frame. #10563 retired
+/// Package/Globals from the advertised contract, so this journey asserts the
+/// Locals reference is positive and the retired scope names stay unadvertised
+/// at a live stopped frame.
 ///
 /// Fixture layout (lifecycle_scopes.pl):
 ///   Line 1: use strict;
@@ -294,9 +295,9 @@ fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
 /// is a regression guard: it will catch any future revert of the PADLIST walk that
 /// re-exposes the internal-frame bug.
 #[test]
-fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
+fn test_lifecycle_scopes_locals_contract() -> TestResult {
     if !perl_available() {
-        eprintln!("Skipping test_lifecycle_scopes_locals_and_globals - perl not available");
+        eprintln!("Skipping test_lifecycle_scopes_locals_contract - perl not available");
         return Ok(());
     }
 
@@ -306,7 +307,8 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_scopes.pl");
-    // Script with an explicit `our` global so the Globals scope has at least one entry.
+    // Script keeps an explicit `our` global so this journey still witnesses how
+    // the advertised scope contract treats package-level variables.
     // Line layout (1-based):
     //   1: use strict;
     //   2: use warnings;
@@ -347,19 +349,24 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
         frame_info.frame_id
     );
 
-    // Globals scope: must be present and positive.
-    let globals_ref = session.scopes_globals_ref(frame_info.frame_id)?;
+    // #10563 scope contract: a live stopped frame advertises only Locals (plus
+    // Arguments when the frame has captured arguments). Package and Globals
+    // are intentionally not advertised, so this journey proves the retired
+    // scopes stay absent instead of expecting the pre-#10563 Globals entry.
+    let scopes_resp = session.request("scopes", Some(json!({"frameId": frame_info.frame_id})));
+    let scopes_body = session.expect_success(&scopes_resp, "scopes")?;
+    let advertised: Vec<&str> = scopes_body
+        .as_ref()
+        .and_then(|body| body.get("scopes"))
+        .and_then(Value::as_array)
+        .map(|scopes| {
+            scopes.iter().filter_map(|scope| scope.get("name").and_then(Value::as_str)).collect()
+        })
+        .unwrap_or_default();
     assert!(
-        globals_ref > 0,
-        "Globals scope variablesReference must be positive (frameId={})",
-        frame_info.frame_id
-    );
-
-    // Locals and Globals must have DIFFERENT references (no aliasing).
-    assert_ne!(
-        locals_ref, globals_ref,
-        "Locals and Globals variablesReference must be distinct \
-         (locals={locals_ref}, globals={globals_ref})"
+        !advertised.iter().any(|name| *name == "Globals" || *name == "Package"),
+        "#10563: Package/Globals scopes must stay unadvertised at a live stopped frame; \
+         got {advertised:?}"
     );
 
     // Locals must contain the real lexical `$x` (assigned at line 5).
@@ -384,12 +391,9 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
          SCOPES_BP_LINE={SCOPES_BP_LINE}; got locals={locals:?}"
     );
 
-    // The Globals request must answer without error. Its *contents* are deliberately
-    // not asserted: globals enumeration returns nothing at a live breakpoint, and this
-    // assertion previously passed only on the fabricated `$_` placeholder rather than
-    // on the declared `our $global` (#10162). The Locals guards above are the part of
-    // this test that proves real inspection, and they still hold.
-    let _globals = session.variables(globals_ref)?;
+    // The Locals guards above are the part of this test that proves real
+    // inspection. Globals enumeration returns nothing at a live breakpoint
+    // (#10162), and since #10563 the Globals scope is not advertised at all.
 
     session.continue_exec(frame_info.thread_id)?;
     let _ = session.drain_until_event("terminated");

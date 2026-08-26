@@ -1705,6 +1705,7 @@ dependencies = [
  "perl-symbol",
  "perl-tdd-support",
  "perl-test-facts",
+ "perl-test-must",
  "perl-workspace",
  "proptest",
  "regex",
