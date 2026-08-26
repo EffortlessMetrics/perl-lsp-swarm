@@ -48,6 +48,8 @@ Rust toolchain is pinned in `rust-toolchain.toml` (MSRV 1.95, channel `1.95.0`).
 
 **Windows users:** format with `cargo xtask fmt` (or `cargo fmt -p <package>`) instead of `cargo fmt --all`. Bare `cargo fmt --all` passes every workspace file as a command-line argument — across this workspace that sums to roughly six times the 32,767-character `CreateProcessW` command-line limit, so the invocation fails with "The filename or extension is too long. (os error 206)". This is a command-line-length limit, not a path-length limit: enabling `LongPathsEnabled` does not affect it, and worktree depth is irrelevant. The xtask formatter runs rustfmt per package, which is the normative formatting entry point on Windows (CI runs `--all` on Linux, where the limit does not apply). Note the per-package margin is not unbounded: the largest package (xtask, ~640 files) passes roughly 29k characters of arguments on a short-rooted checkout, so a checkout root deep enough to add a few thousand characters can still hit the cap for that package — keep the clone path short; a chunked-invocation fix in the formatter is tracked separately.
 
+**Windows users (optional):** symlink-creating tests skip with a visible `SKIPPED:` reason when the session lacks `SeCreateSymbolicLinkPrivilege` (os error 1314). Enabling Developer Mode (Settings → System → For developers) grants the privilege and opts the machine out of every skip, so those tests run in full. This is opt-in, not a requirement.
+
 Install the pre-push hook so the fast gate runs before every push:
 
 ```bash
