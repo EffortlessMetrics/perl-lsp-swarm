@@ -108,6 +108,12 @@ fn assert_native_socket_retired(status: &ExitStatus, stdout: &str, stderr: &str)
 }
 
 fn child_listening_tcp_ports(pid: u32) -> io::Result<Vec<u16>> {
+    if !cfg!(target_os = "linux") {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "listener oracle requires Linux procfs",
+        ));
+    }
     let mut inodes = HashSet::new();
     let fd_dir = format!("/proc/{pid}/fd");
     for entry in fs::read_dir(&fd_dir)? {
@@ -289,6 +295,9 @@ where
 }
 
 fn assert_no_child_listeners(pid: u32) -> Result<()> {
+    if !cfg!(target_os = "linux") {
+        return Ok(());
+    }
     let ports = child_listening_tcp_ports(pid)
         .with_context(|| format!("failed to inspect listening sockets for pid {pid}"))?;
     if !ports.is_empty() {
@@ -511,6 +520,14 @@ fn production_source_rejects_a_returned_native_editor_listener() -> Result<()> {
             "debug_adapter/transport.rs production source regained TcpListener::bind"
         ));
     }
+    let main = production_source_without_cfg_test_mods(&fs::read_to_string(
+        crate_root.join("src/main.rs"),
+    )?);
+    if !main.contains("native_editor_socket_retired") {
+        return Err(anyhow!(
+            "main.rs production source lost native_editor_socket_retired admission"
+        ));
+    }
     Ok(())
 }
 
@@ -531,6 +548,7 @@ fn historical_port_connect_does_not_reach_a_stdio_adapter() -> Result<()> {
         Duration::from_millis(200),
     )
     .is_ok()
+        && cfg!(target_os = "linux")
     {
         let ports = child_listening_tcp_ports(adapter.pid()).unwrap_or_default();
         if ports.contains(&HISTORICAL_NATIVE_PORT) {
