@@ -10,8 +10,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use support::{
-    Classification, Disposition, FixtureError, ParseObservation, Selection, load_manifest,
-    load_manifest_at, observe_resolved, package_root, run_embedded, run_embedded_loaded,
+    Classification, CurrentObservation, DEFAULT_MANIFEST_RELATIVE, Disposition, ExecutionMode,
+    FixtureError, NewlineVariant, ParseObservation, Selection, load_manifest, load_manifest_at,
+    observe_resolved, observe_with_embedded_parser, package_root, run_embedded,
+    run_embedded_loaded,
 };
 
 const REQUIRED_FAMILIES: &[&str] = &[
@@ -159,7 +161,8 @@ disposition = "provisional-observation"
         Ok(_) => return Err("absolute path must fail".into()),
     };
     assert!(
-        matches!(absolute, FixtureError::AbsolutePath(path) if path.contains("/tmp/outside.pl"))
+        matches!(absolute, FixtureError::AbsolutePath(ref path) if path.contains("/tmp/outside.pl")),
+        "absolute path must fail as AbsolutePath, got {absolute}"
     );
     Ok(())
 }
@@ -202,7 +205,7 @@ fn missing_and_unreadable_sources_fail_as_instrument_errors() -> Result<(), Box<
     };
     assert!(matches!(
         missing,
-        FixtureError::MissingSource { id, path }
+        FixtureError::MissingSource { ref id, ref path }
             if id == "missing" && path == "tests/fixtures/sources/absent.pl"
     ));
     assert!(
@@ -366,6 +369,10 @@ disposition = "final-acceptance"
 }
 
 #[test]
+#[expect(
+    clippy::panic,
+    reason = "policy:pest-fixture-panic-probe: inject a panic so the runner cannot hide it as parser rejection"
+)]
 fn parser_panic_is_instrument_failure_not_parser_rejection() -> Result<(), Box<dyn Error>> {
     let package = TempPackage::new()?;
     package.write_source("tests/fixtures/sources/ok.pl", b"my $x = 1;\n")?;
@@ -376,13 +383,14 @@ fn parser_panic_is_instrument_failure_not_parser_rejection() -> Result<(), Box<d
     )))?;
     let loaded = load_manifest(package.root())?;
     let fixture = loaded.select(&Selection::id("panic-case"))?[0];
-    let error = match observe_resolved(fixture, |_| panic!("injected parser panic")) {
+    let error = match observe_resolved(fixture, |_| std::panic::panic_any("injected parser panic"))
+    {
         Err(error) => error,
         Ok(_) => return Err("parser panic must fail the run".into()),
     };
     assert!(matches!(
         error,
-        FixtureError::ParserPanic { id, message }
+        FixtureError::ParserPanic { ref id, ref message }
             if id == "panic-case" && message.contains("injected parser panic")
     ));
     assert!(
@@ -472,6 +480,67 @@ disposition = "provisional-observation"
     Ok(())
 }
 
+#[test]
+fn missing_id_family_and_execution_modes_fail() -> Result<(), Box<dyn Error>> {
+    let package = TempPackage::new()?;
+    package.write_source("tests/fixtures/sources/ok.pl", b"my $x = 1;\n")?;
+    package.write_manifest(&wrap_manifest(
+        r#"
+[[fixtures]]
+family = "source"
+source = "tests/fixtures/sources/ok.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+disposition = "provisional-observation"
+"#,
+    ))?;
+    let missing_id = match load_manifest(package.root()) {
+        Err(error) => error,
+        Ok(_) => return Err("missing id must fail".into()),
+    };
+    assert!(matches!(missing_id, FixtureError::MissingId));
+
+    package.write_manifest(&wrap_manifest(
+        r#"
+[[fixtures]]
+id = "no-family"
+source = "tests/fixtures/sources/ok.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+disposition = "provisional-observation"
+"#,
+    ))?;
+    let missing_family = match load_manifest(package.root()) {
+        Err(error) => error,
+        Ok(_) => return Err("missing family must fail".into()),
+    };
+    assert!(matches!(missing_family, FixtureError::MissingFamily { id } if id == "no-family"));
+
+    package.write_manifest(&wrap_manifest(
+        r#"
+[[fixtures]]
+id = "no-modes"
+family = "source"
+source = "tests/fixtures/sources/ok.pl"
+classification = "valid"
+execution_modes = []
+observation_owner = "8419"
+disposition = "provisional-observation"
+"#,
+    ))?;
+    let missing_modes = match load_manifest(package.root()) {
+        Err(error) => error,
+        Ok(_) => return Err("empty execution_modes must fail".into()),
+    };
+    assert!(matches!(
+        missing_modes,
+        FixtureError::MissingExecutionModes { id } if id == "no-modes"
+    ));
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn symlink_source_is_rejected() -> Result<(), Box<dyn Error>> {
@@ -522,8 +591,8 @@ fn package_root_is_crate_local_not_workspace_root() {
         root.display()
     );
     assert!(
-        root.join("tests/fixtures/manifest.toml").is_file(),
-        "crate-local manifest must exist at tests/fixtures/manifest.toml"
+        root.join(DEFAULT_MANIFEST_RELATIVE).is_file(),
+        "crate-local manifest must exist at {DEFAULT_MANIFEST_RELATIVE}"
     );
     assert!(!root.join("Cargo.lock").is_file(), "package_root must not be the workspace root");
 }
@@ -554,7 +623,11 @@ fn crate_catalog_covers_train_families_without_claiming_acceptance() -> Result<(
             "seed row {} must record a sha256 digest",
             fixture.id
         );
-        assert!(!fixture.execution_modes.is_empty());
+        assert!(
+            fixture.execution_modes.contains(&ExecutionMode::Embedded),
+            "seed row {} must declare embedded execution",
+            fixture.id
+        );
         if let support::SourceKind::File { relative } = &fixture.source_kind {
             assert!(
                 relative.starts_with(PathBuf::from("tests/fixtures")),
@@ -564,9 +637,11 @@ fn crate_catalog_covers_train_families_without_claiming_acceptance() -> Result<(
         }
     }
 
-    let observations = run_embedded_loaded(&loaded, &Selection::all())?;
+    let observations: Vec<CurrentObservation> = run_embedded_loaded(&loaded, &Selection::all())?;
     assert_eq!(observations.len(), loaded.fixtures.len());
     assert_eq!(observations.len(), run_embedded(&package_root(), &Selection::all())?.len());
+    let first = observe_with_embedded_parser(&loaded.fixtures[0])?;
+    assert_eq!(first.id, loaded.fixtures[0].id);
     for observation in &observations {
         assert_eq!(observation.disposition, Disposition::ProvisionalObservation);
         match &observation.parse {
@@ -595,6 +670,9 @@ fn crate_newline_fixtures_preserve_declared_bytes() -> Result<(), Box<dyn Error>
     let lf = loaded.select(&Selection::id("newline.lf"))?[0];
     let crlf = loaded.select(&Selection::id("newline.crlf"))?[0];
     let cr = loaded.select(&Selection::id("newline.bare-cr"))?[0];
+    assert_eq!(lf.newline, Some(NewlineVariant::Lf));
+    assert_eq!(crlf.newline, Some(NewlineVariant::Crlf));
+    assert_eq!(cr.newline, Some(NewlineVariant::Cr));
     assert!(lf.bytes.contains(&b'\n') && !lf.bytes.contains(&b'\r'));
     assert!(crlf.bytes.windows(2).any(|pair| pair == b"\r\n"));
     assert!(cr.bytes.contains(&b'\r') && !cr.bytes.contains(&b'\n'));

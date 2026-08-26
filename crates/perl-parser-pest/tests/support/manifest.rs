@@ -190,8 +190,8 @@ pub fn load_manifest_at(
     package_root: &Path,
     manifest_relative: &Path,
 ) -> Result<LoadedManifest, FixtureError> {
-    require_under_fixtures(manifest_relative)?;
     let manifest_path = resolve_crate_relative(package_root, manifest_relative)?;
+    require_under_fixtures(manifest_relative)?;
     let text = fs::read_to_string(&manifest_path).map_err(|error| {
         if error.kind() == ErrorKind::NotFound {
             FixtureError::MissingSource {
@@ -269,8 +269,8 @@ fn resolve_row(package_root: &Path, row: ManifestRow) -> Result<ResolvedFixture,
 
     let (source_kind, bytes) = match (row.source, row.inline_source) {
         (Some(relative), None) => {
-            require_under_fixtures(&relative)?;
             let absolute = resolve_crate_relative(package_root, &relative)?;
+            require_under_fixtures(&relative)?;
             let bytes = read_regular_file(&id, &relative, &absolute)?;
             (SourceKind::File { relative }, bytes)
         }
@@ -278,14 +278,14 @@ fn resolve_row(package_root: &Path, row: ManifestRow) -> Result<ResolvedFixture,
         _ => return Err(FixtureError::AmbiguousSource { id }),
     };
     let source_digest = sha256_digest(&bytes);
-    if let Some(declared) = row.source_digest.as_ref() {
-        if declared != &source_digest {
-            return Err(FixtureError::DigestMismatch {
-                id: id.clone(),
-                declared: declared.clone(),
-                actual: source_digest,
-            });
-        }
+    if let Some(declared) = row.source_digest.as_ref()
+        && declared != &source_digest
+    {
+        return Err(FixtureError::DigestMismatch {
+            id: id.clone(),
+            declared: declared.clone(),
+            actual: source_digest,
+        });
     }
 
     Ok(ResolvedFixture {
@@ -349,14 +349,14 @@ fn reject_shared_identity_with_distinct_bytes(
         if identity.is_empty() {
             continue;
         }
-        if let Some(previous) = by_identity.insert(identity, fixture) {
-            if previous.bytes != fixture.bytes {
-                return Err(FixtureError::IdentityByteMismatch {
-                    identity: identity.to_string(),
-                    left: source_identity(previous),
-                    right: source_identity(fixture),
-                });
-            }
+        if let Some(previous) = by_identity.insert(identity, fixture)
+            && previous.bytes != fixture.bytes
+        {
+            return Err(FixtureError::IdentityByteMismatch {
+                identity: identity.to_string(),
+                left: source_identity(previous),
+                right: source_identity(fixture),
+            });
         }
     }
     Ok(())
