@@ -38,8 +38,6 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      # changed=false runs close superseded automation PRs (#12606).
-      pull-requests: write
     outputs:
       changed: ${{ steps.payload.outputs.changed }}
     steps:
@@ -222,23 +220,54 @@ jobs:
         if: steps.payload.outputs.changed != 'true'
         run: echo "::notice::Generated status files are already current."
 
-      # #12606: with queued runs (#10199), a stale payload PR lingers when a
-      # later run regenerates at the newest SHA, finds the canonical files
-      # already current, and skips open-pr — the earlier PR is then neither
-      # updated nor invalidated. changed=false means the committed state
-      # matches a fresh deterministic regeneration, so any open
-      # automation/post-merge-status PR is by construction a no-op or a stale
-      # payload: close it as superseded. This also closes the case where main
-      # moved after the stale write landed, which a write-time source_sha
-      # rejection (the alternative interpretation) cannot reach.
+  # #12606: with queued runs (#10199), a stale payload PR lingers when a
+  # later run regenerates at the newest SHA, finds the canonical files
+  # already current, and skips open-pr — the earlier PR is then neither
+  # updated nor invalidated. changed=false means the committed state
+  # matches a fresh deterministic regeneration, so any open
+  # automation/post-merge-status PR is by construction a no-op or a stale
+  # payload: close it as superseded. This also closes the case where main
+  # moved after the stale write landed, which a write-time source_sha
+  # rejection (the alternative interpretation) cannot reach.
+  #
+  # This job is deliberately separate from generate: it holds
+  # pull-requests: write and must never execute repository code or Cargo
+  # dependencies (the workflow treats a compromised generator or build
+  # dependency as untrusted; a persisted gh shim must never see this
+  # token). No checkout, no build — API calls only.
+  close-superseded:
+    name: Close superseded generated status PRs
+    needs: generate
+    if: needs.generate.outputs.changed == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
       - name: Close superseded generated status PRs
-        if: steps.payload.outputs.changed != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          prs=$(gh pr list --state open --head automation/post-merge-status --json number --jq '.[].number')
-          for pr in $prs; do
+          # changed=false describes only the tree pinned to this run's event
+          # SHA. An older rerun (or an unlucky concurrency-group ordering)
+          # must not close a PR produced against a newer tree: close only
+          # when this run's SHA is still the default-branch tip. A skip is
+          # safe — the next push re-fires the healer.
+          tip=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_REF_NAME}" --jq .sha)
+          if [ "$tip" != "$GITHUB_SHA" ]; then
+            echo "::notice::run SHA ${GITHUB_SHA} is no longer the default-branch tip (${tip}); skipping closure"
+            exit 0
+          fi
+          # --head matches branch name only, including fork branches; restrict
+          # closure to same-repository PRs so a fork branch that happens to
+          # share the automation branch name is never touched.
+          gh pr list --state open --head automation/post-merge-status \
+            --json number,isCrossRepository \
+            --jq '.[] | select(.isCrossRepository | not) | .number' |
+          while read -r pr; do
+            [ -n "$pr" ] || continue
             gh pr close "$pr" --comment "Superseded: regeneration at ${GITHUB_SHA} found the canonical generated files already current (changed=false), so this open payload is stale (#12606)."
           done
 
