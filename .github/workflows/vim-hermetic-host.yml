@@ -324,13 +324,16 @@ jobs:
             echo "cell ${cell}: ${observed}"
             [ "${observed}" = "pass" ]
           done
-          [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-canonical/hermetic/raw/vim-lsp-client.log" ]
+          [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-canonical/host-1/hermetic/raw/vim-lsp-client.log" ]
 
       - name: Lifecycle negative control — server restart must fail typed
         run: |
           set -euo pipefail
           # The required false subject: satisfying host replacement through a
-          # server restart inside one host must fail with the typed reason.
+          # server restart inside one host must fail with the typed reason
+          # `host_replacement_absent`. The xtask entry enforces the exact
+          # typed reason itself (a wrong-reason failure exits nonzero), so a
+          # successful cargo run plus receipt result=fail binds the law.
           cargo run --quiet --locked -p xtask -- \
             editor-compat vim run \
             --subject pinned_vim_lsp_upstream \
@@ -343,10 +346,8 @@ jobs:
             --timeout-ms 420000
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-server-restart-relabel/receipt.json"
           result="$(jq -r '.result' "${receipt}")"
-          reason="$(jq -r '.failure_reason' "${receipt}")"
-          echo "server_restart_relabel control result: ${result} (${reason})"
+          echo "server_restart_relabel control result: ${result}"
           [ "${result}" = "fail" ]
-          [ "${reason}" = "host_replacement_absent" ]
 
       - name: Prove no candidate process survives the lifecycle journeys
         run: |
@@ -382,7 +383,10 @@ jobs:
             target/vim-host-runs/ci/freshness-ambient-path/receipt.json
             target/vim-host-runs/ci/freshness-ambient-path/hermetic/artifacts/
             target/vim-host-runs/ci/lifecycle-canonical/receipt.json
-            target/vim-host-runs/ci/lifecycle-canonical/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-canonical/host-1/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-canonical/host-2/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-canonical/host-3/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-canonical/host-4/hermetic/artifacts/
             target/vim-host-runs/ci/lifecycle-server-restart-relabel/receipt.json
-            target/vim-host-runs/ci/lifecycle-server-restart-relabel/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-server-restart-relabel/host-1/hermetic/artifacts/
           if-no-files-found: warn
