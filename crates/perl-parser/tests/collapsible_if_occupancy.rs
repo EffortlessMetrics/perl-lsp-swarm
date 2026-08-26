@@ -1,11 +1,12 @@
 //! Occupancy for #12732: `clippy::collapsible_if` must not be masked in perl-parser.
 //!
 //! Two independent occupancy surfaces:
-//! 1. Crate/file/item `allow`/`expect` attributes naming `clippy::collapsible_if`.
-//!    Clippy `--all-targets` is silent if the blanket returns; this scan is the
-//!    discriminator that still fails.
+//! 1. Crate/file/item `allow`/`expect` attributes naming `clippy::collapsible_if`,
+//!    including those nested in `cfg_attr`. Clippy `--all-targets` is silent if
+//!    the blanket returns; this scan is the discriminator that still fails.
 //! 2. `cargo clippy -p perl-parser --all-targets` with `--force-warn`, which
-//!    pierces allows and fails if any live site remains.
+//!    pierces allows and fails if any live site remains. An unsuccessful Clippy
+//!    run with no matching hits is an instrument failure, not a clean occupancy.
 //!
 //! Scanner literals and comments containing the lint name do not count as occupancy.
 
@@ -115,12 +116,75 @@ fn find_matching_paren(source: &str, open: usize) -> Option<usize> {
     None
 }
 
+fn skip_ws(source: &str, mut i: usize) -> usize {
+    while i < source.len() {
+        let Some(ch) = source[i..].chars().next() else {
+            break;
+        };
+        if !ch.is_whitespace() {
+            break;
+        }
+        i += ch.len_utf8();
+    }
+    i
+}
+
+fn ident_boundary_before(source: &str, i: usize) -> bool {
+    match source.get(..i).and_then(|head| head.chars().next_back()) {
+        None => true,
+        Some(ch) => !ch.is_ascii_alphanumeric() && ch != '_',
+    }
+}
+
+fn suppression_call_at(source: &str, i: usize) -> Option<(&'static str, usize)> {
+    if !ident_boundary_before(source, i) {
+        return None;
+    }
+    let rest = rest_at(source, i);
+    for (name, kind) in [("allow(", "allow"), ("expect(", "expect"), ("cfg_attr(", "cfg_attr")] {
+        if rest.starts_with(name) {
+            return Some((kind, i + name.len() - 1));
+        }
+    }
+    None
+}
+
 fn lint_list_contains_collapsible_if(inner: &str) -> bool {
     inner.split(',').any(|item| {
         let name =
             item.split("//").next().unwrap_or(item).split("/*").next().unwrap_or(item).trim();
         name == LINT
     })
+}
+
+fn scan_suppression_inner(source: &str) -> bool {
+    let mut i = 0;
+    while i < source.len() {
+        if let Some(end) = scan_comment_or_string(source, i) {
+            i = end;
+            continue;
+        }
+        if let Some((kind, open)) = suppression_call_at(source, i) {
+            if let Some(close) = find_matching_paren(source, open) {
+                let inner = &source[open + 1..close];
+                let occupied = if kind == "cfg_attr" {
+                    scan_suppression_inner(inner)
+                } else {
+                    lint_list_contains_collapsible_if(inner)
+                };
+                if occupied {
+                    return true;
+                }
+                i = close + 1;
+                continue;
+            }
+        }
+        let Some(ch) = source[i..].chars().next() else {
+            break;
+        };
+        i += ch.len_utf8();
+    }
+    false
 }
 
 fn allow_attrs_name_collapsible_if(source: &str) -> bool {
@@ -131,25 +195,29 @@ fn allow_attrs_name_collapsible_if(source: &str) -> bool {
             continue;
         }
         let rest = rest_at(source, i);
-        let marker = if rest.starts_with("#![allow(") {
-            Some("#![allow(")
-        } else if rest.starts_with("#[allow(") {
-            Some("#[allow(")
-        } else if rest.starts_with("#![expect(") {
-            Some("#![expect(")
-        } else if rest.starts_with("#[expect(") {
-            Some("#[expect(")
+        let prefix_len = if rest.starts_with("#![") {
+            Some(3usize)
+        } else if rest.starts_with("#[") {
+            Some(2usize)
         } else {
             None
         };
-        if let Some(marker) = marker {
-            let open = i + marker.len() - 1;
-            if let Some(close) = find_matching_paren(source, open) {
-                if lint_list_contains_collapsible_if(&source[open + 1..close]) {
-                    return true;
+        if let Some(prefix_len) = prefix_len {
+            let after = skip_ws(source, i + prefix_len);
+            if let Some((kind, open)) = suppression_call_at(source, after) {
+                if let Some(close) = find_matching_paren(source, open) {
+                    let inner = &source[open + 1..close];
+                    let occupied = if kind == "cfg_attr" {
+                        scan_suppression_inner(inner)
+                    } else {
+                        lint_list_contains_collapsible_if(inner)
+                    };
+                    if occupied {
+                        return true;
+                    }
+                    i = close + 1;
+                    continue;
                 }
-                i = close + 1;
-                continue;
             }
         }
         let Some(ch) = source[i..].chars().next() else {
@@ -192,31 +260,7 @@ fn json_quoted_after(haystack: &str, key: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-fn clippy_collapsible_if_hits() -> Result<Vec<String>, String> {
-    let output = Command::new(env!("CARGO"))
-        .args([
-            "clippy",
-            "-p",
-            "perl-parser",
-            "--all-targets",
-            "--locked",
-            "--offline",
-            "--no-deps",
-            "--message-format=json",
-            "--",
-            "--force-warn",
-            LINT,
-            "-A",
-            "missing_docs",
-            "-A",
-            "clippy::print_stdout",
-            "-A",
-            "clippy::print_stderr",
-        ])
-        .output()
-        .map_err(|error| format!("failed to spawn cargo clippy: {error}"))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+fn clippy_hits_from_stdout(stdout: &str) -> Vec<String> {
     let mut hits = Vec::new();
     for line in stdout.lines() {
         if !line.contains("compiler-message") || !line.contains(LINT) {
@@ -249,7 +293,55 @@ fn clippy_collapsible_if_hits() -> Result<Vec<String>, String> {
     }
     hits.sort();
     hits.dedup();
-    Ok(hits)
+    hits
+}
+
+fn clippy_hits_from_parts(
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+) -> Result<Vec<String>, String> {
+    let hits = clippy_hits_from_stdout(stdout);
+    if !hits.is_empty() {
+        return Ok(hits);
+    }
+    if success {
+        return Ok(hits);
+    }
+    let detail = stderr.trim();
+    Err(if detail.is_empty() {
+        "cargo clippy exited unsuccessfully with no collapsible_if hits".to_string()
+    } else {
+        format!("cargo clippy exited unsuccessfully with no collapsible_if hits; stderr:\n{detail}")
+    })
+}
+
+fn clippy_collapsible_if_hits() -> Result<Vec<String>, String> {
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "clippy",
+            "-p",
+            "perl-parser",
+            "--all-targets",
+            "--locked",
+            "--no-deps",
+            "--message-format=json",
+            "--",
+            "--force-warn",
+            LINT,
+            "-A",
+            "missing_docs",
+            "-A",
+            "clippy::print_stdout",
+            "-A",
+            "clippy::print_stderr",
+        ])
+        .output()
+        .map_err(|error| format!("failed to spawn cargo clippy: {error}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    clippy_hits_from_parts(output.status.success(), &stdout, &stderr)
 }
 
 #[test]
@@ -285,6 +377,47 @@ fn expect_attr_fixture_is_detected() {
 }
 
 #[test]
+fn cfg_attr_allow_fixture_is_detected() {
+    let crate_level = r#"
+#![cfg_attr(unix, allow(clippy::collapsible_if))]
+"#;
+    assert!(allow_attrs_name_collapsible_if(crate_level), "crate-level cfg_attr allow must occupy");
+
+    let item = r#"
+#[cfg_attr(test, expect(clippy::collapsible_if, reason = "temporary"))]
+fn nested() {}
+"#;
+    assert!(allow_attrs_name_collapsible_if(item), "item cfg_attr expect must occupy");
+}
+
+#[test]
+fn nested_cfg_attr_allow_fixture_is_detected() {
+    let nested = r#"
+#![cfg_attr(unix, cfg_attr(feature = "x", allow(clippy::collapsible_if)))]
+"#;
+    assert!(allow_attrs_name_collapsible_if(nested), "nested cfg_attr allow must occupy");
+}
+
+#[test]
+fn cfg_attr_without_collapsible_if_does_not_occupy() {
+    let other_lint = r#"
+#![cfg_attr(unix, allow(clippy::too_many_lines))]
+"#;
+    assert!(
+        !allow_attrs_name_collapsible_if(other_lint),
+        "cfg_attr naming a different lint must not occupy"
+    );
+
+    let deny = r#"
+#![cfg_attr(unix, deny(clippy::collapsible_if))]
+"#;
+    assert!(
+        !allow_attrs_name_collapsible_if(deny),
+        "cfg_attr deny of collapsible_if must not occupy"
+    );
+}
+
+#[test]
 fn comment_and_string_literals_do_not_occupy() {
     let comment = r#"
 // clippy::collapsible_if
@@ -301,6 +434,14 @@ const MSG: &str = "clippy::collapsible_if";
     assert!(
         !allow_attrs_name_collapsible_if(string),
         "string literal mentioning the lint must not occupy"
+    );
+
+    let cfg_comment = r#"
+// #![cfg_attr(unix, allow(clippy::collapsible_if))]
+"#;
+    assert!(
+        !allow_attrs_name_collapsible_if(cfg_comment),
+        "comment mentioning cfg_attr allow must not occupy"
     );
 }
 
@@ -344,6 +485,53 @@ fn lib_rs_crate_allow_list_does_not_name_collapsible_if() {
         !allow_attrs_name_collapsible_if(lib),
         "crates/perl-parser/src/lib.rs crate-level allow list must not name clippy::collapsible_if"
     );
+}
+
+fn sample_compiler_message(file: &str, line: u64) -> String {
+    format!(
+        r#"{{"reason":"compiler-message","message":{{"code":{{"code":"{LINT}"}},"spans":[{{"file_name":"{file}","line_start":{line}}}]}}}}"#
+    )
+}
+
+#[test]
+fn unsuccessful_clippy_without_hits_is_instrument_failure() {
+    let result = clippy_hits_from_parts(false, "", "error: failed to run rustc");
+    assert!(
+        result.is_err(),
+        "unsuccessful clippy with no hits must not report clean occupancy; {result:?}"
+    );
+    if let Err(msg) = result {
+        assert!(
+            msg.contains("unsuccessfully"),
+            "instrument failure must name unsuccessful clippy, got: {msg}"
+        );
+        assert!(
+            msg.contains("failed to run rustc"),
+            "instrument failure must surface stderr, got: {msg}"
+        );
+    }
+}
+
+#[test]
+fn unsuccessful_clippy_with_hits_still_reports_occupancy() {
+    let stdout = sample_compiler_message("crates/perl-parser/src/lib.rs", 10);
+    let result = clippy_hits_from_parts(false, &stdout, "error: aborting due to previous error");
+    assert!(
+        result.is_ok(),
+        "remaining collapsible_if hits must still occupy when clippy fails: {result:?}"
+    );
+    if let Ok(hits) = result {
+        assert_eq!(hits, vec!["crates/perl-parser/src/lib.rs:10".to_string()]);
+    }
+}
+
+#[test]
+fn successful_clippy_without_hits_is_clean() {
+    let result = clippy_hits_from_parts(true, "", "");
+    assert!(result.is_ok(), "successful empty oracle must not be instrument failure: {result:?}");
+    if let Ok(hits) = result {
+        assert!(hits.is_empty(), "successful empty oracle must be clean, got {hits:?}");
+    }
 }
 
 fn assert_no_collapsible_if_hits(result: Result<Vec<String>, String>) {
