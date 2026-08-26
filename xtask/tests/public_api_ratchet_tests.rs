@@ -399,16 +399,22 @@ fn non_facade_crates_have_no_baselines() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-/// Test J (edge case & regression): perllsp baseline has exactly 2 lines (mod + re-export)
+/// Test J (regression): perllsp baseline keeps the thin-facade shape
 ///
-/// `perllsp` is a thin binary wrapper that re-exports from `perl-lsp-rs`.
-/// Its public API surface should be minimal: just the module declaration and
-/// the re-export statement. This test verifies the format is preserved as expected.
+/// `perllsp` is the published Cargo facade that re-exports the `perl-lsp-rs`
+/// implementation. Since #7924 it also carries reviewed facade-owned modules
+/// (`claude_compat` compatibility contracts), and #12030 regenerated the
+/// baseline additively to that accepted surface.
 ///
-/// If perllsp's baseline grows significantly, it may indicate:
-/// - Additional public API was accidentally added to the lib target
-/// - The re-export pattern changed
-/// - The baseline was regenerated incorrectly
+/// This test pins:
+/// - line 1: the crate module declaration;
+/// - line 2: the wholesale `perl_lsp` re-export;
+/// - every later line: an item inside a facade-owned module declared in the
+///   baseline itself (`pub mod perllsp::<name>`).
+///
+/// A lost re-export, a renamed module declaration, or a root-level public item
+/// outside those modules (an accidental lib-target addition) fails here before
+/// CI's cargo-public-api diff runs.
 #[test]
 fn perllsp_baseline_has_expected_reexport_format() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
@@ -419,27 +425,45 @@ fn perllsp_baseline_has_expected_reexport_format() -> Result<(), Box<dyn std::er
 
     let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
 
-    assert_eq!(
-        lines.len(),
-        2,
-        "perllsp baseline should have exactly 2 lines (mod + re-export), got {}. Content:\n{}",
+    assert!(
+        lines.len() >= 2,
+        "perllsp baseline should have at least 2 lines (mod + re-export), got {}. Content:\n{}",
         lines.len(),
         content
     );
 
-    // Verify first line is the module declaration
+    // First line is the crate module declaration
     assert!(
-        lines[0].starts_with("pub mod perllsp"),
-        "perllsp baseline first line should be module declaration, got: {}",
+        lines[0] == "pub mod perllsp",
+        "perllsp baseline first line should be 'pub mod perllsp', got: {}",
         lines[0]
     );
 
-    // Verify second line is a re-export (uses pub use and contains <<...>>)
+    // Second line is the wholesale implementation re-export
     assert!(
-        lines[1].contains("pub use") && lines[1].contains("<<"),
-        "perllsp baseline second line should be a re-export pattern, got: {}",
+        lines[1] == "pub use perllsp::<<perl_lsp::*>>",
+        "perllsp baseline second line should be 'pub use perllsp::<<perl_lsp::*>>', got: {}",
         lines[1]
     );
+
+    // Facade-owned modules are declared in the baseline as `pub mod perllsp::<name>`;
+    // every remaining item must live inside one of them. Root-level items beyond
+    // the re-export would mean the lib target grew its own public API again.
+    let owned_prefixes: Vec<String> = lines[1..]
+        .iter()
+        .filter_map(|line| line.strip_prefix("pub mod perllsp::"))
+        .map(|module| format!("perllsp::{module}::"))
+        .collect();
+
+    for line in &lines[1..] {
+        if *line == "pub use perllsp::<<perl_lsp::*>>" || line.starts_with("pub mod perllsp::") {
+            continue;
+        }
+        assert!(
+            owned_prefixes.iter().any(|prefix| line.contains(prefix.as_str())),
+            "perllsp baseline item is not under a facade-owned module (accidental lib-target API?): {line}"
+        );
+    }
 
     Ok(())
 }
