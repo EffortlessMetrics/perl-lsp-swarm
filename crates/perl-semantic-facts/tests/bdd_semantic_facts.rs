@@ -6,6 +6,7 @@
 //! (goto-definition, rename, hover, completion) depend on.
 
 #![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, DefinitionCandidate, DefinitionRank, DefinitionRankReason,
