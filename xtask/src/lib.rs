@@ -19,6 +19,7 @@ pub mod emacs_host_run;
 pub mod emacs_subject_manifest;
 pub mod file_identity;
 pub mod git_ancestry;
+pub mod native_neovim_actions;
 pub mod publication_drift;
 pub mod rust_hygiene;
 pub mod vim_host_diagnostics_run;

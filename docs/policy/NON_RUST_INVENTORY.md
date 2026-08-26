@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11986 |
-| Rust-family files | 3644 |
-| Non-Rust files | 8342 |
-| Allowlisted | 6079 |
+| Total tracked files | 12003 |
+| Rust-family files | 3648 |
+| Non-Rust files | 8355 |
+| Allowlisted | 6092 |
 | Unclassified | 2263 |
 
 ## Non-Rust files by category
@@ -19,9 +19,9 @@
 | config | 434 |
 | documentation | 2734 |
 | generated | 2 |
-| production | 326 |
-| test | 1974 |
-| tooling | 609 |
+| production | 328 |
+| test | 1986 |
+| tooling | 608 |
 | unclassified | 2263 |
 
 ## Unclassified files
@@ -3535,8 +3535,22 @@
 | `ci/unwrap_prod_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/unwrap_server_impl_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/xtask_wrapper.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `clients/lite-xl/candidate_manifest.lua` | production | `non-rust-litexl-candidate-manifest` | editor/lite-xl |
+| `clients/lite-xl/compose.lua` | production | `non-rust-litexl-composer` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/diagnostics.lua` | test | `non-rust-litexl-pristine-base-diagnostics` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/helpdoc.lua` | test | `non-rust-litexl-pristine-base-helpdoc` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/init.lua` | test | `non-rust-litexl-pristine-base-init` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/json.lua` | test | `non-rust-litexl-pristine-base-json` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/listbox.lua` | test | `non-rust-litexl-pristine-base-listbox` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/server.lua` | test | `non-rust-litexl-pristine-base-server` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/symbolresults.lua` | test | `non-rust-litexl-pristine-base-symbolresults` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/timer.lua` | test | `non-rust-litexl-pristine-base-timer` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/util.lua` | test | `non-rust-litexl-pristine-base-util` | editor/lite-xl |
 | `clients/lite-xl/tests/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `clients/lite-xl/tests/capability_manifest_test.lua` | test | `non-rust-litexl-capability-manifest-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/compose_integration_test.lua` | test | `non-rust-litexl-compose-integration-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/compose_manifest_test.lua` | test | `non-rust-litexl-compose-manifest-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/compose_materializer_test.lua` | test | `non-rust-litexl-compose-materializer-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/diagnostic_position_test.lua` | test | `non-rust-litexl-diagnostic-position-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/diagnostics_currentness_test.lua` | test | `non-rust-litexl-diagnostics-currentness-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/harness.lua` | test | `non-rust-litexl-journey-harness` | editor/lite-xl |
@@ -6544,7 +6558,6 @@
 | `scripts/test/vim-clients/vim-lsp-adapter.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-diagnostics-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
-| `scripts/test/vim-host-freshness-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_iterative_parser.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
