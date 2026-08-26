@@ -534,7 +534,7 @@ perllsp --features-json --feature-profile production | python3 -m json.tool
 3. Verify the TOML is valid:
 
    ```bash
-   perllsp --check-project .  # will warn about bad .perl-lsp.toml
+   perllsp --doctor .  # reports whether .perl-lsp.toml loaded
    ```
 
 ### Module resolution not finding your modules

@@ -102,86 +102,102 @@ mod guard {
         if has_listed_file_check_flag(line)
             && contains_ci(line, "syntax check")
             && !contains_ci(line, "native")
-            && !is_negated(line)
+            && !negates_syntax_check(line)
         {
             findings.push(Finding {
-            rule: "bare_syntax_check",
-            line: line_no,
-            excerpt: line.to_string(),
-            replacement: "Name the validator: `perllsp --check` is a native in-process parser check, not a generic syntax check and not `perl -c`.",
-        });
+                rule: "bare_syntax_check",
+                line: line_no,
+                excerpt: line.to_string(),
+                replacement: "Name the validator: `perllsp --check` is a native in-process parser check, not a generic syntax check and not `perl -c`.",
+            });
         }
 
         if has_shipped_check_project(line)
             && (contains_ci(line, "strict")
                 || contains_ci(line, "all-valid")
                 || contains_ci(line, "all files parse clean"))
-            && !is_negated(line)
+            && !negates_strict_or_all_clean(line)
         {
             findings.push(Finding {
-            rule: "parsability_called_strict",
-            line: line_no,
-            excerpt: line.to_string(),
-            replacement: "`perllsp --check-project` is a native parsability report at a fixed 80% threshold, not a strict all-clean check. Listed-file native checking is `--check`.",
-        });
+                rule: "parsability_called_strict",
+                line: line_no,
+                excerpt: line.to_string(),
+                replacement: "`perllsp --check-project` is a native parsability report at a fixed 80% threshold, not a strict all-clean check. Listed-file native checking is `--check`.",
+            });
         }
 
-        if contains_ci(line, "80%") && contains_ci(line, "strict syntax") && !is_negated(line) {
+        if contains_ci(line, "80%")
+            && contains_ci(line, "strict syntax")
+            && !negates_strict_or_all_clean(line)
+        {
             findings.push(Finding {
-            rule: "threshold_called_strict_syntax",
-            line: line_no,
-            excerpt: line.to_string(),
-            replacement: "The 80% figure is the `--check-project` parsability threshold, not strict syntax validation.",
-        });
+                rule: "threshold_called_strict_syntax",
+                line: line_no,
+                excerpt: line.to_string(),
+                replacement: "The 80% figure is the `--check-project` parsability threshold, not strict syntax validation.",
+            });
         }
 
         if has_native_check_command(line)
             && identifies_native_check_as_perl(line)
-            && !is_negated(line)
+            && !negates_native_execution(line)
         {
             findings.push(Finding {
-            rule: "native_said_to_run_perl",
-            line: line_no,
-            excerpt: line.to_string(),
-            replacement: "Native `--check` / `--check-project` are in-process and do not execute project Perl. `perl -c` is the editor/DAP real-Perl path.",
-        });
+                rule: "native_said_to_run_perl",
+                line: line_no,
+                excerpt: line.to_string(),
+                replacement: "Native `--check` / `--check-project` are in-process and do not execute project Perl. `perl -c` is the editor/DAP real-Perl path.",
+            });
         }
 
-        if has_native_check_command(line) && contains_ci(line, "sandbox") && !is_negated(line) {
+        if has_native_check_command(line)
+            && contains_ci(line, "sandbox")
+            && !negates_sandbox_claim(line)
+        {
             findings.push(Finding {
-            rule: "checking_called_sandboxed",
-            line: line_no,
-            excerpt: line.to_string(),
-            replacement: "Do not claim sandboxing. Native checks do not execute Perl; `perl -c` does execute compile-phase code and is not sandboxed.",
-        });
+                rule: "checking_called_sandboxed",
+                line: line_no,
+                excerpt: line.to_string(),
+                replacement: "Do not claim sandboxing. Native checks do not execute Perl; `perl -c` does execute compile-phase code and is not sandboxed.",
+            });
         }
 
         for flag in UNSHIPPED_PERLLSP_FLAGS {
-            if line.contains(&format!("perllsp {flag}")) && !is_negated(line) {
+            if line.contains(&format!("perllsp {flag}")) && !negates_unshipped(line) {
                 findings.push(Finding {
-                rule: "unshipped_flag_recommended",
-                line: line_no,
-                excerpt: line.to_string(),
-                replacement: "Do not recommend `--check-project-strict`, `--parsability-report`, or `--check-perl` as current commands. They are unshipped (#10766 / #10672).",
-            });
+                    rule: "unshipped_flag_recommended",
+                    line: line_no,
+                    excerpt: line.to_string(),
+                    replacement: "Do not recommend `--check-project-strict`, `--parsability-report`, or `--check-perl` as current commands. They are unshipped (#10766 / #10672).",
+                });
             }
         }
     }
 
+    fn has_flag_token(line: &str, flag: &str) -> bool {
+        let mut search_from = 0;
+        while let Some(rel) = line.get(search_from..).and_then(|rest| rest.find(flag)) {
+            let after = search_from + rel + flag.len();
+            let next = line.get(after..).and_then(|rest| rest.chars().next());
+            let bounded = match next {
+                None => true,
+                Some(c) if c.is_ascii_alphanumeric() || c == '-' => false,
+                Some(_) => true,
+            };
+            if bounded {
+                return true;
+            }
+            search_from = after;
+        }
+        false
+    }
+
     fn has_listed_file_check_flag(line: &str) -> bool {
-        line.contains("`--check`")
-            || line.contains("'--check'")
-            || line.contains("\"--check\"")
-            || line.contains("--check ")
-            || line.contains("--check<")
-            || line.ends_with("--check")
+        has_flag_token(line, CHECK_FLAG)
     }
 
     fn has_shipped_check_project(line: &str) -> bool {
-        if !line.contains(CHECK_PROJECT_FLAG) {
-            return false;
-        }
-        line.replace("--check-project-strict", "").contains(CHECK_PROJECT_FLAG)
+        has_flag_token(line, CHECK_PROJECT_FLAG)
     }
 
     fn has_native_check_command(line: &str) -> bool {
@@ -201,27 +217,40 @@ mod guard {
         line.to_ascii_lowercase().contains(&needle.to_ascii_lowercase())
     }
 
-    fn is_negated(line: &str) -> bool {
-        let lower = line.to_ascii_lowercase();
-        const MARKERS: &[&str] = &[
-            "not ",
-            "n't",
-            "never ",
-            "wrong",
-            "do not",
-            "does not",
-            "must not",
-            "cannot ",
-            "there is no",
-            "there are no",
-            "unshipped",
-            "not shipped",
-            "does not exist",
-            "is not a current",
-            "not a current",
-            "not on current",
-        ];
-        MARKERS.iter().any(|marker| lower.contains(marker))
+    fn negates_syntax_check(line: &str) -> bool {
+        contains_ci(line, "not a syntax check") || contains_ci(line, "without naming")
+    }
+
+    fn negates_strict_or_all_clean(line: &str) -> bool {
+        contains_ci(line, "not a strict")
+            || contains_ci(line, "not strict")
+            || contains_ci(line, "not all-valid")
+            || contains_ci(line, "not all-clean")
+            || contains_ci(line, "do not describe")
+            || contains_ci(line, "is wrong")
+            || contains_ci(line, "wrong:")
+    }
+
+    fn negates_native_execution(line: &str) -> bool {
+        contains_ci(line, "not execute")
+            || contains_ci(line, "does not run")
+            || contains_ci(line, "do not run")
+            || contains_ci(line, "not a native")
+    }
+
+    fn negates_sandbox_claim(line: &str) -> bool {
+        contains_ci(line, "not sandboxed")
+            || contains_ci(line, "not a sandbox")
+            || contains_ci(line, "does not claim")
+            || contains_ci(line, "do not claim")
+    }
+
+    fn negates_unshipped(line: &str) -> bool {
+        contains_ci(line, "there is no")
+            || contains_ci(line, "not shipped")
+            || contains_ci(line, "does not exist")
+            || contains_ci(line, "unshipped")
+            || contains_ci(line, "not on current")
     }
 }
 
@@ -326,7 +355,70 @@ mod tests {
     }
 
     #[test]
-    fn opposite_direction_incomplete_report_must_not_pass_as_strict() {
+    fn unrelated_negation_does_not_exempt_a_strict_parsability_claim() {
+        let findings = scan_current_copy(
+            "`perllsp --check-project` is a strict project check, not a slow one\n",
+        );
+        assert_eq!(
+            rules_in(&findings),
+            vec!["parsability_called_strict"],
+            "unrelated 'not a slow one' must not disable the strict-claim rule, got {findings:?}"
+        );
+        assert!(
+            !scan_current_copy(FIRST_RED_FIXTURE).is_empty(),
+            "narrowing negation must still catch the original 80% strict-syntax fixture"
+        );
+    }
+
+    #[test]
+    fn unrelated_do_not_call_does_not_exempt_a_syntax_check_claim() {
+        let findings =
+            scan_current_copy("`perllsp --check` is a syntax check; do not call it slow\n");
+        assert_eq!(
+            rules_in(&findings),
+            vec!["bare_syntax_check"],
+            "unrelated 'do not call it slow' must not disable the syntax-check rule, got {findings:?}"
+        );
+        assert_eq!(
+            rules_in(&scan_current_copy(
+                "Do not call `perllsp --check` a syntax check without naming the native parser.\n",
+            )),
+            Vec::<&str>::new(),
+            "the canonical CHECKING.md prohibition must still pass"
+        );
+    }
+
+    #[test]
+    fn wrapped_not_execute_is_negation_not_a_run_perl_claim() {
+        assert!(
+            scan_current_copy(
+                "not execute project Perl). `--check` is listed-file; `--check-project` is an\n",
+            )
+            .is_empty(),
+            "a wrapped 'does not execute' continuation must not be a native-runs-perl finding"
+        );
+        assert_eq!(
+            rules_in(&scan_current_copy(NATIVE_RUNS_PERL)),
+            vec!["native_said_to_run_perl"],
+            "narrowing must still catch an explicit native-runs-perl claim"
+        );
+    }
+
+    #[test]
+    fn unshipped_strict_flag_is_not_a_listed_file_check() {
+        let findings = scan_current_copy("perllsp --check-project-strict lib/  # syntax check\n");
+        assert!(
+            !rules_in(&findings).contains(&"bare_syntax_check"),
+            "--check-project-strict must not be tokenized as --check, got {findings:?}"
+        );
+        assert!(
+            rules_in(&findings).contains(&"unshipped_flag_recommended"),
+            "the unshipped-flag rule must still fire, got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn percentage_pass_must_not_be_called_all_valid_strict() {
         let findings = scan_current_copy(
             "perllsp --check-project .  # Assessment: PASS (80.0% parsable) is the strict all-valid project check\n",
         );
@@ -425,12 +517,40 @@ mod tests {
             "not a strict all-clean",
             "There is no `perllsp --check-perl`",
             "There is no `perllsp --check-project-strict`",
+            "PATH `perl -c`",
+            "configured interpreter",
+            "stderr",
         ] {
             assert!(text.contains(needle), "CHECKING.md must contain {needle:?}");
         }
         assert!(
             !text.contains("SARIF") && !text.contains("application/sarif"),
             "do not document unshipped JSON/SARIF project-check as current"
+        );
+    }
+
+    #[test]
+    fn configuration_toml_validation_points_at_doctor_not_check_project() {
+        let text =
+            std::fs::read_to_string(workspace_root().join("docs/reference/CONFIGURATION.md"))
+                .expect("docs/reference/CONFIGURATION.md");
+        assert!(
+            text.contains("perllsp --doctor ."),
+            "toml-load troubleshooting must name --doctor"
+        );
+        assert!(
+            !text.contains("will warn about bad .perl-lsp.toml"),
+            "--check-project does not validate .perl-lsp.toml"
+        );
+    }
+
+    #[test]
+    fn vscode_check_syntax_names_path_perl() {
+        let text = std::fs::read_to_string(workspace_root().join("vscode-extension/README.md"))
+            .expect("vscode-extension/README.md");
+        assert!(
+            text.contains("PATH `perl -c`"),
+            "Perl: Check Syntax must name PATH perl, not a configured DAP interpreter"
         );
     }
 

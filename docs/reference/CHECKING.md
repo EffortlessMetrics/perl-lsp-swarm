@@ -62,10 +62,12 @@ perllsp --check-project .
 
 ## Real-Perl compile observation
 
-VS Code **Perl: Check Syntax** and DAP pre-launch run `perl -c` on a **saved**
-file using the configured Perl. That may execute compile-phase code (`BEGIN`,
-imports, source filters). It is optional and is not a native-language-intelligence
-prerequisite. It is not sandboxed and is not a `perllsp` flag.
+VS Code **Perl: Check Syntax** runs PATH `perl -c` on the saved active file
+(`vscode-extension/src/documentCommands.ts`). DAP pre-launch runs `perl -c`
+with the debug adapter's configured interpreter. Either path may execute
+compile-phase code (`BEGIN`, imports, source filters). This is optional and is
+not a native-language-intelligence prerequisite. It is not sandboxed and is not
+a `perllsp` flag.
 
 Do not show project-recursive real-Perl checking, dirty-buffer compile, or
 workspace-controlled execution as current `perllsp` commands.
@@ -76,9 +78,11 @@ workspace-controlled execution as current `perllsp` commands.
 | --- | --- | --- |
 | `perllsp --check file.pl` | listed files readable, no blocking findings | any listed path unreadable or blocking |
 | `perllsp --check-project dir` | no Perl files, or ≥80% of scanned files clean | missing/non-directory path, or below 80% |
-| editor `perl -c` | Perl accepted the saved file | Perl rejected it |
+| PATH / configured `perl -c` | Perl accepted the saved file | Perl rejected it |
 
 Stdout for `--check` is `path: ok` or `path: FAIL - …` plus optional context
-and advisory lines. Stdout for `--check-project` is the `Perl Project
+and advisory lines. Read failures (`missing`, unreadable, directory) print to
+**stderr** with a hint and still count toward exit `1`; they do not emit a
+`path: FAIL` stdout record. Stdout for `--check-project` is the `Perl Project
 Parsability Report`. Neither command currently emits a versioned machine
 project-check document.
