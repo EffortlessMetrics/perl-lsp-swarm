@@ -9,8 +9,9 @@
 //! `build_emacs_command`/`HermeticLayout`/`run_owned_process`.
 //!
 //! The generic process-tree cleanup boundary (owned-process-tree semantics,
-//! descendant verification, truncation metadata) is #8734's claim; this module
-//! consumes the current cleanup semantics without weakening or widening them.
+//! descendant verification, truncation metadata) is owned by #8734's runner
+//! substrate. This module consumes those fail-closed semantics without
+//! claiming Emacs, Eglot, lsp-mode, diagnostic, root, or install support.
 
 use anyhow::{Context, Result, bail, ensure};
 use std::fmt;
