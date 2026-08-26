@@ -51,7 +51,7 @@ impl TempPackage {
 
     fn write_source(&self, relative: &str, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
         let path = self.root().join(relative);
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
             fs::create_dir_all(parent)?;
         }
         fs::write(path, bytes)?;
@@ -563,6 +563,27 @@ fn symlink_source_is_rejected() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn directory_symlink_component_is_rejected() -> Result<(), Box<dyn Error>> {
+    let package = TempPackage::new()?;
+    let outside = tempfile::tempdir()?;
+    fs::write(outside.path().join("x.pl"), b"my $x = 1;\n")?;
+    let redirect = package.root().join("tests/fixtures/redirect");
+    std::os::unix::fs::symlink(outside.path(), &redirect)?;
+    package.write_manifest(&wrap_manifest(&valid_row(
+        "dir-link",
+        "path",
+        "tests/fixtures/redirect/x.pl",
+    )))?;
+    let error = match load_manifest(package.root()) {
+        Err(error) => error,
+        Ok(_) => return Err("directory symlink component must fail".into()),
+    };
+    assert!(matches!(error, FixtureError::SymlinkSource { id, .. } if id == "dir-link"));
+    Ok(())
+}
+
 #[test]
 fn family_selection_preserves_insertion_order() -> Result<(), Box<dyn Error>> {
     let package = TempPackage::new()?;
@@ -579,6 +600,45 @@ fn family_selection_preserves_insertion_order() -> Result<(), Box<dyn Error>> {
     let selected = loaded.select(&Selection::family("keep"))?;
     let ids: Vec<&str> = selected.iter().map(|fixture| fixture.id.as_str()).collect();
     assert_eq!(ids, ["keep-1", "keep-2"]);
+    Ok(())
+}
+
+#[test]
+fn dotted_crate_relative_source_is_accepted() -> Result<(), Box<dyn Error>> {
+    let package = TempPackage::new()?;
+    package.write_source("tests/fixtures/sources/ok.pl", b"my $x = 1;\n")?;
+    package.write_manifest(&wrap_manifest(&valid_row(
+        "dotted",
+        "path",
+        "./tests/fixtures/sources/ok.pl",
+    )))?;
+    let loaded = load_manifest(package.root())?;
+    assert_eq!(loaded.select(&Selection::id("dotted"))?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn embedded_runner_skips_non_embedded_rows_and_fails_when_none_remain() -> Result<(), Box<dyn Error>>
+{
+    let package = TempPackage::new()?;
+    package.write_source("tests/fixtures/sources/ok.pl", b"my $x = 1;\n")?;
+    package.write_manifest(&wrap_manifest(
+        r#"
+[[fixtures]]
+id = "packaged-only"
+family = "mode"
+source = "tests/fixtures/sources/ok.pl"
+classification = "valid"
+execution_modes = ["packaged"]
+observation_owner = "8419"
+disposition = "provisional-observation"
+"#,
+    ))?;
+    let error = match run_embedded(package.root(), &Selection::all()) {
+        Err(error) => error,
+        Ok(_) => return Err("packaged-only catalog must not run embedded".into()),
+    };
+    assert!(matches!(error, FixtureError::EmptySelection { .. }));
     Ok(())
 }
 

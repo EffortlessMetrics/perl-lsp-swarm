@@ -5,7 +5,7 @@ use super::FixtureError;
 /// Join a crate-local relative path onto `package_root`.
 ///
 /// Rejects absolute paths and any `..` / prefix component so a fixture cannot
-/// walk out of the package tree by normalization.
+/// walk out of the package tree by normalization. `CurDir` (`.`) is ignored.
 pub fn resolve_crate_relative(
     package_root: &Path,
     relative: &Path,
@@ -24,7 +24,8 @@ pub fn resolve_crate_relative(
 
 /// File sources must live under `tests/fixtures/` inside the package.
 pub fn require_under_fixtures(relative: &Path) -> Result<(), FixtureError> {
-    let mut components = relative.components();
+    let mut components =
+        relative.components().filter(|component| !matches!(component, Component::CurDir));
     let tests = components.next();
     let fixtures = components.next();
     match (tests, fixtures) {

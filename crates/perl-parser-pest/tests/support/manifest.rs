@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -234,12 +234,22 @@ pub fn load_manifest_at(
 impl LoadedManifest {
     /// Select rows in insertion order. An empty match fails closed.
     pub fn select(&self, selection: &Selection) -> Result<Vec<&ResolvedFixture>, FixtureError> {
+        self.select_with_mode(selection, None)
+    }
+
+    /// Select rows, optionally requiring an execution mode.
+    pub fn select_with_mode(
+        &self,
+        selection: &Selection,
+        mode: Option<ExecutionMode>,
+    ) -> Result<Vec<&ResolvedFixture>, FixtureError> {
         let selected: Vec<&ResolvedFixture> = self
             .fixtures
             .iter()
             .filter(|fixture| {
                 selection.id.as_ref().is_none_or(|id| fixture.id == *id)
                     && selection.family.as_ref().is_none_or(|family| fixture.family == *family)
+                    && mode.is_none_or(|required| fixture.execution_modes.contains(&required))
             })
             .collect();
         if selected.is_empty() {
@@ -271,6 +281,7 @@ fn resolve_row(package_root: &Path, row: ManifestRow) -> Result<ResolvedFixture,
         (Some(relative), None) => {
             let absolute = resolve_crate_relative(package_root, &relative)?;
             require_under_fixtures(&relative)?;
+            reject_symlink_components(&id, package_root, &relative)?;
             let bytes = read_regular_file(&id, &relative, &absolute)?;
             (SourceKind::File { relative }, bytes)
         }
@@ -304,6 +315,44 @@ fn resolve_row(package_root: &Path, row: ManifestRow) -> Result<ResolvedFixture,
         bytes,
         source_digest,
     })
+}
+
+fn reject_symlink_components(
+    id: &str,
+    package_root: &Path,
+    relative: &Path,
+) -> Result<(), FixtureError> {
+    let mut current = package_root.to_path_buf();
+    for component in relative.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(name) => {
+                current.push(name);
+                let metadata = fs::symlink_metadata(&current).map_err(|error| {
+                    if error.kind() == ErrorKind::NotFound {
+                        FixtureError::MissingSource {
+                            id: id.to_string(),
+                            path: relative.display().to_string(),
+                        }
+                    } else {
+                        FixtureError::Unreadable {
+                            id: id.to_string(),
+                            path: relative.display().to_string(),
+                            detail: error.to_string(),
+                        }
+                    }
+                })?;
+                if metadata.file_type().is_symlink() {
+                    return Err(FixtureError::SymlinkSource {
+                        id: id.to_string(),
+                        path: relative.display().to_string(),
+                    });
+                }
+            }
+            _ => return Err(FixtureError::PathEscape(relative.display().to_string())),
+        }
+    }
+    Ok(())
 }
 
 fn read_regular_file(id: &str, relative: &Path, absolute: &Path) -> Result<Vec<u8>, FixtureError> {

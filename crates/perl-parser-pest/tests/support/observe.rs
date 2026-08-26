@@ -4,7 +4,10 @@ use std::path::Path;
 use perl_parser_pest::PureRustPerlParser;
 
 use super::digest::sha256_digest;
-use super::{Disposition, FixtureError, LoadedManifest, ResolvedFixture, Selection, load_manifest};
+use super::{
+    Disposition, ExecutionMode, FixtureError, LoadedManifest, ResolvedFixture, Selection,
+    load_manifest,
+};
 
 /// Current parser return for one fixture. This is an observation, not a verdict.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +120,11 @@ pub fn run_embedded_loaded(
     loaded: &LoadedManifest,
     selection: &Selection,
 ) -> Result<Vec<CurrentObservation>, FixtureError> {
-    loaded.select(selection)?.into_iter().map(observe_with_embedded_parser).collect()
+    loaded
+        .select_with_mode(selection, Some(ExecutionMode::Embedded))?
+        .into_iter()
+        .map(observe_with_embedded_parser)
+        .collect()
 }
 
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
