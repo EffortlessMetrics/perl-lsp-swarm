@@ -5,6 +5,7 @@ use perl_semantic_facts::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::fmt;
 
 use super::ProviderQueryContractError;
 
@@ -394,7 +395,12 @@ impl ProviderQueryFact {
         envelope: SemanticFactEnvelope,
         symbols: impl IntoIterator<Item = String>,
     ) -> Result<Self, ProviderQueryContractError> {
-        validate_envelope_structure(&envelope)?;
+        // The contract-error taxonomy stays generic on this boundary; #11246
+        // routes that decision separately. Only the adapter rejection carries
+        // the structured invariant reason (#12601).
+        validate_envelope_structure(&envelope).map_err(|_reason: EnvelopeStructureReason| {
+            ProviderQueryContractError::MalformedFact(envelope.fact_id)
+        })?;
         let mut symbols: Vec<_> = symbols.into_iter().collect();
         if symbols.iter().any(|symbol| symbol.trim().is_empty()) {
             return Err(ProviderQueryContractError::MalformedSymbolKey);
@@ -720,24 +726,77 @@ fn range_contains(envelope: &SemanticFactEnvelope, byte_offset: u32) -> bool {
     }
 }
 
+/// Validator invariant a canonical envelope violated.
+///
+/// Structured so an adapter rejection can name the failing rule instead of a
+/// generic malformation; rendered prose lives in the [`Display`] implementation.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvelopeStructureReason {
+    /// Span start byte exceeds the span end byte.
+    InvertedSpan,
+    /// Source generation is present but blank.
+    BlankSourceGeneration,
+    /// Package label is present but blank.
+    BlankPackage,
+    /// Producer identity is unknown, so no truthful attribution exists.
+    UnknownProducer,
+    /// An invalidation dependency key is blank.
+    BlankDependencyKey,
+    /// An invalidation dependency generation is present but blank.
+    BlankDependencyGeneration,
+    /// The same invalidation dependency key appears more than once.
+    DuplicateDependencyKey,
+}
+
+impl fmt::Display for EnvelopeStructureReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvertedSpan => formatter.write_str("span start exceeds span end"),
+            Self::BlankSourceGeneration => formatter.write_str("source generation is blank"),
+            Self::BlankPackage => formatter.write_str("package label is blank"),
+            Self::UnknownProducer => formatter.write_str("producer is unknown"),
+            Self::BlankDependencyKey => formatter.write_str("dependency key is blank"),
+            Self::BlankDependencyGeneration => {
+                formatter.write_str("dependency generation is blank")
+            }
+            Self::DuplicateDependencyKey => formatter.write_str("duplicate dependency identity"),
+        }
+    }
+}
+
 pub(crate) fn validate_envelope_structure(
     envelope: &SemanticFactEnvelope,
-) -> Result<(), ProviderQueryContractError> {
-    if envelope.anchor.start_byte > envelope.anchor.end_byte
-        || matches!(&envelope.source_generation, SourceGeneration::Known(value) if value.trim().is_empty())
-        || envelope.package.as_ref().is_some_and(|package| package.trim().is_empty())
-        || envelope.producer == SemanticProducer::Unknown
-    {
-        return Err(ProviderQueryContractError::MalformedFact(envelope.fact_id));
+) -> Result<(), EnvelopeStructureReason> {
+    if envelope.anchor.start_byte > envelope.anchor.end_byte {
+        return Err(EnvelopeStructureReason::InvertedSpan);
+    }
+    if matches!(
+        &envelope.source_generation,
+        SourceGeneration::Known(value) if value.trim().is_empty()
+    ) {
+        return Err(EnvelopeStructureReason::BlankSourceGeneration);
+    }
+    if envelope.package.as_ref().is_some_and(|package| package.trim().is_empty()) {
+        return Err(EnvelopeStructureReason::BlankPackage);
+    }
+    if envelope.producer == SemanticProducer::Unknown {
+        return Err(EnvelopeStructureReason::UnknownProducer);
     }
 
     let mut dependency_keys = BTreeSet::new();
     for dependency in envelope.invalidation_dependencies() {
-        if dependency.dependency_key.trim().is_empty()
-            || matches!(&dependency.generation, SourceGeneration::Known(value) if value.trim().is_empty())
-            || !dependency_keys.insert(dependency.dependency_key.as_str())
-        {
-            return Err(ProviderQueryContractError::MalformedFact(envelope.fact_id));
+        if dependency.dependency_key.trim().is_empty() {
+            return Err(EnvelopeStructureReason::BlankDependencyKey);
+        }
+        if matches!(
+            &dependency.generation,
+            SourceGeneration::Known(value) if value.trim().is_empty()
+        ) {
+            return Err(EnvelopeStructureReason::BlankDependencyGeneration);
+        }
+        if !dependency_keys.insert(dependency.dependency_key.as_str()) {
+            return Err(EnvelopeStructureReason::DuplicateDependencyKey);
         }
     }
     Ok(())

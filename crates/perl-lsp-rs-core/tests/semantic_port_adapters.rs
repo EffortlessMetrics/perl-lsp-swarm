@@ -1,17 +1,18 @@
 use perl_lsp_rs_core::providers::{
-    CanonicalEnvelopePort, FileFactShardPort, NoopProviderQueryControl, ProviderAdapterError,
-    ProviderAdapterSnapshot, ProviderCancellationState, ProviderIdentity, ProviderQueryCapability,
-    ProviderQueryContext, ProviderQueryControl, ProviderQueryDeadline, ProviderQueryKind,
-    ProviderQueryOutcome, ProviderQueryRequest, ProviderQueryResult, ProviderQuerySubject,
-    ProviderReadinessRequirement, ProviderReadinessState, ProviderSemanticPort,
-    ProviderSnapshotCompleteness, execute_provider_query,
+    CanonicalEnvelopePort, EnvelopeStructureReason, FileFactShardPort, NoopProviderQueryControl,
+    ProviderAdapterError, ProviderAdapterSnapshot, ProviderCancellationState, ProviderIdentity,
+    ProviderQueryCapability, ProviderQueryContext, ProviderQueryControl, ProviderQueryDeadline,
+    ProviderQueryKind, ProviderQueryOutcome, ProviderQueryRequest, ProviderQueryResult,
+    ProviderQuerySubject, ProviderReadinessRequirement, ProviderReadinessState,
+    ProviderSemanticPort, ProviderSnapshotCompleteness, execute_provider_query,
 };
 use perl_semantic_facts::{
     AnchorFact, AnchorId, BoundaryDisposition, BoundaryKind, BoundaryLink, Confidence, EntityFact,
-    EntityId, EntityKind, FactId, FileId, LifecyclePhase, OccurrenceFact, OccurrenceId,
-    OccurrenceKind, Provenance, ProviderFactSourceKind, ProviderFallbackState, ProviderSurface,
-    ScopeId, SemanticConfidence, SemanticFactEnvelope, SemanticFactKind, SemanticFreshness,
-    SemanticProducer, SemanticProvenance, SemanticReasonCode, SourceAnchor, SourceGeneration,
+    EntityId, EntityKind, FactId, FileId, InvalidationDependency, LifecyclePhase, OccurrenceFact,
+    OccurrenceId, OccurrenceKind, Provenance, ProviderFactSourceKind, ProviderFallbackState,
+    ProviderSurface, ScopeId, SemanticConfidence, SemanticFactEnvelope, SemanticFactKind,
+    SemanticFreshness, SemanticProducer, SemanticProvenance, SemanticReasonCode, SourceAnchor,
+    SourceGeneration,
 };
 use perl_workspace::workspace::workspace_index::FileFactShard;
 use std::error::Error;
@@ -1689,5 +1690,144 @@ fn suppressed_declaration_cannot_grant_exact_empty_references_at_cursor()
     )?;
     assert_eq!(result.outcome(), ProviderQueryOutcome::Exact);
     assert_eq!(result.value_facts().count(), 1);
+    Ok(())
+}
+
+// RIPR (#12601): every validator invariant must survive to the adapter error
+// as structured data, and two distinct invariants must not render identically.
+#[test]
+fn malformed_canonical_envelope_error_names_the_failed_invariant() -> Result<(), Box<dyn Error>> {
+    fn rejected_error(
+        envelope: &SemanticFactEnvelope,
+    ) -> Result<ProviderAdapterError, Box<dyn Error>> {
+        match CanonicalEnvelopePort::new(
+            std::slice::from_ref(envelope),
+            snapshot(ProviderSnapshotCompleteness::Complete),
+        ) {
+            Ok(_) => Err("malformed envelope must be rejected at construction".into()),
+            Err(error @ ProviderAdapterError::MalformedEnvelope { fact_id: FactId(900), .. }) => {
+                Ok(error)
+            }
+            Err(other) => Err(format!("unexpected adapter error: {other}").into()),
+        }
+    }
+
+    let base = || compiler_envelope(SemanticFreshness::Fresh, "document-7");
+    let dependency_case = |dependencies: Vec<InvalidationDependency>, expected_reason| {
+        (
+            SemanticFactEnvelope::new(
+                FactId(900),
+                Some(EntityId(30)),
+                SemanticFactKind::Declaration,
+                SourceAnchor::new(Some(AnchorId(20)), FileId(10), 4, 12),
+                SourceGeneration::known("document-7"),
+                Some(ScopeId(1)),
+                Some("Example".to_string()),
+                LifecyclePhase::Runtime,
+                SemanticProducer::PirA,
+                SemanticProvenance::Known(Provenance::ExactAst),
+                SemanticConfidence::Known(Confidence::High),
+                SemanticFreshness::Fresh,
+                None,
+                dependencies,
+                SemanticReasonCode::ExactSource,
+            ),
+            expected_reason,
+        )
+    };
+
+    let mut inverted_span = base();
+    inverted_span.anchor.start_byte = 20;
+    inverted_span.anchor.end_byte = 4;
+
+    let mut blank_generation = base();
+    blank_generation.source_generation = SourceGeneration::Known("   ".into());
+
+    let mut blank_package = base();
+    blank_package.package = Some("   ".to_string());
+
+    let mut unknown_producer = base();
+    unknown_producer.producer = SemanticProducer::Unknown;
+
+    let cases: Vec<(SemanticFactEnvelope, EnvelopeStructureReason)> = vec![
+        (inverted_span, EnvelopeStructureReason::InvertedSpan),
+        (blank_generation, EnvelopeStructureReason::BlankSourceGeneration),
+        (blank_package, EnvelopeStructureReason::BlankPackage),
+        (unknown_producer, EnvelopeStructureReason::UnknownProducer),
+        dependency_case(
+            vec![InvalidationDependency::new("   ", SourceGeneration::known("document-7"))],
+            EnvelopeStructureReason::BlankDependencyKey,
+        ),
+        dependency_case(
+            vec![InvalidationDependency::new("gen-1", SourceGeneration::Known(String::new()))],
+            EnvelopeStructureReason::BlankDependencyGeneration,
+        ),
+        dependency_case(
+            vec![
+                InvalidationDependency::new("gen-1", SourceGeneration::known("document-7")),
+                InvalidationDependency::new("gen-1", SourceGeneration::known("document-8")),
+            ],
+            EnvelopeStructureReason::DuplicateDependencyKey,
+        ),
+    ];
+
+    let mut rendered_errors: Vec<String> = Vec::new();
+    for (index, (envelope, expected_reason)) in cases.iter().enumerate() {
+        let error = rejected_error(envelope)?;
+        let ProviderAdapterError::MalformedEnvelope { fact_id: FactId(900), reason } = error else {
+            return Err(format!("unexpected adapter shape for case {index}").into());
+        };
+        assert_eq!(reason, *expected_reason, "wrong invariant reported for case {index}");
+        if index < 2 {
+            rendered_errors.push(rejected_error(envelope)?.to_string());
+        }
+    }
+
+    // The rendered/logged surface must distinguish the invariants too.
+    assert_ne!(
+        rendered_errors[0], rendered_errors[1],
+        "distinct validator invariants must not collapse into one rendered error"
+    );
+
+    // Rendered adapter errors carry the invariant prose, not just identity.
+    let inverted_rendered = rejected_error(&cases[0].0)?.to_string();
+    assert!(
+        inverted_rendered.contains("span start exceeds span end"),
+        "rendered error must name the invariant: {inverted_rendered}"
+    );
+    Ok(())
+}
+
+// RIPR (#12601): the shard degrade path records why a fact was tombstoned.
+#[test]
+fn malformed_shard_fact_limitation_names_the_failed_invariant() -> Result<(), Box<dyn Error>> {
+    let mut broken = shard(Provenance::ExactAst, Confidence::High);
+    for anchor in &mut broken.anchors {
+        anchor.span_start_byte = anchor.span_end_byte + 1;
+    }
+    let port = parser_port(&[broken], ProviderSnapshotCompleteness::Complete)?;
+    let result = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string())),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert!(
+        result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation.contains("malformed_adapted_fact:")),
+        "malformed fact must be tombstoned with its reason: {:?}",
+        result.evidence().limitations()
+    );
+    assert!(
+        result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation.contains("span start exceeds span end")),
+        "limitation must carry the validator invariant reason: {:?}",
+        result.evidence().limitations()
+    );
     Ok(())
 }

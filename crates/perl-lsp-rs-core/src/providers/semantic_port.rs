@@ -20,11 +20,12 @@ mod model;
 mod result;
 
 pub use model::{
-    NoopProviderQueryControl, ProviderCancellationState, ProviderCompletenessAuthorityReceipt,
-    ProviderCompletenessGrant, ProviderFactGenerationScope, ProviderIdentity,
-    ProviderQueryCapability, ProviderQueryContext, ProviderQueryControl, ProviderQueryDeadline,
-    ProviderQueryFact, ProviderQueryFactRole, ProviderQueryKind, ProviderQueryRequest,
-    ProviderQuerySubject, ProviderReadinessRequirement, ProviderReadinessState,
+    EnvelopeStructureReason, NoopProviderQueryControl, ProviderCancellationState,
+    ProviderCompletenessAuthorityReceipt, ProviderCompletenessGrant, ProviderFactGenerationScope,
+    ProviderIdentity, ProviderQueryCapability, ProviderQueryContext, ProviderQueryControl,
+    ProviderQueryDeadline, ProviderQueryFact, ProviderQueryFactRole, ProviderQueryKind,
+    ProviderQueryRequest, ProviderQuerySubject, ProviderReadinessRequirement,
+    ProviderReadinessState,
 };
 pub(crate) use model::{semantic_provenance_is_exact, validate_envelope_structure};
 pub use result::*;

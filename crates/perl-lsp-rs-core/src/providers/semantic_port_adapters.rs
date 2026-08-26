@@ -28,13 +28,13 @@
 //!   below a qualified read until #6819 supplies a guarded edit plan.
 
 use super::semantic_port::{
-    ProviderCancellationState, ProviderCompletenessGrant, ProviderFactGenerationScope,
-    ProviderQueryCapability, ProviderQueryContractError, ProviderQueryControl,
-    ProviderQueryDeadline, ProviderQueryEvidenceInput, ProviderQueryFact, ProviderQueryFactRole,
-    ProviderQueryKind, ProviderQueryOutcome, ProviderQueryRequest, ProviderQueryResultDraft,
-    ProviderQuerySubject, ProviderQueryTerminalState, ProviderReadinessRequirement,
-    ProviderReadinessState, ProviderResultPath, ProviderSemanticPort, semantic_provenance_is_exact,
-    validate_envelope_structure,
+    EnvelopeStructureReason, ProviderCancellationState, ProviderCompletenessGrant,
+    ProviderFactGenerationScope, ProviderQueryCapability, ProviderQueryContractError,
+    ProviderQueryControl, ProviderQueryDeadline, ProviderQueryEvidenceInput, ProviderQueryFact,
+    ProviderQueryFactRole, ProviderQueryKind, ProviderQueryOutcome, ProviderQueryRequest,
+    ProviderQueryResultDraft, ProviderQuerySubject, ProviderQueryTerminalState,
+    ProviderReadinessRequirement, ProviderReadinessState, ProviderResultPath, ProviderSemanticPort,
+    semantic_provenance_is_exact, validate_envelope_structure,
 };
 use perl_semantic_facts::{
     AnchorFact, AnchorId, BoundaryDisposition, BoundaryKind, BoundaryLink, Confidence, EntityFact,
@@ -170,8 +170,14 @@ pub enum ProviderAdapterError {
         /// Requested provider-trace source class.
         source: ProviderFactSourceKind,
     },
-    /// A canonical envelope is structurally malformed.
-    MalformedEnvelope(FactId),
+    /// A canonical envelope is structurally malformed, naming the validator
+    /// invariant it violated.
+    MalformedEnvelope {
+        /// Canonical identity of the rejected envelope.
+        fact_id: FactId,
+        /// Validator invariant the envelope failed.
+        reason: EnvelopeStructureReason,
+    },
     /// Two inputs share one canonical fact identity with different content.
     ConflictingFactId(FactId),
 }
@@ -185,8 +191,12 @@ impl fmt::Display for ProviderAdapterError {
             Self::UnsupportedTraceSource { producer, source } => {
                 write!(formatter, "trace source {source:?} is invalid for producer {producer:?}")
             }
-            Self::MalformedEnvelope(fact_id) => {
-                write!(formatter, "canonical envelope {} is structurally malformed", fact_id.0)
+            Self::MalformedEnvelope { fact_id, reason } => {
+                write!(
+                    formatter,
+                    "canonical envelope {} is structurally malformed: {reason}",
+                    fact_id.0
+                )
             }
             Self::ConflictingFactId(fact_id) => {
                 write!(formatter, "conflicting facts share identity {}", fact_id.0)
@@ -307,11 +317,15 @@ impl FileFactShardPort {
             record.names.retain(|name| !name.trim().is_empty());
             record.names.sort();
             record.names.dedup();
-            if validate_envelope_structure(&record.envelope).is_ok() {
-                kept.push(record);
-            } else {
-                limitations.push(format!("malformed_adapted_fact:{}", record.envelope.fact_id.0));
-                downgrade_for_kind(&mut snapshot, record.envelope.kind);
+            match validate_envelope_structure(&record.envelope) {
+                Ok(()) => kept.push(record),
+                Err(reason) => {
+                    limitations.push(format!(
+                        "malformed_adapted_fact:{}:{reason}",
+                        record.envelope.fact_id.0
+                    ));
+                    downgrade_for_kind(&mut snapshot, record.envelope.kind);
+                }
             }
         }
         kept.sort_by_key(|record| record.envelope.fact_id);
@@ -404,8 +418,9 @@ impl CanonicalEnvelopePort {
         snapshot: ProviderAdapterSnapshot,
     ) -> Result<Self, ProviderAdapterError> {
         for envelope in envelopes {
-            validate_envelope_structure(envelope)
-                .map_err(|_| ProviderAdapterError::MalformedEnvelope(envelope.fact_id))?;
+            validate_envelope_structure(envelope).map_err(|reason| {
+                ProviderAdapterError::MalformedEnvelope { fact_id: envelope.fact_id, reason }
+            })?;
         }
         let mut sorted: Vec<&SemanticFactEnvelope> = envelopes.iter().collect();
         sorted.sort_by_key(|envelope| envelope.fact_id);
