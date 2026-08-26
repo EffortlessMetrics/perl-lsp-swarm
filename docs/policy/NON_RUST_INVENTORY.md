@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11948 |
-| Rust-family files | 3629 |
-| Non-Rust files | 8319 |
-| Allowlisted | 6056 |
+| Total tracked files | 11964 |
+| Rust-family files | 3635 |
+| Non-Rust files | 8329 |
+| Allowlisted | 6066 |
 | Unclassified | 2263 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 432 |
-| documentation | 2719 |
+| config | 433 |
+| documentation | 2723 |
 | generated | 2 |
 | production | 325 |
-| test | 1972 |
+| test | 1977 |
 | tooling | 606 |
 | unclassified | 2263 |
 
@@ -2711,6 +2711,7 @@
 | `.ci/release/evidence.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/risk-tags.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/agent-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/schemas/ci-route-plan.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-ux.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/generated-status-cell.schema.json` | config | `non-rust-ci-config` | release/ci |
@@ -3155,6 +3156,10 @@
 | `.spec/12186-compiler-profile-identity-closure/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12186-compiler-profile-identity-closure/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12186-compiler-profile-identity-closure/inventory.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12330-compiler-profile-initial-rows/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12330-compiler-profile-initial-rows/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12330-compiler-profile-initial-rows/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12330-compiler-profile-initial-rows/inventory.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -8335,6 +8340,11 @@
 | `xtask/lsp_test/advanced_features.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `xtask/lsp_test/test_features.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `xtask/lsp_test/test_suite.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `xtask/tests/fixtures/ci-route-plan/digests.json` | test | `non-rust-ci-route-plan-golden-vectors` | ci/route-plan |
+| `xtask/tests/fixtures/ci-route-plan/generate_golden.py` | test | `non-rust-ci-route-plan-golden-generator` | ci/route-plan |
+| `xtask/tests/fixtures/ci-route-plan/payload-baseline.json` | test | `non-rust-ci-route-plan-golden-vectors` | ci/route-plan |
+| `xtask/tests/fixtures/ci-route-plan/semantic-baseline.json` | test | `non-rust-ci-route-plan-golden-vectors` | ci/route-plan |
+| `xtask/tests/fixtures/ci-route-plan/semantic-escaping.json` | test | `non-rust-ci-route-plan-golden-vectors` | ci/route-plan |
 | `xtask/tests/fixtures/dependency-hygiene/machete-findings.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-malformed.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-ignored-used.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
