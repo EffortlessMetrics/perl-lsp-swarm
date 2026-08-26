@@ -1261,6 +1261,22 @@ fn oversized_captures_carry_explicit_truncation_integrity_metadata() -> Result<(
         identity.len() == "sha256:".len() + 64 && identity.starts_with("sha256:"),
         "the full sanitized stream identity must be a sha256 value"
     );
+    let retained_bytes = durable_artifact(root.path(), "emacs/driver-stdout.log")?;
+    ensure!(
+        retained_bytes.len() as u64 == retained,
+        "the retained artifact size must match the bounds row"
+    );
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(&retained_bytes);
+    let retained_identity = format!(
+        "sha256:{}",
+        hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+    );
+    ensure!(
+        identity != retained_identity,
+        "full-stream identity must not be the hash of the truncated prefix"
+    );
     for row in rows {
         if row["id"] != "emacs/driver-stdout.log" {
             ensure!(row["truncated"] == false, "{} must declare completeness", row["id"]);

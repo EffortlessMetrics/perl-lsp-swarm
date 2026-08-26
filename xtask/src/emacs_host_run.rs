@@ -814,8 +814,8 @@ pub fn host_run(
     let mut limitations = vec![
         "substrate lifecycle proof only: client support verdicts belong to #7126/#7721/#7727"
             .to_string(),
-        "process-tree cleanup verification is #8734's owned boundary; this receipt consumes the \
-         current runner cleanup semantics unchanged"
+        "process-tree cleanup is independently observed by the shared runner; this receipt copies \
+         that disposition and does not re-judge it"
             .to_string(),
     ];
     if !snapshot.is_file() {
@@ -1003,8 +1003,8 @@ fn outcome_journey(observation: &ProcessObservation) -> Vec<JourneyCell> {
         },
         evidence: vec!["emacs/process-ledger.json".to_string()],
         limitation: Some(
-            "cleanup pass today means a driver-complete status-0 host exit; descendant-process \
-             verification lands with #8734"
+            "cleanup pass requires a driver-complete status-0 host exit and an independently \
+             observed empty candidate process set; an unusable probe is not_proven"
                 .to_string(),
         ),
     });
