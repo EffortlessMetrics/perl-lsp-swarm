@@ -928,14 +928,17 @@ fn launch_refusals_are_preserved_across_the_denominator() {
             "package-input requirement must match the source state for {}",
             slot.subject_id
         );
-        // The launch table: only the two bundled generations and the
-        // released Eglot 1.24 row have driver adapters; the source Eglot
-        // and both lsp-mode rows materialize but refuse to launch.
+        // The launch table: the two bundled generations, the released
+        // Eglot 1.24 row, and — since #8776's external adapter earned its
+        // package-free launch — the pinned upstream-source Eglot row have
+        // driver adapters; both lsp-mode rows materialize but refuse to
+        // launch.
         let launchable = matches!(
             slot.subject_id,
             "bundled_eglot_emacs_29_4"
                 | "bundled_eglot_emacs_30_1"
                 | "released_eglot_gnu_elpa_1_24"
+                | "source_eglot_emacs_c1ad9d27"
         );
         assert_eq!(
             subject.launches_with_current_driver(),
