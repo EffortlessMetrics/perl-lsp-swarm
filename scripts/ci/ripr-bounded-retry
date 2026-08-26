@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# Bounded same-head retry decision and executor for evicted ripr lanes.
+#
+# Claims: #12563, #6807. A runner eviction leaves NO terminal evidence for a
+# SHA. The required `ripr+ New Gap Gate` must never read that as a source-gap
+# red, yet it must also stay blocking until real proof exists. This script is
+# the single tested decision table shared by:
+#
+#   - `.github/workflows/ripr.yml` result aggregator (mode: --decide)
+#   - `.github/workflows/ripr-retry.yml` responder   (mode: arm-retry)
+#   - scripts/tests/test-classify-ripr-lane-termination.sh (unit harness)
+#
+# Contract honored on every application:
+#   * infra-no-verdict applies ONLY to positive runner-teardown evidence
+#     classified by scripts/ci/classify-ripr-lane-termination;
+#   * exactly ONE automatic same-head retry per failed first attempt,
+#     globally bounded by run_attempt == 1 (any second attempt consumes it);
+#   * a genuine gap receipt outranks infra markers -> plain red, no retry;
+#   * manual/API cancellations are human-owned: loud blocking red, no retry;
+#   * retrieval failure fails closed (blocking red), never green;
+#   * after the single retry budget is spent the outcome surfaces as
+#     NOT_PROVEN loudly (machine token `not-proven-infra-retry-exhausted`).
+#
+# Usage:
+#   ripr-bounded-retry --decide <lane_result> <run_attempt> <logfile>
+#       Pure decision over one lane. Prints ACTION=..., RIPR_GATE_VERDICT=...
+#       and an auditable RIPR_GATE_DECISION block; exit 0 always.
+#
+#   ripr-bounded-retry arm-retry
+#       Responder-side execution for a COMPLETED ripr run (env RUN_ID, plus
+#       GH_TOKEN/GITHUB_TOKEN). Re-verifies attempt/conclusion server-side,
+#       classifies each failed evidence-lane log, and arms `rerun-failed-jobs`
+#       exactly once iff >=1 lane carries genuine infra-teardown evidence.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLASSIFIER="${SCRIPT_DIR}/classify-ripr-lane-termination"
+
+LANE_NAMES=("ripr+ on CX53" "ripr+ on CX43" "ripr+ on GitHub Hosted" "ripr+ (Disk-Full Fallback)")
+
+decision_boundary_line() {
+  printf 'RIPR_GATE_DECISION boundary="infra-no-verdict needs positive runner-teardown evidence; genuine gap receipts always red; one automatic same-head retry max, then NOT_PROVEN loudly"'
+}
+
+emit_decision() {
+  local action="$1" verdict="$2" reason="$3"
+  printf 'ACTION=%s\n' "$action"
+  printf 'RIPR_GATE_VERDICT=%s\n' "$verdict"
+  printf 'RIPR_GATE_DECISION reason="%s"\n' "$reason"
+  decision_boundary_line
+}
+
+parse_classifier_output() {
+  # $1 = classifier output file; sets global keys used below.
+  _CLF_OUT="$(cat "$1")"
+}
+
+clf_value() {
+  printf '%s\n' "$_CLF_OUT" | sed -n "s/^$1=//p" | head -1
+}
+
+mode_decide() {
+  if [ "$#" -ne 3 ]; then
+    printf 'usage: %s --decide <lane_result> <run_attempt> <logfile>\n' "${0##*/}" >&2
+    exit 64
+  fi
+  local lane_result="$1" run_attempt="$2" logfile="$3"
+
+  case "$run_attempt" in
+    ''|*[!0-9]*) emit_decision "FAIL_CLOSED" "ripr-failure" "non-numeric run_attempt fails closed"; return 0 ;;
+  esac
+
+  case "$lane_result" in
+    success|skipped)
+      emit_decision "NOT_APPLICABLE" "success-or-skipped" "lane ${lane_result}; nothing to decide here"
+      return 0
+      ;;
+    cancelled|failure) : ;;  # the two shapes that reach this decision table
+    *)
+      emit_decision "FAIL_CLOSED" "ripr-failure" "unexpected lane result '${lane_result}' fails closed"
+      return 0
+      ;;
+  esac
+
+  local out_file
+  out_file="$(mktemp)"
+  # Embed the resolved path now so the EXIT-time expansion cannot lose it.
+  # shellcheck disable=SC2064  # expansion now is intended: fixed path
+  trap 'rm -f "'"${out_file}"'"' EXIT
+  bash "$CLASSIFIER" "$logfile" >"$out_file" 2>/dev/null || true
+  parse_classifier_output "$out_file"
+
+  local verdict gap_hits shut_hits term143 cancel_hits partial
+  verdict="$(clf_value verdict)"
+  gap_hits="$(clf_value gap_receipt_matches)"
+  shut_hits="$(clf_value shutdown_signal_matches)"
+  term143="$(clf_value sigterm143_matches)"
+  cancel_hits="$(clf_value op_cancelled_matches)"
+  partial="$(clf_value partial_read)"
+
+  printf 'RIPR_GATE_DECISION input lane_result=%s run_attempt=%s\n' "$lane_result" "$run_attempt"
+  printf 'RIPR_GATE_DECISION evidence verdict=%s gap_receipt_matches=%s shutdown_signal_matches=%s sigterm143_matches=%s op_cancelled_matches=%s partial_read=%s\n' \
+    "${verdict:-unknown}" "${gap_hits:-0}" "${shut_hits:-0}" "${term143:-0}" "${cancel_hits:-0}" "${partial:-false}"
+
+  case "$verdict" in
+    source-gap-terminal)
+      emit_decision "RIPR_FAILURE" "ripr-failure" \
+        "terminal gap receipt present; a real analysis red always outranks any later teardown marker"
+      return 0
+      ;;
+    infra-eviction-shutdown-signal|infra-eviction-sigterm-canceled)
+      if [ "$run_attempt" -eq 1 ]; then
+        emit_decision "ARM_RETRY" "infra-retry-requested" \
+          "runner teardown evidence with no source receipt on attempt 1; arming the single same-head retry"
+      else
+        emit_decision "NOT_PROVEN_INFRA" "not-proven-infra-retry-exhausted" \
+          "runner teardown persisted past the single retried attempt; surfacing NOT_PROVEN loudly (blocking, no further automation)"
+      fi
+      return 0
+      ;;
+    no-terminal-receipt)
+      if [ "$cancel_hits" -gt 0 ] || [ "$lane_result" = "cancelled" ]; then
+        emit_decision "CANCELLED_NO_VERDICT" "cancelled-no-verdict" \
+          "cancellation without platform teardown evidence; human-owned cancellation stays a loud blocking red"
+      else
+        emit_decision "FAIL_CLOSED" "ripr-failure" \
+          "no terminal receipt and no teardown signature; absence of evidence fails closed to the source-gap red"
+      fi
+      return 0
+      ;;
+    *)
+      emit_decision "FAIL_CLOSED" "ripr-failure" "unclassifiable log output fails closed"
+      return 0
+      ;;
+  esac
+}
+
+job_is_candidate() {
+  # $1 = job name; $2 = conclusion
+  [ "$2" = "failure" ] || return 1
+  local name
+  for name in "${LANE_NAMES[@]}"; do
+    [ "$1" = "$name" ] && return 0
+  done
+  return 1
+}
+
+mode_arm_retry() {
+  local repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}"
+  local run_id="${RUN_ID:?RUN_ID required}"
+  local api="repos/${repo}/actions/runs/${run_id}"
+  local auth=()
+  if [ -n "${GH_TOKEN:-}" ]; then
+    auth=(--header "Authorization: Bearer ${GH_TOKEN}")
+  fi
+
+  # Server-side re-verification: the workflow_run event alone does not own
+  # the exactly-once bound. Re-read it before acting.
+  local meta status conclusion attempt
+  if ! meta="$(gh api "$api" "${auth[@]+"${auth[@]}"}" --jq '[.status, .conclusion, .run_attempt] | @tsv')"; then
+    echo "arm-retry: run metadata fetch failed; failing closed without action"
+    exit 0
+  fi
+  IFS=$'\t' read -r status conclusion attempt <<<"$meta"
+  echo "arm-retry preflight: status=${status} conclusion=${conclusion} run_attempt=${attempt}"
+  [ "$status" = "completed" ] || { echo "skip: run still in progress"; exit 0; }
+  [ "$conclusion" = "failure" ] || { echo "skip: nothing to recover"; exit 0; }
+  [ "$attempt" = "1" ] || { echo "skip: retry budget consumed (attempt=${attempt})"; exit 0; }
+
+  local workdir
+  workdir="$(mktemp -d)"
+  # shellcheck disable=SC2064
+  trap 'rm -rf "'"${workdir}"'"' EXIT
+
+  gh api "${api}/jobs?per_page=100" "${auth[@]+"${auth[@]}"}" \
+    --jq '.jobs[] | [.id, .name, .conclusion] | @tsv' >"${workdir}/jobs.tsv"
+
+  local eligible=0 job_id job_name job_conclusion
+  while IFS=$'\t' read -r job_id job_name job_conclusion; do
+    [ -n "${job_id:-}" ] || continue
+    if ! job_is_candidate "$job_name" "$job_conclusion"; then
+      continue
+    fi
+    echo "arm-retry classifying job ${job_id} (${job_name})"
+    if ! gh api "repos/${repo}/actions/jobs/${job_id}/logs" "${auth[@]+"${auth[@]}"}" \
+        >"${workdir}/log-${job_id}.txt" 2>/dev/null; then
+      echo "RIPR_RETRY_RECEIPT job=${job_name} id=${job_id} classification=log-unavailable fail_closed=true"
+      continue
+    fi
+    local decide_out
+    decide_out="$("$0" --decide failure 1 "${workdir}/log-${job_id}.txt")"
+    echo "$decide_out" | sed "s/^/RIPR_RETRY_RECEIPT job=${job_name} id=${job_id} /"
+    if printf '%s\n' "$decide_out" | grep -q '^ACTION=ARM_RETRY$'; then
+      eligible=$((eligible + 1))
+    fi
+  done <"${workdir}/jobs.tsv"
+
+  if [ "$eligible" -eq 0 ]; then
+    echo "arm-retry: no lane carries runner-teardown evidence; NOT arming a rerun (genuine reds stay red)"
+    exit 0
+  fi
+  echo "arm-retry: ${eligible} retried-lane(s) qualify; posting rerun-failed-jobs exactly once (attempt guard above)"
+  if ! gh api -X POST "${api}/rerun-failed-jobs" "${auth[@]+"${auth[@]}"}" >/dev/null; then
+    echo "arm-retry: rerun request refused (likely raced with another attempt); leaving state untouched"
+    exit 0
+  fi
+  echo "arm-retry: rerun armed for run ${run_id}; next aggregate evaluates on attempt 2"
+}
+
+main() {
+  if [ "$#" -ge 1 ] && [ "$1" = "--decide" ]; then
+    shift
+    mode_decide "$@"
+  elif [ "$#" -eq 1 ] && [ "$1" = "arm-retry" ]; then
+    mode_arm_retry
+  else
+    printf 'usage: %s --decide <lane_result> <run_attempt> <logfile>\n' "${0##*/}" >&2
+    printf '       %s arm-retry            (env: RUN_ID, GITHUB_REPOSITORY, GH_TOKEN)\n' "${0##*/}" >&2
+    exit 64
+  fi
+}
+
+main "$@"

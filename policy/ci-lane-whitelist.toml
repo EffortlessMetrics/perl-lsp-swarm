@@ -455,6 +455,26 @@ duplicate_of = ["nightly:mutation"]
 review_after = "2026-06-07"
 expires = "2026-08-07"
 
+[[lane]]
+id = "ripr_bounded_retry"
+workflow = ".github/workflows/ripr-retry.yml"
+job = "bounded-retry"
+tier = "support"
+kind = "control"
+blocking = false
+default_pr = true
+runner = "ubuntu_24_04"
+base_lem = 1
+owner = "testing"
+intent = "Arm at most one same-head retry when platform runner teardown evicts a ripr evidence lane (#6807, #12563)."
+failure_mode = "A runner eviction otherwise false-reds the required ripr+ New Gap Gate with no terminal evidence for the SHA."
+proof_obligation = "Classify failed lane logs via scripts/ci/classify-ripr-lane-termination; rerun-failed-jobs only for positive teardown evidence on attempt 1."
+evidence = []
+allowed_triggers = ["workflow_run"]
+labels = ["ripr", "ci-reliability"]
+expensive = false
+blocking_promotion_allowed = false
+
 # =============================================================================
 # Nightly / branch-gated deep lanes
 # =============================================================================

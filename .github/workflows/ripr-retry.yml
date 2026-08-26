@@ -1,0 +1,66 @@
+name: ripr-retry
+
+# Bounded same-head retry responder for runner evictions of ripr lanes
+# (#6807, #12563). GitHub-hosted runners are evicted (~10.5 min kills,
+# "The runner has received a shutdown signal") far below the lane's 45-minute
+# budget. The eviction leaves NO terminal evidence for the SHA, yet it fails
+# the required "ripr+ New Gap Gate" — a false red on infrastructure.
+#
+# This responder is the ONLY automation that re-runs failed jobs, and it is
+# bounded by construction:
+#   * it fires once per completed ripr run (workflow_run completed event);
+#   * it requires run_attempt == 1 AND server-side re-verification of that
+#     attempt number, so exactly ONE automatic retry exists — a second
+#     eviction surfaces NOT_PROVEN loudly from the gate and no further
+#     automation runs;
+#   * it arms `rerun-failed-jobs` only when the shared classifier
+#     (scripts/ci/classify-ripr-lane-termination) finds POSITIVE runner
+#     teardown evidence with no genuine ripr gap receipt on an evidence lane;
+#   * genuine reds, manual/API cancellations, and retrieval failures get
+#     NO rerun (see RIPR_RETRY_RECEIPT lines for the auditable decision).
+#
+# The gate itself never greens on absent evidence: the rerun simply restores
+# the normal path where only real proof can pass.
+
+on:
+  workflow_run:
+    workflows: [ripr]
+    types: [completed]
+
+permissions:
+  contents: read
+  # Re-running FAILED jobs of the same immutable SHA is the one mutation this
+  # workflow may perform (#12563). Nothing else is written anywhere.
+  actions: write
+
+concurrency:
+  group: ripr-retry-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  bounded-retry:
+    name: Bound same-head retry to evicted lanes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.run_attempt == 1 &&
+      github.event.workflow_run.repository.full_name == github.repository &&
+      (github.event.workflow_run.event == 'pull_request' ||
+       github.event.workflow_run.event == 'merge_group' ||
+       github.event.workflow_run.event == 'schedule' ||
+       github.event.workflow_run.event == 'workflow_dispatch')
+    steps:
+      - name: Checkout decision scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Classify failed lanes and arm at most one same-head retry
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/ripr-bounded-retry arm-retry

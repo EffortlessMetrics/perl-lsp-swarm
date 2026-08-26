@@ -283,3 +283,134 @@ fn workflow_step<'a>(content: &'a str, name: &str) -> Option<&'a str> {
         .unwrap_or(rest.len());
     Some(&rest[..next])
 }
+
+#[test]
+fn ripr_gate_classifies_infra_termination_with_bounded_same_head_retry()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+    let classifier = fs::read_to_string(root.join("scripts/ci/classify-ripr-lane-termination"))?;
+    let decider = fs::read_to_string(root.join("scripts/ci/ripr-bounded-retry"))?;
+    let responder = fs::read_to_string(root.join(".github/workflows/ripr-retry.yml"))?;
+    let self_test =
+        fs::read_to_string(root.join("scripts/tests/test-classify-ripr-lane-termination.sh"))?;
+
+    // The gate must evaluate non-success lanes through the shared, tested
+    // decision table, and carry the single-retry budget as an explicit input
+    // (#6807, #12563). Infra-no-verdict is never inferred from silence: it
+    // requires the classifier's teardown evidence.
+    assert!(
+        workflow.contains("scripts/ci/ripr-bounded-retry --decide")
+            && workflow.contains("bash scripts/ci/ripr-bounded-retry --decide"),
+        "ripr gate must decide lane outcomes through scripts/ci/ripr-bounded-retry"
+    );
+    assert!(
+        workflow.contains("RUN_ATTEMPT: ${{ github.run_attempt }}"),
+        "gate must know its run attempt so the automatic same-head retry stays bounded to one"
+    );
+    // The decider owns the four machine-checkable lane-outcome tokens and
+    // emits them under the RIPR_GATE_VERDICT= key; the gate echoes every
+    // application's verdict into its run log uniformly.
+    for verdict in [
+        "infra-retry-requested",
+        "not-proven-infra-retry-exhausted",
+        "cancelled-no-verdict",
+        "ripr-failure",
+    ] {
+        assert!(
+            decider.contains(verdict),
+            "each lane outcome must have a distinctive machine-checkable verdict token"
+        );
+    }
+    assert!(
+        decider.contains("RIPR_GATE_VERDICT=%s"),
+        "decision table must emit its tokens under the machine-checkable RIPR_GATE_VERDICT key"
+    );
+    assert!(
+        workflow.contains("echo \"RIPR_GATE_VERDICT=${decide_verdict:-unknown}\""),
+        "gate must echo the decision's verdict token for auditability in the run log"
+    );
+    for loud in [
+        "RIPR_GATE_VERDICT=infra-retry-requested",
+        "RIPR_GATE_VERDICT=not-proven-infra-retry-exhausted",
+    ] {
+        assert!(
+            workflow.contains(loud),
+            "retry-arming and NOT_PROVEN outcomes must be loud literals in the gate log: {loud}"
+        );
+    }
+
+    // Classifier boundary: a genuine terminal red outranks infra markers, so
+    // a real failure keeps redding the gate even when the runner is torn
+    // down during artifact upload. The source must encode that precedence,
+    // not merely mention both classes. Compare CODE positions, not prose:
+    // the boundary rule guards the verdict selection itself.
+    let gap_receipt_rule = classifier
+        .find("if [ \"$gap_hits\" -gt 0 ]")
+        .ok_or("classifier must evaluate genuine gap receipts as its first rule")?;
+    let infra_branch = classifier
+        .find("verdict=\"infra-eviction-shutdown-signal\"")
+        .ok_or("classifier must assign the shutdown-signal infra class")?;
+    assert!(
+        gap_receipt_rule < infra_branch,
+        "genuine-gap-receipt precedence must be evaluated before any infra classification"
+    );
+    for evidence in [
+        "The runner has received a shutdown signal",
+        "Process completed with exit code 143.",
+        "The operation was canceled",
+    ] {
+        assert!(
+            classifier.contains(evidence),
+            "classifier must require positive teardown evidence: {evidence}"
+        );
+    }
+
+    // Decision table: retry arms only on attempt 1, exhausted budgets surface
+    // NOT_PROVEN loudly, and the rerun endpoint is used at most once.
+    assert!(
+        decider.contains("if [ \"$run_attempt\" -eq 1 ]; then"),
+        "exactly one automatic same-head retry: armed only on attempt 1"
+    );
+    assert!(
+        decider.contains("not-proven-infra-retry-exhausted"),
+        "a second eviction must surface NOT_PROVEN loudly instead of looping"
+    );
+    assert_eq!(
+        decider.matches("gh api -X POST \"${api}/rerun-failed-jobs\"").count(),
+        1,
+        "the bounded retry must post the rerun request from exactly one code site"
+    );
+
+    // Responder: fired once per completed ripr run, gated to failed first
+    // attempts in this repository, executing the same decision table.
+    assert!(
+        responder.contains("workflows: [ripr]") && responder.contains("types: [completed]"),
+        "responder must trigger on completed ripr runs"
+    );
+    assert!(
+        responder.contains("run_attempt == 1") && responder.contains("conclusion == 'failure'"),
+        "responder must bound itself to failed first attempts"
+    );
+    assert!(
+        responder.contains("repository.full_name == github.repository"),
+        "responder must stay scoped to runs owned by this repository"
+    );
+    assert!(
+        responder.contains("scripts/ci/ripr-bounded-retry arm-retry"),
+        "responder must execute the shared bounded-retry decision table"
+    );
+
+    // The discriminator suite must pin the load-bearing behaviors: real reds
+    // still red, only teardown evidence retries, retries do not loop.
+    assert!(
+        self_test.contains("DISCRIMINATOR: real failure never retried despite teardown marker"),
+        "self-test must prove a genuine failure still redding the gate with teardown noise present"
+    );
+    assert!(
+        self_test.contains("attempt-2 eviction exhausts retry budget to NOT_PROVEN"),
+        "self-test must prove the single-retry bound"
+    );
+
+    Ok(())
+}
