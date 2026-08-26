@@ -35,7 +35,7 @@ cargo doc -p perl-ast --open         # View documentation
 | `kind_schema/` | Structural `NodeKind` registry: production `FieldId` membership and field-aware child traversal; not rendering/status/fingerprint authority |
 | `ast/node_clone.rs` | Iterative `Node` clone over canonical child fields |
 | `ast/node_debug.rs` | Iterative bounded `Node`/`NodeKind` `Debug` |
-| `ast/node_eq.rs` | Iterative `Node` structural equality over canonical child fields |
+| `ast/read_cursor.rs` | Iterative exact/bounded whole-tree reads over canonical child fields |
 | `v2.rs` | Enhanced AST for incremental parsing: `Node` with `NodeId` + `Range`, `NodeIdGenerator`, `MissingKind`, `DiagnosticId` |
 
 ### Key Types

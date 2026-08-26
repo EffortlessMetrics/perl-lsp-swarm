@@ -89,5 +89,11 @@ pub use tdd::test_runner;
 /// Re-exported from `perl-test-must` for backward compatibility.
 pub use perl_test_must::{must, must_err, must_some};
 
+/// Typed skip for symlink-creating tests on Windows sessions without
+/// `SeCreateSymbolicLinkPrivilege` (os error 1314).
+pub mod symlink_privilege;
+
+pub use symlink_privilege::{SymlinkTestDecision, classify_symlink_error, symlink_test_decision};
+
 /// CI Guardrail Ignored Test Monitoring and Governance.
 pub mod governance;

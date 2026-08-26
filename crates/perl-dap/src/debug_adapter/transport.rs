@@ -1,11 +1,10 @@
-//! Transport layer: run (stdin/stdout), run_socket, run_with_io.
+//! Transport layer: run (stdin/stdout) and run_with_io.
 
 use super::{
     Arc, AtomicBool, BufReader, ContentLengthFramer, DapMessage, DebugAdapter,
-    EVENT_QUEUE_CAPACITY, Mutex, Read, TcpListener, Write, dispatch_event, io, lock_or_recover,
-    sync_channel, thread,
+    EVENT_QUEUE_CAPACITY, Mutex, Read, Write, dispatch_event, io, lock_or_recover, sync_channel,
+    thread,
 };
-use crate::server::DapSocketBindError;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::TryRecvError;
 
@@ -72,22 +71,7 @@ impl DebugAdapter {
         self.run_with_io(io::stdin(), io::stdout())
     }
 
-    /// Run the debug adapter over a TCP socket transport.
-    ///
-    /// This binds to `127.0.0.1:<port>`, accepts one client connection, and
-    /// serves the DAP session on that stream.
-    pub(crate) fn run_socket(&mut self, port: u16) -> anyhow::Result<()> {
-        let listener = bind_socket_listener(port)?;
-        tracing::info!(port, "DAP socket transport listening on 127.0.0.1");
-
-        let (stream, peer_addr) = listener.accept()?;
-        tracing::info!(peer_addr = %peer_addr, "DAP socket client connected");
-
-        let reader_stream = stream.try_clone()?;
-        self.run_with_io(reader_stream, stream).map_err(Into::into)
-    }
-
-    /// Shared DAP transport loop used by stdio and socket modes.
+    /// Shared DAP transport loop used by stdio and generic reader/writer paths.
     pub(super) fn run_with_io<R, W>(&mut self, input: R, output: W) -> io::Result<()>
     where
         R: Read,
@@ -262,17 +246,6 @@ impl DebugAdapter {
     }
 }
 
-fn bind_socket_listener(port: u16) -> anyhow::Result<TcpListener> {
-    bind_socket_listener_with(port, |port| TcpListener::bind(("127.0.0.1", port)))
-}
-
-fn bind_socket_listener_with<F>(port: u16, bind: F) -> anyhow::Result<TcpListener>
-where
-    F: FnOnce(u16) -> io::Result<TcpListener>,
-{
-    bind(port).map_err(|source| anyhow::Error::new(source).context(DapSocketBindError { port }))
-}
-
 /// Write a framed response payload, then — if `notify_initialized` is set — dispatch the
 /// `initialized` event. DAP requires `initialized` only after a successful `initialize`
 /// response is sent.
@@ -436,26 +409,6 @@ mod tests {
         let writer = FailingWriter::always_failing();
         let result = adapter.run_with_io(input, writer);
         assert!(result.is_err(), "run_with_io must return Err when writer is broken immediately");
-    }
-
-    #[test]
-    fn native_socket_bind_failure_preserves_marker_and_io_downcast() -> anyhow::Result<()> {
-        let error = match bind_socket_listener_with(13_603, |_port| {
-            Err(io::Error::new(io::ErrorKind::PermissionDenied, "permission denied"))
-        }) {
-            Ok(_) => anyhow::bail!("injected bind failure unexpectedly succeeded"),
-            Err(error) => error,
-        };
-
-        let marker = error.downcast_ref::<DapSocketBindError>().ok_or_else(|| {
-            io::Error::other("injected bind failure did not preserve the DAP bind marker")
-        })?;
-        assert_eq!(marker.port, 13_603, "bind marker must preserve the requested port");
-        let source = error.downcast_ref::<io::Error>().ok_or_else(|| {
-            io::Error::other("injected bind failure did not preserve its I/O source")
-        })?;
-        assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
-        Ok(())
     }
 
     /// Regression for issue #5149 / PR #5318 defect 1, exercised against the actual

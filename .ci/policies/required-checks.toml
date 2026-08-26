@@ -50,7 +50,7 @@ policy_role = "required"
 applicability = "always-or-scoped-noop"
 enforcement = "github-branch-protection"
 classic_app_id = 15368
-reason = "Live main protection requires the routed Rust aggregate before merge."
+reason = "Live main protection requires the routed Rust aggregate and its recorded-main-red refusal before merge."
 
 [[checks]]
 name = "ripr+ New Gap Gate"
