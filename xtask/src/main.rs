@@ -38,28 +38,28 @@ use tasks::{
     build, build_timing, bump_version, change_set, check, check_agent_context, check_lint_policy,
     check_test_wiring, check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract,
     ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
-    ci_scope, clean, command_evidence, compare, compiler_lexical_cutline, corpus_audit,
-    count_ratchet, cpan_corpus, dead_code, debt_report, dependency_hygiene, dev, devex_docs,
-    devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context,
-    emacs_train_specs, features, finalize_check, fix_forward, fmt, forbid_fatal_constructs,
-    forensics, gate_receipts, gates, generated_files, github, github_preflight, github_review,
-    goals, hardening, hook_checks, ignored_tests, incremental_proof, inject_sha_assets,
-    inline_completion_quality, inline_completion_smoke, install_surface_check, integration_proof,
-    intent_diff_gate, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
-    memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
-    native_critic, native_format, native_product_surface, native_tooling, oracle_fixture_manifest,
-    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
-    parser_ratchet, perl_core_harness, perl_kwalitee, populate_book, pre_push_plan,
-    prep_crates_io_launch, product_health_rail_contract, protocol_type_substrate_matrix,
-    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
-    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, receipts, release, release_artifact_check, release_evidence,
-    release_notes, release_turnkey, repo_hygiene, ripr_evidence, seam_diff,
-    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
-    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
-    srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
-    sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
-    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    ci_scope, clean, clippy_cost_measure, command_evidence, compare, compiler_lexical_cutline,
+    corpus_audit, count_ratchet, cpan_corpus, dead_code, debt_report, dependency_hygiene, dev,
+    devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
+    emacs_train_context, emacs_train_specs, features, finalize_check, fix_forward, fmt,
+    forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files, github,
+    github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
+    incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
+    install_surface_check, integration_proof, intent_diff_gate, issue_plan, layer_check,
+    lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate,
+    metrics, module_train, module_train_live, native_critic, native_format, native_product_surface,
+    native_tooling, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust,
+    parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee,
+    populate_book, pre_push_plan, prep_crates_io_launch, product_health_rail_contract,
+    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
+    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
+    quality_baseline, quality_gate, queue_health, queue_snapshot, receipts, release,
+    release_artifact_check, release_evidence, release_notes, release_turnkey, repo_hygiene,
+    ripr_evidence, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
+    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
+    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
     validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
@@ -1057,6 +1057,26 @@ enum Commands {
 
     /// Measure CI lane runtimes and emit timing artifacts.
     CiMeasure,
+
+    /// Time workspace Clippy by target-kind scope under controlled cache
+    /// states and write a receipt (#11736 decision-1 cost instrument).
+    ClippyCostMeasure {
+        /// Receipt output path (relative paths resolve against the project root).
+        #[arg(long, default_value = "target/receipts/clippy-cost-measurement.json")]
+        receipt: PathBuf,
+
+        /// Comma-separated scopes to measure: lib,all-targets
+        #[arg(long, value_delimiter = ',', default_value = "lib,all-targets")]
+        scopes: Vec<clippy_cost_measure::ClippyScope>,
+
+        /// Comma-separated cache states to measure: warm,members-cold
+        #[arg(long, value_delimiter = ',', default_value = "warm,members-cold")]
+        states: Vec<clippy_cost_measure::ClippyCacheState>,
+
+        /// Per-pass watchdog in seconds; a killed pass fails the measurement loudly.
+        #[arg(long, default_value_t = 2400)]
+        timeout_secs: u64,
+    },
 
     /// Analyze GitHub Actions costs over a recent period.
     CiCostMonitor {
@@ -5181,6 +5201,14 @@ fn run_cli(cli: Cli) -> Result<()> {
             })
         }
         Commands::CiMeasure => ci_measure::run(),
+        Commands::ClippyCostMeasure { receipt, scopes, states, timeout_secs } => {
+            clippy_cost_measure::run(clippy_cost_measure::ClippyCostMeasureArgs {
+                receipt,
+                scopes,
+                states,
+                timeout_secs,
+            })
+        }
         Commands::CiCostMonitor { days, json } => ci_metrics::run_cost_monitor(days, json),
         Commands::CiBaseline { branch, days, limit, output } => {
             ci_metrics::run_ci_baseline(branch, days, limit, output)
