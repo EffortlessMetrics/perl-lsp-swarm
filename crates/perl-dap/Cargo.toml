@@ -375,6 +375,11 @@ path = "tests/wave_h_platform_edge_cases.rs"
 # Green TDD: edge cases and boundary conditions for platform module
 
 [[test]]
+name = "error_class_fixed_origin"
+path = "tests/error_class_fixed_origin.rs"
+# #8739: exhaustive ErrorClass matrix for fixed-origin DAP operational errors
+
+[[test]]
 name = "wave_h_security_edge_cases"
 path = "tests/wave_h_security_edge_cases.rs"
 # Green TDD: edge cases and boundary conditions for security module
