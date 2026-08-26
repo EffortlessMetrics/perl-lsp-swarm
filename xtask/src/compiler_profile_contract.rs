@@ -684,7 +684,8 @@ impl ClaimCeiling {
         }
     }
 
-    fn tag(self) -> &'static str {
+    /// Stable canonical tag, shared with the observation contract (#12188).
+    pub fn tag(self) -> &'static str {
         match self {
             Self::ObservedEvidence => "observed_evidence",
             Self::AcceptedCompatibility => "accepted_compatibility",
@@ -709,7 +710,8 @@ pub enum InvalidationKind {
 }
 
 impl InvalidationKind {
-    fn tag(self) -> &'static str {
+    /// Stable canonical tag, shared with the observation contract (#12188).
+    pub fn tag(self) -> &'static str {
         match self {
             Self::Source => "source_change",
             Self::Dependency => "dependency_change",
