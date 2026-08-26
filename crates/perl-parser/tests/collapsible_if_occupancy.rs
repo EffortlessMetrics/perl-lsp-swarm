@@ -192,11 +192,16 @@ fn json_quoted_after(haystack: &str, key: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-fn clippy_collapsible_if_hits(extra_target: &[&str]) -> Result<Vec<String>, String> {
+fn clippy_collapsible_if_hits() -> Result<Vec<String>, String> {
     let output = Command::new(env!("CARGO"))
-        .args(["clippy", "-p", "perl-parser", "--locked", "--offline", "--no-deps"])
-        .args(extra_target)
         .args([
+            "clippy",
+            "-p",
+            "perl-parser",
+            "--all-targets",
+            "--locked",
+            "--offline",
+            "--no-deps",
             "--message-format=json",
             "--",
             "--force-warn",
@@ -341,19 +346,19 @@ fn lib_rs_crate_allow_list_does_not_name_collapsible_if() {
     );
 }
 
+fn assert_no_collapsible_if_hits(result: Result<Vec<String>, String>) {
+    let hits = match result {
+        Ok(hits) => hits,
+        Err(error) => vec![format!("instrument-failure: {error}")],
+    };
+    assert!(
+        hits.is_empty(),
+        "cargo clippy -p perl-parser --all-targets still hits collapsible_if:\n{}",
+        hits.join("\n")
+    );
+}
+
 #[test]
 fn clippy_all_targets_has_no_collapsible_if_hits() {
-    let lib_hits = clippy_collapsible_if_hits(&["--lib"]).expect("clippy --lib occupancy");
-    let all_hits =
-        clippy_collapsible_if_hits(&["--all-targets"]).expect("clippy --all-targets occupancy");
-    assert!(
-        lib_hits.is_empty(),
-        "cargo clippy -p perl-parser --lib still hits collapsible_if:\n{}",
-        lib_hits.join("\n")
-    );
-    assert!(
-        all_hits.is_empty(),
-        "cargo clippy -p perl-parser --all-targets still hits collapsible_if:\n{}",
-        all_hits.join("\n")
-    );
+    assert_no_collapsible_if_hits(clippy_collapsible_if_hits());
 }
