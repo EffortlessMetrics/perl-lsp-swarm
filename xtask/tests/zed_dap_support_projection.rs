@@ -20,8 +20,6 @@ use serde_json::{Value, json};
 const SCRIPT: &str = "scripts/zed_dap_asset_receipts.py";
 const COMMITTED_RECEIPT: &str =
     ".ci/fixtures/zed-perl-upstream/receipts/dap-public-registry.v1.json";
-const REGISTRY_MANIFEST: &str = ".ci/fixtures/zed-perl-upstream/registry/manifest.toml";
-const RECEIPTS_DIR: &str = ".ci/fixtures/zed-perl-upstream/receipts";
 const EXTENSION_MANIFEST: &str = ".ci/fixtures/zed-perl-upstream/zed-perl/extension.toml";
 const ADAPTER_SCHEMA: &str =
     ".ci/fixtures/zed-perl-upstream/zed-perl/debug_adapter_schemas/perl-dap.json";
@@ -327,7 +325,7 @@ fn committed_output_drift_is_rejected() -> Result<(), Box<dyn Error>> {
 #[test]
 fn the_lsp_support_policy_is_never_touched() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let before = fs::read(&root.join(LSP_POLICY))?;
+    let before = fs::read(root.join(LSP_POLICY))?;
 
     // A failing projection run and a successful regeneration into temporary
     // outputs both leave the LSP client-support registry byte-identical.
@@ -340,7 +338,7 @@ fn the_lsp_support_policy_is_never_touched() -> Result<(), Box<dyn Error>> {
     assert!(!failing.status.success(), "the stale-subject projection must fail before any write");
     assert_eq!(
         before,
-        fs::read(&root.join(LSP_POLICY))?,
+        fs::read(root.join(LSP_POLICY))?,
         "a failed projection run must not touch the LSP support policy"
     );
 
@@ -360,7 +358,7 @@ fn the_lsp_support_policy_is_never_touched() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(
         before,
-        fs::read(&root.join(LSP_POLICY))?,
+        fs::read(root.join(LSP_POLICY))?,
         "the projection must never write the LSP support policy"
     );
     Ok(())
