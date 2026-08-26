@@ -24,7 +24,10 @@
 
 local json = require "plugins.lsp.json"
 local util = require "plugins.lsp.util"
-local diagnostics = require "plugins.lsp.diagnostics"
+-- Local patch (#11172): the initialize advertisement is folded from the
+-- profile-scoped capability manifest, so the wire payload can never exceed
+-- the reconciled capability/affordance matrix.
+local capability_manifest = require "plugins.lsp.capability_manifest"
 local Object = require "core.object"
 
 ---Visible truncation marker appended by bounded text excerpts (#11155).
@@ -453,6 +456,22 @@ function Server:initialize(workspace, editor_name, editor_version)
   self.editor_name = editor_name or "unknown"
   self.editor_version = editor_version or "0.1"
 
+  -- Local patch (#11172): user overrides may claim anything, but claims
+  -- over known unimplemented rows are warned about once here instead of
+  -- silently becoming support evidence.
+  local unsupported_claims =
+    capability_manifest.unsupported_custom_claims(self.custom_capabilities)
+  if #unsupported_claims > 0 then
+    local claimed_paths = {}
+    for _, claim in ipairs(unsupported_claims) do
+      claimed_paths[#claimed_paths + 1] = claim.path
+    end
+    self:log(
+      "[LSP] warning: custom capabilities claim unimplemented client features: %s",
+      table.concat(claimed_paths, ", ")
+    )
+  end
+
   self:push_request('initialize', {
     timeout = 10,
     params = {
@@ -468,145 +487,25 @@ function Server:initialize(workspace, editor_name, editor_version)
         {uri = root_uri, name = util.getpathname(workspace)}
       },
       initializationOptions = self.init_options,
-      capabilities = util.deep_merge({
-        workspace = {
-          configuration = true -- 'workspace/configuration' requests
-        },
-        textDocument = {
-          synchronization = {
-            -- willSave = true,
-            -- willSaveWaitUntil = true,
-            didSave = true,
-            -- dynamicRegistration = false -- not supported
-          },
-          completion = {
-            -- dynamicRegistration = false, -- not supported
-            completionItem = {
-              -- Snippets are required by css-languageserver
-              snippetSupport = self.snippets or self.fake_snippets,
-              -- commitCharactersSupport = true,
-              documentationFormat = {'plaintext'},
-              -- deprecatedSupport = false, -- simple autocompletion list
-              -- preselectSupport = true
-              -- tagSupport = {valueSet = {}},
-              insertReplaceSupport = true,
-              resolveSupport = {properties = {'documentation', 'detail', 'additionalTextEdits'}},
-              -- insertTextModeSupport = {valueSet = {}}
-            },
-            completionItemKind = {
-              valueSet = Server.get_completion_items_kind_list()
-            }
-            -- contextSupport = true
-          },
-          hover = {
-            -- dynamicRegistration = false, -- not supported
-            contentFormat = {'markdown', 'plaintext'}
-          },
-          signatureHelp = {
-            -- dynamicRegistration = false, -- not supported
-            signatureInformation = {
-              documentationFormat = {'plaintext'}
-              -- parameterInformation = {labelOffsetSupport = true},
-              -- activeParameterSupport = true
-            }
-            -- contextSupport = true
-          },
-          -- references = {dynamicRegistration = false}, -- not supported
-          -- documentHighlight = {dynamicRegistration = false}, -- not supported
-          documentSymbol = {
-            -- dynamicRegistration = false, -- not supported
-            symbolKind = {valueSet = Server.get_symbols_kind_list()}
-            -- hierarchicalDocumentSymbolSupport = true,
-            -- tagSupport = {valueSet = {}},
-            -- labelSupport = true
-          },
-          -- diagnostic = {
-          --   dynamicRegistration = true,
-          --   relatedDocumentSupport = false
-          -- },
-          -- formatting = {dynamicRegistration = false},-- not supported
-          -- rangeFormatting = {dynamicRegistration = false}, -- not supported
-          -- onTypeFormatting = {dynamicRegistration = false}, -- not supported
-          -- declaration = {
-          --  dynamicRegistration = false, -- not supported
-          --  linkSupport = true
-          -- }
-          -- definition = {
-          --  dynamicRegistration = false, -- not supported
-          --  linkSupport = true
-          -- },
-          -- typeDefinition = {
-          --  dynamicRegistration = false, -- not supported
-          --  linkSupport = true
-          -- },
-          -- implementation = {
-          --  dynamicRegistration = false, -- not supported
-          --  linkSupport = true
-          -- },
-          -- codeAction = {
-          --  dynamicRegistration = false, -- not supported
-          --  codeActionLiteralSupport = {valueSet = {}},
-          --  isPreferredSupport = true,
-          --  disabledSupport = true,
-          --  dataSupport = true,
-          --  resolveSupport = {properties = {}},
-          --  honorsChangeAnnotations = true
-          -- },
-          -- codeLens = {dynamicRegistration = false}, -- not supported
-          -- documentLink = {
-          --  dynamicRegistration = false, -- not supported
-          --  tooltipSupport = true
-          -- },
-          -- colorProvider = {dynamicRegistration = false}, -- not supported
-          -- rename = {
-          --  dynamicRegistration = false, -- not supported
-          --  prepareSupport = false
-          -- },
-          publishDiagnostics = {
-            relatedInformation = true,
-            tagSupport = {
-              valueSet = {
-                diagnostics.tag.UNNECESSARY,
-                diagnostics.tag.DEPRECATED
-              }
-            },
-            versionSupport = true,
-            codeDescriptionSupport = true,
-            dataSupport = false
-          },
-          -- foldingRange = {
-          --  dynamicRegistration = false, -- not supported
-          --  rangeLimit = ?,
-          --  lineFoldingOnly = true
-          -- },
-          -- selectionRange = {dynamicRegistration = false}, -- not supported
-          -- linkedEditingRange = {dynamicRegistration = false}, -- not supported
-          -- callHierarchy = {dynamicRegistration = false}, -- not supported
-          -- semanticTokens = {
-          --  dynamicRegistration = false, -- not supported
-          --  requests = {},
-          --  tokenTypes = {},
-          --  tokenModifiers = {},
-          --  formats = {},
-          --  overlappingTokenSupport = true,
-          --  multilineTokenSupport = true
-          -- },
-          -- moniker = {dynamicRegistration = false} -- not supported
-        },
-        window = {
-          -- workDoneProgress = true,
-          -- showMessage = {},
-          showDocument = { support = true }
-        },
-        general = {
-          -- regularExpressions = {},
-          -- markdown = {},
-          positionEncodings = {
+      -- Local patch (#11172): capabilities are the manifest's exact truth -
+      -- every advertised leaf has an implemented consumer and deterministic
+      -- proof; unconsumed leaves (publishDiagnostics relatedInformation,
+      -- tagSupport, codeDescriptionSupport) stay absent. User overrides
+      -- merge on top as user freedom, never as repository evidence.
+      capabilities = util.deep_merge(
+        capability_manifest.client_capabilities({
+          -- Normalized to a strict boolean: an absent snippets dependency
+          -- is a real false, not a missing producer.
+          snippet_support = (self.snippets or self.fake_snippets)
+            and true or false,
+          completion_item_kinds = Server.get_completion_items_kind_list(),
+          symbol_kinds = Server.get_symbols_kind_list(),
+          position_encoding_list = {
             Server.position_encoding_kind.UTF16
-          }
-        },
-        -- experimental = nil
-      }, self.custom_capabilities)
+          },
+        }),
+        self.custom_capabilities
+      )
     },
     callback = function(server, response)
       if server.verbose then

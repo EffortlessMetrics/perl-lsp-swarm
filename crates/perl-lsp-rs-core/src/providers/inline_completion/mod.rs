@@ -1146,7 +1146,7 @@ fn parse_damage_for_probe(source: &str) -> ParseDamage {
     let salvage = RecoverySalvageProfile::from_parse(&output.ast, &output.diagnostics, false);
 
     ParseDamage {
-        terminated_early: output.terminated_early,
+        terminated_early: output.terminated_early(),
         error_node_count: salvage.error_node_count,
         diagnostics_count: output.error_count(),
         recovered_count: output.recovered_count,

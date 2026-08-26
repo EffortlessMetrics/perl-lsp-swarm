@@ -31,6 +31,62 @@ mod run_authority;
 mod series;
 pub mod transition;
 
+// The runner-plan authority modules are shared verbatim with the
+// `perl-core-harness-runner-plan` binary units; the observed-discovery receipt
+// surface reuses them so there is exactly one source-frame normalizer and one
+// target-selection vocabulary. Items unused by this unit remain compiled for
+// the other inclusion sites.
+#[allow(dead_code)]
+#[path = "runner_plan/build.rs"]
+pub(crate) mod build;
+#[allow(dead_code)]
+// The shared normalizer's own test module predates this inclusion site and
+// uses workspace-denied helpers; its tests remain exercised by their original
+// bin/test units.
+#[cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#[path = "runner_plan/normalize.rs"]
+pub(crate) mod normalize;
+#[allow(dead_code)]
+#[path = "runner_plan/model.rs"]
+pub(crate) mod runner_model;
+
+/// Strict immutable observed upstream-discovery receipts
+/// (`upstream_runner_discovery.v1`, #12281): byte-exact raw envelopes, typed
+/// terminal state, frame-aware decoded rows, membership dispositions, work
+/// accounting, and deterministic digests over canonical payloads.
+pub mod observed_discovery {
+    /// Strict constructors, payload digests, freshness, and matrix adapter.
+    #[path = "build.rs"]
+    pub mod build;
+    /// Strict byte-level stream decoder and observation-state derivation.
+    #[path = "decode.rs"]
+    pub mod decode;
+    /// Receipt, envelope, row, disposition, subject, and work types.
+    #[path = "model.rs"]
+    pub mod model;
+    /// Fail-closed validation reconstructing rows from retained raw bytes.
+    #[path = "validate.rs"]
+    pub mod validate;
+
+    #[cfg(test)]
+    #[path = "tests.rs"]
+    mod tests;
+
+    pub use build::{
+        build_observed_discovery_receipt, check_observed_discovery_against,
+        discovery_payload_digest, receipt_freshness,
+    };
+    pub use decode::derive_observation_state;
+    pub use model::{
+        DiscoveryObservationState, DiscoveryPayload, DiscoverySubjectIdentity, EnvironmentIdentity,
+        EvidenceClass, InvocationObservation, LineFraming, MemberDisposition,
+        ObservedDiscoveryInput, ObservedDiscoveryRow, ProcessCompletion, RawStreamEnvelope,
+        ReceiptFreshness, RunnerArtifactIdentity, TerminalObservation,
+        UPSTREAM_DISCOVERY_SCHEMA_VERSION, UpstreamDiscoveryReceiptV1,
+    };
+    pub use validate::{validate_observed_discovery_receipt, validate_receipt_subject_binding};
+}
+
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness_types::{

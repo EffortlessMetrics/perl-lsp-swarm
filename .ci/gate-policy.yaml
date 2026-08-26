@@ -790,7 +790,7 @@ gates:
 
   - name: clippy_tests_kernel
     tier: pr_fast
-    description: "Clippy --all-targets on the known-clean staged cohort (34/46 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    description: "Clippy --all-targets on the known-clean staged cohort (36/46 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     required: true
     # (#11736): The workspace lints in Cargo.toml deny `unwrap_used`, `expect_used`,
     # and `panic` but the existing clippy gates use `--lib` only, so these denials
@@ -804,7 +804,7 @@ gates:
     # docs/CLIPPY_POLICY.md ("Target-kind lint contract"): print_stdout and
     # print_stderr are intentional in tests//examples/ (encoded as file-scoped
     # reasoned #[expect]s, never config or gate flags); the panic family stays
-    # denied everywhere. The remaining 14 crates carry measured repair tranches
+    # denied everywhere. The remaining 12 crates carry measured repair tranches
     # tracked on #11736 (2026-08-23 census on 470277161, warn-neutralized
     # disjoint-unit method: 3195 test-context findings across those 14 crates;
     # production --lib/--bins pass clean except one xtask
@@ -845,6 +845,20 @@ gates:
     #     (#12395, #12398), so this batch's duplicate fixes were dropped during
     #     the merge with e40c2a386. Exact extended-cohort rerun PASS on this
     #     branch.
+    #   2026-08-25 batch (parked tranches unblocked and repaired, see PR for
+    #     #11736): perl-ci-hygiene (expect_err in commands/doc_links.rs cfg(test)
+    #     replaced with a match returning a typed Err; 12 Regex::new unwrap() in
+    #     main.rs cfg(test) propagated via eyre `?`, matching the module's
+    #     Result<()> convention), perl-lexer (3 Option::expect in
+    #     lexer_slash_timeout_tests + 2 in hang_risk_regex_literal_tests replaced
+    #     with ok_or()? per each file's TestResult convention; 3 panic fallbacks
+    #     and 2 fixture-offset expects in lexer_robustness_tests replaced with
+    #     the file's established assert!-then-if-let pattern). The parked
+    #     perl-lexer tranche census predated #12534; current-main findings differ
+    #     (collapsible_if/assertions_on_constants no longer present). Prerequisite
+    #     verification on 6ec7242bd: lexer_robustness_tests green twice,
+    #     check-panic-test exit 0. Exact extended-cohort rerun PASS on this
+    #     branch.
     command: >-
       cargo clippy
       -p perl-token
@@ -881,6 +895,8 @@ gates:
       -p perl-core-harness-types
       -p perl-regex
       -p perllsp
+      -p perl-lexer
+      -p perl-ci-hygiene
       --all-targets --locked
       -- -D warnings -A missing_docs
     # Budget: measured ~80s locally with warm dependencies and cold check

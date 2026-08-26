@@ -257,7 +257,7 @@ pub(crate) fn runner_plan_digest(plan: &RunnerPlan) -> Result<String, String> {
     sha256_json(plan)
 }
 
-fn find_target<'a>(
+pub(crate) fn find_target<'a>(
     matrix: &'a UpstreamTargetMatrix,
     target_id: &str,
 ) -> Result<&'a TargetMatrixEntry, String> {
@@ -268,7 +268,7 @@ fn find_target<'a>(
         .ok_or_else(|| format!("target matrix has no target {target_id}"))
 }
 
-fn effective_selection(
+pub(crate) fn effective_selection(
     matrix: &UpstreamTargetMatrix,
     entry: &TargetMatrixEntry,
 ) -> Result<(Vec<crate::model::TargetSelector>, Vec<TargetScriptForm>), String> {
@@ -298,7 +298,7 @@ fn effective_selection(
     }
 }
 
-fn effective_selection_authority(
+pub(crate) fn effective_selection_authority(
     matrix: &UpstreamTargetMatrix,
     entry: &TargetMatrixEntry,
 ) -> Result<TargetAuthority, String> {
