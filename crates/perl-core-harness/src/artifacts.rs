@@ -1650,7 +1650,7 @@ pub(crate) fn reject_subject_destinations(
 /// textually, and `reject_output_aliases` compares it against canonicalized
 /// inputs. An unfolded `<elsewhere>/../<perl-tree>/t/x.json` would slip past
 /// both and then be written inside the measured subject.
-fn resolve_destination(path: &Path) -> Result<PathBuf> {
+pub(crate) fn resolve_destination(path: &Path) -> Result<PathBuf> {
     use std::path::Component;
 
     let absolute = if path.is_absolute() {

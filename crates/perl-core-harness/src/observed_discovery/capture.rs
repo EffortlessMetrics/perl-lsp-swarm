@@ -151,6 +151,13 @@ pub(crate) fn selector_arguments(
 /// honest frame is [`DiscoveryFrame::CanonicalRepositoryPath`].
 /// [`DiscoveryFrame::RunnerTDirectoryRelative`] stays reserved for runners
 /// that actually emit `t/`-relative rows.
+///
+/// The behavior-bearing environment is the capture baseline (`LC_ALL=C`)
+/// overlaid with the target contract's declared environment, so an
+/// environment-bearing target (for example `optional_bigmem`'s
+/// `PERL_TEST_MEMORY`) executes and records exactly its declared process
+/// contract; ambient caller variables beyond the sanitized set stay outside
+/// receipt identity by the #12281 caller-supplied-reference limitation.
 pub(crate) fn bind_process_plan(
     matrix: &UpstreamTargetMatrix,
     entry: &TargetMatrixEntry,
@@ -171,6 +178,10 @@ pub(crate) fn bind_process_plan(
         .with_context(|| format!("reading runner artifact {}", script_path.display()))?;
     let mut argv = vec!["TEST".to_string(), "--dumptests".to_string()];
     argv.extend(selectors);
+    let mut environment = BTreeMap::from([("LC_ALL".to_string(), "C".to_string())]);
+    for (key, value) in &entry.contract.environment {
+        environment.insert(key.clone(), value.clone());
+    }
     Ok(ObservationProcessPlan {
         runner,
         runner_artifact: RunnerArtifactIdentity {
@@ -179,7 +190,7 @@ pub(crate) fn bind_process_plan(
         },
         argv,
         working_directory: "t".to_string(),
-        environment: BTreeMap::from([("LC_ALL".to_string(), "C".to_string())]),
+        environment,
         t_dir,
     })
 }
@@ -232,13 +243,52 @@ fn completion_from_outcome(outcome: &DiscoveryProcessOutcome) -> ProcessCompleti
     }
 }
 
+/// Resolve the host interpreter against the caller's directory before the
+/// child changes its working directory.
+///
+/// A relative interpreter path containing a separator would otherwise be
+/// resolved relative to the runner's `t` directory by the spawned process. A
+/// bare name stays bare so `PATH` lookup keeps working.
+pub(crate) fn resolve_host_interpreter(host_perl: &Path) -> Result<PathBuf> {
+    if host_perl.is_absolute() || host_perl.components().count() == 1 {
+        return Ok(host_perl.to_path_buf());
+    }
+    let current = std::env::current_dir()
+        .context("reading the current directory to resolve the relative host Perl path")?;
+    Ok(current.join(host_perl))
+}
+
+/// Reject a receipt destination that would overwrite the pinned target
+/// matrix itself: the matrix file, or any member of a bundle directory.
+///
+/// The matrix is the authority the receipt is validated against, so
+/// overwriting it after capture would destroy the input while the command
+/// still reports success.
+fn reject_matrix_output_alias(matrix_path: &Path, output: &Path) -> Result<()> {
+    let matrix_canonical = fs::canonicalize(matrix_path)
+        .with_context(|| format!("canonicalizing target matrix {}", matrix_path.display()))?;
+    let output_resolved = crate::artifacts::resolve_destination(output)?;
+    if output_resolved == matrix_canonical || output_resolved.starts_with(&matrix_canonical) {
+        bail!(
+            "receipt output {} would overwrite the pinned target matrix {}",
+            output.display(),
+            matrix_path.display()
+        );
+    }
+    Ok(())
+}
+
 /// Mint one capture identity unique to this observation.
+///
+/// The nonce combines wall-clock time, the observing process id, and an
+/// in-process counter so two CLI processes minting in the same millisecond
+/// still cannot share a capture identity.
 fn mint_process_nonce() -> Result<String> {
     let since_epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("reading the system clock for the capture identity")?;
     let counter = CAPTURE_NONCE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    Ok(format!("observe-discovery-{}-{counter}", since_epoch.as_millis()))
+    Ok(format!("observe-discovery-{}-{}-{counter}", since_epoch.as_millis(), std::process::id()))
 }
 
 /// Run one exact observed discovery and assemble the strict #12281 receipt.
@@ -265,15 +315,13 @@ pub fn observe_discovery(config: &ObserveDiscoveryConfig) -> Result<UpstreamDisc
     if !perl_tree.is_dir() {
         bail!("prepared Perl tree is not a directory: {}", perl_tree.display());
     }
+    let host_perl = resolve_host_interpreter(&config.host_perl)?;
+    reject_matrix_output_alias(&config.matrix, &config.output)?;
     reject_output_aliases(
-        &[perl_tree.join("t").join("TEST"), config.host_perl.clone()],
+        &[perl_tree.join("t").join("TEST"), host_perl.clone()],
         std::slice::from_ref(&config.output),
     )?;
-    reject_subject_destinations(
-        &config.host_perl,
-        &perl_tree,
-        std::slice::from_ref(&config.output),
-    )?;
+    reject_subject_destinations(&host_perl, &perl_tree, std::slice::from_ref(&config.output))?;
 
     let plan = bind_process_plan(&matrix, entry, config.runner, &perl_tree)?;
     let matrix_fingerprint =
@@ -293,7 +341,7 @@ pub fn observe_discovery(config: &ObserveDiscoveryConfig) -> Result<UpstreamDisc
     };
     let process_nonce = mint_process_nonce()?;
     let (completion, stdout_bytes, stdout_truncated, stderr_bytes, stderr_truncated) =
-        execute_plan(&plan, &config.host_perl, &config.limits);
+        execute_plan(&plan, &host_perl, &config.limits);
     let input = ObservedDiscoveryInput {
         subject,
         runner: plan.runner,
@@ -549,6 +597,107 @@ mod contract_tests {
         assert!(
             error.to_string().contains("missing the exact t/TEST runner artifact"),
             "unexpected missing-artifact error: {error}"
+        );
+        Ok(())
+    }
+
+    /// Review repair (P2): the target contract's declared environment is part
+    /// of the exact invocation subject, so an environment-bearing target binds
+    /// its declared variables into the plan and the receipt.
+    #[test]
+    fn target_contract_environment_is_applied_and_recorded() -> Result<()> {
+        let matrix = matrix()?;
+        let temp = tempfile::tempdir()?;
+        let tree = temp.path().join("prepared");
+        let t_dir = tree.join("t");
+        std::fs::create_dir_all(t_dir.join("base"))?;
+        std::fs::write(t_dir.join("TEST"), "#!./perl\n")?;
+
+        // A pinned test-authority target with a declared environment.
+        let plan = bind_process_plan(
+            &matrix,
+            entry(&matrix, "optional_bigmem")?,
+            RunnerKind::Test,
+            &tree,
+        )?;
+        assert_eq!(
+            plan.environment,
+            std::collections::BTreeMap::from([
+                ("LC_ALL".to_string(), "C".to_string()),
+                ("PERL_TEST_MEMORY".to_string(), "enabled".to_string()),
+            ]),
+            "the contract environment must overlay the capture baseline"
+        );
+        assert_eq!(plan.argv.len(), 3, "optional_bigmem keeps its recursive-root selector");
+
+        // A contract variable wins over a colliding baseline entry: the target
+        // authority owns the behavior-bearing process contract.
+        let mut colliding = entry(&matrix, "component_base")?.clone();
+        colliding.contract.environment.insert("LC_ALL".to_string(), "en_US.UTF-8".to_string());
+        let plan = bind_process_plan(&matrix, &colliding, RunnerKind::Test, &tree)?;
+        assert_eq!(plan.environment.get("LC_ALL").map(String::as_str), Some("en_US.UTF-8"));
+        Ok(())
+    }
+
+    /// Review repair (P2): a receipt destination may never overwrite the
+    /// pinned matrix authority it will be validated against.
+    #[test]
+    fn receipt_output_cannot_alias_the_pinned_matrix() -> Result<()> {
+        let matrix_dir = repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1");
+        let member = matrix_dir.join("01-components-a.json");
+        let Err(error) = super::reject_matrix_output_alias(&matrix_dir, &member) else {
+            bail!("a bundle-member output must be rejected");
+        };
+        assert!(
+            error.to_string().contains("would overwrite the pinned target matrix"),
+            "unexpected matrix-alias error: {error}"
+        );
+        let single = repo_file(".ci/perl-core-harness/upstream-targets-blead-drift.v1.json");
+        let Err(_) = super::reject_matrix_output_alias(&single, &single) else {
+            bail!("a single-file matrix output must be rejected");
+        };
+        let elsewhere = std::env::temp_dir().join("plsw-12283-receipt-check.json");
+        assert!(super::reject_matrix_output_alias(&matrix_dir, &elsewhere).is_ok());
+        Ok(())
+    }
+
+    /// Review repair (P2): a relative path-bearing interpreter resolves
+    /// against the caller's directory, not the runner's future cwd.
+    #[test]
+    fn relative_host_interpreters_resolve_against_the_caller_directory() -> Result<()> {
+        let bare = super::resolve_host_interpreter(Path::new("perl"))?;
+        assert_eq!(bare, Path::new("perl"), "bare names stay for PATH lookup");
+
+        let absolute =
+            PathBuf::from(if cfg!(windows) { "C:\\tools\\perl.exe" } else { "/usr/bin/perl" });
+        assert_eq!(super::resolve_host_interpreter(&absolute)?, absolute);
+
+        let relative = Path::new(if cfg!(windows) { "tools\\perl.exe" } else { "tools/perl" });
+        let resolved = super::resolve_host_interpreter(relative)?;
+        assert!(resolved.is_absolute(), "path-bearing relatives become caller-absolute");
+        assert!(
+            resolved.ends_with(relative),
+            "resolution must preserve the interpreter spelling: {}",
+            resolved.display()
+        );
+        Ok(())
+    }
+
+    /// Review repair (P2): capture identities stay unique across observing
+    /// processes minting in the same millisecond.
+    #[test]
+    fn capture_nonces_carry_a_process_unique_component() -> Result<()> {
+        let first = super::mint_process_nonce()?;
+        let second = super::mint_process_nonce()?;
+        assert_ne!(first, second);
+        let tail = first
+            .strip_prefix("observe-discovery-")
+            .ok_or_else(|| color_eyre::eyre::eyre!("nonce lost its prefix: {first}"))?;
+        let parts = tail.split('-').count();
+        assert_eq!(parts, 3, "nonce combines time, process id, and counter: {first}");
+        assert!(
+            first.contains(&std::process::id().to_string()),
+            "nonce must carry the observing process id: {first}"
         );
         Ok(())
     }
