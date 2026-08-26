@@ -5,6 +5,7 @@
 //! between them must compile and the types must be identical (same TypeId).
 //!
 //! This is an orchestrator-locked requirement (see plan-reviewer comment on #4429).
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_diagnostics::codes::DiagnosticSeverity as CodesSeverity;
 use perl_diagnostics::codes::DiagnosticTag as CodesTag;

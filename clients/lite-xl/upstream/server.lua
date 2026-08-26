@@ -400,6 +400,11 @@ function Server:new(options)
   self.response_list = {}
   self.notification_list = {}
   self.raw_list = {}
+  -- Response-obligation correlation (#10785): ids of accepted server
+  -- requests still awaiting their handler's terminal reply, and ids whose
+  -- terminal reply is already queued. Both die with the generation.
+  self.pending_response_ids = {}
+  self.answered_response_ids = {}
   self.command = options.command
   self.write_fails = 0
   self.fatal_error = false
@@ -622,7 +627,7 @@ function Server:respond(id, result)
   local data = json.encode(message)
 
   if self.verbose then
-    self:log("Responding to '%d':\n%s", id, util.jsonprettify(data))
+    self:log("Responding to '%s':\n%s", tostring(id), util.jsonprettify(data))
   end
 
   local sent, errmsg = self:write_request(data)
@@ -652,7 +657,7 @@ function Server:respond_error(id, error_message, error_code)
   local data = json.encode(message)
 
   if self.verbose then
-    self:log("Responding error to '%d':\n%s", id, util.jsonprettify(data))
+    self:log("Responding error to '%s':\n%s", tostring(id), util.jsonprettify(data))
   end
 
   local sent, errmsg = self:write_request(data)
@@ -885,10 +890,18 @@ function Server:process_client_responses()
       id = response.id
     }
 
-    if response.result then
+    -- Explicit representation (#10785): admission already decided this
+    -- entry's branch; the send loop encodes exactly that member instead of
+    -- re-applying Lua truthiness (a queued result:false must reach the
+    -- wire as result:false, never as an error frame).
+    if response.error ~= nil then
+      message.error = response.error
+    elseif response.result ~= nil then
       message.result = response.result
     else
-      message.error = response.error
+      -- Unreachable through push_response admission (#10785): keep the
+      -- obligation's frame valid rather than emitting a member-less reply.
+      message.result = json.null
     end
 
     local data = json.encode(message)
@@ -1218,24 +1231,75 @@ end
 ---or a regular response, one of both. A response is an obligation toward
 ---the server (#10785): it is always admitted and never dropped by any rate
 ---mechanism (#10833).
+---
+---Local patch (#10785): the result-vs-error branch is explicit, never Lua
+---truthiness. A non-nil `error` argument selects the error branch and must
+---be a real JSON-RPC error object - one missing code/message is wrapped into
+---one typed internal error so an invalid payload can never silently produce
+---a member-less or malformed frame. Otherwise ANY result value travels
+---verbatim, including boolean false, 0, "", json.null and empty arrays and
+---objects. Exactly one terminal response is admitted per accepted
+---server-request occurrence: a duplicate handler attempt is rejected with a
+---typed disposition instead of emitting a second frame, and the answered
+---marker persists until the server admits a genuinely new request with that
+---id or the generation tears down (#10785 review), so a late asynchronous
+---handler replay can never double-send.
 ---@param method string
----@param id integer
----@param result table|nil
----@param error table|nil
----@return string disposition Always "queued"
+---@param id any JSON-RPC request id, echoed verbatim (number or string)
+---@param result any Result payload; falsey values keep their identity
+---@param error table|nil JSON-RPC error object; presence selects the branch
+---@return string disposition One of "queued" or "rejected_duplicate"
 function Server:push_response(method, id, result, error)
   if self.verbose then
     self:log("Adding response %s to %s", tostring(id), tostring(method))
   end
 
-  -- Store the response for later processing on loop
+  -- Exactly one terminal response per accepted server request (#10785):
+  -- a second handler attempt for an already-answered id is rejected
+  -- instead of double-sending.
+  if id ~= nil and self.answered_response_ids[id] then
+    self:log(
+      "Duplicate client response for server request id %s rejected",
+      tostring(id)
+    )
+    return "rejected_duplicate"
+  end
+
+  -- Store the response for later processing on loop. Admission decides the
+  -- branch exactly once so the send loop cannot re-apply truthiness.
   local response = {
     id = id
   }
-  if result then
-    response.result = result
-  else
+  if error ~= nil then
+    if
+      type(error) ~= "table"
+      or type(error.code) ~= "number"
+      or type(error.message) ~= "string"
+    then
+      self:log(
+        "Invalid client error payload for '%s' (%s); answering one typed internal error",
+        tostring(method),
+        type(error) ~= "table"
+          and ("error value was " .. type(error))
+          or (
+            type(error.code) ~= "number"
+            and "error code is not a number"
+            or "error message is not a string"
+          )
+      )
+      error = {
+        code = Server.error_code.InternalError,
+        message = "Internal error: invalid client error payload",
+      }
+    end
     response.error = error
+  else
+    response.result = result
+  end
+
+  if id ~= nil then
+    self.pending_response_ids[id] = nil
+    self.answered_response_ids[id] = true
   end
 
   table.insert(self.response_list, response)
@@ -1779,6 +1843,17 @@ function Server:send_request_signal(request)
     return
   end
 
+  -- Accepted server request (#10785): register its pending terminal-reply
+  -- obligation so teardown can dispose of unanswered ids explicitly and a
+  -- replacement generation starts clean. A genuinely new request occurrence
+  -- with a reused id supersedes the previous occurrence's correlation
+  -- (#10785 review); a late handler replay for the OLD occurrence stays
+  -- rejected instead of emitting a second terminal frame.
+  if request.id ~= nil then
+    self.pending_response_ids[request.id] = true
+    self.answered_response_ids[request.id] = nil
+  end
+
   if self.request_listeners[request.method] then
     for _, l in ipairs(self.request_listeners[request.method]) do
       l(self, request)
@@ -1875,10 +1950,15 @@ function Server:stop()
   self.initialized = false
   self.proc = nil
 
+  -- Explicit obligation teardown (#10785): unsent queued responses and
+  -- unanswered accepted-request obligations die with this generation so
+  -- old ids cannot leak into, or be satisfied by, a replacement server.
   self.request_list = {}
   self.response_list = {}
   self.notification_list = {}
   self.raw_list = {}
+  self.pending_response_ids = {}
+  self.answered_response_ids = {}
 end
 
 ---Shutdown the server if not running or amount of write fails

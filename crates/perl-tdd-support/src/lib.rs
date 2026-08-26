@@ -32,6 +32,7 @@
     clippy::print_stderr,
     reason = "test support crate intentionally emits narrative scenario output"
 )]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 #![allow(
     clippy::too_many_lines,
     clippy::module_name_repetitions,
