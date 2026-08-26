@@ -319,10 +319,13 @@ pub fn materialize_activation_fixture(
 /// The payload delivered to the driver: one entry per denominator row, in
 /// artifact order, carrying exactly what the execution needs. Authored from
 /// the landed catalog mirror (`ACTIVATION_DENOMINATOR`) — never re-derived.
+/// `path` is the full fixture-relative document location under the governed
+/// #7762 root, exactly what the substrate-delivered `*_OPENED_FILE_REL`
+/// transports look like in the sibling journeys.
 #[derive(Debug, Clone, Serialize)]
 struct ActivationRowPayload<'a> {
     row: &'a str,
-    path: &'a str,
+    path: String,
     expect: &'a str,
     negative_control: bool,
     manual_override: &'a str,
@@ -334,7 +337,7 @@ fn activation_rows_payload_json() -> Result<OsString> {
         .iter()
         .map(|row| ActivationRowPayload {
             row: row.slug,
-            path: row.path,
+            path: format!("{GOVERNED_ROOT_REL}/{}", row.path),
             expect: row.expect,
             negative_control: row.negative_control,
             manual_override: row.manual_override.unwrap_or(""),

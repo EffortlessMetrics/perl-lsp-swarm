@@ -170,16 +170,23 @@ endif
 " selection with decoy discrimination, and the wire push evidence.
 
 let s:row0 = s:rows[0]
-let s:absolute0 = s:fixture_root . '/' . get(s:row0, 'path', '')
 let s:native0 = ''
+let s:absolute0 = s:fixture_root . '/' . get(s:row0, 'path', '')
+let s:governed_ok = filereadable(s:absolute0)
 
 call s:Emit('fixture_opened', {'bootstrap_row': get(s:row0, 'row', '')})
 
-if s:phase ==# 'preset_filetype_claimed'
-  " The manufactured-state control: force a Perl filetype right after the
-  " open, retain that the observation is synthetic, and void the whole claim
-  " with the typed reason. Nothing else is emitted — a pre-forced filetype
-  " can never ride through a stream that calls anything native.
+if !s:governed_ok
+  " A missing denominator document is an instrument/fixture fault, never a
+  " silent edit of a phantom buffer.
+  call s:Fail('governed_document_absent')
+elseif s:phase ==# 'preset_filetype_claimed'
+  " The manufactured-state control: open the real document, force a Perl
+  " filetype right after the open, retain that the observation is synthetic,
+  " and void the whole claim with the typed reason. Nothing else is emitted —
+  " a pre-forced filetype can never ride through a stream that calls anything
+  " native.
+  call VimLspHostOpenFixture(s:absolute0)
   setf perl
   let s:native0 = VimLspHostEffectiveFiletype()
   call s:Emit('activation_native_observed', {
@@ -192,6 +199,9 @@ if s:phase ==# 'preset_filetype_claimed'
   call s:Fail('pre_forced_filetype_not_native')
 else
   call VimLspHostOpenFixture(s:absolute0)
+endif
+
+if s:governed_ok && s:phase !=# 'preset_filetype_claimed'
   let s:native0 = VimLspHostEffectiveFiletype()
   let s:enable_before0 = g:perllsp_vim_host_buffer_enabled
   let s:publish_before0 = VimLspHostWireMarkerCount('textDocument/publishDiagnostics')
@@ -293,19 +303,21 @@ else
           \ })
   endif
 
-  let s:quiet0 = s:budget / 5 < 2000 ? 2000 : s:budget / 5
-  let s:settled0 = VimLspHostSettledStateBarrier(
-        \ "VimLspHostBufferDiagnosticsCounts()['error'] >= 1", s:quiet0, s:budget)
-  let s:publish_now0 = VimLspHostWireMarkerCount('textDocument/publishDiagnostics')
-  if s:settled0 == 1 && s:publish_now0 > s:publish_before0
-    call s:Emit('activation_semantic_observed', {
-          \ 'row_index': '0',
-          \ 'row': get(s:row0, 'row', ''),
-          \ 'state_source': 'client_state',
-          \ 'errors': string(VimLspHostBufferDiagnosticsCounts()['error']),
-          \ })
-  else
-    call s:Fail('semantic_discriminator_absent')
+  if s:attached0
+    let s:quiet0 = s:budget / 5 < 2000 ? 2000 : s:budget / 5
+    let s:settled0 = VimLspHostSettledStateBarrier(
+          \ "VimLspHostBufferDiagnosticsCounts()['error'] >= 1", s:quiet0, s:budget)
+    let s:publish_now0 = VimLspHostWireMarkerCount('textDocument/publishDiagnostics')
+    if s:settled0 == 1 && s:publish_now0 > s:publish_before0
+      call s:Emit('activation_semantic_observed', {
+            \ 'row_index': '0',
+            \ 'row': get(s:row0, 'row', ''),
+            \ 'state_source': 'client_state',
+            \ 'errors': string(VimLspHostBufferDiagnosticsCounts()['error']),
+            \ })
+    else
+      call s:Fail('semantic_discriminator_absent')
+    endif
   endif
 
   " Between-rows reset through the real client didClose path so one row
@@ -328,6 +340,19 @@ if empty(s:failures)
     let s:absolute = s:fixture_root . '/' . get(s:row, 'path', '')
     let s:enable_before = g:perllsp_vim_host_buffer_enabled
     let s:publish_before = VimLspHostWireMarkerCount('textDocument/publishDiagnostics')
+
+    if !filereadable(s:absolute)
+      " Same phantom-buffer law as the bootstrap row.
+      call s:Emit('activation_native_observed', {
+            \ 'row_index': string(s:i),
+            \ 'row': s:slug,
+            \ 'observed_filetype': 'unset',
+            \ 'detection': 'native_vim',
+            \ 'preset': '0',
+            \ })
+      call s:Fail('row_document_absent')
+      break
+    endif
 
     call VimLspHostOpenFixture(s:absolute)
     let s:native = VimLspHostEffectiveFiletype()
