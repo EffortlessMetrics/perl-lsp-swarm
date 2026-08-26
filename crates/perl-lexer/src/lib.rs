@@ -898,6 +898,27 @@ impl<'a> PerlLexer<'a> {
         let start = self.position;
         let quote = self.current_char()?;
 
+        // Punctuation typeglob names (`*"`, `*'`, *`): after a glob sigil in
+        // term position, a quote character immediately followed by `;` is the
+        // punctuation-variable typeglob name (English.pm, e.g.
+        // `*PREMATCH = *`;`), never the start of a string. String-lexing it
+        // runs the unterminated-quote recovery, which consumes through
+        // end-of-line: it errors when a newline follows (#12363) and silently
+        // swallows the rest of the line otherwise. A multiplication such as
+        // `$a * ";"` is excluded by requiring a non-operand before the star.
+        if matches!(quote, '"' | '\'' | '`')
+            && self.peek_char(1) == Some(';')
+            && self.glob_sigil_precedes()
+        {
+            self.advance();
+            return Some(Token {
+                token_type: TokenType::Operator(Arc::from(&self.input[start..start + 1])),
+                text: Arc::from(&self.input[start..start + 1]),
+                start,
+                end: start + 1,
+            });
+        }
+
         match quote {
             '"' => self.parse_double_quoted_string(start),
             '\'' => self.parse_single_quoted_string(start),
@@ -905,6 +926,33 @@ impl<'a> PerlLexer<'a> {
             'q' if self.peek_char(1) == Some('{') => self.parse_q_string(start),
             _ => None,
         }
+    }
+
+    /// Whether the previous significant character is a `*` in glob-sigil
+    /// position (preceded by an operator or the start of input, not by an
+    /// operand — `$a * x` is multiplication, `= *x` is a glob).
+    fn glob_sigil_precedes(&self) -> bool {
+        let bytes = self.input.as_bytes();
+        let mut index = self.position;
+        while index > 0 && bytes[index - 1].is_ascii_whitespace() {
+            index -= 1;
+        }
+        if index == 0 || bytes[index - 1] != b'*' {
+            return false;
+        }
+        index -= 1;
+        while index > 0 && bytes[index - 1].is_ascii_whitespace() {
+            index -= 1;
+        }
+        if index == 0 {
+            return true;
+        }
+        let before = bytes[index - 1] as char;
+        !(before.is_ascii_alphanumeric()
+            || matches!(
+                before,
+                '_' | '$' | '@' | '%' | '&' | '*' | ')' | ']' | '}' | '\'' | '"' | '`'
+            ))
     }
 
     #[inline]
