@@ -274,6 +274,10 @@ class MainRedRefusalWorkflowTests(unittest.TestCase):
         self.assertIn("  checks: read", self.workflow)
         self.assertNotIn("\n  push:", self.workflow)
         self.assertNotIn("pr-smoke", self.workflow)
+        self.assertIn(
+            "if: github.event_name != 'pull_request' || github.event.pull_request.draft != true",
+            self.workflow,
+        )
 
     def test_probe_reads_main_before_and_after_exact_check_lookup(self) -> None:
         probe_start = self.workflow.index("      - name: Probe main-red refusal")
@@ -288,7 +292,9 @@ class MainRedRefusalWorkflowTests(unittest.TestCase):
         self.assertIn("contents/.github/workflows/ci.yml?ref=$1", probe)
         self.assertIn("--main-workflow-sha", probe)
         self.assertIn("--candidate-workflow-sha", probe)
-        self.assertIn("scripts/ci/main_red_refusal.py", probe)
+        self.assertIn("contents/scripts/ci/main_red_refusal.py?ref=${MAIN_SHA_BEFORE}", probe)
+        self.assertIn('python3 "$TRUSTED_SCRIPT"', probe)
+        self.assertIn("TRUSTED_SCRIPT_AVAILABLE", probe)
         self.assertIn("MAIN_SHA_AFTER", probe)
 
     def test_final_refusal_is_propagated_to_required_lane(self) -> None:
