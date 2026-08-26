@@ -36,6 +36,12 @@ agent-nextest:
 agent-pr-fast:
     {{cargo_safe}} xtask gates --tier pr-fast --receipt
 
+# Run any cargo command with shared multi-worktree build caching (devplane
+# target dir, sccache, build flock, disk gate). Documented default for local
+# multi-worktree development — see docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md.
+cached *args:
+    {{cargo_safe}} {{args}}
+
 # M4b (#3763): assert review/audit agents are mechanically read-only
 # (no Edit/Write/NotebookEdit/Agent in their tools: allowlist).
 check-agent-capabilities:
