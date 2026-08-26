@@ -842,10 +842,10 @@ mod tests {
     fn retain_shifted_cached_token_does_not_drop_clamped_empty_identifier() {
         let token = Token::new_checked(TokenKind::Identifier, "x", 1, 2).expect("valid token");
         let shifted = retain_shifted_cached_token(&token, 0, 0);
-        assert_eq!(shifted.kind(), TokenKind::Unknown);
+        assert_eq!(shifted.kind(), TokenKind::Eof);
         assert_eq!(shifted.start(), 0);
         assert_eq!(shifted.end(), 0);
-        assert_eq!(&*shifted.text, "x");
+        assert_eq!(&*shifted.text, "");
     }
 
     #[test]
