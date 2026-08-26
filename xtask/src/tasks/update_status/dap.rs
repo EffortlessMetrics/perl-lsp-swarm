@@ -253,6 +253,16 @@ mod tests {
             "expected 69 [[test]] targets in perl-dap/Cargo.toml (67 + error_class_fixed_origin from #8739 + debugger_output_origin from #8746), got {}",
             counts.integration_test_targets
         );
+        // The count alone cannot prove the two named targets are present — an
+        // unrelated addition could keep the total at 69 while either one goes
+        // missing. Assert both names exist in their [[test]] declarations.
+        let manifest = fs::read_to_string(root.join("crates/perl-dap/Cargo.toml"))?;
+        for target in ["error_class_fixed_origin", "debugger_output_origin"] {
+            assert!(
+                manifest.contains(&format!("name = \"{target}\"")),
+                "expected a [[test]] target named {target} in perl-dap/Cargo.toml"
+            );
+        }
         assert_eq!(
             counts.scorecard_fixtures,
             SCORECARD_FIXTURES.len(),
