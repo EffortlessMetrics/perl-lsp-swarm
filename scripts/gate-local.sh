@@ -7,6 +7,9 @@
 
 set -euo pipefail
 
+# Toolchain guard (#12593): refuse a stale non-rustup cargo before any build work.
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
 export CARGO_TERM_COLOR=always
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
 export RUST_TEST_THREADS="${RUST_TEST_THREADS:-1}"

@@ -323,6 +323,75 @@ pub fn render_markdown(records: &[FileRecord]) -> String {
     out
 }
 
+/// Fail closed when the rendered projection is self-inconsistent.
+///
+/// One tracked file must project to exactly one row (#1800 review): a
+/// duplicate file path in any table — or a path listed under both the
+/// unclassified and allowlisted tables — means the projection was produced
+/// from more than one policy/output pass and every row-count consumer sees a
+/// contradictory denominator. The summary must also agree with the emitted
+/// row counts, so stale summary totals cannot survive a regeneration.
+pub(crate) fn verify_inventory_projection(markdown: &str) -> Result<()> {
+    let mut seen_paths = std::collections::BTreeSet::new();
+    let mut summary_counts: std::collections::BTreeMap<&str, usize> =
+        std::collections::BTreeMap::new();
+    let mut section_rows: std::collections::BTreeMap<&str, usize> =
+        std::collections::BTreeMap::new();
+    let mut section = "";
+
+    for line in markdown.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            section = line.trim_start_matches('#').trim();
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("| ") else { continue };
+        let cells: Vec<&str> =
+            rest.trim_end().trim_end_matches('|').split('|').map(str::trim).collect();
+        if cells.len() == 2 && section == "Summary" {
+            if let Ok(count) = cells[1].parse::<usize>() {
+                summary_counts.insert(cells[0], count);
+            }
+            continue;
+        }
+        let Some(path) = cells
+            .first()
+            .and_then(|cell| cell.strip_prefix('`').and_then(|path| path.strip_suffix('`')))
+        else {
+            continue;
+        };
+        if !seen_paths.insert(path) {
+            bail!(
+                "non-Rust inventory projection emits duplicate file rows for `{path}`; \
+                 regenerate from a single pass with `cargo xtask non-rust inventory --write`"
+            );
+        }
+        *section_rows.entry(section).or_insert(0) += 1;
+    }
+
+    if let (Some(&allowlisted), Some(&rows)) =
+        (summary_counts.get("Allowlisted"), section_rows.get("Allowlisted non-Rust files"))
+    {
+        if allowlisted != rows {
+            bail!(
+                "non-Rust inventory summary reports {allowlisted} allowlisted files but the \
+                 table projects {rows} rows; regenerate the summary with the same pass"
+            );
+        }
+    }
+    if let (Some(&unclassified), Some(&rows)) =
+        (summary_counts.get("Unclassified"), section_rows.get("Unclassified files"))
+    {
+        if unclassified != rows {
+            bail!(
+                "non-Rust inventory summary reports {unclassified} unclassified files but the \
+                 table projects {rows} rows; regenerate the summary with the same pass"
+            );
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -347,6 +416,8 @@ pub fn non_rust_inventory(root: &Path) -> Result<()> {
     let json_path = target_dir.join("non-rust-inventory.json");
 
     let markdown = render_markdown(&records);
+    verify_inventory_projection(&markdown)
+        .with_context(|| "generated non-Rust inventory projection is self-inconsistent")?;
     fs::write(&md_path, &markdown).with_context(|| format!("writing {}", md_path.display()))?;
     println!("  wrote {}", md_path.display());
 
@@ -454,9 +525,18 @@ fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -
     }
 
     let expected = render_markdown(&records);
+    verify_inventory_projection(&expected)
+        .with_context(|| "generated non-Rust inventory projection is self-inconsistent")?;
     let docs_path = root.join("docs/policy/NON_RUST_INVENTORY.md");
     let actual = fs::read_to_string(&docs_path)
         .with_context(|| format!("reading committed inventory {}", docs_path.display()))?;
+    if let Err(error) = verify_inventory_projection(&actual) {
+        bail!(
+            "committed non-Rust inventory {} has an inconsistent projection: {error}; \
+             regenerate it with `cargo xtask non-rust inventory --write`",
+            docs_path.display()
+        );
+    }
     if normalize_line_endings(&actual) != normalize_line_endings(&expected) {
         eprintln!(
             "warning: non-Rust inventory documentation is stale at {}; run `cargo xtask non-rust inventory --write` to regenerate it",
@@ -2991,5 +3071,79 @@ review_after = "2026-08-13"
         assert!(md.contains("## Summary"), "missing Summary section");
         assert!(md.contains("## Unclassified files"), "missing Unclassified section");
         assert!(md.contains("## Allowlisted non-Rust files"), "missing Allowlisted section");
+    }
+    // --- projection self-consistency (#1800 review) ---
+
+    fn record(path: &str, category: &str, allowlisted: bool) -> FileRecord {
+        FileRecord {
+            path: path.to_string(),
+            extension: "json".to_string(),
+            category: category.to_string(),
+            allowlisted,
+            entry: None,
+        }
+    }
+
+    /// A projection that emits one file twice - the duplicated-row defect the
+    /// review filed - must fail closed instead of shipping contradictory
+    /// denominators.
+    #[test]
+    fn projection_with_duplicate_rows_fails_closed() {
+        let records = vec![
+            record("archive/a.json", "documentation", true),
+            record("docs/b.md", "documentation", true),
+            record("archive/a.json", "documentation", true),
+        ];
+        let markdown = render_markdown(&records);
+        let error = verify_inventory_projection(&markdown).expect_err("duplicate rows must fail");
+        assert!(
+            error.to_string().contains("duplicate file rows for `archive/a.json`"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// A path projected under both the unclassified and allowlisted tables is
+    /// also a duplicate row and fails closed.
+    #[test]
+    fn projection_with_cross_table_path_fails_closed() {
+        let records = vec![
+            record("docs/b.md", "documentation", true),
+            record("docs/b.md", "unclassified", false),
+        ];
+        let markdown = render_markdown(&records);
+        assert!(
+            verify_inventory_projection(&markdown).is_err(),
+            "a path in both tables must fail closed"
+        );
+    }
+
+    /// Summary totals that disagree with the emitted table rows - the stale
+    /// summary the review filed - must fail closed.
+    #[test]
+    fn projection_with_stale_summary_fails_closed() {
+        let records = vec![record("docs/b.md", "documentation", true)];
+        let mut markdown = render_markdown(&records);
+        markdown = markdown.replace("| Allowlisted | 1 |", "| Allowlisted | 19 |");
+        let error = verify_inventory_projection(&markdown).expect_err("stale summary must fail");
+        assert!(
+            error.to_string().contains("allowlisted files but the table projects"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// A single-pass projection with unique rows and matching summary totals
+    /// verifies cleanly.
+    #[test]
+    fn single_pass_projection_verifies_cleanly() {
+        let records = vec![
+            record("docs/b.md", "documentation", true),
+            record("archive/a.json", "documentation", true),
+            record("notes/c.txt", "unclassified", false),
+        ];
+        let markdown = render_markdown(&records);
+        assert!(
+            verify_inventory_projection(&markdown).is_ok(),
+            "consistent projection must verify"
+        );
     }
 }
