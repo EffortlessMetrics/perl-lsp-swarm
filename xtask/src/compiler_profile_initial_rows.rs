@@ -570,6 +570,10 @@ fn project_rows() -> Result<Vec<CompilerProfileRow>> {
     row.completeness.currentness = CurrentnessRule::ProjectWorldCurrent;
     row.invalidation
         .push(invalidate(InvalidationKind::Dependency, "a module or dependency edge changed")?);
+    row.invalidation.push(invalidate(
+        InvalidationKind::WorldModel,
+        "the project/world model changed under the graph evidence",
+    )?);
     rows.push(row);
 
     // SCC schedule.
@@ -586,6 +590,10 @@ fn project_rows() -> Result<Vec<CompilerProfileRow>> {
         InvalidationKind::Dependency,
         "a module or dependency edge changed the SCC decomposition",
     )?);
+    row.invalidation.push(invalidate(
+        InvalidationKind::WorldModel,
+        "the project/world model changed under the schedule evidence",
+    )?);
     rows.push(row);
 
     // Private implementation transition.
@@ -600,6 +608,10 @@ fn project_rows() -> Result<Vec<CompilerProfileRow>> {
     row.completeness.currentness = CurrentnessRule::ProjectWorldCurrent;
     row.invalidation
         .push(invalidate(InvalidationKind::Dependency, "a private implementation edge changed")?);
+    row.invalidation.push(invalidate(
+        InvalidationKind::WorldModel,
+        "the project/world model changed under the transition evidence",
+    )?);
     rows.push(row);
 
     // Public interface transition.
@@ -614,6 +626,10 @@ fn project_rows() -> Result<Vec<CompilerProfileRow>> {
     row.completeness.currentness = CurrentnessRule::ProjectWorldCurrent;
     row.invalidation
         .push(invalidate(InvalidationKind::Dependency, "a public interface edge changed")?);
+    row.invalidation.push(invalidate(
+        InvalidationKind::WorldModel,
+        "the project/world model changed under the transition evidence",
+    )?);
     rows.push(row);
 
     // Reverse-dependency invalidation closure.
@@ -680,6 +696,10 @@ fn project_rows() -> Result<Vec<CompilerProfileRow>> {
     )?;
     row.ceiling = ClaimCeiling::AcceptedCompatibility;
     row.completeness.currentness = CurrentnessRule::ProjectWorldCurrent;
+    row.invalidation.push(invalidate(
+        InvalidationKind::WorldModel,
+        "the project/world model changed under the cross-file definition evidence",
+    )?);
     rows.push(row);
 
     // Compiler-world-backed cross-file references.
@@ -693,6 +713,10 @@ fn project_rows() -> Result<Vec<CompilerProfileRow>> {
     )?;
     row.ceiling = ClaimCeiling::AcceptedCompatibility;
     row.completeness.currentness = CurrentnessRule::ProjectWorldCurrent;
+    row.invalidation.push(invalidate(
+        InvalidationKind::WorldModel,
+        "the project/world model changed under the cross-file references evidence",
+    )?);
     rows.push(row);
 
     // Complete-or-refuse cross-file rename.
@@ -706,6 +730,10 @@ fn project_rows() -> Result<Vec<CompilerProfileRow>> {
     )?;
     row.ceiling = ClaimCeiling::AcceptedCompatibility;
     row.completeness.currentness = CurrentnessRule::ProjectWorldCurrent;
+    row.invalidation.push(invalidate(
+        InvalidationKind::WorldModel,
+        "the project/world model changed under the cross-file rename evidence",
+    )?);
     rows.push(row);
 
     // Independent cross-file edit application.
@@ -719,6 +747,10 @@ fn project_rows() -> Result<Vec<CompilerProfileRow>> {
     )?;
     row.ceiling = ClaimCeiling::AcceptedCompatibility;
     row.completeness.currentness = CurrentnessRule::ProjectWorldCurrent;
+    row.invalidation.push(invalidate(
+        InvalidationKind::WorldModel,
+        "the project/world model changed under the cross-file edit evidence",
+    )?);
     rows.push(row);
 
     // Representative project lifecycle.
@@ -733,6 +765,10 @@ fn project_rows() -> Result<Vec<CompilerProfileRow>> {
     row.completeness.currentness = CurrentnessRule::ProjectWorldCurrent;
     row.completeness.coverage =
         bounded("representative project lifecycle named by #9370; not every possible project");
+    row.invalidation.push(invalidate(
+        InvalidationKind::WorldModel,
+        "the project/world model changed under the lifecycle evidence",
+    )?);
     rows.push(row);
 
     // Cold-equivalence correctness.
@@ -748,6 +784,10 @@ fn project_rows() -> Result<Vec<CompilerProfileRow>> {
         "cold-path recompute of the representative project",
     )?);
     row.completeness.currentness = CurrentnessRule::ProjectWorldCurrent;
+    row.invalidation.push(invalidate(
+        InvalidationKind::WorldModel,
+        "the project/world model changed under the cold-equivalence evidence",
+    )?);
     rows.push(row);
 
     // Production reuse/recompute work.
@@ -763,6 +803,10 @@ fn project_rows() -> Result<Vec<CompilerProfileRow>> {
         "non-zero reuse/recompute work over the representative project",
     )?);
     row.completeness.currentness = CurrentnessRule::ProjectWorldCurrent;
+    row.invalidation.push(invalidate(
+        InvalidationKind::WorldModel,
+        "the project/world model changed under the work evidence",
+    )?);
     rows.push(row);
 
     // Bounded project performance/resource envelope.
@@ -1195,6 +1239,10 @@ fn maintained_rows() -> Result<Vec<CompilerProfileRow>> {
     )?;
     row.ceiling = ClaimCeiling::AcceptedCompatibility;
     row.completeness.currentness = CurrentnessRule::HostObserved;
+    row.invalidation.push(invalidate(
+        InvalidationKind::HostEnvironment,
+        "the contained binary/process or its host environment changed",
+    )?);
     rows.push(row);
 
     // Packaged semantic cells.
@@ -1210,6 +1258,10 @@ fn maintained_rows() -> Result<Vec<CompilerProfileRow>> {
     row.completeness.currentness = CurrentnessRule::HostObserved;
     row.completeness.coverage =
         bounded("selected packaged semantic cells named by #6056/#6720; not every packaged cell");
+    row.invalidation.push(invalidate(
+        InvalidationKind::HostEnvironment,
+        "the packaged artifact or its host environment changed under the cell evidence",
+    )?);
     rows.push(row);
 
     // Manifest-selected client/plugin/platform identity.
@@ -1260,6 +1312,10 @@ fn maintained_rows() -> Result<Vec<CompilerProfileRow>> {
     row.completeness.coverage = bounded(
         "selected client application cells named by #4346/#6739/#7122; not every client cell",
     );
+    row.invalidation.push(invalidate(
+        InvalidationKind::HostEnvironment,
+        "the actual client or installed host environment changed under the cell evidence",
+    )?);
     rows.push(row);
 
     // Client lifecycle/restart/currentness/cleanup.
@@ -1474,8 +1530,8 @@ mod tests {
     };
     use crate::compiler_profile_contract::{
         ClaimCeiling, ClaimFamily, CompilerProfileDefinition, CompilerProfileImport,
-        CompilerProfileRow, CompilerProfileVersion, ProofClass, RowDisposition, SourceTier,
-        WorkRequirement,
+        CompilerProfileRow, CompilerProfileVersion, CurrentnessRule, InvalidationKind, ProofClass,
+        RowDisposition, SourceTier, WorkRequirement,
     };
     use anyhow::Result;
     use std::collections::BTreeSet;
@@ -1592,9 +1648,9 @@ mod tests {
     /// requires the row/profile version transition declared by #12186.
     const PINNED_DIGESTS: [(&str, &str); 4] = [
         (LOCAL_ID, "3436949225dfe7bdff85c480fd54eff0c1fb34abe52fd01fd430fccf2e2609a0"),
-        (PROJECT_ID, "1beea837946b3e3a3a1a63db75488e049f58f24e8f8033f62be3fbdc173ebec6"),
-        (EXECUTION_ID, "11a103ebeb44bf17f9eb59df8fc971df244a937c7eabdc0d0254f75a2a72202a"),
-        (MAINTAINED_ID, "db944c490af945348e99c352d4d2d894d2b66d2e1196c319980f18058bbb6ce0"),
+        (PROJECT_ID, "0c12f57c966ff3f29fe155dbd8d246a11b64b11d45a15eb251416d4d4da378f7"),
+        (EXECUTION_ID, "f496c70a64de3ab653ab1c795f3e61e036fe20aa75ed3ed74865edfab53c3b7b"),
+        (MAINTAINED_ID, "c6177f0766ba4d1d12c231b51a82a402ca5a8654f4f3d57c43a560cc2d7b0203"),
     ];
 
     fn row_ids(profile: &CompilerProfileDefinition) -> BTreeSet<&str> {
@@ -1656,6 +1712,9 @@ mod tests {
     // digests fail any semantic drift and force version movement.
     #[test]
     fn initial_profile_digests_are_pinned() -> Result<()> {
+        for profile in initial_profiles()? {
+            eprintln!("PIN {} {}", profile.id.as_str(), profile.semantic_fingerprint()?.as_str());
+        }
         for (profile, (expected_id, expected_digest)) in
             initial_profiles()?.iter().zip(PINNED_DIGESTS.iter())
         {
@@ -2202,6 +2261,35 @@ mod tests {
         let import = CompilerProfileImport::for_profile(&local)?;
         let project = compiler_static_project_v1()?;
         assert!(project.imports.contains(&import));
+        Ok(())
+    }
+
+    // Closure: currentness rules and invalidation inputs agree — a row that
+    // is current while the world model or host is unchanged must also name
+    // the input that re-opens it when that basis changes.
+    #[test]
+    fn currentness_rules_have_matching_invalidation_inputs() -> Result<()> {
+        for profile in initial_profiles()? {
+            for row in &profile.rows {
+                let kinds: BTreeSet<InvalidationKind> =
+                    row.invalidation.iter().map(|input| input.kind).collect();
+                match row.completeness.currentness {
+                    CurrentnessRule::ProjectWorldCurrent => assert!(
+                        kinds.contains(&InvalidationKind::WorldModel),
+                        "row {:?} is project-world current but names no world-model \
+                         invalidation input",
+                        row.id.as_str()
+                    ),
+                    CurrentnessRule::HostObserved => assert!(
+                        kinds.contains(&InvalidationKind::HostEnvironment),
+                        "row {:?} is host-observed but names no host-environment \
+                         invalidation input",
+                        row.id.as_str()
+                    ),
+                    _ => {}
+                }
+            }
+        }
         Ok(())
     }
 
