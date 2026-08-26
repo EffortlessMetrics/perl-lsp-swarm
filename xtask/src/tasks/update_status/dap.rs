@@ -249,8 +249,8 @@ mod tests {
             "stdio-proof fixture must remain present but is not a launch-scorecard fixture"
         );
         assert_eq!(
-            counts.integration_test_targets, 67,
-            "expected 67 [[test]] targets in perl-dap/Cargo.toml, got {}",
+            counts.integration_test_targets, 69,
+            "expected 69 [[test]] targets in perl-dap/Cargo.toml (67 + error_class_fixed_origin from #8739 + debugger_output_origin from #8746), got {}",
             counts.integration_test_targets
         );
         assert_eq!(
