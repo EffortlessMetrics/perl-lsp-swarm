@@ -131,6 +131,12 @@ run_gc() {
       "$root"/target|"$root"/.worktrees/*/target) ;;
       *) echo "REFUSING: candidate outside the allowed shape: $candidate" >&2; exit 65 ;;
     esac
+    # Revalidate immediately before removal: freshness evidence must be
+    # current at the deletion point, not only at classification time.
+    if ! is_stale_target "$candidate"; then
+      echo "skipped (no longer provably stale at deletion point): $candidate"
+      continue
+    fi
     rm -rf -- "$candidate"
     echo "deleted: $candidate"
   done
@@ -196,7 +202,26 @@ self_test() {
     fi
   fi
 
-  echo "target-gc self-test: OK (stale-only selection, apply preserves fresh+decoys, flock refusal)"
+  # Discrimination 4: a failed freshness scan fails CLOSED — the run refuses
+  # and nothing is classified stale. Shadow `find` with a stub that always
+  # fails; even the 60-day-old tree must not be selected or deleted.
+  mkdir -p "$tmp/bin"
+  printf '#!/bin/sh\nexit 1\n' > "$tmp/bin/find"
+  chmod +x "$tmp/bin/find"
+  rc=0
+  report=$(PATH="$tmp/bin:$PATH" TARGET_GC_SELFTEST_DRY_RUN="$tmp" DEVPLANE="$tmp/devplane" bash "${BASH_SOURCE[0]}" --days=30 --self-test-dry-run 2>&1) || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "SELF-TEST FAILED: a failed freshness scan did not refuse the run:" >&2
+    echo "$report" >&2
+    exit 1
+  fi
+  if grep -q "^stale: " <<<"$report"; then
+    echo "SELF-TEST FAILED: a failed freshness scan classified a tree as stale:" >&2
+    echo "$report" >&2
+    exit 1
+  fi
+
+  echo "target-gc self-test: OK (stale-only selection, apply preserves fresh+decoys, flock refusal, scan failure refuses)"
 }
 
 # Self-test plumbing: run the GC against an injected root instead of the repo.
