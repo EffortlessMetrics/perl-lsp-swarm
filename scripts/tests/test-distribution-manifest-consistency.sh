@@ -289,8 +289,15 @@ test_every_channel_ships_dap() {
         missing+="  scripts/install.sh
 "
     fi
-    # install.ps1 must both locate and copy the DAP binary, not merely mention it.
-    if ! grep -q 'DapSourcePath' "$INSTALL_PS1" || ! grep -q 'Copy-Item -Path \$DapSourcePath' "$INSTALL_PS1"; then
+    # install.ps1 must locate the staged DAP member and publish it into the
+    # product unit, not merely mention perl-dap. The old independent
+    # Copy-Item -Path $DapSourcePath path is gone; the promotion pipeline is
+    # the production install and must still fail closed without the pair.
+    if ! grep -q '\$DapName = "perl-dap"' "$INSTALL_PS1" \
+        || ! grep -q '\$dapSrc = Join-Path \$SourceDir "\$DapName.exe"' "$INSTALL_PS1" \
+        || ! grep -q 'Copy-Item -LiteralPath \$dapSrc' "$INSTALL_PS1" \
+        || ! grep -q 'Install-StandaloneProductUnit -ExtractDir \$ExtractedDir' "$INSTALL_PS1" \
+        || ! grep -q 'archive product unit requires a complete perllsp/perl-dap pair' "$INSTALL_PS1"; then
         missing+="  install.ps1 (Windows PowerShell installer)
 "
     fi
