@@ -147,6 +147,7 @@ jobs:
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     outputs:
       windows_runner: ${{ steps.scope.outputs.windows_runner }}
+      windows_test_crates: ${{ steps.scope.outputs.windows_test_crates }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

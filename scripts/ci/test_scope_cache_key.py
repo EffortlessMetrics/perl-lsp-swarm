@@ -212,6 +212,30 @@ class WorkflowContractTests(unittest.TestCase):
             "the scope hash must exist before rust-cache consumes it",
         )
 
+    def test_platform_overrides_exports_the_crate_set_its_consumers_read(self) -> None:
+        """Producer→consumer binding: a needs.* read of windows_test_crates
+        resolves empty unless the platform-overrides job exports it."""
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        job_start = text.index("platform-overrides:")
+        job_end = text.index("windows-platform-smoke:", job_start)
+        job_segment = text[job_start:job_end]
+        outputs_start = job_segment.index("outputs:")
+        outputs_end = job_segment.index("steps:", outputs_start)
+        self.assertIn(
+            "windows_test_crates: "
+            "${{ steps.scope.outputs.windows_test_crates }}",
+            job_segment[outputs_start:outputs_end],
+            "platform-overrides must export windows_test_crates; an "
+            "unexported step output makes every needs.* consumer resolve "
+            "the empty set",
+        )
+        self.assertGreaterEqual(
+            text.count("needs.platform-overrides.outputs.windows_test_crates"),
+            1,
+            "the scope-hash and smoke steps must keep reading the exported "
+            "job output, not re-derive it",
+        )
+
     def test_ready_tier_keys_stay_byte_identical_to_workspace_wide_form(self) -> None:
         text = self.WORKFLOW.read_text(encoding="utf-8")
         for lane_marker in (
