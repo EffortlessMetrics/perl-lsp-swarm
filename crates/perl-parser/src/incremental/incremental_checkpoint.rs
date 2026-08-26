@@ -108,6 +108,23 @@ impl TokenSegment {
     }
 }
 
+/// Keep a shifted cached parser token in the stream.
+///
+/// Valid ordered geometry is preserved. After a negative byte shift that
+/// clamps to an illegally empty span, the token becomes synthetic `Unknown`
+/// (or EOF if even that constructor fails) instead of being dropped.
+fn retain_shifted_cached_token(token: &Token, start: usize, end: usize) -> Token {
+    match Token::new_checked(token.kind(), token.text.clone(), start, end) {
+        Ok(token) => token,
+        Err(_) => {
+            let ordered_start = start.min(end);
+            let ordered_end = start.max(end);
+            Token::unknown_at(token.text.clone(), ordered_start, ordered_end)
+                .unwrap_or_else(|_| Token::eof_at(ordered_start))
+        }
+    }
+}
+
 /// Cache for parser tokens to avoid re-lexing.
 ///
 /// Stores [`Token`] values (from `perl-token`) rather than raw lexer tokens so
@@ -749,12 +766,8 @@ impl CheckpointedIncrementalParser {
                     // Use max(0) to prevent underflow on negative shifts (#2457).
                     let start = (token.start() as isize + byte_shift).max(0) as usize;
                     let end = (token.end() as isize + byte_shift).max(0) as usize;
-                    if let Ok(adjusted) =
-                        Token::new_checked(token.kind(), token.text.clone(), start, end)
-                    {
-                        parser_tokens.push(adjusted);
-                        self.stats.tokens_reused += 1;
-                    }
+                    parser_tokens.push(retain_shifted_cached_token(&token, start, end));
+                    self.stats.tokens_reused += 1;
                 }
             } else {
                 self.stats.cache_misses += 1;
@@ -814,6 +827,26 @@ mod tests {
     use perl_parser_core::NodeKind;
     use perl_parser_core::token_stream::TokenKind;
     use perl_tdd_support::{must, must_some};
+
+    #[test]
+    fn retain_shifted_cached_token_keeps_valid_geometry() {
+        let token = Token::new_checked(TokenKind::Identifier, "x", 10, 11).expect("valid token");
+        let shifted = retain_shifted_cached_token(&token, 4, 5);
+        assert_eq!(shifted.kind(), TokenKind::Identifier);
+        assert_eq!(shifted.start(), 4);
+        assert_eq!(shifted.end(), 5);
+        assert_eq!(&*shifted.text, "x");
+    }
+
+    #[test]
+    fn retain_shifted_cached_token_does_not_drop_clamped_empty_identifier() {
+        let token = Token::new_checked(TokenKind::Identifier, "x", 1, 2).expect("valid token");
+        let shifted = retain_shifted_cached_token(&token, 0, 0);
+        assert_eq!(shifted.kind(), TokenKind::Unknown);
+        assert_eq!(shifted.start(), 0);
+        assert_eq!(shifted.end(), 0);
+        assert_eq!(&*shifted.text, "x");
+    }
 
     #[test]
     fn test_checkpoint_incremental_parsing() {
