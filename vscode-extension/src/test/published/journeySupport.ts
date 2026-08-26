@@ -335,7 +335,11 @@ export async function scanServerProcessIdentities(
     );
   }
   const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
-  const needle = caseInsensitive ? resolved.toLowerCase() : resolved;
+  // Match the directory boundary, not a bare prefix: `/path/to/dir-other`
+  // must not match a scan for `/path/to/dir`.
+  const separator = process.platform === 'win32' ? '\\' : '/';
+  const bounded = resolved.endsWith(separator) ? resolved : resolved + separator;
+  const needle = caseInsensitive ? bounded.toLowerCase() : bounded;
   // `ps -eo pid=,args=` pads its columns with spaces while the PowerShell
   // probe emits id/path tab-separated: accept any whitespace separator so
   // both hosts parse (a tab-only parser silently drops every Linux row).
@@ -447,6 +451,11 @@ export interface SuspendResult {
 
 /** Suspend the exact server process (SIGSTOP) so it hangs without exiting. */
 export function suspendServerProcess(pid: number): SuspendResult {
+  // process.kill(0, ...) would signal the whole process group — including the
+  // extension host. Guard every caller, not just the current scan-filtered one.
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return { outcome: 'error', detail: `invalid server pid: ${pid}` };
+  }
   try {
     process.kill(pid, 'SIGSTOP');
     return { outcome: 'suspended', detail: `SIGSTOP pid ${pid}` };
@@ -460,6 +469,9 @@ export function suspendServerProcess(pid: number): SuspendResult {
 
 /** Resume a suspended server process (SIGCONT). */
 export function resumeServerProcess(pid: number): SuspendResult {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return { outcome: 'error', detail: `invalid server pid: ${pid}` };
+  }
   try {
     process.kill(pid, 'SIGCONT');
     return { outcome: 'resumed', detail: `SIGCONT pid ${pid}` };
@@ -506,7 +518,11 @@ export async function scanProcessesUnderDirectory(directory: string): Promise<st
     );
   }
   const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
-  const needle = caseInsensitive ? resolved.toLowerCase() : resolved;
+  // Match the directory boundary, not a bare prefix: `/path/to/dir-other`
+  // must not match a scan for `/path/to/dir`.
+  const separator = process.platform === 'win32' ? '\\' : '/';
+  const bounded = resolved.endsWith(separator) ? resolved : resolved + separator;
+  const needle = caseInsensitive ? bounded.toLowerCase() : bounded;
   return result.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())

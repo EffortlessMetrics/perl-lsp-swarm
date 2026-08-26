@@ -11,8 +11,10 @@
 //! - mutable [`crate::Node::try_for_each_child_mut_with_field`]
 //!
 //! [`crate::Node::for_each_child_mut`] is a compatibility wrapper over the
-//! mutable field-aware walker. S-expression / debug rendering, generated status,
-//! and schema fingerprint remain out of scope.
+//! mutable field-aware walker. Native debug S-expression rendering consumes
+//! this visit table for child order; payload spelling and the one-root grammar
+//! live in `ast::node_sexp`. Generated status and schema fingerprint remain
+//! out of scope.
 //!
 //! `source_boundary` tags are recorded and serialized. They are **not**
 //! production authority: they were not reconciled against a production

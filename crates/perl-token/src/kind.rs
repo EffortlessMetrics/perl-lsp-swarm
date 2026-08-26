@@ -3,6 +3,11 @@
 /// The set is intentionally simplified for fast parser matching while covering
 /// keywords, operators, delimiters, literals, identifiers, and special tokens.
 ///
+/// This enum is an explicitly **closed / exhaustive** public API: adding a
+/// variant is a breaking change, and downstream crates may match without a
+/// wildcard. That closed contract is the #2898 evolution disposition for
+/// `TokenKind` (parser matching is the product).
+///
 /// Use [`TokenKind::display_name`] to get a human-readable string suitable for
 /// error messages shown to the user.
 ///

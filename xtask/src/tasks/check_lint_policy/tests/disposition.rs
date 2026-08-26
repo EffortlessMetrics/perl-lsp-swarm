@@ -83,6 +83,18 @@ fn active_lints_require_matching_cargo_levels() -> Result<()> {
 }
 
 #[test]
+fn active_lints_cannot_leave_cargo_unratcheted() -> Result<()> {
+    let ledger = ledger_with(vec![lint_entry("clippy::collapsible_if", "active")]);
+
+    let result = validate_workspace_lints(&empty_cargo()?, &ledger, test_date()?);
+    let Err(error) = result else {
+        bail!("active lint without a Cargo.toml activation should fail");
+    };
+    assert!(error.to_string().contains("clippy::collapsible_if lint is missing from Cargo.toml"));
+    Ok(())
+}
+
+#[test]
 fn duplicate_active_and_planned_dispositions_fail() -> Result<()> {
     let mut ledger = ledger_with(vec![lint_entry("clippy::manual_take", "active")]);
     ledger.planned.push(planned_lint("clippy::manual_take", "1.96"));

@@ -44,7 +44,7 @@
 //!
 //! # Traversal
 //!
-//! [`Node`] exposes `to_sexp()` for a tree-sitter-compatible S-expression and
+//! [`Node`] exposes `to_sexp()` for a native debug S-expression projection and
 //! `count_nodes()` for an exact iterative size metric. [`validate_ast`] uses the
 //! canonical exhaustive child iterator to check source and tree invariants
 //! without a recursive call stack. The policy registry is reconciled directly
@@ -78,8 +78,9 @@ pub mod invariants;
 /// Shadow `NodeKind` structural registry and check-mode parity checker.
 ///
 /// Production FieldId membership and field-aware child traversal are derived
-/// from this module. It does not drive S-expression rendering, generated
-/// status, or schema fingerprint.
+/// from this module. Native debug S-expression rendering consumes the visit
+/// table for child order but keeps payload disposition renderer-local. This
+/// module does not own generated status or schema fingerprint.
 pub mod kind_schema;
 
 /// Incremental parsing AST types extracted into a dedicated microcrate.
@@ -90,7 +91,8 @@ pub use ast::GotoTargetForm;
 /// Primary AST node -- the building block of every syntax tree.
 pub use ast::{
     AstReadExact, AstReadInstrumentCause, AstReadLimits, AstReadPath, AstReadPathStep,
-    AstReadResult, AstReadTruncation, AstReadWork, DeepestContainingMatch, FieldId, Node, NodeKind,
+    AstReadResult, AstReadTruncation, AstReadWork, DeepestContainingMatch, FieldId,
+    NATIVE_DEBUG_SEXP_DEPTH_LIMIT_MARKER, NATIVE_DEBUG_SEXP_GRAMMAR, Node, NodeKind,
 };
 /// Exhaustive AST invariant policy types and registry.
 pub use invariant_policy::{
