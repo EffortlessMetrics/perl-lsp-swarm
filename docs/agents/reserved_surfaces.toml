@@ -1,0 +1,133 @@
+schema_version = 1
+owner = "perl-lsp maintainers"
+human_index = "docs/agents/RESERVED_SURFACES.md"
+tracking_issue = 12562
+
+# Advisory ownership boundaries for repository surfaces where concurrent
+# lanes have already risked (or produced) same-seam writes. Each row records
+# which durable claim owns a surface's NEXT change. It never records lane
+# liveness, topology, wake events, queue order, retries, or task state —
+# root AGENTS.md keeps those runtime-local, expressed through issue/PR
+# comments at lane-brief time, not tracked files.
+#
+# Status vocabulary (closed set):
+#   open   - the listed issues hold live claims on this surface's next change
+#   landed - the governing claim has landed; new work extends the landed
+#            contract instead of forking it
+#
+# Every path existed at main 296ae9bb4141 on 2026-08-26.
+last_verified = 2026-08-26
+
+[[surfaces]]
+name = "references-navigation-pir-shadow"
+paths = [
+  "crates/perl-lsp-rs-core/src/providers/navigation/references_pir_shadow.rs",
+  "crates/perl-lsp-rs-core/tests/references_pir_shadow_test.rs",
+]
+owner_issues = [12155, 12329]
+status = "open"
+notes = "Exact-request-subject refactor and PIR-quarantine cutover residuals following the 2026-08 repair wave around #12274/#12357. Both claims were open at registration."
+
+[[surfaces]]
+name = "dap-module-reload-family"
+paths = ["crates/perl-dap/src/reload/", "crates/perl-dap/src/reload_family.rs"]
+owner_issues = [10095, 10138]
+status = "open"
+notes = "Programme #10095 owns the reload family; wire-registration family #10138 continues after contract #12376 and wire registration #12543 (both merged 2026-08-25). A generation-invalidation lane was actively writing in this directory on registration day (issue #10102, branch agent/dap-reload-r03-invalidation). Bounded-earn work coordinates through the programme, not side channels."
+
+[[surfaces]]
+name = "dap-perl-identity-prerequisites"
+paths = [
+  "xtask/src/tasks/devex_doctor.rs",
+  "crates/perl-dap/tests/common/mod.rs",
+  "crates/perl-lsp-rs/src/cli/doctor.rs",
+  "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+]
+owner_issues = [12594, 12595, 12748]
+status = "open"
+notes = "Three live lanes converged on interpreter identity and pipe-capability semantics on 2026-08-26: the Windows failure triage test contract (branch fix/12594-item6-dap-scope-contract), Windows dev-prerequisite detection (#12595), and DAP live-session perl identity surfaced by doctor (#12748). The boundary: identity semantics are one decision — later writers build on the landed semantics instead of redefining them."
+
+[[surfaces]]
+name = "session-warning-dedup-runtime"
+paths = ["crates/perl-lsp-rs/src/runtime/session_warning_dedup.rs"]
+owner_issues = [9769]
+status = "landed"
+notes = "The near-miss that motivated this register: #12367 and #12374 independently repaired the same clippy_full red with different strategies; #12367 (merged 2026-08-25T02:28Z) is the canonical cfg-gate strategy and #12374 was closed unmerged. The surface's next change extends the merged gate strategy; do not re-run the removal fork."
+
+[[surfaces]]
+name = "xtask-gate-disposition-route-profile"
+paths = [
+  "xtask/src/tasks/gates/disposition.rs",
+  "xtask/src/tasks/gates/route_profile.rs",
+]
+owner_issues = [10176, 10178]
+status = "landed"
+notes = "Typed disposition/quarantine authority landed as #12415 and governed route-profile denominators as #12541 (both merged 2026-08-25). Gate additions ride these typed contracts rather than adding parallel gate plumbing."
+
+[[surfaces]]
+name = "vim-lsp-cell-catalog"
+paths = [
+  "xtask/src/vim_lsp_cell_catalog/",
+  "xtask/tests/vim_lsp_cell_catalog_contract.rs",
+]
+owner_issues = [11374]
+status = "landed"
+notes = "Catalog family closed completed; children landed via #12222/#12225/#12378. New activation cells extend the checked catalog API (.ci/editor-clients/vim-vim-lsp-*.v1.json subject contracts); they do not fork per-cell catalogs. During umbrella #11869 this surface carried an explicit serial-lane reservation that prevented all two-writer incidents — the durable form of that pattern is this row."
+
+[[surfaces]]
+name = "vim-host-leaves"
+paths = [
+  "scripts/test/vim-clients/",
+  "scripts/test/vim-host-driver.vim",
+  ".github/workflows/vim-hermetic-host.yml",
+]
+owner_issues = [11396, 11372]
+status = "open"
+notes = "Racing vim leaves on 2026-08-26: format-on-save ownership (#11396, branch agent/vim-lsp-format-on-save-host) and content-bound host toolchain provisioning (#11372, branch fix/11372-vim-host-toolchain). Both wire new xtask modules through the shared trunk registration points xtask/src/{lib,main}.rs, so the second leaf rebases onto the first leaf's wiring instead of editing it in parallel."
+
+[[surfaces]]
+name = "framework-adapters-canonical-facts"
+paths = ["crates/perl-semantic-facts/src/framework_adapters/"]
+owner_issues = [8928]
+status = "open"
+notes = "Dancer2 adapter family under parent #8910 (closed); child #8928 held an active provider-cutover lane at registration (branch lane/8928-dancer2-provider-cutover). Mojo-base sibling #9681 landed via #12332 (merged 2026-08-25). Adapter additions cut read-only provider cells to canonical facts; they do not fork the canonical-facts contract."
+
+[[surfaces]]
+name = "collapsible-if-suppression-sweep"
+paths = ["Cargo.toml", "policy/clippy-debt.toml"]
+owner_issues = [6305, 12734, 12731, 12732]
+status = "open"
+notes = "Workspace lint governance: collapsible_if became an explicit deny after the 293-site burn-down (#6305, recorded in the root Cargo.toml workspace lints table). On 2026-08-26 four same-day lanes removed remaining blanket suppressions per crate: perl-lsp-rs (#12734), perl-semantic-analyzer (#12731), perl-parser (#12732), and workspace-lineage #12733. Per-crate site edits stayed disjoint, but the deny policy and the clippy-debt ratchet are shared: late landers refresh occupancy commentary and never silently re-widen suppressions."
+
+[[surfaces]]
+name = "parser-consumers-facade-imports"
+paths = [".ci/coverage-packs.toml", ".github/workflows/ci.yml"]
+owner_issues = [11377, 11382, 11389]
+status = "open"
+notes = "Three facade-import sweep drivers were simultaneously open on 2026-08-26 (semantic #11377, TDD #11382, workspace/index #11389). Their diffs genuinely overlap beyond their named crates: all three edit .ci/coverage-packs.toml, .github/workflows/ci.yml, and perl-lsp-rs facade import sites. Drivers agree on landing order at brief time; the later lanes resolve onto landed coverage-pack state."
+
+[[surfaces]]
+name = "devex-shared-build-cache"
+paths = ["justfile"]
+owner_issues = [12596]
+status = "open"
+notes = "One claim, two concurrent candidate strategies on 2026-08-26: make shared caching the default (feat branch feat/12596-shared-build-cache-default) versus document it as the multi-worktree default (perf branch perf/12596-worktree-build-caching). The strategies overlap on justfile and developer docs and one CONTRIBUTING update. One semantic strategy reconciles before landing; the second candidate closes or retargets rather than merging both."
+
+[[surfaces]]
+name = "non-rust-inventory-manifest"
+paths = ["docs/policy/NON_RUST_INVENTORY.md"]
+owner_issues = [12775]
+status = "open"
+notes = "Generated snapshot under convergence tracking (#12775, open). On 2026-08-26 it was edited concurrently by unrelated feature lanes (Windows doctor prerequisites, shared build-cache docs, vim host work) while a dedicated regeneration lane also flew. Changes regenerate from the inventory tooling instead of hand-editing contested sections; feature lanes touching unrelated regions still expect rebase onto regenerated snapshots."
+
+[[surfaces]]
+name = "emacs-journey-host-runner"
+paths = [
+  "scripts/test/emacs-clients/",
+  "scripts/test/emacs-host-driver.el",
+  ".github/workflows/emacs-train-context-contract.yml",
+  ".ci/editor-clients/emacs-subjects.v1.json",
+]
+owner_issues = [8824, 8825, 8830, 11719]
+status = "open"
+notes = "Two layers share the emacs tree: pinned lsp-mode/Eglot journey proofs (#8824/#8825/#8830) edit client configs under scripts/test/emacs-clients/, while packet tooling #11719 generates builder/reviewer packets over the same layers (branch tooling/11719-emacs-actor-packets active 2026-08-26). The hermetic actual-host runner substrate itself landed via #7778; its branches remain visible and its driver (emacs-host-driver.el) is the boundary between substrate fixes and journey edits. A lane states which layer it owns at brief time."
