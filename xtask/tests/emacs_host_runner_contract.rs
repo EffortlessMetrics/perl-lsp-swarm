@@ -1,14 +1,13 @@
 // The hermetic runner substrate is consumed progressively by the sibling
-// actual-host verdict targets (#7126/#7721/#7727); this contract target
-// exercises only the schema/event/receipt core, so under-consumed substrate
-// items are expected rather than drift.
-#![allow(dead_code)]
-#![allow(unused_imports)]
+// actual-host verdict targets (#7126/#7721/#7727). Since #8734 this target
+// also exercises the owned-process supervision, capture-bounds, redaction,
+// and receipt-failure seams directly, so only narrowly justified substrate
+// items may stay locally exempted from dead-code analysis.
 
 #[path = "support/emacs_host_runner.rs"]
 mod emacs_host_runner;
 
-use anyhow::{Result, ensure};
+use anyhow::{Result, bail, ensure};
 use emacs_host_runner::{
     DRIVER_SCHEMA_VERSION, DriverEvent, DriverEventKind, RUN_PLAN_SCHEMA_VERSION,
     default_not_proven_diagnostics, validate_driver_events,
@@ -951,6 +950,560 @@ fn released_subject_never_searches_the_host_installation() -> Result<()> {
         !host_run_task::EmacsClientSubject::ReleasedEglotGnuElpa123
             .resolves_client_source_from_installation(),
         "a released subject resolves its source only through declared package inputs"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Runner supervision contract (#8734): timeout, process-tree cleanup,
+// capture-bounds integrity, redaction, and receipt failure paths.
+//
+// A deterministic fake-host fixture drives the same owned-process, artifact,
+// and receipt seam the real Emacs consumers use (`run_owned_process` over a
+// `HermeticLayout`, then receipt construction), so no second test-only
+// supervisor exists whose success would say nothing about the shared runner.
+// Each scenario runs under a unique candidate identity so concurrent
+// scenarios in one test binary can never attribute each other's processes;
+// real plan validation continues to pin `perllsp[.exe]` names where it
+// applies.
+// ---------------------------------------------------------------------------
+
+use std::collections::BTreeSet;
+
+use xtask::editor_client_compat::{
+    ClientSourceState, FailureClass, PlatformIdentity, WorkspaceFixtureIdentity,
+};
+
+const FAKE_HOST_ENTRY_TEST: &str = "runner_support_fake_host_child_entry";
+
+/// Diagnostic-only guard that keeps a supervision run directory on disk so a
+/// failed iteration can be inspected directly while #8734 is being driven to
+/// green; a green suite removes it through ordinary target/ hygiene.
+struct TempDirGuard(PathBuf);
+
+impl TempDirGuard {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for TempDirGuard {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// The contract-harness entry the fake host re-enters through: without the
+/// mode environment it is an inert pass, as any plain harness invocation is.
+#[test]
+fn runner_support_fake_host_child_entry() {
+    if let Ok(mode) = std::env::var(emacs_host_runner::FAKE_HOST_MODE_ENV) {
+        emacs_host_runner::run_fake_host_entry(&mode);
+    }
+}
+
+fn run_fake_scenario(
+    root: &Path,
+    mode: &str,
+    tag: &str,
+    timeout_ms: u64,
+) -> Result<emacs_host_runner::ProcessObservation> {
+    let (plan, layout) = emacs_host_runner::supervision_plan(root, tag, timeout_ms)?;
+    let host_executable = std::env::current_exe()
+        .context("locating this test binary for fake-host re-entry")?;
+    let mut command = emacs_host_runner::supervision_command(
+        &host_executable,
+        FAKE_HOST_ENTRY_TEST,
+        &plan,
+        &layout,
+        mode,
+    )?;
+    emacs_host_runner::run_owned_process(&mut command, &plan, &layout)
+}
+
+fn durable_artifact(root: &Path, id: &str) -> Result<Vec<u8>> {
+    fs::read(root.join("artifacts").join(id))
+        .with_context(|| format!("reading retained artifact {id}"))
+}
+
+/// Positive control: a status-0 host that emits the complete transcript and
+/// leaks nothing satisfies the process boundary only because the
+/// deterministic before/after comparison observed the tree gone.
+#[test]
+fn clean_status_zero_run_passes_only_with_observed_clean_process_set() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let observation = run_fake_scenario(root.path(), "clean", "cleanpos", 30_000)?;
+    ensure!(
+        observation.status_code == Some(0),
+        "the clean scenario must exit zero"
+    );
+    ensure!(!observation.timed_out && !observation.kill_requested);
+    ensure!(
+        observation.cleanup == emacs_host_runner::CleanupResult::Pass,
+        "a proven-clean process set with an orderly exit must pass cleanup, got {:?} ({})",
+        observation.cleanup,
+        observation.cleanup_detail
+    );
+    ensure!(observation.driver_complete);
+    ensure!(
+        observation.last_completed_barrier.as_deref() == Some("shutdown_completed"),
+        "the last completed barrier must be observed, got {:?}",
+        observation.last_completed_barrier
+    );
+    ensure!(observation.passed_process_boundary());
+    Ok(())
+}
+
+/// The issue's central defect: a status-0 host that emits
+/// `shutdown_completed` while deliberately leaking its candidate descendant
+/// must fail cleanup and can never satisfy the passing-process boundary or a
+/// fabricated passing receipt.
+#[test]
+fn clean_exit_with_leaked_candidate_descendant_fails_cleanup() -> Result<()> {
+    let root_dir = workspace_root()?.join("target").join("supervision-debug-leak");
+    let _ = fs::remove_dir_all(&root_dir);
+    let root = fs::create_dir_all(&root_dir).map(|_| {
+        // Preserved between retry iterations only while diagnosing #8734;
+        // `supervision_plan` refuses nothing here and cargo ignores target/.
+        TempDirGuard(root_dir.clone())
+    })?;
+    let observation =
+        run_fake_scenario(root.path(), "leak_descendant_clean_exit", "leakneg", 60_000)?;
+    if observation.status_code != Some(0) {
+        let fixture_stderr = durable_artifact(root.path(), "emacs/driver-stderr.log")
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_else(|_| "<unreadable>".to_string());
+        bail!(
+            "the host itself must exit zero to discriminate the leak path, got {:?}; \
+             host stderr head: {}",
+            observation.status_code,
+            fixture_stderr.chars().take(400).collect::<String>()
+        );
+    }
+    if observation.cleanup != emacs_host_runner::CleanupResult::Fail {
+        let raw_dir = root.path().join("raw");
+        let after_snapshot =
+            fs::read_to_string(raw_dir.join("process-snapshot-after.txt")).unwrap_or_default();
+        let needle_hits: Vec<&str> = after_snapshot
+            .lines()
+            .filter(|line| line.to_ascii_lowercase().contains("perllsp"))
+            .collect();
+        let markers: Vec<String> = fs::read_dir(&raw_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with("descendant-ready") {
+                    Some(format!(
+                        "{name}: {}",
+                        fs::read_to_string(entry.path()).unwrap_or_default()
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        bail!(
+            "a leaked candidate descendant must fail cleanup even on clean exit, got {:?} \
+             ({}); needle hits in after-snapshot: {needle_hits:?}; ready-markers: \
+             {markers:?}",
+            observation.cleanup,
+            observation.cleanup_detail
+        );
+    }
+    ensure!(
+        !observation.surviving_processes.is_empty(),
+        "the surviving descendant must be recorded in the ledger"
+    );
+    ensure!(
+        !observation.passed_process_boundary(),
+        "an orphaned descendant must never satisfy the passing boundary"
+    );
+
+    let fabrication = supervised_receipt(
+        &observation,
+        xtask::editor_client_compat::ObservationResult::Pass,
+    );
+    let error = fabrication
+        .validate()
+        .err()
+        .context("a leaked-descendant observation must not validate as a passing receipt")?;
+    assert!(
+        error.to_string().contains("proven process cleanup"),
+        "the refusal must name the cleanup proof gap: {error:#}"
+    );
+    let honest = supervised_receipt(
+        &observation,
+        xtask::editor_client_compat::ObservationResult::NotProven,
+    );
+    if let Err(error) = honest.validate() {
+        let fixture_stderr = durable_artifact(root.path(), "emacs/driver-stderr.log")
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_else(|_| "<unreadable>".to_string());
+        bail!("the honest fail-closed receipt must validate: {error:#}; host stderr head: \
+               {}",
+            fixture_stderr.chars().take(400).collect::<String>()
+        );
+    }
+
+    for survivor in &observation.surviving_processes {
+        emacs_host_runner::stop_test_descendant(survivor.pid);
+    }
+    Ok(())
+}
+
+/// Timeout records the last completed lifecycle barrier and returns failed/
+/// not-proven evidence; it can never become a pass because a process existed
+/// or the probe happened to look clean.
+#[test]
+fn timeout_records_last_completed_barrier_and_stays_not_proven() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let observation =
+        run_fake_scenario(root.path(), "hang_after_workspace_ready", "timeoutneg", 1_500)?;
+    ensure!(observation.timed_out && observation.kill_requested);
+    ensure!(
+        observation.last_completed_barrier.as_deref() == Some("workspace_ready"),
+        "the last completed barrier must be recorded on timeout, got {:?}",
+        observation.last_completed_barrier
+    );
+    ensure!(
+        observation.cleanup != emacs_host_runner::CleanupResult::Pass,
+        "timeout can never be credited as a passing cleanup"
+    );
+    ensure!(!observation.passed_process_boundary());
+    supervised_receipt(
+        &observation,
+        xtask::editor_client_compat::ObservationResult::NotProven,
+    )
+    .validate()
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "the timed-out receipt must still validate honestly: {error:#}"
+        )
+    })?;
+    Ok(())
+}
+
+/// Malformed/truncated driver output fails closed: the run cannot satisfy the
+/// complete-lifecycle boundary, and the raw stream is retained verbatim as
+/// bounded diagnostics instead of being silently repaired.
+#[test]
+fn malformed_driver_stream_fails_closed_with_bounded_diagnostics() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let observation = run_fake_scenario(root.path(), "garbage_events", "garbageneg", 30_000)?;
+    ensure!(
+        !observation.driver_complete,
+        "malformed driver output cannot count as a complete host run"
+    );
+    ensure!(
+        !observation.passed_process_boundary(),
+        "an incomplete driver stream cannot satisfy the passing boundary"
+    );
+    let retained =
+        String::from_utf8_lossy(&durable_artifact(root.path(), "emacs/driver-events.jsonl")?)
+            .into_owned();
+    ensure!(
+        retained.contains("\"schema_version\":\"emacs_host_driver.v1\""),
+        "the malformed stream prefix must be retained for diagnostics"
+    );
+    supervised_receipt(
+        &observation,
+        xtask::editor_client_compat::ObservationResult::NotProven,
+    )
+    .validate()
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "a malformed-stream receipt must validate as honest fail-closed evidence: {error:#}"
+        )
+    })?;
+    Ok(())
+}
+
+/// A driver that records its typed failure and exits non-zero surfaces failed
+/// evidence while its event stream stays observable.
+#[test]
+fn nonzero_driver_failure_yields_failed_observation_evidence() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let observation = run_fake_scenario(root.path(), "driver_failed_exit3", "failedneg", 30_000)?;
+    ensure!(observation.status_code == Some(3));
+    ensure!(
+        observation.cleanup != emacs_host_runner::CleanupResult::Pass,
+        "an abnormal exit cannot claim a passing cleanup"
+    );
+    ensure!(!observation.passed_process_boundary());
+    ensure!(
+        observation
+            .events
+            .iter()
+            .any(|event| event.kind == DriverEventKind::DriverFailed),
+        "the recorded stream must retain the driver's own failure event"
+    );
+    Ok(())
+}
+
+/// Capture bounds are evidentiary: an oversize capture is retained truncated
+/// but carries full-size identity semantics, and unbounded captures declare
+/// completeness rather than silently pretending fullness.
+#[test]
+fn oversized_captures_carry_explicit_truncation_integrity_metadata() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let observation = run_fake_scenario(root.path(), "oversize_output", "boundspos", 30_000)?;
+    ensure!(observation.status_code == Some(0));
+    let bounds: serde_json::Value =
+        serde_json::from_slice(&durable_artifact(root.path(), "emacs/capture-bounds.json")?)
+            .context("capture bounds must be structured JSON")?;
+    ensure!(
+        bounds["schema_version"] == "emacs_host_capture_bounds.v1",
+        "bounds carry their own schema version"
+    );
+    let rows = bounds["captures"]
+        .as_array()
+        .context("bounds enumerate every retained capture")?;
+    let stdout_row = rows
+        .iter()
+        .find(|row| row["id"] == "emacs/driver-stdout.log")
+        .context("the oversize stdout capture must have a bounds row")?;
+    ensure!(
+        stdout_row["truncated"] == true,
+        "oversize output must declare truncation instead of presenting it as complete"
+    );
+    let original = stdout_row["original_byte_count"].as_u64().context("original size")?;
+    let retained = stdout_row["retained_byte_count"].as_u64().context("retained size")?;
+    ensure!(original > retained, "the original stream was larger than the retention bound");
+    let identity = stdout_row["full_stream_sha256"].as_str().context("full-stream identity")?;
+    ensure!(
+        identity.len() == "sha256:".len() + 64 && identity.starts_with("sha256:"),
+        "the full sanitized stream identity must be a sha256 value"
+    );
+    for row in rows {
+        if row["id"] != "emacs/driver-stdout.log" {
+            ensure!(
+                row["truncated"] == false,
+                "{} must declare completeness",
+                row["id"]
+            );
+            ensure!(
+                row["original_byte_count"] == row["retained_byte_count"],
+                "{} byte counts must agree when complete",
+                row["id"]
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Durable artifacts are redacted before they are written: planned paths are
+/// tokenized, and residual private-path-shaped values are rejected generically
+/// rather than persisted verbatim.
+#[test]
+fn chatty_output_never_persists_raw_private_paths() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let observation = run_fake_scenario(root.path(), "chatty_paths", "redactpos", 30_000)?;
+    ensure!(
+        observation.status_code == Some(0),
+        "redaction must not corrupt the supervised run itself"
+    );
+    let retained = String::from_utf8_lossy(
+        &durable_artifact(root.path(), "emacs/driver-stdout.log")?,
+    )
+    .into_owned();
+    if !retained.contains("<RUN_ROOT>") {
+        bail!(
+            "the hermetic run root must be normalized in durable evidence; \
+             retained stdout head: {:?}",
+            retained.chars().take(400).collect::<String>()
+        );
+    }
+    for private in ["/home/observer/.netrc", "\\Users\\observer\\secret-token.txt"] {
+        ensure!(
+            !retained.contains(private),
+            "raw private-looking values must not survive into durable artifacts: {private}"
+        );
+    }
+    Ok(())
+}
+
+/// Deterministic serialization apart from explicitly normalized
+/// observational fields: two identical supervision runs serialize identical
+/// capture bounds once the pid-bearing process-ledger row (an observational
+/// variable exactly like the receipt timestamp) is set aside, while every
+/// content-derived row compares byte-for-byte.
+#[test]
+fn capture_bounds_serialization_is_deterministic_across_runs() -> Result<()> {
+    let first = tempfile::tempdir()?;
+    let second = tempfile::tempdir()?;
+    let first_observation = run_fake_scenario(first.path(), "clean", "detfirst", 30_000)?;
+    let second_observation = run_fake_scenario(second.path(), "clean", "detsecond", 30_000)?;
+    ensure!(first_observation.status_code == Some(0));
+    ensure!(second_observation.status_code == Some(0));
+    let stable_rows = |root: &Path| -> Result<Vec<(String, String)>> {
+        let bounds: serde_json::Value =
+            serde_json::from_slice(&durable_artifact(root, "emacs/capture-bounds.json")?)?;
+        Ok(bounds["captures"]
+            .as_array()
+            .context("bounds enumerate captures")?
+            .iter()
+            .filter(|row| row["id"] != "emacs/process-ledger.json")
+            .map(|row| {
+                (
+                    row["id"].as_str().unwrap_or_default().to_string(),
+                    row["full_stream_sha256"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect())
+    };
+    ensure!(
+        stable_rows(first.path())? == stable_rows(second.path())?,
+        "identical runs must derive identical content identities"
+    );
+    // The volatile row must still exist and still carry its own integrity.
+    for root in [first.path(), second.path()] {
+        let bounds: serde_json::Value =
+            serde_json::from_slice(&durable_artifact(root, "emacs/capture-bounds.json")?)?;
+        ensure!(
+            bounds["captures"]
+                .as_array()
+                .context("captures")?
+                .iter()
+                .any(|row| row["id"] == "emacs/process-ledger.json"),
+            "the ledger retains its own bounds row per run"
+        );
+    }
+    Ok(())
+}
+
+/// Guard pinning artifact separation: every distinct evidence stream keeps
+/// its own id and kind in the retained surface, including the process ledger
+/// recording the supervised host pid.
+#[test]
+fn separate_streams_remain_separate_artifacts() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let observation = run_fake_scenario(root.path(), "clean", "separapos", 30_000)?;
+    let ids: BTreeSet<String> = observation.artifacts.iter().map(|item| item.id.clone()).collect();
+    for required in [
+        "emacs/driver-stdout.log",
+        "emacs/driver-stderr.log",
+        "emacs/driver-events.jsonl",
+        "emacs/client.log",
+        "emacs/perllsp.stderr",
+        "emacs/initialize.json",
+        "emacs/process-ledger.json",
+        "emacs/capture-bounds.json",
+    ] {
+        ensure!(ids.contains(required), "{required} must be retained separately");
+    }
+    let ledger: serde_json::Value =
+        serde_json::from_slice(&durable_artifact(root.path(), "emacs/process-ledger.json")?)
+            .context("ledger must be readable JSON")?;
+    ensure!(ledger["pid"].is_u64(), "the ledger records the supervised host pid");
+    ensure!(
+        ledger["last_completed_barrier"] == serde_json::json!("shutdown_completed"),
+        "the ledger records the final completed barrier"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Receipt-construction guards over supervision observations
+// ---------------------------------------------------------------------------
+
+fn supervised_receipt(
+    observation: &emacs_host_runner::ProcessObservation,
+    result: xtask::editor_client_compat::ObservationResult,
+) -> xtask::editor_client_compat::EditorClientCompatReceipt {
+    let (result, failure_class, limitations) = match result {
+        xtask::editor_client_compat::ObservationResult::Pass => (
+            xtask::editor_client_compat::ObservationResult::Pass,
+            None,
+            Vec::new(),
+        ),
+        other => (
+            other,
+            Some(FailureClass::Cleanup),
+            vec!["cleanup evidence incomplete".to_string()],
+        ),
+    };
+    emacs_host_runner::build_receipt_supervised(
+        observation,
+        emacs_host_runner::SupervisionReceiptInputs {
+            stage: xtask::editor_client_compat::EvidenceStage::ExactSourceLocal,
+            repository: "repo/example".to_string(),
+            candidate_sha: "0123456789abcdef0123456789abcdef01234567".to_string(),
+            platform: PlatformIdentity {
+                os: "test".to_string(),
+                os_version: "test".to_string(),
+                arch: "test".to_string(),
+            },
+            client_id: "bundled_eglot_emacs_30_1".to_string(),
+            emacs_version: "GNU Emacs 30.1 (fake)".to_string(),
+            source_state: ClientSourceState::Bundled,
+            source_ref: "emacs-30.1".to_string(),
+            emacs_build_sha256: format!("sha256:{}", "3".repeat(64)),
+            configuration_sha256: format!("sha256:{}", "4".repeat(64)),
+            driver_sha256: format!("sha256:{}", "5".repeat(64)),
+            candidate_version: "perllsp fake".to_string(),
+            candidate_build_revision: "0123456789abcdef0123456789abcdef01234567".to_string(),
+            candidate_artifact_sha256: format!("sha256:{}", "6".repeat(64)),
+            fixture: WorkspaceFixtureIdentity {
+                id: "fixture".to_string(),
+                digest: format!("sha256:{}", "7".repeat(64)),
+                expectation_set_id: "canonical_expectation_set.v1".to_string(),
+                expectation_set_digest: format!("sha256:{}", "8".repeat(64)),
+            },
+            journey_selector: "supervision_lifecycle.v1".to_string(),
+            result,
+            failure_class,
+            limitations,
+            claim_boundary: "supervision-only receipt: unobserved journey and diagnostic \
+                             cells stay not_proven"
+                .to_string(),
+        },
+    )
+}
+
+/// The production validator, not a local copy, owns receipt law: an all-
+/// not-proven observation cannot back an overall pass, while honest
+/// not-proven receipts do validate and keep unobserved cells not_proven.
+#[test]
+fn receipts_fail_closed_through_the_production_validator() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let clean = run_fake_scenario(root.path(), "clean", "receiptpos", 30_000)?;
+    ensure!(clean.cleanup == emacs_host_runner::CleanupResult::Pass);
+
+    let manufactured =
+        supervised_receipt(&clean, xtask::editor_client_compat::ObservationResult::Pass);
+    let error = manufactured
+        .validate()
+        .err()
+        .context("an all-not-proven receipt cannot claim an overall pass")?;
+    assert!(
+        error.to_string().contains("position encoding"),
+        "the refusal must name the unobserved capability evidence: {error}"
+    );
+
+    let honest = supervised_receipt(
+        &clean,
+        xtask::editor_client_compat::ObservationResult::NotProven,
+    );
+    honest
+        .validate()
+        .context("honest not-proven supervision receipts validate against production law")?;
+    ensure!(
+        honest.journey.len() == 1,
+        "the fixture derives exactly one fail-closed journey cell"
+    );
+    ensure!(
+        honest.journey[0].result == xtask::editor_client_compat::ObservationResult::NotProven,
+        "the supervised journey cell must stay not_proven, never synthesized"
+    );
+    ensure!(
+        honest.diagnostics.advertised_mode == DiagnosticMode::NotProven,
+        "unobserved diagnostics must stay not_proven"
+    );
+    ensure!(
+        honest.process_cleanup == emacs_host_runner::CleanupResult::Pass,
+        "receipt must carry the observed cleanup disposition unchanged"
     );
     Ok(())
 }

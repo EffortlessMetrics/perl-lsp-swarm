@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail, ensure};
 use chrono::Utc;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -9,20 +10,34 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 use xtask::editor_client_compat::{
-    ArtifactKind, CANONICAL_EXPECTATION_SET_ID, CapabilityIdentity, CleanupResult,
-    ClientSourceState, DiagnosticMode, DiagnosticsIdentity, EditorClientCompatReceipt,
-    EvidenceArtifact, EvidenceStage, FailureClass, HostIdentity, IntegrationIdentity,
-    IntegrationMode, JourneyCell, ObservationResult, PlatformIdentity, RegistrationState,
-    SCHEMA_VERSION as RECEIPT_SCHEMA_VERSION, ServerIdentity, WorkspaceFixtureIdentity,
-    canonical_expectation_set_digest, fixture_digest,
+    ArtifactKind, CANONICAL_EXPECTATION_SET_ID, CapabilityIdentity, ClientSourceState,
+    DiagnosticMode, DiagnosticsIdentity, EditorClientCompatReceipt, EvidenceArtifact,
+    EvidenceStage, FailureClass, HostIdentity, IntegrationIdentity, IntegrationMode, JourneyCell,
+    PlatformIdentity, RegistrationState, SCHEMA_VERSION as RECEIPT_SCHEMA_VERSION, ServerIdentity,
+    WorkspaceFixtureIdentity, canonical_expectation_set_digest, fixture_digest,
 };
+
+// Supervision consumers name the fail-closed result vocabulary directly, so
+// the runner re-exports the canonical definitions instead of wrapping them.
+pub use xtask::editor_client_compat::{CleanupResult, ObservationResult};
 
 pub const RUN_PLAN_SCHEMA_VERSION: &str = "emacs_host_run_plan.v1";
 pub const DRIVER_SCHEMA_VERSION: &str = "emacs_host_driver.v1";
+pub const CAPTURE_BOUNDS_SCHEMA_VERSION: &str = "emacs_host_capture_bounds.v1";
 const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
+
+/// Environment switch selecting the fake-host behavior for the deterministic
+/// supervision fixture (`run_fake_host_entry`). Without it the child behaves
+/// as an ordinary test-harness invocation.
+pub const FAKE_HOST_MODE_ENV: &str = "PERL_LSP_FAKE_HOST_MODE";
+const FAKE_HOST_DESCENDANT_READY_ENV: &str = "PERL_LSP_FAKE_DESCENDANT_READY";
+/// Best-effort safety cap so a mis-supervised descendant can never linger for
+/// longer than one CI job even if every explicit stop path failed.
+const DESCENDANT_LIFETIME_CAP_MS: u64 = 120_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -325,6 +340,17 @@ impl HermeticLayout {
         self.raw_directory.join("initialize.json")
     }
 
+    /// Raw before-run process-table snapshot, retained as run evidence even
+    /// when the cleanup comparison itself could not be made.
+    pub fn process_snapshot_before(&self) -> PathBuf {
+        self.raw_directory.join("process-snapshot-before.txt")
+    }
+
+    /// Raw after-run process-table snapshot (same retention rule).
+    pub fn process_snapshot_after(&self) -> PathBuf {
+        self.raw_directory.join("process-snapshot-after.txt")
+    }
+
     pub fn environment(&self, plan: &EmacsHostRunPlan) -> Result<BTreeMap<OsString, OsString>> {
         let mut environment = BTreeMap::new();
         for key in [
@@ -593,8 +619,43 @@ struct ProcessLedger {
     kill_requested: bool,
     exit_code: Option<i32>,
     cleanup: CleanupResult,
+    cleanup_detail: String,
+    process_probe: String,
+    last_completed_barrier: Option<String>,
+    surviving_processes: Vec<LedgerSurvivor>,
     event_count: usize,
     driver_complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct LedgerSurvivor {
+    pid: u32,
+    args: String,
+}
+
+/// One evidence row of the capture-bounds document: for every retained
+/// capture it distinguishes full from truncated evidence instead of letting
+/// a silent truncation masquerade as completeness.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CaptureBoundsRow {
+    id: String,
+    kind: String,
+    full_stream_sha256: String,
+    original_byte_count: u64,
+    retained_byte_count: u64,
+    truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CaptureBoundsDocument {
+    schema_version: String,
+    captures: Vec<CaptureBoundsRow>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SurvivorProcess {
+    pub pid: u32,
+    pub args: String,
 }
 
 #[derive(Debug, Clone)]
@@ -603,8 +664,11 @@ pub struct ProcessObservation {
     pub timed_out: bool,
     pub kill_requested: bool,
     pub cleanup: CleanupResult,
+    pub cleanup_detail: String,
     pub events: Vec<DriverEvent>,
     pub driver_complete: bool,
+    pub last_completed_barrier: Option<String>,
+    pub surviving_processes: Vec<SurvivorProcess>,
     pub artifacts: Vec<EvidenceArtifact>,
 }
 
@@ -617,11 +681,75 @@ impl ProcessObservation {
     }
 }
 
+/// The lifecycle barrier token for a singleton driver event, or `None` for
+/// non-lifecycle events (actions, edits, failures).
+fn completed_barrier_token(kind: DriverEventKind) -> Option<&'static str> {
+    match kind {
+        DriverEventKind::HostStarted => Some("host_started"),
+        DriverEventKind::ClientLoaded => Some("client_loaded"),
+        DriverEventKind::RegistrationSelected => Some("registration_selected"),
+        DriverEventKind::InitializeObserved => Some("initialize_observed"),
+        DriverEventKind::WorkspaceReady => Some("workspace_ready"),
+        DriverEventKind::BufferOpened => Some("buffer_opened"),
+        DriverEventKind::ShutdownStarted => Some("shutdown_started"),
+        DriverEventKind::ShutdownCompleted => Some("shutdown_completed"),
+        DriverEventKind::HostActionStarted
+        | DriverEventKind::HostActionCompleted
+        | DriverEventKind::EditApplied
+        | DriverEventKind::DriverFailed => None,
+    }
+}
+
+fn last_completed_barrier(events: &[DriverEvent]) -> Option<String> {
+    let mut best: Option<(u8, &'static str)> = None;
+    for event in events {
+        if let Some(token) = completed_barrier_token(event.kind) {
+            let rank = lifecycle_rank(event.kind);
+            match best {
+                Some((current_rank, _)) if rank < current_rank => {}
+                _ => best = Some((rank, token)),
+            }
+        }
+    }
+    best.map(|(_, token)| token.to_string())
+}
+
 pub fn run_owned_process(
     command: &mut Command,
     plan: &EmacsHostRunPlan,
     layout: &HermeticLayout,
 ) -> Result<ProcessObservation> {
+    // The needle binds this run's exact candidate identity. The plan path is
+    // unique per run, so unrelated same-name processes (another checkout's
+    // real host run) are never attributed here.
+    let needle = if cfg!(windows) {
+        plan.paths
+            .candidate_executable
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("perllsp")
+            .to_string()
+    } else {
+        plan.paths.candidate_executable.to_string_lossy().into_owned()
+    };
+    let parse_probe = |text: &str| {
+        if cfg!(windows) {
+            parse_windows_process_snapshot(text)
+        } else {
+            parse_process_snapshot(text)
+        }
+    };
+    let probe_before = probe_process_table();
+    // A before-probe that cannot be parsed is recorded with its typed cause:
+    // treating it as an empty set would fabricate survivors later, and a
+    // generic refusal would hide whether the table was unreadable, absent,
+    // or malformed. The comparison refuses to judge cleanup either way.
+    let before_diagnostic = diagnostic_probe_failure("before", &probe_before);
+    let before_lines = match &probe_before {
+        Some(Ok(text)) => parse_probe(text).unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().context("spawning Emacs host subject")?;
     let pid = child.id();
@@ -656,24 +784,83 @@ pub fn run_owned_process(
 
     let stdout = join_reader(stdout_reader, "host stdout")?;
     let stderr = join_reader(stderr_reader, "host stderr")?;
-    // `Child::kill` signals only the Emacs process. The adapter starts
-    // `perllsp` as a descendant, so after a forced kill — or any exit that
-    // skipped the driver's own shutdown path — nothing here has observed that
-    // the server went away, and the server can outlive the run. Claiming
-    // `pass` in the receipt would assert a cleanup that was never witnessed,
-    // so only a host that terminated through its own shutdown path with a
-    // success status may report a proven cleanup; everything else is
-    // `not_proven` rather than `fail`, because a leak is unobserved here, not
-    // demonstrated.
-    let cleanup = if timed_out || kill_requested || status.code() != Some(0) {
-        CleanupResult::NotProven
+
+    // Cleanup law (#8734): pass requires settled termination AND an
+    // independently observed absence of this run's owned process tree.
+    // A survivor matching the exact candidate needle that was absent before
+    // the run is an observed leak (`fail`). An unavailable or unparseable
+    // probe leaves the judgment not-proven with a typed detail. A forced
+    // kill or abnormal exit skipped the driver's own shutdown path, so even
+    // a clean-looking table degrades to not-proven rather than pass.
+    let probe_after = probe_process_table();
+    let after_diagnostic = diagnostic_probe_failure("after", &probe_after);
+    let (mut cleanup, mut cleanup_detail, survivors) = if let Some(before_error) =
+        before_diagnostic
+    {
+        (CleanupResult::NotProven, before_error, Vec::new())
     } else {
-        CleanupResult::Pass
+        match (&probe_before, &probe_after) {
+            (Some(Ok(_)), Some(Ok(after_text))) => match parse_probe(after_text) {
+                Ok(after_lines) => {
+                    let survivors = surviving_processes(&before_lines, &after_lines, &needle);
+                    if survivors.is_empty() {
+                        (
+                            CleanupResult::Pass,
+                            "process-set comparison clean".to_string(),
+                            survivors,
+                        )
+                    } else {
+                        (
+                            CleanupResult::Fail,
+                            format!(
+                                "process-set comparison observed {} surviving candidate \
+                                 process(es) after the run",
+                                survivors.len()
+                            ),
+                            survivors,
+                        )
+                    }
+                }
+                Err(error) => (
+                    CleanupResult::NotProven,
+                    format!("after-process probe unparseable: {error:#}"),
+                    Vec::new(),
+                ),
+            },
+            _ => (
+                CleanupResult::NotProven,
+                after_diagnostic.unwrap_or_else(|| {
+                    "process probe unavailable on this platform; cleanup not observed".to_string()
+                }),
+                Vec::new(),
+            ),
+        }
     };
+    // Retain both raw snapshots as run evidence even when the comparison
+    // itself could not be made. These stay outside the sanitized artifact
+    // list: they contain host-wide observations beyond this run's boundary.
+    let _ = fs::write(layout.process_snapshot_before(), render_process_snapshot(&before_lines));
+    let _ = fs::write(
+        layout.process_snapshot_after(),
+        match &probe_after {
+            Some(Ok(text)) => text.clone(),
+            _ => String::new(),
+        },
+    );
+    if (timed_out || kill_requested || status.code() != Some(0)) && cleanup == CleanupResult::Pass
+    {
+        cleanup = CleanupResult::NotProven;
+        cleanup_detail =
+            "host exit skipped the driver shutdown path; orderly client shutdown not observed"
+                .to_string();
+    }
+
     let event_bytes = fs::read(layout.event_file()).unwrap_or_default();
     let events = parse_driver_events(&event_bytes, false).unwrap_or_default();
     let driver_complete = validate_driver_events(&events, true).is_ok();
+    let last_barrier = last_completed_barrier(&events);
 
+    let mut bounds: BTreeMap<String, CaptureBoundsRow> = BTreeMap::new();
     let mut artifacts = Vec::new();
     artifacts.push(write_sanitized_artifact(
         &layout.artifact_directory,
@@ -682,6 +869,7 @@ pub fn run_owned_process(
         &stdout,
         plan,
         layout,
+        &mut bounds,
     )?);
     artifacts.push(write_sanitized_artifact(
         &layout.artifact_directory,
@@ -690,6 +878,7 @@ pub fn run_owned_process(
         &stderr,
         plan,
         layout,
+        &mut bounds,
     )?);
     artifacts.push(write_sanitized_artifact(
         &layout.artifact_directory,
@@ -698,6 +887,7 @@ pub fn run_owned_process(
         &event_bytes,
         plan,
         layout,
+        &mut bounds,
     )?);
 
     for (path, id, kind) in [
@@ -715,6 +905,7 @@ pub fn run_owned_process(
                 &bytes,
                 plan,
                 layout,
+                &mut bounds,
             )?);
         }
     }
@@ -725,6 +916,17 @@ pub fn run_owned_process(
         kill_requested,
         exit_code: status.code(),
         cleanup,
+        cleanup_detail: cleanup_detail.clone(),
+        process_probe: if matches!((&probe_before, &probe_after), (Some(Ok(_)), Some(Ok(_)))) {
+            "available".to_string()
+        } else {
+            "unavailable".to_string()
+        },
+        last_completed_barrier: last_barrier.clone(),
+        surviving_processes: survivors
+            .iter()
+            .map(|line| LedgerSurvivor { pid: line.pid, args: line.args.clone() })
+            .collect(),
         event_count: events.len(),
         driver_complete,
     };
@@ -736,6 +938,22 @@ pub fn run_owned_process(
         &ledger_bytes,
         plan,
         layout,
+        &mut bounds,
+    )?);
+
+    let bounds_document = CaptureBoundsDocument {
+        schema_version: CAPTURE_BOUNDS_SCHEMA_VERSION.to_string(),
+        captures: bounds.values().cloned().collect(),
+    };
+    let bounds_bytes = serde_json::to_vec_pretty(&bounds_document)?;
+    artifacts.push(write_sanitized_artifact(
+        &layout.artifact_directory,
+        "emacs/capture-bounds.json",
+        ArtifactKind::Other,
+        &bounds_bytes,
+        plan,
+        layout,
+        &mut bounds,
     )?);
 
     Ok(ProcessObservation {
@@ -743,8 +961,14 @@ pub fn run_owned_process(
         timed_out,
         kill_requested,
         cleanup,
+        cleanup_detail,
         events,
         driver_complete,
+        last_completed_barrier: last_barrier,
+        surviving_processes: survivors
+            .iter()
+            .map(|line| SurvivorProcess { pid: line.pid, args: line.args.clone() })
+            .collect(),
         artifacts,
     })
 }
@@ -759,6 +983,7 @@ fn join_reader(
         .with_context(|| format!("reading {label}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_sanitized_artifact(
     artifact_root: &Path,
     id: &str,
@@ -766,17 +991,49 @@ fn write_sanitized_artifact(
     bytes: &[u8],
     plan: &EmacsHostRunPlan,
     layout: &HermeticLayout,
+    bounds: &mut BTreeMap<String, CaptureBoundsRow>,
 ) -> Result<EvidenceArtifact> {
     validate_safe_identity(id, "artifact id")?;
     let sanitized = sanitize_text(bytes, plan, layout);
-    let bounded = bound_capture(sanitized.as_bytes());
+    let sanitized_bytes = sanitized.as_bytes();
+    // The full-stream identity is taken over the complete sanitized content
+    // BEFORE bounding, so a truncated retention can never present its prefix
+    // hash as the identity of the full source stream (#8734).
+    let full_stream_sha256 = bytes_sha256(sanitized_bytes)?;
+    let original_byte_count = sanitized_bytes.len() as u64;
+    let bounded = bound_capture(sanitized_bytes);
+    let truncated = bounded.len() < sanitized_bytes.len();
     let destination = artifact_root.join(id);
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
     fs::write(&destination, bounded)
         .with_context(|| format!("writing sanitized artifact {}", destination.display()))?;
-    Ok(EvidenceArtifact { kind, id: id.to_string(), sha256: file_sha256(&destination)? })
+    let sha256 = file_sha256(&destination)?;
+    bounds.insert(
+        id.to_string(),
+        CaptureBoundsRow {
+            id: id.to_string(),
+            kind: artifact_kind_token(kind).to_string(),
+            full_stream_sha256,
+            original_byte_count,
+            retained_byte_count: bounded.len() as u64,
+            truncated,
+        },
+    );
+    Ok(EvidenceArtifact { kind, id: id.to_string(), sha256 })
+}
+
+fn artifact_kind_token(kind: ArtifactKind) -> &'static str {
+    match kind {
+        ArtifactKind::ClientLog => "client_log",
+        ArtifactKind::ServerStderr => "server_stderr",
+        ArtifactKind::DriverOutput => "driver_output",
+        ArtifactKind::CapabilitySnapshot => "capability_snapshot",
+        ArtifactKind::ProcessLedger => "process_ledger",
+        ArtifactKind::FailureDiagnostics => "failure_diagnostics",
+        ArtifactKind::Other => "other",
+    }
 }
 
 fn sanitize_text(bytes: &[u8], plan: &EmacsHostRunPlan, layout: &HermeticLayout) -> String {
@@ -809,7 +1066,35 @@ fn sanitize_text(bytes: &[u8], plan: &EmacsHostRunPlan, layout: &HermeticLayout)
             text = text.replace(&value.replace('\\', "/"), token);
         }
     }
+    redact_resident_private_paths(&mut text);
     text
+}
+
+/// Defense-in-depth after the planned-path replacement: residual absolute
+/// POSIX paths, drive-qualified Windows paths, and backslash path runs still
+/// look private, so they are rejected generically into `<PATH>` tokens rather
+/// than persisted verbatim into durable artifacts. Host-driver event detail
+/// values remain strictly validated at parse time; this heuristic covers only
+/// free-text captures such as logs and snapshots.
+fn redact_resident_private_paths(text: &mut String) {
+    static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+    let patterns = PATTERNS.get_or_init(|| {
+        [
+            // POSIX absolute path with at least two segments.
+            r#"(?:^|(?<=[\s"'`(=,:;\[]))(/(?:[A-Za-z0-9._@+-]+/)+[A-Za-z0-9._@+-]*)"#,
+            // Drive-qualified Windows path (C:\... or C:/...) with at least
+            // one segment below the root.
+            r#"(?:^|(?<=[\s"'`(=,:;\[]))[A-Za-z]:[/\\][A-Za-z0-9._@+-]+(?:[/\\][A-Za-z0-9._@+-]+)*"#,
+            // Backslash path run with at least two segments (\Users\name).
+            r#"(?:^|(?<=[\s"'`(=,:;\[]))(?:\\[A-Za-z0-9._@+-]+){2,}"#,
+        ]
+        .into_iter()
+        .filter_map(|pattern| Regex::new(pattern).ok())
+        .collect()
+    });
+    for pattern in patterns {
+        *text = pattern.replace_all(text, "<PATH>").into_owned();
+    }
 }
 
 fn bound_capture(bytes: &[u8]) -> &[u8] {
@@ -952,3 +1237,617 @@ fn is_perllsp_filename(path: &Path) -> bool {
         .and_then(OsStr::to_str)
         .is_some_and(|name| name == "perllsp" || name == "perllsp.exe")
 }
+
+// ---------------------------------------------------------------------------
+// Deterministic process-table probes (#8734)
+//
+// Same fail-closed family as the Vim sibling substrate; #10894 may extract
+// them unchanged later. An unusable probe is evidence failure (`None` /
+// parse error), never an empty set, so cleanup can degrade to not_proven but
+// never fabricate a pass.
+// ---------------------------------------------------------------------------
+
+/// One observed process line from the platform probe.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProcessProbeLine {
+    pub pid: u32,
+    pub args: String,
+}
+
+/// Parse a `ps -eo pid=,args=` style snapshot into deterministic lines.
+pub fn parse_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine>> {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mut split = trimmed.splitn(2, char::is_whitespace);
+        let pid = split.next().unwrap_or_default();
+        let args = split.next().unwrap_or_default().trim();
+        let pid: u32 = pid
+            .parse()
+            .with_context(|| format!("process snapshot line is not `pid args`: {trimmed:?}"))?;
+        lines.push(ProcessProbeLine { pid, args: args.to_string() });
+    }
+    lines.sort();
+    Ok(lines)
+}
+
+/// Probe the current process table through the platform command. `None` means
+/// the platform probe is unavailable — a typed limitation, never a pass.
+pub fn probe_process_table() -> Option<Result<String>> {
+    let output = if cfg!(windows) {
+        Command::new("tasklist").arg("/FO").arg("CSV").arg("/NH").stdin(Stdio::null()).output()
+    } else {
+        Command::new("ps").args(["-eo", "pid=,args="]).stdin(Stdio::null()).output()
+    };
+    match output {
+        Ok(output) if output.status.success() => {
+            Some(Ok(String::from_utf8_lossy(&output.stdout).into_owned()))
+        }
+        Ok(output) => {
+            // Bounded typed diagnostics: a failed probe must name its cause,
+            // not collapse into a generic unparseable bucket.
+            let stderr_head =
+                String::from_utf8_lossy(&output.stderr[..usize::min(200, output.stderr.len())])
+                    .into_owned();
+            let stdout_head =
+                String::from_utf8_lossy(&output.stdout[..usize::min(120, output.stdout.len())])
+                    .into_owned();
+            Some(Err(anyhow::anyhow!(
+                "process probe failed with status {}; stderr head: {stderr_head:?}; \
+                 stdout head: {stdout_head:?}",
+                output.status
+            )))
+        }
+        Err(error) => Some(Err(anyhow::Error::new(error))),
+    }
+}
+
+/// Parse a Windows `tasklist /FO CSV /NH` snapshot into the same
+/// `pid args` lines.
+pub fn parse_windows_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine>> {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = trimmed.split("\",\"").collect();
+        if fields.len() < 2 {
+            bail!("windows process snapshot row is not CSV: {trimmed:?}");
+        }
+        let image = fields[0].trim_start_matches('"');
+        let pid: u32 = fields[1]
+            .trim_end_matches('"')
+            .parse()
+            .with_context(|| format!("windows process snapshot pid is not numeric: {trimmed:?}"))?;
+        lines.push(ProcessProbeLine { pid, args: image.to_string() });
+    }
+    lines.sort();
+    Ok(lines)
+}
+
+/// The deterministic comparison: which `after` probe lines matching `needle`
+/// were not present in the `before` probe. A survivor means the run leaked a
+/// process it was responsible for.
+pub fn surviving_processes(
+    before: &[ProcessProbeLine],
+    after: &[ProcessProbeLine],
+    needle: &str,
+) -> Vec<ProcessProbeLine> {
+    let before_matching: BTreeSet<&ProcessProbeLine> =
+        before.iter().filter(|line| line.args.contains(needle)).collect();
+    after
+        .iter()
+        .filter(|line| line.args.contains(needle) && !before_matching.contains(line))
+        .cloned()
+        .collect()
+}
+
+/// Typed cause for an unusable probe snapshot: unavailable, failed, or
+/// unparseable — never a silent empty set.
+fn diagnostic_probe_failure(
+    phase: &str,
+    probe: &Option<Result<String>>,
+) -> Option<String> {
+    match probe {
+        None => Some(format!(
+            "{phase}-process probe unavailable on this platform; cleanup not observed"
+        )),
+        Some(Err(error)) => {
+            Some(format!("{phase}-process probe failed: {error:#}"))
+        }
+        Some(Ok(text)) => {
+            let parsed = if cfg!(windows) {
+                parse_windows_process_snapshot(text)
+            } else {
+                parse_process_snapshot(text)
+            };
+            parsed.err().map(|error| format!("{phase}-process probe unparseable: {error:#}"))
+        }
+    }
+}
+
+fn render_process_snapshot(lines: &[ProcessProbeLine]) -> String {
+    let mut text = String::new();
+    for line in lines {
+        let _ = writeln!(text, "{} {}", line.pid, line.args);
+    }
+    text
+}
+
+/// Best-effort hygiene for a knowingly leaked supervision descendant. The
+/// tested behavior is the leak detection itself; removing the descendant is
+/// test-environment care and never part of the judged evidence.
+pub fn stop_test_descendant(pid: u32) {
+    if cfg!(windows) {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    } else {
+        let _ = Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Supervision plan + fake-host fixture (#8734)
+//
+// The fixture re-enters this same test binary through the harness entry the
+// contract registers, so every scenario exercises the real
+// `run_owned_process` / artifact / receipt seam with a deterministic
+// process-emitting subject instead of a second test-only supervisor.
+// Candidate identities are unique per scenario so concurrent scenarios in one
+// binary cannot attribute each other's processes; real plan validation
+// continues to pin `perllsp[.exe]` names where it applies.
+// ---------------------------------------------------------------------------
+
+const FAKE_HOST_ENTRY_ENV: &str = "PERL_LSP_FAKE_ENTRY_TEST";
+
+fn synthetic_sha256(seed: u8) -> String {
+    format!("sha256:{}", [seed; 64].iter().map(|byte| format!("{byte:x}")).collect::<String>())
+}
+
+fn standalone_forty_hex(seed: u8) -> String {
+    [seed; 40].iter().map(|byte| format!("{byte:x}")).collect()
+}
+
+pub fn supervision_plan(
+    root: &Path,
+    tag: &str,
+    timeout_ms: u64,
+) -> Result<(EmacsHostRunPlan, HermeticLayout)> {
+    ensure!(root.is_absolute(), "supervision root must be absolute");
+    let layout = HermeticLayout::prepare(root)?;
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin).context("creating supervision bin directory")?;
+    let fixture_root = root.join("fixture");
+    fs::create_dir_all(&fixture_root).context("creating supervision fixture directory")?;
+
+    let executable_suffix = if cfg!(windows) { ".exe" } else { "" };
+    let candidate_executable = bin.join(format!("perllsp-{tag}{executable_suffix}"));
+    let emacs_executable = bin.join("host-fixture");
+    let client_source = bin.join("client-source.el");
+    let driver = bin.join("host-driver.el");
+    let adapter = bin.join("client-adapter.el");
+    let configuration = bin.join("client-config.el");
+    for (path, label) in [
+        (&candidate_executable, &b"supervised candidate"[..]),
+        (&emacs_executable, &b"supervised host"[..]),
+        (&client_source, &b";; supervised client"[..]),
+        (&driver, &b";; supervised driver"[..]),
+        (&adapter, &b";; supervised adapter"[..]),
+        (&configuration, &b";; supervised configuration"[..]),
+    ] {
+        fs::write(path, label)
+            .with_context(|| format!("writing supervision input {}", path.display()))?;
+    }
+
+    let identity = EmacsHostRunIdentity {
+        schema_version: RUN_PLAN_SCHEMA_VERSION.to_string(),
+        stage: EvidenceStage::ExactSourceLocal,
+        repository: "repo/supervision".to_string(),
+        candidate_sha: standalone_forty_hex(1),
+        emacs_version: "GNU Emacs 30.1 (supervision fixture)".to_string(),
+        emacs_build_sha256: synthetic_sha256(2),
+        client: ClientSubject {
+            client_id: format!("fake_eglot_{tag}"),
+            kind: EmacsClientKind::BundledEglot,
+            version: "1.17.30".to_string(),
+            source_state: ClientSourceState::Bundled,
+            source_ref: "fixture".to_string(),
+            source_sha256: synthetic_sha256(3),
+            package_sha256: None,
+        },
+        driver_sha256: synthetic_sha256(4),
+        adapter_sha256: synthetic_sha256(5),
+        configuration_sha256: synthetic_sha256(6),
+        candidate_version: "perllsp supervision".to_string(),
+        candidate_build_revision: standalone_forty_hex(7),
+        candidate_artifact_sha256: synthetic_sha256(8),
+        fixture: WorkspaceFixtureIdentity {
+            id: format!("fixture_{tag}"),
+            digest: synthetic_sha256(9),
+            expectation_set_id: CANONICAL_EXPECTATION_SET_ID.to_string(),
+            expectation_set_digest: synthetic_sha256(10),
+        },
+        journey_selector: "supervision_lifecycle.v1".to_string(),
+        platform: PlatformIdentity {
+            os: "supervision".to_string(),
+            os_version: "fixture".to_string(),
+            arch: "fixture".to_string(),
+        },
+        registration_state: RegistrationState::ManualClientRegistration,
+        timeout_ms,
+    };
+    let plan = EmacsHostRunPlan {
+        identity,
+        paths: EmacsHostPaths {
+            emacs_executable,
+            client_source,
+            client_package: None,
+            driver,
+            adapter,
+            configuration,
+            candidate_executable,
+            fixture_root,
+            artifact_root: layout.artifact_directory.clone(),
+        },
+    };
+    Ok((plan, layout))
+}
+
+/// Build the fake-host command with the same environment surface the real
+/// command builder applies, so the fixture consumes one env contract.
+pub fn supervision_command(
+    host_executable: &Path,
+    entry_test: &str,
+    plan: &EmacsHostRunPlan,
+    layout: &HermeticLayout,
+    mode: &str,
+) -> Result<Command> {
+    let mut command = Command::new(host_executable);
+    // --nocapture: the fixture's own stdout/stderr are the supervised
+    // evidence streams, so the child harness must not swallow them.
+    command.arg("--exact").arg(entry_test).arg("--nocapture");
+    for (key, value) in layout.environment(plan)? {
+        command.env(key, value);
+    }
+    command.env(FAKE_HOST_MODE_ENV, mode);
+    command.env(FAKE_HOST_ENTRY_ENV, entry_test);
+    Ok(command)
+}
+
+// -- fake-host child implementation -----------------------------------------
+
+fn child_required_env(name: &str) -> Result<PathBuf> {
+    std::env::var_os(name)
+        .map(PathBuf::from)
+        .with_context(|| format!("supervision child missing {name}"))
+}
+
+fn child_emit(
+    event_file: &Path,
+    sequence: &mut u64,
+    event: &str,
+    details: &[(&str, &str)],
+) -> Result<()> {
+    *sequence += 1;
+    let mut detail_map = BTreeMap::new();
+    for (key, value) in details {
+        detail_map.insert((*key).to_string(), (*value).to_string());
+    }
+    let payload = serde_json::json!({
+        "schema_version": DRIVER_SCHEMA_VERSION,
+        "sequence": sequence,
+        "event": event,
+        "details": detail_map,
+    });
+    use std::io::Write as _;
+    let mut file = fs::OpenOptions::new().create(true).append(true).open(event_file)?;
+    writeln!(file, "{payload}")?;
+    Ok(())
+}
+
+fn child_emit_lifecycle(
+    event_file: &Path,
+    sequence: &mut u64,
+    stop_after_barrier: Option<&str>,
+) -> Result<()> {
+    let ladder: [(&str, Vec<(&str, &str)>); 11] = [
+        ("host_started", vec![("subject", "emacs"), ("client_kind", "bundled_eglot")]),
+        ("client_loaded", vec![]),
+        ("registration_selected", vec![]),
+        ("initialize_observed", vec![]),
+        ("workspace_ready", vec![]),
+        ("buffer_opened", vec![]),
+        ("host_action_started", vec![("action_id", "rename_module")]),
+        ("host_action_completed", vec![("action_id", "rename_module")]),
+        ("edit_applied", vec![]),
+        ("shutdown_started", vec![]),
+        ("shutdown_completed", vec![]),
+    ];
+    for (name, details) in ladder {
+        child_emit(event_file, sequence, name, &details)?;
+        if stop_after_barrier == Some(name) {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+/// Entry point the contract test invokes when re-entered by the fake host.
+/// It never returns normally: it exits with the fixture's status code so the
+/// supervised process boundary observes honest exit semantics.
+pub fn run_fake_host_entry(mode: &str) -> ! {
+    eprintln!("fixture-enter mode={mode} pid={}", std::process::id());
+    match run_fake_host_mode(mode) {
+        Ok(code) => {
+            eprintln!("fixture-exit mode={mode} code={code}");
+            std::process::exit(code)
+        }
+        Err(error) => {
+            eprintln!("supervision fixture failed: {error:#}");
+            std::process::exit(9);
+        }
+    }
+}
+
+fn run_fake_host_mode(mode: &str) -> Result<i32> {
+    let event_file = child_required_env("PERL_LSP_EMACS_EVENT_FILE")?;
+    eprintln!(
+        "fixture mode={mode} event_file={} cand={}",
+        event_file.display(),
+        std::env::var("PERL_LSP_EMACS_CANDIDATE").unwrap_or_default(),
+    );
+    let mut sequence = 0_u64;
+    match mode {
+        "clean" => {
+            for (name_env, content) in [
+                ("PERL_LSP_EMACS_CLIENT_LOG", "client log supervision capture distinct"),
+                ("PERL_LSP_EMACS_SERVER_STDERR", "server stderr supervision capture distinct"),
+                ("PERL_LSP_EMACS_CAPABILITY_SNAPSHOT", "{\"capabilities\":{}}"),
+            ] {
+                fs::write(child_required_env(name_env)?, content)
+                    .with_context(|| format!("writing distinct capture for {name_env}"))?;
+            }
+            println!("clean supervision stdout");
+            child_emit_lifecycle(&event_file, &mut sequence, None)?;
+            Ok(0)
+        }
+        "chatty_paths" => {
+            let home = std::env::var_os("HOME")
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            println!("{home}");
+            println!("/home/observer/.netrc");
+            println!("C:\\Users\\observer\\secret-token.txt");
+            println!("\\Users\\observer\\secret-token.txt");
+            child_emit_lifecycle(&event_file, &mut sequence, None)?;
+            Ok(0)
+        }
+        "oversize_output" => {
+            use std::io::Write as _;
+            let stdout = std::io::stdout();
+            let mut lock = stdout.lock();
+            let filler = [b'x'; 4096];
+            let total = MAX_CAPTURE_BYTES + 4096;
+            let mut written = 0_usize;
+            while written < total {
+                let chunk = usize::min(filler.len(), total - written);
+                lock.write_all(&filler[..chunk])
+                    .map(|_| written += chunk)
+                    .map_err(anyhow::Error::from)?;
+            }
+            writeln!(lock, "/home/observer/.netrc leaked past bound")?;
+            lock.flush()?;
+            child_emit_lifecycle(&event_file, &mut sequence, None)?;
+            Ok(0)
+        }
+        "garbage_events" => {
+            use std::io::Write as _;
+            let mut file =
+                fs::OpenOptions::new().create(true).append(true).open(&event_file)?;
+            write!(file, "{{\"schema_version\":\"{DRIVER_SCHEMA_VERSION}\"")?;
+            drop(file);
+            child_emit(&event_file, &mut sequence, "host_started", &[("subject", "emacs")])?;
+            Ok(0)
+        }
+        "hang_after_workspace_ready" => {
+            child_emit_lifecycle(&event_file, &mut sequence, Some("workspace_ready"))?;
+            // The parent-owned deadline kills this fixture; the cap only
+            // bounds residue in a mis-supervised environment.
+            for _ in 0..6000 {
+                thread::sleep(Duration::from_millis(100));
+            }
+            Ok(7)
+        }
+        "driver_failed_exit3" => {
+            child_emit_lifecycle(&event_file, &mut sequence, Some("buffer_opened"))?;
+            child_emit(
+                &event_file,
+                &mut sequence,
+                "driver_failed",
+                &[("reason", "candidate_refused")],
+            )?;
+            Ok(3)
+        }
+        "leak_descendant_clean_exit" => {
+            let candidate = child_required_env("PERL_LSP_EMACS_CANDIDATE")?;
+            let self_exe =
+                std::env::current_exe().context("locating supervision fixture exe")?;
+            eprintln!("fixture: staging descendant image");
+            fs::copy(&self_exe, &candidate).with_context(|| {
+                format!("staging descendant image at {}", candidate.display())
+            })?;
+            let ready_marker = event_file
+                .parent()
+                .context("event file must have a parent directory")?
+                .join(format!("descendant-ready-{}", std::process::id()));
+            let entry_test = std::env::var(FAKE_HOST_ENTRY_ENV)
+                .context("supervision child missing entry test name")?;
+            eprintln!("fixture: spawning descendant");
+            // The descendant is deliberately detached (null stdio, never
+            // waited): the whole point of this scenario is a host that exits
+            // zero immediately while leaking a live candidate process for
+            // the deterministic cleanup comparison to observe.
+            let descendant = Command::new(&candidate)
+                .args(["--exact", &entry_test])
+                .env(FAKE_HOST_MODE_ENV, "descendant_sleep")
+                .env(FAKE_HOST_DESCENDANT_READY_ENV, &ready_marker)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .context("spawning leak-scenario descendant")?;
+            let descendant_pid = descendant.id();
+            drop(descendant);
+            let mut became_ready = ready_marker.is_file();
+            for _ in 0..300 {
+                if became_ready {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+                became_ready = ready_marker.is_file();
+            }
+            eprintln!("fixture: descendant {descendant_pid} ready={became_ready}");
+            if !became_ready {
+                bail!("leak-scenario descendant {descendant_pid} never signaled readiness");
+            }
+            child_emit_lifecycle(&event_file, &mut sequence, None)?;
+            Ok(0)
+        }
+        "descendant_sleep" => {
+            let ready = child_required_env(FAKE_HOST_DESCENDANT_READY_ENV)?;
+            fs::write(
+                &ready,
+                format!("ready pid={}", std::process::id()).as_bytes(),
+            )
+            .with_context(|| format!("writing {}", ready.display()))?;
+            for _ in 0..(DESCENDANT_LIFETIME_CAP_MS / 50) {
+                thread::sleep(Duration::from_millis(50));
+                // Heartbeat: refresh the marker so a diagnostic observer can
+                // distinguish a living sleeper from one that died early.
+                let _ = fs::write(&ready, format!("alive pid={}", std::process::id()));
+            }
+            Ok(0)
+        }
+        other => bail!("unknown supervision fixture mode: {other}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Supervised receipt construction (#8734)
+//
+// Same production-receipt dialect as the plan-driven builder below, fed from
+// a supervised observation instead of a validated exact-input run plan. It
+// never manufactures observed cells: capabilities and diagnostics stay
+// not_proven and the journey stays empty unless a real adapter supplies them,
+// so only the production validator can decide what this evidence may claim.
+// ---------------------------------------------------------------------------
+
+pub struct SupervisionReceiptInputs {
+    pub stage: EvidenceStage,
+    pub repository: String,
+    pub candidate_sha: String,
+    pub platform: PlatformIdentity,
+    pub client_id: String,
+    pub emacs_version: String,
+    pub source_state: ClientSourceState,
+    pub source_ref: String,
+    pub emacs_build_sha256: String,
+    pub configuration_sha256: String,
+    pub driver_sha256: String,
+    pub candidate_version: String,
+    pub candidate_build_revision: String,
+    pub candidate_artifact_sha256: String,
+    pub fixture: WorkspaceFixtureIdentity,
+    pub journey_selector: String,
+    pub result: ObservationResult,
+    pub failure_class: Option<FailureClass>,
+    pub limitations: Vec<String>,
+    pub claim_boundary: String,
+}
+
+pub fn build_receipt_supervised(
+    observation: &ProcessObservation,
+    inputs: SupervisionReceiptInputs,
+) -> EditorClientCompatReceipt {
+    EditorClientCompatReceipt {
+        schema_version: RECEIPT_SCHEMA_VERSION.to_string(),
+        observed_at: Utc::now().to_rfc3339(),
+        stage: inputs.stage,
+        repository: inputs.repository,
+        candidate_sha: inputs.candidate_sha,
+        platform: inputs.platform,
+        host: HostIdentity {
+            client_id: inputs.client_id,
+            product: "emacs".to_string(),
+            version: inputs.emacs_version,
+            source_state: inputs.source_state,
+            // The fixture has no upstream client tree to digest; the
+            // supervision prefix keeps that provenance visible instead of
+            // borrowing an identity the run did not verify.
+            source_ref: format!("supervision/{}", inputs.source_ref),
+            executable_sha256: inputs.emacs_build_sha256,
+        },
+        integration: IntegrationIdentity {
+            mode: IntegrationMode::GenericLsp,
+            registration_state: RegistrationState::ManualClientRegistration,
+            configuration_sha256: inputs.configuration_sha256,
+            driver_sha256: inputs.driver_sha256,
+        },
+        server: ServerIdentity {
+            executable: "perllsp".to_string(),
+            version: inputs.candidate_version,
+            build_revision: inputs.candidate_build_revision,
+            artifact_sha256: inputs.candidate_artifact_sha256,
+            protocol_version: "3.17".to_string(),
+            launch_command: vec!["perllsp".to_string(), "--stdio".to_string()],
+        },
+        workspace_fixture: inputs.fixture,
+        capabilities: CapabilityIdentity {
+            initialize_snapshot_sha256: synthetic_sha256(0),
+            position_encodings_offered: Vec::new(),
+            position_encoding_basis: xtask::editor_client_compat::PositionEncodingBasis::NotProven,
+            position_encoding_selected: None,
+        },
+        diagnostics: default_not_proven_diagnostics(),
+        // Receipt law requires at least one journey cell. The fixture
+        // authors no catalog content: it derives a single fail-closed cell
+        // from the run's own selector, observes no capability, and reports
+        // not_proven so nothing semantic can be credited by construction.
+        journey: vec![JourneyCell {
+            id: inputs.journey_selector.clone(),
+            capability_basis: xtask::editor_client_compat::CapabilityBasis::NotApplicable,
+            observed: observation.passed_process_boundary(),
+            result: ObservationResult::NotProven,
+            evidence: Vec::new(),
+            limitation: Some(
+                "supervision fixture: process-boundary observation only; host lifecycle \
+                 and client behavior stay unobserved"
+                    .to_string(),
+            ),
+        }],
+        protocol_evidence: None,
+        process_cleanup: observation.cleanup,
+        result: inputs.result,
+        failure_class: inputs.failure_class,
+        limitations: inputs.limitations,
+        artifacts: observation.artifacts.clone(),
+        // The journey selector rides on the claim boundary here because the
+        // fixture emits no journey evidence of its own; real adapters attach
+        // journey cells through their own builders.
+        claim_boundary: format!("{} | {}", inputs.journey_selector, inputs.claim_boundary),
+    }
+}
+
