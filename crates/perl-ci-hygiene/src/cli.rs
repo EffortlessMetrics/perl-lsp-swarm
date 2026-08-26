@@ -61,7 +61,7 @@ pub(crate) enum CliCommand {
         #[arg(trailing_var_arg = true)]
         crates: Vec<String>,
     },
-    /// Run perl-parser tests with feature-catalog override fixtures.
+    /// Run perl-lsp-rs feature gating tests against override catalog fixtures.
     TestWithOverride,
     /// Emit a single initialize request against perl-lsp stdin.
     SimpleLspTest,

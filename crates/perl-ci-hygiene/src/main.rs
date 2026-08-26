@@ -1279,12 +1279,24 @@ fn cmd_compare_benchmarks(repo_root: &Path, args: &[String]) -> Result<i32> {
 }
 
 fn cmd_test_with_override(repo_root: &Path) -> Result<i32> {
+    // The override fixtures are consumed by perl-lsp-rs-core's and perl-dap's
+    // build scripts, which resolve the path against their own manifest
+    // directories, so it must be absolute to work for both consumers.
+    // Both scenarios run the gating target (#12722): it asserts disabled
+    // features stay hidden while supported ones advertise, which is exactly
+    // what both fixtures exist to exercise. lsp_features_snapshot_test pins
+    // the default catalog's advertised set and compliance percent, so it only
+    // holds without an override; it stays in perl-lsp-rs's normal suite.
+    let minimal_override = repo_root.join("crates/perl-parser/tests/data/features_minimal.toml");
+    let disabled_override =
+        repo_root.join("crates/perl-parser/tests/data/features_disabled_test.toml");
+
     println!("Testing with minimal features catalog...");
     command_status_strict(
         repo_root,
         "cargo",
-        &["test", "-p", "perl-parser", "--test", "lsp_feature_gating_test", "--", "--nocapture"],
-        &[("FEATURES_TOML_OVERRIDE", "crates/perl-parser/tests/data/features_minimal.toml")],
+        &["test", "-p", "perl-lsp-rs", "--test", "lsp_feature_gating_test", "--", "--nocapture"],
+        &[("FEATURES_TOML_OVERRIDE", &minimal_override.to_string_lossy())],
     )?;
 
     println!();
@@ -1292,8 +1304,8 @@ fn cmd_test_with_override(repo_root: &Path) -> Result<i32> {
     command_status_strict(
         repo_root,
         "cargo",
-        &["test", "-p", "perl-parser", "--test", "lsp_features_snapshot_test", "--", "--nocapture"],
-        &[("FEATURES_TOML_OVERRIDE", "crates/perl-parser/tests/data/features_disabled_test.toml")],
+        &["test", "-p", "perl-lsp-rs", "--test", "lsp_feature_gating_test", "--", "--nocapture"],
+        &[("FEATURES_TOML_OVERRIDE", &disabled_override.to_string_lossy())],
     )?;
 
     println!("✅ Override testing complete!");
