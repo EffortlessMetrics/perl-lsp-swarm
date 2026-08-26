@@ -6,8 +6,8 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11949 |
-| Rust-family files | 3630 |
+| Total tracked files | 11948 |
+| Rust-family files | 3629 |
 | Non-Rust files | 8319 |
 | Allowlisted | 6056 |
 | Unclassified | 2263 |
@@ -16,12 +16,12 @@
 
 | Category | Count |
 |---|---|
-| config | 431 |
+| config | 432 |
 | documentation | 2719 |
 | generated | 2 |
 | production | 325 |
 | test | 1972 |
-| tooling | 607 |
+| tooling | 606 |
 | unclassified | 2263 |
 
 ## Unclassified files
@@ -2577,6 +2577,7 @@
 | `.ci/editor-clients/emacs-subjects.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-activation-root.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-configuration.v1.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/editor-clients/vim-vim-lsp-lifecycle-root.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-public-surface.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-recovery-root.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-subject.v1.json` | config | `non-rust-ci-config` | release/ci |
@@ -6525,7 +6526,6 @@
 | `scripts/test/vim-clients/vim-lsp-adapter.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-diagnostics-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
-| `scripts/test/vim-host-freshness-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_iterative_parser.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |

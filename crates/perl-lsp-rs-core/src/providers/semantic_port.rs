@@ -20,11 +20,12 @@ mod model;
 mod result;
 
 pub use model::{
-    NoopProviderQueryControl, ProviderCancellationState, ProviderCompletenessAuthorityReceipt,
-    ProviderCompletenessGrant, ProviderFactGenerationScope, ProviderIdentity,
-    ProviderQueryCapability, ProviderQueryContext, ProviderQueryControl, ProviderQueryDeadline,
-    ProviderQueryFact, ProviderQueryFactRole, ProviderQueryKind, ProviderQueryRequest,
-    ProviderQuerySubject, ProviderReadinessRequirement, ProviderReadinessState,
+    EnvelopeStructureViolation, NoopProviderQueryControl, ProviderCancellationState,
+    ProviderCompletenessAuthorityReceipt, ProviderCompletenessGrant, ProviderFactGenerationScope,
+    ProviderIdentity, ProviderQueryCapability, ProviderQueryContext, ProviderQueryControl,
+    ProviderQueryDeadline, ProviderQueryFact, ProviderQueryFactRole, ProviderQueryKind,
+    ProviderQueryRequest, ProviderQuerySubject, ProviderReadinessRequirement,
+    ProviderReadinessState,
 };
 pub(crate) use model::{semantic_provenance_is_exact, validate_envelope_structure};
 pub use result::*;
@@ -43,7 +44,12 @@ pub enum ProviderQueryContractError {
     /// A source-level symbol alias is empty.
     MalformedSymbolKey,
     /// A canonical semantic envelope is structurally malformed.
-    MalformedFact(FactId),
+    MalformedFact {
+        /// Identity of the malformed fact.
+        fact_id: FactId,
+        /// Structural invariant that failed.
+        violation: EnvelopeStructureViolation,
+    },
     /// More than one fact uses the same canonical fact identity.
     DuplicateFactId(FactId),
     /// Fact does not match or relate to the query subject.
@@ -75,8 +81,12 @@ impl fmt::Display for ProviderQueryContractError {
             Self::MalformedSymbolKey => {
                 formatter.write_str("provider query symbol key is malformed")
             }
-            Self::MalformedFact(fact_id) => {
-                write!(formatter, "provider fact {} is structurally malformed", fact_id.0)
+            Self::MalformedFact { fact_id, violation } => {
+                write!(
+                    formatter,
+                    "provider fact {} is structurally malformed: {violation}",
+                    fact_id.0
+                )
             }
             Self::DuplicateFactId(fact_id) => {
                 write!(formatter, "duplicate provider fact identity {}", fact_id.0)
