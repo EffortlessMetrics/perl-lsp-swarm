@@ -145,13 +145,6 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             sample_category: Some(ErrorCategory::Bug),
             sample_disposition: Some(disposition_for(ErrorCategory::Bug)),
         },
-        ErrorInventoryEntry {
-            type_name: "DapSocketBindError",
-            crate_name: "perl-dap",
-            has_error_class: true,
-            sample_category: Some(ErrorCategory::Infra),
-            sample_disposition: Some(disposition_for(ErrorCategory::Infra)),
-        },
     ]
 }
 

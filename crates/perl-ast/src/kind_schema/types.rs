@@ -1,7 +1,9 @@
-//! Structural row vocabulary for the shadow `NodeKind` schema.
+//! Structural row vocabulary for the `NodeKind` schema.
 //!
-//! These types describe current primary-AST structure. They are not production
-//! traversal, `FieldId`, rendering, or status authority.
+//! These types describe primary-AST structure. [`FieldCardinality`] and
+//! [`ChildFieldSpec`] are production facts for FieldId membership and
+//! field-aware traversal. `source_boundary` is recorded only; it is not
+//! production classification authority.
 
 use crate::FieldId;
 
@@ -88,6 +90,10 @@ pub struct KindStructuralRow<'a> {
     /// Whether this variant is a recovery/synthetic kind.
     pub recovery: bool,
     /// Whether this variant is a specialized source-boundary kind.
+    ///
+    /// Recorded and serialized only. This flag is not production authority:
+    /// #8415 did not reconcile it against a production inventory, and #8424
+    /// does not promote it.
     pub source_boundary: bool,
     /// Static grammar name or runtime-derived inputs.
     pub grammar: GrammarNameSpec<'a>,

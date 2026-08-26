@@ -44,6 +44,10 @@ local util = require "plugins.lsp.util"
 local listbox = require "plugins.lsp.listbox"
 local diagnostics = require "plugins.lsp.diagnostics"
 local Server = require "plugins.lsp.server"
+-- Local patch (#11172): command availability is projected through the
+-- capability manifest - a server capability alone never enables a command
+-- whose client consumer is absent.
+local capability_manifest = require "plugins.lsp.capability_manifest"
 local Timer = require "plugins.lsp.timer"
 local SymbolResults = require "plugins.lsp.symbolresults"
 local MessageBox = require "libraries.widget.messagebox"
@@ -2610,6 +2614,16 @@ function lsp.request_call_hierarchy(doc, line, col)
   for _, name in pairs(lsp.get_active_servers(doc.filename, true)) do
     local server = lsp.servers_running[name]
     if server.capabilities.callHierarchyProvider then
+      -- Local patch (#11172): client-affordance projection gate. The server
+      -- advertising callHierarchyProvider is not enough: until #10719 lands
+      -- a consumer, the result would be discarded, so the request is never
+      -- sent and one explicit message explains why.
+      local available, _ = capability_manifest.command_availability(
+        "lsp:view-call-hierarchy", server.capabilities)
+      if not available then
+        core.log(capability_manifest.commands["lsp:view-call-hierarchy"].unsupported_message)
+        return
+      end
       -- Local patch (#11108): bind this request to its exact subject.
       local subject = lsp.make_request_subject(
         'textDocument/prepareCallHierarchy', doc, server, line, col)
@@ -2659,6 +2673,16 @@ function lsp.request_symbol_rename(doc, line, col, new_name)
     servers_found = true
     local server = lsp.servers_running[name]
     if server.capabilities.renameProvider then
+      -- Local patch (#11172): client-affordance projection gate. Until #8986
+      -- lands real WorkspaceEdit application, a rename response could only
+      -- be logged as a false success, so the request is never sent and one
+      -- explicit message explains why.
+      local available, _ = capability_manifest.command_availability(
+        "lsp:rename-symbol", server.capabilities)
+      if not available then
+        core.log(capability_manifest.commands["lsp:rename-symbol"].unsupported_message)
+        return
+      end
       local request_params = get_buffer_position_params(doc, line, col)
       -- Local patch (#11165): no wire identity means no request.
       if not request_params then

@@ -13,7 +13,16 @@ on:
 
 concurrency:
   group: post-merge-status-${{ github.ref }}
-  cancel-in-progress: true
+  # #10199: this run is the only automated healer for the generated status
+  # documents and docs/policy/NON_RUST_INVENTORY.md (#11731). With
+  # cancel-in-progress the next merge superseded each in-flight run before its
+  # ~10-minute generate cycle finished, so under merge cadence the healing PR
+  # never opened and main's committed inventory drifted permanently. Every
+  # later branch then failed the strict inventory ratchet in
+  # xtask/tests/file_policy.rs, reding PR Smoke on healthy PRs. Queued runs are
+  # safe: each regenerates from its own pinned event SHA and the writer updates
+  # the same automation branch, so the newest completed run converges.
+  cancel-in-progress: false
 
 permissions:
   contents: read

@@ -40,6 +40,19 @@
 "   VimLspHostServerCapabilities()  lsp#get_server_capabilities
 "   VimLspHostOpenFixture(path)     open a fixture file natively
 "   VimLspHostApplyEditAndFlush()   buffer edit + real client didChange flush
+"   VimLspHostSetLineAndFlush(l, t) one-line buffer edit + real didChange
+"                                   flush (#10946: the governed fix edit)
+"   VimLspHostBufferDiagnosticsCounts()
+"                                   the client's own public diagnostics state
+"                                   (lsp#get_buffer_diagnostics_counts())
+"   VimLspHostDiagnosticsUpdatedCount()
+"                                   how many User lsp_diagnostics_updated
+"                                   events the client emitted
+"   VimLspHostWaitForWireMarkerCount(m, n, ms)
+"                                   bounded barrier until the client log's
+"                                   wire marker appears at least n times
+"   VimLspHostWireMarkerCount(m)    current count of the wire marker in the
+"                                   client log (generation observation)
 "   VimLspHostCloseReopen()         close and reopen the current buffer
 "   VimLspHostStopServer()          stop the server through vim-lsp
 "   VimLspHostStopServerAndWait()   stop + bounded wait for client exit
@@ -249,6 +262,66 @@ function! VimLspHostApplyEditAndFlush() abort
   call append(l:line, '# host adapter edit flush sentinel')
   doautocmd <nomodeline> TextChanged
   return v:true
+endfunction
+
+function! VimLspHostSetLineAndFlush(line_number, text) abort
+  " Replace one buffer line through the real buffer/change path and flush the
+  " real client event path (TextChanged -> didChange). The caller owns which
+  " line and text; this adapter owns only the mechanism (#10946 fix edit).
+  call setline(a:line_number, a:text)
+  doautocmd <nomodeline> TextChanged
+  return v:true
+endfunction
+
+function! VimLspHostBufferDiagnosticsCounts() abort
+  " The client's own public diagnostics state for the current buffer
+  " (#11369-classified stable surface): {'error': N, 'warning': N, ...}.
+  return lsp#get_buffer_diagnostics_counts()
+endfunction
+
+function! VimLspHostDiagnosticsUpdatedCount() abort
+  " How many times the client emitted its public diagnostics update event.
+  return g:perllsp_vim_host_diagnostics_updated
+endfunction
+
+function! VimLspHostWaitForWireMarkerCount(marker, min_count, timeout_ms) abort
+  " Bounded barrier until the client's own protocol log carries the exact
+  " wire marker at least min_count times: the deterministic currentness
+  " barrier surface for post-edit generations (#10946). The threshold rides
+  " in script scope because the waited expression is eval'd outside a:
+  " scope.
+  let s:wire_needle = '"method":"' . a:marker . '"'
+  let s:wire_needle_min = a:min_count
+  return VimLspHostWaitFor(
+        \ 'filereadable(s:client_log) && s:WireMarkerCount() >= s:wire_needle_min',
+        \ a:timeout_ms)
+endfunction
+
+function! VimLspHostWireMarkerCount(marker) abort
+  " Current number of times the client's own protocol log carries the exact
+  " wire marker: the pre-edit generation observation for currentness
+  " barriers (#10946).
+  let s:wire_needle = '"method":"' . a:marker . '"'
+  return s:WireMarkerCount()
+endfunction
+
+function! s:WireMarkerCount() abort
+  try
+    let l:text = join(readfile(s:client_log, 'b'), "\n")
+    let l:count = 0
+    let l:index = 0
+    while v:true
+      let l:hit = stridx(l:text, s:wire_needle, l:index)
+      if l:hit < 0
+        break
+      endif
+      let l:count += 1
+      let l:index = l:hit + len(s:wire_needle)
+    endwhile
+    return l:count
+  catch
+    return 0
+  endtry
 endfunction
 
 function! VimLspHostCloseReopen() abort
