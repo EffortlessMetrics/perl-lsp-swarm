@@ -13,7 +13,14 @@ use crate::TokenKind;
 ///
 /// ```compile_fail
 /// use perl_token::TokenSpan;
-/// let _ = TokenSpan { start: 2, end: 1 };
+/// let mut span = TokenSpan::try_new(0, 1).unwrap();
+/// span.start = 2;
+/// ```
+///
+/// ```compile_fail
+/// use perl_token::TokenSpan;
+/// let mut span = TokenSpan::try_new(0, 1).unwrap();
+/// span.end = 0;
 /// ```
 ///
 /// ```compile_fail

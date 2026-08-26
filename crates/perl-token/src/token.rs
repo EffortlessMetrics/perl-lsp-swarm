@@ -19,12 +19,14 @@ use crate::{TokenKind, TokenSpan, TokenSpanError};
 ///
 /// ```compile_fail
 /// use perl_token::{TokenKind, TokenRef};
-/// let _ = TokenRef {
-///     kind: TokenKind::Identifier,
-///     text: "x",
-///     start: 1,
-///     end: 0,
-/// };
+/// let mut tok = TokenRef::new_checked(TokenKind::Identifier, "x", 0, 1).unwrap();
+/// tok.start = 4;
+/// ```
+///
+/// ```compile_fail
+/// use perl_token::{TokenKind, TokenRef};
+/// let mut tok = TokenRef::new_checked(TokenKind::Identifier, "x", 0, 1).unwrap();
+/// tok.end = 0;
 /// ```
 ///
 /// ```compile_fail
@@ -171,6 +173,12 @@ impl<'src> TokenRef<'src> {
 /// use perl_token::{Token, TokenKind};
 /// let mut tok = Token::new_checked(TokenKind::Identifier, "x", 0, 1).unwrap();
 /// tok.start = 4;
+/// ```
+///
+/// ```compile_fail
+/// use perl_token::{Token, TokenKind};
+/// let mut tok = Token::new_checked(TokenKind::Identifier, "x", 0, 1).unwrap();
+/// tok.end = 0;
 /// ```
 ///
 /// ```compile_fail
