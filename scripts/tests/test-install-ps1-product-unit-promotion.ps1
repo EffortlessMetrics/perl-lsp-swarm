@@ -13,6 +13,7 @@ $Pass = 0
 $Fail = 0
 $LastStatus = 0
 $LastOutput = ""
+$LastResult = $null
 $InstallDir = $null
 $ExtractDir = $null
 
@@ -69,8 +70,10 @@ function Invoke-Promote {
     param([string]$Mode = "release")
     $script:LastStatus = 0
     $script:LastOutput = ""
+    $script:LastResult = $null
     try {
         $result = Install-StandaloneProductUnit -ExtractDir $script:ExtractDir -InstallDir $script:InstallDir -Mode $Mode
+        $script:LastResult = $result
         $script:LastOutput = [string]$result.Receipt
     } catch {
         $script:LastStatus = 1
@@ -90,11 +93,15 @@ function Assert-CompletePair {
     $dapPath = Join-Path $script:InstallDir "perl-dap.exe"
     $sitem = Get-Item -LiteralPath $serverPath
     $ditem = Get-Item -LiteralPath $dapPath
-    if (-not $sitem.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { return $false }
-    if (-not $ditem.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { return $false }
-    $st = $sitem.Target; if ($st -is [array]) { $st = $st[0] }
-    $dt = $ditem.Target; if ($dt -is [array]) { $dt = $dt[0] }
-    if ([IO.Path]::GetDirectoryName([string]$st) -ne [IO.Path]::GetDirectoryName([string]$dt)) { return $false }
+    $st = $null
+    $dt = $null
+    if ($sitem.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
+        $st = $sitem.Target; if ($st -is [array]) { $st = $st[0] }
+    }
+    if ($ditem.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
+        $dt = $ditem.Target; if ($dt -is [array]) { $dt = $dt[0] }
+    }
+    if ($st -and $dt -and ([IO.Path]::GetDirectoryName([string]$st) -ne [IO.Path]::GetDirectoryName([string]$dt))) { return $false }
     if ((Hash-BytesFile $serverPath) -ne $wantServer) { return $false }
     if ((Hash-BytesFile $dapPath) -ne $wantDap) { return $false }
     $current = Get-StandaloneCurrentObservation -InstallDir $script:InstallDir
@@ -118,14 +125,27 @@ try {
         Pass-Case "independent perllsp destination copy is gone"
     }
 
+    if (Select-String -Path $Installer -Pattern 'New-Item -ItemType SymbolicLink -Path $serverDest' -SimpleMatch -Quiet) {
+        Fail-Case "PATH selectors use atomic replace" "install.ps1 still creates PATH names with a non-atomic New-Item"
+    } else {
+        Pass-Case "PATH selectors use atomic replace"
+    }
+
+    if (-not (Select-String -Path $Installer -Pattern 'ItemType Junction' -SimpleMatch -Quiet)) {
+        Fail-Case "unelevated directory pointer fallback exists" "install.ps1 has no junction fallback for current"
+    } else {
+        Pass-Case "unelevated directory pointer fallback exists"
+    }
+
     Setup-Root
     Stage-Pair -Dest $ExtractDir -Server "server-a" -Dap "dap-a"
     Invoke-Promote
     $receiptOk = ($LastOutput -like "*product_unit_receipt*") -and ($LastOutput -like "*archive_pair_required*") -and ($LastOutput -notlike "*$InstallDir*")
-    if (($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-a" -Dap "dap-a") -and $receiptOk) {
+    $dapPathOk = ($null -ne $LastResult) -and ([string]$LastResult.DapDestPath -eq (Join-Path $InstallDir "perl-dap.exe"))
+    if (($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-a" -Dap "dap-a") -and $receiptOk -and $dapPathOk) {
         Pass-Case "first archive pair publishes one current complete unit"
     } else {
-        Fail-Case "first archive pair publishes one current complete unit" "status=$LastStatus output=$LastOutput"
+        Fail-Case "first archive pair publishes one current complete unit" "status=$LastStatus output=$LastOutput dapDest=$dapPathOk"
     }
 
     Setup-Root
@@ -241,6 +261,40 @@ try {
         Pass-Case "source upgrade does not keep the previous DAP as current"
     } else {
         Fail-Case "source upgrade does not keep the previous DAP as current" "status=$LastStatus current=$current output=$LastOutput"
+    }
+
+    Setup-Root
+    $env:PERL_LSP_INSTALL_POINTER = "unprivileged"
+    try {
+        Stage-Pair -Dest $ExtractDir -Server "server-a" -Dap "dap-a"
+        Invoke-Promote
+        $okUnpriv = ($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-a" -Dap "dap-a")
+        Stage-Pair -Dest $ExtractDir -Server "server-b" -Dap "dap-b"
+        Invoke-Promote
+        $okUnpriv = $okUnpriv -and ($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-b" -Dap "dap-b")
+        if ($okUnpriv) {
+            Pass-Case "unelevated junction/hardlink promotion keeps complete pairs"
+        } else {
+            Fail-Case "unelevated junction/hardlink promotion keeps complete pairs" "status=$LastStatus output=$LastOutput"
+        }
+    } finally {
+        Remove-Item Env:PERL_LSP_INSTALL_POINTER -ErrorAction SilentlyContinue
+    }
+
+    Setup-Root
+    $env:PERL_LSP_INSTALL_POINTER = "copy"
+    try {
+        Stage-Pair -Dest $ExtractDir -Server "server-a" -Dap "dap-a"
+        Invoke-Promote
+        Stage-Pair -Dest $ExtractDir -Server "server-b" -Dap "dap-b"
+        Invoke-Promote
+        if (($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-b" -Dap "dap-b")) {
+            Pass-Case "copy fallback still publishes one complete pair"
+        } else {
+            Fail-Case "copy fallback still publishes one complete pair" "status=$LastStatus output=$LastOutput"
+        }
+    } finally {
+        Remove-Item Env:PERL_LSP_INSTALL_POINTER -ErrorAction SilentlyContinue
     }
 } finally {
     Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue

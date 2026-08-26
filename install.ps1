@@ -584,28 +584,125 @@ function Get-StagedProductUnitDisposition {
     return "archive_pair_required"
 }
 
-function Invoke-AtomicSymlinkReplace {
-    param(
-        [Parameter(Mandatory = $true)][string]$LinkPath,
-        [Parameter(Mandatory = $true)][string]$RelativeTarget
-    )
+function Initialize-StandaloneNativeFile {
     if (-not ("PerlLspNative.File" -as [type])) {
         Add-Type -Namespace PerlLspNative -Name File -MemberDefinition @"
 [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
 public static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, uint dwFlags);
 "@
     }
-    $tmp = "$LinkPath.tmp.$PID.$([guid]::NewGuid().ToString("N"))"
-    if (Test-Path -LiteralPath $tmp) {
-        Remove-Item -LiteralPath $tmp -Force -Recurse -ErrorAction SilentlyContinue
+}
+
+function Get-StandalonePointerKindOrder {
+    param([Parameter(Mandatory = $true)][ValidateSet("Directory", "File")][string]$Surface)
+    $raw = [string]$env:PERL_LSP_INSTALL_POINTER
+    if ([string]::IsNullOrWhiteSpace($raw) -or $raw -eq "auto") {
+        if ($Surface -eq "Directory") {
+            return @("symlink", "junction")
+        }
+        return @("symlink", "hardlink", "copy")
     }
-    New-Item -ItemType SymbolicLink -Path $tmp -Target $RelativeTarget | Out-Null
-    $flags = [uint32]1 # MOVEFILE_REPLACE_EXISTING
-    if (-not [PerlLspNative.File]::MoveFileEx($tmp, $LinkPath, $flags)) {
+    if ($raw -eq "symlink") {
+        return @("symlink")
+    }
+    if ($raw -eq "unprivileged" -or $raw -eq "junction" -or $raw -eq "hardlink" -or $raw -eq "copy") {
+        if ($Surface -eq "Directory") {
+            return @("junction")
+        }
+        if ($raw -eq "copy") {
+            return @("copy")
+        }
+        if ($raw -eq "hardlink") {
+            return @("hardlink")
+        }
+        return @("hardlink", "copy")
+    }
+    throw "unknown PERL_LSP_INSTALL_POINTER=$raw"
+}
+
+function New-TemporaryStandalonePointer {
+    param(
+        [Parameter(Mandatory = $true)][string]$TmpPath,
+        [Parameter(Mandatory = $true)][string]$RelativeTarget,
+        [Parameter(Mandatory = $true)][string]$ResolvedTarget,
+        [Parameter(Mandatory = $true)][ValidateSet("symlink", "junction", "hardlink", "copy")][string]$Kind
+    )
+    if (Test-Path -LiteralPath $TmpPath) {
+        Remove-Item -LiteralPath $TmpPath -Force -Recurse -ErrorAction SilentlyContinue
+    }
+    switch ($Kind) {
+        "symlink" {
+            New-Item -ItemType SymbolicLink -Path $TmpPath -Target $RelativeTarget | Out-Null
+        }
+        "junction" {
+            New-Item -ItemType Junction -Path $TmpPath -Target $ResolvedTarget | Out-Null
+        }
+        "hardlink" {
+            New-Item -ItemType HardLink -Path $TmpPath -Target $ResolvedTarget | Out-Null
+        }
+        "copy" {
+            Copy-Item -LiteralPath $ResolvedTarget -Destination $TmpPath
+        }
+    }
+}
+
+function Invoke-StandaloneMoveFileReplace {
+    param(
+        [Parameter(Mandatory = $true)][string]$From,
+        [Parameter(Mandatory = $true)][string]$To
+    )
+    Initialize-StandaloneNativeFile
+    $replace = [uint32]1
+    $none = [uint32]0
+    if (-not (Test-Path -LiteralPath $To)) {
+        if ([PerlLspNative.File]::MoveFileEx($From, $To, $none)) {
+            return
+        }
         $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
-        throw "atomic current selection replace failed (win32=$code)"
+        throw "atomic pointer publish failed (win32=$code)"
     }
+    if ([PerlLspNative.File]::MoveFileEx($From, $To, $replace)) {
+        return
+    }
+    $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    $backup = "$To.bak.$PID.$([guid]::NewGuid().ToString("N"))"
+    if (-not [PerlLspNative.File]::MoveFileEx($To, $backup, $none)) {
+        throw "atomic pointer replace failed (win32=$code)"
+    }
+    if (-not [PerlLspNative.File]::MoveFileEx($From, $To, $none)) {
+        $code2 = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        [void][PerlLspNative.File]::MoveFileEx($backup, $To, $none)
+        throw "atomic pointer commit failed (win32=$code2)"
+    }
+    Remove-Item -LiteralPath $backup -Force -Recurse -ErrorAction SilentlyContinue
+}
+
+function Invoke-AtomicSymlinkReplace {
+    param(
+        [Parameter(Mandatory = $true)][string]$LinkPath,
+        [Parameter(Mandatory = $true)][string]$RelativeTarget
+    )
+    $parent = Split-Path -Parent $LinkPath
+    $resolved = [IO.Path]::GetFullPath((Join-Path $parent $RelativeTarget))
+    if (-not (Test-Path -LiteralPath $resolved)) {
+        throw "pointer target does not exist: $resolved"
+    }
+    $surface = if ((Get-Item -LiteralPath $resolved).PSIsContainer) { "Directory" } else { "File" }
+    $errors = @()
+    foreach ($kind in (Get-StandalonePointerKindOrder -Surface $surface)) {
+        $tmp = "$LinkPath.tmp.$PID.$([guid]::NewGuid().ToString("N"))"
+        try {
+            New-TemporaryStandalonePointer -TmpPath $tmp -RelativeTarget $RelativeTarget -ResolvedTarget $resolved -Kind $kind
+            Invoke-StandaloneMoveFileReplace -From $tmp -To $LinkPath
+            return
+        } catch {
+            $errors += "${kind}: $($_.Exception.Message)"
+            if (Test-Path -LiteralPath $tmp) {
+                Remove-Item -LiteralPath $tmp -Force -Recurse -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    throw "atomic current selection replace failed ($($errors -join '; '))"
 }
 
 function Publish-ImmutableStandaloneCandidate {
@@ -684,16 +781,10 @@ function Set-StandalonePathVisibleSelectors {
     Invoke-ProductUnitFaultIfRequested -Barrier "before_selectors" -AllowFault $AllowFault
     $serverDest = Join-Path $InstallDir "$Name.exe"
     $dapDest = Join-Path $InstallDir "$DapName.exe"
-    if (Test-Path -LiteralPath $serverDest) {
-        Remove-Item -LiteralPath $serverDest -Force
-    }
-    New-Item -ItemType SymbolicLink -Path $serverDest -Target $relServer | Out-Null
+    Invoke-AtomicSymlinkReplace -LinkPath $serverDest -RelativeTarget $relServer
     $currentDap = Join-Path $store "current\$DapName.exe"
     if (Test-Path -LiteralPath $currentDap) {
-        if (Test-Path -LiteralPath $dapDest) {
-            Remove-Item -LiteralPath $dapDest -Force
-        }
-        New-Item -ItemType SymbolicLink -Path $dapDest -Target $relDap | Out-Null
+        Invoke-AtomicSymlinkReplace -LinkPath $dapDest -RelativeTarget $relDap
     } elseif (Test-Path -LiteralPath $dapDest) {
         $item = Get-Item -LiteralPath $dapDest -ErrorAction SilentlyContinue
         if ($item -and $item.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
@@ -836,9 +927,14 @@ function Install-StandaloneProductUnit {
     if ($dapHash -ne "-") {
         Write-Success "Installed $DapName to $(Join-Path $InstallDir "$DapName.exe")"
     }
+    $dapDestPath = $null
+    if ($dapHash -ne "-") {
+        $dapDestPath = Join-Path $InstallDir "$DapName.exe"
+    }
     return [pscustomobject]@{
         DapInstalled = ($dapHash -ne "-")
         DestPath     = (Join-Path $InstallDir "$Name.exe")
+        DapDestPath  = $dapDestPath
         CandidateId  = $id
         Receipt      = $receipt
     }
@@ -1009,6 +1105,7 @@ try {
     $Promotion = Install-StandaloneProductUnit -ExtractDir $ExtractedDir -InstallDir $InstallDir -Mode release
     $DestPath = $Promotion.DestPath
     $DapInstalled = $Promotion.DapInstalled
+    $DapDestPath = $Promotion.DapDestPath
 
     # Verify installation
     try {

@@ -103,10 +103,22 @@ else
     pass "independent perllsp destination copy is gone"
 fi
 
-if grep -Fq 'cp "$_src_dap" "$INSTALL_DIR/$DAP_BIN_NAME"' "$INSTALLER"; then
-    fail_case "independent perl-dap destination copy is gone" "scripts/install.sh still copies perl-dap onto INSTALL_DIR independently"
+if grep -Fq 'ln -sfn' "$INSTALLER"; then
+    fail_case "Darwin fallback is rename not ln -sfn" "scripts/install.sh still uses ln -sfn"
 else
-    pass "independent perl-dap destination copy is gone"
+    pass "Darwin fallback is rename not ln -sfn"
+fi
+
+if grep -Fq 'rm -f "${INSTALL_DIR}/${BIN_NAME}"' "$INSTALLER"; then
+    fail_case "PATH selectors do not unlink before replace" "scripts/install.sh still removes PATH-visible perllsp before creating the selector"
+else
+    pass "PATH selectors do not unlink before replace"
+fi
+
+if ! grep -Fq 'perl -e' "$INSTALLER"; then
+    fail_case "POSIX rename fallback is present" "scripts/install.sh has no perl rename fallback"
+else
+    pass "POSIX rename fallback is present"
 fi
 
 setup_root
@@ -293,6 +305,35 @@ else
         fail_case "current selection is a single symlink to one candidate directory" \
             "$(ls -ld "${INSTALL_DIR}/.perl-lsp/current" 2>&1 || true)"
     fi
+fi
+
+setup_root
+mkdir -p "${CASE_ROOT}/a" "${CASE_ROOT}/b"
+ln -s a "${CASE_ROOT}/current"
+ln -s b "${CASE_ROOT}/current.tmp"
+if perl -e 'rename($ARGV[0], $ARGV[1]) or exit 1' -- "${CASE_ROOT}/current.tmp" "${CASE_ROOT}/current" \
+    && [ -L "${CASE_ROOT}/current" ] \
+    && [ "$(readlink "${CASE_ROOT}/current")" = "b" ] \
+    && [ ! -e "${CASE_ROOT}/current.tmp" ]; then
+    pass "perl rename replaces a directory symlink without an unlink gap"
+else
+    fail_case "perl rename replaces a directory symlink without an unlink gap" \
+        "$(ls -ld "${CASE_ROOT}/current" "${CASE_ROOT}/current.tmp" 2>&1 || true)"
+fi
+
+setup_root
+mkdir -p "${INSTALL_DIR}/.perl-lsp/candidates/cid"
+printf '%s\n' "from-current" > "${INSTALL_DIR}/.perl-lsp/candidates/cid/${BIN_NAME}"
+ln -s "candidates/cid" "${INSTALL_DIR}/.perl-lsp/current"
+printf '%s\n' "legacy-bytes" > "$(path_server)"
+INSTALL_DIR="$INSTALL_DIR" ensure_path_visible_selectors 0
+if [ -L "$(path_server)" ] \
+    && [ "$(readlink "$(path_server)")" = ".perl-lsp/current/${BIN_NAME}" ] \
+    && [ "$(hash_file "$(path_server)")" = "$(hash_file "${INSTALL_DIR}/.perl-lsp/candidates/cid/${BIN_NAME}")" ]; then
+    pass "legacy regular PATH file is replaced atomically by a current selector"
+else
+    fail_case "legacy regular PATH file is replaced atomically by a current selector" \
+        "$(ls -l "$(path_server)" 2>&1 || true)"
 fi
 
 if [ "$FAIL" -ne 0 ]; then

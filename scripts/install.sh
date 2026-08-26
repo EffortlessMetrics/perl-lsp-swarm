@@ -930,8 +930,15 @@ atomic_symlink_replace() {
     if mv -T "$_tmp" "$_link" 2>/dev/null; then
         return 0
     fi
-    ln -sfn "$_target" "$_link"
+    # BSD/macOS mv has no -T. rename(2) replaces a symlink without following it
+    # and without an unlink gap. Perl is present on the supported POSIX hosts.
+    if command -v perl >/dev/null 2>&1 \
+        && perl -e 'rename($ARGV[0], $ARGV[1]) or exit 1' -- "$_tmp" "$_link"
+    then
+        return 0
+    fi
     rm -f "$_tmp"
+    err "atomic current-pointer replace requires GNU mv -T or perl rename"
 }
 
 publish_immutable_candidate() {
@@ -998,12 +1005,10 @@ ensure_path_visible_selectors() {
     if [ "$_allow_fault" = "1" ]; then
         maybe_inject_install_fault "before_selectors"
     fi
-    rm -f "${INSTALL_DIR}/${BIN_NAME}"
-    ln -s "${_rel}/${BIN_NAME}" "${INSTALL_DIR}/${BIN_NAME}"
+    atomic_symlink_replace "${INSTALL_DIR}/${BIN_NAME}" "${_rel}/${BIN_NAME}"
     _current_dap="${_store}/current/${DAP_BIN_NAME}"
     if [ -f "$_current_dap" ]; then
-        rm -f "${INSTALL_DIR}/${DAP_BIN_NAME}"
-        ln -s "${_rel}/${DAP_BIN_NAME}" "${INSTALL_DIR}/${DAP_BIN_NAME}"
+        atomic_symlink_replace "${INSTALL_DIR}/${DAP_BIN_NAME}" "${_rel}/${DAP_BIN_NAME}"
     elif [ -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; then
         rm -f "${INSTALL_DIR}/${DAP_BIN_NAME}"
     fi

@@ -162,6 +162,9 @@ integrity against the co-hosted manifest; it does not independently prove
 publisher provenance, health-driven rollback, or PATH persistence. Clone-local
 `install.ps1` promotes `perllsp.exe` and `perl-dap.exe` as one product unit
 through an immutable candidate directory and an atomic current pointer.
+Unelevated Windows accounts without Developer Mode fall back to a directory
+junction for `current` and a hardlink or copy for PATH-visible names, still
+committed with `MoveFileEx`; they never require a privileged file symlink.
 The script installs into `%USERPROFILE%\.local\bin` by default.
 
 Two further limits apply to the script even after that sync:
