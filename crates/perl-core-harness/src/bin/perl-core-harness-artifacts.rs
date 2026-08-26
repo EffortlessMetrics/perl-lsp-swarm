@@ -10,7 +10,7 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let command = args.next().ok_or_else(|| {
         color_eyre::eyre::eyre!(
-            "usage: perl-core-harness-artifacts <capture-discovery|check-discovery|derive-runner-records|check-runner-records|observe-discovery> [options]"
+            "usage: perl-core-harness-artifacts <capture-discovery|check-discovery|derive-runner-records|check-runner-records|observe-discovery|observe-invocations> [options]"
         )
     })?;
     perl_core_harness::artifacts::run(&command, args)
