@@ -11,9 +11,9 @@ Need a project parser coverage metric?              perllsp --check-project [dir
 Need configured Perl's compile observation?         editor Perl: Check Syntax / DAP (`perl -c`)
 ```
 
-The hinge is the validator and the claim, not marketing language. Do not call
-`perllsp --check` a syntax check without naming the native parser. Do not
-describe `--check-project` as a strict all-clean check.
+The hinge is the validator and the claim, not marketing language.
+Do not call `perllsp --check` a syntax check without naming the native parser.
+Do not describe `--check-project` as a strict all-clean check.
 
 There is no `perllsp --check-project-strict` command on current main.
 There is no `perllsp --parsability-report` command on current main.
@@ -80,5 +80,5 @@ workspace-controlled execution as current `perllsp` commands.
 
 Stdout for `--check` is `path: ok` or `path: FAIL - …` plus optional context
 and advisory lines. Stdout for `--check-project` is the `Perl Project
-Parsability Report`. Neither command currently emits a versioned JSON or SARIF
+Parsability Report`. Neither command currently emits a versioned machine
 project-check document.

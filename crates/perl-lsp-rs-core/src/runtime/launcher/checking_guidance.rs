@@ -26,195 +26,208 @@ pub(crate) const CHECK_EXAMPLE_COMMENT: &str = "native listed-file parser check"
 /// Example-line comment for `--check-project`.
 pub(crate) const CHECK_PROJECT_EXAMPLE_COMMENT: &str = "native parsability report (80%)";
 
-/// Phrases current `--help` must carry so native vs report vs real-Perl stay distinct.
-pub(crate) const REQUIRED_HELP_PHRASES: &[&str] = &[
-    CHECK_DESCRIPTION,
-    "does not execute project Perl",
-    CHECK_PROJECT_DESCRIPTION,
-    "Advisories remain visible but non-blocking",
-    "Need fast native feedback on listed files?",
-    "Need a project parser coverage metric?",
-    "Need configured Perl's compile observation?",
-    "perl -c",
-];
+#[cfg(test)]
+mod guard {
+    use super::*;
 
-/// Unshipped flags that current copy must not recommend as live `perllsp` commands.
-pub(crate) const UNSHIPPED_PERLLSP_FLAGS: &[&str] =
-    &["--check-project-strict", "--parsability-report", "--check-perl"];
+    /// Phrases current `--help` must carry so native vs report vs real-Perl stay distinct.
+    pub(super) const REQUIRED_HELP_PHRASES: &[&str] = &[
+        CHECK_DESCRIPTION,
+        "does not execute project Perl",
+        CHECK_PROJECT_DESCRIPTION,
+        "Advisories remain visible but non-blocking",
+        "Need fast native feedback on listed files?",
+        "Need a project parser coverage metric?",
+        "Need configured Perl's compile observation?",
+        "perl -c",
+    ];
 
-/// Current user-facing markdown that must use the shipped checking vocabulary.
-///
-/// Historical articles, archived session reports, specs, and changelogs are
-/// classified elsewhere and are not rewritten by this guard.
-pub(crate) const CURRENT_DOC_PATHS: &[&str] = &[
-    "docs/reference/CHECKING.md",
-    "docs/reference/CONFIG.md",
-    "docs/reference/CONFIGURATION.md",
-    "docs/tutorials/GETTING_STARTED.md",
-    "docs/INDEX.md",
-    "docs/contributing/DEBUGGING_LSP_SERVER.md",
-    "docs/how-to/TROUBLESHOOTING.md",
-    "docs/EDITORS/CODEX_CLI_SETUP.md",
-    "docs/EDITORS/COC_NEOVIM_SETUP.md",
-    "docs/EDITORS/CURSOR_SETUP.md",
-    "docs/EDITORS/EMACS_SETUP.md",
-    "docs/EDITORS/HELIX_SETUP.md",
-    "docs/EDITORS/KIRO_SETUP.md",
-    "docs/EDITORS/NEOVIM_SETUP.md",
-    "docs/EDITORS/OPENCODE_SETUP.md",
-    "docs/EDITORS/SUBLIME_SETUP.md",
-    "docs/EDITORS/TRAE_SETUP.md",
-    "docs/EDITORS/VIM_SETUP.md",
-    "vscode-extension/README.md",
-];
+    /// Unshipped flags that current copy must not recommend as live `perllsp` commands.
+    pub(super) const UNSHIPPED_PERLLSP_FLAGS: &[&str] =
+        &["--check-project-strict", "--parsability-report", "--check-perl"];
 
-/// One terminology finding in a current surface.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Finding {
-    /// Stable rule id for tests and error text.
-    pub rule: &'static str,
-    /// 1-based line number.
-    pub line: usize,
-    /// Trimmed violating line.
-    pub excerpt: String,
-    /// Canonical replacement guidance.
-    pub replacement: &'static str,
-}
+    /// Current user-facing markdown that must use the shipped checking vocabulary.
+    ///
+    /// Historical articles, archived session reports, specs, and changelogs are
+    /// classified elsewhere and are not rewritten by this guard.
+    pub(super) const CURRENT_DOC_PATHS: &[&str] = &[
+        "docs/reference/CHECKING.md",
+        "docs/reference/CONFIG.md",
+        "docs/reference/CONFIGURATION.md",
+        "docs/tutorials/GETTING_STARTED.md",
+        "docs/INDEX.md",
+        "docs/contributing/DEBUGGING_LSP_SERVER.md",
+        "docs/how-to/TROUBLESHOOTING.md",
+        "docs/EDITORS/CODEX_CLI_SETUP.md",
+        "docs/EDITORS/COC_NEOVIM_SETUP.md",
+        "docs/EDITORS/CURSOR_SETUP.md",
+        "docs/EDITORS/EMACS_SETUP.md",
+        "docs/EDITORS/HELIX_SETUP.md",
+        "docs/EDITORS/KIRO_SETUP.md",
+        "docs/EDITORS/NEOVIM_SETUP.md",
+        "docs/EDITORS/OPENCODE_SETUP.md",
+        "docs/EDITORS/SUBLIME_SETUP.md",
+        "docs/EDITORS/TRAE_SETUP.md",
+        "docs/EDITORS/VIM_SETUP.md",
+        "vscode-extension/README.md",
+    ];
 
-/// Scan current-copy text. Historical/quoted/negated uses are not findings.
-pub(crate) fn scan_current_copy(text: &str) -> Vec<Finding> {
-    let mut findings = Vec::new();
-    for (idx, raw) in text.lines().enumerate() {
-        let line = raw.trim();
-        if line.is_empty() {
-            continue;
-        }
-        push_line_findings(line, idx + 1, &mut findings);
+    /// One terminology finding in a current surface.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(super) struct Finding {
+        /// Stable rule id for tests and error text.
+        pub rule: &'static str,
+        /// 1-based line number.
+        pub line: usize,
+        /// Trimmed violating line.
+        pub excerpt: String,
+        /// Canonical replacement guidance.
+        pub replacement: &'static str,
     }
-    findings
-}
 
-fn push_line_findings(line: &str, line_no: usize, findings: &mut Vec<Finding>) {
-    if has_listed_file_check_flag(line)
-        && contains_ci(line, "syntax check")
-        && !contains_ci(line, "native")
-        && !is_negated(line)
-    {
-        findings.push(Finding {
+    /// Scan current-copy text. Historical/quoted/negated uses are not findings.
+    pub(super) fn scan_current_copy(text: &str) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for (idx, raw) in text.lines().enumerate() {
+            let line = raw.trim();
+            if line.is_empty() {
+                continue;
+            }
+            push_line_findings(line, idx + 1, &mut findings);
+        }
+        findings
+    }
+
+    fn push_line_findings(line: &str, line_no: usize, findings: &mut Vec<Finding>) {
+        if has_listed_file_check_flag(line)
+            && contains_ci(line, "syntax check")
+            && !contains_ci(line, "native")
+            && !is_negated(line)
+        {
+            findings.push(Finding {
             rule: "bare_syntax_check",
             line: line_no,
             excerpt: line.to_string(),
             replacement: "Name the validator: `perllsp --check` is a native in-process parser check, not a generic syntax check and not `perl -c`.",
         });
-    }
+        }
 
-    if has_shipped_check_project(line)
-        && (contains_ci(line, "strict")
-            || contains_ci(line, "all-valid")
-            || contains_ci(line, "all files parse clean"))
-        && !is_negated(line)
-    {
-        findings.push(Finding {
+        if has_shipped_check_project(line)
+            && (contains_ci(line, "strict")
+                || contains_ci(line, "all-valid")
+                || contains_ci(line, "all files parse clean"))
+            && !is_negated(line)
+        {
+            findings.push(Finding {
             rule: "parsability_called_strict",
             line: line_no,
             excerpt: line.to_string(),
             replacement: "`perllsp --check-project` is a native parsability report at a fixed 80% threshold, not a strict all-clean check. Listed-file native checking is `--check`.",
         });
-    }
+        }
 
-    if contains_ci(line, "80%") && contains_ci(line, "strict syntax") && !is_negated(line) {
-        findings.push(Finding {
+        if contains_ci(line, "80%") && contains_ci(line, "strict syntax") && !is_negated(line) {
+            findings.push(Finding {
             rule: "threshold_called_strict_syntax",
             line: line_no,
             excerpt: line.to_string(),
             replacement: "The 80% figure is the `--check-project` parsability threshold, not strict syntax validation.",
         });
-    }
+        }
 
-    if has_native_check_command(line)
-        && (contains_ci(line, "perl -c")
-            || contains_ci(line, "runs perl")
-            || contains_ci(line, "execute project perl"))
-        && !is_negated(line)
-    {
-        findings.push(Finding {
+        if has_native_check_command(line)
+            && identifies_native_check_as_perl(line)
+            && !is_negated(line)
+        {
+            findings.push(Finding {
             rule: "native_said_to_run_perl",
             line: line_no,
             excerpt: line.to_string(),
             replacement: "Native `--check` / `--check-project` are in-process and do not execute project Perl. `perl -c` is the editor/DAP real-Perl path.",
         });
-    }
+        }
 
-    if has_native_check_command(line) && contains_ci(line, "sandbox") && !is_negated(line) {
-        findings.push(Finding {
+        if has_native_check_command(line) && contains_ci(line, "sandbox") && !is_negated(line) {
+            findings.push(Finding {
             rule: "checking_called_sandboxed",
             line: line_no,
             excerpt: line.to_string(),
             replacement: "Do not claim sandboxing. Native checks do not execute Perl; `perl -c` does execute compile-phase code and is not sandboxed.",
         });
-    }
+        }
 
-    for flag in UNSHIPPED_PERLLSP_FLAGS {
-        if line.contains(&format!("perllsp {flag}")) && !is_negated(line) {
-            findings.push(Finding {
+        for flag in UNSHIPPED_PERLLSP_FLAGS {
+            if line.contains(&format!("perllsp {flag}")) && !is_negated(line) {
+                findings.push(Finding {
                 rule: "unshipped_flag_recommended",
                 line: line_no,
                 excerpt: line.to_string(),
                 replacement: "Do not recommend `--check-project-strict`, `--parsability-report`, or `--check-perl` as current commands. They are unshipped (#10766 / #10672).",
             });
+            }
         }
     }
-}
 
-fn has_listed_file_check_flag(line: &str) -> bool {
-    line.contains("`--check`")
-        || line.contains("'--check'")
-        || line.contains("\"--check\"")
-        || line.contains("--check ")
-        || line.contains("--check<")
-        || line.ends_with("--check")
-}
-
-fn has_shipped_check_project(line: &str) -> bool {
-    if !line.contains(CHECK_PROJECT_FLAG) {
-        return false;
+    fn has_listed_file_check_flag(line: &str) -> bool {
+        line.contains("`--check`")
+            || line.contains("'--check'")
+            || line.contains("\"--check\"")
+            || line.contains("--check ")
+            || line.contains("--check<")
+            || line.ends_with("--check")
     }
-    line.replace("--check-project-strict", "").contains(CHECK_PROJECT_FLAG)
-}
 
-fn has_native_check_command(line: &str) -> bool {
-    has_listed_file_check_flag(line) || has_shipped_check_project(line)
-}
+    fn has_shipped_check_project(line: &str) -> bool {
+        if !line.contains(CHECK_PROJECT_FLAG) {
+            return false;
+        }
+        line.replace("--check-project-strict", "").contains(CHECK_PROJECT_FLAG)
+    }
 
-fn contains_ci(line: &str, needle: &str) -> bool {
-    line.to_ascii_lowercase().contains(&needle.to_ascii_lowercase())
-}
+    fn has_native_check_command(line: &str) -> bool {
+        has_listed_file_check_flag(line) || has_shipped_check_project(line)
+    }
 
-fn is_negated(line: &str) -> bool {
-    let lower = line.to_ascii_lowercase();
-    const MARKERS: &[&str] = &[
-        "not ",
-        "n't",
-        "never ",
-        "wrong",
-        "do not",
-        "does not",
-        "must not",
-        "cannot ",
-        "there is no",
-        "there are no",
-        "unshipped",
-        "not shipped",
-        "does not exist",
-        "is not a current",
-        "not a current",
-        "not on current",
-    ];
-    MARKERS.iter().any(|marker| lower.contains(marker))
+    fn identifies_native_check_as_perl(line: &str) -> bool {
+        contains_ci(line, "runs perl")
+            || contains_ci(line, "run perl -c")
+            || contains_ci(line, "execute project perl")
+            || contains_ci(line, "executes perl")
+            || contains_ci(line, "is perl -c")
+            || contains_ci(line, "using perl -c")
+    }
+
+    fn contains_ci(line: &str, needle: &str) -> bool {
+        line.to_ascii_lowercase().contains(&needle.to_ascii_lowercase())
+    }
+
+    fn is_negated(line: &str) -> bool {
+        let lower = line.to_ascii_lowercase();
+        const MARKERS: &[&str] = &[
+            "not ",
+            "n't",
+            "never ",
+            "wrong",
+            "do not",
+            "does not",
+            "must not",
+            "cannot ",
+            "there is no",
+            "there are no",
+            "unshipped",
+            "not shipped",
+            "does not exist",
+            "is not a current",
+            "not a current",
+            "not on current",
+        ];
+        MARKERS.iter().any(|marker| lower.contains(marker))
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::guard::*;
     use super::*;
     use std::path::PathBuf;
 
@@ -296,6 +309,12 @@ mod tests {
         assert!(scan_current_copy(NEGATED_STRICT).is_empty());
         assert!(scan_current_copy(NEGATED_UNSHIPPED).is_empty());
         assert!(scan_current_copy(REAL_PERL_EDITOR).is_empty());
+        assert!(
+            scan_current_copy(
+                "| Distinguish native `--check`, `--check-project`, and `perl -c` |\n"
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -349,8 +368,11 @@ mod tests {
         for shell in ["bash", "zsh", "fish", "powershell"] {
             let script = crate::runtime::launcher::shell_completion(shell)
                 .unwrap_or_else(|| panic!("{shell} completions"));
-            assert!(script.contains(CHECK_FLAG), "{shell} missing --check");
-            assert!(script.contains(CHECK_PROJECT_FLAG), "{shell} missing --check-project");
+            assert!(completion_names_flag(script, CHECK_FLAG), "{shell} missing --check");
+            assert!(
+                completion_names_flag(script, CHECK_PROJECT_FLAG),
+                "{shell} missing --check-project"
+            );
             for flag in UNSHIPPED_PERLLSP_FLAGS {
                 assert!(!script.contains(flag), "{shell} advertises unshipped {flag}");
             }
@@ -410,6 +432,14 @@ mod tests {
             !text.contains("SARIF") && !text.contains("application/sarif"),
             "do not document unshipped JSON/SARIF project-check as current"
         );
+    }
+
+    fn completion_names_flag(script: &str, flag: &str) -> bool {
+        if script.contains(flag) {
+            return true;
+        }
+        let name = flag.trim_start_matches('-');
+        script.contains(&format!("-l {name} ")) || script.contains(&format!("-l {name}\n"))
     }
 
     fn workspace_root() -> PathBuf {

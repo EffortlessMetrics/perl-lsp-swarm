@@ -926,10 +926,14 @@ pub fn help_text() -> String {
     out.push_str("  --features-json      Output features catalog as JSON\n");
     out.push('\n');
     out.push_str("Tool options:\n");
-    out.push_str("  --check <files...>   ");
+    out.push_str("  ");
+    out.push_str(checking_guidance::CHECK_FLAG);
+    out.push_str(" <files...>   ");
     out.push_str(checking_guidance::CHECK_DESCRIPTION);
     out.push_str(" (does not execute project Perl)\n");
-    out.push_str("  --check-project [dir]\n");
+    out.push_str("  ");
+    out.push_str(checking_guidance::CHECK_PROJECT_FLAG);
+    out.push_str(" [dir]\n");
     out.push_str("                       ");
     out.push_str(checking_guidance::CHECK_PROJECT_DESCRIPTION);
     out.push('\n');
@@ -966,8 +970,12 @@ pub fn help_text() -> String {
     );
     out.push('\n');
     out.push_str("Checking commands (native vs real Perl):\n");
-    out.push_str("  Need fast native feedback on listed files?     --check <files...>\n");
-    out.push_str("  Need a project parser coverage metric?         --check-project [dir]\n");
+    out.push_str("  Need fast native feedback on listed files?     ");
+    out.push_str(checking_guidance::CHECK_FLAG);
+    out.push_str(" <files...>\n");
+    out.push_str("  Need a project parser coverage metric?         ");
+    out.push_str(checking_guidance::CHECK_PROJECT_FLAG);
+    out.push_str(" [dir]\n");
     out.push_str(
         "  Need configured Perl's compile observation?    editor Perl: Check Syntax / DAP (`perl -c`)\n",
     );
