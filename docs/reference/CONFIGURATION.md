@@ -381,17 +381,19 @@ Running on a VM, container, or remote SSH session with limited RAM or slow I/O:
 
 ### CI / headless environment
 
-Running `perllsp --check` in CI pipelines or pre-commit hooks:
+Native CLI checking does not execute project Perl. See
+[Checking Perl files](CHECKING.md) for the validator/claim split and exits.
 
 ```bash
-# Check a single file
+# Native listed-file parser check (exit 1 on blocking findings)
 perllsp --check lib/MyModule.pm
 
-# Check all Perl files in a directory
+# Native project parsability report (exit 0 at ≥80% scanned-file clean)
 perllsp --check-project lib/
 
-# Check with exit code (non-zero on parse errors)
-perllsp --check-project . && echo "All files parse clean"
+# Wrong: --check-project can PASS with unclean files, so this is not
+# "all files parse clean"
+perllsp --check-project .
 ```
 
 For a project that also uses critic checks in CI, use the `perl.perlcritic`

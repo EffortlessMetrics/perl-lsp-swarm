@@ -99,7 +99,7 @@ perllsp --health
 # Optional: show feature/profile information
 perllsp --info
 
-# Optional: validate a Perl file from the CLI
+# Optional: native listed-file parser check (does not execute project Perl)
 perllsp --check script.pl
 ```
 

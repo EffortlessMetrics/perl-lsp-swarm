@@ -807,9 +807,11 @@ Flags passed when launching the `perllsp` executable. Source:
 
 | Flag | Description |
 |---|---|
-| `--check <files...>` | Validate Perl files and report parse errors to stdout |
-| `--check-project [dir]` | Scan a project directory and print parsability summary (defaults to `.`) |
+| `--check <files...>` | Native in-process parser check of listed files (does not execute project Perl) |
+| `--check-project [dir]` | Native parsability report (80% threshold; not a strict all-clean check; defaults to `.`) |
 | `--completion <shell>` | Print shell completion script (`bash`, `zsh`, `fish`, `powershell`) |
+
+Native vs real-Perl checking, exits, and examples: [Checking Perl files](CHECKING.md).
 
 Examples:
 
@@ -818,8 +820,8 @@ perllsp --stdio                         # stdio mode (default)
 perllsp --stdio --log                   # with logging to stderr
 perllsp --socket --port 9257            # TCP socket mode
 perllsp --stdio --feature-profile prod  # production feature profile
-perllsp --check lib/MyModule.pm         # batch syntax check
-perllsp --check-project lib/            # project-wide parsability scan
+perllsp --check lib/MyModule.pm         # native listed-file parser check
+perllsp --check-project lib/            # native parsability report (80%)
 perllsp --info                          # print server information
 perllsp --completion bash >> ~/.bashrc  # install bash completions
 ```

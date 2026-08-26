@@ -9,6 +9,7 @@ modes. For debugging Perl programs **via DAP**, see
 | Goal | Command |
 |------|---------|
 | Parse a single file, print diagnostics | `perllsp --check path/to/file.pl` |
+| Project parsability report (80% threshold) | `perllsp --check-project [dir]` |
 | Run in TCP mode for a manual client | `perllsp --socket --port 9257` |
 | Enable structured logging to stderr | `perllsp --stdio --log` |
 | Filter log output (per-crate level) | `RUST_LOG=perl_lsp=debug perllsp --stdio --log` |
@@ -20,18 +21,21 @@ modes. For debugging Perl programs **via DAP**, see
 
 ## `--check`: parse diagnostics without an editor
 
-`--check` parses one or more Perl files and prints any diagnostics to stdout,
-then exits. This is the fastest way to reproduce a parser bug or verify that a
-particular file produces the expected error output without needing an LSP
-client:
+`--check` is a native in-process parser check of listed files. It does not
+execute project Perl. It prints diagnostics to stdout, then exits. This is the
+fastest way to reproduce a parser bug or verify that a particular file produces
+the expected error output without needing an LSP client:
 
 ```bash
 perllsp --check lib/MyModule.pm t/basic.t
 ```
 
 Output is always plain text (`path: ok` or `path: FAIL - …` with optional
-context lines). Exit code 0 means no errors; a non-zero exit indicates one or
-more diagnostics.
+context lines). Exit `0` means every listed file was readable and had no
+blocking findings. Advisories remain visible but non-blocking. Exit `1` means
+at least one listed path was unreadable or produced a blocking finding.
+`--check-project` is a different claim: an 80% parsability report, not a
+strict all-clean check. See [Checking Perl files](../reference/CHECKING.md).
 
 ---
 
