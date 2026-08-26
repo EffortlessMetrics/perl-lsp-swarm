@@ -6,8 +6,10 @@ use std::{
     env,
     ffi::OsString,
     fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    time::{Duration, Instant},
 };
 
 pub fn run() -> Result<()> {
@@ -64,6 +66,10 @@ pub fn run() -> Result<()> {
     println!();
     println!("== Build storage ==");
     check_build_storage(&root);
+
+    println!();
+    println!("== DAP live-session perl (advisory) ==");
+    check_dap_live_session_perl();
 
     println!();
     if Path::new("rust-toolchain.toml").exists() {
@@ -384,6 +390,107 @@ fn is_executable(path: &Path) -> bool {
 
 fn pass(message: &str) {
     println!("✅ {message}");
+}
+
+/// #12594 item 6(b) / #12748: live-session DAP suites drive a real
+/// `perl -d` debuggee over stdio pipes, which needs a *pipe-capable*
+/// perl5db. The failure shape that motivated this check: on Windows the
+/// first `perl` on a bash-spawned PATH is often MSYS/cygwin perl, whose
+/// debugger assumes a console and hangs or misbehaves over pipes while a
+/// working Strawberry perl sits later on PATH. Surface which perl the
+/// launch path will see and whether its perl5db actually answers over
+/// pipes. Advisory only: plenty of dev/CI boxes legitimately have no perl
+/// (the suites skip there), so this never blocks doctor.
+fn check_dap_live_session_perl() {
+    let Some(perl) = find_command_path("perl") else {
+        warn(
+            "perl not found on PATH: live-session DAP suites (real `perl -d` over stdio \
+             pipes) cannot run. Install a pipe-capable perl — system perl with perl5db on \
+             Linux/macOS, Strawberry Perl on Windows.",
+        );
+        return;
+    };
+
+    match Command::new(&perl).arg("-e").arg(r#"print "$^V $^O""#).output() {
+        Ok(out) if out.status.success() => {
+            println!("  perl: {} ({})", perl.display(), String::from_utf8_lossy(&out.stdout));
+        }
+        _ => {
+            println!("  perl: {} (version probe failed)", perl.display());
+        }
+    }
+
+    match probe_perl5db_pipe(&perl) {
+        Perl5dbProbe::Capable => {
+            pass("perl5db is pipe-capable: `perl -de 0` answers `q` over piped stdio and exits")
+        }
+        Perl5dbProbe::Hung => warn(
+            "`perl -de 0` did not exit within 10s over piped stdio — this perl's debugger \
+             is not pipe-capable (MSYS/cygwin perl class). Live-session DAP suites will hang. \
+             Put a native perl first on PATH (Strawberry Perl on Windows) or set `perlPath` \
+             explicitly in the launch configuration.",
+        ),
+        Perl5dbProbe::Failed(detail) => warn(&format!(
+            "perl5db pipe probe failed: {detail}. Live-session DAP suites will fail; \
+             check that perl5db is installed for this interpreter."
+        )),
+    }
+}
+
+enum Perl5dbProbe {
+    Capable,
+    Hung,
+    Failed(String),
+}
+
+/// Spawn `perl -de 0` with piped stdio, send `q`, and require a prompt,
+/// clean exit. A debugger that needs a console hangs here; a missing
+/// perl5db.pl errors out here. The 10s watchdog bounds the hang case.
+fn probe_perl5db_pipe(perl: &Path) -> Perl5dbProbe {
+    let mut child = match Command::new(perl)
+        .arg("-de")
+        .arg("0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            return Perl5dbProbe::Failed(format!("cannot spawn `{} -de 0`: {e}", perl.display()));
+        }
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(b"q\n");
+    } // dropped: debugger sees EOF after `q`
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Perl5dbProbe::Capable,
+            Ok(Some(status)) => {
+                let mut stderr = String::new();
+                if let Some(mut pipe) = child.stderr.take() {
+                    let _ = pipe.read_to_string(&mut stderr);
+                }
+                let first_line = stderr.lines().next().unwrap_or("").trim().to_string();
+                return Perl5dbProbe::Failed(format!(
+                    "`perl -de 0` exited {status}{}",
+                    if first_line.is_empty() { String::new() } else { format!(": {first_line}") }
+                ));
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Perl5dbProbe::Hung;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => return Perl5dbProbe::Failed(format!("wait on `perl -de 0` failed: {e}")),
+        }
+    }
 }
 
 fn warn(message: &str) {
