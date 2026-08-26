@@ -12,7 +12,9 @@
 //! The skip is typed and 1314-only: every other symlink-creation error is a
 //! real failure and must be surfaced, never skipped. Substituting a junction
 //! or a copy would not exercise reparse-point semantics and is not supported
-//! by this helper.
+//! by this helper. The skip reason is written outside the test harness's
+//! output capture, so a passing skip stays visible under a default `cargo
+//! test` run instead of hiding behind `--show-output`.
 //!
 //! # Convention
 //!
@@ -89,18 +91,65 @@ impl SymlinkTestDecision {
 
     /// Skip the current test visibly.
     ///
-    /// Prints the skip reason to stderr (so the skip is never a silent pass)
-    /// and returns `true` when this decision is a [`SymlinkTestDecision::TypedSkip`].
-    /// Returns `false` when the test must run in full.
+    /// Writes `SKIPPED: <reason>` outside the default test-harness output
+    /// capture (libtest hides `eprintln!` output of passing tests unless
+    /// `--nocapture`/`--show-output` is passed, which would make the skip
+    /// silent): to the real terminal when stderr is live, following the
+    /// redirection otherwise. Returns `true` when this decision is a
+    /// [`SymlinkTestDecision::TypedSkip`]; `false` when the test must run in
+    /// full.
     pub fn skip_visibly(&self) -> bool {
         match self.skip_reason() {
             Some(reason) => {
-                eprintln!("SKIPPED: {reason}");
+                write_uncaptured_stderr(&format!("SKIPPED: {reason}\n"));
                 true
             }
             None => false,
         }
     }
+}
+
+/// Write `message` to the process's real stderr, outside libtest's capture.
+///
+/// The default test harness captures `eprintln!`/`print!` output of passing
+/// tests and only shows it with `--nocapture` or `--show-output`, which would
+/// make a passing typed skip indistinguishable from a fully exercised test.
+/// Reopening the real stderr sink (`/dev/stderr` on Unix, the console on
+/// Windows when stderr is the terminal) bypasses that capture because the
+/// write never goes through the harness's thread-local output redirection.
+/// When stderr is redirected (or the direct sink cannot be opened, e.g. a
+/// headless session), fall back to `eprint!` so the reason still follows the
+/// redirection and remains available in captured output.
+fn write_uncaptured_stderr(message: &str) {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+
+        // Append mode: when stderr is redirected to a regular file, a
+        // write-only reopen would truncate it.
+        if let Ok(mut stderr) = std::fs::OpenOptions::new().append(true).open("/dev/stderr") {
+            let _ = stderr.write_all(message.as_bytes());
+            return;
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::io::IsTerminal;
+        use std::io::Write;
+
+        // CONOUT$ is the console screen buffer: the place a developer running
+        // `cargo test` is actually looking. Opening it directly bypasses the
+        // harness capture even though stderr itself is captured. Only take it
+        // when stderr is the terminal; when stderr is redirected, the skip
+        // reason belongs in the redirection, not force-printed to the console.
+        if std::io::stderr().is_terminal() {
+            if let Ok(mut console) = std::fs::OpenOptions::new().write(true).open("CONOUT$") {
+                let _ = console.write_all(message.as_bytes());
+                return;
+            }
+        }
+    }
+    eprint!("{message}");
 }
 
 /// Classify a symlink-creation error.
