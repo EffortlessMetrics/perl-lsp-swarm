@@ -263,6 +263,51 @@ fn validate_cases(manifest: &RuleProofManifest, violations: &mut Vec<String>) {
                 case.case_id, case.rule_id
             ));
         }
+        if matches!(case.parse_expectation, ParseExpectation::Error) {
+            for class in &case.evidence_classes {
+                if !class.allowed_on_parse_error() {
+                    violations.push(format!(
+                        "case `{}`: parse-error fixtures may only declare boundary evidence, not `{}`",
+                        case.case_id,
+                        class.as_str()
+                    ));
+                }
+            }
+            if !case.expected_findings.is_empty() {
+                violations.push(format!(
+                    "case `{}`: malformed parse boundaries cannot claim expected findings",
+                    case.case_id
+                ));
+            }
+            if case.suppression_selector.is_some() || case.fix_round_trip.is_some() {
+                violations.push(format!(
+                    "case `{}`: parse-error fixtures cannot claim suppression or automatic round-trip",
+                    case.case_id
+                ));
+            }
+        }
+        for class in &case.evidence_classes {
+            if class.requires_governed_expected_finding()
+                && !case.expected_findings.iter().any(|finding| finding.rule_id == case.rule_id)
+            {
+                violations.push(format!(
+                    "case `{}`: evidence class `{}` requires an expected finding for governed rule `{}`",
+                    case.case_id,
+                    class.as_str(),
+                    case.rule_id
+                ));
+            }
+            if class.requires_governed_non_finding()
+                && !case.expected_non_findings.iter().any(|rule_id| rule_id == &case.rule_id)
+            {
+                violations.push(format!(
+                    "case `{}`: evidence class `{}` requires expected_non_findings to name governed rule `{}`",
+                    case.case_id,
+                    class.as_str(),
+                    case.rule_id
+                ));
+            }
+        }
         if case.evidence_classes.contains(&EvidenceClass::FileLevelSuppression) {
             match case.suppression_selector.as_deref() {
                 None => violations.push(format!(
@@ -328,13 +373,17 @@ fn validate_cases(manifest: &RuleProofManifest, violations: &mut Vec<String>) {
                 }
             }
         }
-        if matches!(case.parse_expectation, ParseExpectation::Error)
-            && !case.expected_findings.is_empty()
-        {
-            violations.push(format!(
-                "case `{}`: malformed parse boundaries cannot claim expected findings",
-                case.case_id
-            ));
+        for finding in &case.expected_findings {
+            if finding.rule_id == case.rule_id
+                && finding.remediation_eligibility != rule.declared_remediation
+            {
+                violations.push(format!(
+                    "case `{}`: expected finding remediation `{}` does not match declared_remediation `{}`",
+                    case.case_id,
+                    finding.remediation_eligibility.as_str(),
+                    rule.declared_remediation.as_str()
+                ));
+            }
         }
     }
     for rule in &manifest.rules {

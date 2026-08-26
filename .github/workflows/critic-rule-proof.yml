@@ -12,6 +12,7 @@ on:
       - 'xtask/tests/critic_rule_proof.rs'
       - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/identity.rs'
       - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/remediation.rs'
+      - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/types.rs'
       - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/native.rs'
       - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/native/**'
       - '.github/workflows/critic-rule-proof.yml'

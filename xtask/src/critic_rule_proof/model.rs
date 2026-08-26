@@ -64,6 +64,31 @@ impl EvidenceClass {
     pub const fn required_for_every_pilot_rule(self) -> bool {
         !matches!(self, Self::AutomaticFixRoundTrip)
     }
+
+    /// Finding-oriented classes that cannot be inherited from a clean fixture.
+    #[must_use]
+    pub const fn requires_governed_expected_finding(self) -> bool {
+        matches!(
+            self,
+            Self::PositiveFinding
+                | Self::CanonicalIdentity
+                | Self::SourceRangeAndSeverity
+                | Self::RemediationClass
+                | Self::AutomaticFixRoundTrip
+        )
+    }
+
+    /// Negative classes that must name the governed rule as a non-finding.
+    #[must_use]
+    pub const fn requires_governed_non_finding(self) -> bool {
+        matches!(self, Self::NearMissNegative | Self::ProjectShapedFalsePositive)
+    }
+
+    /// Parse-error fixtures skip live critic; only boundary evidence is honest.
+    #[must_use]
+    pub const fn allowed_on_parse_error(self) -> bool {
+        matches!(self, Self::Boundary)
+    }
 }
 
 /// Native critic profile named by a case or rule row.

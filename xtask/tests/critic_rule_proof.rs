@@ -76,6 +76,14 @@ fn status_render_is_byte_deterministic() -> TestResult {
         "status remainder must follow the live strict catalog, not a hardcoded 4-rule total:\n{rendered}"
     );
     assert!(
+        rendered.contains("`write-status`"),
+        "status must name the real write-status subcommand:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("--write-status"),
+        "status must not recommend a flag the CLI does not accept:\n{rendered}"
+    );
+    assert!(
         !rendered.contains("4-rule recommended/strict totals"),
         "status must not inherit proof from recommended/strict rule-count totals:\n{rendered}"
     );
@@ -213,7 +221,7 @@ fn positive_finding_at_the_wrong_range_fails_live_check() -> TestResult {
 fn relabeling_a_near_miss_as_a_positive_fails_live_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
     let case = case_mut(&mut manifest, "CRP-ASSIGN-NEAR-001").expect("near");
-    case["expected_non_findings"] = json!([]);
+    case["evidence_classes"] = json!(["near_miss_negative", "positive_finding"]);
     case["expected_findings"] = json!([{
         "rule_id": "native.common.assignment_in_condition",
         "start_byte": 0,
@@ -311,17 +319,37 @@ fn near_miss_fixture_that_starts_producing_a_finding_fails_live_check() -> TestR
 }
 
 #[test]
-fn positive_with_no_recorded_range_fails_live_check() -> TestResult {
+fn positive_with_no_recorded_range_fails_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
     let case = case_mut(&mut manifest, "CRP-ASSIGN-POS-001").expect("assign pos");
     case["expected_findings"] = json!([]);
-    let typed =
-        validate_manifest_value(&repo_root(), &manifest).map_err(|error| error.to_string())?;
-    let error = proof::execute_manifest(&repo_root(), &typed)
-        .expect_err("an unrecorded positive range must fail live critic")
-        .to_string();
-    assert!(error.contains("unexpected extra finding"), "unexpected error: {error}");
-    Ok(())
+    expect_violation(&manifest, "requires an expected finding for governed rule")
+}
+
+#[test]
+fn parse_error_cannot_claim_non_boundary_evidence() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    let case = case_mut(&mut manifest, "CRP-STRICT-BOUND-001").expect("strict boundary");
+    case["parse_expectation"] = json!("error");
+    case["expected_findings"] = json!([]);
+    case["evidence_classes"] = json!(["boundary", "positive_finding", "file_level_suppression"]);
+    expect_violation(&manifest, "parse-error fixtures may only declare boundary evidence")
+}
+
+#[test]
+fn positive_class_without_governed_finding_fails_check() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    let case = case_mut(&mut manifest, "CRP-ASSIGN-NEAR-001").expect("near");
+    case["evidence_classes"] = json!(["near_miss_negative", "positive_finding"]);
+    expect_violation(&manifest, "requires an expected finding for governed rule")
+}
+
+#[test]
+fn declared_remediation_must_match_expected_finding() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    rule_mut(&mut manifest, "native.security.string_eval").expect("eval")["declared_remediation"] =
+        json!("manual");
+    expect_violation(&manifest, "does not match declared_remediation")
 }
 
 #[test]
