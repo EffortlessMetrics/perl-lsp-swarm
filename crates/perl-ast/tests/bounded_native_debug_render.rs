@@ -371,12 +371,12 @@ fn node_depth_byte_and_work_limits_trip_independently() {
         },
     ) {
         NativeDebugSexpResult::Truncated {
-            reason: NativeDebugSexpTruncation::ByteLimit { limit },
+            reason: NativeDebugSexpTruncation::ByteLimit { limit: tripped },
             work,
             ..
         } => {
-            assert_eq!(limit, complete_len.saturating_sub(1));
-            assert!(work.bytes_written <= limit);
+            assert_eq!(tripped, complete_len.saturating_sub(1));
+            assert!(work.bytes_written <= tripped);
             assert!(work.bytes_written < complete_work.bytes_written);
         }
         other => assert!(
@@ -841,6 +841,96 @@ fn node_limit_precedes_depth_and_does_not_charge_a_rejected_edge() {
                 }
             ),
             "max_nodes=1 must trip NodeLimit before any child edge, got {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn rejected_descent_charges_no_edge_work() {
+    let chain = deep_chain(2);
+    let depth0 = chain.render_debug_sexp(
+        &mut String::new(),
+        NativeDebugSexpLimits { max_depth: Some(0), ..NativeDebugSexpLimits::unbounded() },
+    );
+    let depth0_work = match depth0 {
+        NativeDebugSexpResult::Truncated {
+            reason: NativeDebugSexpTruncation::DepthLimit { limit: 0 },
+            work,
+            ..
+        } => {
+            assert_eq!(work.nodes_visited, 1);
+            assert_eq!(work.child_edges_visited, 0);
+            work
+        }
+        other => {
+            assert!(
+                matches!(
+                    other,
+                    NativeDebugSexpResult::Truncated {
+                        reason: NativeDebugSexpTruncation::DepthLimit { limit: 0 },
+                        ..
+                    }
+                ),
+                "max_depth=0 must trip DepthLimit, got {other:?}"
+            );
+            NativeDebugSexpWork::default()
+        }
+    };
+
+    match chain.render_debug_sexp(
+        &mut String::new(),
+        NativeDebugSexpLimits {
+            max_depth: Some(0),
+            max_work: Some(depth0_work.work_units),
+            ..NativeDebugSexpLimits::unbounded()
+        },
+    ) {
+        NativeDebugSexpResult::Truncated {
+            reason: NativeDebugSexpTruncation::DepthLimit { limit: 0 },
+            work,
+            ..
+        } => {
+            assert_eq!(work.work_units, depth0_work.work_units);
+            assert_eq!(work.child_edges_visited, 0);
+        }
+        other => assert!(
+            matches!(
+                other,
+                NativeDebugSexpResult::Truncated {
+                    reason: NativeDebugSexpTruncation::DepthLimit { limit: 0 },
+                    ..
+                }
+            ),
+            "rejected descent must remain DepthLimit when work equals the depth-0 charge, got {other:?}"
+        ),
+    }
+
+    match chain.render_debug_sexp(
+        &mut String::new(),
+        NativeDebugSexpLimits {
+            max_depth: Some(1),
+            max_work: Some(depth0_work.work_units),
+            ..NativeDebugSexpLimits::unbounded()
+        },
+    ) {
+        NativeDebugSexpResult::Truncated {
+            reason: NativeDebugSexpTruncation::WorkLimit { limit },
+            work,
+            ..
+        } => {
+            assert_eq!(limit, depth0_work.work_units);
+            assert_eq!(work.work_units, depth0_work.work_units);
+            assert_eq!(work.child_edges_visited, 0);
+        }
+        other => assert!(
+            matches!(
+                other,
+                NativeDebugSexpResult::Truncated {
+                    reason: NativeDebugSexpTruncation::WorkLimit { .. },
+                    ..
+                }
+            ),
+            "an allowed descent must trip WorkLimit on the edge charge, got {other:?}"
         ),
     }
 }

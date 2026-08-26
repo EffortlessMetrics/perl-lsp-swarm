@@ -236,9 +236,12 @@ impl Node {
     ///
     /// Check order for a rejected operation:
     ///
-    /// 1. node limit, before admitting a node
-    /// 2. work limit, before admit / payload / edge / close
-    /// 3. depth limit, before descending into a child
+    /// 1. node limit, before admitting a node and before descend, so an
+    ///    exhausted node budget wins over depth or edge-work on that child
+    /// 2. depth limit, before descending; a rejected descent charges no edge
+    ///    and no work
+    /// 3. work limit, before admit / payload / edge / close of an allowed
+    ///    operation
     /// 4. byte limit, before forwarding a complete token
     ///
     /// A `fmt::Write` error is [`NativeDebugSexpInstrumentCause::WriterError`],
@@ -390,9 +393,10 @@ impl<'tree, 'write, W: fmt::Write> Renderer<'tree, 'write, W> {
     }
 
     fn next_node_count(&self) -> Result<usize, RenderStop> {
-        self.work.nodes_visited.checked_add(1).ok_or(RenderStop::Instrument(
-            NativeDebugSexpInstrumentCause::WorkCounterOverflow,
-        ))
+        self.work
+            .nodes_visited
+            .checked_add(1)
+            .ok_or(RenderStop::Instrument(NativeDebugSexpInstrumentCause::WorkCounterOverflow))
     }
 
     fn check_node_limit(&self) -> Result<(), RenderStop> {
