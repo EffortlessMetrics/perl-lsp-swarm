@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11948 |
-| Rust-family files | 3629 |
-| Non-Rust files | 8319 |
-| Allowlisted | 6056 |
+| Total tracked files | 11963 |
+| Rust-family files | 3639 |
+| Non-Rust files | 8324 |
+| Allowlisted | 6061 |
 | Unclassified | 2263 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 432 |
-| documentation | 2719 |
+| config | 433 |
+| documentation | 2723 |
 | generated | 2 |
 | production | 325 |
 | test | 1972 |
@@ -3155,6 +3155,10 @@
 | `.spec/12186-compiler-profile-identity-closure/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12186-compiler-profile-identity-closure/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12186-compiler-profile-identity-closure/inventory.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12330-compiler-profile-initial-rows/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12330-compiler-profile-initial-rows/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12330-compiler-profile-initial-rows/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12330-compiler-profile-initial-rows/inventory.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/context.md` | documentation | `non-rust-root-governance-docs` | docs |
