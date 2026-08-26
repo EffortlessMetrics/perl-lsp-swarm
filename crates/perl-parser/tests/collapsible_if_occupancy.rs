@@ -4,11 +4,13 @@
 //! 1. Crate/file/item `allow`/`expect` attributes naming `clippy::collapsible_if`,
 //!    including those nested in `cfg_attr`. Clippy `--all-targets` is silent if
 //!    the blanket returns; this scan is the discriminator that still fails.
-//! 2. `cargo clippy -p perl-parser --all-targets` with `--cap-lints=allow` and
-//!    `--force-warn`, which pierces allows and fails if any live site remains
-//!    without treating unrelated workspace denials as occupancy. An unsuccessful
-//!    Clippy run with no matching hits is an instrument failure, not a clean
-//!    occupancy.
+//! 2. `cargo clippy -p perl-parser --all-targets --features incremental` with
+//!    `--cap-lints=allow` and `--force-warn`, which pierces allows and fails if
+//!    any live site remains without treating unrelated workspace denials as
+//!    occupancy. `--features incremental` is required because workspace
+//!    `clippy_full` compiles this crate with that feature via xtask. An
+//!    unsuccessful Clippy run with no matching hits is an instrument failure,
+//!    not a clean occupancy.
 //!
 //! Scanner literals and comments containing the lint name do not count as occupancy.
 
@@ -321,6 +323,8 @@ fn clippy_collapsible_if_hits() -> Result<Vec<String>, String> {
             "-p",
             "perl-parser",
             "--all-targets",
+            "--features",
+            "incremental",
             "--locked",
             "--no-deps",
             "--message-format=json",
@@ -537,7 +541,7 @@ fn assert_no_collapsible_if_hits(result: Result<Vec<String>, String>) {
     };
     assert!(
         hits.is_empty(),
-        "cargo clippy -p perl-parser --all-targets still hits collapsible_if:\n{}",
+        "cargo clippy -p perl-parser --all-targets --features incremental still hits collapsible_if:\n{}",
         hits.join("\n")
     );
 }
