@@ -244,6 +244,21 @@ impl DebugAdapter {
 
         let mut reasons: Vec<String> = Vec::new();
         let outcome = match seeded {
+            // A mutating outcome for a subject this adapter never bound to
+            // a source cannot be reconciled (which desired breakpoints
+            // would become pending is unknowable), so it never publishes:
+            // the honest terminal is the frozen inexact/stale-identity
+            // refusal — the composition fails closed rather than routing a
+            // reload whose affected source it cannot name (review finding).
+            Some(outcome)
+                if has_session
+                    && crate::reload::outcome_is_mutating(&outcome)
+                    && subject_source.is_none() =>
+            {
+                LoadedModuleReloadOutcome::Refused {
+                    disposition: LoadedModuleReloadEligibility::SourceNotExactOrStale,
+                }
+            }
             Some(outcome) if has_session => {
                 if crate::reload::outcome_is_mutating(&outcome) && clock.current().is_exhausted() {
                     // Bounded exhaustion (#10097): fail closed as a
@@ -430,13 +445,20 @@ mod tests {
 
     impl SeededSources {
         fn new() -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "plsw-r03-route-{}",
+            // Unique even under parallel test processes and coarse clocks:
+            // process id plus a per-process monotonic counter alongside the
+            // timestamp (review finding: timestamp-only names can collide).
+            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let unique = format!(
+                "{}-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|elapsed| elapsed.as_nanos())
                     .unwrap_or_default()
-            ));
+            );
+            let dir = std::env::temp_dir().join(format!("plsw-r03-route-{unique}"));
             must(std::fs::create_dir_all(&dir));
             let body: String = (0..8).map(|index| format!("my $v{index} = {index};\n")).collect();
             let affected = dir.join("affected_module.pl");
@@ -856,6 +878,45 @@ mod tests {
             serde_json::json!("not_stopped_or_not_command_ready")
         );
         assert!(!outcome.generation.ok_or("witness required")?.advanced);
+        Ok(())
+    }
+
+    #[test]
+    fn mutating_outcome_for_an_unbound_subject_refuses_inexact_identity() -> TestResult {
+        let sources = SeededSources::new();
+        let mut adapter = DebugAdapter::new();
+        let (event_sender, receiver) = sync_channel(64);
+        adapter.set_event_sender(event_sender);
+        adapter.enable_loaded_module_reload_preview_profile(true);
+        adapter.declare_loaded_module_reload_client_for_test(&[1])?;
+        // No subject binding is registered: the adapter never issued this
+        // subject's source identity, so a mutating terminal can never
+        // publish — the affected source to reconcile is unknowable.
+        adapter.seed_loaded_module_reload_outcome_for_test(
+            LoadedModuleReloadOutcome::IndeterminatePossiblyApplied {
+                phase: ReloadTransactionPhase::RuntimeMutationBegins,
+                cause: IndeterminateCause::TransportLossAfterMutationBegan,
+            },
+        );
+        seed_stopped_session(&adapter, &sources);
+
+        let response = adapter.handle_request(2, LOADED_MODULE_RELOAD_REQUEST, Some(request(1, 1)));
+        let DapMessage::Response { success, body: Some(body), .. } = &response else {
+            return Err("expected a response body".into());
+        };
+        assert!(!success);
+        let wire: LoadedModuleReloadWireResponse = serde_json::from_value(body.clone())?;
+        let outcome = loaded_module_reload_outcome_body(&wire).ok_or("expected an outcome body")?;
+        assert_eq!(outcome.kind.as_str(), "refused");
+        assert_eq!(
+            serde_json::to_value(outcome.disposition)?,
+            serde_json::json!("source_not_exact_or_stale")
+        );
+        assert!(!outcome.generation.ok_or("witness required")?.advanced);
+        // Nothing was invalidated and nothing was emitted.
+        let (frames, _, _) = session_state_snapshot(&adapter);
+        assert_eq!(frames, 2, "an unbound subject never triggers invalidation");
+        assert!(receiver.try_recv().is_err());
         Ok(())
     }
 }

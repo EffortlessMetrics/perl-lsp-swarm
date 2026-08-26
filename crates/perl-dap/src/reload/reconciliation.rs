@@ -76,6 +76,15 @@ pub enum ReloadWiringRefusal {
         /// The current generation.
         current_generation: RuntimeModuleGeneration,
     },
+    /// The claim names a runtime-module generation this session has not
+    /// reached; nothing has been observed under a future generation, so
+    /// the claim is not current in either direction.
+    GenerationAhead {
+        /// The generation the claim was minted under.
+        claim_generation: RuntimeModuleGeneration,
+        /// The current generation.
+        current_generation: RuntimeModuleGeneration,
+    },
     /// No admitted, not-yet-terminal operation carries this identity.
     OperationNotAdmitted {
         /// The refused operation identity.
@@ -108,6 +117,7 @@ impl ReloadWiringRefusal {
         match self {
             ReloadWiringRefusal::SessionEpochReplaced { .. } => "session_epoch_replaced",
             ReloadWiringRefusal::GenerationSuperseded { .. } => "generation_superseded",
+            ReloadWiringRefusal::GenerationAhead { .. } => "generation_ahead",
             ReloadWiringRefusal::OperationNotAdmitted { .. } => "operation_not_admitted",
             ReloadWiringRefusal::OperationAlreadyCompleted { .. } => "operation_already_completed",
             ReloadWiringRefusal::GenerationExhausted => "generation_exhausted",
@@ -375,9 +385,10 @@ impl ReloadSessionWiring {
     }
 
     /// Refuse reconciliation claims minted under an epoch this session
-    /// replaced or a generation it has advanced past. Late results from a
-    /// previous generation cannot become current; claims minted under the
-    /// current authorities are admitted.
+    /// replaced or a generation that is not the current one — late results
+    /// from a previous generation cannot become current, and nothing has
+    /// been observed under a generation the session has not reached. Only
+    /// claims minted under the current authorities are admitted.
     pub fn reconcile_observation(
         &self,
         claim: &ObservationClaim,
@@ -391,6 +402,12 @@ impl ReloadSessionWiring {
         }
         if claim.generation < current_generation {
             return Err(ReloadWiringRefusal::GenerationSuperseded {
+                claim_generation: claim.generation,
+                current_generation,
+            });
+        }
+        if claim.generation > current_generation {
+            return Err(ReloadWiringRefusal::GenerationAhead {
                 claim_generation: claim.generation,
                 current_generation,
             });
@@ -633,6 +650,18 @@ mod tests {
         // A claim minted under the current generation is admitted.
         let current = ObservationClaim { epoch: 4, generation: clock.current() };
         assert_eq!(wiring.reconcile_observation(&current, clock.current()), Ok(()));
+        // A claim minted under a generation the session has not reached
+        // is not current either: nothing has been observed under a future
+        // generation, so it refuses typed (review finding: future claims
+        // must not pass as current.
+        let ahead = ObservationClaim { epoch: 4, generation: clock.current().next() };
+        assert_eq!(
+            wiring.reconcile_observation(&ahead, clock.current()),
+            Err(ReloadWiringRefusal::GenerationAhead {
+                claim_generation: clock.current().next(),
+                current_generation: clock.current(),
+            })
+        );
         Ok(())
     }
 
@@ -877,6 +906,10 @@ mod tests {
                 claim_generation: RuntimeModuleGeneration::INITIAL,
                 current_generation: RuntimeModuleGeneration::new(1),
             },
+            ReloadWiringRefusal::GenerationAhead {
+                claim_generation: RuntimeModuleGeneration::new(2),
+                current_generation: RuntimeModuleGeneration::new(1),
+            },
             ReloadWiringRefusal::OperationNotAdmitted { operation_id: 9 },
             ReloadWiringRefusal::OperationAlreadyCompleted { operation_id: 9 },
             ReloadWiringRefusal::GenerationExhausted,
@@ -886,7 +919,7 @@ mod tests {
             ),
         ];
         let codes: Vec<&str> = samples.iter().map(|refusal| refusal.code()).collect();
-        assert_eq!(codes.len(), 7);
+        assert_eq!(codes.len(), 8);
         for code in &codes {
             assert!(
                 !code.is_empty()
