@@ -261,7 +261,7 @@ class ClassifyFlowTests(unittest.TestCase):
             self.assertIn("/mnt/target-x", verdict)
 
     def test_lone_llvm_stream_error_does_not_exonerate_candidate(self) -> None:
-        # Negative control: without any ENOSPC / os-error-28 / SIGBUS text in
+        # Negative control: without any ENOSPC / os-error-28 text in
         # the same run, a generic LLVM stream error must not produce the
         # definitive disk-exhaustion verdict.
         with tempfile.TemporaryDirectory() as tmp:
@@ -280,6 +280,57 @@ class ClassifyFlowTests(unittest.TestCase):
             self.assertIn("VERDICT: not_proven_io_failure", verdict)
             self.assertIn("does not exonerate the candidate", verdict)
             self.assertNotIn("not candidate defects", verdict)
+
+    def test_lone_linker_sigbus_does_not_exonerate_candidate(self) -> None:
+        # Negative control (review #12183): `ld terminated with signal 7`
+        # identifies a bus error, not its cause — truncated or replaced mmap
+        # inputs, storage I/O faults, corrupt objects, and hardware faults
+        # produce it with no ENOSPC anywhere. A lone SIGBUS therefore earns
+        # the non-exonerating corroborating verdict, never the definitive one.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            logs_dir.mkdir()
+            (logs_dir / "unit_routed_full.log").write_text(
+                "collect2: fatal error: ld terminated with signal 7 [Bus error]",
+                encoding="utf-8",
+            )
+            pressure_log = root / "pr-fast-disk-pressure.log"
+            output = self.run_classify(logs_dir, pressure_log, "/mnt/target-x")
+            self.assertIn(
+                "::error::not-proven-io-failure [link_sigbus]", output
+            )
+            self.assertNotIn("resource-exhaustion", output)
+            verdict = pressure_log.read_text(encoding="utf-8")
+            self.assertIn("VERDICT: not_proven_io_failure", verdict)
+            self.assertIn("does not exonerate the candidate", verdict)
+            self.assertNotIn("not candidate defects", verdict)
+
+    def test_enospc_alongside_sigbus_still_earns_definitive_verdict(self) -> None:
+        # Corroboration semantics (review #12183): an ENOSPC match proves disk
+        # exhaustion by itself, so a SIGBUS log in the same run keeps the run's
+        # definitive verdict while its own annotation names the weaker class.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            logs_dir.mkdir()
+            (logs_dir / "clippy_full.log").write_text(
+                "error: No space left on device (os error 28)",
+                encoding="utf-8",
+            )
+            (logs_dir / "unit_routed_full.log").write_text(
+                "collect2: fatal error: ld terminated with signal 7 [Bus error]",
+                encoding="utf-8",
+            )
+            pressure_log = root / "pr-fast-disk-pressure.log"
+            output = self.run_classify(logs_dir, pressure_log, "/mnt/target-x")
+            self.assertIn("::error::resource-exhaustion [enospc]", output)
+            self.assertIn(
+                "::error::not-proven-io-failure [link_sigbus]", output
+            )
+            verdict = pressure_log.read_text(encoding="utf-8")
+            self.assertIn("VERDICT: resource-exhaustion detected", verdict)
+            self.assertIn("not candidate defects", verdict)
 
     def test_enospc_match_anywhere_still_earns_definitive_verdict(self) -> None:
         # Corroboration semantics: once a strong signature exists anywhere,
@@ -359,6 +410,68 @@ class PreflightPressureLogCompositionTests(unittest.TestCase):
                     body_lines=[],
                 )
         self.assertIn("::warning::could not update", buffer.getvalue())
+
+
+class RestoredGateLogCleanupTests(unittest.TestCase):
+    def run_preflight(self, workspace: Path) -> str:
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            status = guard.run_preflight(
+                argparse.Namespace(
+                    workspace_path=str(workspace),
+                    target_dir="",
+                    min_free_bytes=1,
+                )
+            )
+        self.assertEqual(status, 0)
+        return buffer.getvalue()
+
+    def test_stale_enospc_log_plus_clean_current_logs_classify_clean(self) -> None:
+        # Negative control for the misattribution class (review #12183): the
+        # shared cargo cache restores ``target`` wholesale, so this run starts
+        # with an unrelated attempt's ENOSPC log. Preflight must sweep it
+        # before anything writes today's records; afterwards the gate writes
+        # only clean logs and classification finds no exhaustion signature.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "target" / "receipts" / "logs"
+            logs_dir.mkdir(parents=True)
+            (logs_dir / "unit_routed_full.log").write_text(
+                "error: No space left on device (os error 28)",
+                encoding="utf-8",
+            )
+
+            self.run_preflight(root)
+
+            # The current run's own (clean) gate logs are written afterwards.
+            (logs_dir / "fmt.log").write_text(
+                "all checks passed", encoding="utf-8"
+            )
+
+            self.assertNotIn(
+                "No space left",
+                "\n".join(
+                    path.read_text(encoding="utf-8") for path in logs_dir.glob("*.log")
+                ),
+            )
+            self.assertEqual(guard.scan_logs(logs_dir), [])
+            provenance = (logs_dir / guard.PRESSURE_LOG_NAME).read_text(
+                encoding="utf-8"
+            )
+            self.assertIn(
+                "cleared 1 restored log(s): unit_routed_full.log", provenance
+            )
+
+    def test_cleanup_tolerates_occupied_logs_dir(self) -> None:
+        # A regular file occupying the receipt-log slot must not break the
+        # advisory preflight lane; the sweep declines and preflight proceeds.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blocker = root / "target" / "receipts" / "logs"
+            blocker.parent.mkdir(parents=True)
+            blocker.write_text("not a directory", encoding="utf-8")
+
+            self.run_preflight(root)
 
 
 if __name__ == "__main__":

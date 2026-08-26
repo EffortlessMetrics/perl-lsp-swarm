@@ -10,6 +10,11 @@ Two modes backing the two acceptance arms of issue #11943:
     tier. A degraded runner therefore reports an explicit resource-exhaustion
     diagnostic naming the filled path instead of dying 38 minutes later inside
     ``ld`` with SIGBUS disguised as a compile failure (run 32697324730).
+    Preflight also clears cache-restored ``*.log`` files from the receipt-log
+    directory first (the shared cargo cache restores all of ``target``, so a
+    fresh job can otherwise start with an unrelated run's logs — the same
+    misattribution class #12085 fixed for gate receipts): after this sweep,
+    every scanned log was produced by the current run.
 
     ``classify``
     Run ``if: always()`` AFTER the gate runner exits. Scans the per-gate logs
@@ -18,10 +23,15 @@ Two modes backing the two acceptance arms of issue #11943:
     ``::error`` annotations that name the offending log and the filled target
     directory, and appends a decision-grade verdict plus a fresh free-bytes
     snapshot to ``pr-fast-disk-pressure.log`` (composing with #11977's raw
-    capture). Only ENOSPC / os-error-28 / ld SIGBUS matches earn the
-    definitive "not candidate defects" verdict; a lone rustc-LLVM output-stream
-    failure is recorded as corroborating evidence under a distinct
-    ``not_proven_io_failure`` verdict that does not exonerate the candidate.
+    capture). Only ENOSPC / os-error-28 matches earn the definitive "not
+    candidate defects" verdict. A linker SIGBUS or a lone rustc-LLVM
+    output-stream failure is recorded as corroborating evidence under a
+    distinct ``not_proven_io_failure`` verdict that does not exonerate the
+    candidate: signal 7 identifies a bus error, not its cause (truncated or
+    concurrently replaced mmap inputs, storage I/O faults, corrupt objects,
+    and hardware faults produce it without any ENOSPC condition), so the
+    definitive classification additionally requires an ENOSPC / os-error-28
+    match in the same run's logs.
     Advisory only: never changes the gate outcome.
 
 Measured basis (2026-08-24 receipt artifacts, runs 32697324730 and
@@ -66,13 +76,17 @@ EXHAUSTION_SIGNATURES: tuple[tuple[str, str], ...] = (
     ("llvm_io_failure", "IO failure on output stream"),
 )
 
-# Classes whose match alone proves disk exhaustion. ``llvm_io_failure`` is
-# deliberately absent from this set: "IO failure on output stream" names no
-# errno and also arises from broken pipes, closed outputs, filesystem I/O
-# faults, and permission/path failures, so a lone match is recorded and
-# annotated as corroborating evidence under the non-exonerating
-# ``not_proven_io_failure`` verdict instead of the definitive one.
-STRONG_EXHAUSTION_CLASSES = frozenset({"enospc", "link_sigbus"})
+# Classes whose match alone proves disk exhaustion: only the ENOSPC family.
+# ``link_sigbus`` and ``llvm_io_failure`` are deliberately absent from this
+# set: `ld terminated with signal 7` identifies a bus error, not its cause —
+# truncated or concurrently replaced mmap inputs, storage I/O faults, corrupt
+# objects, and hardware faults produce it without any ENOSPC condition — and
+# "IO failure on output stream" names no errno at all. A lone match of either
+# class is recorded and annotated as corroborating evidence under the
+# non-exonerating ``not_proven_io_failure`` verdict; the definitive "not
+# candidate defects" classification additionally requires an ENOSPC /
+# os-error-28 match in the same run's logs (review #12183).
+STRONG_EXHAUSTION_CLASSES = frozenset({"enospc"})
 
 Probe = Callable[[str], shutil._ntuple_diskusage]
 
@@ -229,20 +243,65 @@ def _emit(message: str) -> None:
     print(message, flush=True)
 
 
+def _clear_restored_gate_logs(logs_dir: Path) -> list[str]:
+    """Remove cache-restored ``*.log`` files before the current gate run.
+
+    The workflow's shared cargo cache restores all of ``target``, so a fresh
+    job can start with exhaustion logs produced by an unrelated SHA or run;
+    classifying them as current-run evidence would exonerate a real candidate
+    (the misattribution class #12085 fixed for gate receipts). Mirrors
+    ``run_gate_shard._clean_restored_receipt_state`` for this advisory lane:
+    best-effort, never raises, and refuses to follow a symlinked log
+    directory. Returns the names of removed files for provenance.
+    """
+    try:
+        if logs_dir.is_symlink():
+            _emit(
+                f"::warning::refusing symlinked receipt-log directory during "
+                f"cleanup: {logs_dir}"
+            )
+            return []
+        if not logs_dir.is_dir():
+            return []
+        removed: list[str] = []
+        for log_path in sorted(logs_dir.glob("*.log")):
+            if log_path.is_symlink():
+                _emit(
+                    f"::warning::refusing symlinked receipt log during "
+                    f"cleanup: {log_path}"
+                )
+                continue
+            try:
+                log_path.unlink()
+                removed.append(log_path.name)
+            except OSError as error:
+                _emit(f"::warning::could not clear restored log {log_path}: {error}")
+        return removed
+    except OSError as error:
+        _emit(f"::warning::could not sweep restored receipt logs: {error}")
+        return []
+
+
 def run_preflight(args: argparse.Namespace) -> int:
     paths = {"workspace": args.workspace_path}
     target_dir = args.target_dir or str(Path(args.workspace_path) / "target")
     paths["cargo-target-dir"] = target_dir
     breaches = evaluate_preflight(paths, args.min_free_bytes)
     pressure_log = Path(args.workspace_path) / "target/receipts/logs"
+    # Current-run evidence binding (#11943 review): sweep cache-restored logs
+    # before anything writes today's records, so the post-run classify step
+    # can only ever see logs produced by this run.
+    removed_logs = _clear_restored_gate_logs(pressure_log)
+    removal_note = (
+        [f"cleared {len(removed_logs)} restored log(s): {', '.join(removed_logs)}"]
+        if removed_logs
+        else []
+    )
     if breaches:
         _append_pressure_record(
             pressure_log / PRESSURE_LOG_NAME,
             header="== PR Smoke pre-flight disk budget REJECTED the runner ==",
-            body_lines=[
-                *breaches,
-                render_snapshot(paths),
-            ],
+            body_lines=[*removal_note, *breaches, render_snapshot(paths)],
         )
         for message in breaches:
             _emit(f"::error::{message}")
@@ -250,7 +309,7 @@ def run_preflight(args: argparse.Namespace) -> int:
     _append_pressure_record(
         pressure_log / PRESSURE_LOG_NAME,
         header="== PR Smoke pre-flight disk budget accepted the runner ==",
-        body_lines=[render_snapshot(paths)],
+        body_lines=[*removal_note, render_snapshot(paths)],
     )
     _emit(f"PR Smoke pre-flight disk budget OK (>= {args.min_free_bytes} bytes free)")
     return 0
@@ -273,7 +332,7 @@ def run_classify(args: argparse.Namespace) -> int:
     if strong:
         body_lines.append(
             "VERDICT: resource-exhaustion detected in gate logs "
-            "(ENOSPC / ld SIGBUS class); the gate failures above are disk "
+            "(ENOSPC / os-error-28 class); the gate failures above are disk "
             "exhaustion, not candidate defects."
         )
         for finding in (*strong, *corroborating):
@@ -282,13 +341,14 @@ def run_classify(args: argparse.Namespace) -> int:
             _emit(f"::error::{annotation}")
     elif corroborating:
         body_lines.append(
-            "VERDICT: not_proven_io_failure: a lone rustc-LLVM 'IO failure on "
-            "output stream' line does not identify ENOSPC by itself (broken "
-            "pipe, closed output, filesystem I/O fault, or permission/path "
-            "failure produce the same text), so this is not proof of disk "
-            "exhaustion and does not exonerate the candidate. Treat it as "
-            "corroborating evidence only unless an ENOSPC / os-error-28 / ld "
-            "SIGBUS match appears."
+            "VERDICT: not_proven_io_failure: a lone linker SIGBUS or a lone "
+            "rustc-LLVM 'IO failure on output stream' line identifies a bus "
+            "error or a failed write, not its cause (truncated/replaced mmap "
+            "inputs, broken pipe, closed output, filesystem I/O fault, or "
+            "permission/path failure produce the same text without ENOSPC), "
+            "so this is not proof of disk exhaustion and does not exonerate "
+            "the candidate. Treat it as corroborating evidence only unless an "
+            "ENOSPC / os-error-28 match appears in this run's logs."
         )
         for finding in corroborating:
             annotation = finding.annotation(target_dir)
