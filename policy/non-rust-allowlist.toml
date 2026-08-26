@@ -3352,6 +3352,36 @@ covered_by = [
 created = "2026-08-24"
 review_after = "2026-11-24"
 
+[[allow]]
+id = "non-rust-compiler-lexical-cutline-schema"
+path = "schemas/compiler_lexical_cutline_cases.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "JSON Schema for the compiler_lexical_cutline_cases.v1 proof-definition manifest (#12156, CP-LX01); the xtask validator enforces the manifest's denominators, geometry, set identity, and canonical bytes."
+covered_by = [
+  "cargo xtask compiler-lexical-cutline validate",
+  "cargo test -p xtask --locked --test compiler_lexical_cutline",
+]
+created = "2026-08-25"
+review_after = "2026-11-25"
+
+[[allow]]
+id = "non-rust-compiler-lexical-cutline-fixtures"
+glob = "xtask/tests/fixtures/compiler_lexical_cutline/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "compiler"
+reason = "Static invalid fixtures for the compiler lexical cut-line manifest validator (#12156): wrong schema_version and a forbidden client-carried preparation continuation token; deep falsifiers corrupt the canonical manifest in memory."
+covered_by = [
+  "cargo test -p xtask --locked --test compiler_lexical_cutline",
+]
+created = "2026-08-25"
+review_after = "2026-09-25"
 # =============================================================================
 # Archived legacy material
 # =============================================================================
