@@ -307,7 +307,10 @@ fn flush_section(doc: &mut PodDoc, section: &Option<Section>, body: &str, in_ove
 
     match section {
         Section::Name => {
-            doc.name = Some(cleaned);
+            // NAME renders links as plain display text, not markdown — its
+            // consumer is plain perldoc text, and percent-encoded link
+            // targets made a cleaned NAME longer than its source (#12824).
+            doc.name = Some(strip_pod_formatting_display_text(trimmed));
         }
         Section::Synopsis => {
             doc.synopsis = Some(cleaned);
@@ -368,6 +371,26 @@ pub fn strip_pod_formatting(text: &str) -> String {
     strip_pod_formatting_depth(text, 0)
 }
 
+/// Like [`strip_pod_formatting`], but renders `L<...>` links as their plain
+/// display text only — no markdown `[text](url)` wrapper, no percent-encoded
+/// target. Used for the NAME field (#12824): its sole consumer renders it as
+/// plain perldoc text, so link markup is noise, and the percent-encoding
+/// expansion made a cleaned NAME longer than its source, violating the
+/// extraction invariant the `pod_extraction` fuzz target asserts.
+pub fn strip_pod_formatting_display_text(text: &str) -> String {
+    strip_pod_formatting_depth_links(text, 0, LinkRendering::DisplayText)
+}
+
+/// How `L<...>` links render while stripping formatting.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LinkRendering {
+    /// `[text](perldoc://target)` with percent-encoded target.
+    Markdown,
+    /// Bare display text only — explicit `text|target` keeps `text`,
+    /// `Module/section` keeps `Module`, `Module::Name` keeps `Module::Name`.
+    DisplayText,
+}
+
 /// Depth-bounded implementation of [`strip_pod_formatting`].
 ///
 /// `depth` tracks how many levels of formatting-code recursion have already
@@ -375,6 +398,10 @@ pub fn strip_pod_formatting(text: &str) -> String {
 /// emitted verbatim instead of recursing, guarding against stack overflow on
 /// adversarially deep input such as `B<I<B<I<...>>>>`.
 fn strip_pod_formatting_depth(text: &str, depth: usize) -> String {
+    strip_pod_formatting_depth_links(text, depth, LinkRendering::Markdown)
+}
+
+fn strip_pod_formatting_depth_links(text: &str, depth: usize, links: LinkRendering) -> String {
     if depth >= MAX_POD_FORMATTING_DEPTH {
         return text.to_string();
     }
@@ -434,9 +461,12 @@ fn strip_pod_formatting_depth(text: &str, depth: usize) -> String {
             }
 
             let display = match code_char {
-                'L' => extract_link_display(&inner_str, depth + 1),
+                'L' => match links {
+                    LinkRendering::Markdown => extract_link_display(&inner_str, depth + 1),
+                    LinkRendering::DisplayText => extract_link_display_text(&inner_str, depth + 1),
+                },
                 'E' => decode_pod_entity(&inner_str),
-                _ => strip_pod_formatting_depth(&inner_str, depth + 1),
+                _ => strip_pod_formatting_depth_links(&inner_str, depth + 1, links),
             };
 
             result.push_str(&display);
@@ -523,6 +553,23 @@ fn extract_link_display(link: &str, depth: usize) -> String {
     let display = escape_markdown_link_text(&strip_pod_formatting_depth(link.trim(), depth));
     let target = encode_pod_link_target(link.trim());
     format!("[{display}](perldoc://{target})")
+}
+
+/// Display-text-only link rendering for the NAME field (#12824): keeps the
+/// human-readable half of every link form and drops the target entirely —
+/// `L<text|target>` → `text`, `L<Module/section>` → `Module`,
+/// `L<Module::Name>` → `Module::Name`. No markdown wrapper, no
+/// percent-encoding, so the result can never exceed the source link text by
+/// more than the formatting codes it removes.
+fn extract_link_display_text(link: &str, depth: usize) -> String {
+    let display = match link.find('|') {
+        Some(pipe_pos) => &link[..pipe_pos],
+        None => match link.find('/') {
+            Some(slash_pos) => &link[..slash_pos],
+            None => link,
+        },
+    };
+    strip_pod_formatting_depth_links(display.trim(), depth, LinkRendering::DisplayText)
 }
 
 /// Decodes a POD E<> entity to its corresponding character.
