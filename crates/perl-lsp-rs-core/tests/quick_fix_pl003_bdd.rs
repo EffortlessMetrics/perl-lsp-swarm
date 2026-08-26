@@ -22,11 +22,8 @@ fn diagnostic(source: &str, message: &str) -> Diagnostic {
 fn actions_for(source: &str, message: &str) -> Vec<CodeAction> {
     let mut parser = Parser::new(source);
     let ast = must(parser.parse());
-    CodeActionsProvider::new(source.to_string()).get_code_actions(
-        &ast,
-        (0, source.len()),
-        &[diagnostic(source, message)],
-    )
+    CodeActionsProvider::new(source.to_string())
+        .get_diagnostic_quick_fixes(&ast, &[diagnostic(source, message)])
 }
 
 fn apply_first(source: &str, action: &CodeAction) -> String {
@@ -118,10 +115,7 @@ fn other_parse_codes_do_not_receive_the_pl003_eof_fallback() {
         ..diagnostic(source, "Unexpected end of input")
     };
 
-    let actions = CodeActionsProvider::new(source.to_string()).get_code_actions(
-        &ast,
-        (0, source.len()),
-        &[diagnostic],
-    );
+    let actions = CodeActionsProvider::new(source.to_string())
+        .get_diagnostic_quick_fixes(&ast, &[diagnostic]);
     assert!(actions.is_empty());
 }

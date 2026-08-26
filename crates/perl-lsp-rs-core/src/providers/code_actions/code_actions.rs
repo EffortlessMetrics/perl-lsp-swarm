@@ -102,6 +102,24 @@ impl CodeActionsProvider {
 
         actions
     }
+
+    /// Get quick-fix actions driven by the supplied diagnostics only.
+    ///
+    /// Unlike [`get_code_actions`], this returns only the targeted quick fixes
+    /// for the specific diagnostics supplied. Source-level suggestions
+    /// (shebang fixes, missing pragmas, two-argument open modernizations) and
+    /// refactoring actions are not included.
+    ///
+    /// Use this in contexts where you want to isolate the quick-fix contribution
+    /// of a specific diagnostic code — for example, in BDD tests that verify the
+    /// exact set of actions a diagnostic drives.
+    pub fn get_diagnostic_quick_fixes(
+        &self,
+        ast: &Node,
+        diagnostics: &[Diagnostic],
+    ) -> Vec<CodeAction> {
+        diagnostic_routes::quick_fixes_for_diagnostics(&self.source, Some(ast), diagnostics)
+    }
 }
 
 #[cfg(test)]

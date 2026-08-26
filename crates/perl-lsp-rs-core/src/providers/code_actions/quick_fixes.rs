@@ -1423,16 +1423,26 @@ pub fn fix_parse_error(
         {
             // PL001/PL002 are general parse error codes. When the message indicates a missing
             // semicolon, apply the same fix -- but skip heredoc contexts where insertion is wrong.
-            let at_heredoc = source[range_start..].get(..2).is_some_and(|s| s == "<<");
+            //
+            // When the diagnostic points at EOF (range_start >= source.len()), step back to the
+            // start of the last non-empty content line so the semicolon is placed after the last
+            // token rather than after the trailing newline.
+            let search_start = if range_start >= source.len() {
+                let last_content_end = source.trim_end_matches(['\n', '\r']).len();
+                source[..last_content_end].rfind('\n').map(|p| p + 1).unwrap_or(0)
+            } else {
+                range_start
+            };
+            let at_heredoc = source[search_start..].get(..2).is_some_and(|s| s == "<<");
             if !at_heredoc {
-                let line_end = source[range_start..]
+                let line_end = source[search_start..]
                     .find('\n')
-                    .map(|p| range_start + p)
+                    .map(|p| search_start + p)
                     .unwrap_or(source.len());
 
-                // Insert before trailing whitespace
+                // Insert before trailing whitespace on the content line
                 let mut end_pos = line_end;
-                while end_pos > range_start && source.as_bytes()[end_pos - 1].is_ascii_whitespace()
+                while end_pos > search_start && source.as_bytes()[end_pos - 1].is_ascii_whitespace()
                 {
                     end_pos -= 1;
                 }
