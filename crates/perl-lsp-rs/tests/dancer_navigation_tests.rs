@@ -64,7 +64,7 @@ mod dancer_navigation_tests {
         // module with version evidence); without it there is zero framework
         // navigation. The positive canonical path is proven over the
         // skeleton fixture in perl-lsp-ux-tests
-        // (ux_scenario_68_dancer2_provider_cutover). In this unit server no
+        // (ux_scenario_69_dancer2_provider_cutover). In this unit server no
         // Dancer2 module is resolvable, so the route pattern must NOT
         // produce a framework navigation target.
         let route_resp = goto_def(code, uri, "/status", 2)?;
@@ -90,7 +90,7 @@ mod dancer_navigation_tests {
         // absent even while `use Dancer2` is present (zero output without
         // #8914 activation evidence). The positive canonical path is proven
         // over the skeleton fixture in perl-lsp-ux-tests
-        // (ux_scenario_68_dancer2_provider_cutover).
+        // (ux_scenario_69_dancer2_provider_cutover).
         assert!(
             semantic::first_location(&before).is_none(),
             "no activation evidence: no framework route navigation while `use Dancer2` is present (#8928)"

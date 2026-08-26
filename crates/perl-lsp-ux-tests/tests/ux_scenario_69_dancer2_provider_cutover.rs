@@ -1,4 +1,4 @@
-//! Scenario 68 — Dancer2 canonical provider cutover process receipts (#8928).
+//! Scenario 69 — Dancer2 canonical provider cutover process receipts (#8928).
 //!
 //! Exercises the promoted read-only Dancer2 provider cells through the real
 //! `textDocument/*` and `workspace/symbol` request paths over the committed
@@ -30,7 +30,7 @@ use perl_lsp_ux_tests::{
 };
 use serde_json::Value;
 
-const SCENARIO_FILE: &str = "ux_scenario_68_dancer2_provider_cutover.rs";
+const SCENARIO_FILE: &str = "ux_scenario_69_dancer2_provider_cutover.rs";
 
 const APP_MAIN: &str = r#"#!/usr/bin/perl
 use strict;
@@ -146,11 +146,11 @@ fn scenario_harness() -> Result<UxHarness> {
 }
 
 #[test]
-fn scenario_68_dancer2_provider_cutover_receipt() {
+fn scenario_69_dancer2_provider_cutover_receipt() {
     run_ux_scenario(
         "dancer2_provider_cutover",
         SCENARIO_FILE,
-        "scenario_68_dancer2_provider_cutover_receipt",
+        "scenario_69_dancer2_provider_cutover_receipt",
         UxCiTier::Pr,
         Some(UxComponent::Completion),
         |recorder| {
