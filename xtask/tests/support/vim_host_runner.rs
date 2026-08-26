@@ -756,6 +756,17 @@ pub enum DriverEventKind {
     StaleGenerationHeld,
     ClientMaterializationApplied,
     GenerationCurrentObserved,
+    /// #11403 expanded-activation events. Like the #11390 kinds these repeat
+    /// within one journey — one pass over the finite #7762 activation-root
+    /// denominator in artifact order. Each carries a monotone `row_index`
+    /// detail with a per-kind cap, so an unordered, duplicated, or overlong
+    /// barrier stream is rejected before the scenario judgment checks the
+    /// exact per-row phase sequence. The earlier journeys never emit them.
+    ActivationNativeObserved,
+    ActivationOverrideApplied,
+    ActivationAttachmentObserved,
+    ActivationSemanticObserved,
+    ActivationRowReset,
     ShutdownStarted,
     ShutdownCompleted,
     DriverFailed,
@@ -803,6 +814,12 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
     let mut freshness_hold_index = 0_u32;
     let mut freshness_materialization_index = 0_u32;
     let mut freshness_generation_index = 0_u32;
+    // Monotone last-seen indexes for the #11403 repeating activation kinds.
+    let mut activation_native_index = 0_u32;
+    let mut activation_override_index = 0_u32;
+    let mut activation_attachment_index = 0_u32;
+    let mut activation_semantic_index = 0_u32;
+    let mut activation_reset_index = 0_u32;
 
     for (index, event) in events.iter().enumerate() {
         ensure!(event.schema_version == DRIVER_SCHEMA_VERSION, "unexpected driver event schema");
@@ -1016,6 +1033,97 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 );
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
+            DriverEventKind::ActivationNativeObserved => {
+                validate_repeating_activation_event(
+                    event,
+                    ACTIVATION_NATIVE_CAP,
+                    &mut activation_native_index,
+                )?;
+                let detection = event.details.get("detection").map(String::as_str);
+                ensure!(
+                    matches!(detection, Some("native_vim") | Some("pre_forced")),
+                    "activation_native_observed must bind detection native_vim or pre_forced"
+                );
+                let preset = event.details.get("preset").map(String::as_str);
+                ensure!(
+                    (detection == Some("pre_forced")) == (preset == Some("1")),
+                    "activation_native_observed must agree on preset and detection identity"
+                );
+                ensure!(
+                    event.details.contains_key("observed_filetype"),
+                    "activation_native_observed must record the observed filetype token"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::ActivationOverrideApplied => {
+                validate_repeating_activation_event(
+                    event,
+                    ACTIVATION_OVERRIDE_CAP,
+                    &mut activation_override_index,
+                )?;
+                ensure!(
+                    event.details.get("rule") == Some(&"narrow_exact_buffer_setf_perl".to_string()),
+                    "activation_override_applied must bind the narrow exact-buffer rule shape"
+                );
+                ensure!(
+                    event.details.get("boundary")
+                        == Some(&"not_authorized_by_extension_alone".to_string()),
+                    "activation_override_applied must keep the #7762 override boundary"
+                );
+                ensure!(
+                    event.details.contains_key("filetype_after"),
+                    "activation_override_applied must record the post-rule filetype"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::ActivationAttachmentObserved => {
+                validate_repeating_activation_event(
+                    event,
+                    ACTIVATION_ATTACHMENT_CAP,
+                    &mut activation_attachment_index,
+                )?;
+                ensure!(
+                    matches!(
+                        event.details.get("attached").map(String::as_str),
+                        Some("0") | Some("1")
+                    ),
+                    "activation_attachment_observed must record the attached disposition"
+                );
+                ensure!(
+                    event.details.contains_key("language_id"),
+                    "activation_attachment_observed must record the language id surface"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::ActivationSemanticObserved => {
+                validate_repeating_activation_event(
+                    event,
+                    ACTIVATION_SEMANTIC_CAP,
+                    &mut activation_semantic_index,
+                )?;
+                ensure!(
+                    event.details.get("state_source") == Some(&"client_state".to_string()),
+                    "activation_semantic_observed must come from the client's own diagnostics \
+                     state"
+                );
+                ensure!(
+                    event.details.get("errors").is_some_and(|value| value.parse::<u32>().is_ok()),
+                    "activation_semantic_observed must report the client-state error count"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::ActivationRowReset => {
+                validate_repeating_activation_event(
+                    event,
+                    ACTIVATION_RESET_CAP,
+                    &mut activation_reset_index,
+                )?;
+                ensure!(
+                    event.details.get("reset") == Some(&"buffer_close".to_string()),
+                    "activation_row_reset must bind the real client didClose path"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
             kind => {
                 ensure!(singleton.insert(kind), "duplicate singleton driver event");
                 let rank = lifecycle_rank(kind);
@@ -1079,6 +1187,16 @@ fn lifecycle_rank(kind: DriverEventKind) -> u8 {
         | DriverEventKind::StaleGenerationHeld
         | DriverEventKind::ClientMaterializationApplied
         | DriverEventKind::GenerationCurrentObserved => 44,
+        // The #11403 expanded-activation tier: the five repeating kinds share
+        // one rank (rows interleave phases legitimately — native observation,
+        // optional bounded override, attachment, semantic discriminator, and
+        // the between-rows reset), with per-kind monotone row_index carrying
+        // the order. All strictly before shutdown.
+        DriverEventKind::ActivationNativeObserved
+        | DriverEventKind::ActivationOverrideApplied
+        | DriverEventKind::ActivationAttachmentObserved
+        | DriverEventKind::ActivationSemanticObserved
+        | DriverEventKind::ActivationRowReset => 45,
         DriverEventKind::ShutdownStarted => 50,
         DriverEventKind::ShutdownCompleted => 51,
         DriverEventKind::DriverFailed => 51,
@@ -1097,6 +1215,18 @@ pub const GENERATION_CURRENT_CAP: u32 = 12;
 /// The minimum honest absence-observation window for a stale-generation hold:
 /// below this the "no spontaneous republish" claim carries no observation.
 pub const MIN_STALE_WINDOW_MS: u64 = 2000;
+
+/// Per-kind occurrence caps for the #11403 expanded-activation events: one
+/// native observation and one between-rows reset per denominator row (18),
+/// overrides only for the bounded manual-override rows of the artifact,
+/// attachments at most one per row, and the semantic discriminator only for
+/// the rows whose #7762 expectation claims Perl semantic support (5). A
+/// stream exceeding a cap is an instrument fault, never evidence.
+pub const ACTIVATION_NATIVE_CAP: u32 = 24;
+pub const ACTIVATION_OVERRIDE_CAP: u32 = 4;
+pub const ACTIVATION_ATTACHMENT_CAP: u32 = 24;
+pub const ACTIVATION_SEMANTIC_CAP: u32 = 8;
+pub const ACTIVATION_RESET_CAP: u32 = 24;
 
 /// Validate one repeating #11390 freshness event: its index detail is numeric,
 /// exactly one greater than the last seen index for its kind (monotone,
@@ -1119,6 +1249,36 @@ fn validate_repeating_freshness_event(
         *last_index
     );
     ensure!(index <= cap, "freshness event {index_key} {index} exceeds the journey cap {cap}");
+    *last_index = index;
+    Ok(())
+}
+
+/// Validate one repeating #11403 activation event: its `row_index` detail is
+/// numeric, exactly one greater than the last seen index for its kind
+/// (monotone, gap-free), and within the kind's cap. The row slug rides beside
+/// the index; the scenario judgment binds index to slug against the finite
+/// #7762 denominator.
+fn validate_repeating_activation_event(
+    event: &DriverEvent,
+    cap: u32,
+    last_index: &mut u32,
+) -> Result<()> {
+    let index = event
+        .details
+        .get("row_index")
+        .and_then(|value| value.parse::<u32>().ok())
+        .context("activation event omitted a numeric row_index")?;
+    ensure!(
+        index == *last_index + 1,
+        "activation event row_index {} is not exactly one greater than the last seen {}",
+        index,
+        *last_index
+    );
+    ensure!(index <= cap, "activation event row_index {index} exceeds the journey cap {cap}");
+    ensure!(
+        event.details.get("row").is_some_and(|value| is_reason_token(value)),
+        "activation event must carry a reason-token row slug"
+    );
     *last_index = index;
     Ok(())
 }

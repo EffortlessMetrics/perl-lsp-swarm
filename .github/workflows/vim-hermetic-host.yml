@@ -7,6 +7,7 @@ on:
       - "scripts/test/vim-host-driver.vim"
       - "scripts/test/vim-host-diagnostics-driver.vim"
       - "scripts/test/vim-host-freshness-driver.vim"
+      - "scripts/test/vim-host-activation-driver.vim"
       - "scripts/test/vim-clients/**"
       - ".ci/editor-clients/vim-vim-lsp-*.json"
       - "crates/perl-lsp-rs-core/**"
@@ -282,6 +283,96 @@ jobs:
             exit 1
           fi
 
+      - name: Run the #11403 expanded-activation journey (canonical)
+        run: >-
+          cargo run --quiet --locked -p xtask --
+          editor-compat vim run
+          --subject pinned_vim_lsp_upstream
+          --journey expanded-activation
+          --fixture-variant canonical
+          --vim "$(command -v vim)"
+          --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"
+          --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"
+          --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/activation-canonical"
+          --timeout-ms 600000
+
+      - name: Bind the #11388 activation cells (fail closed on any non-pass)
+        run: |
+          set -euo pipefail
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/activation-canonical/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "expanded-activation result: ${result}"
+          [ "${result}" = "pass" ]
+          count="$(jq '[.journey[] | select(.id | startswith("vim.vim_lsp.activation."))] | length' "${receipt}")"
+          echo "activation journey cells: ${count}"
+          [ "${count}" = "90" ]
+          for cell in \
+            vim.vim_lsp.activation.pl_native_filetype \
+            vim.vim_lsp.activation.pl_attachment \
+            vim.vim_lsp.activation.pl_semantic_result \
+            vim.vim_lsp.activation.pm_xpm_native_filetype \
+            vim.vim_lsp.activation.t_tads_ambiguity_preserved \
+            vim.vim_lsp.activation.cgi_override \
+            vim.vim_lsp.activation.fcgi_override \
+            vim.vim_lsp.activation.cpanfile_native_filetype; do
+            observed="$(jq -r --arg id "${cell}" '.journey[] | select(.id == $id) | .result' "${receipt}")"
+            echo "cell ${cell}: ${observed}"
+            case "${observed}" in
+              pass|unsupported) ;;
+              *) exit 1 ;;
+            esac
+          done
+          [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/activation-canonical/hermetic/raw/vim-lsp-client.log" ]
+
+      - name: Activation negative control — pre-forced filetype must fail typed
+        run: |
+          set -euo pipefail
+          # A pre-forced filetype can never be relabeled native: the harness
+          # deliberately forges one, and the oracle must void the claim with
+          # the typed reason (exit 0 means the typed failure was observed).
+          cargo run --quiet --locked -p xtask -- \
+            editor-compat vim run \
+            --subject pinned_vim_lsp_upstream \
+            --journey expanded-activation \
+            --fixture-variant preset_filetype_claimed \
+            --vim "$(command -v vim)" \
+            --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject" \
+            --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp" \
+            --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/activation-preset-filetype" \
+            --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/activation-preset-filetype/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "preset_filetype_claimed control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Activation negative control — blanket *.t rule must fail typed
+        run: |
+          set -euo pipefail
+          # The forbidden broad rule: `*.t` -> perl must steal the TADS
+          # control row and be caught with the typed reason.
+          cargo run --quiet --locked -p xtask -- \
+            editor-compat vim run \
+            --subject pinned_vim_lsp_upstream \
+            --journey expanded-activation \
+            --fixture-variant blanket_override_steal \
+            --vim "$(command -v vim)" \
+            --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject" \
+            --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp" \
+            --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/activation-blanket-steal" \
+            --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/activation-blanket-steal/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "blanket_override_steal control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Prove no candidate process survives the activation journeys
+        run: |
+          if pgrep -f '[p]erllsp([[:space:]]|$)' >/dev/null; then
+            echo "a perllsp process survived the activation host runs" >&2
+            pgrep -af '[p]erllsp([[:space:]]|$)' >&2 || true
+            exit 1
+          fi
+
       - name: Upload the run evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -307,4 +398,8 @@ jobs:
             target/vim-host-runs/ci/freshness-live-reload-claimed/hermetic/artifacts/
             target/vim-host-runs/ci/freshness-ambient-path/receipt.json
             target/vim-host-runs/ci/freshness-ambient-path/hermetic/artifacts/
+            target/vim-host-runs/ci/activation-canonical/receipt.json
+            target/vim-host-runs/ci/activation-canonical/hermetic/artifacts/
+            target/vim-host-runs/ci/activation-preset-filetype/receipt.json
+            target/vim-host-runs/ci/activation-blanket-steal/receipt.json
           if-no-files-found: warn

@@ -23,6 +23,7 @@ pub mod git_ancestry;
 pub mod native_neovim_actions;
 pub mod publication_drift;
 pub mod rust_hygiene;
+pub mod vim_host_activation_run;
 pub mod vim_host_diagnostics_run;
 pub mod vim_host_freshness_run;
 pub mod vim_host_run;

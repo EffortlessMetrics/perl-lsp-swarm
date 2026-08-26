@@ -2655,6 +2655,11 @@ enum VimEditorCompatCommand {
     /// reload route, project config through the restart route, client
     /// settings through the live push channel, stale generation rejection,
     /// and provider ownership — against the governed freshness fixture.
+    /// `expanded-activation` (#11403) runs one pass over the finite #7762
+    /// activation-root denominator — per row, native filetype, bounded
+    /// override where admitted, vim-lsp attachment/languageId/root, semantic
+    /// eligibility where claimed, and ambiguity preservation — receipted into
+    /// the #11388 activation cells.
     Run {
         /// Exact client subject id (see
         /// `xtask::vim_host_run::VimClientSubject::known_ids`).
@@ -2662,7 +2667,7 @@ enum VimEditorCompatCommand {
         subject: String,
 
         /// Hermetic journey to execute: host-lifecycle, bootstrap-diagnostics,
-        /// or freshness-generations.
+        /// freshness-generations, or expanded-activation.
         #[arg(long, default_value = "host-lifecycle")]
         journey: String,
 
@@ -4788,10 +4793,69 @@ fn run_cli(cli: Cli) -> Result<()> {
                         }
                         return Ok(());
                     }
+                    if journey == "expanded-activation" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_activation_run::ActivationFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_activation_run::host_activation_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim expanded-activation run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} driver_failure={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.driver_failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.driver_failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
+                                        outcome.driver_failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim expanded-activation run did not pass: {result:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     if journey != "host-lifecycle" {
                         return Err(eyre!(
                             "unknown journey {journey}: known journeys are host-lifecycle, \
-                             bootstrap-diagnostics, freshness-generations"
+                             bootstrap-diagnostics, freshness-generations, expanded-activation"
                         ));
                     }
                     let outcome = xtask::vim_host_run::host_run_from_cli(
