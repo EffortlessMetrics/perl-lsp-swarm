@@ -108,6 +108,8 @@ expect_false "1.75.0 < 1.95"       cargo_guard_version_ge 1.75.0 1.95
 expect_false "1.95.0 < 1.95.1"     cargo_guard_version_ge 1.95.0 1.95.1
 expect_false "1.9.0 < 1.95 (minor is numeric, not decimal)" \
   cargo_guard_version_ge 1.9.0 1.95
+expect_false "named channel is not a numeric version" \
+  cargo_guard_version_ge stable 1.95
 
 # ── rustup shim-path detection ────────────────────────────────────────────────
 
@@ -251,7 +253,8 @@ fi
 # ── full guard with no cargo on PATH ──────────────────────────────────────────
 
 code=0
-env -i "$(command -v bash)" -c ". \"$LIB\"; cargo_toolchain_guard" \
+env -i PATH="${TMPDIR_BASE}/empty-path" "$(command -v bash)" \
+  -c ". \"$LIB\"; cargo_toolchain_guard" \
   2> "${TMPDIR_BASE}/missing.err" || code=$?
 if [[ "$code" -eq 78 ]]; then
   pass "guard: missing cargo refuses with typed exit 78 (got ${code})"
@@ -366,6 +369,40 @@ else
   pass "install.sh standalone: skipped on Windows (installer supports Linux/macOS only)"
 fi
 
+# ── guarded fallback entrypoints refuse before Cargo work ─────────────────────
+# These two scripts were previously missed by the first implementation: one
+# still runs Cargo in SKIP_INSTALL mode, and the other reaches Cargo only after
+# exhausting its prebuilt xtask ladder.
+
+code=0
+(
+  cd "$REPO_ROOT"
+  PATH="${STALE_BIN}:$PATH" WSL_DISTRO_NAME=Ubuntu \
+    SKIP_INSTALL=1 bash scripts/post-publish-smoke.sh 0.0.0
+) > "${TMPDIR_BASE}/post-publish-stale.out" \
+  2> "${TMPDIR_BASE}/post-publish-stale.err" || code=$?
+if [[ "$code" -eq 78 ]]; then
+  pass "post-publish smoke: SKIP_INSTALL still guards Cargo with exit 78"
+else
+  fail "post-publish smoke: stale Cargo must refuse before SKIP_INSTALL work, got ${code}"
+fi
+assert_contains "post-publish smoke: refusal banner" \
+  "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/post-publish-stale.err"
+
+code=0
+(
+  cd "$REPO_ROOT"
+  PATH="${STALE_BIN}:$PATH" bash scripts/check_release_history.sh
+) > "${TMPDIR_BASE}/release-history-stale.out" \
+  2> "${TMPDIR_BASE}/release-history-stale.err" || code=$?
+if [[ "$code" -eq 78 ]]; then
+  pass "release history: Cargo fallback refuses stale toolchain with exit 78"
+else
+  fail "release history: stale Cargo must refuse before fallback work, got ${code}"
+fi
+assert_contains "release history: refusal banner" \
+  "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/release-history-stale.err"
+
 # ── entrypoint coverage consistency ───────────────────────────────────────────
 # Every repo bash entrypoint that invokes cargo as a command must source the
 # guard library and call cargo_toolchain_guard, or carry an explicit
@@ -394,7 +431,27 @@ invokes_cargo() {
   ' "$1"
 }
 
-ENTRYPOINTS=(scripts/*.sh scripts/cargo-safe scripts/fuzz-bounded .github/run_all_tests.sh)
+has_guard_call() {
+  awk '
+    {
+      line = $0
+      sub(/[[:space:]]+#.*/, "", line)
+      if (line ~ /(^|[^[:alnum:]_])cargo_toolchain_guard([[:space:];&|]|$)/) {
+        found = 1
+        exit
+      }
+    }
+    END { exit !found }
+  ' "$1"
+}
+
+mapfile -t ENTRYPOINTS < <(
+  find scripts -type f -name '*.sh' \
+    ! -path 'scripts/tests/*' \
+    ! -path 'scripts/lib/*' \
+    -print | sort
+)
+ENTRYPOINTS+=(scripts/cargo-safe scripts/fuzz-bounded .github/run_all_tests.sh)
 for entry in "${ENTRYPOINTS[@]}"; do
   [[ -f "$entry" ]] || continue
   if ! invokes_cargo "$entry"; then
@@ -404,7 +461,7 @@ for entry in "${ENTRYPOINTS[@]}"; do
     pass "coverage: ${entry} invokes cargo with an explicit exemption"
     continue
   fi
-  if grep -q "cargo_toolchain_guard" "$entry"; then
+  if has_guard_call "$entry"; then
     pass "coverage: ${entry} invokes cargo and runs the guard"
   else
     fail "coverage: ${entry} invokes cargo but never calls cargo_toolchain_guard"

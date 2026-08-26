@@ -11,14 +11,15 @@
 
 set -euo pipefail
 
-# cargo-toolchain-guard: exempt — install-surface checks prefer a prebuilt
-# target/debug/xtask and treat cargo as one fallback rung in a ladder, so a
-# PATH-cargo guard would refuse legitimate prebuilt-only runs on cargo-less
-# boxes.
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
+
+# The prebuilt xtask paths below are intentionally cargo-free. Once the
+# fallback ladder reaches Cargo, however, guard the exact binary before any
+# metadata or build work so an apt Cargo cannot hide the real toolchain error.
+# This keeps prebuilt-only checkouts usable while closing the stale-Cargo gap.
+. "$SCRIPT_DIR/lib/cargo-toolchain-guard.sh"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -208,7 +209,8 @@ run_install_surface_check() {
         fi
     done
 
-    if cargo metadata --no-deps --format-version 1 >/dev/null 2>&1; then
+    if cargo_guard_before_fallback &&
+       cargo metadata --no-deps --format-version 1 >/dev/null 2>&1; then
         cargo xtask install-surface-check
         return
     fi
@@ -223,7 +225,12 @@ run_install_surface_check() {
         return
     fi
 
+    cargo_guard_before_fallback
     cargo xtask install-surface-check
+}
+
+cargo_guard_before_fallback() {
+    cargo_toolchain_guard
 }
 
 if ! run_install_surface_check; then

@@ -92,6 +92,10 @@ cargo_guard_parse_version() {
 cargo_guard_version_ge() {
   local actual="$1" required="$2"
   local a_major a_minor a_patch r_major r_minor r_patch
+  if [[ ! "$actual" =~ ^[0-9]+\.[0-9]+([.][0-9]+)?$ ||
+        ! "$required" =~ ^[0-9]+\.[0-9]+([.][0-9]+)?$ ]]; then
+    return 1
+  fi
   IFS='.' read -r a_major a_minor a_patch <<< "$actual"
   IFS='.' read -r r_major r_minor r_patch <<< "$required"
   a_major="${a_major:-0}" a_minor="${a_minor:-0}" a_patch="${a_patch:-0}"
