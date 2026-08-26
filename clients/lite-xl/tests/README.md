@@ -15,10 +15,16 @@ source via `dofile`, and stay authoritative for their seams:
 lua clients/lite-xl/tests/json_decode_test.lua            # json.lua codec
 lua clients/lite-xl/tests/server_frame_test.lua           # server.lua framing
 lua clients/lite-xl/tests/server_logging_test.lua         # server.lua logging
+lua clients/lite-xl/tests/server_message_scheduling_test.lua # server.lua admission/scheduling
 lua clients/lite-xl/tests/util_show_document_test.lua     # util.lua showDocument
 lua clients/lite-xl/tests/init_document_session_test.lua  # init.lua sessions/versions
 lua clients/lite-xl/tests/init_request_currentness_test.lua # init.lua request admission
 lua clients/lite-xl/tests/init_configuration_items_test.lua # init.lua configuration items
+lua clients/lite-xl/tests/init_show_document_outcome_test.lua # init.lua showDocument outcomes
+lua clients/lite-xl/tests/init_completion_resolve_test.lua # init.lua completion resolve pre-apply
+lua clients/lite-xl/tests/capability_manifest_test.lua    # capability manifest schema/projection
+lua clients/lite-xl/tests/server_initialize_capabilities_test.lua # server.lua initialize truthfulness
+lua clients/lite-xl/tests/init_command_projection_test.lua # init.lua command affordance gates
 lua clients/lite-xl/tests/diagnostics_currentness_test.lua  # diagnostics.lua publications
 ```
 

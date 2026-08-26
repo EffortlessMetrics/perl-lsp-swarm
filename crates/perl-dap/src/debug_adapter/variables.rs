@@ -6,6 +6,8 @@ use super::{
     is_valid_set_variable_name, json, lock_or_recover, parse_dap_arguments, slice_variables,
 };
 use crate::value_format::ValueFormatPolicy;
+#[cfg(test)]
+use perl_tdd_support::must_some;
 
 impl DebugAdapter {
     /// Handle variables request
@@ -997,9 +999,7 @@ mod hazard_invariant_tests {
             (8, ScopeKind::Locals),
             (8, ScopeKind::Arguments),
         ] {
-            let wire = VariableReference::Scope { frame_id, kind }
-                .encode()
-                .expect("test scope reference must encode");
+            let wire = must_some(VariableReference::Scope { frame_id, kind }.encode());
             assert!(
                 variables_body_is_empty(&mut a, i64::from(wire)),
                 "unadmitted {kind:?} scope for frame {frame_id} must be honest empty"
@@ -1107,8 +1107,7 @@ mod hazard_invariant_tests {
         // An EvalResult wire value that IS in cache (simulates a fresh evaluate result
         // before resume — the client holds the ref and sends a variables request while
         // the session is still stopped at the same breakpoint).
-        let eval_ref_wire: i32 =
-            VariableReference::EvalResult { counter: 42 }.encode().expect("counter=42 is valid");
+        let eval_ref_wire: i32 = must_some(VariableReference::EvalResult { counter: 42 }.encode());
         assert!(
             (1_000_000..=1_999_999_999).contains(&eval_ref_wire),
             "setup: must be in EvalResult band"
@@ -1247,16 +1246,11 @@ mod hazard_invariant_tests {
         let lines = vec![format!("@big = [{values}]")];
         let (roots, child_cache) =
             DebugAdapter::parse_scope_variables_from_lines(&lines, 11, 0, 1024);
-        let root = roots
-            .iter()
-            .find(|variable| variable.row.name == "@big")
-            .expect("@big root must be rendered");
+        let root = must_some(roots.iter().find(|variable| variable.row.name == "@big"));
         assert_eq!(root.row.indexed_variables, Some(500));
         assert!(root.row.variables_reference > 0);
 
-        let children = child_cache
-            .get(&root.row.variables_reference)
-            .expect("@big children must be cached for paging");
+        let children = must_some(child_cache.get(&root.row.variables_reference));
         assert_eq!(children.len(), 500);
         assert_eq!(children[250].row.name, "[250]");
         assert_eq!(children[250].row.value, "251");

@@ -1112,22 +1112,15 @@ fn unterminated_string_does_not_hang() -> R {
 
 #[test]
 fn unterminated_regex_does_not_hang() -> R {
-    // The lexer may hang on unterminated regex. Use a bounded loop to verify.
-    let mut lexer = PerlLexer::new("/unterminated");
-    let mut count = 0;
-    loop {
-        match lexer.next_token() {
-            Some(tok) if matches!(tok.token_type, TokenType::EOF) => break,
-            Some(_) => {
-                count += 1;
-                if count > 100 {
-                    break;
-                }
-            }
-            None => break,
-        }
-    }
-    // If we got here, the lexer terminated (pass)
+    let toks = tokens("/unterminated");
+    assert!(
+        toks.iter().any(|t| t.token_type.is_recovery_token()),
+        "unterminated regex must emit a recovery token, got {toks:?}"
+    );
+    assert!(
+        toks.iter().any(|t| matches!(t.token_type, TokenType::EOF)),
+        "unterminated regex should still produce EOF"
+    );
     Ok(())
 }
 

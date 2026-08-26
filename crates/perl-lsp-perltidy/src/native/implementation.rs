@@ -73,7 +73,7 @@ impl NativeFormatter {
 
         // LCOV_EXCL_START — budget exhaustion on pathologically large/deeply-nested
         // input; not reachable with the small sources used in formatter tests.
-        if output.terminated_early {
+        if output.terminated_early() {
             return Err(FormatDiagnostic::new(
                 PARSE_INCOMPLETE_CODE,
                 FormatDiagnosticSeverity::Warning,

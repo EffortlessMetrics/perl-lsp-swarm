@@ -1,17 +1,18 @@
 use perl_lsp_rs_core::providers::{
-    CanonicalEnvelopePort, FileFactShardPort, NoopProviderQueryControl, ProviderAdapterError,
-    ProviderAdapterSnapshot, ProviderCancellationState, ProviderIdentity, ProviderQueryCapability,
-    ProviderQueryContext, ProviderQueryControl, ProviderQueryDeadline, ProviderQueryKind,
-    ProviderQueryOutcome, ProviderQueryRequest, ProviderQueryResult, ProviderQuerySubject,
-    ProviderReadinessRequirement, ProviderReadinessState, ProviderSemanticPort,
-    ProviderSnapshotCompleteness, execute_provider_query,
+    CanonicalEnvelopePort, EnvelopeStructureViolation, FileFactShardPort, NoopProviderQueryControl,
+    ProviderAdapterError, ProviderAdapterSnapshot, ProviderCancellationState, ProviderIdentity,
+    ProviderQueryCapability, ProviderQueryContext, ProviderQueryControl, ProviderQueryDeadline,
+    ProviderQueryKind, ProviderQueryOutcome, ProviderQueryRequest, ProviderQueryResult,
+    ProviderQuerySubject, ProviderReadinessRequirement, ProviderReadinessState,
+    ProviderSemanticPort, ProviderSnapshotCompleteness, execute_provider_query,
 };
 use perl_semantic_facts::{
     AnchorFact, AnchorId, BoundaryDisposition, BoundaryKind, BoundaryLink, Confidence, EntityFact,
-    EntityId, EntityKind, FactId, FileId, LifecyclePhase, OccurrenceFact, OccurrenceId,
-    OccurrenceKind, Provenance, ProviderFactSourceKind, ProviderFallbackState, ProviderSurface,
-    ScopeId, SemanticConfidence, SemanticFactEnvelope, SemanticFactKind, SemanticFreshness,
-    SemanticProducer, SemanticProvenance, SemanticReasonCode, SourceAnchor, SourceGeneration,
+    EntityId, EntityKind, FactId, FileId, InvalidationDependency, LifecyclePhase, OccurrenceFact,
+    OccurrenceId, OccurrenceKind, Provenance, ProviderFactSourceKind, ProviderFallbackState,
+    ProviderSurface, ScopeId, SemanticConfidence, SemanticFactEnvelope, SemanticFactKind,
+    SemanticFreshness, SemanticProducer, SemanticProvenance, SemanticReasonCode, SourceAnchor,
+    SourceGeneration,
 };
 use perl_workspace::workspace::workspace_index::FileFactShard;
 use std::error::Error;
@@ -426,6 +427,85 @@ fn canonical_envelopes_preserve_real_compiler_producer_and_staleness() -> Result
     assert_eq!(stale_result.outcome(), ProviderQueryOutcome::Stale);
     assert_eq!(stale_result.value_facts().count(), 0);
     Ok(())
+}
+
+/// #12601 falsifier: one envelope failing each validator invariant must produce
+/// an error from which the failing rule is identifiable.
+#[test]
+fn malformed_envelope_error_identifies_the_failed_invariant() {
+    let valid = || compiler_envelope(SemanticFreshness::Fresh, "document-7");
+    let with_dependencies = |dependencies: Vec<InvalidationDependency>| {
+        SemanticFactEnvelope::new(
+            FactId(900),
+            Some(EntityId(30)),
+            SemanticFactKind::Declaration,
+            SourceAnchor::new(Some(AnchorId(20)), FileId(10), 4, 12),
+            SourceGeneration::known("document-7"),
+            Some(ScopeId(1)),
+            Some("Example".to_string()),
+            LifecyclePhase::Runtime,
+            SemanticProducer::PirA,
+            SemanticProvenance::Known(Provenance::ExactAst),
+            SemanticConfidence::Known(Confidence::High),
+            SemanticFreshness::Fresh,
+            None,
+            dependencies,
+            SemanticReasonCode::ExactSource,
+        )
+    };
+
+    let mut inverted = valid();
+    inverted.anchor.start_byte = 12;
+    inverted.anchor.end_byte = 4;
+    let mut empty_generation = valid();
+    empty_generation.source_generation = SourceGeneration::known("  ");
+    let mut empty_package = valid();
+    empty_package.package = Some(" ".to_string());
+    let mut unknown_producer = valid();
+    unknown_producer.producer = SemanticProducer::Unknown;
+
+    let cases: [(SemanticFactEnvelope, EnvelopeStructureViolation); 7] = [
+        (inverted, EnvelopeStructureViolation::AnchorRangeInverted),
+        (empty_generation, EnvelopeStructureViolation::EmptySourceGeneration),
+        (empty_package, EnvelopeStructureViolation::EmptyPackageName),
+        (unknown_producer, EnvelopeStructureViolation::UnknownProducer),
+        (
+            with_dependencies(vec![InvalidationDependency::new(
+                "  ",
+                SourceGeneration::known("dep-1"),
+            )]),
+            EnvelopeStructureViolation::EmptyDependencyKey,
+        ),
+        (
+            with_dependencies(vec![InvalidationDependency::new(
+                "dep-1",
+                SourceGeneration::known(" "),
+            )]),
+            EnvelopeStructureViolation::EmptyDependencyGeneration,
+        ),
+        (
+            with_dependencies(vec![
+                InvalidationDependency::new("dep-1", SourceGeneration::known("gen-1")),
+                InvalidationDependency::new("dep-1", SourceGeneration::known("gen-2")),
+            ]),
+            EnvelopeStructureViolation::DuplicateDependencyKey,
+        ),
+    ];
+
+    for (envelope, expected) in cases {
+        let result = CanonicalEnvelopePort::new(
+            &[envelope],
+            snapshot(ProviderSnapshotCompleteness::Complete),
+        );
+        assert_eq!(
+            result.err(),
+            Some(ProviderAdapterError::MalformedEnvelope {
+                fact_id: FactId(900),
+                violation: expected,
+            }),
+            "the failing invariant must be identifiable from the error alone"
+        );
+    }
 }
 
 #[test]

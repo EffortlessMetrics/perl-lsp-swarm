@@ -37,15 +37,21 @@ not an arena or index tree.
 - **Clone** is iterative over the same canonical child fields. Overflow is
   proven on a 50,000-node chain with a 256 KiB worker. Cloning is a full
   owned duplication, not a shared projection.
-- **Debug** and **PartialEq** remain derived and recursive. They are
-  supported only for ordinary parser-produced nesting. Adversarial
-  50,000-node chains are outside that precondition, and the precondition is
-  not runtime-enforced. Replacements are [#8839](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8839)
-  (PartialEq) and [#8840](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8840)
-  (Debug).
-- Recursive read helpers may stay depth-guarded and may truncate. Silent
-  truncation of an operation advertised as exact is a separate claim
-  ([#8867](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8867)).
+- **PartialEq** is iterative exact structural equality over the same
+  canonical child fields. Overflow is proven on a 50,000-node chain with a
+  256 KiB worker. This preserves current `==` semantics; it is not
+  S-expression, fingerprint, or source-text equality.
+- **Debug** is an iterative bounded human projection over the same
+  canonical child fields. Overflow is proven on a 50,000-node chain with a
+  256 KiB worker. Output stays at or under the documented byte bound, and
+  truncation is visible. Rust `Debug` is not machine identity, equality, or
+  a durable metric. Configured complete/truncated rendering is
+  [#8832](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8832).
+- Exact whole-tree reads (`count_nodes`, `find_deepest_containing_offset`)
+  are iterative over the canonical child visit table and cannot silently
+  truncate. Bounded variants expose complete/truncated/instrument-failed
+  state. `to_sexp` may stay depth-guarded; configured rendering remains
+  [#8832](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8832).
 
 ## Contributor checklist (AST behavior changes)
 

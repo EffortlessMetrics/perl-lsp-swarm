@@ -1528,6 +1528,7 @@ dependencies = [
  "perl-module",
  "perl-parser",
  "perl-parser-core",
+ "perl-source-identity",
  "perl-tdd-support",
  "proptest",
  "regex",
@@ -1694,6 +1695,7 @@ dependencies = [
  "perl-symbol",
  "perl-tdd-support",
  "perl-test-facts",
+ "perl-test-must",
  "perl-workspace",
  "proptest",
  "regex",
@@ -1866,6 +1868,7 @@ dependencies = [
 name = "perl-regex"
 version = "0.17.0"
 dependencies = [
+ "perl-test-must",
  "proptest",
  "thiserror",
 ]

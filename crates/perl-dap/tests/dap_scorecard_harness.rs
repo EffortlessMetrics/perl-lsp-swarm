@@ -9,6 +9,10 @@
 //! cargo test -p perl-dap --test dap_scorecard_harness -- --nocapture
 //! ```
 
+#![expect(
+    clippy::print_stderr,
+    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
+)]
 mod common;
 
 use common::{DapWorkflowSession, perl_available, workflow_timeout};
@@ -220,10 +224,13 @@ fn metric_from_result(result: Result<String, String>) -> BinaryMetric {
 fn probe_session_metrics() -> Result<(BinaryMetric, BinaryMetric, BinaryMetric), String> {
     let workspace = tempdir().map_err(|e| e.to_string())?;
     let script_path = workspace.path().join("scorecard_session.pl");
+    // `@big` is lexical so it is enumerated through the advertised Locals
+    // scope (#10563: Package/Globals are not advertised at a live frame);
+    // `our $x` stays for the evaluate-in-frame proof.
     let script_text = r#"use strict;
 use warnings;
 our $x = 41;
-our @big = (1..500);
+my @big = (1..500);
 our %meta = (name => "dap-scorecard");
 my $marker = $x + 1;
 print "marker=$marker\n";
@@ -240,22 +247,22 @@ print "marker=$marker\n";
 
     let stop = session.wait_stopped()?;
     let (frame_id, _, _) = session.stack_trace(stop.thread_id)?;
-    let globals_ref = session.scopes_globals_ref(frame_id)?;
-    let globals = session.variables(globals_ref)?;
+    // #10563: a live frame advertises Locals (plus Arguments); Globals is not
+    // advertised, so the session metrics measure the Locals enumeration.
+    let locals_ref = session.scopes_locals_ref(frame_id)?;
+    let locals = session.variables(locals_ref)?;
 
     let vars_metric = metric_from_result((|| {
-        if globals.is_empty() {
-            return Err("globals scope returned no variables".to_string());
+        if locals.is_empty() {
+            return Err("locals scope returned no variables".to_string());
         }
-        if globals
-            .iter()
-            .any(|var| var.get("name").and_then(Value::as_str).unwrap_or("").is_empty())
+        if locals.iter().any(|var| var.get("name").and_then(Value::as_str).unwrap_or("").is_empty())
         {
-            return Err("globals scope contains variables with empty names".to_string());
+            return Err("locals scope contains variables with empty names".to_string());
         }
-        let n = globals.len();
+        let n = locals.len();
         Ok(format!(
-            "globals scope returned {} named {}",
+            "locals scope returned {} named {}",
             n,
             if n == 1 { "variable" } else { "variables" }
         ))
@@ -280,7 +287,7 @@ print "marker=$marker\n";
         Ok("evaluate($x + 1) returns 42".to_string())
     })());
 
-    let deep_metric = if let Some(expandable) = globals.iter().find(|var| {
+    let deep_metric = if let Some(expandable) = locals.iter().find(|var| {
         var.get("variablesReference").and_then(Value::as_i64).unwrap_or(0) > 0
             && var.get("indexedVariables").and_then(Value::as_i64).unwrap_or(0) >= 200
     }) {
@@ -320,9 +327,18 @@ print "marker=$marker\n";
             Ok(format!("pagination verified on variable with indexedVariables={indexed_count}"))
         })())
     } else {
+        // Not a skip: under the current locals contract this proof cannot run.
+        // `build_locals_b_eval_cmd` deliberately renders lexical aggregates as
+        // opaque `ARRAY(0x0)`/`HASH(0x0)` markers without variablesReference or
+        // indexedVariables until bounded lexical-aggregate enumeration lands
+        // (#7358), so no real-session local can satisfy the pagination
+        // predicate today. Record the gap as not proven rather than letting a
+        // permanently unreachable metric read as an incidental skip.
         BinaryMetric {
-            status: "SKIP",
-            detail: "no indexedVariables >= 200 found in this real-session scope".to_string(),
+            status: "NOT_PROVEN",
+            detail: "no expandable lexical aggregate at this stop: locals aggregates render as \
+                     opaque markers until #7358 lands, so live deep pagination is not proven"
+                .to_string(),
         }
     };
 
@@ -383,11 +399,7 @@ fn print_marker_friendly_summary(receipt: &ScorecardReceipt) {
     eprintln!("<!-- BEGIN: DAP_LAUNCH_SCORECARD -->");
     eprintln!("| Metric | Value | Target | Status |");
     eprintln!("|---|---|---|---|");
-    let launch_pct = if receipt.launch.total == 0 {
-        0
-    } else {
-        (receipt.launch.passed * 100) / receipt.launch.total
-    };
+    let launch_pct = (receipt.launch.passed * 100).checked_div(receipt.launch.total).unwrap_or(0);
     let launch_status =
         if launch_pct >= usize::from(receipt.launch.threshold_pct) { "PASS" } else { "FAIL" };
     eprintln!(
@@ -414,11 +426,7 @@ fn print_marker_friendly_summary(receipt: &ScorecardReceipt) {
     eprintln!("| Metric | Value | Target | Status |");
     eprintln!("|---|---|---|---|");
 
-    let attach_pct = if receipt.attach.total == 0 {
-        0
-    } else {
-        (receipt.attach.passed * 100) / receipt.attach.total
-    };
+    let attach_pct = (receipt.attach.passed * 100).checked_div(receipt.attach.total).unwrap_or(0);
     let attach_status =
         if attach_pct >= usize::from(receipt.attach.threshold_pct) { "PASS" } else { "FAIL" };
     eprintln!(
@@ -588,7 +596,7 @@ fn scorecard_launch_success_rate() -> TestResult {
         receipt.evaluate.detail
     );
     assert!(
-        receipt.deep_pagination.status == "PASS" || receipt.deep_pagination.status == "SKIP",
+        receipt.deep_pagination.status == "PASS" || receipt.deep_pagination.status == "NOT_PROVEN",
         "deep pagination scorecard failed: {}",
         receipt.deep_pagination.detail
     );
