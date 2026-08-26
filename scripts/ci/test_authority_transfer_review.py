@@ -206,6 +206,23 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         receipt = self.evaluate(GOVERNED_CHANGED, [wrong])
         self.assertEqual(atr.FAIL_REVIEW_PROFILE_MISMATCH, receipt["result"])
 
+    def test_row_level_profile_divergence_fails_even_when_profile_exists(self) -> None:
+        # A packet whose profile is valid in the manifest but differs from the
+        # governed row's own review profile still fails the row.
+        close_profile_packet = self.write_packet(
+            "close-profile.json",
+            packet_body(
+                "semantic_close_authority",
+                HEAD,
+                authorities=[
+                    {"ref": "config.public_schema", "subject": "schemas/perllsp-settings.schema.json"}
+                ],
+            ),
+        )
+        receipt = self.evaluate(["schemas/perllsp-settings.schema.json"], [close_profile_packet])
+        self.assertEqual(atr.FAIL_REVIEW_PROFILE_MISMATCH, receipt["result"])
+        self.assertEqual("settings_schema", receipt["verdicts"][0]["surface_id"])
+
     def test_codeowners_style_builder_only_review_is_not_review_evidence(self) -> None:
         # Falsifier 6: CODEOWNERS match or one approval treated as sufficient.
         builder_only = packet_body("semantic_close_authority", HEAD)

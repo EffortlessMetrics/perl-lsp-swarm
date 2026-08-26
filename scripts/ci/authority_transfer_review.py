@@ -903,6 +903,7 @@ def _fixture_manifest_text(catalog_predecessor_exit: str = "") -> str:
         falsifier: str,
         paths: list[str],
         predecessor_exit: str = "",
+        profile: str = "semantic_close_authority",
     ) -> str:
         lines = [
             "",
@@ -912,7 +913,7 @@ def _fixture_manifest_text(catalog_predecessor_exit: str = "") -> str:
             f'controller = "{controller}"',
             f'conflict_key = "{conflict_key}"',
             f'risk_class = "{risk_class}"',
-            'review_profile = "semantic_close_authority"',
+            f'review_profile = "{profile}"',
             f'required_evidence = "{evidence}"',
             f'first_falsifier = "{falsifier}"',
             'enforcement_successor = "#11796"',
@@ -953,6 +954,13 @@ def _fixture_manifest_text(catalog_predecessor_exit: str = "") -> str:
             'required_roles = ["adversarial_challenger"]',
             'packet_contract = "schemas/agent_review_packet.v1.schema.json"',
             'handoff_authority = "#11701"',
+            "",
+            "[profile.public_api_or_retirement_authority]",
+            'fresh_direction = "Challenge denominator movement."',
+            "lenses = [\"release_external_boundary\", \"architecture_authority_duplication\", \"subject_evidence_identity\"]",
+            'required_roles = ["adversarial_challenger"]',
+            'packet_contract = "schemas/agent_review_packet.v1.schema.json"',
+            'handoff_authority = "#10881"',
             "",
             "[code_owner_identity.EffortlessSteven]",
             'kind = "user"',
@@ -1054,6 +1062,7 @@ def _fixture_manifest_text(catalog_predecessor_exit: str = "") -> str:
             "schemas/perllsp-settings.schema.json",
             "docs/reference/CONFIGURATION_SCHEMA.md",
         ],
+        profile="public_api_or_retirement_authority",
     )
     body += surface(
         "ripr_suppression",
@@ -1187,11 +1196,6 @@ def _write_fixture_root(base: Path) -> None:
     manifest_path = base / DEFAULT_MANIFEST
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(_fixture_manifest_text(), encoding="utf-8", newline="\n")
-    (base / "scripts/ci/validate_review_surfaces.py").write_text(
-        (_HERE / "validate_review_surfaces.py").read_text(encoding="utf-8"),
-        encoding="utf-8",
-        newline="\n",
-    )
     (base / ".github/CODEOWNERS").write_text("* @EffortlessSteven\n", encoding="utf-8")
     doc = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
     rendered = vrs.render_projection(doc)
