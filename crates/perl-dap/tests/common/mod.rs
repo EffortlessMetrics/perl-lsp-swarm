@@ -10,10 +10,11 @@ use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel, sync_channel};
 use std::time::{Duration, Instant};
 
 // ─── Public surface ───────────────────────────────────────────────────────────
@@ -710,13 +711,17 @@ pub struct DebuggeePerl {
     /// Absolute path of the probed interpreter; passed as launch-args
     /// `perlPath`, which the adapter honors verbatim.
     pub binary: PathBuf,
-    /// First line of `--version` for the probed binary (diagnostic identity).
+    /// Diagnostic identity derived from the probe session's own output
+    /// (preferentially the perl5db banner line), capped to 120 characters.
     pub identity: String,
 }
 
 struct DebuggeePerlResolution {
     resolved: Option<DebuggeePerl>,
     diagnostics: Vec<String>,
+    /// Whether at least one candidate failed in the timing-sensitive class,
+    /// making one retry worthwhile before caching the negative result.
+    transient_failure: bool,
 }
 
 static DEBUGGEE_PERL: OnceLock<DebuggeePerlResolution> = OnceLock::new();
@@ -752,58 +757,83 @@ fn debuggee_perl_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-/// Probe whether `binary` can actually drive a debugger session over pipes.
-///
-/// Spawns `<binary> -d -- <fixture>` with piped stdio (the exact shape the
-/// adapter uses), feeds it `c` then `q`, and requires the process to exit
-/// within [`DEBUGGEE_PROBE_BUDGET`] having produced either the perl5db banner
-/// or the fixture program's output. Native MSWin32 builds fail here by
-/// producing zero bytes and hanging until killed (#12594 item 6b).
-fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, String> {
-    let version_output = Command::new(binary)
-        .arg("--version")
-        .output()
-        .map_err(|e| format!("cannot execute --version: {e}"))?;
-    let identity = String::from_utf8_lossy(&version_output.stdout)
-        .lines()
-        .next()
-        .unwrap_or("unknown perl")
-        .chars()
-        .take(120)
-        .collect::<String>();
+/// Why one [`probe_debuggee_perl`] attempt failed.
+struct ProbeFailure {
+    reason: String,
+    /// Timing-sensitive failure (the deadline killed a still-running
+    /// debuggee); one retry can legitimately flip it, unlike deterministic
+    /// failures such as a spawn error or a missing debugger banner.
+    transient: bool,
+}
 
+/// Probe whether `binary` can actually drive a debugger session over true
+/// pipes.
+///
+/// Spawns `<binary> -d -- <fixture>` with all three stdio streams as real OS
+/// pipes (`Stdio::piped()` ×3 — the exact spawn shape the adapter uses in
+/// `crates/perl-dap/src/debug_adapter/process.rs`), feeds `c` then `q`
+/// through the pipe write end from a dedicated writer thread, and drains
+/// stdout and stderr on their own reader threads while the deadline loop
+/// waits for exit. Redirection to FILES was rejected deliberately: files are
+/// seekable and perl5db treats non-seekable stdin differently, so a candidate
+/// can pass a file probe yet still hang over the adapter's true pipes — the
+/// exact failure class being classified (#12594 item 6b). A working perl5db
+/// exits well inside [`DEBUGGEE_PROBE_BUDGET`]; native MSWin32 builds produce
+/// zero bytes and hang until killed.
+///
+/// Residual sensitivity: a single attempt is wall-clock sensitive, so the
+/// resolver retries once on a transient-class failure before caching a
+/// negative result ([`resolved_debuggee_perl_or_reason`]).
+fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
+    let fail = |reason: String| ProbeFailure { reason, transient: false };
     let probe_dir =
         std::env::temp_dir().join(format!("perl-lsp-dap-debuggee-probe-{}", std::process::id()));
-    fs::create_dir_all(&probe_dir).map_err(|e| format!("cannot create probe dir: {e}"))?;
+    fs::create_dir_all(&probe_dir).map_err(|e| fail(format!("cannot create probe dir: {e}")))?;
     let script = probe_dir.join("pipe_probe.pl");
     fs::write(
         &script,
         "use strict;\nuse warnings;\nmy $x = 10;\nmy $y = $x + 5;\nprint \"$y\\n\";\n",
     )
-    .map_err(|e| format!("cannot write probe script: {e}"))?;
-    let cmds = probe_dir.join("pipe_probe_cmds.txt");
-    fs::write(&cmds, "c\nq\n").map_err(|e| format!("cannot write probe commands: {e}"))?;
-    let out_path = probe_dir.join("pipe_probe_out.txt");
-    let err_path = probe_dir.join("pipe_probe_err.txt");
-
-    let stdin_file = fs::File::open(&cmds).map_err(|e| format!("cannot open probe stdin: {e}"))?;
-    let stdout_file =
-        fs::File::create(&out_path).map_err(|e| format!("cannot create probe stdout: {e}"))?;
-    let stderr_file =
-        fs::File::create(&err_path).map_err(|e| format!("cannot create probe stderr: {e}"))?;
+    .map_err(|e| fail(format!("cannot write probe script: {e}")))?;
 
     let mut child = Command::new(binary)
         .args(["-d", "--"])
         .arg(&script)
-        .stdin(Stdio::from(stdin_file))
-        .stdout(Stdio::from(stdout_file))
-        .stderr(Stdio::from(stderr_file))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .env_remove("PERL5LIB")
         .env_remove("PERL5OPT")
         .env("LC_ALL", "C")
         .env("TZ", "UTC")
         .spawn()
-        .map_err(|e| format!("cannot spawn: {e}"))?;
+        .map_err(|e| fail(format!("cannot spawn: {e}")))?;
+
+    let Some(stdout_pipe) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(fail("stdout pipe unavailable".to_string()));
+    };
+    let Some(stderr_pipe) = child.stderr.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(fail("stderr pipe unavailable".to_string()));
+    };
+
+    // Feed the scripted debugger commands through the REAL pipe write end. The
+    // payload is four bytes, so the writer cannot block on a full pipe buffer;
+    // dropping `stdin` afterwards delivers EOF exactly like an editor closing
+    // its side of the session.
+    let stdin_pipe = child.stdin.take();
+    let writer = std::thread::spawn(move || {
+        if let Some(mut stdin) = stdin_pipe {
+            let _ = stdin.write_all(b"c\nq\n");
+            let _ = stdin.flush();
+        }
+    });
+
+    let stdout_chunks = drain_pipe(stdout_pipe);
+    let stderr_chunks = drain_pipe(stderr_pipe);
 
     let deadline = Instant::now() + DEBUGGEE_PROBE_BUDGET;
     let status = loop {
@@ -813,33 +843,92 @@ fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, String> {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(format!(
-                        "no exit within {}s — perl5db cannot bootstrap over piped stdio",
-                        DEBUGGEE_PROBE_BUDGET.as_secs()
-                    ));
+                    return Err(ProbeFailure {
+                        reason: format!(
+                            "no exit within {}s — perl5db cannot bootstrap over piped stdio",
+                            DEBUGGEE_PROBE_BUDGET.as_secs()
+                        ),
+                        transient: true,
+                    });
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
-            Err(e) => return Err(format!("probe wait failed: {e}")),
+            Err(e) => return Err(fail(format!("probe wait failed: {e}"))),
         }
     };
+    let _ = writer.join();
 
-    let stdout = fs::read_to_string(&out_path).unwrap_or_default();
-    let stderr = fs::read_to_string(&err_path).unwrap_or_default();
+    // The child has exited, so its pipe write ends are closing and the reader
+    // threads reach EOF almost immediately; the bounded collector exists only
+    // so a grandchild inheriting the write end cannot extend the probe past
+    // its budget.
+    let stdout = collect_pipe_output(stdout_chunks);
+    let stderr = collect_pipe_output(stderr_chunks);
 
     // Either signal proves a live debugger session ran over pipes: the perl5db
     // banner (stderr) or the fixture program's own output (stdout, `15`).
     if !stderr.contains("Loading DB routines") && !stdout.contains("15") {
         let stderr_atom: String = stderr.chars().take(160).collect();
-        return Err(format!(
+        return Err(fail(format!(
             "no usable debugger session over pipes (exit={status}, stdout={}B, \
              stderr={}B: {stderr_atom})",
             stdout.len(),
             stderr.len()
-        ));
+        )));
     }
 
-    Ok(DebuggeePerl { binary: binary.to_path_buf(), identity })
+    Ok(DebuggeePerl {
+        binary: binary.to_path_buf(),
+        identity: identity_from_probe_output(&stderr, &stdout),
+    })
+}
+
+/// Drain `pipe` to EOF on a background thread, forwarding chunks to the
+/// returned receiver. Killing the debuggee closes its pipe write ends, which
+/// unblocks the reader — the deadline loop never waits on the drain.
+fn drain_pipe<R: Read + Send + 'static>(pipe: R) -> Receiver<Vec<u8>> {
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let mut pipe = pipe;
+        let mut buf = [0u8; 4096];
+        loop {
+            match pipe.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    rx
+}
+
+/// Collect drained chunks into a string, bounded well inside the probe budget.
+fn collect_pipe_output(rx: Receiver<Vec<u8>>) -> String {
+    let mut bytes = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(chunk) => bytes.extend_from_slice(&chunk),
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Diagnostic identity from the probe's own output — the perl5db banner line
+/// when present, else the first non-empty output line. Derived here instead of
+/// shelling out to an unbounded separate `--version` subprocess.
+fn identity_from_probe_output(stderr: &str, stdout: &str) -> String {
+    let mut lines = stderr.lines().chain(stdout.lines());
+    let identity_line = lines
+        .clone()
+        .find(|line| line.contains("Loading DB routines"))
+        .or_else(|| lines.find(|line| !line.trim().is_empty()))
+        .unwrap_or("unknown perl");
+    identity_line.chars().take(120).collect()
 }
 
 /// Resolve and cache a pipe-capable debuggee interpreter for live sessions.
@@ -852,29 +941,53 @@ pub fn resolve_debuggee_perl() -> Option<&'static DebuggeePerl> {
     resolved_debuggee_perl_or_reason().ok()
 }
 
-/// [`resolve_debuggee_perl`] with the captured per-candidate failure reasons.
-fn resolved_debuggee_perl_or_reason() -> Result<&'static DebuggeePerl, String> {
-    let resolution = DEBUGGEE_PERL.get_or_init(|| {
-        let explicit = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some();
-        let mut diagnostics = Vec::new();
-        for candidate in &debuggee_perl_candidates() {
-            match probe_debuggee_perl(candidate) {
-                Ok(perl) => return DebuggeePerlResolution { resolved: Some(perl), diagnostics },
-                Err(reason) => {
-                    if explicit {
-                        // An explicitly pinned identity must not fall through:
-                        // surface its failure and stop.
-                        diagnostics.push(format!(
-                            "{DEBUGGEE_PERL_OVERRIDE_ENV} pin {}: {reason}",
-                            candidate.display()
-                        ));
-                        break;
-                    }
-                    diagnostics.push(format!("{}: {reason}", candidate.display()));
+/// One uncached resolution sweep over every candidate interpreter.
+fn resolve_debuggee_perl_uncached() -> DebuggeePerlResolution {
+    let explicit = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some();
+    let mut diagnostics = Vec::new();
+    let mut transient_failure = false;
+    for candidate in &debuggee_perl_candidates() {
+        match probe_debuggee_perl(candidate) {
+            Ok(perl) => {
+                return DebuggeePerlResolution {
+                    resolved: Some(perl),
+                    diagnostics,
+                    transient_failure: false,
+                };
+            }
+            Err(failure) => {
+                transient_failure |= failure.transient;
+                if explicit {
+                    // An explicitly pinned identity must not fall through:
+                    // surface its failure and stop.
+                    diagnostics.push(format!(
+                        "{DEBUGGEE_PERL_OVERRIDE_ENV} pin {}: {}",
+                        candidate.display(),
+                        failure.reason
+                    ));
+                    break;
                 }
+                diagnostics.push(format!("{}: {}", candidate.display(), failure.reason));
             }
         }
-        DebuggeePerlResolution { resolved: None, diagnostics }
+    }
+    DebuggeePerlResolution { resolved: None, diagnostics, transient_failure }
+}
+
+/// [`resolve_debuggee_perl`] with the captured per-candidate failure reasons.
+///
+/// A transient probe failure (wall-clock deadline kill) is retried ONCE with a
+/// fresh sweep over all candidates before the negative result is cached for
+/// the test process. Residual sensitivity: two consecutive transient windows
+/// still cache unresolved, so one heavily loaded moment can skip every live
+/// test in a target for that run.
+fn resolved_debuggee_perl_or_reason() -> Result<&'static DebuggeePerl, String> {
+    let resolution = DEBUGGEE_PERL.get_or_init(|| {
+        let first = resolve_debuggee_perl_uncached();
+        if first.resolved.is_some() || !first.transient_failure {
+            return first;
+        }
+        resolve_debuggee_perl_uncached()
     });
 
     match resolution.resolved.as_ref() {

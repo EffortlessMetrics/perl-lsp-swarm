@@ -222,6 +222,20 @@ fn metric_from_result(result: Result<String, String>) -> BinaryMetric {
     }
 }
 
+/// Assert the attach success-rate threshold on a receipt. Shared by the live
+/// and skipped paths because attach probes run in both.
+fn assert_attach_rate(receipt: &ScorecardReceipt) {
+    let attach_threshold =
+        (receipt.attach.total * usize::from(receipt.attach.threshold_pct)).div_ceil(100);
+    assert!(
+        receipt.attach.passed >= attach_threshold,
+        "DAP attach success rate below threshold: {}/{} passed (need ≥{})",
+        receipt.attach.passed,
+        receipt.attach.total,
+        attach_threshold
+    );
+}
+
 fn probe_session_metrics(
     perl_binary: &Path,
 ) -> Result<(BinaryMetric, BinaryMetric, BinaryMetric), String> {
@@ -495,10 +509,28 @@ fn scorecard_launch_success_rate() -> TestResult {
         return Ok(());
     }
 
+    // Attach probes involve zero perl — a fake TCP server stands in for the
+    // debuggee — so they run regardless of whether a pipe-capable debuggee
+    // interpreter resolves; gating them on identity resolution would silently
+    // discard perl-independent attach proof (#12594 item 6 review). Run 5
+    // attach probes so the 80 % threshold (div_ceil(5 * 80 / 100) = 4) is
+    // meaningful: exactly 1 failure is tolerated.  With n < 5 the ceil
+    // rounding makes the effective threshold 100 %, defeating the intent.
+    let mut attach_results: Vec<FixtureResult> = Vec::new();
+    for _attempt in 0..5 {
+        let (elapsed_ms, error) = match probe_attach(launch_timeout()) {
+            Ok(()) => (None, None),
+            Err(err) => (None, Some(err)),
+        };
+        attach_results.push(FixtureResult { name: "tcp_loopback", elapsed_ms, error });
+    }
+    let attach_passed = attach_results.iter().filter(|r| r.passed()).count();
+
     // Live launch/session probes need an interpreter whose perl5db actually
     // operates over piped stdio; native MSWin32 builds hang at bootstrap
     // (#12594 item 6b). Record the gap as a typed skip rather than letting
-    // every session metric fail on timeouts.
+    // every session metric fail on timeouts. Only the live-session probes are
+    // gated on this resolution.
     let Some(debuggee_perl) = debuggee_perl_or_typed_skip("scorecard_launch_success_rate") else {
         let skipped = ScorecardReceipt {
             perl_available: true,
@@ -511,12 +543,12 @@ fn scorecard_launch_success_rate() -> TestResult {
                 details: Vec::new(),
             },
             attach: RateMetric {
-                passed: 0,
-                total: 0,
+                passed: attach_passed,
+                total: attach_results.len(),
                 threshold_pct: 80,
                 p50_ms: None,
                 p95_ms: None,
-                details: Vec::new(),
+                details: attach_results,
             },
             variables: BinaryMetric {
                 status: "SKIP",
@@ -534,7 +566,11 @@ fn scorecard_launch_success_rate() -> TestResult {
         };
         print_marker_friendly_summary(&skipped);
         write_receipt(&skipped)?;
-        eprintln!("scorecard_launch_success_rate: skipping — no pipe-capable perl debugger");
+        assert_attach_rate(&skipped);
+        eprintln!(
+            "scorecard_launch_success_rate: skipping live-session probes — no pipe-capable perl \
+             debugger"
+        );
         return Ok(());
     };
 
@@ -559,23 +595,10 @@ fn scorecard_launch_success_rate() -> TestResult {
         launch_results.push(FixtureResult { name, elapsed_ms, error });
     }
 
-    // Run 5 attach probes so the 80 % threshold (div_ceil(5 * 80 / 100) = 4) is
-    // meaningful: exactly 1 failure is tolerated.  With n < 5 the ceil rounding
-    // makes the effective threshold 100 %, defeating the intent.
-    let mut attach_results: Vec<FixtureResult> = Vec::new();
-    for _attempt in 0..5 {
-        let (elapsed_ms, error) = match probe_attach(launch_timeout()) {
-            Ok(()) => (None, None),
-            Err(err) => (None, Some(err)),
-        };
-        attach_results.push(FixtureResult { name: "tcp_loopback", elapsed_ms, error });
-    }
-
     let mut latencies: Vec<u128> = launch_results.iter().filter_map(|r| r.elapsed_ms).collect();
     latencies.sort_unstable();
 
     let launch_passed = launch_results.iter().filter(|r| r.passed()).count();
-    let attach_passed = attach_results.iter().filter(|r| r.passed()).count();
 
     let (variables, evaluate, deep_pagination) = match probe_session_metrics(&debuggee_perl.binary)
     {
@@ -616,9 +639,6 @@ fn scorecard_launch_success_rate() -> TestResult {
 
     let launch_threshold =
         (receipt.launch.total * usize::from(receipt.launch.threshold_pct)).div_ceil(100);
-    let attach_threshold =
-        (receipt.attach.total * usize::from(receipt.attach.threshold_pct)).div_ceil(100);
-
     assert!(
         receipt.launch.passed >= launch_threshold,
         "DAP launch success rate below threshold: {}/{} passed (need ≥{})",
@@ -626,13 +646,7 @@ fn scorecard_launch_success_rate() -> TestResult {
         receipt.launch.total,
         launch_threshold
     );
-    assert!(
-        receipt.attach.passed >= attach_threshold,
-        "DAP attach success rate below threshold: {}/{} passed (need ≥{})",
-        receipt.attach.passed,
-        receipt.attach.total,
-        attach_threshold
-    );
+    assert_attach_rate(&receipt);
     assert_eq!(
         receipt.variables.status, "PASS",
         "variables scorecard failed: {}",
