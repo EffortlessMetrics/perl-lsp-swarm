@@ -432,6 +432,10 @@ impl LspServer {
                 return self.search_open_documents_for_symbols(query, cap);
             }
 
+            // Canonical Dancer2 entries (#8928) are computed BEFORE the
+            // index coordinator guard is taken: the computation re-enters
+            // module resolution and readiness state internally.
+            let dancer2_entries = self.dancer2_workspace_symbols_typed(query, cap);
             let access_mode = route_index_access(self.coordinator());
 
             match access_mode {
@@ -448,6 +452,10 @@ impl LspServer {
                             Some(cap),
                         ),
                     );
+                    // Canonical Dancer2 route entries (#8928): labeled
+                    // framework projections from open-document canonical
+                    // facts, bounded by the same cap.
+                    symbols.extend(dancer2_entries);
 
                     // Convert to LSP format with cooperative yielding.
                     // No .take(cap) needed — the search functions already apply the cap.
@@ -969,6 +977,98 @@ impl LspServer {
         let mut seen = HashSet::new();
         candidates.retain(|candidate| seen.insert(candidate.clone()));
         candidates
+    }
+
+    /// Canonical Dancer2 workspace-symbol entries (#8928).
+    ///
+    /// Labeled `[Dancer2 route]` entries computed from the canonical facts
+    /// of each open document's current snapshot. This is the read-only
+    /// slice: index-side publication of canonical framework entities belongs
+    /// to the canonical shard seam, not to a provider-local second index.
+    /// Empty query returns no framework entries (browse behavior stays with
+    /// the source index).
+    #[cfg(feature = "workspace")]
+    fn dancer2_workspace_symbols_typed(
+        &self,
+        query: &str,
+        cap: usize,
+    ) -> Vec<perl_workspace::workspace_index::WorkspaceSymbol> {
+        use perl_lsp_rs_core::providers::dancer2::{
+            DANCER2_ROUTE_LABEL, dancer2_workspace_entities,
+        };
+        use perl_parser_core::position::{Position, Range as ByteRange};
+        use perl_symbol::SymbolKind;
+
+        if query.is_empty() || cap == 0 {
+            return Vec::new();
+        }
+        let lower_query = query.to_ascii_lowercase();
+        let docs: Vec<(String, std::sync::Arc<crate::state::ParsedSnapshot>, String)> = {
+            let documents = self.documents_guard();
+            documents
+                .iter()
+                .filter_map(|(uri, doc)| {
+                    doc.current_parsed()
+                        .map(|snapshot| (uri.clone(), snapshot, doc.text_arc.to_string()))
+                })
+                .collect()
+        };
+
+        let mut entries = Vec::new();
+        for (doc_uri, snapshot, text) in docs {
+            let Some(ast) = snapshot.ast() else { continue };
+            let context =
+                self.dancer2_request_context(&doc_uri, &text, snapshot.content_hash(), ast);
+            if !context.activations.has_exact() {
+                continue;
+            }
+            for entity in dancer2_workspace_entities(&context.facts) {
+                if !entity.bare_name.to_ascii_lowercase().contains(&lower_query) {
+                    continue;
+                }
+                let ((sl, sc), (el, ec)) = {
+                    let documents = self.documents_guard();
+                    self.get_document(&documents, &doc_uri)
+                        .map(|doc| {
+                            (
+                                self.offset_to_pos16(
+                                    doc,
+                                    usize::try_from(entity.start).unwrap_or(0),
+                                ),
+                                self.offset_to_pos16(doc, usize::try_from(entity.end).unwrap_or(0)),
+                            )
+                        })
+                        .unwrap_or(((0, 0), (0, 0)))
+                };
+                let package = entity
+                    .canonical_name
+                    .rsplit_once("::")
+                    .map(|(container, _)| container.to_string())
+                    .unwrap_or_else(|| "main".to_string());
+                entries.push(perl_workspace::workspace_index::WorkspaceSymbol {
+                    name: format!("{} {DANCER2_ROUTE_LABEL}", entity.bare_name),
+                    kind: SymbolKind::Subroutine,
+                    uri: doc_uri.clone(),
+                    range: ByteRange::new(
+                        Position::new(usize::try_from(entity.start).unwrap_or(0), sl, sc),
+                        Position::new(usize::try_from(entity.end).unwrap_or(0), el, ec),
+                    ),
+                    qualified_name: Some(entity.canonical_name.clone()),
+                    documentation: Some(
+                        "Canonical Dancer2 framework projection anchored to the source                          declaration; virtual entry, no generated body"
+                            .to_string(),
+                    ),
+                    container_name: Some(package),
+                    has_body: false,
+                    workspace_folder_uri: None,
+                    is_lexical: false,
+                });
+                if entries.len() >= cap {
+                    return entries;
+                }
+            }
+        }
+        entries
     }
 
     /// Search open documents for symbols (non-workspace stub)

@@ -1,0 +1,138 @@
+//! Per-file canonical Dancer2 fact assembly (#8928).
+//!
+//! Runs the canonical extractors over one document and mints the canonical
+//! fact family through the registry-activated producers for every exactly
+//! activated package. Facts are recomputed from the current snapshot on
+//! every request — the source generation is derived from the document
+//! content digest, so an edit immediately changes the generation and a
+//! stale exact answer cannot survive a re-query.
+
+use super::activation::Dancer2FileActivations;
+use perl_parser_core::Node;
+use perl_semantic_analyzer::analysis::dancer2_hooks::extract_dancer2_hook_declarations;
+use perl_semantic_analyzer::analysis::dancer2_routes::extract_dancer2_route_contexts;
+use perl_semantic_facts::FileId;
+use perl_semantic_facts::framework_adapters::dancer2_hooks::{
+    Dancer2HookDeclaration, dancer2_hook_facts,
+};
+use perl_semantic_facts::framework_adapters::dancer2_routes::{
+    Dancer2RouteFacts, dancer2_route_family_facts,
+};
+use perl_semantic_facts::hook::HookFact;
+use perl_semantic_facts::route::{RouteFact, RouteHandlerContextFact};
+
+/// Canonical Dancer2 facts for one document (all exactly activated packages).
+#[non_exhaustive]
+#[derive(Debug, Clone, Default)]
+pub struct CanonicalDancer2FileFacts {
+    /// Minted route facts (exact and degraded, generation owned).
+    pub routes: Vec<RouteFact>,
+    /// Minted prefix declaration facts.
+    pub prefixes: Vec<perl_semantic_facts::route::RoutePrefixFact>,
+    /// Minted route parameter facts.
+    pub parameters: Vec<perl_semantic_facts::route::RouteParameterFact>,
+    /// Minted inline handler-context facts.
+    pub handler_contexts: Vec<RouteHandlerContextFact>,
+    /// Minted hook facts.
+    pub hooks: Vec<HookFact>,
+    /// Source-extracted route declarations of exactly activated packages,
+    /// retained for bounded diagnostics (excluded keywords mint no fact but
+    /// remain source observations).
+    pub extracted_routes:
+        Vec<perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration>,
+}
+
+impl CanonicalDancer2FileFacts {
+    /// Whether any canonical fact was minted (activation was exact and the
+    /// document carries admitted declarations).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.routes.is_empty()
+            && self.prefixes.is_empty()
+            && self.parameters.is_empty()
+            && self.handler_contexts.is_empty()
+            && self.hooks.is_empty()
+    }
+
+    /// The route fact whose declaration span contains `offset`, if any.
+    #[must_use]
+    pub fn route_at(&self, offset: usize) -> Option<&RouteFact> {
+        self.routes.iter().find(|fact| {
+            let anchor = &fact.envelope.anchor;
+            usize::try_from(anchor.start_byte).ok() <= Some(offset)
+                && offset < usize::try_from(anchor.end_byte).unwrap_or(0)
+        })
+    }
+
+    /// The hook fact whose declaration span contains `offset`, if any.
+    #[must_use]
+    pub fn hook_at(&self, offset: usize) -> Option<&HookFact> {
+        self.hooks.iter().find(|fact| {
+            let anchor = &fact.envelope.anchor;
+            usize::try_from(anchor.start_byte).ok() <= Some(offset)
+                && offset < usize::try_from(anchor.end_byte).unwrap_or(0)
+        })
+    }
+
+    /// Whether `offset` lies inside one of the minted inline handler spans.
+    #[must_use]
+    pub fn inside_handler_context(&self, offset: usize) -> bool {
+        self.handler_contexts.iter().any(|context| {
+            let anchor = &context.envelope.anchor;
+            usize::try_from(anchor.start_byte).ok() <= Some(offset)
+                && offset < usize::try_from(anchor.end_byte).unwrap_or(0)
+        })
+    }
+}
+
+/// Mint the canonical Dancer2 fact family for one document.
+///
+/// Uses only the canonical producers; when no package is exactly activated
+/// the result is empty (zero facts of any kind). The generation embedded in
+/// each activation's exact state (from [`super::activation::file_activations`])
+/// is the generation the facts mint with.
+#[must_use]
+pub fn canonical_file_facts(
+    ast: &Node,
+    file_id: FileId,
+    activations: &Dancer2FileActivations,
+) -> CanonicalDancer2FileFacts {
+    let mut facts = CanonicalDancer2FileFacts::default();
+    let Some(detection) = &activations.detection else {
+        return facts;
+    };
+
+    let route_contexts = extract_dancer2_route_contexts(ast, file_id);
+    let hook_declarations: Vec<Dancer2HookDeclaration> =
+        extract_dancer2_hook_declarations(ast, file_id);
+
+    for activation in &activations.packages {
+        if !activation.facts.is_exact() {
+            continue;
+        }
+        let package = Some(activation.package.as_str());
+        for declaration in &route_contexts.routes {
+            if declaration.package.as_deref() == package {
+                facts.extracted_routes.push(declaration.clone());
+            }
+        }
+        let family: Dancer2RouteFacts = dancer2_route_family_facts(
+            detection,
+            &activation.facts,
+            package,
+            &route_contexts.routes,
+            &route_contexts.prefixes,
+        );
+        facts.routes.extend(family.routes);
+        facts.prefixes.extend(family.prefixes);
+        facts.parameters.extend(family.parameters);
+        facts.handler_contexts.extend(family.handler_contexts);
+        facts.hooks.extend(dancer2_hook_facts(
+            detection,
+            &activation.facts,
+            package,
+            &hook_declarations,
+        ));
+    }
+    facts
+}
