@@ -203,9 +203,9 @@ struct Receipt {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct VerifiedChildArtifact<'a> {
-    owner_issue: &'static str,
-    schema_version: &'static str,
-    receipt_schema_version: &'static str,
+    owner_issue: &'a str,
+    schema_version: &'a str,
+    receipt_schema_version: &'a str,
     candidate_id: &'a str,
     frozen_product_sha: &'a str,
     artifact_set_id: &'a str,
@@ -566,7 +566,8 @@ mod tests {
         let directory = tempdir()?;
         let output = directory.path().join("child.json");
         write_verified_child_artifact(&receipt, &receipt_sha256, status, &output)?;
-        let artifact: VerifiedChildArtifact<'_> = serde_json::from_slice(&std::fs::read(output)?)?;
+        let artifact_bytes = std::fs::read(&output)?;
+        let artifact = serde_json::from_slice::<VerifiedChildArtifact>(&artifact_bytes)?;
         assert_eq!(artifact.schema_version, "verified_child_receipt.v1");
         assert_eq!(artifact.receipt_schema_version, "first_ten_minutes.v1");
         assert_eq!(artifact.candidate_id, "v0.18.0-pre-freeze");
@@ -736,14 +737,17 @@ mod tests {
             .and_then(serde_json::Value::as_array_mut)
             .and_then(|steps| steps.first_mut())
             .and_then(serde_json::Value::as_object_mut)
-            .and_then(|step| step.get_mut("limitations"))
-            .and_then(serde_json::Value::as_array_mut)
-            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no step limitations"))?;
-        let first = limitations
-            .first()
-            .cloned()
-            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no step limitation"))?;
-        limitations.push(first);
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no steps"))?
+            .entry("limitations")
+            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        let limitations = limitations
+            .as_array_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("step limitations is not an array"))?;
+        // Inject our own duplicate pair: the fixture's own limitation set may
+        // legitimately be empty, so the discriminator cannot depend on
+        // pre-existing entries.
+        limitations.push(serde_json::Value::String("duplicate-limitation-probe".to_string()));
+        limitations.push(serde_json::Value::String("duplicate-limitation-probe".to_string()));
         if validate_raw_shape(&raw).is_ok() {
             return Err(color_eyre::eyre::eyre!(
                 "duplicate steps[].limitations unexpectedly passed raw validation"
