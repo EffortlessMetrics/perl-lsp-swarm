@@ -53,6 +53,10 @@
 "                                   wire marker appears at least n times
 "   VimLspHostWireMarkerCount(m)    current count of the wire marker in the
 "                                   client log (generation observation)
+"   VimLspHostSettledStateBarrier(expr, quiet, timeout)
+"                                   negated-claim barrier: passes only when
+"                                   the claim holds AND the wire push count
+"                                   stayed quiet for quiet_ms (#11390)
 "   VimLspHostStableStateWindow(expr, ms)
 "                                   bounded stale-hold window: 1 when the
 "                                   state claim held, 0 when false at start,
@@ -378,6 +382,39 @@ function! VimLspHostUpdateWorkspaceConfig(include_paths_csv) abort
         \ },
         \ })
   return a:include_paths_csv
+endfunction
+
+function! VimLspHostSettledStateBarrier(expr, quiet_ms, timeout_ms) abort
+  " Settled-state barrier for negated claims (errors == 0, warnings == 0):
+  " after a document open the server first publishes a leading empty batch
+  " and the computed batch follows, so a first-true wait can pass on the
+  " transient. The claim is accepted only once it holds AND the client log's
+  " publishDiagnostics count has stayed unchanged for quiet_ms — the settled
+  " generation — still bounded by the parent-owned timeout.
+  let s:wire_needle = '"method":"textDocument/publishDiagnostics"'
+  let l:deadline = reltime()
+  while v:true
+    if reltimefloat(reltime(l:deadline)) * 1000.0 >= a:timeout_ms
+      return 0
+    endif
+    let l:count = s:WireMarkerCount()
+    if eval(a:expr)
+      let l:quiet_start = reltime()
+      while v:true
+        if reltimefloat(reltime(l:quiet_start)) * 1000.0 >= a:quiet_ms
+          return 1
+        endif
+        if reltimefloat(reltime(l:deadline)) * 1000.0 >= a:timeout_ms
+          return 0
+        endif
+        if s:WireMarkerCount() != l:count
+          break
+        endif
+        sleep 50m
+      endwhile
+    endif
+    sleep 50m
+  endwhile
 endfunction
 
 function! VimLspHostStableStateWindow(expr, window_ms) abort

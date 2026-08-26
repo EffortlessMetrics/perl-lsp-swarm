@@ -218,7 +218,12 @@ function! s:MaterializeBarrier(update_before, wire_before, state_expr, state_fai
     call s:Fail('materialization_wire_push_never_arrived')
     return 0
   endif
-  if !s:WaitFor(a:state_expr, s:budget)
+  " The state claim settles rather than first-passes: a document open begins
+  " with a leading empty publishDiagnostics batch and the computed batch
+  " follows, so a negated claim (== 0) observed on the transient would accept
+  " a generation that is not current. The settled barrier requires the claim
+  " to hold across a bounded quiet window of the wire push count.
+  if !VimLspHostSettledStateBarrier(a:state_expr, 1500, s:budget)
     call s:Fail(a:state_fail_reason)
     return 0
   endif
@@ -340,7 +345,9 @@ endif
 " generations
 
 if empty(s:failures) && s:WaitFor("VimLspHostBufferDiagnosticsCounts()['error'] == 0", s:budget)
-      \ && s:WaitFor("VimLspHostBufferDiagnosticsCounts()['warning'] == 0", s:budget / 3)
+      \ && VimLspHostSettledStateBarrier(
+      \   "VimLspHostBufferDiagnosticsCounts()['error'] == 0"
+      \   . " && VimLspHostBufferDiagnosticsCounts()['warning'] == 0", 1500, s:budget)
   call s:EmitGenerationCurrent(1, 'g1_clean')
 elseif empty(s:failures)
   call s:Fail('g1_clean_state_never_arrived')
@@ -441,9 +448,9 @@ if empty(s:failures)
         \ 'picks_generation': 'g3_old_clean',
         \ })
   if s:MaterializeBarrier(s:update_before, s:wire_before,
-        \ "VimLspHostBufferDiagnosticsCounts()['error'] == 0",
+        \ "VimLspHostBufferDiagnosticsCounts()['error'] == 0"
+        \ . " && VimLspHostBufferDiagnosticsCounts()['warning'] == 0",
         \ 'materialization_state_never_arrived')
-        \ && s:WaitFor("VimLspHostBufferDiagnosticsCounts()['warning'] == 0", s:budget / 3)
     call s:EmitGenerationCurrent(4, 'g3_decoy_control')
   endif
 endif
