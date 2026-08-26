@@ -275,14 +275,14 @@ impl<'a> TokenStream<'a> {
     /// In buffered mode the peek cache is cleared but no re-lexing occurs â€”
     /// token kinds are fixed from the original lex pass.
     pub fn relex_as_term(&mut self) {
-        if let TokenStreamInner::Lexer(ref mut lexer) = self.inner {
-            if let Some(ref token) = self.peeked {
-                use perl_lexer::Checkpointable;
-                let pos = token.start();
-                // Build a checkpoint at the peeked token's position with ExpectTerm mode
-                let cp = perl_lexer::LexerCheckpoint::at_position(pos);
-                lexer.restore(&cp);
-            }
+        if let TokenStreamInner::Lexer(ref mut lexer) = self.inner
+            && let Some(ref token) = self.peeked
+        {
+            use perl_lexer::Checkpointable;
+            let pos = token.start();
+            // Build a checkpoint at the peeked token's position with ExpectTerm mode
+            let cp = perl_lexer::LexerCheckpoint::at_position(pos);
+            lexer.restore(&cp);
         }
         // Both modes: clear the peek cache.
         self.peeked = None;

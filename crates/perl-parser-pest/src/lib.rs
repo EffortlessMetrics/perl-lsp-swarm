@@ -37,6 +37,7 @@
 //! 1. **Pest Parsing**: PEG grammar processes input into parse tree
 //! 2. **AST Building**: Type-safe AST construction with position tracking
 //! 3. **S-Expression Output**: Tree-sitter compatible format generation
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 pub mod error;
 pub mod pratt_parser;

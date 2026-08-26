@@ -8,6 +8,7 @@
 //! - TokenKind variant exhaustiveness
 //! - TokenKind Copy / Clone / Eq / Debug
 //! - Edge cases: empty text, zero-length spans, unicode, large offsets
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_parser_core::percentile::nearest_rank_percentile;
 use perl_token::{Token, TokenKind};

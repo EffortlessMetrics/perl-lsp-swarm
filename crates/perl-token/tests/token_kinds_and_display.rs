@@ -7,6 +7,7 @@
 //! - Source location (span) tracking and consistency
 //! - Missing variant coverage (Field, Goto in keyword lists)
 //! - Token equality across different construction paths
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_token::{Token, TokenKind};
 use std::sync::Arc;
