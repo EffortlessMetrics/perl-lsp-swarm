@@ -1063,6 +1063,9 @@ jobs:
           CX43_RESULT: ${{ needs.ripr-cx43.result }}
           GITHUB_RESULT: ${{ needs.ripr-github.result }}
           FALLBACK_RESULT: ${{ needs.ripr-fallback.result }}
+          # gh authenticates through GH_TOKEN/GITHUB_TOKEN; without this the
+          # eviction log inspection below always fails closed to ripr-failure.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -1136,6 +1139,13 @@ jobs:
             cx43) lane_name="ripr+ on CX43"; lane_result="$CX43_RESULT" ;;
             github) lane_name="ripr+ on GitHub Hosted"; lane_result="$GITHUB_RESULT" ;;
           esac
+          # After a disk-preflight failover the evidence-producing job is the
+          # fallback, not the primary CX lane: inspect its log when it ran and
+          # failed, or its runner eviction reports as a ripr source failure.
+          if [ "$FALLBACK_RESULT" = "failure" ] || [ "$FALLBACK_RESULT" = "cancelled" ]; then
+            lane_name="ripr+ (Disk-Full Fallback)"
+            lane_result="$FALLBACK_RESULT"
+          fi
           lane_class="ripr-failure"
           lane_job_id=""
           if [ -n "$lane_name" ] && [ "$lane_result" != "success" ]; then
