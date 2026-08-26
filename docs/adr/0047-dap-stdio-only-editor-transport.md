@@ -47,10 +47,12 @@ proof. A generic DAP client that *might* speak TCP is not a product
 requirement.
 
 This ADR froze architecture truth before code removal. Native editor
-`run_socket` was later removed by #10565. `--socket`/`--port` still parse for
-the `#10566` external-peer editor wrapper and fail before bind on the native
-path. `bind_editor_listener` remains until #10566. Debugger-peer TCP is not in
-scope. Editor-socket authentication is rejected as a design for this train.
+`run_socket` was later removed by #10565. #10566 then removed
+`bind_editor_listener` and the remaining external-peer editor-socket wrapper.
+`--socket`/`--port` still parse via shared `TransportArgs` and fail before bind
+on every `perl-dap` path, including `--external-peer` / `--external-peer-listen`.
+Debugger-peer TCP is not in scope. Editor-socket authentication is rejected as a
+design for this train.
 
 ## Decision Drivers
 
@@ -116,10 +118,15 @@ supported client that requires editor TCP.
   command as history.
 - Native `#10565` removed production `run_socket` / the native editor
   `TcpListener`. Shared `TransportArgs` `--socket`/`--port` remain parsed and
-  inventoried as `retire` until #10566; native use fails before bind with a
-  `--stdio` migration.
-- #10566 may remove the remaining external-peer editor-socket wrapper only
-  after this inventory remains current.
+  inventoried as `retire`; native use fails before bind with a `--stdio`
+  migration.
+- #10566 removed the remaining external-peer editor-socket wrapper. The same
+  flags now fail before bind on `--external-peer` / `--external-peer-listen`
+  with a stdio migration that preserves the selected peer backend. They are not
+  silently ignored.
+- #10567 proves stdio-only editor authority and zero ambient DAP listeners
+  across every process mode. Do not implement that leaf, #7486, or
+  editor-socket authentication in the PR that lands a later child.
 - If later evidence proves a current supported client requires editor TCP,
   `ruling_status` cannot stay `accepted` and #7486 must be amended before
   further removal.
@@ -127,7 +134,7 @@ supported client that requires editor TCP.
 ## Follow-up obligations
 
 - #10565 — native editor `--socket` / `run_socket` production admission removed.
-- #10566 — remove external-peer editor socket wrappers; keep peer-only TCP.
+- #10566 — external-peer editor socket wrappers removed; peer-only TCP retained.
 - #10567 — prove stdio-only editor authority and zero ambient DAP listeners.
-- Do not implement those remaining leaves, #7486, or editor-socket authentication
-  in the PR that lands a later child.
+- Do not implement #10567, #7486, or editor-socket authentication in the PR
+  that lands a later child.

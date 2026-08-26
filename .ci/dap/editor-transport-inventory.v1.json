@@ -87,7 +87,7 @@
       "paths": [
         "crates/perl-dap/src/main.rs"
       ],
-      "claim_boundary": "optional --socket wrapper around external-peer editor I/O is retire; peer TCP is not"
+      "claim_boundary": "external-peer editor socket wrapper is retired; --socket/--port fail before bind on every perl-dap path including external-peer"
     },
     {
       "id": "native-editor-stdio",
@@ -111,7 +111,7 @@
       "paths": [
         "crates/perl-dap/src/debug_adapter/transport.rs"
       ],
-      "claim_boundary": "native run_socket / editor listener removed; --socket/--port still parse for #10566 and fail before bind on the native path"
+      "claim_boundary": "native run_socket / editor listener removed; --socket/--port still parse via TransportArgs flatten and fail before bind on every perl-dap path including external-peer"
     },
     {
       "id": "test-only-loopback",
@@ -121,7 +121,8 @@
       "authority": "test",
       "owner_issue": "#10564",
       "paths": [
-        "crates/perl-dap/tests/dap_native_editor_socket_retirement.rs"
+        "crates/perl-dap/tests/dap_native_editor_socket_retirement.rs",
+        "crates/perl-dap/tests/dap_peer_editor_stdio_only.rs"
       ],
       "claim_boundary": "test loopback helpers cannot satisfy a product client row; native editor listener is gone from production"
     }
@@ -133,13 +134,6 @@
       "role": "debugger_peer",
       "transport_id": "debugger-peer-tcp",
       "disposition": "retain"
-    },
-    {
-      "id": "external-peer-editor-listener",
-      "path": "crates/perl-dap/src/main.rs",
-      "role": "editor",
-      "transport_id": "external-peer-editor-tcp",
-      "disposition": "retire"
     }
   ],
   "cli_flags": [
@@ -148,14 +142,14 @@
       "flag": "--port",
       "applies_to": "perl-dap",
       "disposition": "retire",
-      "source": "TransportArgs flatten; DEFAULT_DAP_PORT 13603 remains only for #10566 external-peer editor wrapper"
+      "source": "TransportArgs flatten; DEFAULT_DAP_PORT 13603 is only used to detect retired editor-port flags before bind"
     },
     {
       "id": "perl-dap-socket",
       "flag": "--socket",
       "applies_to": "perl-dap",
       "disposition": "retire",
-      "source": "TransportArgs flatten on perl-dap Args; native use is retired (#10565); remains for #10566 external-peer editor wrapper"
+      "source": "TransportArgs flatten on perl-dap Args; native (#10565) and external-peer (#10566) editor use fail before bind"
     }
   ],
   "dap_to_dap_relays": [
@@ -226,8 +220,8 @@
         "perl-dap --socket"
       ],
       "support_owner": "#6949",
-      "migration": "keep stdio editor link; retire optional editor --socket wrapper in #10566",
-      "claim_boundary": "debugger-peer TCP is retained; the editor wrapper socket is optional and classified retire",
+      "migration": "none; editor DAP is stdio-only. Authenticated debugger-peer TCP remains a backend transport",
+      "claim_boundary": "debugger-peer TCP is retained; the editor wrapper socket is retired and --socket/--port fail before bind",
       "blocks_retirement": false
     },
     {
@@ -429,5 +423,5 @@
       "blocks_retirement": false
     }
   ],
-  "digest": "1b24ad8fd9389f5cc8a69bb90590ba84ebc251906c49f17c7aa61d57bd42cb28"
+  "digest": "f5514854df6bf51ea5b10e2fc8d3e74dd36b5763fa4c9b6bb788b286dcfbe06e"
 }

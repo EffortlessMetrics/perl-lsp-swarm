@@ -1152,6 +1152,22 @@ impl LspServer {
                         continue;
                     }
 
+                    // Same-document lexicals are owned by cursor-visibility
+                    // admission (#8941): the core provider paths already emitted
+                    // every cursor-visible same-document variable matching this
+                    // prefix, so anything reaching this fallback was rejected
+                    // before candidate construction (sibling/child/ended scope,
+                    // future declaration). Re-admitting it here would encode an
+                    // invisible lexical as a low-priority workspace candidate,
+                    // which admission forbids at any rank.
+                    let is_same_document_lexical_variable =
+                        matches!(symbol.kind, crate::workspace_index::SymbolKind::Variable(_))
+                            && !is_cross_file_variable
+                            && symbol.is_lexical;
+                    if is_same_document_lexical_variable {
+                        continue;
+                    }
+
                     // Strategy A: module-kind symbols in `use Module` / `require Module`
                     // context — filter by position-aware @INC reachability so that
                     // `no lib` cancellations are honoured (fixes #8537).
@@ -5340,6 +5356,56 @@ our $single_root_var;
             "a variable declared in the open document is already in scope bare"
         );
         assert!(text_edit_range.is_none(), "a bare insert_text must carry no replace range");
+    }
+
+    /// A same-document `my` lexical rejected by cursor-visibility admission
+    /// (#8941) must stay withdrawn in the runtime workspace fallback: the core
+    /// provider already emitted every visible same-document variable matching
+    /// this prefix, so anything reaching this pass was rejected before
+    /// candidate construction. Re-admitting it here would encode an invisible
+    /// lexical as a low-priority workspace candidate.
+    ///
+    /// The prefix is the bare sigil `$`, so the candidate set is exactly the
+    /// variables under assertion. The two vacuity guards pin the neighbors the
+    /// skip must NOT swallow — the same-document `our` stays bare and the
+    /// cross-file `our` stays qualified in the very same response — so the
+    /// withdrawal below is a decision, not an empty or over-broad gate.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn same_document_lexical_variable_is_withdrawn_from_runtime_fallback() {
+        let items = run_workspace_pass_over_secrets_module(
+            "file:///project/bin/app.pl",
+            "package App;\nmy $same_doc_lexical = 3;\nour $api_local = 1;\n$",
+            Some("package App;\nmy $same_doc_lexical = 3;\nour $api_local = 1;\n"),
+        );
+        let labels: Vec<&str> = items.iter().map(|(label, _, _)| label.as_str()).collect();
+
+        assert!(
+            !labels.contains(&"$same_doc_lexical"),
+            "a same-document `my` lexical withdrawn by cursor-visibility admission must not \
+             re-enter through the runtime fallback; got {items:?}"
+        );
+
+        let (_, our_insert, our_range) =
+            items.iter().find(|(label, _, _)| label == "$api_local").cloned().unwrap_or_else(
+                || panic!("vacuity guard: expected the same-document `$api_local`; got {items:?}"),
+            );
+        assert_eq!(
+            our_insert.as_deref(),
+            Some("$api_local"),
+            "a same-document `our` variable stays bare (current behavior)"
+        );
+        assert!(our_range.is_none(), "a bare insertion carries no replace range");
+
+        let (_, cross_file_insert, _) =
+            items.iter().find(|(label, _, _)| label == "$api_token").cloned().unwrap_or_else(
+                || panic!("vacuity guard: expected the cross-file `$api_token`; got {items:?}"),
+            );
+        assert_eq!(
+            cross_file_insert.as_deref(),
+            Some("$Secrets::api_token"),
+            "a cross-file `our` variable stays qualified in the same response"
+        );
     }
 
     /// Same-document identity is `perl_uri::uri_key`, not raw string equality.

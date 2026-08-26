@@ -78,6 +78,67 @@ created = "2026-05-07"
 review_after = "2026-08-07"
 
 [[allow]]
+id = "non-rust-crate-features-sot"
+glob = "crates/*/features_sot.toml"
+kind = "feature_catalog"
+language = "toml"
+surface = "lsp"
+classification = "config"
+owner = "lsp/features"
+reason = "Per-crate LSP feature source-of-truth manifests are deterministic generated projections of the root features.toml authority (#7029); never edited by hand."
+covered_by = [
+  "cargo xtask features invariants",
+]
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
+id = "non-rust-corpus-concepts"
+glob = "crates/perl-corpus/concepts/*.toml"
+kind = "corpus_concept"
+language = "toml"
+surface = "fixtures"
+classification = "test"
+owner = "parser/corpus"
+reason = "perl-corpus concept declarations feed the corpus ratchet floors and documentation of parser evidence."
+covered_by = [
+  "cargo test -p perl-corpus",
+]
+created = "2026-08-26"
+review_after = "2027-02-26"
+
+[[allow]]
+id = "non-rust-corpus-meta-toml"
+glob = "crates/perl-corpus/tests/**/*.meta.toml"
+kind = "test_fixture_metadata"
+language = "toml"
+surface = "fixtures"
+classification = "test"
+owner = "parser/corpus"
+reason = "Per-fixture metadata records corpus expectations consumed by the perl-corpus test runners."
+covered_by = [
+  "cargo test -p perl-corpus",
+]
+broad_glob_reason = "Fixture metadata accompanies fixtures across many corpus subtrees and is governed by the corpus test runner."
+created = "2026-08-26"
+review_after = "2027-02-26"
+
+[[allow]]
+id = "non-rust-parser-test-data-toml"
+glob = "crates/perl-parser/tests/data/*.toml"
+kind = "test_fixture_data"
+language = "toml"
+surface = "fixtures"
+classification = "test"
+owner = "parser/lsp-fixtures"
+reason = "perl-parser test fixture manifests are consumed as FEATURES_TOML_OVERRIDE catalogs through perl-lsp-rs-core's feature_catalog loader."
+covered_by = [
+  "cargo test -p perl-lsp-rs-core --lib feature_catalog",
+]
+created = "2026-08-26"
+review_after = "2027-02-26"
+
+[[allow]]
 id = "non-rust-agent-review-packet-golden-markdown"
 glob = "fixtures/agent_review_packet/golden/*.md"
 kind = "test_fixture"
@@ -2689,6 +2750,21 @@ owner = "compiler"
 reason = "Published JSON Schema for the versioned perl_core_harness.upstream_runner_discovery.v1 receipt; byte-exact envelopes, terminal taxonomy, frame-aware rows, and work invariants are exercised by the Rust observed-discovery contract tests (#12281)."
 covered_by = [
   "cargo test -p perl-core-harness --locked --lib observed_discovery",
+]
+created = "2026-08-25"
+review_after = "2026-11-25"
+
+[[allow]]
+id = "non-rust-core-harness-upstream-effective-invocation-trace-schema"
+path = "schemas/perl_core_harness_upstream_effective_invocation_trace.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Published JSON Schema for the versioned perl_core_harness.upstream_effective_invocation_trace.v1 receipt; strict JSONL framing, typed field observation states, parent receipt re-binding, plan projection records, and work invariants are exercised by the Rust invocation-trace contract tests (#12284)."
+covered_by = [
+  "cargo test -p perl-core-harness --locked --lib invocation_trace",
 ]
 created = "2026-08-25"
 review_after = "2026-11-25"

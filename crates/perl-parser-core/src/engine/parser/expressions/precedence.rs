@@ -87,7 +87,7 @@ impl<'a> Parser<'a> {
         self.with_recursion_guard(|s| {
             if s.peek_kind() == Some(TokenKind::WordNot) {
                 let op_token = s.tokens.next()?;
-                let start = op_token.start;
+                let start = op_token.start();
                 let operand = s.parse_word_not_expr()?;
                 let end = operand.location.end;
 
@@ -113,7 +113,7 @@ impl<'a> Parser<'a> {
                 let token = self.tokens.next()?;
                 return Ok(Node::new(
                     NodeKind::Identifier { name: token.text.to_string() },
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 ));
             }
 
@@ -160,7 +160,7 @@ impl<'a> Parser<'a> {
                 let op_token = self.tokens.next()?; // consume operator
                 // The RHS can be a 'not' expression, or missing (recovery)
                 let rhs =
-                    if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+                    if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                         missing
                     } else if self.peek_kind() == Some(TokenKind::WordNot) {
                         self.parse_word_not_expr()?
@@ -471,7 +471,7 @@ impl<'a> Parser<'a> {
     fn parse_or_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         while Self::is_logical_or(self.peek_kind()) {
             let op_token = self.tokens.next()?;
-            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
                 self.parse_and()?
@@ -495,7 +495,7 @@ impl<'a> Parser<'a> {
     fn parse_and_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         while self.peek_kind() == Some(TokenKind::And) {
             let op_token = self.tokens.next()?;
-            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
                 self.parse_bitwise_or()?
@@ -519,7 +519,7 @@ impl<'a> Parser<'a> {
     fn parse_bitwise_or_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         while self.peek_kind() == Some(TokenKind::BitwiseOr) {
             let op_token = self.tokens.next()?;
-            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
                 self.parse_bitwise_xor()?
@@ -543,7 +543,7 @@ impl<'a> Parser<'a> {
     fn parse_bitwise_xor_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         while self.peek_kind() == Some(TokenKind::BitwiseXor) {
             let op_token = self.tokens.next()?;
-            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
                 self.parse_bitwise_and()?
@@ -567,7 +567,7 @@ impl<'a> Parser<'a> {
     fn parse_range_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         while self.peek_kind() == Some(TokenKind::Range) {
             let op_token = self.tokens.next()?;
-            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
                 self.parse_equality()?
@@ -591,7 +591,7 @@ impl<'a> Parser<'a> {
     fn parse_bitwise_and_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         while self.peek_kind() == Some(TokenKind::BitwiseAnd) {
             let op_token = self.tokens.next()?;
-            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
                 self.parse_range()?
@@ -620,7 +620,7 @@ impl<'a> Parser<'a> {
                     if matches!(next_text, "eq" | "ne" | "cmp") {
                         let op_token = self.tokens.next()?;
                         let right = if let Some(missing) =
-                            self.recover_missing_infix_rhs(op_token.start)
+                            self.recover_missing_infix_rhs(op_token.start())
                         {
                             missing
                         } else {
@@ -644,7 +644,7 @@ impl<'a> Parser<'a> {
                 TokenKind::Spaceship | TokenKind::StringCompare => {
                     let op_token = self.tokens.next()?;
                     let right = if let Some(missing) =
-                        self.recover_missing_infix_rhs(op_token.start)
+                        self.recover_missing_infix_rhs(op_token.start())
                     {
                         missing
                     } else {
@@ -669,7 +669,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::SmartMatch => {
                     let op_token = self.tokens.next()?;
                     let right = if let Some(missing) =
-                        self.recover_missing_infix_rhs(op_token.start)
+                        self.recover_missing_infix_rhs(op_token.start())
                     {
                         missing
                     } else {
@@ -678,11 +678,11 @@ impl<'a> Parser<'a> {
                     let start = expr.location.start;
                     let end = right.location.end;
 
-                    if matches!(op_token.kind, TokenKind::Match | TokenKind::NotMatch) {
+                    if matches!(op_token.kind(), TokenKind::Match | TokenKind::NotMatch) {
                         if let NodeKind::Substitution { pattern, replacement, modifiers, has_embedded_code, .. } =
                             &right.kind
                         {
-                            let negated = matches!(op_token.kind, TokenKind::NotMatch);
+                            let negated = matches!(op_token.kind(), TokenKind::NotMatch);
                             expr = Node::new(
                                 NodeKind::Substitution {
                                     expr: Box::new(expr),
@@ -698,7 +698,7 @@ impl<'a> Parser<'a> {
                             search, replace, modifiers, ..
                         } = &right.kind
                         {
-                            let negated = matches!(op_token.kind, TokenKind::NotMatch);
+                            let negated = matches!(op_token.kind(), TokenKind::NotMatch);
                             expr = Node::new(
                                 NodeKind::Transliteration {
                                     expr: Box::new(expr),
@@ -712,7 +712,7 @@ impl<'a> Parser<'a> {
                         } else if let NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } =
                             &right.kind
                         {
-                            let negated = matches!(op_token.kind, TokenKind::NotMatch);
+                            let negated = matches!(op_token.kind(), TokenKind::NotMatch);
                             if let Some(replacement) = replacement {
                                 let pat = if pattern.len() >= 2 {
                                     pattern[1..pattern.len() - 1].to_string()
@@ -797,7 +797,7 @@ impl<'a> Parser<'a> {
             if peek_text == "ISA" || peek_text == "isa" {
                 let op_token = self.tokens.next()?;
                 let right = if let Some(missing) =
-                    self.recover_missing_infix_rhs(op_token.start)
+                    self.recover_missing_infix_rhs(op_token.start())
                 {
                     missing
                 } else {
@@ -827,7 +827,7 @@ impl<'a> Parser<'a> {
 
         // Parse the first operator and its right-hand operand.
         let op1 = self.tokens.next()?;
-        let rhs1 = if let Some(missing) = self.recover_missing_infix_rhs(op1.start) {
+        let rhs1 = if let Some(missing) = self.recover_missing_infix_rhs(op1.start()) {
             missing
         } else {
             self.parse_shift()?
@@ -856,7 +856,7 @@ impl<'a> Parser<'a> {
         while self.peek_is_relational_op() {
             let op_token = self.tokens.next()?;
             let operand = if let Some(missing) =
-                self.recover_missing_infix_rhs(op_token.start)
+                self.recover_missing_infix_rhs(op_token.start())
             {
                 missing
             } else {
@@ -905,7 +905,7 @@ impl<'a> Parser<'a> {
                 TokenKind::LeftShift | TokenKind::RightShift => {
                     let op_token = self.tokens.next()?;
                     let right = if let Some(missing) =
-                        self.recover_missing_infix_rhs(op_token.start)
+                        self.recover_missing_infix_rhs(op_token.start())
                     {
                         missing
                     } else {
@@ -936,7 +936,7 @@ impl<'a> Parser<'a> {
                 TokenKind::Plus | TokenKind::Minus | TokenKind::Dot => {
                     let op_token = self.tokens.next()?;
                     let right = if let Some(missing) =
-                        self.recover_missing_infix_rhs(op_token.start)
+                        self.recover_missing_infix_rhs(op_token.start())
                     {
                         missing
                     } else {
@@ -969,7 +969,7 @@ impl<'a> Parser<'a> {
                     // Use parse_power() so that `a * b**c` parses as `a * (b**c)`.
                     // Exponentiation binds more tightly than multiplication in Perl.
                     let right = if let Some(missing) =
-                        self.recover_missing_infix_rhs(op_token.start)
+                        self.recover_missing_infix_rhs(op_token.start())
                     {
                         missing
                     } else {
@@ -1000,8 +1000,8 @@ impl<'a> Parser<'a> {
                     if fused_x_digits {
                         let op_token = self.tokens.next()?;
                         let num_str = op_token.text[1..].to_string();
-                        let num_start = op_token.start + 1;
-                        let num_end = op_token.end;
+                        let num_start = op_token.start() + 1;
+                        let num_end = op_token.end();
                         let right = Node::new(
                             NodeKind::Number { value: num_str },
                             SourceLocation { start: num_start, end: num_end },
@@ -1022,7 +1022,7 @@ impl<'a> Parser<'a> {
                         break;
                     }
                     let is_operand_start = if let Ok(next) = self.tokens.peek_second() {
-                        match next.kind {
+                        match next.kind() {
                             TokenKind::Number
                             | TokenKind::ScalarSigil
                             | TokenKind::ArraySigil
@@ -1091,7 +1091,7 @@ impl<'a> Parser<'a> {
     fn parse_power_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         while self.peek_kind() == Some(TokenKind::Power) {
             let op_token = self.tokens.next()?;
-            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
                 self.parse_power()?
