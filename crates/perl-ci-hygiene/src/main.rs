@@ -1279,11 +1279,14 @@ fn cmd_compare_benchmarks(repo_root: &Path, args: &[String]) -> Result<i32> {
 }
 
 fn cmd_test_with_override(repo_root: &Path) -> Result<i32> {
+    // The override fixtures are consumed through perl-lsp-rs-core's
+    // feature_catalog loader; the gating and snapshot targets live in
+    // perl-lsp-rs, not perl-parser (#12722).
     println!("Testing with minimal features catalog...");
     command_status_strict(
         repo_root,
         "cargo",
-        &["test", "-p", "perl-parser", "--test", "lsp_feature_gating_test", "--", "--nocapture"],
+        &["test", "-p", "perl-lsp-rs", "--test", "lsp_feature_gating_test", "--", "--nocapture"],
         &[("FEATURES_TOML_OVERRIDE", "crates/perl-parser/tests/data/features_minimal.toml")],
     )?;
 
@@ -1292,7 +1295,7 @@ fn cmd_test_with_override(repo_root: &Path) -> Result<i32> {
     command_status_strict(
         repo_root,
         "cargo",
-        &["test", "-p", "perl-parser", "--test", "lsp_features_snapshot_test", "--", "--nocapture"],
+        &["test", "-p", "perl-lsp-rs", "--test", "lsp_features_snapshot_test", "--", "--nocapture"],
         &[("FEATURES_TOML_OVERRIDE", "crates/perl-parser/tests/data/features_disabled_test.toml")],
     )?;
 
