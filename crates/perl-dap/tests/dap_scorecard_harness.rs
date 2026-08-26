@@ -327,9 +327,17 @@ print "marker=$marker\n";
             Ok(format!("pagination verified on variable with indexedVariables={indexed_count}"))
         })())
     } else {
+        // Not a skip: under the current locals contract this proof cannot run.
+        // `build_locals_b_eval_cmd` deliberately renders lexical aggregates as
+        // opaque `ARRAY(0x0)`/`HASH(0x0)` markers without variablesReference or
+        // indexedVariables until bounded lexical-aggregate enumeration lands
+        // (#7358), so no real-session local can satisfy the pagination
+        // predicate today. Record the gap as not proven rather than letting a
+        // permanently unreachable metric read as an incidental skip.
         BinaryMetric {
-            status: "SKIP",
-            detail: "no indexedVariables >= 200 found in this real-session locals scope"
+            status: "NOT_PROVEN",
+            detail: "no expandable lexical aggregate at this stop: locals aggregates render as \
+                     opaque markers until #7358 lands, so live deep pagination is not proven"
                 .to_string(),
         }
     };
@@ -588,7 +596,7 @@ fn scorecard_launch_success_rate() -> TestResult {
         receipt.evaluate.detail
     );
     assert!(
-        receipt.deep_pagination.status == "PASS" || receipt.deep_pagination.status == "SKIP",
+        receipt.deep_pagination.status == "PASS" || receipt.deep_pagination.status == "NOT_PROVEN",
         "deep pagination scorecard failed: {}",
         receipt.deep_pagination.detail
     );
