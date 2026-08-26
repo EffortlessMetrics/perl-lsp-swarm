@@ -30,28 +30,24 @@ impl<'a> Parser<'a> {
 
             if let Some(nk) = next_kind {
                 // Form 1: block filehandle `print { $fh } ...`
-                if nk == TokenKind::LeftBrace {
-                    if let Some(ref txt) = third_text {
-                        if txt.starts_with('$') || txt.starts_with('*') {
+                if nk == TokenKind::LeftBrace
+                    && let Some(ref txt) = third_text
+                        && (txt.starts_with('$') || txt.starts_with('*')) {
                             return true;
                         }
-                    }
-                }
                 // Form 2: variable filehandle `print $fh $msg` (no comma after $fh)
                 if next_text.as_deref().unwrap_or("").starts_with('$') {
                     // If next-next starts with $ or @ or is a string, it's likely
                     // `print $fh $msg` — no comma between filehandle and message.
                     // A comma means it's a regular `print $var, $other` list.
-                    if third_kind != Some(TokenKind::Comma) {
-                        if let Some(ref txt) = third_text {
-                            if txt.starts_with('$')
+                    if third_kind != Some(TokenKind::Comma)
+                        && let Some(ref txt) = third_text
+                            && (txt.starts_with('$')
                                 || txt.starts_with('@')
-                                || third_kind == Some(TokenKind::String)
+                                || third_kind == Some(TokenKind::String))
                             {
                                 return true;
                             }
-                        }
-                    }
                 }
             }
             return false;
@@ -59,13 +55,11 @@ impl<'a> Parser<'a> {
 
         // print "string" should not be treated as indirect object syntax
         // Note: peek_second() gets the token after "print" since peek() is "print"
-        if name == "print" {
-            if let Ok(next) = self.tokens.peek_second() {
-                if next.kind() == TokenKind::String {
+        if name == "print"
+            && let Ok(next) = self.tokens.peek_second()
+                && next.kind() == TokenKind::String {
                     return false;
                 }
-            }
-        }
 
         // Known builtins that commonly use indirect object syntax
         let indirect_builtins = [
@@ -155,8 +149,8 @@ impl<'a> Parser<'a> {
             //   print Data::Dumper->new([$self])->Dump()
             // And NOT if followed by fat arrow — that's a hash-style list, NOT indirect:
             //   print STDERR => "msg"  means  print(STDERR => "msg"), not print to STDERR
-            if matches!(next_kind, TokenKind::Identifier | TokenKind::Try) {
-                if let Ok(third) = self.tokens.peek_third() {
+            if matches!(next_kind, TokenKind::Identifier | TokenKind::Try)
+                && let Ok(third) = self.tokens.peek_third() {
                     if matches!(
                         third.kind(),
                         TokenKind::Comma | TokenKind::Arrow | TokenKind::FatArrow
@@ -199,20 +193,18 @@ impl<'a> Parser<'a> {
                         return true;
                     }
                 }
-            }
         }
 
         // Check for "new ClassName" pattern
         if name == "new" {
             // peek_second() gets the token after "new"
-            if let Ok(next) = self.tokens.peek_second() {
-                if let TokenKind::Identifier = next.kind() {
+            if let Ok(next) = self.tokens.peek_second()
+                && let TokenKind::Identifier = next.kind() {
                     // Uppercase identifier after "new" suggests constructor
                     if next.text.chars().next().is_some_and(|c| c.is_uppercase()) {
                         return true;
                     }
                 }
-            }
         }
 
         false
