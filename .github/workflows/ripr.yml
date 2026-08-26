@@ -716,7 +716,16 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ripr-${{ env.RIPR_VERSION }}-${{ hashFiles('Cargo.lock') }}
-          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+          # #12563: the old main-only save-if could never fire (this workflow has
+          # no push/schedule trigger, so github.ref is never refs/heads/main) and
+          # every hosted run cold-built ~6.5m into the runner-eviction window.
+          # Save from every trusted run (same-repo PR, merge_group, dispatch);
+          # fork PRs — the untrusted class the router sends here — never save.
+          save-if: >-
+            ${{
+            github.event_name != 'pull_request' ||
+            github.event.pull_request.head.repo.full_name == github.repository
+            }}
 
       - name: Install ripr
         run: cargo install ripr --version "$RIPR_VERSION" --locked
@@ -876,7 +885,13 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ripr-fallback-${{ env.RIPR_VERSION }}-${{ hashFiles('Cargo.lock') }}
-          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+          # #12563: same trusted-save repair as the primary hosted job above —
+          # the main-only save-if could never fire in this workflow.
+          save-if: >-
+            ${{
+            github.event_name != 'pull_request' ||
+            github.event.pull_request.head.repo.full_name == github.repository
+            }}
 
       - name: Install ripr
         run: cargo install ripr --version "$RIPR_VERSION" --locked
