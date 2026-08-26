@@ -227,7 +227,7 @@ pub(crate) fn execute_plan(
 
 /// Project the supervisor's terminal taxonomy onto the receipt vocabulary
 /// without collapsing distinct terminations.
-fn completion_from_outcome(outcome: &DiscoveryProcessOutcome) -> ProcessCompletion {
+pub(crate) fn completion_from_outcome(outcome: &DiscoveryProcessOutcome) -> ProcessCompletion {
     match outcome {
         DiscoveryProcessOutcome::Exited { code } => ProcessCompletion::ExitStatus { code: *code },
         DiscoveryProcessOutcome::Signaled { signal, .. } => u32::try_from(*signal)
