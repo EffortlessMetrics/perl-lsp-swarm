@@ -61,7 +61,7 @@ jobs:
   inventory:
     name: Stdio-only editor transport
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - name: Check out exact candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -91,12 +91,32 @@ jobs:
             --manifest .ci/dap/editor-transport-inventory.v1.json \
             --receipt target/receipts/dap-editor-transport.json
 
-      - name: Enforce transport-security static instrument
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+          shared-key: dap-editor-transport-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+
+      - name: Run exact Linux process/socket rows
+        env:
+          DAP_EDITOR_TRANSPORT_SECURITY_RECEIPT: ${{ github.workspace }}/target/receipts/dap-editor-transport-security.json
+        run: cargo test -p perl-dap --test dap_editor_transport_security --locked -- --nocapture
+
+      - name: Enforce transport-security instrument including runtime receipt
         run: |
           python3 scripts/ci/dap_editor_transport_security.py check \
             --root . \
             --manifest .ci/dap/editor-transport-inventory.v1.json \
-            --receipt target/receipts/dap-editor-transport-security-static.json
+            --receipt target/receipts/dap-editor-transport-security-static.json \
+            --runtime-receipt target/receipts/dap-editor-transport-security.json \
+            --canary dap-10567-peer-token-canary
 
       - name: Publish inventory summary
         shell: bash
@@ -107,6 +127,7 @@ jobs:
             echo '- Candidate: `'$DAP_TRANSPORT_CANDIDATE_SHA'`'
             echo '- Receipt: `target/receipts/dap-editor-transport.json`'
             echo '- Security static receipt: `target/receipts/dap-editor-transport-security-static.json`'
+            echo '- Security runtime receipt: `target/receipts/dap-editor-transport-security.json`'
             echo
             echo '```json'
             cat target/receipts/dap-editor-transport.json
@@ -114,6 +135,10 @@ jobs:
             echo
             echo '```json'
             cat target/receipts/dap-editor-transport-security-static.json
+            echo '```'
+            echo
+            echo '```json'
+            cat target/receipts/dap-editor-transport-security.json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -125,5 +150,6 @@ jobs:
           path: |
             target/receipts/dap-editor-transport.json
             target/receipts/dap-editor-transport-security-static.json
+            target/receipts/dap-editor-transport-security.json
           if-no-files-found: error
           retention-days: 14

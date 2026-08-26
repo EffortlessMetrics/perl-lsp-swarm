@@ -435,6 +435,72 @@ class SecretLeakageAndReceiptPassPromotion(unittest.TestCase):
     def test_valid_receipt_has_no_schema_errors(self) -> None:
         self.assertEqual(MODULE.validate_receipt(valid_runtime_receipt()), [])
 
+    def test_failed_cli_refusal_cannot_declare_pass(self) -> None:
+        receipt = valid_runtime_receipt()
+        receipt["modes"][0]["old_cli_refusal"] = {
+            "verdict": "failed",
+            "failed_before_bind": False,
+        }
+        receipt["modes"][0]["verdict"] = "pass"
+        errors = MODULE.validate_receipt(receipt)
+        self.assertTrue(any("subproof" in item for item in errors), errors)
+
+    def test_failed_dap_discriminator_cannot_declare_pass(self) -> None:
+        receipt = valid_runtime_receipt()
+        receipt["modes"][1]["dap_discriminator"] = {
+            "verdict": "failed",
+            "initialize": "tcp",
+        }
+        receipt["modes"][1]["verdict"] = "pass"
+        errors = MODULE.validate_receipt(receipt)
+        self.assertTrue(any("subproof" in item for item in errors), errors)
+
+    def test_check_rejects_non_pass_runtime_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_valid_tree(root)
+            receipt = valid_runtime_receipt()
+            receipt["verdict"] = "failed"
+            runtime_path = root / "runtime.json"
+            runtime_path.write_text(json.dumps(receipt), encoding="utf-8")
+            static_path = root / "static.json"
+            rc = MODULE.main(
+                [
+                    "check",
+                    "--root",
+                    str(root),
+                    "--manifest",
+                    str(root / ".ci/dap/editor-transport-inventory.v1.json"),
+                    "--receipt",
+                    str(static_path),
+                    "--runtime-receipt",
+                    str(runtime_path),
+                ]
+            )
+            self.assertEqual(rc, 1)
+
+    def test_check_accepts_pass_runtime_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_valid_tree(root)
+            runtime_path = root / "runtime.json"
+            runtime_path.write_text(json.dumps(valid_runtime_receipt()), encoding="utf-8")
+            static_path = root / "static.json"
+            rc = MODULE.main(
+                [
+                    "check",
+                    "--root",
+                    str(root),
+                    "--manifest",
+                    str(root / ".ci/dap/editor-transport-inventory.v1.json"),
+                    "--receipt",
+                    str(static_path),
+                    "--runtime-receipt",
+                    str(runtime_path),
+                ]
+            )
+            self.assertEqual(rc, 0)
+
 
 class SourceReintroductionFalsifiers(unittest.TestCase):
     def test_reintroduced_run_socket_is_rejected(self) -> None:

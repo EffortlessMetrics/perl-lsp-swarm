@@ -84,6 +84,13 @@ REQUIRED_MODE_FIELDS = (
 REQUIRED_BINARY_FIELDS = ("path", "sha256", "source")
 REQUIRED_CANDIDATE_FIELDS = ("git_sha", "tree")
 REQUIRED_LISTENER_OBS_FIELDS = ("instrument", "inventory")
+SUBPROOF_FIELDS = (
+    "old_cli_refusal",
+    "dap_discriminator",
+    "peer_authentication",
+    "cross_session_replay",
+    "stdout_stderr_purity",
+)
 
 
 class SecurityProofError(RuntimeError):
@@ -207,6 +214,32 @@ def identity_verdict(
     if claimed_sha256 == "0" * 64 or actual_sha256 == "0" * 64:
         errors.append("all-zero binary hash is not a bound artifact identity")
     return ("failed" if errors else "pass", errors)
+
+
+def subproof_verdict(field: str, value: Any) -> str | None:
+    """Extract a combinable verdict from a required mode sub-proof.
+
+    ``not_applicable`` is omitted rather than treated as pass. A missing
+    object is instrument_failure. ``peer_authentication`` may use ``class``
+    when it has no explicit verdict.
+    """
+    if not _is_mapping(value):
+        return "instrument_failure"
+    declared = value.get("verdict")
+    if declared in {"not_applicable"}:
+        return None
+    if declared in VERDICTS:
+        return str(declared)
+    if field == "peer_authentication":
+        cls = value.get("class")
+        if cls in {"not_applicable"}:
+            return None
+        if cls == "authenticated":
+            return "pass"
+        if cls in {None, ""}:
+            return "not_proven"
+        return "failed"
+    return "not_proven"
 
 
 def cleanup_verdict(state: str | None) -> tuple[str, list[str]]:
@@ -369,18 +402,24 @@ def validate_receipt(receipt: Mapping[str, Any], *, canaries: Sequence[str] = ()
         if declared not in VERDICTS:
             errors.append(f"modes[{index}].verdict {declared!r} is not in {list(VERDICTS)}")
         else:
+            subproofs = [
+                subproof_verdict(field, row.get(field)) for field in SUBPROOF_FIELDS
+            ]
             expected = combine_verdicts(
                 [
                     role_verdict,
                     clean_verdict,
-                    str(declared) if declared in {"failed", "instrument_failure", "not_proven"} else "pass",
+                    *[item for item in subproofs if item is not None],
+                    str(declared)
+                    if declared in {"failed", "instrument_failure", "not_proven"}
+                    else "pass",
                 ]
             )
             # A row may declare a stricter failure. It must not declare pass when
-            # the observation instrument or cleanup is non-pass.
+            # observation, cleanup, or a required sub-proof is non-pass.
             if declared == "pass" and expected != "pass":
                 errors.append(
-                    f"modes[{index}] declared pass but observation/cleanup verdict is {expected}"
+                    f"modes[{index}] declared pass but observation/cleanup/subproof verdict is {expected}"
                 )
             row_verdicts.append(str(declared))
 
@@ -492,6 +531,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 runtime_errors.append("runtime receipt is not an object")
             else:
                 runtime_errors.extend(validate_receipt(runtime, canaries=args.canary))
+                overall = runtime.get("verdict")
+                if overall != "pass":
+                    runtime_errors.append(
+                        f"runtime receipt verdict {overall!r} is not pass; "
+                        "non-pass runtime evidence is not a successful check"
+                    )
 
         all_errors = list(errors) + runtime_errors
         if all_errors:

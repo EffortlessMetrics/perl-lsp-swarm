@@ -160,7 +160,7 @@ fn git_tree_state() -> Result<&'static str> {
     if output.stdout.is_empty() { Ok("clean") } else { Ok("dirty") }
 }
 
-fn observe_child_listeners(pid: u32, mode: &str) -> SocketObservation {
+fn observe_child_listeners(pid: u32) -> SocketObservation {
     if !cfg!(target_os = "linux") {
         return SocketObservation::UnsupportedPlatform;
     }
@@ -168,7 +168,7 @@ fn observe_child_listeners(pid: u32, mode: &str) -> SocketObservation {
         Ok(ports) => {
             let listeners = ports
                 .into_iter()
-                .map(|port| ClassifiedListener { port, role: classify_port(port, mode) })
+                .map(|port| ClassifiedListener { port, role: classify_port(port) })
                 .collect();
             SocketObservation::Observed { listeners }
         }
@@ -176,11 +176,23 @@ fn observe_child_listeners(pid: u32, mode: &str) -> SocketObservation {
     }
 }
 
-fn classify_port(port: u16, mode: &str) -> ListenerRole {
+fn classify_port(port: u16) -> ListenerRole {
     if port == HISTORICAL_EDITOR_PORT {
         return ListenerRole::EditorDap;
     }
-    if mode == "external_peer_listen" { ListenerRole::DebuggerPeer } else { ListenerRole::Unknown }
+    let candidates = [
+        SocketAddr::from(([127, 0, 0, 1], port)),
+        SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], port)),
+    ];
+    let mut connected_without_dap = false;
+    for addr in candidates {
+        match attacker_initialize(addr) {
+            Ok(AttackerOutcome::InitializeSucceeded) => return ListenerRole::EditorDap,
+            Ok(AttackerOutcome::ConnectedNoInitialize) => connected_without_dap = true,
+            Ok(AttackerOutcome::ConnectionRefused) | Err(_) => {}
+        }
+    }
+    if connected_without_dap { ListenerRole::DebuggerPeer } else { ListenerRole::Unknown }
 }
 
 fn child_listening_tcp_ports(pid: u32) -> io::Result<Vec<u16>> {
@@ -716,16 +728,16 @@ fn write_receipt(receipt: &Value) -> Result<()> {
     Ok(())
 }
 
-fn observe_spawned_mode(mode: &str, args: &[&str]) -> Result<SocketObservation> {
+fn observe_spawned_mode(mode: &str, args: &[&str]) -> Result<(SocketObservation, Cleanup)> {
     let adapter = StdioAdapter::spawn(args)?;
     thread::sleep(Duration::from_millis(200));
-    let obs = observe_child_listeners(adapter.pid(), mode);
+    let obs = observe_child_listeners(adapter.pid());
     match &obs {
         SocketObservation::Observed { .. } => assert_no_editor_listeners(&obs, mode)?,
         SocketObservation::InstrumentFailure { .. } | SocketObservation::UnsupportedPlatform => {}
     }
-    drop(adapter);
-    Ok(obs)
+    let cleanup = adapter.close_stdin()?;
+    Ok((obs, cleanup))
 }
 
 fn json_listeners(obs: &SocketObservation) -> Value {
@@ -845,6 +857,44 @@ fn extra_ephemeral_listener_in_peer_listen_is_not_classified_as_a_single_peer() 
 }
 
 #[test]
+fn ephemeral_dap_tcp_listener_is_editor_not_debugger_peer() -> Result<()> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let addr = listener.local_addr()?;
+    let handle = thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let Ok(DapMessage::Request { seq, command, .. }) = read_framed_message(&mut stream) else {
+            return;
+        };
+        if command != "initialize" {
+            return;
+        }
+        let Ok(payload) = serde_json::to_vec(&DapMessage::Response {
+            seq: 1,
+            request_seq: seq,
+            success: true,
+            command: "initialize".to_string(),
+            body: Some(json!({})),
+            message: None,
+        }) else {
+            return;
+        };
+        let _ = write!(stream, "Content-Length: {}\r\n\r\n", payload.len());
+        let _ = stream.write_all(&payload);
+        let _ = stream.flush();
+    });
+    let role = classify_port(addr.port());
+    let _ = handle.join();
+    if role != ListenerRole::EditorDap {
+        return Err(anyhow!(
+            "ephemeral DAP listener classified as {role:?}; a mode heuristic would have labeled it debugger_peer"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
 fn secret_canary_is_rejected_from_evidence() -> Result<()> {
     match assert_no_canary("receipt", TOKEN_CANARY) {
         Err(err) => {
@@ -950,7 +1000,7 @@ fn native_stdio_exposes_zero_editor_listeners() -> Result<()> {
     identity_matches(&identity, &bind_binary_identity(&cargo_dap_binary())?)?;
     let mut adapter = StdioAdapter::spawn(&["--stdio", "--log-level", "error"])?;
     thread::sleep(Duration::from_millis(150));
-    let obs = observe_child_listeners(adapter.pid(), "native");
+    let obs = observe_child_listeners(adapter.pid());
     assert_no_editor_listeners(&obs, "native")?;
     adapter.send_request(1, "initialize", Some(initialize_args()))?;
     match adapter.wait_for_response(1, "initialize")? {
@@ -961,7 +1011,7 @@ fn native_stdio_exposes_zero_editor_listeners() -> Result<()> {
         SocketAddr::from(([127, 0, 0, 1], HISTORICAL_EDITOR_PORT)),
         "historical editor port during native stdio",
     )?;
-    let obs_after = observe_child_listeners(adapter.pid(), "native");
+    let obs_after = observe_child_listeners(adapter.pid());
     assert_no_editor_listeners(&obs_after, "native")?;
     adapter.send_request(2, "disconnect", Some(json!({})))?;
     let cleanup = adapter.close_stdin()?;
@@ -979,7 +1029,7 @@ fn peer_connect_stdio_exposes_zero_editor_listeners() -> Result<()> {
     let addr = peer.addr_arg();
     let mut adapter = StdioAdapter::spawn(&["--external-peer", &addr, "--log-level", "error"])?;
     thread::sleep(Duration::from_millis(150));
-    let obs = observe_child_listeners(adapter.pid(), "external_peer_connect");
+    let obs = observe_child_listeners(adapter.pid());
     assert_no_editor_listeners(&obs, "external_peer_connect")?;
     adapter.send_request(1, "initialize", Some(initialize_args()))?;
     let initialize = adapter.wait_for_response(1, "initialize")?;
@@ -1011,7 +1061,7 @@ fn peer_listen_classifies_debugger_peer_not_editor() -> Result<()> {
     let mut adapter =
         StdioAdapter::spawn(&["--external-peer-listen", "127.0.0.1", "--log-level", "error"])?;
     thread::sleep(Duration::from_millis(250));
-    let obs = observe_child_listeners(adapter.pid(), "external_peer_listen");
+    let obs = observe_child_listeners(adapter.pid());
     assert_no_editor_listeners(&obs, "external_peer_listen")?;
     let listeners = require_observation(&obs)?;
     let peer_port = listeners[0].port;
@@ -1064,7 +1114,6 @@ fn cross_session_peer_token_is_unique_and_not_replayable() -> Result<()> {
     let first_token = first.session_token();
     drop(first_listener);
     let (second_listener, second) = PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror)?;
-    let second_addr = second.addr;
     if first_token == second.session_token() {
         return Err(anyhow!("peer token/session N authenticated process N+1"));
     }
@@ -1073,8 +1122,9 @@ fn cross_session_peer_token_is_unique_and_not_replayable() -> Result<()> {
     {
         return Err(anyhow!("PeerListenEndpoint Debug leaked a session token"));
     }
-    send_wrong_token_hello(second_addr, &first_token)?;
-    assert_no_tcp_initialize(second_addr, "replayed session-N token")?;
+    // Do not DAP-probe the bare second listener: nothing accepts, so a refused
+    // initialize would not prove the production acceptor rejected the stale
+    // token. Acceptor rejection remains #6949.
     drop(second_listener);
     Ok(())
 }
@@ -1091,24 +1141,25 @@ fn composed_receipt_binds_exact_candidate_without_secrets() -> Result<()> {
         return Err(anyhow!("perl-dap --help still presents native editor TCP as supported"));
     }
 
-    let native_obs = observe_spawned_mode("native", &["--stdio", "--log-level", "error"])?;
+    let (native_obs, native_cleanup) =
+        observe_spawned_mode("native", &["--stdio", "--log-level", "error"])?;
     let peer = ListeningFakePeer::start(Some(TOKEN_CANARY.to_owned()), false)?;
     let addr = peer.addr_arg();
-    let connect_obs = observe_spawned_mode(
+    let (connect_obs, connect_cleanup) = observe_spawned_mode(
         "external_peer_connect",
         &["--external-peer", &addr, "--log-level", "error"],
     )?;
-    let listen_obs = observe_spawned_mode(
+    let (listen_obs, listen_cleanup) = observe_spawned_mode(
         "external_peer_listen",
         &["--external-peer-listen", "127.0.0.1", "--log-level", "error"],
     )?;
 
-    let native_verdict = mode_verdict(&native_obs, "clean", &[Verdict::Pass]);
-    let connect_verdict = mode_verdict(&connect_obs, "clean", &[Verdict::Pass]);
-    let listen_verdict = mode_verdict(&listen_obs, "clean", &[Verdict::Pass]);
+    let native_verdict = mode_verdict(&native_obs, native_cleanup.state, &[Verdict::Pass]);
+    let connect_verdict = mode_verdict(&connect_obs, connect_cleanup.state, &[Verdict::Pass]);
+    let listen_verdict = mode_verdict(&listen_obs, listen_cleanup.state, &[Verdict::Pass]);
     let overall = mode_verdict(
         &listen_obs,
-        "clean",
+        listen_cleanup.state,
         &[native_verdict.clone(), connect_verdict.clone(), listen_verdict.clone()],
     );
 
@@ -1141,7 +1192,7 @@ fn composed_receipt_binds_exact_candidate_without_secrets() -> Result<()> {
                 "peer_authentication": {"class": "not_applicable"},
                 "cross_session_replay": {"verdict": "not_applicable"},
                 "stdout_stderr_purity": {"verdict": "pass"},
-                "cleanup": {"state": "clean"},
+                "cleanup": {"state": native_cleanup.state},
                 "verdict": native_verdict.as_str(),
             },
             {
@@ -1152,9 +1203,9 @@ fn composed_receipt_binds_exact_candidate_without_secrets() -> Result<()> {
                 "old_cli_refusal": {"verdict": "pass", "failed_before_bind": true},
                 "dap_discriminator": {"verdict": "pass", "initialize": "stdio"},
                 "peer_authentication": {"class": "authenticated", "token": "<redacted>"},
-                "cross_session_replay": {"verdict": "pass"},
+                "cross_session_replay": {"verdict": "pass", "token_uniqueness": "pass"},
                 "stdout_stderr_purity": {"verdict": "pass"},
-                "cleanup": {"state": "clean"},
+                "cleanup": {"state": connect_cleanup.state},
                 "verdict": connect_verdict.as_str(),
             },
             {
@@ -1171,9 +1222,15 @@ fn composed_receipt_binds_exact_candidate_without_secrets() -> Result<()> {
                     "cli_correct_peer_after_attacker": "not_proven",
                     "owner": "#6949"
                 },
-                "cross_session_replay": {"verdict": "pass", "layer": "PeerListenEndpoint"},
+                "cross_session_replay": {
+                    "verdict": "pass",
+                    "token_uniqueness": "pass",
+                    "acceptor_on_session_n_plus_1": "not_proven",
+                    "layer": "PeerListenEndpoint",
+                    "owner": "#6949"
+                },
                 "stdout_stderr_purity": {"verdict": "pass"},
-                "cleanup": {"state": "clean"},
+                "cleanup": {"state": listen_cleanup.state},
                 "verdict": listen_verdict.as_str(),
             }
         ],
@@ -1182,11 +1239,15 @@ fn composed_receipt_binds_exact_candidate_without_secrets() -> Result<()> {
             "proves editor transport authority and listener absence for the exact candidate/modes tested",
             "does not prove real ptkdb semantics, all DAP requests, all platforms, or installed editor consumption (#6694)",
             "CLI listen-mode correct-peer-after-attacker uses #6949 acceptor evidence; the session token is not exported from the child",
+            "cross-session acceptor rejection on session N+1 is #6949; this row proves token uniqueness via PeerListenEndpoint",
             "Windows/macOS socket observation is not_proven"
         ],
         "verdict": overall.as_str(),
     });
     assert_no_canary("receipt", &receipt.to_string())?;
+    assert_no_canary("native cleanup", &native_cleanup.stderr)?;
+    assert_no_canary("connect cleanup", &connect_cleanup.stderr)?;
+    assert_no_canary("listen cleanup", &listen_cleanup.stderr)?;
     write_receipt(&receipt)?;
     Ok(())
 }
