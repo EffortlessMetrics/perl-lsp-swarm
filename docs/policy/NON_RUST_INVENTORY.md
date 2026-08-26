@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12029 |
-| Rust-family files | 3663 |
-| Non-Rust files | 8366 |
-| Allowlisted | 6120 |
+| Total tracked files | 12067 |
+| Rust-family files | 3679 |
+| Non-Rust files | 8388 |
+| Allowlisted | 6142 |
 | Unclassified | 2246 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 439 |
+| config | 440 |
 | documentation | 2740 |
 | generated | 2 |
 | production | 328 |
-| test | 1999 |
+| test | 2020 |
 | tooling | 612 |
 | unclassified | 2246 |
 
@@ -3954,6 +3954,27 @@
 | `crates/perl-parser-pest/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-parser-pest/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser-pest/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-parser-pest/tests/fixtures/manifest.toml` | test | `non-rust-parser-pest-fixture-manifest` | parser/pest-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/assignment-exponentiation/chained-assign.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/assignment-exponentiation/power.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/bitwise-not/spaced-tilde.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/declaration-control-flow/foreach-my.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/declaration-control-flow/if-block.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/declaration-control-flow/simple-scalar.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/heredoc/bare-eof.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/heredoc/q-placeholder.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/nested-call/nested-multi.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/quoting-context/comment-double-dollar.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/quoting-context/qq-heredoc-token.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/quoting-context/regex-bitnot.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/recovery/strict-invalid.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/recovery/valid-invalid-valid.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/scalar-deref/double-dollar.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/statement-modifier/print-if.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/unicode-newline/bare-cr.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/unicode-newline/crlf.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/unicode-newline/identifier.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/unicode-newline/lf.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-parser/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-parser/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
@@ -6228,6 +6249,7 @@
 | `schemas/perl_core_harness_target_matrix_index.v1.schema.json` | config | `non-rust-core-harness-target-matrix-index-schema` | compiler |
 | `schemas/perl_core_harness_target_matrix_part.v1.schema.json` | config | `non-rust-core-harness-target-matrix-part-schema` | compiler |
 | `schemas/perl_core_harness_target_topology_drift.v1.schema.json` | config | `non-rust-core-harness-target-topology-drift-schema` | compiler |
+| `schemas/perl_core_harness_upstream_effective_invocation_trace.v1.schema.json` | config | `non-rust-core-harness-upstream-effective-invocation-trace-schema` | compiler |
 | `schemas/perl_core_harness_upstream_runner_discovery.v1.schema.json` | config | `non-rust-core-harness-upstream-runner-discovery-schema` | compiler |
 | `schemas/publication_runtime_identity.v1.schema.json` | config | `non-rust-publication-runtime-identity-schema` | release/ci |
 | `schemas/release_topology.v1.schema.json` | config | `non-rust-release-topology-schema` | release/ci |

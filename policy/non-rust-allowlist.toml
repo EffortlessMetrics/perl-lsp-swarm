@@ -139,6 +139,21 @@ created = "2026-08-26"
 review_after = "2027-02-26"
 
 [[allow]]
+id = "non-rust-parser-pest-fixture-manifest"
+path = "crates/perl-parser-pest/tests/fixtures/manifest.toml"
+kind = "test_fixture_data"
+language = "toml"
+surface = "fixtures"
+classification = "test"
+owner = "parser/pest-fixtures"
+reason = "Package-local pest-train fixture catalog consumed by the perl-parser-pest fixture runner; later isolation and extraction reuse this identity rather than copying source lists."
+covered_by = [
+  "cargo test -p perl-parser-pest --test fixture_manifest --locked",
+]
+created = "2026-08-26"
+review_after = "2027-02-26"
+
+[[allow]]
 id = "non-rust-agent-review-packet-golden-markdown"
 glob = "fixtures/agent_review_packet/golden/*.md"
 kind = "test_fixture"
@@ -2750,6 +2765,21 @@ owner = "compiler"
 reason = "Published JSON Schema for the versioned perl_core_harness.upstream_runner_discovery.v1 receipt; byte-exact envelopes, terminal taxonomy, frame-aware rows, and work invariants are exercised by the Rust observed-discovery contract tests (#12281)."
 covered_by = [
   "cargo test -p perl-core-harness --locked --lib observed_discovery",
+]
+created = "2026-08-25"
+review_after = "2026-11-25"
+
+[[allow]]
+id = "non-rust-core-harness-upstream-effective-invocation-trace-schema"
+path = "schemas/perl_core_harness_upstream_effective_invocation_trace.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Published JSON Schema for the versioned perl_core_harness.upstream_effective_invocation_trace.v1 receipt; strict JSONL framing, typed field observation states, parent receipt re-binding, plan projection records, and work invariants are exercised by the Rust invocation-trace contract tests (#12284)."
+covered_by = [
+  "cargo test -p perl-core-harness --locked --lib invocation_trace",
 ]
 created = "2026-08-25"
 review_after = "2026-11-25"

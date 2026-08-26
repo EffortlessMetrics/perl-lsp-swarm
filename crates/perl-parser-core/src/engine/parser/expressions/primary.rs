@@ -1033,16 +1033,14 @@ impl<'a> Parser<'a> {
                         // last element when `=>` follows without a preceding comma.
                         if self.peek_kind() == Some(TokenKind::FatArrow) {
                             saw_fat_comma = true;
-                            if !was_comma {
-                                if let Some(last) = elements.last_mut() {
-                                    if let NodeKind::Identifier { ref name } = last.kind {
+                            if !was_comma
+                                && let Some(last) = elements.last_mut()
+                                    && let NodeKind::Identifier { ref name } = last.kind {
                                         *last = Node::new(
                                             NodeKind::String { value: name.clone(), interpolated: false },
                                             last.location,
                                         );
                                     }
-                                }
-                            }
                             self.consume_token()?; // consume =>
                             if self.peek_kind() == Some(TokenKind::FatArrow) {
                                 self.consume_token()?; // consume redundant chained =>
