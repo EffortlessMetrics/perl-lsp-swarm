@@ -750,7 +750,7 @@ do
   s:send_request_signal({ method = "client/doesNotExist", id = "s-13" })
   ok(s.answered_response_ids["s-13"] == true,
     "an accepted-and-synchronously-answered request holds its answered marker")
-  s.process_client_responses(s)
+  s:process_client_responses()
   local frames = decoded_wire(s)
   ok(#frames == 1 and frames[1].id == "s-13"
     and type(frames[1].error) == "table"
@@ -771,10 +771,18 @@ do
   s:process_client_responses()
   ok(#decoded_wire(s) == 1,
     "exactly one frame is ever written for the answered request")
-  ok(s.answered_response_ids[20] == nil,
-    "a flushed obligation releases its answered marker")
+  -- Occurrence-scoped correlation (#10657 review): flushing does NOT
+  -- release the guard - a late asynchronous handler replay stays rejected;
+  -- only a genuinely new request occurrence with that id re-arms it.
+  ok(s:push_response("window/showDocument", 20, { success = false })
+    == "rejected_duplicate",
+    "a late replay after a flushed reply is still rejected")
+  -- A genuinely new request occurrence with that id re-arms the guard: a
+  -- deferring handler accepts it without answering synchronously.
+  s:add_request_listener("window/showDocument", function() end)
+  s:send_request_signal({ method = "window/showDocument", id = 20 })
   ok(s:push_response("window/showDocument", 20, { success = true }) == "queued",
-    "after flush the same id starts a clean cycle")
+    "a genuinely new request occurrence with that id starts clean")
 end
 
 do
@@ -783,13 +791,18 @@ do
   local s = fresh_server()
   s:push_response("bad/stringError", 14, nil, "boom")
   s:push_response("bad/partialError", 15, nil, { message = "no code" })
+  s:push_response("bad/typedError", 16, nil,
+    { code = "not-a-number", message = {} })
   s:process_client_responses()
   local frames = decoded_wire(s)
-  ok(#frames == 2 and type(frames[1].error) == "table"
+  ok(#frames == 3 and type(frames[1].error) == "table"
     and frames[1].error.code == -32603,
     "a non-table error payload answers one typed internal error frame")
   ok(type(frames[2].error) == "table" and frames[2].error.code == -32603,
     "an error object missing code answers one typed internal error frame")
+  ok(type(frames[3].error) == "table" and frames[3].error.code == -32603
+    and type(frames[3].error.message) == "string",
+    "wrong-typed error fields answer one valid typed internal error frame")
 end
 
 do
@@ -838,7 +851,6 @@ do
   -- through the lifecycle path, and recovers exactly once while holding
   -- the duplicate guard until the frame is truly out.
   local s = fresh_server()
-  local failing = true
   s.write_request = function() return false end
   s:push_response("m", 30, { ok = true })
   s:process_client_responses()

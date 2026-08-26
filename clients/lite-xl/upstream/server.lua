@@ -924,11 +924,6 @@ function Server:process_client_responses()
 
     if written then
       self.write_fails = 0
-      -- The obligation is terminal: release its answered marker so a later
-      -- request reusing the same id starts clean (#10785).
-      if response.id ~= nil then
-        self.answered_response_ids[response.id] = nil
-      end
       table.remove(self.response_list, index)
       -- restart loop after removing from table to prevent issues
       goto send_responses
@@ -1244,9 +1239,11 @@ end
 ---a member-less or malformed frame. Otherwise ANY result value travels
 ---verbatim, including boolean false, 0, "", json.null and empty arrays and
 ---objects. Exactly one terminal response is admitted per accepted
----server-request id: a duplicate handler attempt is rejected with a typed
----disposition instead of emitting a second frame. The answered-id marker
----clears once the frame is written and on generation teardown.
+---server-request occurrence: a duplicate handler attempt is rejected with a
+---typed disposition instead of emitting a second frame, and the answered
+---marker persists until the server admits a genuinely new request with that
+---id or the generation tears down (#10785 review), so a late asynchronous
+---handler replay can never double-send.
 ---@param method string
 ---@param id any JSON-RPC request id, echoed verbatim (number or string)
 ---@param result any Result payload; falsey values keep their identity
@@ -1274,13 +1271,21 @@ function Server:push_response(method, id, result, error)
     id = id
   }
   if error ~= nil then
-    if type(error) ~= "table" or error.code == nil or error.message == nil then
+    if
+      type(error) ~= "table"
+      or type(error.code) ~= "number"
+      or type(error.message) ~= "string"
+    then
       self:log(
         "Invalid client error payload for '%s' (%s); answering one typed internal error",
         tostring(method),
-        type(error) == "table"
-          and "error object missing code/message"
-          or ("error value was " .. type(error))
+        type(error) ~= "table"
+          and ("error value was " .. type(error))
+          or (
+            type(error.code) ~= "number"
+            and "error code is not a number"
+            or "error message is not a string"
+          )
       )
       error = {
         code = Server.error_code.InternalError,
@@ -1840,9 +1845,13 @@ function Server:send_request_signal(request)
 
   -- Accepted server request (#10785): register its pending terminal-reply
   -- obligation so teardown can dispose of unanswered ids explicitly and a
-  -- replacement generation starts clean.
+  -- replacement generation starts clean. A genuinely new request occurrence
+  -- with a reused id supersedes the previous occurrence's correlation
+  -- (#10785 review); a late handler replay for the OLD occurrence stays
+  -- rejected instead of emitting a second terminal frame.
   if request.id ~= nil then
     self.pending_response_ids[request.id] = true
+    self.answered_response_ids[request.id] = nil
   end
 
   if self.request_listeners[request.method] then
