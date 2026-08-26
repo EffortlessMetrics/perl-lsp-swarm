@@ -102,12 +102,12 @@ impl SourceRange {
         ranges.sort_by(|left, right| left.start.cmp(&right.start).then(left.end.cmp(&right.end)));
         let mut previous: Option<Self> = None;
         for range in &ranges {
-            if let Some(left) = previous {
-                if left == *range || left.end > range.start {
+            match previous {
+                Some(left) if left == *range || left.end > range.start => {
                     return Err(OutcomeError::overlapping(left, *range));
                 }
+                _ => previous = Some(*range),
             }
-            previous = Some(*range);
         }
         Ok(ranges)
     }

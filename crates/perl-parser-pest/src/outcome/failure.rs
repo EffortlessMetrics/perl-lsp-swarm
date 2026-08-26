@@ -60,15 +60,6 @@ pub enum OutcomeError {
     /// Unsupported completeness had no `unsupported-syntax` diagnostic.
     #[error("unsupported outcomes require an unsupported-syntax diagnostic")]
     UnsupportedWithoutDiagnostic,
-    /// Pest location cannot be mapped onto the caller-supplied original source.
-    #[error("pest error location cannot be mapped onto the original source")]
-    UnmappablePestLocation,
-    /// Serialized document used an unsupported schema identity.
-    #[error("unsupported parse-outcome schema {schema}")]
-    UnsupportedSchema {
-        /// Schema string from the document.
-        schema: String,
-    },
 }
 
 impl OutcomeError {
@@ -154,11 +145,9 @@ impl StrictParseError {
         original_source: &str,
     ) -> Result<Self, OutcomeError> {
         let range = match error.location {
-            InputLocation::Pos(pos) => SourceRange::try_over_source(pos, pos, original_source)
-                .map_err(|_| OutcomeError::UnmappablePestLocation)?,
+            InputLocation::Pos(pos) => SourceRange::try_over_source(pos, pos, original_source)?,
             InputLocation::Span((start, end)) => {
-                SourceRange::try_over_source(start, end, original_source)
-                    .map_err(|_| OutcomeError::UnmappablePestLocation)?
+                SourceRange::try_over_source(start, end, original_source)?
             }
         };
         let message = match &error.variant {

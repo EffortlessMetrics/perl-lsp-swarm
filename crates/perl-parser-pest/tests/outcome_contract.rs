@@ -6,14 +6,14 @@
 
 use std::error::Error;
 
-use perl_parser_pest::pure_rust_parser::{PerlParser, Rule};
+use perl_parser_pest::pure_rust_parser::Rule;
 use perl_parser_pest::{
     OutcomeError, PARSE_OUTCOME_SCHEMA, PARSER_FAILURE_SCHEMA, ParseAttempt, ParseCompleteness,
     ParseDiagnostic, ParseDiagnosticKind, ParseOutcome, ParseOutcomeVocabulary, ParserFailure,
     ParserFailureKind, PureRustPerlParser, RecoveryAction, STRICT_PARSE_ERROR_SCHEMA, SourceRange,
     StrictParseError,
 };
-use pest::Parser;
+use pest::error::{Error as PestError, ErrorVariant};
 
 fn inverted(start: usize, end: usize) -> Result<OutcomeError, Box<dyn Error>> {
     match SourceRange::try_new(start, end) {
@@ -207,6 +207,8 @@ fn complete_recovered_and_unsupported_cannot_be_conflated() -> Result<(), Box<dy
     assert_eq!(complete.completeness(), ParseCompleteness::Complete);
     assert!(complete.diagnostics().is_empty());
     assert!(complete.recovery_ranges().is_empty());
+    assert_eq!(complete.into_ast(), "complete-ast");
+    let complete = ParseOutcome::complete("complete-ast");
 
     match ParseOutcome::try_new(
         "bad-complete",
@@ -295,31 +297,71 @@ fn rejection_and_instrument_failure_are_distinct_parse_attempt_arms() -> Result<
         ParserFailureKind::Panic { message } if message == "boom" => {}
         other => return Err(format!("expected panic kind, got {other}").into()),
     }
+    match ParserFailure::invalid_utf8("odd byte").kind() {
+        ParserFailureKind::InvalidUtf8 { detail } if detail == "odd byte" => {}
+        other => return Err(format!("expected invalid-utf8 kind, got {other}").into()),
+    }
     assert_eq!(rejected.schema(), STRICT_PARSE_ERROR_SCHEMA);
     assert_eq!(failed.schema(), PARSER_FAILURE_SCHEMA);
     Ok(())
 }
 
+fn pest_pos_error(
+    source: &str,
+    pos: usize,
+    message: &str,
+) -> Result<PestError<Rule>, Box<dyn Error>> {
+    let position = match pest::Position::new(source, pos) {
+        Some(position) => position,
+        None => return Err(format!("invalid pest position {pos} in {source:?}").into()),
+    };
+    Ok(PestError::new_from_pos(
+        ErrorVariant::CustomError { message: message.to_string() },
+        position,
+    ))
+}
+
 #[test]
 fn pest_rejection_maps_original_source_bytes_and_preserves_pest_context()
 -> Result<(), Box<dyn Error>> {
-    let source = "@@@not perl";
-    let pest_error = match <PerlParser as Parser<Rule>>::parse(Rule::program, source) {
-        Ok(_) => return Err("expected pest rejection for invalid source".into()),
-        Err(error) => error,
-    };
+    let source = "hello";
+    let pest_error = pest_pos_error(source, 2, "unexpected token")?;
     let mapped = StrictParseError::from_pest(&pest_error, source)?;
-    mapped.range().check_over_source(source)?;
+    assert_eq!(mapped.range().start(), 2);
+    assert_eq!(mapped.range().end(), 2);
+    assert_eq!(mapped.message(), "unexpected token");
     if mapped.pest_context().trim().is_empty() {
         return Err("pest context must retain original Pest display".into());
     }
-    if mapped.message().trim().is_empty() {
-        return Err("strict rejection must carry a parser-domain message".into());
+    if !mapped.pest_context().contains("unexpected token") {
+        return Err(
+            format!("pest context lost the original message: {}", mapped.pest_context()).into()
+        );
+    }
+
+    let span = match pest::Span::new(source, 1, 4) {
+        Some(span) => span,
+        None => return Err("span [1, 4) should be valid on hello".into()),
+    };
+    let span_error: PestError<Rule> = PestError::new_from_span(
+        ErrorVariant::ParsingError { positives: vec![Rule::EOI], negatives: Vec::new() },
+        span,
+    );
+    let mapped_span = StrictParseError::from_pest(&span_error, source)?;
+    assert_eq!((mapped_span.range().start(), mapped_span.range().end()), (1, 4));
+    if !mapped_span.message().contains("EOI") {
+        return Err(format!(
+            "span rejection must retain expected rules, got {}",
+            mapped_span.message()
+        )
+        .into());
     }
 
     match StrictParseError::from_pest(&pest_error, "") {
-        Err(OutcomeError::UnmappablePestLocation) => Ok(()),
-        other => Err(format!("shorter original source must be unmappable, got {other:?}").into()),
+        Err(OutcomeError::OutOfBounds { .. }) => Ok(()),
+        other => {
+            Err(format!("shorter original source must fail as out of bounds, got {other:?}").into())
+        }
     }
 }
 
