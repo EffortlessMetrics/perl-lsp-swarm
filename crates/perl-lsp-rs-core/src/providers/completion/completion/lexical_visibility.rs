@@ -91,12 +91,6 @@ impl Admission {
     pub(crate) fn is_visible(self) -> bool {
         matches!(self, Self::Visible(_))
     }
-
-    pub(crate) fn reason(self) -> VisibilityReason {
-        match self {
-            Self::Visible(reason) | Self::NotVisible(reason) => reason,
-        }
-    }
 }
 
 /// Declaration roles relevant to visibility admission.

@@ -197,12 +197,12 @@ pub fn add_all_variables(
 
         for (name, symbols) in &symbol_table.symbols {
             for symbol in symbols {
-                if symbol.kind.is_variable() && name.starts_with(&context.prefix) {
-                    if admit(symbol_table, context.cursor_scope_id, context.position, symbol)
+                if symbol.kind.is_variable()
+                    && name.starts_with(&context.prefix)
+                    && admit(symbol_table, context.cursor_scope_id, context.position, symbol)
                         .is_visible()
-                    {
-                        admitted.push(symbol);
-                    }
+                {
+                    admitted.push(symbol);
                 }
             }
         }
