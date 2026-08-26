@@ -411,4 +411,25 @@ mod contract_tests {
         let malformed_outcome = StreamDecodeOutcome::Malformed { reason: "utf8".to_string() };
         assert!(decode_malformed(&malformed_outcome, &[]));
     }
+
+    #[test]
+    fn streams_beyond_the_decoded_row_bound_are_refused() {
+        // The decoder's bounded-row error path is executable proof, not a
+        // decorative guard: a stream of MAX_DECODED_ROWS + 1 members is
+        // refused with the bound named.
+        let mut raw = String::new();
+        for index in 0..=crate::observed_discovery::model::MAX_DECODED_ROWS {
+            raw.push_str(&format!("t/base/{index}.t\n"));
+        }
+        match decode(raw.as_bytes()) {
+            Err(message) => assert!(
+                message.contains("decoded-row bound"),
+                "unexpected refusal message: {message}"
+            ),
+            Ok(decoded) => panic!(
+                "stream beyond the decoded-row bound was accepted with {} rows",
+                decoded.rows.len()
+            ),
+        }
+    }
 }
