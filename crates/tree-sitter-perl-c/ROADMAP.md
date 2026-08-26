@@ -24,8 +24,11 @@ Breaking changes will follow semver.
 
 - The vendored `c-src/` is a periodic snapshot; it may lag behind upstream by
   one or two grammar releases. File an issue to request a snapshot update.
-- The crate does not expose tree-sitter query helpers — use the
-  `tree-sitter` crate directly with the `language()` return value.
+- Query helpers are exposed (`INJECTIONS_QUERY`, `HIGHLIGHTS_QUERY`,
+  `load_injections_query`, `load_highlights_query`). The vendored
+  `highlights.scm` does not yet fully validate against the frozen `c-src/`
+  parser (it targets newer grammar surface); see `UPSTREAM_SNAPSHOT.md` and
+  the loader docs for the pinned delta.
 
 ## Snapshot Governance
 
@@ -52,7 +55,9 @@ validates, and exposes the snapshot through a stable Rust wrapper API.
 
 ### Not planned
 
-- New high-level parse APIs (out of scope — use `perl-parser` for that).
+- New parsing engines or AST abstractions that replace `perl-parser` (out of
+  scope — use `perl-parser` for that). Thin ergonomic wrappers over existing
+  behavior (for example `ParseResult`/`parse_perl_summary`) remain in scope.
 - Grammar extensions or bug fixes (those belong upstream in tree-sitter-perl).
 
 ## Internal Dependencies

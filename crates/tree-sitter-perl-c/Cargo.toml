@@ -15,6 +15,7 @@ categories = ["development-tools", "parser-implementations", "parsing"]
 include = [
     "src/**",
     "c-src/**",
+    "queries/**",
     "build.rs",
     "Cargo.toml",
     "README.md",
