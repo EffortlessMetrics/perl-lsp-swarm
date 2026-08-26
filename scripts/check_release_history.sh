@@ -209,12 +209,8 @@ run_install_surface_check() {
         fi
     done
 
-    if cargo_guard_before_fallback &&
-       cargo metadata --no-deps --format-version 1 >/dev/null 2>&1; then
-        cargo xtask install-surface-check
-        return
-    fi
-
+    # A stale-but-usable prebuilt binary is still preferable to requiring
+    # Cargo. This path is important for cargo-less release checkouts.
     if [[ -x target/debug/xtask.exe ]]; then
         target/debug/xtask.exe install-surface-check
         return
@@ -222,6 +218,12 @@ run_install_surface_check() {
 
     if [[ -x target/debug/xtask ]]; then
         target/debug/xtask install-surface-check
+        return
+    fi
+
+    if cargo_guard_before_fallback &&
+       cargo metadata --no-deps --format-version 1 >/dev/null 2>&1; then
+        cargo xtask install-surface-check
         return
     fi
 

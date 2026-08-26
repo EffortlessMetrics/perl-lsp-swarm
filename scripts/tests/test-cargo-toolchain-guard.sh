@@ -425,6 +425,10 @@ invokes_cargo() {
         while (s ~ /^[A-Za-z_][A-Za-z0-9_]*=[^ ]*[ \t]+/)
           sub(/^[A-Za-z_][A-Za-z0-9_]*=[^ ]*[ \t]+/, "", s)
         if (s ~ /^cargo([ \t(]|$)/) { found = 1; exit }
+        # Some entrypoints pass a command string through timeout/eval helpers.
+        # Treat a quoted cargo command as executable too, while comments and
+        # echo/printf examples remain excluded above.
+        if (s ~ /["'\'']cargo[ \t]/) { found = 1; exit }
       }
     }
     END { exit !found }

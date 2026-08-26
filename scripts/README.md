@@ -146,8 +146,8 @@ Run in order for a release. See [CONTRIBUTING.md](../CONTRIBUTING.md#release-wor
 
 ## Cargo toolchain guard (Windows bash prerequisite)
 
-Every bash entrypoint that invokes cargo (`scripts/cargo-safe`, the
-cargo-invoking `scripts/*.sh`, `scripts/fuzz-bounded`, and
+Every bash entrypoint that invokes cargo (`scripts/cargo-safe`, nested
+`scripts/**/*.sh` entrypoints, `scripts/fuzz-bounded`, and
 `.github/run_all_tests.sh`) sources `lib/cargo-toolchain-guard.sh` before any
 build work. The guard resolves the cargo the entrypoint is about to use and
 refuses with exit 78 and a remediation message when it is older than the
@@ -165,6 +165,13 @@ exists (issue #12593); environment-level doctor detection is a separate claim
 A cargo-invoking entrypoint must either call the guard or carry an explicit
 `cargo-toolchain-guard: exempt` marker with a reason; the coverage check in
 `scripts/tests/test-cargo-toolchain-guard.sh` enforces this for new scripts.
+`SKIP_INSTALL=1` in `post-publish-smoke.sh` skips package installation only;
+the smoke tests still use Cargo and therefore still require the guard. The
+release-history checker can remain cargo-free when it finds a prebuilt xtask;
+it guards only when the fallback actually reaches Cargo. The standalone
+remote installer has no workspace metadata, so its source-build fallback
+enforces the edition-2024 Cargo floor rather than the clone-local
+`rust-version` pin.
 Self-tests: `scripts/tests/test-cargo-toolchain-guard.sh` (decision
 functions, refusal contents, coverage) and
 `scripts/tests/test-cargo-safe-toolchain-guard.sh` (entrypoint integration
