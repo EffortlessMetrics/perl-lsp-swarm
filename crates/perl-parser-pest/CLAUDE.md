@@ -64,6 +64,25 @@ let ast = parser.parse("my $x = 42;")?;
 let sexp = parser.to_sexp(&ast);
 ```
 
+## Fixture manifest (test substrate)
+
+Package-local fixture identity for the pest train lives under `tests/fixtures/`.
+The reusable runner is `tests/support/` and is exercised by
+`cargo test -p perl-parser-pest --test fixture_manifest`. Rows record current
+parse observations only; they do not declare the parser correct or replace
+existing inline tests.
+
+```text
+tests/fixtures/manifest.toml
+tests/fixtures/sources/**
+tests/fixture_manifest.rs
+tests/support/**
+```
+
+Load and select through a caller-supplied package root (`CARGO_MANIFEST_DIR`),
+not the workspace root. Duplicate IDs, path escape, missing sources, empty
+selection, and parser panics fail closed as instrument errors.
+
 ## Important Notes
 
 - **NOT in default gate** -- excluded from `just ci-gate`; build and test independently

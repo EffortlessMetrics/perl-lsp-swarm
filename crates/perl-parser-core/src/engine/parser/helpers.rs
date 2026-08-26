@@ -92,15 +92,12 @@ impl<'a> Parser<'a> {
         }
 
         // Identifier that starts with a sigil char (e.g. `$name`, `@items`)
-        if next == TokenKind::Identifier {
-            if let Ok(t) = self.tokens.peek_second() {
-                if let Some(ch) = t.text.chars().next() {
-                    if matches!(ch, '$' | '@' | '%' | '*' | '&') {
+        if next == TokenKind::Identifier
+            && let Ok(t) = self.tokens.peek_second()
+                && let Some(ch) = t.text.chars().next()
+                    && matches!(ch, '$' | '@' | '%' | '*' | '&') {
                         return true;
                     }
-                }
-            }
-        }
 
         false
     }
@@ -555,13 +552,12 @@ impl<'a> Parser<'a> {
             return true;
         }
         // The lexer sometimes emits variables as Identifier("$x") tokens
-        if self.peek_kind() == Some(TokenKind::Identifier) {
-            if let Ok(tok) = self.peek_token() {
+        if self.peek_kind() == Some(TokenKind::Identifier)
+            && let Ok(tok) = self.peek_token() {
                 return tok.text.starts_with('$')
                     || tok.text.starts_with('@')
                     || tok.text.starts_with('%');
             }
-        }
         false
     }
 
@@ -702,11 +698,10 @@ impl<'a> Parser<'a> {
 
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 saw_fat_arrow = true;
-                if !was_comma {
-                    if let Some(last) = expressions.last_mut() {
+                if !was_comma
+                    && let Some(last) = expressions.last_mut() {
                         Self::autoquote_fat_arrow_key(last);
                     }
-                }
                 self.consume_token()?; // consume =>
             }
 
@@ -1336,12 +1331,11 @@ impl<'a> Parser<'a> {
                     return false;
                 }
                 // Block-list functions (map/grep/sort/etc.) as argument: `uniq map { ... } @list`
-                if Self::is_block_list_func(&next_text) {
-                    if let Ok(third) = self.tokens.peek_second() {
+                if Self::is_block_list_func(&next_text)
+                    && let Ok(third) = self.tokens.peek_second() {
                         return third.kind() == TokenKind::LeftBrace
                             || third.kind() == TokenKind::LeftParen;
                     }
-                }
                 // Builtin functions as arguments:
                 //
                 // Pattern A (sigil arg): `func values %hash`, `func keys %h`
@@ -1357,8 +1351,8 @@ impl<'a> Parser<'a> {
                 // Without the `LeftParen` check, the early-return here prevented
                 // the fallthrough to the general `(` check at the bottom of this
                 // branch, causing `croak ref($x) . "y"` to drop the argument.
-                if Self::is_builtin_function(&next_text) {
-                    if let Ok(third) = self.tokens.peek_second() {
+                if Self::is_builtin_function(&next_text)
+                    && let Ok(third) = self.tokens.peek_second() {
                         let third_text: &str = &third.text;
                         if third.kind() == TokenKind::LeftParen {
                             // builtin(args) — the builtin is called with parens,
@@ -1367,14 +1361,12 @@ impl<'a> Parser<'a> {
                         }
                         return Self::is_sigil_argument_start(third.kind(), third_text);
                     }
-                }
-                if next_text.starts_with(|c: char| c.is_ascii_lowercase() || c == '_') {
-                    if self.tokens.peek_second().ok().is_some_and(|third| {
+                if next_text.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+                    && self.tokens.peek_second().ok().is_some_and(|third| {
                         Self::is_sigil_argument_start(third.kind(), third.text.as_ref())
                     }) {
                         return true;
                     }
-                }
                 // Check if the next-next token is `(` — that signals a function call
                 // or `=>` (fat arrow after bareword) — that signals an auto-quoted arg
                 self.tokens.peek_second().ok().is_some_and(|t| {

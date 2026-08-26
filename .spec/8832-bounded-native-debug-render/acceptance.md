@@ -19,8 +19,6 @@
 - thread-local depth inherited by nested calls → SEXP-005
 - wrapping a writer and checking `String::len()` after `write_str` → SEXP-003
 - descending (and charging an edge) before checking exhausted node capacity → SEXP-002
-- wrapping a writer and checking `String::len()` after `write_str` → SEXP-003
-- descending (and charging an edge) before checking exhausted node capacity → SEXP-002
 - `match result { Complete {..} \| Truncated {..} => treat as complete }` → SEXP-007, SEXP-008
 - second NodeKind child-match table omitting a #8424 field → SEXP-001
 - `mem::forget` as leak-free proof → SEXP-004

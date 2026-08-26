@@ -2054,8 +2054,11 @@ dependencies = [
  "pest_derive",
  "regex",
  "serde",
+ "sha2",
  "stacker",
+ "tempfile",
  "thiserror",
+ "toml",
 ]
 
 [[package]]

@@ -290,11 +290,10 @@ impl<'a> Parser<'a> {
         // so we collect attributes on both sides and merge them.
         let mut attributes = self.parse_declaration_attributes()?;
 
-        if let Some(handler_name) = name.as_deref() {
-            if attributes.iter().any(|attr| attr.starts_with("ATTR(") || attr == "ATTR") {
+        if let Some(handler_name) = name.as_deref()
+            && attributes.iter().any(|attr| attr.starts_with("ATTR(") || attr == "ATTR") {
                 self.register_custom_attribute_handler(handler_name);
             }
-        }
 
         // Parse optional prototype or signature after leading attributes.
         let (prototype, signature) = if self.peek_kind() == Some(TokenKind::LeftParen) {
@@ -446,9 +445,9 @@ impl<'a> Parser<'a> {
             || self.peek_kind() == Some(TokenKind::VString)
         {
             self.tokens.next()?; // consume and discard version token
-        } else if let Some(TokenKind::Identifier) = self.peek_kind() {
-            if let Ok(token) = self.tokens.peek() {
-                if token.text.starts_with('v') && token.text.len() > 1 {
+        } else if let Some(TokenKind::Identifier) = self.peek_kind()
+            && let Ok(token) = self.tokens.peek()
+                && token.text.starts_with('v') && token.text.len() > 1 {
                     // v-string identifier like `v5` — consume it and any trailing
                     // `.N` number tokens that the lexer emits as separate tokens.
                     self.tokens.next()?;
@@ -464,8 +463,6 @@ impl<'a> Parser<'a> {
                         }
                     }
                 }
-            }
-        }
 
         // Parse class-level attributes (e.g. `:isa(Parent)`).
         // `_extra_known` is ignored since #1361 removed the unknown-attribute
@@ -812,9 +809,9 @@ impl<'a> Parser<'a> {
                     let mut version = first_token.text.to_string();
 
                     // Check if followed by dot and more numbers (e.g., v5.36)
-                    if self.peek_kind() == Some(TokenKind::Unknown) {
-                        if let Ok(dot_token) = self.tokens.peek() {
-                            if dot_token.text.as_ref() == "." {
+                    if self.peek_kind() == Some(TokenKind::Unknown)
+                        && let Ok(dot_token) = self.tokens.peek()
+                            && dot_token.text.as_ref() == "." {
                                 self.consume_token()?; // consume dot
                                 if self.peek_kind() == Some(TokenKind::Number) {
                                     let num = self.consume_token()?;
@@ -822,8 +819,6 @@ impl<'a> Parser<'a> {
                                     version.push_str(&num.text);
                                 }
                             }
-                        }
-                    }
                     version
                 } else if first_token.text.as_ref() == "v"
                     && self.peek_kind() == Some(TokenKind::Number)
@@ -1097,8 +1092,8 @@ impl<'a> Parser<'a> {
             // Also handle -strict flag and comma forms
             loop {
                 // Check for qw BEFORE the match to avoid it being consumed as a generic identifier
-                if let Ok(tok) = self.tokens.peek() {
-                    if tok.text.as_ref() == "qw" {
+                if let Ok(tok) = self.tokens.peek()
+                    && tok.text.as_ref() == "qw" {
                         self.consume_token()?; // consume 'qw'
                         let list = self.parse_qw_words()?;
                         // Format as "qw(FOO BAR BAZ)" so DeclarationProvider can recognize it
@@ -1124,7 +1119,6 @@ impl<'a> Parser<'a> {
                         }
                         continue; // Don't fall through to the match below
                     }
-                }
 
                 match self.peek_kind() {
                     Some(TokenKind::String) => {
@@ -1513,8 +1507,8 @@ impl<'a> Parser<'a> {
             // Parse bare arguments like: no warnings 'void'
             loop {
                 // Check for qw BEFORE the match to avoid it being consumed as a generic identifier
-                if let Ok(tok) = self.tokens.peek() {
-                    if tok.text.as_ref() == "qw" {
+                if let Ok(tok) = self.tokens.peek()
+                    && tok.text.as_ref() == "qw" {
                         self.consume_token()?; // consume 'qw'
                         let list = self.parse_qw_words()?;
                         // Format as "qw(FOO BAR BAZ)" so DeclarationProvider can recognize it
@@ -1540,7 +1534,6 @@ impl<'a> Parser<'a> {
                         }
                         continue; // Don't fall through to the match below
                     }
-                }
 
                 match self.peek_kind() {
                     Some(TokenKind::String) => {
