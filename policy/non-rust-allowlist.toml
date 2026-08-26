@@ -3471,6 +3471,22 @@ created = "2026-08-24"
 review_after = "2026-11-24"
 
 [[allow]]
+id = "non-rust-import-cleanup-train-schema"
+path = "schemas/import_cleanup_train.v1.schema.json"
+kind = "train_contract"
+language = "json"
+surface = "tooling"
+classification = "config"
+owner = "tooling/train-graph"
+reason = "JSON Schema pinning the closed import_cleanup_train.v1 cleanup-train contract (#11084); closed vocabularies are derived from the pinned manifest revision and cross-checked by the focused xtask proof."
+covered_by = [
+  "cargo test -p xtask --locked import_cleanup_train_manifest",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
 id = "non-rust-agent-implementation-packet-schema"
 path = "schemas/agent_implementation_packet.v1.schema.json"
 kind = "agent_contract"
