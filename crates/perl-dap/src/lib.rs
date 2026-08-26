@@ -28,8 +28,10 @@
 //! perl-dap --stdio
 //! ```
 //!
-//! Native editor TCP (`--socket` / editor `--port`) is retired. The flags remain
-//! only as a deprecated wrapper around `--external-peer` editor I/O (#10566).
+//! Native editor TCP (`--socket` / editor `--port`) is retired. Those flags still
+//! parse via shared transport options and fail before bind with a `perl-dap --stdio`
+//! migration, including when combined with `--external-peer`. They are not a
+//! supported editor run mode.
 //!
 //! # Programmatic launch
 //!
@@ -119,6 +121,8 @@ pub mod breakpoint;
 pub mod command_args;
 /// DAP launch and attach configuration types (from perl-dap-config).
 pub mod config;
+/// Fixed-origin operational error classification for the #8739 DAP slice.
+mod error_class;
 /// Safe expression evaluation validation (from perl-dap-eval).
 pub mod eval;
 /// Cross-platform utilities for Perl path resolution and environment setup (from perl-dap-platform).

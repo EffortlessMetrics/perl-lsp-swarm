@@ -728,9 +728,15 @@ jobs:
       needs.route-ripr.outputs.fallback_allowed == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    # The cancellation-class step reads THIS job's log via the API (#6807).
+    permissions:
+      contents: read
+      actions: read
     outputs:
       lane_started: ${{ steps.lane_start.outputs.lane_started }}
       deadline_exceeded: ${{ steps.classify.outputs.deadline_exceeded }}
+      cancellation_class: ${{ steps.classify.outputs.cancellation_class }}
+      job_id: ${{ steps.classify.outputs.job_id }}
     env:
       RIPR_VERSION: "0.9.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
@@ -761,6 +767,10 @@ jobs:
           # budget. Exit classes:
           #   0     command succeeded
           #   124   our budget expired -> deadline marker + rc 90 (never retried)
+          #   137   budget expired AND --kill-after escalated to SIGKILL
+          #         (classified like 124, but only when this lane's deadline
+          #         actually elapsed; an unrelated child that self-exits 137
+          #         early passes through untouched)
           #   other passed through untouched (semantic failure or external signal;
           #         runner shutdown lands here as process death, job conclusion
           #         stays 'cancelled', and the retry chain consumes it)
@@ -786,6 +796,16 @@ jobs:
             set -e
             if [ "$rc" -eq 124 ]; then
               echo "::error::[TIMEOUT-BUDGET] ${label}: exceeded the self-enforced 2400s hosted-lane budget; classified TIMEOUT-BUDGET, NOT runner-shutdown-cancellation; not retried"
+              : > "$RUNNER_TEMP/ripr-hosted-deadline-exceeded"
+              return 90
+            fi
+            # GNU timeout escalates a SIGTERM-ignoring child to SIGKILL once
+            # the --kill-after window elapses; that forced kill exits 137,
+            # not 124 (#6807 review). Treat it as this lane's budget
+            # exhaustion only when the deadline actually elapsed — an
+            # unrelated command that self-exits 137 early stays unclassified.
+            if [ "$rc" -eq 137 ] && [ "$(date +%s)" -ge "${RIPR_LANE_DEADLINE_EPOCH}" ]; then
+              echo "::error::[TIMEOUT-BUDGET] ${label}: budget expired and the child ignored SIGTERM, so timeout --kill-after escalated to SIGKILL (rc 137); classified TIMEOUT-BUDGET, NOT runner-shutdown-cancellation; not retried"
               : > "$RUNNER_TEMP/ripr-hosted-deadline-exceeded"
               return 90
             fi
@@ -824,11 +844,20 @@ jobs:
           # dispatch) instead.
           save-if: ${{ github.event_name == 'workflow_dispatch' }}
 
+      # Checkout and rust-cache are platform-bounded action steps outside the
+      # self-enforced budget; a hang there hits the 45m platform timeout,
+      # which concludes as 'failure' — a class the retry chain never admits.
       - name: Install ripr
-        run: cargo install ripr --version "$RIPR_VERSION" --locked
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Install ripr" cargo install ripr --version "$RIPR_VERSION" --locked
 
       - name: Run ripr doctor
-        run: ripr doctor
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Run ripr doctor" ripr doctor
 
       # Every cargo xtask analysis invocation below runs under the lane_run
       # guard so budget exhaustion becomes an explicit TIMEOUT-BUDGET failure
@@ -953,14 +982,18 @@ jobs:
         shell: bash
         env:
           RIPR_ATTEMPT: "1"
+          RIPR_JOB_NAME: ripr+ on GitHub Hosted
+          # gh authenticates through GITHUB_TOKEN; without read access to
+          # actions this classification fails closed to an empty class.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # Terminal classification for retry gating (#6807). Only a
           # self-enforced TIMEOUT-BUDGET trip sets deadline_exceeded=true;
-          # such failures are visible, named, and never retried. Runner
-          # shutdowns leave the marker absent and conclude as 'cancelled',
-          # which the retry chain consumes.
+          # such failures are visible, named, and never retried.
+          deadline_flag=false
           if [ -f "$RUNNER_TEMP/ripr-hosted-deadline-exceeded" ]; then
+            deadline_flag=true
             echo "deadline_exceeded=true" >> "$GITHUB_OUTPUT"
             {
               echo "### ripr+ hosted lane outcome (attempt ${RIPR_ATTEMPT}/3)"
@@ -973,11 +1006,85 @@ jobs:
             echo "deadline_exceeded=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # Retry chain (#6807): each retry chains ONLY on its predecessor's
-  # cancellation-class outcome ('cancelled' with no TIMEOUT-BUDGET marker).
-  # Semantic failures conclude as 'failure' and stop the chain with zero
-  # retries; a third consecutive cancellation is escalated by the aggregator
-  # as an exhausted RUNNER-SHUTDOWN-CANCELLATION incident.
+          # Cancellation-class evidence (#6807 review): the retry chain keys
+          # on this class, not on the bare job conclusion. The bounded
+          # runner-shutdown signature is read from THIS job's own log; a
+          # generic API/UI cancellation line alone classifies as
+          # manual-or-api-cancellation and stops the chain. When the runner
+          # died before this step could run at all, the output stays empty
+          # ('' = hard loss) — the next link admits exactly that as its one
+          # bounded recovery signal, so real evictions stay absorbed.
+          job_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+            --jq ".jobs[] | select(.name == \"${RIPR_JOB_NAME}\")" || true)"
+          job_id="$(printf '%s' "$job_json" | jq -r '.id // empty')"
+          job_conclusion="$(printf '%s' "$job_json" | jq -r '.conclusion // empty')"
+          log_file="$RUNNER_TEMP/ripr-attempt-job.log"
+          : > "$log_file"
+          if [ -n "$job_id" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${job_id}/logs" >"$log_file" 2>/dev/null || true
+          fi
+          cancellation_class=""
+          if [ "$deadline_flag" = "true" ]; then
+            cancellation_class="timeout-budget"
+          elif grep -qE "The runner has received a shutdown signal|Process completed with exit code 143" "$log_file"; then
+            cancellation_class="runner-shutdown"
+          elif [ "$job_conclusion" = "cancelled" ]; then
+            if grep -q "The operation was canceled" "$log_file"; then
+              cancellation_class="manual-or-api-cancellation"
+            else
+              cancellation_class="unattributed-cancellation"
+            fi
+          elif [ "$job_conclusion" = "failure" ]; then
+            cancellation_class="semantic-failure"
+          fi
+          echo "cancellation_class=${cancellation_class}" >> "$GITHUB_OUTPUT"
+          echo "job_id=${job_id}" >> "$GITHUB_OUTPUT"
+
+          # Per-attempt receipt (#6807 review): run/job identity, exact head
+          # SHAs, conclusion, budget state, and cancellation class in one
+          # durable machine-readable record uploaded with the lane evidence.
+          cat > "$RUNNER_TEMP/ripr-attempt-receipt.json" <<RIPR_RECEIPT_EOF
+          {
+            "schema_version": "ripr.hosted_attempt_receipt.v1",
+            "issue": 6807,
+            "attempt": ${RIPR_ATTEMPT},
+            "of": 3,
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "job_id": "${job_id}",
+            "job_name": "${RIPR_JOB_NAME}",
+            "head_sha": "${GITHUB_SHA}",
+            "pr_head_sha": "${PR_HEAD_SHA:-}",
+            "conclusion": "${job_conclusion}",
+            "deadline_exceeded": ${deadline_flag},
+            "cancellation_class": "${cancellation_class}"
+          }
+          RIPR_RECEIPT_EOF
+          {
+            echo "### ripr+ hosted attempt receipt (attempt ${RIPR_ATTEMPT}/3)"
+            echo '```json'
+            cat "$RUNNER_TEMP/ripr-attempt-receipt.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload hosted attempt receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ripr-attempt-receipt-1
+          path: ${{ runner.temp }}/ripr-attempt-receipt.json
+          retention-days: 14
+          if-no-files-found: warn
+
+  # Retry chain (#6807): each retry chains ONLY on a cancellation-class
+  # predecessor outcome, evidenced by the predecessor's cancellation_class.
+  # A bounded runner-shutdown signature admits recovery; an empty class means
+  # the runner died before it could classify (hard loss) and admits exactly
+  # one bounded recovery link. Generic API/UI cancellations
+  # (manual-or-api-cancellation), unattributed cancellations, semantic
+  # failures, skips, and TIMEOUT-BUDGET outcomes stop the chain immediately.
+  # A third consecutive cancellation-class outcome is escalated by the
+  # aggregator as an exhausted RUNNER-SHUTDOWN-CANCELLATION incident.
   ripr-github-retry-1:
     name: ripr+ on GitHub Hosted (retry 1/2)
     needs:
@@ -989,12 +1096,18 @@ jobs:
       needs.route-ripr.outputs.target == 'github' &&
       needs.route-ripr.outputs.fallback_allowed == 'true' &&
       needs.ripr-github.result == 'cancelled' &&
-      needs.ripr-github.outputs.deadline_exceeded != 'true'
+      needs.ripr-github.outputs.deadline_exceeded != 'true' &&
+      (
+        needs.ripr-github.outputs.cancellation_class == 'runner-shutdown' ||
+        needs.ripr-github.outputs.cancellation_class == ''
+      )
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     outputs:
       lane_started: ${{ steps.lane_start.outputs.lane_started }}
       deadline_exceeded: ${{ steps.classify.outputs.deadline_exceeded }}
+      cancellation_class: ${{ steps.classify.outputs.cancellation_class }}
+      job_id: ${{ steps.classify.outputs.job_id }}
     env:
       RIPR_VERSION: "0.9.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
@@ -1039,6 +1152,10 @@ jobs:
           # budget. Exit classes:
           #   0     command succeeded
           #   124   our budget expired -> deadline marker + rc 90 (never retried)
+          #   137   budget expired AND --kill-after escalated to SIGKILL
+          #         (classified like 124, but only when this lane's deadline
+          #         actually elapsed; an unrelated child that self-exits 137
+          #         early passes through untouched)
           #   other passed through untouched (semantic failure or external signal;
           #         runner shutdown lands here as process death, job conclusion
           #         stays 'cancelled', and the retry chain consumes it)
@@ -1064,6 +1181,16 @@ jobs:
             set -e
             if [ "$rc" -eq 124 ]; then
               echo "::error::[TIMEOUT-BUDGET] ${label}: exceeded the self-enforced 2400s hosted-lane budget; classified TIMEOUT-BUDGET, NOT runner-shutdown-cancellation; not retried"
+              : > "$RUNNER_TEMP/ripr-hosted-deadline-exceeded"
+              return 90
+            fi
+            # GNU timeout escalates a SIGTERM-ignoring child to SIGKILL once
+            # the --kill-after window elapses; that forced kill exits 137,
+            # not 124 (#6807 review). Treat it as this lane's budget
+            # exhaustion only when the deadline actually elapsed — an
+            # unrelated command that self-exits 137 early stays unclassified.
+            if [ "$rc" -eq 137 ] && [ "$(date +%s)" -ge "${RIPR_LANE_DEADLINE_EPOCH}" ]; then
+              echo "::error::[TIMEOUT-BUDGET] ${label}: budget expired and the child ignored SIGTERM, so timeout --kill-after escalated to SIGKILL (rc 137); classified TIMEOUT-BUDGET, NOT runner-shutdown-cancellation; not retried"
               : > "$RUNNER_TEMP/ripr-hosted-deadline-exceeded"
               return 90
             fi
@@ -1095,11 +1222,20 @@ jobs:
           shared-key: ripr-${{ env.RIPR_VERSION }}-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.event_name == 'workflow_dispatch' }}
 
+      # Checkout and rust-cache are platform-bounded action steps outside the
+      # self-enforced budget; a hang there hits the 45m platform timeout,
+      # which concludes as 'failure' — a class the retry chain never admits.
       - name: Install ripr
-        run: cargo install ripr --version "$RIPR_VERSION" --locked
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Install ripr" cargo install ripr --version "$RIPR_VERSION" --locked
 
       - name: Run ripr doctor
-        run: ripr doctor
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Run ripr doctor" ripr doctor
 
       # Every cargo xtask analysis invocation below runs under the lane_run
       # guard so budget exhaustion becomes an explicit TIMEOUT-BUDGET failure
@@ -1206,7 +1342,7 @@ jobs:
 
       - name: Upload ripr PR evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: ripr-pr-evidence-retry-1
           path: |
@@ -1225,14 +1361,18 @@ jobs:
         shell: bash
         env:
           RIPR_ATTEMPT: "2"
+          RIPR_JOB_NAME: ripr+ on GitHub Hosted (retry 1/2)
+          # gh authenticates through GITHUB_TOKEN; without read access to
+          # actions this classification fails closed to an empty class.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # Terminal classification for retry gating (#6807). Only a
           # self-enforced TIMEOUT-BUDGET trip sets deadline_exceeded=true;
-          # such failures are visible, named, and never retried. Runner
-          # shutdowns leave the marker absent and conclude as 'cancelled',
-          # which the retry chain consumes.
+          # such failures are visible, named, and never retried.
+          deadline_flag=false
           if [ -f "$RUNNER_TEMP/ripr-hosted-deadline-exceeded" ]; then
+            deadline_flag=true
             echo "deadline_exceeded=true" >> "$GITHUB_OUTPUT"
             {
               echo "### ripr+ hosted lane outcome (attempt ${RIPR_ATTEMPT}/3)"
@@ -1244,6 +1384,76 @@ jobs:
           else
             echo "deadline_exceeded=false" >> "$GITHUB_OUTPUT"
           fi
+
+          # Cancellation-class evidence (#6807 review): the retry chain keys
+          # on this class, not on the bare job conclusion. The bounded
+          # runner-shutdown signature is read from THIS job's own log; a
+          # generic API/UI cancellation line alone classifies as
+          # manual-or-api-cancellation and stops the chain. When the runner
+          # died before this step could run at all, the output stays empty
+          # ('' = hard loss) — the next link admits exactly that as its one
+          # bounded recovery signal, so real evictions stay absorbed.
+          job_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+            --jq ".jobs[] | select(.name == \"${RIPR_JOB_NAME}\")" || true)"
+          job_id="$(printf '%s' "$job_json" | jq -r '.id // empty')"
+          job_conclusion="$(printf '%s' "$job_json" | jq -r '.conclusion // empty')"
+          log_file="$RUNNER_TEMP/ripr-attempt-job.log"
+          : > "$log_file"
+          if [ -n "$job_id" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${job_id}/logs" >"$log_file" 2>/dev/null || true
+          fi
+          cancellation_class=""
+          if [ "$deadline_flag" = "true" ]; then
+            cancellation_class="timeout-budget"
+          elif grep -qE "The runner has received a shutdown signal|Process completed with exit code 143" "$log_file"; then
+            cancellation_class="runner-shutdown"
+          elif [ "$job_conclusion" = "cancelled" ]; then
+            if grep -q "The operation was canceled" "$log_file"; then
+              cancellation_class="manual-or-api-cancellation"
+            else
+              cancellation_class="unattributed-cancellation"
+            fi
+          elif [ "$job_conclusion" = "failure" ]; then
+            cancellation_class="semantic-failure"
+          fi
+          echo "cancellation_class=${cancellation_class}" >> "$GITHUB_OUTPUT"
+          echo "job_id=${job_id}" >> "$GITHUB_OUTPUT"
+
+          # Per-attempt receipt (#6807 review): run/job identity, exact head
+          # SHAs, conclusion, budget state, and cancellation class in one
+          # durable machine-readable record uploaded with the lane evidence.
+          cat > "$RUNNER_TEMP/ripr-attempt-receipt.json" <<RIPR_RECEIPT_EOF
+          {
+            "schema_version": "ripr.hosted_attempt_receipt.v1",
+            "issue": 6807,
+            "attempt": ${RIPR_ATTEMPT},
+            "of": 3,
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "job_id": "${job_id}",
+            "job_name": "${RIPR_JOB_NAME}",
+            "head_sha": "${GITHUB_SHA}",
+            "pr_head_sha": "${PR_HEAD_SHA:-}",
+            "conclusion": "${job_conclusion}",
+            "deadline_exceeded": ${deadline_flag},
+            "cancellation_class": "${cancellation_class}"
+          }
+          RIPR_RECEIPT_EOF
+          {
+            echo "### ripr+ hosted attempt receipt (attempt ${RIPR_ATTEMPT}/3)"
+            echo '```json'
+            cat "$RUNNER_TEMP/ripr-attempt-receipt.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload hosted attempt receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ripr-attempt-receipt-2
+          path: ${{ runner.temp }}/ripr-attempt-receipt.json
+          retention-days: 14
+          if-no-files-found: warn
 
   # Final cancellation-retry attempt (#6807). If this also concludes
   # 'cancelled', no proof exists for the SHA and the aggregator fails the gate
@@ -1259,12 +1469,18 @@ jobs:
       needs.route-ripr.outputs.target == 'github' &&
       needs.route-ripr.outputs.fallback_allowed == 'true' &&
       needs.ripr-github-retry-1.result == 'cancelled' &&
-      needs.ripr-github-retry-1.outputs.deadline_exceeded != 'true'
+      needs.ripr-github-retry-1.outputs.deadline_exceeded != 'true' &&
+      (
+        needs.ripr-github-retry-1.outputs.cancellation_class == 'runner-shutdown' ||
+        needs.ripr-github-retry-1.outputs.cancellation_class == ''
+      )
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     outputs:
       lane_started: ${{ steps.lane_start.outputs.lane_started }}
       deadline_exceeded: ${{ steps.classify.outputs.deadline_exceeded }}
+      cancellation_class: ${{ steps.classify.outputs.cancellation_class }}
+      job_id: ${{ steps.classify.outputs.job_id }}
     env:
       RIPR_VERSION: "0.9.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
@@ -1309,6 +1525,10 @@ jobs:
           # budget. Exit classes:
           #   0     command succeeded
           #   124   our budget expired -> deadline marker + rc 90 (never retried)
+          #   137   budget expired AND --kill-after escalated to SIGKILL
+          #         (classified like 124, but only when this lane's deadline
+          #         actually elapsed; an unrelated child that self-exits 137
+          #         early passes through untouched)
           #   other passed through untouched (semantic failure or external signal;
           #         runner shutdown lands here as process death, job conclusion
           #         stays 'cancelled', and the retry chain consumes it)
@@ -1334,6 +1554,16 @@ jobs:
             set -e
             if [ "$rc" -eq 124 ]; then
               echo "::error::[TIMEOUT-BUDGET] ${label}: exceeded the self-enforced 2400s hosted-lane budget; classified TIMEOUT-BUDGET, NOT runner-shutdown-cancellation; not retried"
+              : > "$RUNNER_TEMP/ripr-hosted-deadline-exceeded"
+              return 90
+            fi
+            # GNU timeout escalates a SIGTERM-ignoring child to SIGKILL once
+            # the --kill-after window elapses; that forced kill exits 137,
+            # not 124 (#6807 review). Treat it as this lane's budget
+            # exhaustion only when the deadline actually elapsed — an
+            # unrelated command that self-exits 137 early stays unclassified.
+            if [ "$rc" -eq 137 ] && [ "$(date +%s)" -ge "${RIPR_LANE_DEADLINE_EPOCH}" ]; then
+              echo "::error::[TIMEOUT-BUDGET] ${label}: budget expired and the child ignored SIGTERM, so timeout --kill-after escalated to SIGKILL (rc 137); classified TIMEOUT-BUDGET, NOT runner-shutdown-cancellation; not retried"
               : > "$RUNNER_TEMP/ripr-hosted-deadline-exceeded"
               return 90
             fi
@@ -1365,11 +1595,20 @@ jobs:
           shared-key: ripr-${{ env.RIPR_VERSION }}-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.event_name == 'workflow_dispatch' }}
 
+      # Checkout and rust-cache are platform-bounded action steps outside the
+      # self-enforced budget; a hang there hits the 45m platform timeout,
+      # which concludes as 'failure' — a class the retry chain never admits.
       - name: Install ripr
-        run: cargo install ripr --version "$RIPR_VERSION" --locked
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Install ripr" cargo install ripr --version "$RIPR_VERSION" --locked
 
       - name: Run ripr doctor
-        run: ripr doctor
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Run ripr doctor" ripr doctor
 
       # Every cargo xtask analysis invocation below runs under the lane_run
       # guard so budget exhaustion becomes an explicit TIMEOUT-BUDGET failure
@@ -1476,7 +1715,7 @@ jobs:
 
       - name: Upload ripr PR evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: ripr-pr-evidence-retry-2
           path: |
@@ -1495,14 +1734,18 @@ jobs:
         shell: bash
         env:
           RIPR_ATTEMPT: "3"
+          RIPR_JOB_NAME: ripr+ on GitHub Hosted (retry 2/2)
+          # gh authenticates through GITHUB_TOKEN; without read access to
+          # actions this classification fails closed to an empty class.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # Terminal classification for retry gating (#6807). Only a
           # self-enforced TIMEOUT-BUDGET trip sets deadline_exceeded=true;
-          # such failures are visible, named, and never retried. Runner
-          # shutdowns leave the marker absent and conclude as 'cancelled',
-          # which the retry chain consumes.
+          # such failures are visible, named, and never retried.
+          deadline_flag=false
           if [ -f "$RUNNER_TEMP/ripr-hosted-deadline-exceeded" ]; then
+            deadline_flag=true
             echo "deadline_exceeded=true" >> "$GITHUB_OUTPUT"
             {
               echo "### ripr+ hosted lane outcome (attempt ${RIPR_ATTEMPT}/3)"
@@ -1514,6 +1757,71 @@ jobs:
           else
             echo "deadline_exceeded=false" >> "$GITHUB_OUTPUT"
           fi
+
+          # Cancellation-class evidence (#6807 review): this final attempt has
+          # no successor link, so its class exists purely for the aggregator's
+          # incident receipt and operator triage.
+          job_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+            --jq ".jobs[] | select(.name == \"${RIPR_JOB_NAME}\")" || true)"
+          job_id="$(printf '%s' "$job_json" | jq -r '.id // empty')"
+          job_conclusion="$(printf '%s' "$job_json" | jq -r '.conclusion // empty')"
+          log_file="$RUNNER_TEMP/ripr-attempt-job.log"
+          : > "$log_file"
+          if [ -n "$job_id" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${job_id}/logs" >"$log_file" 2>/dev/null || true
+          fi
+          cancellation_class=""
+          if [ "$deadline_flag" = "true" ]; then
+            cancellation_class="timeout-budget"
+          elif grep -qE "The runner has received a shutdown signal|Process completed with exit code 143" "$log_file"; then
+            cancellation_class="runner-shutdown"
+          elif [ "$job_conclusion" = "cancelled" ]; then
+            if grep -q "The operation was canceled" "$log_file"; then
+              cancellation_class="manual-or-api-cancellation"
+            else
+              cancellation_class="unattributed-cancellation"
+            fi
+          elif [ "$job_conclusion" = "failure" ]; then
+            cancellation_class="semantic-failure"
+          fi
+          echo "cancellation_class=${cancellation_class}" >> "$GITHUB_OUTPUT"
+          echo "job_id=${job_id}" >> "$GITHUB_OUTPUT"
+
+          # Per-attempt receipt (#6807 review): run/job identity, exact head
+          # SHAs, conclusion, budget state, and cancellation class in one
+          # durable machine-readable record uploaded with the lane evidence.
+          cat > "$RUNNER_TEMP/ripr-attempt-receipt.json" <<RIPR_RECEIPT_EOF
+          {
+            "schema_version": "ripr.hosted_attempt_receipt.v1",
+            "issue": 6807,
+            "attempt": ${RIPR_ATTEMPT},
+            "of": 3,
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "job_id": "${job_id}",
+            "job_name": "${RIPR_JOB_NAME}",
+            "head_sha": "${GITHUB_SHA}",
+            "pr_head_sha": "${PR_HEAD_SHA:-}",
+            "conclusion": "${job_conclusion}",
+            "deadline_exceeded": ${deadline_flag},
+            "cancellation_class": "${cancellation_class}"
+          }
+          RIPR_RECEIPT_EOF
+          {
+            echo "### ripr+ hosted attempt receipt (attempt ${RIPR_ATTEMPT}/3)"
+            echo '```json'
+            cat "$RUNNER_TEMP/ripr-attempt-receipt.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload hosted attempt receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ripr-attempt-receipt-3
+          path: ${{ runner.temp }}/ripr-attempt-receipt.json
+          retention-days: 14
+          if-no-files-found: warn
 
   # -------------------------------------------------------------------------
   # 2d. ripr disk-full failover -- runs ripr on GitHub-hosted when the primary
@@ -1581,6 +1889,8 @@ jobs:
           # the fallback key is seeded by the scheduled main-ref seed job.
           save-if: ${{ github.event_name == 'workflow_dispatch' }}
 
+      # The fallback lane has no self-enforced deadline guard (no retry
+      # policy hangs off it); its steps stay plain.
       - name: Install ripr
         run: cargo install ripr --version "$RIPR_VERSION" --locked
 
@@ -1735,6 +2045,10 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      # #6807: read the failed lane's job log to classify runner evictions.
+      actions: read
     steps:
       - name: Evaluate routed result
         shell: bash
@@ -1748,6 +2062,19 @@ jobs:
           RETRY1_RESULT: ${{ needs.ripr-github-retry-1.result }}
           RETRY2_RESULT: ${{ needs.ripr-github-retry-2.result }}
           FALLBACK_RESULT: ${{ needs.ripr-fallback.result }}
+          # Per-attempt cancellation-class receipts (#6807 review): the
+          # aggregator reports WHY each hosted attempt ended, not just that
+          # it ended, so operators can distinguish runner shutdown from
+          # manual cancellation and analysis failure.
+          GITHUB_CLASS: ${{ needs.ripr-github.outputs.cancellation_class }}
+          RETRY1_CLASS: ${{ needs.ripr-github-retry-1.outputs.cancellation_class }}
+          RETRY2_CLASS: ${{ needs.ripr-github-retry-2.outputs.cancellation_class }}
+          GITHUB_JOB_ID: ${{ needs.ripr-github.outputs.job_id }}
+          RETRY1_JOB_ID: ${{ needs.ripr-github-retry-1.outputs.job_id }}
+          RETRY2_JOB_ID: ${{ needs.ripr-github-retry-2.outputs.job_id }}
+          # gh authenticates through GH_TOKEN/GITHUB_TOKEN; without this the
+          # eviction log inspection below always fails closed to ripr-failure.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -1760,6 +2087,9 @@ jobs:
           echo "retry1_result=${RETRY1_RESULT:-}"
           echo "retry2_result=${RETRY2_RESULT:-}"
           echo "fallback_result=${FALLBACK_RESULT:-}"
+          echo "github_class=${GITHUB_CLASS:-<unclassified>} github_job=${GITHUB_JOB_ID:-unknown}"
+          echo "retry1_class=${RETRY1_CLASS:-<unclassified>} retry1_job=${RETRY1_JOB_ID:-unknown}"
+          echo "retry2_class=${RETRY2_CLASS:-<unclassified>} retry2_job=${RETRY2_JOB_ID:-unknown}"
 
           {
             echo "### ripr+ New Gap Gate Result"
@@ -1773,6 +2103,9 @@ jobs:
             echo "- retry1_result: \`${RETRY1_RESULT:-}\`"
             echo "- retry2_result: \`${RETRY2_RESULT:-}\`"
             echo "- fallback_result: \`${FALLBACK_RESULT:-}\`"
+            echo "- github_class: \`${GITHUB_CLASS:-<unclassified>}\` (job \`${GITHUB_JOB_ID:-unknown}\`)"
+            echo "- retry1_class: \`${RETRY1_CLASS:-<unclassified>}\` (job \`${RETRY1_JOB_ID:-unknown}\`)"
+            echo "- retry2_class: \`${RETRY2_CLASS:-<unclassified>}\` (job \`${RETRY2_JOB_ID:-unknown}\`)"
           } >> "$GITHUB_STEP_SUMMARY"
 
           # Draft PRs intentionally skip ripr: route-ripr has
@@ -1813,6 +2146,53 @@ jobs:
             fi
           done
 
+          # #6807: a lane that reports `failure` may have been killed by the
+          # platform (runner shutdown signal, SIGTERM/exit 143, API
+          # cancellation) instead of failing on ripr findings. That is
+          # infra-no-proof, not a source gap — genuine ripr failures exit 101.
+          # Classify once from the failed lane's own job log so an eviction
+          # never reads as a ripr failure. The gate blocks either way: no
+          # terminal receipt exists for this head.
+          lane_name=""
+          lane_result=""
+          case "${ROUTER_TARGET:-}" in
+            cx53) lane_name="ripr+ on CX53"; lane_result="$CX53_RESULT" ;;
+            cx43) lane_name="ripr+ on CX43"; lane_result="$CX43_RESULT" ;;
+            github) lane_name="ripr+ on GitHub Hosted"; lane_result="$GITHUB_RESULT" ;;
+          esac
+          # After a disk-preflight failover the evidence-producing job is the
+          # fallback, not the primary CX lane: inspect its log when it ran and
+          # failed, or its runner eviction reports as a ripr source failure.
+          if [ "$FALLBACK_RESULT" = "failure" ] || [ "$FALLBACK_RESULT" = "cancelled" ]; then
+            lane_name="ripr+ (Disk-Full Fallback)"
+            lane_result="$FALLBACK_RESULT"
+          fi
+          lane_class="ripr-failure"
+          lane_job_id=""
+          if [ -n "$lane_name" ] && [ "$lane_result" != "success" ]; then
+            lane_job_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+              --jq ".jobs[] | select(.name == \"${lane_name}\") | .id" | head -1 || true)
+            if [ -n "$lane_job_id" ] && \
+               gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${lane_job_id}/logs" 2>/dev/null \
+                 | grep -qE "The runner has received a shutdown signal|Process completed with exit code 143|The operation was canceled"; then
+              lane_class="infra-no-proof"
+            fi
+          fi
+          report_lane_failure() {
+            if [ "$lane_class" = "infra-no-proof" ]; then
+              echo "::error::ripr lane \`${lane_name}\` was killed by the runner (infra-no-proof: shutdown signal / SIGTERM / API cancellation), NOT by a ripr source gap. No proof exists for ${GITHUB_SHA}. Safe same-head recovery: \`gh run rerun ${GITHUB_RUN_ID} --failed\` — the evaluated tree is unchanged by an infra kill, so a rerun re-runs this exact head (#6807, #12563)."
+              {
+                echo "- classification: \`infra-no-proof (runner eviction)\`"
+                echo "- lane: \`${lane_name}\` (job \`${lane_job_id:-unknown}\`)"
+                echo "- head: \`${GITHUB_SHA}\`"
+                echo "- rerun: \`gh run rerun ${GITHUB_RUN_ID} --failed\`"
+              } >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::$1"
+            fi
+            exit 1
+          }
+
           case "${ROUTER_TARGET:-}" in
             cx53)
               if [ "$CX53_RESULT" = "success" ]; then
@@ -1824,8 +2204,7 @@ jobs:
               else
                 # Primary failed and fallback did not succeed (real ripr failure, or
                 # fallback skipped because preflight wasn't the failure cause).
-                echo "::error::ripr on CX53 failed ($CX53_RESULT); fallback result: $FALLBACK_RESULT"
-                exit 1
+                report_lane_failure "ripr on CX53 failed ($CX53_RESULT); fallback result: $FALLBACK_RESULT"
               fi
               ;;
             cx43)
@@ -1834,8 +2213,7 @@ jobs:
               elif [ "$FALLBACK_RESULT" = "success" ]; then
                 echo "::warning::CX43 disk preflight failed; ripr passed via GitHub-hosted fallback. Reclaim CX43 disk."
               else
-                echo "::error::ripr on CX43 failed ($CX43_RESULT); fallback result: $FALLBACK_RESULT"
-                exit 1
+                report_lane_failure "ripr on CX43 failed ($CX43_RESULT); fallback result: $FALLBACK_RESULT"
               fi
               ;;
             # >>> ripr github-chain decision table (unit-tested in
@@ -1846,12 +2224,24 @@ jobs:
               if [ "${GITHUB_RESULT:-}" = "success" ] || [ "${RETRY1_RESULT:-}" = "success" ] || [ "${RETRY2_RESULT:-}" = "success" ]; then
                 : # Some attempt produced terminal proof for this SHA.
               elif [ "${GITHUB_RESULT:-}" = "cancelled" ] && [ "${RETRY1_RESULT:-}" = "cancelled" ] && [ "${RETRY2_RESULT:-}" = "cancelled" ]; then
-                echo "::error::RUNNER-SHUTDOWN-CANCELLATION exhausted: ripr+ on GitHub Hosted concluded 'cancelled' on attempt 1, retry 1/2, and retry 2/2 with zero test failures and no proof produced for this SHA. This is a repeat-offender infrastructure failure class (#6807, #12563), NOT a new RIPR gap. Escalate to the runner pool owner and re-run after the pool recovers."
+                # Self-contained exhaustion receipt (#6807): this branch uses
+                # only echo and exit so the unit-tested decision table stays
+                # hermetic. Every permitted attempt concluded 'cancelled' —
+                # the incident class is already determined; no log re-read
+                # can change it.
+                echo "::error::RUNNER-SHUTDOWN-CANCELLATION exhausted: ripr+ on GitHub Hosted concluded 'cancelled' on attempt 1, retry 1/2, and retry 2/2 with zero test failures and no proof produced for this SHA (${GITHUB_SHA:-<unknown>}). This is a repeat-offender infrastructure failure class (#6807, #12563), NOT a new RIPR gap. Escalate to the runner pool owner and re-run after the pool recovers."
+                {
+                  echo "- incident class: \`RUNNER-SHUTDOWN-CANCELLATION (exhausted)\`"
+                  echo "- attempts: \`${GITHUB_RESULT:-<unset>}\`, \`${RETRY1_RESULT:-<unset>}\`, \`${RETRY2_RESULT:-<unset>}\` (classes: \`${GITHUB_CLASS:-<unclassified>}\`, \`${RETRY1_CLASS:-<unclassified>}\`, \`${RETRY2_CLASS:-<unclassified>}\`)"
+                  echo "- jobs: \`${GITHUB_JOB_ID:-unknown}\`, \`${RETRY1_JOB_ID:-unknown}\`, \`${RETRY2_JOB_ID:-unknown}\`"
+                  echo "- head: \`${GITHUB_SHA:-<unknown>}\`"
+                  echo "- rerun: \`gh run rerun ${GITHUB_RUN_ID:-<run>} --failed\`"
+                } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
                 echo "ripr+ New Gap Gate: failed (RUNNER-SHUTDOWN-CANCELLATION exhausted after 3 attempts — no proof for this SHA)"
                 exit 1
               else
-                echo "::error::ripr on GitHub-hosted did not succeed: attempt1=${GITHUB_RESULT:-<unset>} retry1=${RETRY1_RESULT:-<unset>} retry2=${RETRY2_RESULT:-<unset>}. Cancellation-class outcomes retry at most twice (#6807); failures and skips stop the chain immediately."
-                exit 1
+                echo "ripr+ New Gap Gate: failed (hosted chain concluded without proof for this SHA)"
+                report_lane_failure "ripr on GitHub-hosted did not succeed: attempt1=${GITHUB_RESULT:-<unset>} retry1=${RETRY1_RESULT:-<unset>} retry2=${RETRY2_RESULT:-<unset>}. Cancellation-class outcomes retry at most twice (#6807); failures, skips, TIMEOUT-BUDGET, and manual/API cancellations stop the chain immediately."
               fi
               # <<< ripr github-chain decision table (unit-tested)
               ;;

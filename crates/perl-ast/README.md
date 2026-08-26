@@ -6,7 +6,7 @@ AST (Abstract Syntax Tree) node definitions for the Perl parser ecosystem.
 
 `perl-ast` provides the typed node structures used to represent parsed Perl source code. It contains two AST modules:
 
-- **`ast`** -- The primary AST used by `perl-parser`. Defines `Node` (kind + `SourceLocation`) and the `NodeKind` enum with 50+ variants covering declarations, expressions, control flow, regex, OO constructs, and error recovery nodes. Includes S-expression serialization via `to_sexp()`.
+- **`ast`** -- The primary AST used by `perl-parser`. Defines `Node` (kind + `SourceLocation`) and the `NodeKind` enum with 50+ variants covering declarations, expressions, control flow, regex, OO constructs, and error recovery nodes. Includes a native debug S-expression projection via `to_sexp()` (not Tree-sitter compatibility; see issue 8047).
 - **`v2`** -- Re-exported from the extracted `perl-ast-v2` microcrate. This incremental-parsing surface is currently experimental/pre-stability; nodes carry a unique `NodeId` and use `Range` (line/column) positions instead of byte offsets. Adds `NodeIdGenerator`, `MissingKind`, `DiagnosticId`, and lightweight `ErrorRef` nodes.
 
 ## Public API
@@ -45,8 +45,9 @@ children, pair/clause records). That public geometry is unchanged.
   `find_deepest_containing_offset` are iterative over the canonical child
   visit table and return exact results. Bounded variants expose
   `Complete` / `Truncated` / `InstrumentFailure` instead of an ordinary
-  `usize` / `Some` after a caller-selected bound. `to_sexp` stays separately
-  guarded by `MAX_AST_DEPTH` and may truncate; that projection is
+  `usize` / `Some` after a caller-selected bound. Native debug `to_sexp` stays
+  separately guarded by `MAX_AST_DEPTH` and may truncate; that remaining
+  recursive renderer is
   [#8832](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8832).
 
 See the rustdoc on `Node` and the [AST compatibility contract](../../docs/reference/ast-contract.md).

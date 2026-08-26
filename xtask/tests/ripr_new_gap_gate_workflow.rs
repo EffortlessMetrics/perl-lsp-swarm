@@ -299,6 +299,18 @@ fn hosted_retry_conditions_admit_only_cancellation_class_outcomes()
             condition.contains("needs.route-ripr.outputs.target == 'github'"),
             "the retry policy is scoped to the GitHub-hosted lane only: {condition}"
         );
+        // Evidence gate (#6807 review): a bare 'cancelled' conclusion no
+        // longer admits a retry by itself — the predecessor's
+        // cancellation_class must be either a positively detected
+        // runner-shutdown signature or empty because the runner died before
+        // it could classify. Manual/API cancellations classify as
+        // manual-or-api-cancellation and stop the chain.
+        for allowed in ["outputs.cancellation_class == 'runner-shutdown'", "outputs.cancellation_class == ''"] {
+            assert!(
+                condition.contains(allowed),
+                "retry conditions must admit only evidenced cancellation classes ({allowed}): {condition}"
+            );
+        }
     }
     assert!(
         retry_1_if.contains("needs.ripr-github.result == 'cancelled'"),
@@ -346,6 +358,15 @@ fn github_chain_decision_table_executes_with_bash() -> Result<(), Box<dyn std::e
 
     let temp = std::env::temp_dir().join(format!("ripr-decision-table-{}", std::process::id()));
     fs::create_dir_all(&temp)?;
+    // RAII cleanup guard: the temp dir is removed when this test scope ends,
+    // whether the combos pass, fail, or panic (review disposition).
+    struct TempCleanup(std::path::PathBuf);
+    impl Drop for TempCleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = TempCleanup(temp.clone());
     let script_path = temp.join("table.sh");
     fs::write(&script_path, script)?;
     // Git-bash on Windows rejects backslash paths in argv; forward slashes
@@ -410,11 +431,22 @@ fn github_chain_decision_table_executes_with_bash() -> Result<(), Box<dyn std::e
         let stderr = String::from_utf8_lossy(&output.stderr);
         let combined = format!("{stdout}{stderr}");
         if output.status.success() != combo.expect_success {
+            // Bounded stderr diagnostic: surface the first non-empty stderr
+            // line so CI failures are diagnosable without unbounded dumps
+            // (review disposition).
+            let stderr_summary = stderr
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("")
+                .chars()
+                .take(200)
+                .collect::<String>();
             failures.push(format!(
-                "attempts {:?}: expected {}, got exit {:?}",
+                "attempts {:?}: expected {}, got exit {:?} (stderr: {})",
                 combo.attempts,
                 if combo.expect_success { "success" } else { "failure" },
-                output.status.code()
+                output.status.code(),
+                stderr_summary
             ));
         }
         let names_exhausted = combined.contains("RUNNER-SHUTDOWN-CANCELLATION exhausted");
@@ -431,8 +463,6 @@ fn github_chain_decision_table_executes_with_bash() -> Result<(), Box<dyn std::e
             ));
         }
     }
-    fs::remove_file(&script_path).ok();
-    fs::remove_dir(&temp).ok();
     assert!(
         failures.is_empty(),
         "decision-table behavior drifted from the cancellation policy: {failures:?}"
@@ -539,7 +569,14 @@ fn job_condition(content: &str, job: &str) -> Result<String, Box<dyn std::error:
         if trimmed.is_empty() {
             continue;
         }
-        if !trimmed.starts_with("needs.") && !trimmed.starts_with("always()") {
+        // The evidence-gate conjunct is parenthesized across lines; keep
+        // parsing through the opening parenthesis and outputs. terms instead
+        // of truncating the condition mid-expression.
+        if !trimmed.starts_with("needs.")
+            && !trimmed.starts_with("always()")
+            && !trimmed.starts_with("outputs.")
+            && trimmed != "("
+        {
             break;
         }
         condition.push_str(trimmed.trim_end_matches("&&"));

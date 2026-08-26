@@ -1,5 +1,5 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"$obj->foo->bar->baz;\")"
 ---
-(source_file (method_call (method_call (method_call (variable $ obj) foo ()) bar ()) baz ()))
+(source_file (statements (expression_statement (expression (method_call (method baz) (object (method_call (method bar) (object (method_call (method foo) (object (variable (sigil $) (name obj))))))))))))
