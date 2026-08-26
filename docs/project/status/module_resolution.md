@@ -6,9 +6,10 @@ consumers. It is distinct from HIR compiler-substrate module-request facts,
 which are tracked in [compiler_facts.md](compiler_facts.md) and
 [#8242](https://github.com/EffortlessMetrics/perl-lsp/issues/8242).
 
-This page does **not** claim complete effective-root authority. Historical
-selected-rail closeouts from 2026-05-11 remain receipts for the Scenario 14
-denominator; they are not current proof of the broader module programme.
+This page does **not** claim complete effective-root authority; it is
+not complete effective-root authority. Historical selected-rail closeouts from
+2026-05-11 remain receipts for the Scenario 14 denominator; they are not current
+proof of the broader module programme.
 
 #8479 / #7460 generated claim identities are not on `main` (those issues remain
 open). The table below is therefore denominator-bound to Scenario 14 plus exact

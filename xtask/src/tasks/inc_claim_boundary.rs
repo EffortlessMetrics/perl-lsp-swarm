@@ -31,7 +31,7 @@ const MODULE_RESOLUTION_FORBIDDEN: &[&str] =
 /// denominator-bound and historical receipts stay discoverable.
 const MODULE_RESOLUTION_REQUIRED: &[&str] = &[
     "Selected static @INC consumer rail",
-    "complete effective-root authority",
+    "not complete effective-root authority",
     "PL701",
     "completion",
     "goto-definition",
@@ -55,7 +55,7 @@ const SUPPORT_TIERS_REQUIRED: &[&str] = &[
     "Scenario 14",
     "Selected static",
     "PL701",
-    "complete effective-root authority",
+    "not complete effective-root authority",
     "ux_scenario_14_inc_conformance",
 ];
 
@@ -184,7 +184,7 @@ mod tests {
     fn all_consumers_is_allowed_when_the_four_scenario_14_consumers_are_named() {
         let text = "\
 Selected static @INC consumer rail
-complete effective-root authority
+not complete effective-root authority
 PL701 diagnostic, completion, goto-definition, and hover
 ux_scenario_14_inc_conformance
 #8493 #8506 #8544
@@ -258,6 +258,19 @@ all consumers on this page means those four Scenario 14 consumers
     }
 
     #[test]
+    fn positive_complete_effective_root_claim_fails() {
+        let text = repaired_module_resolution_fixture().replace(
+            "not complete effective-root authority",
+            "this is complete effective-root authority",
+        );
+        let violations = inc_claim_guard_violations(MODULE_RESOLUTION_STATUS, &text);
+        assert!(
+            violations.iter().any(|v| v.contains("not complete effective-root authority")),
+            "a positive complete-effective-root claim must fail without the negation marker, got: {violations:?}"
+        );
+    }
+
+    #[test]
     fn omitting_promotion_owners_fails() {
         let text = repaired_module_resolution_fixture().replace("#9270", "");
         let violations = inc_claim_guard_violations(MODULE_RESOLUTION_STATUS, &text);
@@ -300,7 +313,7 @@ all consumers on this page means those four Scenario 14 consumers
     fn repaired_module_resolution_fixture() -> String {
         "\
 Selected static @INC consumer rail
-complete effective-root authority
+not complete effective-root authority
 PL701 diagnostic, completion, goto-definition, and hover
 ux_scenario_14_inc_conformance
 #8493
