@@ -68,6 +68,7 @@ mod generation;
 mod invalidation;
 mod measurement;
 mod mechanism;
+mod reconciliation;
 mod subject;
 mod surface;
 mod transaction;
@@ -90,6 +91,11 @@ pub use measurement::{
 pub use mechanism::{
     MechanismClaim, MechanismClaims, MechanismRecordError, ReloadMechanism, ReloadMechanismRecord,
     mechanism_records, verify_mechanism_claims,
+};
+pub use reconciliation::{
+    MAX_RETAINED_COMPLETIONS, MUTATION_INVALIDATED_AREAS, ObservationClaim, ReloadSessionWiring,
+    ReloadWiringRefusal, RoutedReloadTerminal, outcome_is_mutating,
+    reconciliation_dispositions_for, verify_reconciliation_claim,
 };
 pub use subject::{
     LoadedModuleSubject, ModuleClassification, SubjectBindingError, SubjectCandidate,

@@ -142,6 +142,17 @@ impl DebugAdapter {
             "goto" => self.handle_goto(seq, request_seq, arguments),
             "restartFrame" => self.handle_restart_frame(seq, request_seq, arguments),
             "terminateThreads" => self.handle_terminate_threads(seq, request_seq, arguments),
+            // The reload family request (R03, #10102): routed only under
+            // the exact preview/test profile; every other spelling and
+            // every profile-disabled construction falls through to the
+            // ordinary unknown-command response, so the family stays
+            // unavailable without general advertisement and remains absent
+            // from `SUPPORTED_COMMANDS` (the standard-command authority).
+            _ if command == crate::reload_family::LOADED_MODULE_RELOAD_REQUEST
+                && self.loaded_module_reload_route_enabled() =>
+            {
+                self.handle_loaded_module_reload(seq, request_seq, arguments)
+            }
             _ => DapMessage::Response {
                 seq,
                 request_seq,
