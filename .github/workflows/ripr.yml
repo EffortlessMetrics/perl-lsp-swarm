@@ -1155,11 +1155,18 @@ jobs:
               # grep -c reads the whole stream before exiting; `grep -q` exits
               # on the first match and its SIGPIPE then trips pipefail, making
               # every eviction classify as ripr-failure (#6807 follow-up).
-              eviction_matches=$(gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${lane_job_id}/logs" 2>/dev/null \
-                | grep -cE "The runner has received a shutdown signal|Process completed with exit code 143|The operation was canceled" || true)
-              if [ "${eviction_matches:-0}" -gt 0 ]; then
-                lane_class="infra-no-proof"
+              # Fetch first and count only on a complete successful read: a
+              # partial log carrying a signature after a failed fetch must
+              # never become infra-no-proof; retrieval failure stays
+              # ripr-failure.
+              lane_log=$(mktemp)
+              if gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${lane_job_id}/logs" > "$lane_log" 2>/dev/null; then
+                eviction_matches=$(grep -cE "The runner has received a shutdown signal|Process completed with exit code 143|The operation was canceled" "$lane_log" || true)
+                if [ "${eviction_matches:-0}" -gt 0 ]; then
+                  lane_class="infra-no-proof"
+                fi
               fi
+              rm -f "$lane_log"
             fi
           fi
           report_lane_failure() {
