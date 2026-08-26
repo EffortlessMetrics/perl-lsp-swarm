@@ -958,8 +958,8 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                      {MIN_STALE_WINDOW_MS}ms"
                 );
                 ensure!(
-                    event.details.get("wire_batches_unchanged") == Some(&"1".to_string()),
-                    "stale_generation_held must prove the client's wire push count did not move"
+                    event.details.get("state_held") == Some(&"1".to_string()),
+                    "stale_generation_held must prove the client-state claim held for the whole                      window"
                 );
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }

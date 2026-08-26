@@ -197,7 +197,7 @@ fn complete_freshness_events(digest: &str) -> Vec<DriverEvent> {
                 ("held_generation", "g2_defect"),
                 ("current_generation", "g1_clean"),
                 ("window_ms", "5000"),
-                ("wire_batches_unchanged", "1"),
+                ("state_held", "1"),
             ],
         ),
         detail_event(
@@ -232,7 +232,7 @@ fn complete_freshness_events(digest: &str) -> Vec<DriverEvent> {
                 ("held_generation", "g3_old_clean"),
                 ("current_generation", "g2_defect"),
                 ("window_ms", "5000"),
-                ("wire_batches_unchanged", "1"),
+                ("state_held", "1"),
             ],
         ),
         detail_event(
@@ -338,7 +338,7 @@ fn complete_freshness_events(digest: &str) -> Vec<DriverEvent> {
                 ("held_generation", "toml_exclude_created"),
                 ("current_generation", "config_critic_present"),
                 ("window_ms", "5000"),
-                ("wire_batches_unchanged", "1"),
+                ("state_held", "1"),
             ],
         ),
         detail_event(
@@ -373,7 +373,7 @@ fn complete_freshness_events(digest: &str) -> Vec<DriverEvent> {
                 ("held_generation", "toml_malformed"),
                 ("current_generation", "config_exclude_active"),
                 ("window_ms", "5000"),
-                ("wire_batches_unchanged", "1"),
+                ("state_held", "1"),
             ],
         ),
         detail_event(
@@ -408,7 +408,7 @@ fn complete_freshness_events(digest: &str) -> Vec<DriverEvent> {
                 ("held_generation", "toml_exclude_repaired"),
                 ("current_generation", "config_malformed_rejected"),
                 ("window_ms", "5000"),
-                ("wire_batches_unchanged", "1"),
+                ("state_held", "1"),
             ],
         ),
         detail_event(
@@ -700,12 +700,12 @@ fn freshness_event_repetition_laws_reject_disorder_and_forgeries() -> Result<()>
         "a stale hold without a real observation window must be rejected"
     );
 
-    // A hold that does not prove the wire unmoved is rejected.
-    let mut moved_wire = complete_freshness_events(&digest);
-    moved_wire[11].details.insert("wire_batches_unchanged".to_string(), "0".to_string());
+    // A hold whose state claim did not hold is rejected.
+    let mut broken_hold = complete_freshness_events(&digest);
+    broken_hold[11].details.insert("state_held".to_string(), "0".to_string());
     ensure!(
-        validate_driver_events(&moved_wire, true).is_err(),
-        "a hold that observed the wire moving must be rejected"
+        validate_driver_events(&broken_hold, true).is_err(),
+        "a hold whose state claim did not hold must be rejected"
     );
 
     // A mutation without an exact mode is rejected.

@@ -1100,7 +1100,7 @@ pub fn evaluate_freshness_observation(
         })
         .count();
     let held_windows_honest = holds.iter().all(|event| {
-        event.details.get("wire_batches_unchanged") == Some(&"1".to_string())
+        event.details.get("state_held") == Some(&"1".to_string())
             && event
                 .details
                 .get("window_ms")

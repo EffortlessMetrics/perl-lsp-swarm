@@ -53,10 +53,10 @@
 "                                   wire marker appears at least n times
 "   VimLspHostWireMarkerCount(m)    current count of the wire marker in the
 "                                   client log (generation observation)
-"   VimLspHostStableWireWindow(m, ms)
-"                                   bounded absence window: -1 when the wire
-"                                   marker count moved inside the window,
-"                                   else the unchanged count (#11390)
+"   VimLspHostStableStateWindow(expr, ms)
+"                                   bounded stale-hold window: 1 when the
+"                                   state claim held, 0 when false at start,
+"                                   -1 the moment it stops holding (#11390)
 "   VimLspHostCloseBuffer()         close (bwipeout) the current buffer
 "   VimLspHostCloseReopen()         close and reopen the current buffer
 "   VimLspHostServerInitCount()     how many lsp_server_init events fired
@@ -380,22 +380,26 @@ function! VimLspHostUpdateWorkspaceConfig(include_paths_csv) abort
   return a:include_paths_csv
 endfunction
 
-function! VimLspHostStableWireWindow(marker, window_ms) abort
-  " Bounded absence window over the client's own protocol log: observes that
-  " the exact wire marker's count does not move for window_ms. Returns the
-  " unchanged count, or -1 the moment the count moves — a spontaneous
-  " republish inside a hold window is a typed route violation, never a silent
-  " pass. Poll granularity 100ms; no fixed sleep is used as a positive
-  " barrier anywhere else in this harness.
-  let s:wire_needle = '"method":"' . a:marker . '"'
-  let l:before = s:WireMarkerCount()
+function! VimLspHostStableStateWindow(expr, window_ms) abort
+  " Bounded stale-hold window over the client's own state: the state claim
+  " (a boolean expression over the public client surfaces) must hold for the
+  " whole window. Returns 1 when it held, 0 when it was false at the start,
+  " or -1 the moment it stops holding — a spontaneous semantic update inside
+  " a hold window is a typed route violation, never a silent pass. The wire
+  " count may legitimately move: the server re-publishes idempotent
+  " refreshes (index-ready) that do not change any generation, so state
+  " semantics, not wire stillness, is the honest oracle. Poll granularity
+  " 100ms; no fixed sleep is used as a positive barrier anywhere else.
+  if !eval(a:expr)
+    return 0
+  endif
   let l:start = reltime()
   while v:true
-    if s:WireMarkerCount() != l:before
+    if !eval(a:expr)
       return -1
     endif
     if reltimefloat(reltime(l:start)) * 1000.0 >= a:window_ms
-      return l:before
+      return 1
     endif
     sleep 100m
   endwhile

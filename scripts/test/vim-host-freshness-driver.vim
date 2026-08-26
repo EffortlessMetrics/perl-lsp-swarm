@@ -229,13 +229,13 @@ endfunction
 " not move for the whole window, and the state expression must hold at both
 " ends. A spontaneous republish inside the window is a typed route violation.
 function! s:ObserveStaleHold(index, held_generation, current_generation, state_expr) abort
-  let l:stable = VimLspHostStableWireWindow('textDocument/publishDiagnostics', s:stale_window)
+  let l:stable = VimLspHostStableStateWindow(a:state_expr, s:stale_window)
   if l:stable < 0
-    call s:Fail('spontaneous_republish_observed')
+    call s:Fail('spontaneous_state_change_observed')
     return 0
   endif
-  if !eval(a:state_expr)
-    call s:Fail('stale_state_changed_without_wire')
+  if l:stable == 0
+    call s:Fail('stale_state_claim_false')
     return 0
   endif
   call s:Emit('stale_generation_held', {
@@ -243,7 +243,7 @@ function! s:ObserveStaleHold(index, held_generation, current_generation, state_e
         \ 'held_generation': a:held_generation,
         \ 'current_generation': a:current_generation,
         \ 'window_ms': string(s:stale_window),
-        \ 'wire_batches_unchanged': '1',
+        \ 'state_held': '1',
         \ })
   return 1
 endfunction
