@@ -339,7 +339,9 @@ fn run_mode(selectors: &[String]) -> io::Result<i32> {
 
     let mut members = selected_rows(selectors)?;
     if mode == "extra_member" {
-        members.push("t/base/foreign_extra.t".to_string());
+        // Outside the base selector root: the parent membership keeps the
+        // typed out-of-target disposition instead of accepting it.
+        members.push("t/comp/foreign_extra.t".to_string());
     }
     members.sort();
     members.dedup();

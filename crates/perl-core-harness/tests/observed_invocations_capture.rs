@@ -966,3 +966,127 @@ fn the_fixture_refuses_an_unpatched_artifact_digest() -> Result<()> {
     assert!(!t_dir.join(".trace.jsonl").exists(), "no trace may be emitted for a foreign subject");
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Review repairs: parent completeness gates the verdict, stale outputs are
+// cleared, authoritative inputs cannot be aliased, and the exact supplied
+// specification binds validation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_partial_parent_never_completes_on_trace_evidence_alone() -> Result<()> {
+    // extra_member: the instrumented discovery adds a member; the parent
+    // observation stays partial, so no trace-only completion is possible.
+    let observation = observe_with_mode("component_base", "extra_member", &["if.t"])?;
+    let parent = observation
+        .parent
+        .as_ref()
+        .ok_or_else(|| color_eyre::eyre::eyre!("the partial parent stays retained"))?;
+    assert_eq!(parent.payload.state, DiscoveryObservationState::ObservedPartial);
+    let trace = observation
+        .trace
+        .as_ref()
+        .ok_or_else(|| color_eyre::eyre::eyre!("the trace stays retained"))?;
+    assert!(trace.payload.trace_decode.is_complete());
+    for row in &trace.payload.rows {
+        if row.subject.parent_member_path == "t/comp/foreign_extra.t" {
+            // The invocation of an unobserved member types itself, never
+            // joins the accepted denominator.
+            assert_eq!(row.state, InvocationObservationState::SubjectMismatch);
+        } else {
+            assert_eq!(row.state, InvocationObservationState::ObservedComplete);
+        }
+    }
+    assert_eq!(observation.work.payload.state, InstrumentationState::ParentIncomplete);
+
+    let temp = tempfile::tempdir()?;
+    let tree = fixture_tree(temp.path(), "extra_member", &["if.t"])?;
+    let patch = write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?;
+    let config = config_for(&tree, &patch, temp.path(), "component_base", default_limits());
+    let Err(error) = observe_invocations_command(&config) else {
+        bail!("a partial parent must not be a clean pass");
+    };
+    assert!(
+        error.to_string().contains("ParentIncomplete"),
+        "typed failure must name the parent law: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn failed_reruns_clear_stale_successful_outputs() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let tree = fixture_tree(temp.path(), "clean", &["if.t"])?;
+    let patch = write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?;
+    let config = config_for(&tree, &patch, temp.path(), "component_base", default_limits());
+    observe_invocations_command(&config)?;
+    assert!(config.output.is_file() && config.trace_output.is_file());
+
+    // The same destinations, now a capture whose parent cannot be built: the
+    // previous successful evidence must not survive the typed failure.
+    fs::write(tree.join("t").join(".trace-fixture-mode"), "empty")?;
+    let Err(error) = observe_invocations_command(&config) else {
+        bail!("an empty instrumented discovery must not be a clean pass");
+    };
+    assert!(error.to_string().contains("ParentConstructionFailed"));
+    assert!(!config.output.exists(), "stale parent receipt must be removed");
+    assert!(!config.trace_output.exists(), "stale trace receipt must be removed");
+    let work = load_work(&config.work_output)?;
+    assert_eq!(work.payload.state, InstrumentationState::ParentConstructionFailed);
+    Ok(())
+}
+
+#[test]
+fn outputs_cannot_alias_the_matrix_or_the_reviewed_patch() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let tree = fixture_tree(temp.path(), "clean", &["if.t"])?;
+    let patch = write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?;
+
+    let mut aliased_patch =
+        config_for(&tree, &patch, temp.path(), "component_base", default_limits());
+    aliased_patch.output = patch.clone();
+    let Err(error) = observe_invocations(&aliased_patch) else {
+        bail!("an output aliasing the reviewed patch must refuse");
+    };
+    assert!(
+        error.to_string().contains("destination") || error.to_string().contains("alias"),
+        "unexpected alias refusal: {error}"
+    );
+    assert!(patch.is_file(), "the patch must survive the refusal");
+
+    let mut aliased_matrix =
+        config_for(&tree, &patch, temp.path(), "component_base", default_limits());
+    aliased_matrix.output = matrix_path().join("01-components-a.json");
+    let Err(_) = observe_invocations(&aliased_matrix) else {
+        bail!("an output aliasing the pinned matrix must refuse");
+    };
+    Ok(())
+}
+
+#[test]
+fn validation_binds_the_exact_supplied_specification() -> Result<()> {
+    let observation = observe_with_mode("component_base", "clean", &["if.t"])?;
+    let work = &observation.work;
+    let spec_raw = {
+        let temp = tempfile::tempdir()?;
+        let path = write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?;
+        fs::read_to_string(path)?
+    };
+    let spec = spec_from(&spec_raw);
+    validate_instrumentation_work(work, ORDINARY_ARTIFACT.as_bytes(), &spec)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+
+    // A different specification with the same patched bytes never validates
+    // this receipt.
+    let mut other = spec.clone();
+    other.operations[0].label = "relabelled-operation".to_string();
+    let Err(error) = validate_instrumentation_work(work, ORDINARY_ARTIFACT.as_bytes(), &other)
+    else {
+        bail!("a foreign specification must refuse validation");
+    };
+    assert!(
+        error.contains("does not bind the supplied specification"),
+        "unexpected refusal: {error}"
+    );
+    Ok(())
+}

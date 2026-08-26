@@ -264,7 +264,7 @@ pub(crate) fn resolve_host_interpreter(host_perl: &Path) -> Result<PathBuf> {
 /// The matrix is the authority the receipt is validated against, so
 /// overwriting it after capture would destroy the input while the command
 /// still reports success.
-fn reject_matrix_output_alias(matrix_path: &Path, output: &Path) -> Result<()> {
+pub(crate) fn reject_matrix_output_alias(matrix_path: &Path, output: &Path) -> Result<()> {
     let matrix_canonical = fs::canonicalize(matrix_path)
         .with_context(|| format!("canonicalizing target matrix {}", matrix_path.display()))?;
     let output_resolved = crate::artifacts::resolve_destination(output)?;
