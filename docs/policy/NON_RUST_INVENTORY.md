@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11963 |
-| Rust-family files | 3639 |
-| Non-Rust files | 8324 |
-| Allowlisted | 6061 |
+| Total tracked files | 12006 |
+| Rust-family files | 3650 |
+| Non-Rust files | 8356 |
+| Allowlisted | 6093 |
 | Unclassified | 2263 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 433 |
-| documentation | 2723 |
+| config | 435 |
+| documentation | 2734 |
 | generated | 2 |
-| production | 325 |
-| test | 1972 |
-| tooling | 606 |
+| production | 328 |
+| test | 1986 |
+| tooling | 608 |
 | unclassified | 2263 |
 
 ## Unclassified files
@@ -2352,6 +2352,7 @@
 | `.changes/unreleased/product-12213-Added-053344.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12425-Changed-064000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12428-Changed-071500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12470-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12489-Changed-095500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12559-Fixed-213941.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12573-Changed-194700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2504,6 +2505,7 @@
 | `.changes/unreleased/product-9103-Added-211500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9450-Added-125043.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9487-Added-740216.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-9489-Added-314720.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9516-Added-235900.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9593-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9593-Security-000001.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3151,10 +3153,19 @@
 | `.spec/12121-semantic-identity-contract/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12121-semantic-identity-contract/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12121-semantic-identity-contract/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12156-compiler-lexical-cutline/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12156-compiler-lexical-cutline/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12156-compiler-lexical-cutline/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12156-compiler-lexical-cutline/inventory.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12156-compiler-lexical-cutline/manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/12186-compiler-profile-identity-closure/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12186-compiler-profile-identity-closure/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12186-compiler-profile-identity-closure/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12186-compiler-profile-identity-closure/inventory.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12188-observation-envelope-registry/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12188-observation-envelope-registry/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12188-observation-envelope-registry/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12188-observation-envelope-registry/inventory.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12330-compiler-profile-initial-rows/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12330-compiler-profile-initial-rows/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12330-compiler-profile-initial-rows/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3524,8 +3535,22 @@
 | `ci/unwrap_prod_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/unwrap_server_impl_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/xtask_wrapper.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `clients/lite-xl/candidate_manifest.lua` | production | `non-rust-litexl-candidate-manifest` | editor/lite-xl |
+| `clients/lite-xl/compose.lua` | production | `non-rust-litexl-composer` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/diagnostics.lua` | test | `non-rust-litexl-pristine-base-diagnostics` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/helpdoc.lua` | test | `non-rust-litexl-pristine-base-helpdoc` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/init.lua` | test | `non-rust-litexl-pristine-base-init` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/json.lua` | test | `non-rust-litexl-pristine-base-json` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/listbox.lua` | test | `non-rust-litexl-pristine-base-listbox` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/server.lua` | test | `non-rust-litexl-pristine-base-server` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/symbolresults.lua` | test | `non-rust-litexl-pristine-base-symbolresults` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/timer.lua` | test | `non-rust-litexl-pristine-base-timer` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/util.lua` | test | `non-rust-litexl-pristine-base-util` | editor/lite-xl |
 | `clients/lite-xl/tests/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `clients/lite-xl/tests/capability_manifest_test.lua` | test | `non-rust-litexl-capability-manifest-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/compose_integration_test.lua` | test | `non-rust-litexl-compose-integration-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/compose_manifest_test.lua` | test | `non-rust-litexl-compose-manifest-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/compose_materializer_test.lua` | test | `non-rust-litexl-compose-materializer-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/diagnostic_position_test.lua` | test | `non-rust-litexl-diagnostic-position-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/diagnostics_currentness_test.lua` | test | `non-rust-litexl-diagnostics-currentness-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/harness.lua` | test | `non-rust-litexl-journey-harness` | editor/lite-xl |
@@ -4208,6 +4233,7 @@
 | `docs/EDITORS/TRAE_SETUP.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/EDITORS/VIM_SETUP.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/EDITORS/VS_CODE_SETUP.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/EDITORS/ZED_DAP_SUPPORT.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/EDITORS/ZED_SETUP.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/EDITORS/lsp4ij-perl-lsp.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/EXTENSION.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6173,6 +6199,7 @@
 | `policy/workflow-contracts.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/workspace-runtime-ownership.v1.tsv` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/workspace-symbol-classes.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/zed-dap-support.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `ripr.toml` | config | `non-rust-ripr-toml` | quality/ripr |
 | `ripr/pr/repo-exposure.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `rust-analyzer.toml` | tooling | `non-rust-rust-analyzer-toml` | developer-experience |
@@ -6180,6 +6207,7 @@
 | `schemas/agent_review_finding.v1.schema.json` | config | `non-rust-agent-review-finding-schema` | tooling/agent-review |
 | `schemas/agent_review_packet.v1.schema.json` | config | `non-rust-agent-review-packet-schema` | tooling/agent-review |
 | `schemas/binary_identity_protocol.v1.schema.json` | config | `non-rust-binary-identity-schema` | identity |
+| `schemas/compiler_lexical_cutline_cases.v1.schema.json` | config | `non-rust-compiler-lexical-cutline-schema` | compiler |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
 | `schemas/loaded_module_reload_family.v1.schema.json` | config | `non-rust-loaded-module-reload-family-schema` | identity |
 | `schemas/perl_builtin_semantics.v1.schema.json` | config | `non-rust-compiler-builtin-semantics-schema` | compiler |
@@ -6669,6 +6697,7 @@
 | `scripts/zed_assets/dap_process.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/zed_assets/dap_producer.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/zed_assets/dap_public.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/zed_assets/dap_support.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/zed_assets/dap_validation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/zed_assets/framing.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/zed_assets/github_io.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -8252,6 +8281,7 @@
 | `vscode-extension/src/test/packagedServerVersion.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/podPreview.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/activationFailureJourney.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/published/crashRecoveryJourney.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/harness/extension.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/harness/package.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/journeySupport.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -8340,6 +8370,8 @@
 | `xtask/lsp_test/advanced_features.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `xtask/lsp_test/test_features.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `xtask/lsp_test/test_suite.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `xtask/tests/fixtures/compiler_lexical_cutline/invalid-continuation-token.json` | test | `non-rust-compiler-lexical-cutline-fixtures` | compiler |
+| `xtask/tests/fixtures/compiler_lexical_cutline/invalid-schema-version.json` | test | `non-rust-compiler-lexical-cutline-fixtures` | compiler |
 | `xtask/tests/fixtures/dependency-hygiene/machete-findings.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-malformed.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-ignored-used.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |

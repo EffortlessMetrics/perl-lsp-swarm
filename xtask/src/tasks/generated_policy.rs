@@ -273,12 +273,12 @@ mod tests {
             .expect("generated-status-pages allowlist entry");
         let live_glob = status.glob.as_deref().expect("generated-status-pages glob");
         assert_eq!(
-            live_glob, "docs/project/status/**.md",
-            "live status glob is currently the invalid **.md form; repairing it is a generated-policy claim because it reclassifies status pages and churns NON_RUST_INVENTORY"
+            live_glob, "docs/project/status/**/*.md",
+            "live status glob must stay the repaired **/*.md form; the prior **.md spelling is invalid for the glob crate and silently matched zero files (#12566)"
         );
         assert!(
-            Pattern::new(live_glob).is_err(),
-            "live generated-status-pages glob is invalid for the glob crate"
+            Pattern::new(live_glob).is_ok(),
+            "live generated-status-pages glob must be valid for the glob crate"
         );
 
         const SAMPLE: &str = "docs/project/status/dap.md";
@@ -286,17 +286,8 @@ mod tests {
             files.iter().any(|path| path == SAMPLE),
             "status glob sample {SAMPLE} must stay tracked"
         );
-        assert!(
-            !entry_matches(status, SAMPLE),
-            "invalid live glob cannot match a tracked status page"
-        );
+        assert!(entry_matches(status, SAMPLE), "live glob must match a tracked status page");
         assert!(!entry_matches(status, "docs/project/ROADMAP.md"));
-
-        let mut valid = status.clone();
-        valid.glob = Some(live_glob.replace("**.md", "**/*.md"));
-        assert_eq!(valid.glob.as_deref(), Some("docs/project/status/**/*.md"));
-        assert!(entry_matches(&valid, SAMPLE));
-        assert!(!entry_matches(&valid, "docs/project/ROADMAP.md"));
     }
 
     #[test]
