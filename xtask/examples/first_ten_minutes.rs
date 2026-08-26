@@ -746,8 +746,9 @@ mod tests {
         // Inject our own duplicate pair: the fixture's own limitation set may
         // legitimately be empty, so the discriminator cannot depend on
         // pre-existing entries.
-        limitations.push(serde_json::Value::String("duplicate-limitation-probe".to_string()));
-        limitations.push(serde_json::Value::String("duplicate-limitation-probe".to_string()));
+        let probe: serde_json::Value = "duplicate-limitation-probe".into();
+        limitations.push(probe.clone());
+        limitations.push(probe);
         if validate_raw_shape(&raw).is_ok() {
             return Err(color_eyre::eyre::eyre!(
                 "duplicate steps[].limitations unexpectedly passed raw validation"
