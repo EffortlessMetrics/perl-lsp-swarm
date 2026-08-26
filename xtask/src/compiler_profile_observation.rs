@@ -77,6 +77,16 @@ fn ensure_private_safe(field: &str, value: &str) -> Result<()> {
     if value.starts_with('/') || value.starts_with('~') {
         bail!("{field} must not carry a host-specific absolute path, got {value:?}");
     }
+    // Any drive root (`C:\`, `d:/`, ...) is a host-specific absolute path;
+    // hard-coding one drive letter lets every other Windows drive through.
+    let bytes = value.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    {
+        bail!("{field} must not carry a host-specific absolute path, got {value:?}");
+    }
     let lowered = value.to_lowercase();
     for marker in PRIVATE_OR_WORKFLOW_MARKERS {
         if lowered.contains(marker) {
@@ -798,6 +808,12 @@ impl InvalidationEvidence {
         if self.inputs.is_empty() {
             bail!("invalidation evidence must name at least one input");
         }
+        // Detail text is written into the private-safe canonical envelope and
+        // its identity, so every input detail must satisfy the same
+        // private-safety rules as every other free-text field.
+        for input in &self.inputs {
+            ensure_private_safe("invalidation detail", &input.detail)?;
+        }
         Ok(())
     }
 
@@ -1233,6 +1249,12 @@ pub struct ObservationAdapterRegistry {
 
 impl ObservationAdapterRegistry {
     /// An empty registry.
+    ///
+    /// A registry built incrementally through [`Self::register`] is
+    /// re-validated at every operational boundary ([`Self::select_adapter`],
+    /// [`Self::validate_observation`], [`Self::canonical_text`]): a dangling
+    /// migration target can never be selected, validated against, or
+    /// canonicalized into identity bytes.
     pub fn new() -> Self {
         Self::default()
     }
@@ -1298,6 +1320,10 @@ impl ObservationAdapterRegistry {
         family: &ReceiptFamily,
         schema: SchemaVersion,
     ) -> Result<&ObservationAdapterDescriptor> {
+        // The incremental new()+register() path skips from_descriptors'
+        // final validation, so every operational boundary re-checks it: a
+        // registry with a dangling migration target can never be operated on.
+        self.validate_migration_targets()?;
         let candidates: Vec<&ObservationAdapterDescriptor> = self
             .adapters
             .values()
@@ -1341,6 +1367,7 @@ impl ObservationAdapterRegistry {
     /// observation may narrow but never strengthen the adapter's declared
     /// observation ceiling.
     pub fn validate_observation(&self, observation: &CompilerProfileObservationV1) -> Result<()> {
+        self.validate_migration_targets()?;
         observation.validate()?;
         let descriptor = self.adapters.get(&observation.adapter.id).ok_or_else(|| {
             anyhow::anyhow!(
@@ -1415,6 +1442,7 @@ impl ObservationAdapterRegistry {
     /// Deterministic canonical text of every registered adapter in identity
     /// order.  Registration order cannot change these bytes.
     pub fn canonical_text(&self) -> Result<String> {
+        self.validate_migration_targets()?;
         let mut out = String::new();
         out.push_str("observation_adapter_registry v1\n");
         for descriptor in self.adapters.values() {
@@ -2033,6 +2061,10 @@ mod tests {
             "/Users/ci/build/receipt.json",
             "C:\\Users\\ci\\receipt.json",
             "~/private/receipt.json",
+            // Every Windows drive root is host-specific, not only C:\.
+            "D:\\build\\operator-secret",
+            "c:/Users/ci/receipt.json",
+            "E:\\data\\receipt.json",
         ] {
             assert!(
                 SubjectDimension::proven(leaked).is_err(),
@@ -2050,6 +2082,56 @@ mod tests {
                 "canonical form must not carry private/workflow marker {marker:?}"
             );
         }
+        Ok(())
+    }
+
+    // Review falsifier (PR #12492): an invalidation detail is written into
+    // the canonical envelope and its identity, so private content there must
+    // be rejected before canonicalizing.
+    #[test]
+    fn invalidation_details_are_private_safe_before_canonicalizing() -> Result<()> {
+        let mut base = observation();
+        base.invalidation = InvalidationEvidence::new(vec![InvalidationInput::new(
+            InvalidationKind::Source,
+            "/home/operator/token",
+        )?])?;
+        assert!(
+            base.validate().is_err(),
+            "a private-unsafe invalidation detail must fail envelope validation"
+        );
+        assert!(
+            base.canonical_semantic_text().is_err(),
+            "a private-unsafe invalidation detail must never reach canonical bytes"
+        );
+        Ok(())
+    }
+
+    // Review falsifier (PR #12492): the incremental new()+register() path
+    // skips from_descriptors' final validation, so a registry with a dangling
+    // migration target must fail closed at every operational boundary.
+    #[test]
+    fn incremental_registry_with_dangling_migration_target_fails_closed() -> Result<()> {
+        let mut dangling = adapter();
+        dangling.supersedes = Some(AdapterId::new("adapter-missing")?);
+        let mut registry = ObservationAdapterRegistry::new();
+        registry.register(dangling)?;
+        let family = ReceiptFamily::new(synthetic_fixtures::FAMILY)?;
+        assert!(
+            registry.select_adapter(&family, SchemaVersion::new(1)).is_err(),
+            "selection on a dangling migration registry must fail closed"
+        );
+        assert!(
+            registry.canonical_text().is_err(),
+            "canonicalizing a dangling migration registry must fail closed"
+        );
+        assert!(
+            registry.semantic_fingerprint().is_err(),
+            "fingerprinting a dangling migration registry must fail closed"
+        );
+        assert!(
+            registry.validate_observation(&observation()).is_err(),
+            "validating an observation against a dangling migration registry must fail closed"
+        );
         Ok(())
     }
 
