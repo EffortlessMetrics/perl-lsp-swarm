@@ -88,6 +88,10 @@ const RECOVERY_WINDOW_MS = 120_000;
 const QUIET_WINDOW_MS = 6_000;
 const BREAKER_EXHAUSTION_WINDOW_MS = 15_000;
 const WATCHDOG_RECOVERY_WINDOW_MS = 60_000;
+/** Per-episode wait for a post-crash generation to reach Running on a loaded
+ *  hosted runner; matches the initial demand-start bound, not a weaker
+ *  invariant — a lifecycle stuck at 'failed' still fails this window. */
+const EPISODE_RUNNING_WINDOW_MS = 120_000;
 const POLL_INTERVAL_MS = 50;
 /** Kills must land inside the stable-run grace so the budget never resets. */
 const MAX_RUN_TO_KILL_MS = 25_000;
@@ -517,8 +521,8 @@ suite('Packaged crash-recovery journey (#7848)', function () {
           try {
             await withTimeout(
               `replay readiness ${path.basename(document.uri.fsPath)}`,
-              api.waitForActiveDocumentReady!(document.uri.toString(), 60_000),
-              60_000,
+              api.waitForActiveDocumentReady!(document.uri.toString(), EPISODE_RUNNING_WINDOW_MS),
+              EPISODE_RUNNING_WINDOW_MS,
             );
             replayRows[path.basename(document.uri.fsPath)] = 'ready_in_replacement_generation';
           } catch (error: unknown) {
@@ -801,8 +805,15 @@ suite('Packaged crash-recovery journey (#7848)', function () {
         // (a pre-Running death is a startup failure, not a crash episode),
         // and measure the kill latency from the moment Running was observed
         // so the receipt proves every kill landed inside the 30s stable-run
-        // grace and could not have silently reset the budget.
-        const runningDeadline = Date.now() + 60_000;
+        // grace and could not have silently reset the budget. The bound
+        // matches the initial demand start: a post-crash restart does the
+        // same server spawn + initialization on the same loaded host, so a
+        // 60s episode window that was never validated on hosted runners
+        // falsified slow-but-healthy recoveries. The proven invariant (kill
+        // inside the 30s stable grace, measured FROM the Running
+        // observation) is unchanged; a lifecycle stuck at 'failed' still
+        // fails here with richer receipt evidence.
+        const runningDeadline = Date.now() + EPISODE_RUNNING_WINDOW_MS;
         let runningObservedAt: number | null = null;
         while (Date.now() < runningDeadline) {
           if (lifecycleState(api) === 'running') {
@@ -1005,8 +1016,8 @@ suite('Packaged crash-recovery journey (#7848)', function () {
       try {
         await withTimeout(
           'post-retry readiness',
-          api.waitForActiveDocumentReady!(document.uri.toString(), 60_000),
-          60_000,
+          api.waitForActiveDocumentReady!(document.uri.toString(), EPISODE_RUNNING_WINDOW_MS),
+          EPISODE_RUNNING_WINDOW_MS,
         );
         explicitRetry.readiness = 'ready_in_retry_generation';
       } catch (error: unknown) {
