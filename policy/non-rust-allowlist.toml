@@ -139,6 +139,21 @@ created = "2026-08-26"
 review_after = "2027-02-26"
 
 [[allow]]
+id = "non-rust-parser-pest-fixture-manifest"
+path = "crates/perl-parser-pest/tests/fixtures/manifest.toml"
+kind = "test_fixture_data"
+language = "toml"
+surface = "fixtures"
+classification = "test"
+owner = "parser/pest-fixtures"
+reason = "Package-local pest-train fixture catalog consumed by the perl-parser-pest fixture runner; later isolation and extraction reuse this identity rather than copying source lists."
+covered_by = [
+  "cargo test -p perl-parser-pest --test fixture_manifest --locked",
+]
+created = "2026-08-26"
+review_after = "2027-02-26"
+
+[[allow]]
 id = "non-rust-agent-review-packet-golden-markdown"
 glob = "fixtures/agent_review_packet/golden/*.md"
 kind = "test_fixture"
