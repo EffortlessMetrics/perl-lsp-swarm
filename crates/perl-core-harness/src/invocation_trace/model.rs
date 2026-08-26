@@ -660,7 +660,7 @@ pub struct EffectiveInvocationRow {
 
 /// Outcome of strictly decoding one trace stream.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "outcome", content = "reason")]
+#[serde(rename_all = "snake_case", tag = "outcome")]
 pub enum TraceStreamOutcome {
     /// Stream decoded strictly: one header, ordered unique frames, terminal
     /// frame present and consistent.

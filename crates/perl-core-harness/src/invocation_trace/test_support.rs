@@ -277,26 +277,26 @@ impl TraceFixture {
         }
     }
 
-    /// Serialize frames into the exact JSONL stream bytes.
+    /// Serialize frames into the exact JSONL stream bytes. Fixture emission
+    /// fails loudly on serialization errors: a silently dropped frame would
+    /// let a dependent test pass for the wrong reason.
     pub fn emit(
         &self,
         header: &HeaderFrame,
         row_lines: &[String],
         terminal: &TerminalFrame,
     ) -> Vec<u8> {
-        let mut bytes =
-            serde_json::to_vec(header).map_err(|error| error.to_string()).ok().unwrap_or_default();
+        let header_bytes = serde_json::to_vec(header)
+            .unwrap_or_else(|error| panic!("fixture header must serialize: {error}"));
+        let terminal_bytes = serde_json::to_vec(terminal)
+            .unwrap_or_else(|error| panic!("fixture terminal must serialize: {error}"));
+        let mut bytes = header_bytes;
         bytes.push(b'\n');
         for line in row_lines {
             bytes.extend_from_slice(line.as_bytes());
             bytes.push(b'\n');
         }
-        bytes.extend_from_slice(
-            &serde_json::to_vec(terminal)
-                .map_err(|error| error.to_string())
-                .ok()
-                .unwrap_or_default(),
-        );
+        bytes.extend_from_slice(&terminal_bytes);
         bytes.push(b'\n');
         bytes
     }

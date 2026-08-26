@@ -13,7 +13,7 @@ use crate::invocation_trace::build::{
 use crate::invocation_trace::decode::{decode_trace_stream, derive_row_state, work_from_rows};
 use crate::invocation_trace::model::{
     EffectiveInvocationTraceReceiptV1, InvocationObservationState, MAX_TRACE_STREAM_BYTES,
-    TRACE_CONTAMINATION_MARKERS, UPSTREAM_INVOCATION_TRACE_SCHEMA_VERSION,
+    UPSTREAM_INVOCATION_TRACE_SCHEMA_VERSION,
 };
 use crate::observed_discovery::model::{EvidenceClass, ProcessCompletion};
 use crate::observed_discovery::validate::validate_receipt_subject_binding;
@@ -42,16 +42,18 @@ pub fn validate_invocation_trace_receipt(
         return Err("receipt parent process identity does not match the parent terminal capture"
             .to_string());
     }
-    if payload.subject.repository_commit != parent.payload.subject.repository_commit
-        || payload.subject.prepared_tree_identity != parent.payload.subject.prepared_tree_identity
-        || payload.subject.target_id != parent.payload.subject.target_id
-        || payload.subject.target_contract_digest != parent.payload.subject.target_contract_digest
-        || payload.subject.matrix_fingerprint != parent.payload.subject.matrix_fingerprint
-        || payload.subject.variant_target_id != parent.payload.subject.variant_target_id
+    if let Some(disagreement) =
+        crate::invocation_trace::build::subject_disagreement(&payload.subject, parent)
     {
-        return Err(
-            "receipt subject does not bind the supplied parent discovery subject".to_string()
-        );
+        return Err(format!(
+            "receipt subject does not bind the supplied parent discovery subject: {disagreement}"
+        ));
+    }
+    if payload.runner != parent.payload.invocation.runner {
+        return Err(format!(
+            "receipt runner {:?} does not match the parent discovery runner {:?}",
+            payload.runner, parent.payload.invocation.runner
+        ));
     }
     if payload.runner_artifact.canonical_path != payload.runner.entrypoint() {
         return Err(format!(
@@ -59,7 +61,7 @@ pub fn validate_invocation_trace_receipt(
             payload.runner_artifact.canonical_path, payload.runner
         ));
     }
-    enforce_uncontaminated(parent)?;
+    crate::invocation_trace::build::enforce_uncontaminated_result_streams(parent)?;
 
     let trace_bytes = payload.trace.bytes()?;
     if trace_bytes.len() > MAX_TRACE_STREAM_BYTES {
@@ -69,15 +71,28 @@ pub fn validate_invocation_trace_receipt(
         ));
     }
     let decoded = decode_trace_stream(&trace_bytes)?;
-    if let Some(header) = &decoded.header {
-        if header.trace_session_id != payload.subject.trace_session_id
-            || header.parent_process_nonce != payload.subject.parent_process_nonce
-            || header.parent_receipt_digest != payload.subject.parent_receipt_digest
-        {
-            return Err("retained header does not bind the receipt subject identity".to_string());
+    match &decoded.header {
+        Some(header) => {
+            if header.trace_session_id != payload.subject.trace_session_id
+                || header.parent_process_nonce != payload.subject.parent_process_nonce
+                || header.parent_receipt_digest != payload.subject.parent_receipt_digest
+            {
+                return Err(
+                    "retained header does not bind the receipt subject identity".to_string()
+                );
+            }
+            if *header != payload.header {
+                return Err("retained header disagrees with the decoded trace bytes".to_string());
+            }
         }
-        if *header != payload.header {
-            return Err("retained header disagrees with the decoded trace bytes".to_string());
+        // No decodable header exists: the retained header must stay the exact
+        // empty placeholder, never a forged header.
+        None => {
+            if payload.header != crate::invocation_trace::build::empty_header_for() {
+                return Err(
+                    "receipt retains a header although the trace bytes decode none".to_string()
+                );
+            }
         }
     }
     if decoded.terminal != payload.terminal {
@@ -114,26 +129,22 @@ pub fn validate_invocation_trace_receipt(
             subject_consistent,
             &decoded_row.fields,
         );
-        if expected_state != recorded_row.state {
-            return Err(format!(
-                "row {index} records state {:?} but reconstructs {expected_state:?}",
-                recorded_row.state
-            ));
-        }
         let binding =
             ExpectedInvocationBinding::from_subject(&payload.subject, &decoded_row.subject);
-        let outcome = project_effective_invocation(
-            &rehydrated_row(decoded_row, recorded_row.state),
-            &binding,
-        );
+        let outcome =
+            project_effective_invocation(&rehydrated_row(decoded_row, expected_state), &binding);
         if outcome.is_projected() {
             projections_accepted += 1;
         }
-        if outcome.record() != recorded_row.projection {
+        // The recorded row must equal the reconstructed row field-for-field:
+        // frame, identity, fields, disposition, fingerprint, state, and
+        // projection all come from the retained bytes and the pure laws.
+        let mut reconstructed = decoded_row.clone();
+        reconstructed.state = expected_state;
+        reconstructed.projection = outcome.record();
+        if &reconstructed != recorded_row {
             return Err(format!(
-                "row {index} records projection {:?} but reconstructs {:?}",
-                recorded_row.projection,
-                outcome.record()
+                "row {index} disagrees with the row reconstructed from the retained trace bytes"
             ));
         }
     }
@@ -247,22 +258,4 @@ fn rehydrated_row(
     let mut row = decoded_row.clone();
     row.state = state;
     row
-}
-
-fn enforce_uncontaminated(
-    parent: &crate::observed_discovery::model::UpstreamDiscoveryReceiptV1,
-) -> Result<(), String> {
-    let stdout = parent.payload.stdout.bytes()?;
-    let stderr = parent.payload.stderr.bytes()?;
-    for marker in TRACE_CONTAMINATION_MARKERS {
-        for (name, stream) in [("stdout", &stdout), ("stderr", &stderr)] {
-            if stream.windows(marker.len()).any(|window| window == marker.as_bytes()) {
-                return Err(format!(
-                    "parent discovery {name} carries trace-frame bytes; the trace channel must \
-                     stay independent of ordinary runner result streams"
-                ));
-            }
-        }
-    }
-    Ok(())
 }

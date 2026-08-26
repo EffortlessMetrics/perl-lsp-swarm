@@ -153,6 +153,10 @@ pub(crate) struct DecodedTrace {
 /// decoded-row bound; every framing defect is a typed outcome or disposition.
 pub(crate) fn decode_trace_stream(raw: &[u8]) -> Result<DecodedTrace, String> {
     let mut state = DecodeState::default();
+    if raw.is_empty() {
+        state.fail("trace stream is empty".to_string());
+        return Ok(state.finish());
+    }
     let text = match std::str::from_utf8(raw) {
         Ok(text) => text,
         Err(error) => {
@@ -533,9 +537,11 @@ pub(crate) fn work_from_rows(
 /// Completeness law for one row: derive the single row state.
 ///
 /// Precedence (first match wins):
-/// 1. malformed or conflicting frame, stream malformation, or unknown
-///    terminal evidence → `not_proven`
-/// 2. any field `instrument_failure` → `instrument_failed`
+/// 1. malformed or conflicting frame, stream malformation, or missing
+///    terminal evidence (unknown, cancelled, or timed-out completions carry
+///    no finished-run evidence) → `not_proven`
+/// 2. an instrument-failed completion or any field `instrument_failure` →
+///    `instrument_failed`
 /// 3. subject binding mismatch → `subject_mismatch`
 /// 4. nonzero exit or signal → `runner_failed`
 /// 5. any field not `observed` → `observed_partial`
@@ -552,10 +558,13 @@ pub fn derive_row_state(
     if !frame_accepted || !stream_complete {
         return InvocationObservationState::NotProven;
     }
-    if completion == ProcessCompletion::Unknown {
-        return InvocationObservationState::NotProven;
+    match completion {
+        ProcessCompletion::Unknown
+        | ProcessCompletion::Cancelled
+        | ProcessCompletion::TimedOut { .. } => return InvocationObservationState::NotProven,
+        _ => {}
     }
-    if fields.any_instrument_failure() {
+    if completion == ProcessCompletion::InstrumentFailed || fields.any_instrument_failure() {
         return InvocationObservationState::InstrumentFailed;
     }
     if !subject_consistent {

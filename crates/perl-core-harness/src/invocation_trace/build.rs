@@ -64,6 +64,14 @@ pub fn build_invocation_trace_receipt(
                 .to_string(),
         );
     }
+    // The traced process is the parent discovery process itself: its runner
+    // route cannot differ from the route the parent receipt recorded.
+    if input.runner != parent.payload.invocation.runner {
+        return Err(format!(
+            "trace runner {:?} does not match the parent discovery runner {:?}",
+            input.runner, parent.payload.invocation.runner
+        ));
+    }
     if input.runner_artifact.canonical_path != input.runner.entrypoint() {
         return Err(format!(
             "runner artifact {} is not the entrypoint of runner {:?}",
@@ -205,7 +213,7 @@ pub(crate) fn row_subject_consistent(
 pub(crate) fn validate_subject(input_subject: &TraceSubjectIdentity) -> Result<(), String> {
     validate_subject_references(input_subject)
 }
-fn empty_header_for() -> crate::invocation_trace::model::TraceHeader {
+pub(crate) fn empty_header_for() -> crate::invocation_trace::model::TraceHeader {
     crate::invocation_trace::model::TraceHeader {
         schema_version: UPSTREAM_INVOCATION_TRACE_SCHEMA_VERSION.to_string(),
         trace_session_id: String::new(),
@@ -229,7 +237,7 @@ pub(crate) fn required_limitations() -> Vec<String> {
     limitations
 }
 
-fn subject_disagreement(
+pub(crate) fn subject_disagreement(
     subject: &TraceSubjectIdentity,
     parent: &UpstreamDiscoveryReceiptV1,
 ) -> Option<String> {
@@ -256,7 +264,7 @@ fn subject_disagreement(
         .map(|(label, _)| format!("{label} disagrees with the parent discovery subject"))
 }
 
-fn enforce_uncontaminated_result_streams(
+pub(crate) fn enforce_uncontaminated_result_streams(
     parent: &UpstreamDiscoveryReceiptV1,
 ) -> Result<(), String> {
     let stdout = parent.payload.stdout.bytes()?;

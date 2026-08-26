@@ -169,7 +169,10 @@ pub enum ExpectedFieldResult {
     ObservedEqual,
     /// The observed value differs from the expected value.
     ObservedDifferent,
-    /// The field was not observed; the expected value stays a expectation,
+    /// The field was observed but the expectation carries no value for it;
+    /// nothing can agree or disagree.
+    NoExpectation,
+    /// The field was not observed; the expected value stays an expectation,
     /// never evidence.
     NotObserved,
     /// The field does not apply to this invocation shape.
@@ -188,7 +191,9 @@ pub fn compare_expected(
     for key in FieldKey::ALL {
         let result = match fields.state_of(key) {
             FieldStateRef::Observed => {
-                if expected_values.matches(key, fields) {
+                if !expected_values.carries(key) {
+                    ExpectedFieldResult::NoExpectation
+                } else if expected_values.matches(key, fields) {
                     ExpectedFieldResult::ObservedEqual
                 } else {
                     ExpectedFieldResult::ObservedDifferent
@@ -222,6 +227,17 @@ pub struct ExpectedInvocationValues {
 }
 
 impl ExpectedInvocationValues {
+    fn carries(&self, key: FieldKey) -> bool {
+        match key {
+            FieldKey::RunCwd => self.run_cwd.is_some(),
+            FieldKey::IncludeRoots => self.include_roots.is_some(),
+            FieldKey::TestInit => self.test_init.is_some(),
+            FieldKey::TaintMode => self.taint_mode.is_some(),
+            FieldKey::ScriptPath => self.script_path.is_some(),
+            _ => false,
+        }
+    }
+
     fn matches(&self, key: FieldKey, fields: &EffectiveInvocationFields) -> bool {
         match key {
             FieldKey::RunCwd => self.run_cwd.as_deref().is_some_and(|expected| {
@@ -299,6 +315,19 @@ pub fn project_effective_invocation(
     if let Some(rejection) = subject_rejection(&row.subject, binding) {
         return ProjectionOutcome::Rejected(ProjectionRejection::SubjectMismatch {
             detail: rejection,
+        });
+    }
+    // The projected member comes from the observed field, so the observation
+    // itself must name exactly the member its frame proved binding for.
+    if row.fields.member_identity.observed().map(String::as_str)
+        != Some(row.subject.parent_member_path.as_str())
+    {
+        return ProjectionOutcome::Rejected(ProjectionRejection::SubjectMismatch {
+            detail: format!(
+                "observed member identity {:?} disagrees with the frame member binding {:?}",
+                row.fields.member_identity.observed(),
+                row.subject.parent_member_path
+            ),
         });
     }
     if let Some((field, reason)) = validate_observed_values(&row.fields) {
@@ -444,6 +473,22 @@ fn validate_observed_values(fields: &EffectiveInvocationFields) -> Option<(Field
             FieldKey::UpstreamOperation,
             "upstream operation must be 1-256 characters".to_string(),
         ));
+    }
+    if let Some(environment) = fields.environment.observed() {
+        let mut canonical = String::new();
+        for (key, value) in &environment.variables {
+            canonical.push_str(key);
+            canonical.push('=');
+            canonical.push_str(value);
+            canonical.push('\n');
+        }
+        let expected = crate::build::sha256_bytes(canonical.as_bytes());
+        if environment.sha256 != expected {
+            return Some((
+                FieldKey::Environment,
+                "environment identity digest does not bind the retained variables".to_string(),
+            ));
+        }
     }
     None
 }

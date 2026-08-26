@@ -1092,7 +1092,7 @@ mod schema_check {
             if passing != 1 {
                 let details = branches
                     .iter()
-                    .map(|branch| check(branch, root, instance).unwrap_err())
+                    .filter_map(|branch| check(branch, root, instance).err())
                     .collect::<Vec<_>>()
                     .join(" | ");
                 return Err(format!(
@@ -1291,5 +1291,223 @@ fn produced_receipt_matches_registered_json_schema() -> Result<()> {
             "registered schema must reject drifted shape at {pointer}"
         );
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Review repairs: discriminating tests for each bot finding
+// ---------------------------------------------------------------------------
+
+#[test]
+fn empty_trace_stream_types_its_own_reason() -> Result<()> {
+    let fixture = TraceFixture::new("component_base", "t/base/if.t\n")?;
+    let receipt = build(&fixture, b"")?;
+    assert!(!receipt.payload.trace_decode.is_complete());
+    match &receipt.payload.trace_decode {
+        crate::invocation_trace::model::TraceStreamOutcome::Malformed { reason } => {
+            assert!(reason.contains("empty"), "reason must name the empty stream: {reason}");
+        }
+        _ => bail!("empty stream must carry a typed malformed outcome"),
+    }
+    assert!(receipt.payload.rows.is_empty());
+    Ok(())
+}
+
+#[test]
+fn cancelled_timed_out_and_instrument_failed_completions_never_complete_rows() -> Result<()> {
+    use crate::observed_discovery::model::ProcessCompletion as Completion;
+    // Terminal completions without a finished run leave every row not proven;
+    // an instrument-failed terminal types the rows instrument-failed.
+    for (completion, expected) in [
+        (Completion::Cancelled, InvocationObservationState::NotProven),
+        (Completion::TimedOut { deadline_millis: 1_000 }, InvocationObservationState::NotProven),
+        (Completion::InstrumentFailed, InvocationObservationState::InstrumentFailed),
+    ] {
+        let fixture = TraceFixture::new("component_base", "t/base/if.t\n")?;
+        let bytes = single_row_stream(&fixture, "t/base/if.t", |_| {}, completion)?;
+        let receipt = build(&fixture, &bytes)?;
+        assert_eq!(
+            receipt.payload.rows[0].state, expected,
+            "completion {completion:?} must derive {expected:?}"
+        );
+        assert!(matches!(receipt.payload.rows[0].projection, ProjectionRecord::Rejected { .. }));
+        ensure(validate_invocation_trace_receipt(&fixture.parent, &receipt))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn observed_member_identity_must_equal_the_frame_member_binding() -> Result<()> {
+    let fixture = TraceFixture::new("component_base", "t/base/if.t\nt/base/cond.t\n")?;
+    // The frame proves binding for one accepted member while the observed
+    // field names another: the projection must refuse the borrowed identity.
+    let bytes = single_row_stream(
+        &fixture,
+        "t/base/if.t",
+        |fields| {
+            fields.member_identity =
+                EffectiveInvocationField::Observed { value: "t/base/cond.t".to_string() };
+        },
+        ProcessCompletion::ExitStatus { code: 0 },
+    )?;
+    let receipt = build(&fixture, &bytes)?;
+    let row = &receipt.payload.rows[0];
+    assert!(matches!(
+        row.projection,
+        ProjectionRecord::Rejected {
+            reason: crate::invocation_trace::model::ProjectionRejectionKind::SubjectMismatch
+        }
+    ));
+    Ok(())
+}
+
+#[test]
+fn environment_identity_digests_are_recomputed_before_projection() -> Result<()> {
+    let fixture = TraceFixture::new("component_base", "t/base/if.t\n")?;
+    // A digest that belongs to different retained variables cannot enter an
+    // authoritative projection.
+    let bytes = single_row_stream(
+        &fixture,
+        "t/base/if.t",
+        |fields| {
+            fields.environment = EffectiveInvocationField::Observed {
+                value: crate::observed_discovery::model::EnvironmentIdentity {
+                    variables: [("LC_ALL".to_string(), "C".to_string())].into_iter().collect(),
+                    sha256: sha_hex(b"LC_ALL=en_US.UTF-8\n"),
+                },
+            };
+        },
+        ProcessCompletion::ExitStatus { code: 0 },
+    )?;
+    let receipt = build(&fixture, &bytes)?;
+    assert!(matches!(
+        receipt.payload.rows[0].projection,
+        ProjectionRecord::Rejected {
+            reason: crate::invocation_trace::model::ProjectionRejectionKind::InvalidObservedValue
+        }
+    ));
+    Ok(())
+}
+
+#[test]
+fn trace_runner_must_match_the_parent_discovery_route() -> Result<()> {
+    let fixture = TraceFixture::new("component_base", "t/base/if.t\n")?;
+    let bytes = fixture.emit_complete(&["t/base/if.t"])?;
+    let mut input = fixture.input(bytes);
+    input.runner = crate::runner_model::RunnerKind::Harness;
+    input.runner_artifact = crate::observed_discovery::model::RunnerArtifactIdentity {
+        canonical_path: "t/harness".to_string(),
+        content_sha256: sha_hex(b"t/harness"),
+    };
+    let Err(error) = build_invocation_trace_receipt(&input) else {
+        bail!("a harness trace over a t/TEST parent must fail construction");
+    };
+    assert!(
+        error.contains("does not match the parent discovery runner"),
+        "rejection must name the parent-route law: {error}"
+    );
+    Ok(())
+}
+
+fn tampered_receipt(
+    receipt: &EffectiveInvocationTraceReceiptV1,
+    pointer: &str,
+    replacement: serde_json::Value,
+) -> Result<EffectiveInvocationTraceReceiptV1> {
+    let mut value = serde_json::to_value(receipt).map_err(|error| eyre!(error))?;
+    let cursor = value.pointer_mut(pointer).ok_or_else(|| eyre!("missing pointer {pointer}"))?;
+    *cursor = replacement;
+    let tampered: EffectiveInvocationTraceReceiptV1 =
+        serde_json::from_value(value).map_err(|error| eyre!(error))?;
+    Ok(EffectiveInvocationTraceReceiptV1 {
+        payload_digest: crate::invocation_trace::trace_payload_digest(&tampered.payload)
+            .map_err(|error| eyre!(error))?,
+        ..tampered
+    })
+}
+
+#[test]
+fn tampered_rows_fail_full_validation_even_with_a_recomputed_digest() -> Result<()> {
+    let fixture = TraceFixture::new("component_base", "t/base/if.t\n")?;
+    let bytes = fixture.emit_complete(&["t/base/if.t"])?;
+    let receipt = build(&fixture, &bytes)?;
+    // Row identity drift with a recomputed payload digest must not survive
+    // validation: rows are compared field-for-field against reconstruction.
+    let tampered =
+        tampered_receipt(&receipt, "/payload/rows/0/row_id", serde_json::json!("row-0-forged"))?;
+    assert!(validate_trace_receipt_subject_binding(&tampered).is_ok());
+    assert!(validate_invocation_trace_receipt(&fixture.parent, &tampered).is_err());
+    let tampered = tampered_receipt(
+        &receipt,
+        "/payload/rows/0/fields/script_path",
+        serde_json::json!({"state": "observed", "payload": {"value": "t/base/cond.t"}}),
+    )?;
+    assert!(validate_invocation_trace_receipt(&fixture.parent, &tampered).is_err());
+    Ok(())
+}
+
+#[test]
+fn tampered_placeholder_header_fails_validation_without_decoded_bytes() -> Result<()> {
+    let fixture = TraceFixture::new("component_base", "t/base/if.t\n")?;
+    // Invalid UTF-8 bytes carry no decodable header: the retained header must
+    // stay the exact empty placeholder.
+    let receipt = build(&fixture, b"\xff\xfe\n")?;
+    assert!(receipt.payload.header.trace_session_id.is_empty());
+    let tampered = tampered_receipt(
+        &receipt,
+        "/payload/header/trace_session_id",
+        serde_json::json!("trace-session-forged"),
+    )?;
+    assert!(validate_invocation_trace_receipt(&fixture.parent, &tampered).is_err());
+    // Subject-field drift is also caught against the full parent binding.
+    let tampered = tampered_receipt(
+        &receipt,
+        "/payload/subject/perl_ref",
+        serde_json::json!("perl-5.99.0-forged"),
+    )?;
+    assert!(validate_invocation_trace_receipt(&fixture.parent, &tampered).is_err());
+    Ok(())
+}
+
+#[test]
+fn absent_expectations_report_no_expectation_not_a_difference() -> Result<()> {
+    let fields = all_observed_fields("t/base/if.t");
+    let comparisons = crate::invocation_trace::adapter::compare_expected(
+        &fields,
+        &crate::invocation_trace::adapter::ExpectedInvocationValues::default(),
+    );
+    let cwd = comparisons
+        .iter()
+        .find(|entry| entry.field == FieldKey::RunCwd)
+        .ok_or_else(|| eyre!("comparison must cover run_cwd"))?;
+    assert_eq!(cwd.result, crate::invocation_trace::adapter::ExpectedFieldResult::NoExpectation);
+    Ok(())
+}
+
+#[test]
+fn registered_schema_rejects_the_consumer_side_stale_state() -> Result<()> {
+    let fixture = TraceFixture::new("component_base", "t/base/if.t\n")?;
+    let bytes = fixture.emit_complete(&["t/base/if.t"])?;
+    let receipt = build(&fixture, &bytes)?;
+    let schema_path = crate::invocation_trace::test_support::repo_file(
+        "schemas/perl_core_harness_upstream_effective_invocation_trace.v1.schema.json",
+    );
+    let schema: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(schema_path).map_err(|error| eyre!(error))?)
+            .map_err(|error| eyre!(error))?;
+    let mut value = serde_json::to_value(&receipt).map_err(|error| eyre!(error))?;
+    value["payload"]["rows"][0]["state"] = json!("stale");
+    assert!(
+        schema_check::validate(&schema, &value).is_err(),
+        "registered schema must reject the consumer-side stale state"
+    );
+    // The malformed decode outcome keeps the plain-string wire shape the
+    // schema documents.
+    let mut malformed = value.clone();
+    malformed["payload"]["rows"][0]["state"] = json!("observed_complete");
+    malformed["payload"]["trace_decode"] =
+        json!({"outcome": "malformed", "reason": "review discriminator"});
+    schema_check::validate(&schema, &malformed)
+        .map_err(|error| eyre!("malformed outcome must match the registered schema: {error}"))?;
     Ok(())
 }
