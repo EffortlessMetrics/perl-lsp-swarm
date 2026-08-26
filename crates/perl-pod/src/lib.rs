@@ -560,14 +560,34 @@ fn extract_link_display(link: &str, depth: usize) -> String {
 /// `L<text|target>` → `text`, `L<Module/section>` → `Module`,
 /// `L<Module::Name>` → `Module::Name`. No markdown wrapper, no
 /// percent-encoding, so the result can never exceed the source link text by
-/// more than the formatting codes it removes.
+/// more than the formatting codes it removes. URL links render verbatim and
+/// local-section links render their section label — the unconditional
+/// module/section split would otherwise reduce `L<https://example.com/a>` to
+/// `https:` and `L</section>` to an empty name (#12824 review).
 fn extract_link_display_text(link: &str, depth: usize) -> String {
-    let display = match link.find('|') {
-        Some(pipe_pos) => &link[..pipe_pos],
-        None => match link.find('/') {
-            Some(slash_pos) => &link[..slash_pos],
-            None => link,
-        },
+    let trimmed = link.trim();
+    let display = if let Some(pipe_pos) = trimmed.find('|') {
+        // Explicit display text wins for every link form.
+        &trimmed[..pipe_pos]
+    } else if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("ftp://")
+        || trimmed.starts_with("mailto:")
+    {
+        // URL link: render the URL itself, as Pod::Simple::Text does.
+        trimmed
+    } else if let Some(section) = trimmed.strip_prefix('/') {
+        // Local-section link L</section>: the display is the section label.
+        section.trim_matches('"')
+    } else if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+        // Quoted section link L<"Section With Spaces">.
+        trimmed.trim_matches('"')
+    } else {
+        match trimmed.find('/') {
+            // L<Module/section>: display is the module part.
+            Some(slash_pos) => &trimmed[..slash_pos],
+            None => trimmed,
+        }
     };
     strip_pod_formatting_depth_links(display.trim(), depth, LinkRendering::DisplayText)
 }

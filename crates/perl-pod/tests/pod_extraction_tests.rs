@@ -152,6 +152,24 @@ fn strips_link_with_section() {
 }
 
 #[test]
+fn name_link_local_section_keeps_the_section_label() {
+    // L</section> is a local-section link: display is the section label, not
+    // an empty module part (#12824 review).
+    let doc = extract_pod("=head1 NAME\n\nL</METHODS>\n\n=cut\n");
+    let name = doc.name.as_deref().unwrap_or("");
+    assert_eq!(name, "METHODS", "got: {name}");
+}
+
+#[test]
+fn name_link_url_renders_verbatim() {
+    // L<https://...> is a URL link: render the URL itself, as
+    // Pod::Simple::Text does — never split it at the scheme (#12824 review).
+    let doc = extract_pod("=head1 NAME\n\nL<https://metacpan.org/pod/File::Path>\n\n=cut\n");
+    let name = doc.name.as_deref().unwrap_or("");
+    assert_eq!(name, "https://metacpan.org/pod/File::Path", "got: {name}");
+}
+
+#[test]
 fn name_field_never_exceeds_source_after_link_display_text() {
     // Regression for the pod_extraction fuzz panic (#12824): an unterminated
     // L<...> swallowing adversarial bytes previously percent-encoded its
