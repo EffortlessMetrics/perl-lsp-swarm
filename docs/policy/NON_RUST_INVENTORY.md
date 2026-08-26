@@ -6,17 +6,17 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12074 |
-| Rust-family files | 3681 |
-| Non-Rust files | 8393 |
-| Allowlisted | 6147 |
+| Total tracked files | 12088 |
+| Rust-family files | 3694 |
+| Non-Rust files | 8394 |
+| Allowlisted | 6148 |
 | Unclassified | 2246 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 440 |
+| config | 441 |
 | documentation | 2743 |
 | generated | 2 |
 | production | 328 |
@@ -2887,6 +2887,7 @@
 | `.github/workflows/release-settings-closeout.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/release.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/review-receipt-retirement.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/ripr-infra-retry.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/ripr.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/scoop-bump.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/security-reconciliation.yml` | config | `non-rust-github-workflows` | release/ci |
