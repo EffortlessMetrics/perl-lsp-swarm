@@ -146,3 +146,10 @@ level = "deny"
 status = "active"
 class = "architecture"
 reason = "The mechanism is active; clippy.toml deliberately carries an empty protected-field set until #6114 completes the governed Phase 1 contract."
+
+[[lint]]
+name = "clippy::ptr_arg"
+level = "deny"
+status = "active"
+class = "api"
+reason = "Activated by #2313 after a zero-site force-warn all-targets measurement on current main; public APIs must prefer &str, &[T], and &Path over &String, &Vec<T>, and &PathBuf parameters."

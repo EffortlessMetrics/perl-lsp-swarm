@@ -427,6 +427,9 @@ print_stderr = "deny"
 print_stdout = "deny"
 # same_length_and_capacity: protects raw-parts reconstruction from length/capacity identity errors (#1804).
 same_length_and_capacity = "deny"
+# ptr_arg: zero-copy signature discipline — public APIs prefer &str/&[T]/&Path over
+# &String/&Vec<T>/&PathBuf (#2313); activated after a zero-site pierced measurement.
+ptr_arg = "deny"
 # disallowed_fields: architectural seam protection (#6114).
 # The actual field denylist lives in clippy.toml `disallowed-fields = []`.
 disallowed_fields = "deny"
