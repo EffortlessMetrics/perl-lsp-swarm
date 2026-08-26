@@ -149,7 +149,8 @@ limitations = [
   "The official-registry journey has not run: no released official registry entry serves the DAP-capable perl extension yet.",
   "The linux/macOS rows of the bound #9516 aggregate receipt stay managed_extracted_not_executed; those matching-host executions are owned by the #9516 closeout residual, not by this stage.",
   "This receipt consumes the checked #9516 contract and aggregate receipt; it does not re-derive public asset selection, digests, or the recorded Windows member divergence (#9485 and #7980 own those).",
-  "The exact-source stage promotes individual cells only from a genuine committed #9486 receipt; no such receipt is committed, so every exact-source cell stays not_proven.",
+  "The exact-source stage promotes individual cells only from a genuine committed #9486 receipt binding the perl-dap adapter identity; no such receipt is committed, so every exact-source cell stays not_proven.",
+  "The exact-source stage boolean counts only receipts that bind the exact perl-dap adapter identity; a Zed LSP exact-source receipt sharing the zed_host_compat.v1 family never promotes the DAP stage.",
 ]
 
 [gates]

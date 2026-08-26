@@ -245,6 +245,271 @@ fn lying_pass_shapes_cannot_promote_projection_cells() -> Result<(), Box<dyn Err
     Ok(())
 }
 
+/// A synthetic fully passing public journey over the exact committed bindings
+/// (mirroring the #9487 suite's pass control), so the projection's promotion
+/// path can be discriminated without a real Zed host.
+fn pass_control(committed: &Value) -> Result<Value, Box<dyn Error>> {
+    let mut receipt = committed.clone();
+    receipt["result"] = json!("pass");
+    for cell in [
+        "released_zed_build",
+        "official_registry_entry",
+        "extension_upstream_release",
+        "matching_host_asset_receipt",
+        "exact_source_zed_dap_receipt",
+        "routing_final_check_authority",
+    ] {
+        receipt["gates"][cell] = json!("current");
+    }
+    receipt["gates"]["blockers"] = json!([]);
+    receipt["registry"] = json!({
+        "repository": "zed-industries/extensions",
+        "entry": "perl",
+        "submodule_path": "extensions/perl",
+        "extension_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "extension_version": "0.5.0",
+        "upstream_branch": "main",
+        "released_build": "zed-build-test",
+    });
+    receipt["zed"] = json!({
+        "product": "Zed",
+        "version": "0.0.0-test",
+        "channel": "stable",
+        "build": "zed-build-test",
+    });
+    receipt["platform"] = json!({"os": "windows", "architecture": "x86_64"});
+    receipt["extension"] = json!({
+        "install_route": "official_registry",
+        "upstream_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "manifest_version": "0.5.0",
+        "package_identity": "perl@0.5.0",
+    });
+    for cell in receipt["profile"]
+        .as_object()
+        .map(|it| it.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default()
+    {
+        receipt["profile"][&cell] = json!(true);
+    }
+    let installed_path = receipt
+        .pointer("/asset_evidence/selected_target/installed_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::other("committed receipt lacks installed_path"))?
+        .to_string();
+    let member_digest = receipt
+        .pointer("/asset_evidence/selected_target/member_sha256")
+        .cloned()
+        .unwrap_or_default();
+    let version_directory = installed_path.split('/').next().unwrap_or_default().to_string();
+    receipt["adapter"] = json!({
+        "adapter_id": "perl-dap",
+        "binary_route": "managed_public_artifact",
+        "process_path": format!("C:/Users/t/AppSupport/Zed/debug_adapters/{installed_path}"),
+        "process_argv": ["perl-dap", "--stdio"],
+        "version_output": "perl-dap 0.17.0",
+        "binary_sha256": member_digest,
+    });
+    let digest =
+        committed.pointer("/asset_evidence/aggregate_receipt/sha256").cloned().unwrap_or_default();
+    receipt["workspace"] = json!({
+        "fixture_id": "fixture-test",
+        "fixture_sha256": digest,
+        "root_identity": "root-test",
+    });
+    receipt["configuration"] = json!({
+        "config_sha256": digest,
+        "driver_sha256": digest,
+        "instrument_sha256": digest,
+    });
+    for cell in receipt["journey"]
+        .as_object()
+        .map(|it| it.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default()
+    {
+        receipt["journey"][&cell] =
+            json!({"result": "pass", "evidence": format!("{cell}-evidence")});
+    }
+    receipt["discriminators"] = json!({"wrong_root_same_basename_rejected": true});
+    receipt["managed_cache"] = json!({
+        "before": [],
+        "after": [version_directory],
+        "restart": {"same_subject": true, "second_provider_absent": true},
+    });
+    receipt["cleanup"] = json!({"adapter_orphans": [], "debuggee_orphans": []});
+    Ok(receipt)
+}
+
+#[test]
+fn an_lsp_exact_source_receipt_cannot_promote_the_dap_stage_or_fabricate_a_tier()
+-> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let dir = temp_dir("lsp-exact-source")?;
+
+    // An LSP exact-source journey: same schema family and evidence stage, a
+    // perllsp server block, and no perl-dap adapter identity. The D05 entry
+    // gate (wide predicate) counts it; the projection's DAP stage must not.
+    let lsp_receipt = json!({
+        "schema_version": "zed_host_compat.v1",
+        "evidence_stage": "exact_source_dev_extension",
+        "result": "pass",
+        "perllsp": {"server_id": "perllsp", "command": "perllsp", "arguments": ["--stdio"]},
+    });
+    let receipts_dir = dir.join("receipts");
+    write_temp(
+        &receipts_dir.join("exact-source-perllsp.v1.json"),
+        &serde_json::to_string_pretty(&lsp_receipt)?,
+    )?;
+
+    let pass = pass_control(&committed_receipt(&root)?)?;
+    let pass_path = dir.join("pass.json");
+    write_temp(&pass_path, &serde_json::to_string_pretty(&pass)?)?;
+    let manifest_path = dir.join("published-manifest.toml");
+    write_temp(&manifest_path, PUBLISHED_MANIFEST)?;
+
+    let policy_output = dir.join("policy.toml");
+    let docs_output = dir.join("docs.md");
+    let output = Command::new(python())
+        .arg(root.join(SCRIPT))
+        .arg("project-dap-support")
+        .arg("--receipt")
+        .arg(&pass_path)
+        .arg("--registry-manifest")
+        .arg(&manifest_path)
+        .arg("--receipts-dir")
+        .arg(&receipts_dir)
+        .arg("--policy-output")
+        .arg(&policy_output)
+        .arg("--docs-output")
+        .arg(&docs_output)
+        .current_dir(&root)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "the synthetic public pass must project\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let policy: toml::Value = toml::from_str(&fs::read_to_string(&policy_output)?)?;
+    let stages: Vec<(String, String)> = policy
+        .get("stage")
+        .and_then(toml::Value::as_array)
+        .map(|stages| {
+            stages
+                .iter()
+                .map(|stage| {
+                    (
+                        stage
+                            .get("id")
+                            .and_then(toml::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        stage
+                            .get("state")
+                            .and_then(toml::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let stage_state = |id: &str| {
+        stages
+            .iter()
+            .find(|(stage_id, _)| stage_id == id)
+            .map(|(_, state)| state.as_str())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        stage_state("public_registry_install"),
+        "pass",
+        "a valid public pass must project its earned public stage"
+    );
+    assert_eq!(
+        stage_state("exact_source_dev_extension"),
+        "not_proven",
+        "an LSP exact-source receipt sharing the zed_host_compat.v1 family must not promote the DAP stage"
+    );
+    assert_eq!(
+        policy
+            .get("claim_boundary")
+            .and_then(|boundary| boundary.get("support_tier"))
+            .and_then(toml::Value::as_str),
+        Some("public_registry_proven"),
+        "the support tier must follow the validated receipt instead of a hard-coded verdict"
+    );
+    for cell in policy.get("cell").and_then(toml::Value::as_array).unwrap_or(&vec![]) {
+        assert_eq!(
+            cell.get("public_registry_install").and_then(toml::Value::as_str),
+            Some("pass"),
+            "every journey cell the pass proves must project as pass"
+        );
+        assert_eq!(
+            cell.get("exact_source_dev_extension").and_then(toml::Value::as_str),
+            Some("not_proven"),
+            "the exact-source column must stay independent of the public pass"
+        );
+    }
+    let docs = fs::read_to_string(&docs_output)?;
+    assert!(
+        docs.contains("public-registry journey proven at the recorded subjects"),
+        "the generated documentation status must follow the validated receipt"
+    );
+    Ok(())
+}
+
+#[test]
+fn crlf_committed_artifacts_fail_the_exact_byte_check() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let dir = temp_dir("crlf-drift")?;
+
+    let policy_text = fs::read_to_string(root.join(SUPPORT_POLICY))?;
+    let crlf_policy = policy_text.replace('\n', "\r\n");
+    let crlf_policy_path = dir.join("zed-dap-support.toml");
+    write_temp(&crlf_policy_path, &crlf_policy)?;
+    let docs_text = fs::read_to_string(root.join(SUPPORT_DOCS))?;
+    let docs_path = dir.join("ZED_DAP_SUPPORT.md");
+    write_temp(&docs_path, &docs_text)?;
+    assert_rejected(
+        &run_projection(&root, |command| {
+            command
+                .arg("--policy-output")
+                .arg(&crlf_policy_path)
+                .arg("--docs-output")
+                .arg(&docs_path);
+        })?,
+        "CRLF-committed support registry",
+        "drifted from the projection",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn a_retargeted_schema_path_cannot_hide_behind_the_static_authority() -> Result<(), Box<dyn Error>>
+{
+    let root = repo_root()?;
+    let dir = temp_dir("schema-retarget")?;
+
+    let extension_text = fs::read_to_string(root.join(EXTENSION_MANIFEST))?;
+    let retargeted = extension_text
+        .replace("debug_adapter_schemas/perl-dap.json", "debug_adapter_schemas/other.json");
+    assert_ne!(
+        retargeted, extension_text,
+        "the staged manifest must bind the perl-dap schema for this mutation to discriminate"
+    );
+    let retargeted_path = dir.join("extension-retargeted.toml");
+    write_temp(&retargeted_path, &retargeted)?;
+    assert_rejected(
+        &run_projection(&root, |command| {
+            command.arg("--extension-manifest").arg(&retargeted_path);
+        })?,
+        "manifest schema_path retargeted away from the validated schema",
+        "names a different adapter schema",
+    )?;
+    Ok(())
+}
+
 #[test]
 fn adapter_identity_aliasing_is_rejected() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
@@ -269,7 +534,9 @@ fn adapter_identity_aliasing_is_rejected() -> Result<(), Box<dyn Error>> {
     let schema = load_json(&root.join(ADAPTER_SCHEMA))?;
     let mut attach = schema.clone();
     attach["properties"]["request"]["enum"] = json!(["launch", "attach"]);
-    let attach_path = dir.join("perl-dap-attach.json");
+    // Keep the manifest-bound relative suffix so the path-binding check passes
+    // and the session-kind discriminator fires for what it mutates.
+    let attach_path = dir.join("debug_adapter_schemas").join("perl-dap.json");
     write_temp(&attach_path, &serde_json::to_string_pretty(&attach)?)?;
     assert_rejected(
         &run_projection(&root, |command| {

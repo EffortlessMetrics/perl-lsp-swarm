@@ -26,14 +26,17 @@ from typing import Any
 
 from .common import ReceiptError, load_json, sha256_file
 from .dap_contract import DAP_ADAPTER_ID
-from .dap_public import (
-    exact_source_receipt_current,
-    load_registry_manifest,
-    validate_dap_public_receipt,
-)
+from .dap_public import load_registry_manifest, validate_dap_public_receipt
 
 SUPPORT_SCHEMA = "zed-dap-support.v1"
 PROJECTION_ISSUE = 9489
+
+# The D02 (#9486) DAP receipt must bind the perl-dap adapter identity under
+# one of these keys. The shared `zed_host_compat.v1` + `exact_source_dev_extension`
+# family is also used by Zed LSP exact-source receipts, so schema+stage alone
+# cannot distinguish an LSP journey from a debugger journey; only a receipt
+# naming the exact adapter identity may promote the DAP exact-source stage.
+DAP_IDENTITY_KEYS = ("debug_adapter", "adapter", "dap")
 
 PUBLIC_RECEIPT_RELATIVE_PATH = ".ci/fixtures/zed-perl-upstream/receipts/dap-public-registry.v1.json"
 EXTENSION_MANIFEST_RELATIVE_PATH = ".ci/fixtures/zed-perl-upstream/zed-perl/extension.toml"
@@ -94,8 +97,41 @@ def load_extension_manifest(path: Path) -> dict[str, Any]:
     return manifest
 
 
+def exact_source_dap_receipt_present(receipts_dir: Path) -> bool:
+    """Whether a committed exact-source receipt binds a genuine DAP journey.
+
+    Unlike the D05 entry-gate predicate (which counts any passing
+    `zed_host_compat.v1` exact-source receipt), the projected stage must not
+    promote from an LSP journey receipt that merely shares the schema family:
+    the receipt must additionally record the exact `perl-dap` adapter
+    identity under a debug-adapter block.
+    """
+    if not receipts_dir.is_dir():
+        return False
+    for path in sorted(receipts_dir.glob("exact-source*.json")):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(value, dict):
+            continue
+        if (
+            value.get("schema_version") != "zed_host_compat.v1"
+            or value.get("evidence_stage") != "exact_source_dev_extension"
+            or value.get("result") != "pass"
+        ):
+            continue
+        for key in DAP_IDENTITY_KEYS:
+            block = value.get(key)
+            if isinstance(block, dict) and block.get("adapter_id") == DAP_ADAPTER_ID:
+                return True
+    return False
+
+
 def static_adapter_authority(
-    extension_manifest: dict[str, Any], adapter_schema: dict[str, Any]
+    extension_manifest: dict[str, Any],
+    adapter_schema: dict[str, Any],
+    adapter_schema_path: Path,
 ) -> dict[str, Any]:
     """Evaluate the static adapter authority stage over the staged extension.
 
@@ -129,6 +165,17 @@ def static_adapter_authority(
     schema_path = str(entry.get("schema_path") or "")
     if not schema_path:
         raise ReceiptError("the staged debug adapter must bind its configuration schema")
+    # The validated schema must be the file the manifest names, so a retargeted
+    # or mistyped schema_path cannot hide a different file behind the static
+    # authority claim.
+    normalized_schema = adapter_schema_path.as_posix()
+    if not normalized_schema.endswith(schema_path.replace("\\", "/")):
+        raise ReceiptError(
+            "the staged manifest names a different adapter schema "
+            f"({schema_path!r}) than the one validated "
+            f"({normalized_schema!r}); the static authority must describe the "
+            "file Zed will actually load"
+        )
 
     properties = adapter_schema.get("properties")
     request = properties.get("request") if isinstance(properties, dict) else None
@@ -208,10 +255,11 @@ def project_dap_support(
 
     extension_manifest = load_extension_manifest(extension_manifest_path)
     adapter_schema = load_json(adapter_schema_path)
-    authority = static_adapter_authority(extension_manifest, adapter_schema)
+    authority = static_adapter_authority(extension_manifest, adapter_schema, adapter_schema_path)
 
-    exact_source_current = exact_source_receipt_current(receipts_dir)
+    exact_source_current = exact_source_dap_receipt_present(receipts_dir)
     public_result = str(receipt.get("result"))
+    public_pass = public_result == "pass"
     public_cells = _public_cell_results(receipt)
 
     gates = receipt.get("gates")
@@ -292,7 +340,9 @@ def project_dap_support(
         },
         "cross_platform_promotion": "denied",
         "claim_boundary": {
-            "support_tier": NOT_PROVEN,
+            # The tier follows the validated receipt, never a hard-coded
+            # verdict, so a future public pass projects a consistent surface.
+            "support_tier": "public_registry_proven" if public_pass else NOT_PROVEN,
             "public_support_requires_issue": 9487,
             "exact_source_alone_cannot_promote": True,
             "all_platforms": NOT_PROVEN,
@@ -300,10 +350,20 @@ def project_dap_support(
         },
         "invalidators": invalidators,
         "limitations": limitations
+        + (
+            []
+            if exact_source_current
+            else [
+                "The exact-source stage promotes individual cells only from a "
+                "genuine committed #9486 receipt binding the perl-dap adapter "
+                "identity; no such receipt is committed, so every exact-source "
+                "cell stays not_proven.",
+            ]
+        )
         + [
-            "The exact-source stage promotes individual cells only from a "
-            "genuine committed #9486 receipt; no such receipt is committed, so "
-            "every exact-source cell stays not_proven.",
+            "The exact-source stage boolean counts only receipts that bind the "
+            "exact perl-dap adapter identity; a Zed LSP exact-source receipt "
+            "sharing the zed_host_compat.v1 family never promotes the DAP stage.",
         ],
     }
 
@@ -442,19 +502,31 @@ def render_support_markdown(model: dict[str, Any]) -> str:
     blockers = model["blockers"]
     limitations = model["limitations"]
     invalidators = model["invalidators"]
+    public_pass = model["source_receipt_result"] == "pass"
     lines: list[str] = []
     lines.append("# Zed debugger support (perl-dap)")
     lines.append("")
     lines.append("<!-- Generated by `python scripts/zed_dap_asset_receipts.py project-dap-support`.")
     lines.append("     Do not edit: regenerate and commit. Owner: #9489. -->")
     lines.append("")
-    lines.append("> **Status: planned / not proven.**")
-    lines.append(">")
-    lines.append("> No public-registry Zed debug session with `perl-dap` has been observed.")
-    lines.append("> Installing the Perl extension does **not** by itself prove debugging, and")
-    lines.append("> the presence of `perl-dap` in a release archive is not session proof.")
-    lines.append("> This debugger surface is independent of the Zed LSP row: a DAP change")
-    lines.append("> never alters the LSP verdict, and an LSP change never alters these cells.")
+    if public_pass:
+        lines.append("> **Status: public-registry journey proven at the recorded subjects.**")
+        lines.append(">")
+        lines.append("> Every proven cell binds exactly the receipt recorded above — the")
+        lines.append("> observed platform, session kind, adapter identity, and public")
+        lines.append("> release. Nothing on this page extends beyond that observation:")
+        lines.append("> all other platforms, the PATH route, and every cell the receipt")
+        lines.append("> does not record stay not proven. This debugger surface is")
+        lines.append("> independent of the Zed LSP row: a DAP change never alters the LSP")
+        lines.append("> verdict, and an LSP change never alters these cells.")
+    else:
+        lines.append("> **Status: planned / not proven.**")
+        lines.append(">")
+        lines.append("> No public-registry Zed debug session with `perl-dap` has been observed.")
+        lines.append("> Installing the Perl extension does **not** by itself prove debugging, and")
+        lines.append("> the presence of `perl-dap` in a release archive is not session proof.")
+        lines.append("> This debugger surface is independent of the Zed LSP row: a DAP change")
+        lines.append("> never alters the LSP verdict, and an LSP change never alters these cells.")
     lines.append("")
     lines.append(f"Source receipt: `{model['source_receipt']}`")
     lines.append("")
@@ -527,8 +599,17 @@ def render_support_markdown(model: dict[str, Any]) -> str:
             f"{cell[STAGE_EXACT_SOURCE]} | {cell[STAGE_PUBLIC]} |"
         )
     lines.append("")
-    lines.append("Cells promote individually from matching receipts only; no cell above is")
-    lines.append("proven at any stage yet.")
+    if public_pass:
+        lines.append(
+            "Public-registry cells are proven exactly as quoted from the receipt; the"
+        )
+        lines.append(
+            "PATH route, unobserved platforms, and the exact-source column stay"
+        )
+        lines.append("unproven until their own matching receipts land.")
+    else:
+        lines.append("Cells promote individually from matching receipts only; no cell above is")
+        lines.append("proven at any stage yet.")
     lines.append("")
     platform = model["platform"]
     lines.append("## Platforms")
@@ -601,10 +682,11 @@ def check_or_write_projection(
         (policy_output, rendered_policy, "support registry"),
         (docs_output, rendered_docs, "support documentation"),
     ):
-        committed = (
-            path.read_text(encoding="utf-8") if path.exists() else None
-        )
-        if committed != rendered:
+        # Compare exact bytes: the renderer and write path promise LF-only
+        # output, so a host-newline or hand edit must surface as drift
+        # instead of being normalized away.
+        committed = path.read_bytes() if path.exists() else None
+        if committed != rendered.encode("utf-8"):
             raise ReceiptError(
                 f"the {label} {path.as_posix()} drifted from the projection of the "
                 f"current receipts; regenerate it with `{REGENERATE_COMMAND}` "
