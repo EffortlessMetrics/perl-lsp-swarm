@@ -302,4 +302,15 @@ hello = "world"
         assert!(message.contains("unknown") || message.contains("extra"));
         Ok(())
     }
+
+    #[test]
+    fn checked_in_concept_registry_loads_and_validates() -> Result<()> {
+        // The checked-in crates/perl-corpus/concepts/*.toml files are a
+        // governed surface: until now every loader caller used temporary
+        // registries, so a malformed or unknown-field row in the real
+        // registry was never detected (#2006 review finding).
+        let loaded = must(load_concept_registry());
+        assert!(!loaded.is_empty(), "checked-in concept registry must not be empty");
+        Ok(())
+    }
 }
