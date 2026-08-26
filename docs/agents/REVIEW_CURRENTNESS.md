@@ -56,7 +56,10 @@ That is not a licence to churn, and the distinction is exactly where the two rul
   its subject. Do not re-review or re-run it to manufacture a receipt;
 - a *required* status that has not reported on the current head is **pending**, not
   green-by-inheritance and not stale. The resolution is to let the run report, which
-  yields `PR_IN_FLIGHT` — never a rebase, an empty commit, or a push to retrigger.
+  yields `PR_IN_FLIGHT` — never a rebase, an empty commit, or a push to retrigger,
+  except the bounded merge-tree fresh trigger in PLSP-SPEC-0006 "Live required
+  status" (a same-head rerun replays the stale merge snapshot after material base
+  movement).
 
 Reading an older green as satisfying a live required check is the failure this row
 exists to prevent. It looks like the no-churn rule and is its opposite: the no-churn
@@ -196,7 +199,11 @@ candidate remains conflict-free
 ```
 
 Do not rebase, update the branch, create empty commits, replay full CI, or rerun review
-merely because `main` advanced.
+merely because `main` advanced. One bounded exception lives in PLSP-SPEC-0006 "Live
+required status": when material base movement changed the merge tree a required
+`pull_request` check evaluates, and a same-head rerun would replay the stale snapshot,
+an empty-commit head bump is the sanctioned fresh trigger — it re-evaluates the changed
+subject rather than manufacturing a status on an unchanged one.
 
 If Git reports a real conflict, the later lane resolves it and refreshes only the
 affected proof/review. If an explicit stack or combined-tree check exposes a real
