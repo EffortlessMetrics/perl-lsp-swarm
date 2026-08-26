@@ -25,6 +25,38 @@ const BANNED_PATTERNS: &[(&str, &str)] = &[
         "(sym.uri.clone(), sym.range.start.byte)",
         "first-key-wins geometry dedup key — every admitted key of a row must be evaluated before materialization (#10645)",
     ),
+    (
+        "WorkspaceSymbolMatchTier::Exact =>",
+        "local tier-table arm — tier scoring must stay owned by the pinned `legacy_index_match_rank` projection (#10645 M12)",
+    ),
+    (
+        "WorkspaceSymbolMatchTier::Prefix =>",
+        "local tier-table arm — tier scoring must stay owned by the pinned `legacy_index_match_rank` projection (#10645 M12)",
+    ),
+    (
+        "WorkspaceSymbolMatchTier::Substring =>",
+        "local tier-table arm — tier scoring must stay owned by the pinned `legacy_index_match_rank` projection (#10645 M12)",
+    ),
+    (
+        "WorkspaceSymbolMatchTier::Subsequence =>",
+        "local tier-table arm — tier scoring must stay owned by the pinned `legacy_index_match_rank` projection (#10645 M12)",
+    ),
+    (
+        "Tier::Exact =>",
+        "aliased local tier-table arm — tier scoring must stay owned by the pinned `legacy_index_match_rank` projection (#10645 M12)",
+    ),
+    (
+        "Tier::Prefix =>",
+        "aliased local tier-table arm — tier scoring must stay owned by the pinned `legacy_index_match_rank` projection (#10645 M12)",
+    ),
+    (
+        "Tier::Substring =>",
+        "aliased local tier-table arm — tier scoring must stay owned by the pinned `legacy_index_match_rank` projection (#10645 M12)",
+    ),
+    (
+        "Tier::Subsequence =>",
+        "aliased local tier-table arm — tier scoring must stay owned by the pinned `legacy_index_match_rank` projection (#10645 M12)",
+    ),
 ];
 
 /// Required substrings: the seam must keep consuming the shared authorities.
@@ -154,6 +186,43 @@ mod tests {
         let source = "let mut seen: HashSet<(String, usize)> = HashSet::new();";
         let violations = collect_violations(source, super::BANNED_PATTERNS);
         assert_eq!(violations.len(), 1, "{violations:?}");
+    }
+
+    /// The claimed local-tier ban must actually fire: every qualified or
+    /// aliased tier match-arm in the seam is a tier-table recurrence (#10645
+    /// M12), even when the pinned anchors remain incidentally present.
+    #[test]
+    fn detects_local_tier_table_arms() {
+        for arm in [
+            "WorkspaceSymbolMatchTier::Exact => 3",
+            "WorkspaceSymbolMatchTier::Prefix => 2",
+            "WorkspaceSymbolMatchTier::Substring => 2",
+            "WorkspaceSymbolMatchTier::Subsequence => 1",
+            "Tier::Exact => 3u8",
+            "Tier::Subsequence => 1u8",
+        ] {
+            // Qualified spellings also contain their alias suffix, so a
+            // qualified arm may fire two bans; at least one must always fire.
+            let violations = collect_violations(arm, super::BANNED_PATTERNS);
+            assert!(!violations.is_empty(), "{arm}: {violations:?}");
+        }
+        // A mutation keeping the required anchors while scoring locally is
+        // still rejected: anchors alone cannot silence the ban.
+        let mutated = "fn score(t: WorkspaceSymbolMatchTier) -> u8 { \
+             match t { Tier::Exact => 3, _ => legacy_index_match_rank(t) } \
+         } evidence.compare(current);";
+        assert!(
+            !collect_violations(mutated, super::BANNED_PATTERNS).is_empty(),
+            "local tier table must fail the gate even with anchors present"
+        );
+        // Non-arm comparisons and assertions stay legal.
+        assert!(
+            collect_violations(
+                "assert_eq!(evidence.tier(), WorkspaceSymbolMatchTier::Exact);",
+                super::BANNED_PATTERNS
+            )
+            .is_empty()
+        );
     }
 
     #[test]

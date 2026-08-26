@@ -44,9 +44,15 @@ M10 stale alias after replacement → WS-BEST-011.
 M11 affinity used as semantic/edit identity → evidence carried alongside
 payload only; no identity field consumes it (review-checked).
 M12 local comparator reconstruction → aggregator contains no tier scoring;
-only `compare()` + role ordinal; architecture gate bans new u8 tier tables.
+only `compare()` + role ordinal; architecture gate bans restored geometry
+keys and local `WorkspaceSymbolMatchTier`/`Tier` match-arm tier tables in
+the seam (unit-tested; gate falsified under injected mutation).
 M13 rejects later Q02/Q03 evidence version → genericity: no version/tier
 branching; mismatch refusal path is the only version-sensitive branch.
 M14 mixes digests within a row → WS-BEST-008 refusal.
 M15 missing instrumentation reported as zero/pass → counters are
 `Option<u64>`; unset stays `None` (`not_proven`).
+M16 identical bare/qualified spelling double-push (packages, labels) counts
+one matching key once → `ws_best_identical_spelling_double_push_is_not_multikey`;
+intra-bucket whole-payload collapse precedes accumulation, so receipts never
+report an index-internal clone as a multi-key row or equal-evidence tie.

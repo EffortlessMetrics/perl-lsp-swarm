@@ -4244,6 +4244,12 @@ impl WorkspaceIndex {
     ///
     /// - every unique name key is admitted once through
     ///   [`match_searchable_key`]; key iteration order carries no semantics;
+    /// - an admitted key contributes evidence to a row at most once:
+    ///   declarations whose bare and qualified spellings are identical
+    ///   (packages, labels) are pushed twice into one bucket by index
+    ///   construction, and whole-payload row identity collapses that
+    ///   index-internal duplicate before accumulation, so row counters stay
+    ///   consistent with the distinct matching-key count;
     /// - matched bucket entries group by whole-payload value identity — the
     ///   strictest duplicate detection available in this index — so distinct
     ///   projections sharing one `(uri, start_byte)` anchor stay distinct
@@ -4329,6 +4335,10 @@ impl WorkspaceIndex {
                 continue;
             };
             receipt.record_matching_key();
+            // Row slots already given this key's evidence: index construction
+            // stores one declaration under identical bare/qualified spellings,
+            // so one bucket can hold whole-payload clones of the same row.
+            let mut considered_in_bucket: HashSet<usize> = HashSet::new();
             for sym in bucket {
                 let slot = match rows.entry(row_value_key(sym)) {
                     std::collections::hash_map::Entry::Occupied(occupied) => *occupied.get(),
@@ -4339,6 +4349,9 @@ impl WorkspaceIndex {
                         payloads.len() - 1
                     }
                 };
+                if !considered_in_bucket.insert(slot) {
+                    continue;
+                }
                 let update = accumulators[slot].consider(&evidence);
                 receipt.record_update(update);
             }
@@ -12910,6 +12923,41 @@ mod entity_id_file_scoped_tests {
         assert_eq!(evidence.searchable_key(), "Run::run");
         assert_eq!(evidence.tier(), crate::workspace_symbol_query::WorkspaceSymbolMatchTier::Exact);
         assert_eq!(evidence.key_role(), WorkspaceSymbolSearchKeyRole::QualifiedName);
+    }
+
+    /// Review disposition (#10645 thread on bucket-level consistency): a
+    /// package declaration's bare and qualified spellings are identical, so
+    /// index construction pushes one clone twice into the same bucket. One
+    /// admitted key must contribute evidence to its row exactly once — the
+    /// receipt may not fabricate a multi-key row or an equal-evidence tie
+    /// from an index-internal duplicate.
+    #[test]
+    fn ws_best_identical_spelling_double_push_is_not_multikey() {
+        let index = WorkspaceIndex::new();
+        must(index.index_file(
+            must(url::Url::parse("file:///lib/Foo.pm")),
+            "package Foo;\n1;\n".to_string(),
+        ));
+
+        let profile = WorkspaceSymbolQueryProfile::compile("Foo");
+        let (matches, receipt) = index.search_source_symbols_ranked_with_receipt(&profile, None);
+        assert_eq!(matches.len(), 1);
+        let best = &matches[0].best_match;
+        assert_eq!(best.winning_evidence().searchable_key(), "Foo");
+        assert_eq!(receipt.searchable_keys_examined, Some(1));
+        assert_eq!(receipt.matching_keys, Some(1));
+        assert_eq!(receipt.canonical_rows_matched, Some(1));
+        assert_eq!(
+            receipt.rows_with_multiple_matching_keys,
+            Some(0),
+            "one map key admitted once is not multiple matching keys"
+        );
+        assert_eq!(
+            receipt.equal_evidence_ties,
+            Some(0),
+            "the same key's duplicate bucket entry must not fabricate a tie"
+        );
+        assert_eq!(receipt.better_alias_replacements, Some(0));
     }
 
     /// WS-BEST-006: two intentionally distinct projection rows sharing one
