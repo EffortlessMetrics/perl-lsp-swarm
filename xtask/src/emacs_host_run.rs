@@ -13,6 +13,7 @@
 //! consumes the current cleanup semantics without weakening or widening them.
 
 use anyhow::{Context, Result, bail, ensure};
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -41,6 +42,8 @@ const DEFAULT_TIMEOUT_MS: u64 = 180_000;
 /// host build is a new variant, never a silent edit of an existing row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmacsClientSubject {
+    /// Bundled Eglot inside exact Emacs 29.4 (slice 1).
+    BundledEglotEmacs294,
     /// Bundled Eglot inside exact Emacs 30.1 (slice 1).
     BundledEglotEmacs301,
     /// Standalone Eglot released as GNU ELPA 1.23 (slice 2).
@@ -52,6 +55,7 @@ impl EmacsClientSubject {
     /// registry, never a fallback to whatever matches loosely.
     pub fn from_id(id: &str) -> Result<Self> {
         match id {
+            "bundled_eglot_emacs_29_4" => Ok(Self::BundledEglotEmacs294),
             "bundled_eglot_emacs_30_1" => Ok(Self::BundledEglotEmacs301),
             "released_eglot_gnu_elpa_1_23" => Ok(Self::ReleasedEglotGnuElpa123),
             _ => bail!(
@@ -63,11 +67,12 @@ impl EmacsClientSubject {
 
     /// Every exact client subject the execution surface can run today.
     pub fn known_ids() -> &'static [&'static str] {
-        &["bundled_eglot_emacs_30_1", "released_eglot_gnu_elpa_1_23"]
+        &["bundled_eglot_emacs_29_4", "bundled_eglot_emacs_30_1", "released_eglot_gnu_elpa_1_23"]
     }
 
     pub fn id(self) -> &'static str {
         match self {
+            Self::BundledEglotEmacs294 => "bundled_eglot_emacs_29_4",
             Self::BundledEglotEmacs301 => "bundled_eglot_emacs_30_1",
             Self::ReleasedEglotGnuElpa123 => "released_eglot_gnu_elpa_1_23",
         }
@@ -78,6 +83,7 @@ impl EmacsClientSubject {
     /// subject, not this run.
     pub fn pinned_emacs_version_token(self) -> &'static str {
         match self {
+            Self::BundledEglotEmacs294 => "29.4",
             Self::BundledEglotEmacs301 | Self::ReleasedEglotGnuElpa123 => "30.1",
         }
     }
@@ -93,39 +99,52 @@ impl EmacsClientSubject {
         Ok(())
     }
 
-    /// The pinned client identity for the subject.  Public so the contract
+    /// The pinned client identity for the subject.  Bundled rows draw every
+    /// identity string from the checked subject manifest (#11744): the
+    /// manifest is the single declared authority for subject rows, and this
+    /// registry only dispatches runner mechanics.  Public so the contract
     /// tests can pin the registry row without a host.
     pub fn client_identity(
         self,
+        manifest: &crate::emacs_subject_manifest::SubjectManifest,
         source_sha256: String,
         package_sha256: Option<String>,
-    ) -> emacs_host_runner::ClientSubject {
-        let (kind, version, source_state, source_ref) = match self {
-            Self::BundledEglotEmacs301 => {
-                (EmacsClientKind::BundledEglot, "1.17.30", ClientSourceState::Bundled, "emacs-30.1")
+    ) -> Result<emacs_host_runner::ClientSubject> {
+        match self {
+            Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => {
+                let row = manifest.row_for(self.id()).with_context(|| {
+                    format!(
+                        "bundled subject {} must be a row of the checked subject manifest",
+                        self.id()
+                    )
+                })?;
+                // One bundled identity constructor: the manifest module
+                // owns the row-to-subject mapping so the resolver and the
+                // registry cannot drift apart.
+                Ok(crate::emacs_subject_manifest::runner_client_subject(row, source_sha256))
             }
-            Self::ReleasedEglotGnuElpa123 => (
-                EmacsClientKind::ExternalEglot,
-                "1.23",
-                ClientSourceState::Released,
-                "gnu-elpa-eglot-1.23",
-            ),
-        };
-        emacs_host_runner::ClientSubject {
-            client_id: self.id().to_string(),
-            kind,
-            version: version.to_string(),
-            source_state,
-            source_ref: source_ref.to_string(),
-            source_sha256,
-            package_sha256,
+            // The released row predates the subject manifest; its
+            // digest-bound package identity arrives with the
+            // external-subject rows (#11745), which extend the manifest
+            // without changing these landed mechanics.
+            Self::ReleasedEglotGnuElpa123 => Ok(emacs_host_runner::ClientSubject {
+                client_id: self.id().to_string(),
+                kind: EmacsClientKind::ExternalEglot,
+                version: "1.23".to_string(),
+                source_state: ClientSourceState::Released,
+                source_ref: "gnu-elpa-eglot-1.23".to_string(),
+                source_sha256,
+                package_sha256,
+            }),
         }
     }
 
     /// Checked-in adapter path relative to the repository root.
     pub fn adapter_relative_path(self) -> &'static str {
         match self {
-            Self::BundledEglotEmacs301 => "scripts/test/emacs-clients/eglot-bundled.el",
+            Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => {
+                "scripts/test/emacs-clients/eglot-bundled.el"
+            }
             Self::ReleasedEglotGnuElpa123 => "scripts/test/emacs-clients/eglot-released.el",
         }
     }
@@ -133,7 +152,9 @@ impl EmacsClientSubject {
     /// Checked-in configuration path relative to the repository root.
     pub fn configuration_relative_path(self) -> &'static str {
         match self {
-            Self::BundledEglotEmacs301 => "scripts/test/emacs-clients/eglot-bundled-config.el",
+            Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => {
+                "scripts/test/emacs-clients/eglot-bundled-config.el"
+            }
             Self::ReleasedEglotGnuElpa123 => "scripts/test/emacs-clients/eglot-released-config.el",
         }
     }
@@ -141,7 +162,7 @@ impl EmacsClientSubject {
     /// Journey selector token bound into the run plan and receipt.
     pub fn journey_selector(self) -> &'static str {
         match self {
-            Self::BundledEglotEmacs301 => "bundled_eglot_lifecycle.v1",
+            Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => "bundled_eglot_lifecycle.v1",
             Self::ReleasedEglotGnuElpa123 => "released_eglot_lifecycle.v1",
         }
     }
@@ -149,7 +170,7 @@ impl EmacsClientSubject {
     /// Fixture identity token for the materialized journey fixture.
     pub fn fixture_id(self) -> &'static str {
         match self {
-            Self::BundledEglotEmacs301 => "bundled_eglot_lifecycle_v1",
+            Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => "bundled_eglot_lifecycle_v1",
             Self::ReleasedEglotGnuElpa123 => "released_eglot_lifecycle_v1",
         }
     }
@@ -158,7 +179,7 @@ impl EmacsClientSubject {
     /// cannot (`validate_client_subject` rejects that combination).
     pub fn requires_client_package(self) -> bool {
         match self {
-            Self::BundledEglotEmacs301 => false,
+            Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => false,
             Self::ReleasedEglotGnuElpa123 => true,
         }
     }
@@ -167,7 +188,7 @@ impl EmacsClientSubject {
     /// declared package inputs, never by searching the host installation.
     pub fn resolves_client_source_from_installation(self) -> bool {
         match self {
-            Self::BundledEglotEmacs301 => true,
+            Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => true,
             Self::ReleasedEglotGnuElpa123 => false,
         }
     }
@@ -213,6 +234,47 @@ pub fn materialize_client_subject_fixture(root: &Path) -> Result<PathBuf> {
 /// `.el.gz`.
 const BUNDLED_LIBRARY_FORMS: [&str; 3] = ["eglot.el", "eglot.elc", "eglot.el.gz"];
 
+/// Typed failure of resolving the bundled client library inside one exact
+/// Emacs installation. The producer stays typed (#11744 review): consumers
+/// must never reclassify a formatted error string to recover the kind,
+/// because a message reword would silently change the rejection's type.
+#[derive(Debug)]
+pub enum BundledClientResolutionError {
+    /// The exact Emacs executable could not be canonicalized into an
+    /// installation root. An instrument failure, never a subject verdict.
+    ExecutableUnresolvable { path: PathBuf, source: std::io::Error },
+    /// No library of any declared form exists inside the installation.
+    NoLibrary { installation: PathBuf },
+    /// Two libraries of the same form exist: an identity defect of the
+    /// build, never a silent choice.
+    Ambiguous { form: &'static str, candidates: usize, installation: PathBuf },
+}
+
+impl fmt::Display for BundledClientResolutionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ExecutableUnresolvable { path, source } => write!(
+                formatter,
+                "resolving the exact Emacs executable {}: {source}",
+                path.display()
+            ),
+            Self::NoLibrary { installation } => write!(
+                formatter,
+                "no bundled Eglot library {:?} found inside the exact Emacs installation {}",
+                BUNDLED_LIBRARY_FORMS,
+                installation.display()
+            ),
+            Self::Ambiguous { form, candidates, installation } => write!(
+                formatter,
+                "ambiguous bundled {form} identity: {candidates} candidate libraries inside {}",
+                installation.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BundledClientResolutionError {}
+
 /// Resolve the bundled Eglot library inside the exact Emacs installation.
 ///
 /// The executable path is canonicalized first so a symlinked `emacs` (for
@@ -220,12 +282,27 @@ const BUNDLED_LIBRARY_FORMS: [&str; 3] = ["eglot.el", "eglot.elc", "eglot.el.gz"
 /// Two libraries of the *same* form inside one build is an identity defect
 /// and a typed error; different forms of one library are normal shipping
 /// and resolved by the fixed preference order.
-pub fn resolve_bundled_client_source(emacs_executable: &Path) -> Result<PathBuf> {
-    let canonical = fs::canonicalize(emacs_executable).with_context(|| {
-        format!("resolving the exact Emacs executable {}", emacs_executable.display())
+pub fn resolve_bundled_client_source(
+    emacs_executable: &Path,
+) -> std::result::Result<PathBuf, BundledClientResolutionError> {
+    let canonical = fs::canonicalize(emacs_executable).map_err(|source| {
+        BundledClientResolutionError::ExecutableUnresolvable {
+            path: emacs_executable.to_path_buf(),
+            source,
+        }
     })?;
-    let bin = canonical.parent().context("Emacs executable has no parent directory")?;
-    let root = bin.parent().context("Emacs executable has no installation root")?;
+    let Some(bin) = canonical.parent() else {
+        return Err(BundledClientResolutionError::ExecutableUnresolvable {
+            path: emacs_executable.to_path_buf(),
+            source: std::io::Error::other("Emacs executable has no parent directory"),
+        });
+    };
+    let Some(root) = bin.parent() else {
+        return Err(BundledClientResolutionError::ExecutableUnresolvable {
+            path: emacs_executable.to_path_buf(),
+            source: std::io::Error::other("Emacs executable has no installation root"),
+        });
+    };
     for form in BUNDLED_LIBRARY_FORMS {
         let mut matches: Vec<PathBuf> = WalkDir::new(root)
             .max_depth(7)
@@ -239,17 +316,16 @@ pub fn resolve_bundled_client_source(emacs_executable: &Path) -> Result<PathBuf>
         match matches.len() {
             0 => continue,
             1 => return Ok(matches.remove(0)),
-            count => bail!(
-                "ambiguous bundled {form} identity: {count} candidate libraries inside {}",
-                root.display()
-            ),
+            count => {
+                return Err(BundledClientResolutionError::Ambiguous {
+                    form,
+                    candidates: count,
+                    installation: root.to_path_buf(),
+                });
+            }
         }
     }
-    bail!(
-        "no bundled Eglot library {:?} found inside the exact Emacs installation {}",
-        BUNDLED_LIBRARY_FORMS,
-        root.display()
-    )
+    Err(BundledClientResolutionError::NoLibrary { installation: root.to_path_buf() })
 }
 
 fn bounded_diagnostic(bytes: &[u8]) -> String {
@@ -338,9 +414,13 @@ fn candidate_commit_identity(repo_root: &Path) -> Result<String> {
 }
 
 /// Build the complete run plan for one client subject over the checked
-/// tree.  Validation (digest verification of every exact input) happens
-/// inside `build_emacs_command`, so a returned plan has already proven its
-/// file identities.
+/// tree.  Bundled subjects are digest-validated through the subject
+/// manifest resolver (#11744) before the plan exists: a modified, ambient,
+/// or cross-generation client file is a typed rejection, never a receipt
+/// labeled as the checked subject over unchecked bytes.  Validation
+/// (digest verification of every exact input) happens inside
+/// `build_emacs_command`, so a returned plan has already proven its file
+/// identities.
 pub fn build_client_subject_run_plan(
     repo_root: &Path,
     subject: EmacsClientSubject,
@@ -348,12 +428,8 @@ pub fn build_client_subject_run_plan(
     commit: &str,
     candidate_version: &str,
     emacs_version: &str,
+    subject_manifest: &crate::emacs_subject_manifest::SubjectManifest,
 ) -> Result<(EmacsHostRunPlan, HermeticLayout)> {
-    let driver = repo_root.join("scripts/test/emacs-host-driver.el");
-    let adapter = repo_root.join(subject.adapter_relative_path());
-    let configuration = repo_root.join(subject.configuration_relative_path());
-    let fixture_root = materialize_client_subject_fixture(&run.out_root.join("fixture"))?;
-    let layout = HermeticLayout::prepare(&run.out_root.join("hermetic"))?;
     let package_sha256 = match (&run.client_package, subject.requires_client_package()) {
         (Some(package), true) => Some(file_sha256(package)?),
         (None, true) => bail!(
@@ -367,6 +443,42 @@ pub fn build_client_subject_run_plan(
         ),
         (None, false) => None,
     };
+    // Bundled rows resolve through the subject manifest resolver so the
+    // plan binds exactly the audited library bytes and the exact Emacs
+    // build; the resolver's bounded cache entry is written under the run's
+    // fresh output root.  The released row predates the subject manifest
+    // and keeps its explicit-input identity until the external-subject
+    // rows (#11745/#11746) extend the manifest.
+    let (client, emacs_build_sha256) = if subject.resolves_client_source_from_installation() {
+        let resolved = crate::emacs_subject_manifest::resolve(
+            subject_manifest,
+            subject.id(),
+            &crate::emacs_subject_manifest::ResolveRequest {
+                emacs_executable: &run.emacs_executable,
+                client_source: Some(&run.client_source),
+                cache_root: &run.out_root.join("subject-input-cache"),
+                probed_emacs_version: Some(emacs_version),
+            },
+        )
+        .map_err(|failure| {
+            anyhow::anyhow!("subject {} failed manifest resolution: {failure}", subject.id())
+        })?;
+        (resolved.client, resolved.emacs_build_sha256)
+    } else {
+        (
+            subject.client_identity(
+                subject_manifest,
+                file_sha256(&run.client_source)?,
+                package_sha256,
+            )?,
+            file_sha256(&run.emacs_executable)?,
+        )
+    };
+    let driver = repo_root.join("scripts/test/emacs-host-driver.el");
+    let adapter = repo_root.join(subject.adapter_relative_path());
+    let configuration = repo_root.join(subject.configuration_relative_path());
+    let fixture_root = materialize_client_subject_fixture(&run.out_root.join("fixture"))?;
+    let layout = HermeticLayout::prepare(&run.out_root.join("hermetic"))?;
     let plan = EmacsHostRunPlan {
         identity: emacs_host_runner::EmacsHostRunIdentity {
             schema_version: emacs_host_runner::RUN_PLAN_SCHEMA_VERSION.to_string(),
@@ -374,8 +486,8 @@ pub fn build_client_subject_run_plan(
             repository: REPOSITORY.to_string(),
             candidate_sha: commit.to_string(),
             emacs_version: emacs_version.to_string(),
-            emacs_build_sha256: file_sha256(&run.emacs_executable)?,
-            client: subject.client_identity(file_sha256(&run.client_source)?, package_sha256),
+            emacs_build_sha256,
+            client,
             driver_sha256: file_sha256(&driver)?,
             adapter_sha256: file_sha256(&adapter)?,
             configuration_sha256: file_sha256(&configuration)?,
@@ -522,6 +634,10 @@ pub fn host_run(
     }
     fs::create_dir_all(&run.out_root)
         .with_context(|| format!("creating output root {}", run.out_root.display()))?;
+    // The checked subject manifest (#11744) is the declared identity
+    // authority for bundled rows; a missing or invalid manifest fails the
+    // run closed rather than falling back to embedded identity strings.
+    let subject_manifest = crate::emacs_subject_manifest::SubjectManifest::load(repo_root)?;
     let (plan, layout) = build_client_subject_run_plan(
         repo_root,
         subject,
@@ -529,6 +645,7 @@ pub fn host_run(
         &commit,
         &candidate_version,
         &emacs_version,
+        &subject_manifest,
     )?;
 
     let mut command = build_emacs_command(&plan, &layout)?;

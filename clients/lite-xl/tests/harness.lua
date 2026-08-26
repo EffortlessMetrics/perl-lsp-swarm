@@ -282,7 +282,7 @@ local FAKE_MODULE_KEYS = {
   "plugins.lsp.json", "process", "plugins.lsp.util", "plugins.lsp.listbox",
   "plugins.lsp.diagnostics", "plugins.lsp.server", "plugins.lsp.timer",
   "plugins.lsp.symbolresults", "libraries.widget.messagebox",
-  "plugins.lsp.helpdoc",
+  "plugins.lsp.helpdoc", "plugins.lsp.capability_manifest",
 }
 
 ---Marker distinguishing "module was absent" from a stored nil, which Lua
@@ -311,10 +311,13 @@ local DEFAULTS = {
 }
 
 ---Create one isolated journey world. Options:
----   init_module  path to the exact staged init.lua to load (default:
----                ../upstream/init.lua relative to this file). Point this
----                at a mutated copy when verifying documented falsifiers.
----   platform     PLATFORM global seen by production code.
+---   init_module      path to the exact staged init.lua to load (default:
+---                    ../upstream/init.lua relative to this file). Point
+---                    this at a mutated copy when verifying documented
+---                    falsifiers.
+---   manifest_module  path to the exact staged capability manifest to load
+---                    (#11172; default ../upstream/capability_manifest.lua).
+---   platform         PLATFORM global seen by production code.
 ---
 ---The returned world exposes the exact staged module as world.lsp plus the
 ---observation surfaces (wire history, clock, config, diagnostics log).
@@ -326,12 +329,15 @@ function harness.new_world(options)
   local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or "."
   local init_module_path = options.init_module
     or here .. "/../upstream/init.lua"
+  local manifest_module_path = options.manifest_module
+    or here .. "/../upstream/capability_manifest.lua"
 
   local world = {
     wire = {},
     diagnostics_log = {},
     process_starts = {},
     timers = {},
+    commands_registered = {},
     _file_info = { size = 100 },
   }
 
@@ -428,8 +434,17 @@ function harness.new_world(options)
   package.preload["core.config"] = function() return plugin_config end
 
   package.preload["core.command"] = function()
+    -- Record every registered command name so suites can pin projection
+    -- coverage (e.g. every lsp:* command carries a manifest row, #11172)
+    -- without depending on command dispatch.
     return {
-      add = function() end,
+      add = function(_, items)
+        if type(items) == "table" then
+          for name in pairs(items) do
+            world.commands_registered[name] = true
+          end
+        end
+      end,
       map = function() end,
     }
   end
@@ -560,6 +575,10 @@ function harness.new_world(options)
   -- instances instead of constructing real processes.
   package.preload["plugins.lsp.server"] = function()
     return dofile(here .. "/../upstream/server.lua")
+  end
+
+  package.preload["plugins.lsp.capability_manifest"] = function()
+    return dofile(manifest_module_path)
   end
 
   package.preload["plugins.lsp.timer"] = function()

@@ -2573,12 +2573,6 @@ pub struct perl_dap::server::DapServer
 pub perl_dap::server::DapServer::config: perl_dap::DapConfig
 pub fn perl_dap::DapServer::new(config: perl_dap::DapConfig) -> anyhow::Result<Self>
 pub fn perl_dap::DapServer::run(&mut self) -> anyhow::Result<()>
-pub fn perl_dap::DapServer::run_socket(&mut self, port: u16) -> anyhow::Result<()>
-pub struct perl_dap::server::DapSocketBindError
-pub perl_dap::server::DapSocketBindError::port: u16
-pub fn perl_dap::DapSocketBindError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_dap::DapSocketBindError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_dap::DapSocketBindError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub mod perl_dap::session_plan
 pub struct perl_dap::session_plan::DebugSessionPlanBuilder
 pub fn perl_dap::session_plan::DebugSessionPlanBuilder::breakpoint(self, breakpoint: perl_dap::model::DebugBreakpoint) -> Self
@@ -3170,12 +3164,6 @@ pub struct perl_dap::DapServer
 pub perl_dap::DapServer::config: perl_dap::DapConfig
 pub fn perl_dap::DapServer::new(config: perl_dap::DapConfig) -> anyhow::Result<Self>
 pub fn perl_dap::DapServer::run(&mut self) -> anyhow::Result<()>
-pub fn perl_dap::DapServer::run_socket(&mut self, port: u16) -> anyhow::Result<()>
-pub struct perl_dap::DapSocketBindError
-pub perl_dap::DapSocketBindError::port: u16
-pub fn perl_dap::DapSocketBindError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_dap::DapSocketBindError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_dap::DapSocketBindError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub struct perl_dap::DataBreakpoint
 pub perl_dap::DataBreakpoint::access_type: core::option::Option<alloc::string::String>
 pub perl_dap::DataBreakpoint::condition: core::option::Option<alloc::string::String>

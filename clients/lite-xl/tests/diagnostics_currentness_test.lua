@@ -217,6 +217,11 @@ end
 ---The diagnostics module under test is injectable: default is the staged
 ---patched module; red-first runs pass the pristine blob path instead.
 local diag_under_test = nil
+-- Local patch (#11172): the staged modules fold their capability
+-- advertisement and command projection through the exact manifest source.
+package.preload["plugins.lsp.capability_manifest"] = function()
+  return dofile(here .. "/../upstream/capability_manifest.lua")
+end
 package.preload["plugins.lsp.diagnostics"] = function()
   return dofile(diag_module_path)
 end
