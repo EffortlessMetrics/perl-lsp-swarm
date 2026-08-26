@@ -100,23 +100,31 @@ jobs:
             exit 0
           fi
           gate_head=$(grep -oE '^head_sha=[0-9a-f]{40}$' "${classification_file}" | cut -d= -f2 || true)
+          gate_run_id=$(grep -oE '^run_id=[0-9]+$' "${classification_file}" | cut -d= -f2 || true)
           lane_name=$(grep -oE '^lane_name=.+$' "${classification_file}" | cut -d= -f2- || true)
           lane_job_id=$(grep -oE '^lane_job_id=[0-9]+$' "${classification_file}" | cut -d= -f2 || true)
 
-          # Sanity: the gate's recorded head must match the event head — a
-          # mismatch means the artifact does not describe this run.
-          if [ -z "${gate_head}" ] || [ "${gate_head}" != "${HEAD_SHA}" ]; then
-            echo "::notice::classification head (${gate_head:-invalid}) does not match event head ${HEAD_SHA} — no automatic retry."
-            summary "decision: \`skip (head mismatch between classification and event)\`"
+          # Sanity: the artifact must describe THIS run. Compare the recorded
+          # run id — not the head SHA: for pull_request runs the gate's
+          # GITHUB_SHA is the evaluated refs/pull/<n>/merge commit while
+          # workflow_run.head_sha is the PR branch tip, so a head comparison
+          # would skip every genuine PR eviction (verified on run
+          # 32969627737: event head_sha == PR branch tip, gate head == merge
+          # ref). rerun-failed-jobs re-runs the same run and therefore the
+          # same evaluated tree regardless of which identity names it.
+          if [ -z "${gate_run_id}" ] || [ "${gate_run_id}" != "${RUN_ID}" ]; then
+            echo "::notice::classification run id (${gate_run_id:-invalid}) does not match event run ${RUN_ID} — no automatic retry."
+            summary "decision: \`skip (run-id mismatch between classification and event)\`"
             exit 0
           fi
 
-          echo "::notice::gate classified run ${RUN_ID} as infra-no-proof (lane: ${lane_name:-unknown}, job: ${lane_job_id:-unknown}); re-running failed jobs for exact head ${HEAD_SHA}."
+          echo "::notice::gate classified run ${RUN_ID} as infra-no-proof (lane: ${lane_name:-unknown}, job: ${lane_job_id:-unknown}); re-running failed jobs for the same evaluated tree."
           gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/rerun-failed-jobs"
 
           summary \
             "decision: \`retry (infra-no-proof)\`" \
             "lane: \`${lane_name:-unknown}\` (job \`${lane_job_id:-unknown}\`)" \
-            "gate head: \`${gate_head}\`" \
-            "action: \`rerun-failed-jobs\` (attempt 2, same exact SHA)"
-          echo "ripr-infra-retry: re-queued failed jobs of run ${RUN_ID} for ${HEAD_SHA}"
+            "evaluated head (gate): \`${gate_head:-unknown}\`" \
+            "branch head (event): \`${HEAD_SHA}\`" \
+            "action: \`rerun-failed-jobs\` (attempt 2, same evaluated tree)"
+          echo "ripr-infra-retry: re-queued failed jobs of run ${RUN_ID} (evaluated ${gate_head:-unknown})"

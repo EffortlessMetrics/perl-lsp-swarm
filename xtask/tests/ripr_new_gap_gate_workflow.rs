@@ -246,7 +246,8 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<(), Box<dyn std::
     assert!(
         evaluate_step.contains("classification=infra-no-proof")
             && evaluate_step.contains("> ripr-gate-classification.env")
-            && evaluate_step.contains("head_sha=${GITHUB_SHA}"),
+            && evaluate_step.contains("head_sha=${GITHUB_SHA}")
+            && evaluate_step.contains("run_id=${GITHUB_RUN_ID}"),
         "the ripr gate must emit its infra-no-proof verdict as a data file for the retry workflow"
     );
     let upload_step = workflow_step(&gate, "Upload gate classification")
@@ -286,10 +287,17 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<(), Box<dyn std::
             && retry.contains("actions/runs/${RUN_ID}/rerun-failed-jobs"),
         "ripr-infra-retry must rerun failed jobs of the event run id, not an artifact-provided id"
     );
-    // The gate-recorded head must match the event head before any retry.
+    // Artifact/run coherence is proven by the recorded run id, not by head
+    // SHA: for pull_request runs the gate's GITHUB_SHA is the evaluated
+    // refs/pull/<n>/merge commit while workflow_run.head_sha is the PR branch
+    // tip, so a head comparison would skip every genuine PR eviction.
     assert!(
-        retry.contains("[ \"${gate_head}\" != \"${HEAD_SHA}\" ]"),
-        "ripr-infra-retry must verify the classification head matches the event head"
+        retry.contains("[ \"${gate_run_id}\" != \"${RUN_ID}\" ]"),
+        "ripr-infra-retry must verify the classification run id matches the event run"
+    );
+    assert!(
+        !retry.contains("[ \"${gate_head}\" != \"${HEAD_SHA}\" ]"),
+        "ripr-infra-retry must not gate the retry on a head-SHA comparison (merge ref vs branch tip)"
     );
 
     Ok(())
