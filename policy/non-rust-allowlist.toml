@@ -2456,7 +2456,11 @@ created = "2026-08-19"
 review_after = "2026-11-19"
 
 # =============================================================================
-# Binary identity protocol (perl_lsp.binary_identity.v1)
+# Lite XL integration train (staged exact upstream client source)
+#
+# Files are classified individually, mirroring clients/sublime convention:
+# a new file below clients/lite-xl fails the inventory check until it is
+# reviewed and classified.
 # =============================================================================
 
 [[allow]]
