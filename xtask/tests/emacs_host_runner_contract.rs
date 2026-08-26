@@ -378,6 +378,8 @@ fn subject_registry_pins_each_exact_client_subject_immutable() -> Result<()> {
             "released_eglot_gnu_elpa_1_23",
             "released_eglot_gnu_elpa_1_24",
             "source_eglot_emacs_c1ad9d27",
+            "released_lsp_mode_melpa_stable_10_0_0",
+            "source_lsp_mode_github_6bfc593",
         ],
         "each subject is an immutable registry row; new releases are new rows, never silent \
          replacements"

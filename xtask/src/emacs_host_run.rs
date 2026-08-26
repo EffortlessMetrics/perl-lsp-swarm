@@ -53,6 +53,11 @@ pub enum EmacsClientSubject {
     /// Upstream-source Eglot pinned to the emacs.git commit
     /// `c1ad9d27207aff96a22d49ae4c6cab35a2619927` (#11745).
     SourceEglotEmacsC1ad9d27,
+    /// Released lsp-mode 10.0.0 from MELPA Stable, manifest-bound (#11746).
+    ReleasedLspModeMelpaStable1000,
+    /// Upstream-source lsp-mode pinned to the emacs-lsp/lsp-mode commit
+    /// `6bfc593d7b1bc0dd656f09ffce52cc085ebced05` (#11746).
+    SourceLspModeGithub6bfc593,
 }
 
 impl EmacsClientSubject {
@@ -65,6 +70,8 @@ impl EmacsClientSubject {
             "released_eglot_gnu_elpa_1_23" => Ok(Self::ReleasedEglotGnuElpa123),
             "released_eglot_gnu_elpa_1_24" => Ok(Self::ReleasedEglotGnuElpa124),
             "source_eglot_emacs_c1ad9d27" => Ok(Self::SourceEglotEmacsC1ad9d27),
+            "released_lsp_mode_melpa_stable_10_0_0" => Ok(Self::ReleasedLspModeMelpaStable1000),
+            "source_lsp_mode_github_6bfc593" => Ok(Self::SourceLspModeGithub6bfc593),
             _ => bail!(
                 "unknown client subject {id}: known subjects are {}",
                 Self::known_ids().join(", ")
@@ -80,6 +87,8 @@ impl EmacsClientSubject {
             "released_eglot_gnu_elpa_1_23",
             "released_eglot_gnu_elpa_1_24",
             "source_eglot_emacs_c1ad9d27",
+            "released_lsp_mode_melpa_stable_10_0_0",
+            "source_lsp_mode_github_6bfc593",
         ]
     }
 
@@ -90,6 +99,8 @@ impl EmacsClientSubject {
             Self::ReleasedEglotGnuElpa123 => "released_eglot_gnu_elpa_1_23",
             Self::ReleasedEglotGnuElpa124 => "released_eglot_gnu_elpa_1_24",
             Self::SourceEglotEmacsC1ad9d27 => "source_eglot_emacs_c1ad9d27",
+            Self::ReleasedLspModeMelpaStable1000 => "released_lsp_mode_melpa_stable_10_0_0",
+            Self::SourceLspModeGithub6bfc593 => "source_lsp_mode_github_6bfc593",
         }
     }
 
@@ -102,7 +113,9 @@ impl EmacsClientSubject {
             Self::BundledEglotEmacs301
             | Self::ReleasedEglotGnuElpa123
             | Self::ReleasedEglotGnuElpa124
-            | Self::SourceEglotEmacsC1ad9d27 => "30.1",
+            | Self::SourceEglotEmacsC1ad9d27
+            | Self::ReleasedLspModeMelpaStable1000
+            | Self::SourceLspModeGithub6bfc593 => "30.1",
         }
     }
 
@@ -141,9 +154,12 @@ impl EmacsClientSubject {
                 // registry cannot drift apart.
                 Ok(crate::emacs_subject_manifest::runner_client_subject(row, source_sha256, None))
             }
-            // The manifest-bound external rows (#11745) draw every identity
-            // field from their checked rows the same way.
-            Self::ReleasedEglotGnuElpa124 | Self::SourceEglotEmacsC1ad9d27 => {
+            // The manifest-bound external rows (#11745/#11746) draw every
+            // identity field from their checked rows the same way.
+            Self::ReleasedEglotGnuElpa124
+            | Self::SourceEglotEmacsC1ad9d27
+            | Self::ReleasedLspModeMelpaStable1000
+            | Self::SourceLspModeGithub6bfc593 => {
                 let row = manifest.row_for(self.id()).with_context(|| {
                     format!(
                         "external subject {} must be a row of the checked subject manifest",
@@ -175,7 +191,11 @@ impl EmacsClientSubject {
     /// Checked-in adapter path relative to the repository root. The two
     /// #11745 external rows reuse the released-Eglot adapter mechanically
     /// (plan-building digest input only); no source-subject journey is
-    /// claimed by that reuse.
+    /// claimed by that reuse. The #11746 lsp-mode rows have no adapter yet:
+    /// lsp-mode journey mechanics belong to the lsp-mode lanes, so plan
+    /// construction for these subjects fails closed on the missing adapter
+    /// until that lane lands one, while subject materialization through the
+    /// manifest resolver is complete without it.
     pub fn adapter_relative_path(self) -> &'static str {
         match self {
             Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => {
@@ -184,6 +204,9 @@ impl EmacsClientSubject {
             Self::ReleasedEglotGnuElpa123
             | Self::ReleasedEglotGnuElpa124
             | Self::SourceEglotEmacsC1ad9d27 => "scripts/test/emacs-clients/eglot-released.el",
+            Self::ReleasedLspModeMelpaStable1000 | Self::SourceLspModeGithub6bfc593 => {
+                "scripts/test/emacs-clients/lsp-mode.el"
+            }
         }
     }
 
@@ -198,6 +221,9 @@ impl EmacsClientSubject {
             | Self::SourceEglotEmacsC1ad9d27 => {
                 "scripts/test/emacs-clients/eglot-released-config.el"
             }
+            Self::ReleasedLspModeMelpaStable1000 | Self::SourceLspModeGithub6bfc593 => {
+                "scripts/test/emacs-clients/lsp-mode-config.el"
+            }
         }
     }
 
@@ -209,6 +235,8 @@ impl EmacsClientSubject {
                 "released_eglot_lifecycle.v1"
             }
             Self::SourceEglotEmacsC1ad9d27 => "source_eglot_lifecycle.v1",
+            Self::ReleasedLspModeMelpaStable1000 => "released_lsp_mode_lifecycle.v1",
+            Self::SourceLspModeGithub6bfc593 => "source_lsp_mode_lifecycle.v1",
         }
     }
 
@@ -220,6 +248,8 @@ impl EmacsClientSubject {
                 "released_eglot_lifecycle_v1"
             }
             Self::SourceEglotEmacsC1ad9d27 => "source_eglot_lifecycle_v1",
+            Self::ReleasedLspModeMelpaStable1000 => "released_lsp_mode_lifecycle_v1",
+            Self::SourceLspModeGithub6bfc593 => "source_lsp_mode_lifecycle_v1",
         }
     }
 
@@ -229,8 +259,11 @@ impl EmacsClientSubject {
         match self {
             Self::BundledEglotEmacs294
             | Self::BundledEglotEmacs301
-            | Self::SourceEglotEmacsC1ad9d27 => false,
-            Self::ReleasedEglotGnuElpa123 | Self::ReleasedEglotGnuElpa124 => true,
+            | Self::SourceEglotEmacsC1ad9d27
+            | Self::SourceLspModeGithub6bfc593 => false,
+            Self::ReleasedEglotGnuElpa123
+            | Self::ReleasedEglotGnuElpa124
+            | Self::ReleasedLspModeMelpaStable1000 => true,
         }
     }
 
@@ -241,21 +274,25 @@ impl EmacsClientSubject {
             Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => true,
             Self::ReleasedEglotGnuElpa123
             | Self::ReleasedEglotGnuElpa124
-            | Self::SourceEglotEmacsC1ad9d27 => false,
+            | Self::SourceEglotEmacsC1ad9d27
+            | Self::ReleasedLspModeMelpaStable1000
+            | Self::SourceLspModeGithub6bfc593 => false,
         }
     }
 
     /// Whether run-plan construction routes this subject through the
     /// checked subject manifest resolver (#11744). Every bundled row and
-    /// the manifest-bound external rows (#11745) do; the slice-2 released
-    /// row predates the manifest and keeps its landed explicit-input
-    /// mechanics until it is superseded.
+    /// the manifest-bound external rows (#11745/#11746) do; the slice-2
+    /// released row predates the manifest and keeps its landed
+    /// explicit-input mechanics until it is superseded.
     pub fn resolves_through_subject_manifest(self) -> bool {
         match self {
             Self::BundledEglotEmacs294
             | Self::BundledEglotEmacs301
             | Self::ReleasedEglotGnuElpa124
-            | Self::SourceEglotEmacsC1ad9d27 => true,
+            | Self::SourceEglotEmacsC1ad9d27
+            | Self::ReleasedLspModeMelpaStable1000
+            | Self::SourceLspModeGithub6bfc593 => true,
             Self::ReleasedEglotGnuElpa123 => false,
         }
     }
@@ -272,7 +309,12 @@ impl EmacsClientSubject {
             | Self::BundledEglotEmacs301
             | Self::ReleasedEglotGnuElpa123
             | Self::ReleasedEglotGnuElpa124 => true,
-            Self::SourceEglotEmacsC1ad9d27 => false,
+            // No lsp-mode adapter exists yet; plan construction already
+            // fails closed on the missing adapter file, and the host-run
+            // boundary refuses the launch with the same typed reason.
+            Self::SourceEglotEmacsC1ad9d27
+            | Self::ReleasedLspModeMelpaStable1000
+            | Self::SourceLspModeGithub6bfc593 => false,
         }
     }
 }
