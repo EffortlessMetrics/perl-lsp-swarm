@@ -1205,6 +1205,9 @@ mod tests {
     fn lowering_disposition_is_copy_and_clone() {
         // Verify the `Copy` and `Clone` derives work correctly for `LoweringDisposition`.
         let d = disposition_for("Package").expect("Package must have a disposition");
+        // Explicit `Clone::clone` call: a plain assignment would exercise `Copy`
+        // and leave `Clone` uncovered even if the derive stopped being used.
+        #[allow(clippy::clone_on_copy)] // the explicit call IS the Clone assertion
         let cloned = d.clone();
         assert_eq!(d, cloned, "Clone must produce equal LoweringDisposition");
         // Copy: assign to a new binding and both must be usable.

@@ -1,0 +1,20 @@
+{
+  "schema": "perl_dap.loaded_module_reload_family.vector.v1",
+  "name": "terminal_refused_unsupported_runtime",
+  "description": "Admission refused because the selected runtime does not support the reload mechanism family; family presence never makes an ineligible runtime reloadable.",
+  "outcome": { "kind": "refused", "disposition": "unsupported_runtime" },
+  "generation_before": 2,
+  "expect": {
+    "kind": "refused",
+    "phase": "admission",
+    "disposition": "unsupported_runtime",
+    "success": false,
+    "possibly_applied": false,
+    "generation": { "previous": 2, "current": 2, "advanced": false },
+    "reconciliation": {
+      "loaded_source_refresh": "deferred",
+      "inspection_invalidation": "deferred",
+      "breakpoint_reconciliation": "deferred"
+    }
+  }
+}

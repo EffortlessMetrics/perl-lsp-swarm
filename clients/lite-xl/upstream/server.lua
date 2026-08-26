@@ -24,7 +24,10 @@
 
 local json = require "plugins.lsp.json"
 local util = require "plugins.lsp.util"
-local diagnostics = require "plugins.lsp.diagnostics"
+-- Local patch (#11172): the initialize advertisement is folded from the
+-- profile-scoped capability manifest, so the wire payload can never exceed
+-- the reconciled capability/affordance matrix.
+local capability_manifest = require "plugins.lsp.capability_manifest"
 local Object = require "core.object"
 
 ---Visible truncation marker appended by bounded text excerpts (#11155).
@@ -110,8 +113,7 @@ end
 -- by default; never enable it for canonical host or CI proof artifacts.
 ---@field public verbose boolean
 ---@field public initialized boolean
----@field public hitrate_list table
----@field public requests_per_second integer
+---@field public max_queued_requests integer
 ---@field public proc process | nil
 ---@field public quit_timeout number
 ---@field public exit_timer lsp.timer | nil
@@ -167,8 +169,6 @@ Server.options = {
   custom_capabilities = {},
   ---Function called when the server has been started
   on_start = nil,
-  ---Set by default to 16 should only be modified if having issues with a server
-  requests_per_second = 32,
   ---Some servers like bash language server support incremental changes
   ---which are more performant but don't advertise it, set to true to force
   ---incremental changes even if server doesn't advertise them
@@ -176,6 +176,14 @@ Server.options = {
   ---True to debug the lsp client when developing it
   verbose = false,
 }
+
+---Default bound on simultaneously queued outbound requests (#10833). Rate
+---control moved from enqueue admission (the old hit-rate dropper silently
+---discarded load-bearing traffic) to send scheduling: messages are queued or
+---coalesced, and only an explicit bound breach without an applicable
+---coalescing policy rejects with a typed not_queued disposition.
+---@type integer
+Server.MAX_QUEUED_REQUESTS = 256
 
 ---Default timeout when sending a request to lsp server.
 ---@type integer Time in seconds
@@ -407,8 +415,8 @@ function Server:new(options)
   self.max_body_bytes = options.max_body_bytes
   self.last_restart = system.get_time()
   self.initialized = false
-  self.hitrate_list = {}
-  self.requests_per_second = options.requests_per_second or 16
+  -- Outbound request-queue bound (#10833); see Server.MAX_QUEUED_REQUESTS.
+  self.max_queued_requests = Server.MAX_QUEUED_REQUESTS
 
   self.proc = process.start(
     options.command, {
@@ -448,6 +456,22 @@ function Server:initialize(workspace, editor_name, editor_version)
   self.editor_name = editor_name or "unknown"
   self.editor_version = editor_version or "0.1"
 
+  -- Local patch (#11172): user overrides may claim anything, but claims
+  -- over known unimplemented rows are warned about once here instead of
+  -- silently becoming support evidence.
+  local unsupported_claims =
+    capability_manifest.unsupported_custom_claims(self.custom_capabilities)
+  if #unsupported_claims > 0 then
+    local claimed_paths = {}
+    for _, claim in ipairs(unsupported_claims) do
+      claimed_paths[#claimed_paths + 1] = claim.path
+    end
+    self:log(
+      "[LSP] warning: custom capabilities claim unimplemented client features: %s",
+      table.concat(claimed_paths, ", ")
+    )
+  end
+
   self:push_request('initialize', {
     timeout = 10,
     params = {
@@ -463,145 +487,25 @@ function Server:initialize(workspace, editor_name, editor_version)
         {uri = root_uri, name = util.getpathname(workspace)}
       },
       initializationOptions = self.init_options,
-      capabilities = util.deep_merge({
-        workspace = {
-          configuration = true -- 'workspace/configuration' requests
-        },
-        textDocument = {
-          synchronization = {
-            -- willSave = true,
-            -- willSaveWaitUntil = true,
-            didSave = true,
-            -- dynamicRegistration = false -- not supported
-          },
-          completion = {
-            -- dynamicRegistration = false, -- not supported
-            completionItem = {
-              -- Snippets are required by css-languageserver
-              snippetSupport = self.snippets or self.fake_snippets,
-              -- commitCharactersSupport = true,
-              documentationFormat = {'plaintext'},
-              -- deprecatedSupport = false, -- simple autocompletion list
-              -- preselectSupport = true
-              -- tagSupport = {valueSet = {}},
-              insertReplaceSupport = true,
-              resolveSupport = {properties = {'documentation', 'detail', 'additionalTextEdits'}},
-              -- insertTextModeSupport = {valueSet = {}}
-            },
-            completionItemKind = {
-              valueSet = Server.get_completion_items_kind_list()
-            }
-            -- contextSupport = true
-          },
-          hover = {
-            -- dynamicRegistration = false, -- not supported
-            contentFormat = {'markdown', 'plaintext'}
-          },
-          signatureHelp = {
-            -- dynamicRegistration = false, -- not supported
-            signatureInformation = {
-              documentationFormat = {'plaintext'}
-              -- parameterInformation = {labelOffsetSupport = true},
-              -- activeParameterSupport = true
-            }
-            -- contextSupport = true
-          },
-          -- references = {dynamicRegistration = false}, -- not supported
-          -- documentHighlight = {dynamicRegistration = false}, -- not supported
-          documentSymbol = {
-            -- dynamicRegistration = false, -- not supported
-            symbolKind = {valueSet = Server.get_symbols_kind_list()}
-            -- hierarchicalDocumentSymbolSupport = true,
-            -- tagSupport = {valueSet = {}},
-            -- labelSupport = true
-          },
-          -- diagnostic = {
-          --   dynamicRegistration = true,
-          --   relatedDocumentSupport = false
-          -- },
-          -- formatting = {dynamicRegistration = false},-- not supported
-          -- rangeFormatting = {dynamicRegistration = false}, -- not supported
-          -- onTypeFormatting = {dynamicRegistration = false}, -- not supported
-          -- declaration = {
-          --  dynamicRegistration = false, -- not supported
-          --  linkSupport = true
-          -- }
-          -- definition = {
-          --  dynamicRegistration = false, -- not supported
-          --  linkSupport = true
-          -- },
-          -- typeDefinition = {
-          --  dynamicRegistration = false, -- not supported
-          --  linkSupport = true
-          -- },
-          -- implementation = {
-          --  dynamicRegistration = false, -- not supported
-          --  linkSupport = true
-          -- },
-          -- codeAction = {
-          --  dynamicRegistration = false, -- not supported
-          --  codeActionLiteralSupport = {valueSet = {}},
-          --  isPreferredSupport = true,
-          --  disabledSupport = true,
-          --  dataSupport = true,
-          --  resolveSupport = {properties = {}},
-          --  honorsChangeAnnotations = true
-          -- },
-          -- codeLens = {dynamicRegistration = false}, -- not supported
-          -- documentLink = {
-          --  dynamicRegistration = false, -- not supported
-          --  tooltipSupport = true
-          -- },
-          -- colorProvider = {dynamicRegistration = false}, -- not supported
-          -- rename = {
-          --  dynamicRegistration = false, -- not supported
-          --  prepareSupport = false
-          -- },
-          publishDiagnostics = {
-            relatedInformation = true,
-            tagSupport = {
-              valueSet = {
-                diagnostics.tag.UNNECESSARY,
-                diagnostics.tag.DEPRECATED
-              }
-            },
-            versionSupport = true,
-            codeDescriptionSupport = true,
-            dataSupport = false
-          },
-          -- foldingRange = {
-          --  dynamicRegistration = false, -- not supported
-          --  rangeLimit = ?,
-          --  lineFoldingOnly = true
-          -- },
-          -- selectionRange = {dynamicRegistration = false}, -- not supported
-          -- linkedEditingRange = {dynamicRegistration = false}, -- not supported
-          -- callHierarchy = {dynamicRegistration = false}, -- not supported
-          -- semanticTokens = {
-          --  dynamicRegistration = false, -- not supported
-          --  requests = {},
-          --  tokenTypes = {},
-          --  tokenModifiers = {},
-          --  formats = {},
-          --  overlappingTokenSupport = true,
-          --  multilineTokenSupport = true
-          -- },
-          -- moniker = {dynamicRegistration = false} -- not supported
-        },
-        window = {
-          -- workDoneProgress = true,
-          -- showMessage = {},
-          showDocument = { support = true }
-        },
-        general = {
-          -- regularExpressions = {},
-          -- markdown = {},
-          positionEncodings = {
+      -- Local patch (#11172): capabilities are the manifest's exact truth -
+      -- every advertised leaf has an implemented consumer and deterministic
+      -- proof; unconsumed leaves (publishDiagnostics relatedInformation,
+      -- tagSupport, codeDescriptionSupport) stay absent. User overrides
+      -- merge on top as user freedom, never as repository evidence.
+      capabilities = util.deep_merge(
+        capability_manifest.client_capabilities({
+          -- Normalized to a strict boolean: an absent snippets dependency
+          -- is a real false, not a missing producer.
+          snippet_support = (self.snippets or self.fake_snippets)
+            and true or false,
+          completion_item_kinds = Server.get_completion_items_kind_list(),
+          symbol_kinds = Server.get_symbols_kind_list(),
+          position_encoding_list = {
             Server.position_encoding_kind.UTF16
-          }
-        },
-        -- experimental = nil
-      }, self.custom_capabilities)
+          },
+        }),
+        self.custom_capabilities
+      )
     },
     callback = function(server, response)
       if server.verbose then
@@ -1112,53 +1016,29 @@ function Server:process_raw()
   if sent then collectgarbage("collect") end
 end
 
----Help controls the amount of requests sent to the lsp server per second
----which prevents overloading it and causing a pipe hang.
----@param type string
----@return boolean true if max hitrate was reached
-function Server:hitrate_reached(type)
-  if not self.hitrate_list[type] then
-    self.hitrate_list[type] = {
-      count = 1,
-      timestamp = os.time() + 1
-    }
-  elseif self.hitrate_list[type].timestamp > os.time() then
-    if self.hitrate_list[type].count >= self.requests_per_second then
-      return true
-    end
-    self.hitrate_list[type].count = self.hitrate_list[type].count + 1
-  else
-    self.hitrate_list[type].timestamp = os.time() + 1
-    self.hitrate_list[type].count = 1
-  end
-  return false
-end
+-- Local patch (#10833): rate control moved from enqueue admission to send
+-- scheduling. The previous hit-rate dropper silently discarded load-bearing
+-- traffic at enqueue time - didChange/watched-files/provider requests, and
+-- even client responses owed to server requests - so document truth could go
+-- stale while the client behaved as if every message was delivered. The
+-- queues are drained one message per editor tick (responses flush fully),
+-- which is the pacing mechanism; admission now only coalesces or explicitly
+-- rejects with typed dispositions:
+--
+--   "queued"      stored for sending on a later tick
+--   "coalesced"   replaced an unsent same-method entry in place (overwrite
+--                 policy; the newer state supersedes the older frame)
+--   "not_queued"  explicit typed rejection (server not initialized, or the
+--                 request queue is full without an overwrite target); the
+--                 optional not_queued_callback receives the reason and the
+--                 method, and no phantom request id is allocated
 
----Check if it is possible to queue a new request of any kind except
----raw ones. This is useful to delay a request and not loose it in case
----the lsp reached maximum amount of hit rate per second.
-function Server:can_push()
-  local type = "request"
-  if not self.hitrate_list[type] then
-    return self.initialized
-  elseif self.hitrate_list[type].timestamp > os.time() then
-    if self.hitrate_list[type].count >= self.requests_per_second then
-      return false
-    end
-  end
-  return self.initialized
-end
-
--- Notifications that should bypass the hitrate limit
-local notifications_whitelist = {
-  "textDocument/didOpen",
-  "textDocument/didSave",
-  "textDocument/didClose"
-}
-
----Queue a new notification but ignores new ones if the hit rate was reached.
+---Queue a new notification. State-bearing notifications are always admitted;
+---an overwrite-capable call coalesces onto its latest unsent same-method
+---entry instead of growing the queue.
 ---@param method string
 ---@param options lsp.server.requestoptions
+---@return string disposition One of "queued" or "coalesced"
 function Server:push_notification(method, options)
   assert(options.params, "please provide the parameters for the notification")
 
@@ -1171,19 +1051,9 @@ function Server:push_notification(method, options)
         notification.params = options.params
         notification.callback = options.callback
         notification.data = options.data
-        return
+        return "coalesced"
       end
     end
-  end
-
-  if
-    method ~= "textDocument/didOpen"
-    and
-    self:hitrate_reached("request")
-    and
-    not util.intable(method, notifications_whitelist)
-  then
-    return
   end
 
   if self.verbose then
@@ -1201,28 +1071,38 @@ function Server:push_notification(method, options)
     callback = options.callback,
     data = options.data,
   })
+  return "queued"
 end
 
--- Requests that should bypass the hitrate limit
-local requests_whitelist = {
-  "completionItem/resolve"
-}
-
----Queue a new request but ignores new ones if the hit rate was reached.
+---Queue a new client request for paced sending. Requests are queued,
+---coalesced under their declared overwrite policy, or explicitly rejected
+---with a typed not_queued disposition - never silently dropped (#10833).
+---Once sent, #10657 owns id/timeout correlation; queued work keeps its exact
+---operation identity and no phantom ids are allocated for rejections.
 ---@param method string
 ---@param options lsp.server.requestoptions
+---@return string disposition One of "queued", "coalesced" or "not_queued"
 function Server:push_request(method, options)
   if not self.initialized and method ~= "initialize" then
-    return
+    if options.not_queued_callback then
+      options.not_queued_callback("not_initialized", method)
+    end
+    return "not_queued"
   end
 
   assert(options.params, "please provide the parameters for the request")
 
+  -- Locate the declared overwrite policy target before any rejection path.
+  -- An already-sent request is only marked overwritten once its replacement
+  -- is actually admitted: marking first and rejecting second would suppress
+  -- the in-flight request's valid response callback and lose both outcomes
+  -- (#10833).
+  local sent_overwrite_target = nil
   if options.overwrite then
     for _, request in ipairs(self.request_list) do
       if request.method == method then
         if request.times_sent > 0 then
-          request.overwritten = true
+          sent_overwrite_target = request
           break
         else
           request.params = options.params
@@ -1235,27 +1115,31 @@ function Server:push_request(method, options)
           if self.verbose then
             self:log("Overwriting request %s", tostring(method))
           end
-          return
+          return "coalesced"
         end
       end
     end
   end
 
-  if
-    method ~= "initialize"
-    and
-    self:hitrate_reached("request")
-    and
-    not util.intable(method, requests_whitelist)
-  then
-    return
+  -- Bound with an explicit typed rejection (#10833): when the queue is full
+  -- and this call has no unsent same-method overwrite target, the caller
+  -- learns the operation was not queued instead of losing it silently.
+  if #self.request_list >= self.max_queued_requests then
+    if self.verbose then
+      self:log("Request queue bound reached; not queueing %s", tostring(method))
+    end
+    if options.not_queued_callback then
+      options.not_queued_callback("queue_full", method)
+    end
+    return "not_queued"
   end
 
   if self.verbose then
     self:log("Adding request %s", tostring(method))
   end
 
-  -- Set the request id
+  -- Set the request id only after every rejection path is closed, so
+  -- rejected operations leave no phantom in-flight identity.
   self.current_request = self.current_request + 1
 
   -- Store the request for later processing on responses_loop
@@ -1271,20 +1155,29 @@ function Server:push_request(method, options)
     timestamp = 0,
     times_sent = 0
   })
+
+  -- Replacement admitted: only now retire the already-sent predecessor so a
+  -- rejected replacement can never strand the in-flight original (#10833).
+  if sent_overwrite_target then
+    sent_overwrite_target.overwritten = true
+    if self.verbose then
+      self:log("Overwriting request %s", tostring(method))
+    end
+  end
+
+  return "queued"
 end
 
 ---Queue a client response to a server request which can be an error
----or a regular response, one of both. This may ignore new ones if
----the hit rate was reached.
+---or a regular response, one of both. A response is an obligation toward
+---the server (#10785): it is always admitted and never dropped by any rate
+---mechanism (#10833).
 ---@param method string
 ---@param id integer
 ---@param result table|nil
 ---@param error table|nil
+---@return string disposition Always "queued"
 function Server:push_response(method, id, result, error)
-  if self:hitrate_reached("request") then
-    return
-  end
-
   if self.verbose then
     self:log("Adding response %s to %s", tostring(id), tostring(method))
   end
@@ -1300,6 +1193,7 @@ function Server:push_response(method, id, result, error)
   end
 
   table.insert(self.response_list, response)
+  return "queued"
 end
 
 ---Send raw json strings to server in cases where the json encoder

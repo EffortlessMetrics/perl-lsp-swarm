@@ -29,7 +29,18 @@ pub const FRAMEWORK_ADAPTER_SDK_VERSION: &str = "framework_adapter_sdk.v2";
 pub const FRAMEWORK_ADAPTER_SDK_LEGACY_VERSION: &str = "framework_adapter_sdk.v1";
 
 /// Current numeric schema version for descriptor/result records.
-pub const FRAMEWORK_ADAPTER_SCHEMA_VERSION: u32 = 1;
+///
+/// Version history:
+///
+/// - `1`: initial descriptor/result records;
+/// - `2`: adds the `RoutePrefix`, `RouteParameter`, and `RouteHandlerContext`
+///   `SemanticFactKind` discriminants (#8921) — per this module's wire
+///   contract, adding an enum discriminant requires a new schema version,
+///   because `#[non_exhaustive]` does not give older consumers an
+///   unknown-variant fallback on the wire;
+/// - `3`: adds the `Hook` `SemanticFactKind` discriminant (#8924) under the
+///   same rule.
+pub const FRAMEWORK_ADAPTER_SCHEMA_VERSION: u32 = 3;
 
 /// Stable opaque identity for a registered adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -912,7 +923,14 @@ mod tests {
         EntityId, FactId, LifecyclePhase, SemanticFactKind, SemanticReasonCode, SourceAnchor,
     };
     fn descriptor(disposition: AdapterDisposition) -> AdapterDescriptor {
-        AdapterDescriptor::new(AdapterId(1), "moo", "Moo", None, 1, disposition)
+        AdapterDescriptor::new(
+            AdapterId(1),
+            "moo",
+            "Moo",
+            None,
+            FRAMEWORK_ADAPTER_SCHEMA_VERSION,
+            disposition,
+        )
     }
 
     fn scope() -> AdapterSourceScope {
@@ -1005,6 +1023,48 @@ mod tests {
             SourceGeneration::known("generation-1"),
             AdapterOutcome::Applied { sink, limitations: Vec::new() },
         )
+    }
+
+    #[test]
+    fn route_family_discriminants_advertise_the_bumped_schema_version()
+    -> Result<(), serde_json::Error> {
+        // Ratchet for this module's own wire contract: adding an enum
+        // discriminant requires a new schema version, because
+        // `#[non_exhaustive]` is not an unknown-variant wire fallback. The
+        // route-family kinds (`Route`, `RoutePrefix`, `RouteParameter`,
+        // `RouteHandlerContext`) must travel on schema version 2 — an older
+        // consumer that accepted a v1/schema-1 result would fail
+        // deserializing them.
+        assert_eq!(FRAMEWORK_ADAPTER_SCHEMA_VERSION, 3);
+        for kind in [
+            SemanticFactKind::Route,
+            SemanticFactKind::RoutePrefix,
+            SemanticFactKind::RouteParameter,
+            SemanticFactKind::RouteHandlerContext,
+            SemanticFactKind::Hook,
+        ] {
+            let mut envelope = envelope(Provenance::FrameworkSynthesis);
+            envelope.kind = kind;
+            let fact = EmittedFact::new(
+                FactSinkId(7),
+                AdapterId(1),
+                "Dancer2",
+                Provenance::FrameworkSynthesis,
+                Confidence::High,
+                envelope,
+                FactClass::GeneratedMembers,
+                None,
+                false,
+            );
+            let result = applied(AdapterDisposition::Production, fact);
+            let value = serde_json::to_value(&result)?;
+            assert_eq!(
+                value["schema_version"],
+                serde_json::json!(3),
+                "{kind:?} must only travel on the bumped schema version"
+            );
+        }
+        Ok(())
     }
 
     #[test]
@@ -1102,7 +1162,7 @@ mod tests {
             "moo",
             "Moo",
             None,
-            1,
+            FRAMEWORK_ADAPTER_SCHEMA_VERSION,
             AdapterDisposition::Production,
         );
         assert_eq!(

@@ -1,0 +1,30 @@
+{
+  "schema": "perl_dap.loaded_module_reload_family.vector.v1",
+  "name": "unnegotiated_request",
+  "description": "A client with no family support reaches no backend action: the request is rejected with the typed family_not_negotiated code before anything is attempted.",
+  "negotiation": {
+    "client": null,
+    "adapter": {
+      "epoch": 7,
+      "backed": true
+    }
+  },
+  "request": {
+    "family": "perl-lsp/loadedModuleReload",
+    "familyVersion": 1,
+    "sessionEpoch": 7,
+    "operationId": 43,
+    "subject": {
+      "moduleIdentity": "opaque-module-token-1a2b",
+      "savedSourceDigest": "sha256:0f12e4d6a9b8c7d5e3f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d",
+      "logicalSourceUri": "perl-lsp-subject:epoch=7;observation=3",
+      "observationGeneration": 3
+    }
+  },
+  "expect": {
+    "evaluation": "rejected",
+    "code": "family_not_negotiated",
+    "kind": "request_rejected",
+    "success": false
+  }
+}
