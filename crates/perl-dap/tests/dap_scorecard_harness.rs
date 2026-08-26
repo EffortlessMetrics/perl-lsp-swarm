@@ -15,7 +15,7 @@
 )]
 mod common;
 
-use common::{DapWorkflowSession, perl_available, workflow_timeout};
+use common::{DapWorkflowSession, debuggee_perl_or_typed_skip, perl_available, workflow_timeout};
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::transport::framing::frame;
 use serde::Serialize;
@@ -118,7 +118,7 @@ fn launch_timeout() -> Duration {
     }
 }
 
-fn probe_launch(script_path: &Path, timeout: Duration) -> Result<u128, String> {
+fn probe_launch(script_path: &Path, perl_binary: &Path, timeout: Duration) -> Result<u128, String> {
     let script_str =
         script_path.to_str().ok_or("fixture path contains non-UTF-8 characters")?.to_string();
 
@@ -138,6 +138,7 @@ fn probe_launch(script_path: &Path, timeout: Duration) -> Result<u128, String> {
             "program": script_str,
             "args": [],
             "stopOnEntry": true,
+            "perlPath": perl_binary.to_string_lossy(),
             "env": {
                 "PERL_PERTURB_KEYS": "0",
                 "PERL_HASH_SEED": "0",
@@ -221,7 +222,9 @@ fn metric_from_result(result: Result<String, String>) -> BinaryMetric {
     }
 }
 
-fn probe_session_metrics() -> Result<(BinaryMetric, BinaryMetric, BinaryMetric), String> {
+fn probe_session_metrics(
+    perl_binary: &Path,
+) -> Result<(BinaryMetric, BinaryMetric, BinaryMetric), String> {
     let workspace = tempdir().map_err(|e| e.to_string())?;
     let script_path = workspace.path().join("scorecard_session.pl");
     // `@big` is lexical so it is enumerated through the advertised Locals
@@ -241,7 +244,7 @@ print "marker=$marker\n";
         script_path.to_str().ok_or_else(|| "script path is not valid UTF-8".to_string())?;
 
     let mut session = DapWorkflowSession::new(workflow_timeout())?;
-    session.launch(script_str)?;
+    session.launch_pinned(perl_binary, script_str)?;
     session.set_breakpoints(script_str, &[6])?;
     session.configuration_done()?;
 
@@ -492,6 +495,49 @@ fn scorecard_launch_success_rate() -> TestResult {
         return Ok(());
     }
 
+    // Live launch/session probes need an interpreter whose perl5db actually
+    // operates over piped stdio; native MSWin32 builds hang at bootstrap
+    // (#12594 item 6b). Record the gap as a typed skip rather than letting
+    // every session metric fail on timeouts.
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("scorecard_launch_success_rate") else {
+        let skipped = ScorecardReceipt {
+            perl_available: true,
+            launch: RateMetric {
+                passed: 0,
+                total: 0,
+                threshold_pct: 80,
+                p50_ms: None,
+                p95_ms: None,
+                details: Vec::new(),
+            },
+            attach: RateMetric {
+                passed: 0,
+                total: 0,
+                threshold_pct: 80,
+                p50_ms: None,
+                p95_ms: None,
+                details: Vec::new(),
+            },
+            variables: BinaryMetric {
+                status: "SKIP",
+                detail: "no pipe-capable perl debugger for live sessions".to_string(),
+            },
+            evaluate: BinaryMetric {
+                status: "SKIP",
+                detail: "no pipe-capable perl debugger for live sessions".to_string(),
+            },
+            deep_pagination: BinaryMetric {
+                status: "SKIP",
+                detail: "no pipe-capable perl debugger for live sessions".to_string(),
+            },
+            memory: memory_metric(),
+        };
+        print_marker_friendly_summary(&skipped);
+        write_receipt(&skipped)?;
+        eprintln!("scorecard_launch_success_rate: skipping — no pipe-capable perl debugger");
+        return Ok(());
+    };
+
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
     let fixture_dir = Path::new(&manifest_dir).join("tests").join("fixtures");
     let fixtures: &[(&str, &str)] = &[
@@ -505,7 +551,8 @@ fn scorecard_launch_success_rate() -> TestResult {
     let mut launch_results: Vec<FixtureResult> = Vec::with_capacity(fixtures.len());
     for (name, filename) in fixtures {
         let path = fixture_dir.join(filename);
-        let (elapsed_ms, error) = match probe_launch(&path, launch_timeout()) {
+        let (elapsed_ms, error) = match probe_launch(&path, &debuggee_perl.binary, launch_timeout())
+        {
             Ok(ms) => (Some(ms), None),
             Err(err) => (None, Some(err)),
         };
@@ -530,7 +577,8 @@ fn scorecard_launch_success_rate() -> TestResult {
     let launch_passed = launch_results.iter().filter(|r| r.passed()).count();
     let attach_passed = attach_results.iter().filter(|r| r.passed()).count();
 
-    let (variables, evaluate, deep_pagination) = match probe_session_metrics() {
+    let (variables, evaluate, deep_pagination) = match probe_session_metrics(&debuggee_perl.binary)
+    {
         Ok(metrics) => metrics,
         Err(err) => (
             BinaryMetric { status: "FAIL", detail: format!("session setup failed: {err}") },

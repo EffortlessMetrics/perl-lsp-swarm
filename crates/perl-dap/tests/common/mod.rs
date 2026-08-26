@@ -9,6 +9,10 @@ use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::time::{Duration, Instant};
 
@@ -91,6 +95,34 @@ impl DapWorkflowSession {
     /// `wait_stopped` to follow the DAP ordering requirement.
     pub fn launch(&mut self, script_path: &str) -> Result<(), String> {
         self.launch_with_stop_on_entry(script_path, false)
+    }
+
+    /// Launch a script pinned to an explicitly resolved interpreter identity.
+    ///
+    /// Live-session journeys must pin the debuggee perl: the adapter's ambient
+    /// resolution (`resolve_launch_interpreter`) inherits whatever `perl`
+    /// resolves on the spawning shell's `PATH`, which is not stable across
+    /// bash-spawned vs cmd-spawned test runs on Windows. Native MSWin32 perl
+    /// builds (e.g. Strawberry) hang at perl5db bootstrap when stdio is piped,
+    /// so an unpinned session silently never reaches its first stop (#12594
+    /// item 6b). The pinned binary is passed as `perlPath`, which the adapter
+    /// honors verbatim.
+    pub fn launch_pinned(&mut self, perl_binary: &Path, script_path: &str) -> Result<(), String> {
+        let args = json!({
+            "program": script_path,
+            "args": [],
+            "stopOnEntry": false,
+            "perlPath": perl_binary.to_string_lossy(),
+            "env": {
+                "PERL_PERTURB_KEYS": "0",
+                "PERL_HASH_SEED": "0",
+                "LC_ALL": "C",
+                "TZ": "UTC"
+            }
+        });
+        let resp = self.request("launch", Some(args));
+        self.expect_success(&resp, "launch")?;
+        Ok(())
     }
 
     /// Launch a script with explicit `stopOnEntry` control.
@@ -652,6 +684,233 @@ pub fn perl_available() -> bool {
         );
     }
     available
+}
+
+// ─── Live-session debuggee perl resolution (#12594 item 6b) ──────────────────
+
+/// Environment variable that pins the interpreter used by live DAP sessions.
+///
+/// When set, it names the ONLY candidate considered by
+/// [`resolve_debuggee_perl`] (an absolute path to a perl executable). A pinned
+/// candidate that fails the pipe-conformance probe fails resolution outright —
+/// an explicitly chosen identity must never be silently replaced.
+pub const DEBUGGEE_PERL_OVERRIDE_ENV: &str = "PERL_LSP_DAP_DEBUGGEE_PERL";
+
+/// Wall-clock budget for one [`probe_debuggee_perl`] attempt.
+///
+/// A working perl5db emits its banner well inside a second; a broken one
+/// (native MSWin32 builds at piped bootstrap) hangs forever, so the budget is
+/// what bounds the probe.
+const DEBUGGEE_PROBE_BUDGET: Duration = Duration::from_secs(10);
+
+/// A debuggee interpreter proven able to run a real debugger session over
+/// piped stdio.
+#[derive(Debug, Clone)]
+pub struct DebuggeePerl {
+    /// Absolute path of the probed interpreter; passed as launch-args
+    /// `perlPath`, which the adapter honors verbatim.
+    pub binary: PathBuf,
+    /// First line of `--version` for the probed binary (diagnostic identity).
+    pub identity: String,
+}
+
+struct DebuggeePerlResolution {
+    resolved: Option<DebuggeePerl>,
+    diagnostics: Vec<String>,
+}
+
+static DEBUGGEE_PERL: OnceLock<DebuggeePerlResolution> = OnceLock::new();
+
+fn debuggee_perl_candidates() -> Vec<PathBuf> {
+    if let Some(pinned) = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV) {
+        return vec![PathBuf::from(pinned)];
+    }
+
+    let mut candidates = vec![PathBuf::from("perl")];
+
+    // Windows: add well-known MSYS-family perl locations. The cataloged root
+    // cause (#12594 item 6b) is that native MSWin32 perl5db builds cannot run
+    // over piped stdio, while MSYS/cygwin-flavored builds can; these paths are
+    // only PROPOSALS — every candidate still has to pass the conformance
+    // probe before it is trusted. Environments with other layouts should set
+    // [`DEBUGGEE_PERL_OVERRIDE_ENV`].
+    if cfg!(windows) {
+        if let Some(system_drive) = std::env::var_os("SystemDrive") {
+            candidates.push(PathBuf::from(format!(
+                "{}\\msys64\\usr\\bin\\perl.exe",
+                system_drive.to_string_lossy()
+            )));
+        }
+        if let Some(program_files) = std::env::var_os("ProgramFiles") {
+            candidates.push(PathBuf::from(format!(
+                "{}\\Git\\usr\\bin\\perl.exe",
+                program_files.to_string_lossy()
+            )));
+        }
+    }
+
+    candidates
+}
+
+/// Probe whether `binary` can actually drive a debugger session over pipes.
+///
+/// Spawns `<binary> -d -- <fixture>` with piped stdio (the exact shape the
+/// adapter uses), feeds it `c` then `q`, and requires the process to exit
+/// within [`DEBUGGEE_PROBE_BUDGET`] having produced either the perl5db banner
+/// or the fixture program's output. Native MSWin32 builds fail here by
+/// producing zero bytes and hanging until killed (#12594 item 6b).
+fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, String> {
+    let version_output = Command::new(binary)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("cannot execute --version: {e}"))?;
+    let identity = String::from_utf8_lossy(&version_output.stdout)
+        .lines()
+        .next()
+        .unwrap_or("unknown perl")
+        .chars()
+        .take(120)
+        .collect::<String>();
+
+    let probe_dir =
+        std::env::temp_dir().join(format!("perl-lsp-dap-debuggee-probe-{}", std::process::id()));
+    fs::create_dir_all(&probe_dir).map_err(|e| format!("cannot create probe dir: {e}"))?;
+    let script = probe_dir.join("pipe_probe.pl");
+    fs::write(
+        &script,
+        "use strict;\nuse warnings;\nmy $x = 10;\nmy $y = $x + 5;\nprint \"$y\\n\";\n",
+    )
+    .map_err(|e| format!("cannot write probe script: {e}"))?;
+    let cmds = probe_dir.join("pipe_probe_cmds.txt");
+    fs::write(&cmds, "c\nq\n").map_err(|e| format!("cannot write probe commands: {e}"))?;
+    let out_path = probe_dir.join("pipe_probe_out.txt");
+    let err_path = probe_dir.join("pipe_probe_err.txt");
+
+    let stdin_file = fs::File::open(&cmds).map_err(|e| format!("cannot open probe stdin: {e}"))?;
+    let stdout_file =
+        fs::File::create(&out_path).map_err(|e| format!("cannot create probe stdout: {e}"))?;
+    let stderr_file =
+        fs::File::create(&err_path).map_err(|e| format!("cannot create probe stderr: {e}"))?;
+
+    let mut child = Command::new(binary)
+        .args(["-d", "--"])
+        .arg(&script)
+        .stdin(Stdio::from(stdin_file))
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file))
+        .env_remove("PERL5LIB")
+        .env_remove("PERL5OPT")
+        .env("LC_ALL", "C")
+        .env("TZ", "UTC")
+        .spawn()
+        .map_err(|e| format!("cannot spawn: {e}"))?;
+
+    let deadline = Instant::now() + DEBUGGEE_PROBE_BUDGET;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "no exit within {}s — perl5db cannot bootstrap over piped stdio",
+                        DEBUGGEE_PROBE_BUDGET.as_secs()
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => return Err(format!("probe wait failed: {e}")),
+        }
+    };
+
+    let stdout = fs::read_to_string(&out_path).unwrap_or_default();
+    let stderr = fs::read_to_string(&err_path).unwrap_or_default();
+
+    // Either signal proves a live debugger session ran over pipes: the perl5db
+    // banner (stderr) or the fixture program's own output (stdout, `15`).
+    if !stderr.contains("Loading DB routines") && !stdout.contains("15") {
+        let stderr_atom: String = stderr.chars().take(160).collect();
+        return Err(format!(
+            "no usable debugger session over pipes (exit={status}, stdout={}B, \
+             stderr={}B: {stderr_atom})",
+            stdout.len(),
+            stderr.len()
+        ));
+    }
+
+    Ok(DebuggeePerl { binary: binary.to_path_buf(), identity })
+}
+
+/// Resolve and cache a pipe-capable debuggee interpreter for live sessions.
+///
+/// Candidate order: [`DEBUGGEE_PERL_OVERRIDE_ENV`] (exclusive when set),
+/// `perl` on `PATH`, then well-known MSYS-family locations on Windows. Every
+/// candidate must pass [`probe_debuggee_perl`] — path presence alone never
+/// proves session capability. Resolution runs once per test process.
+pub fn resolve_debuggee_perl() -> Option<&'static DebuggeePerl> {
+    resolved_debuggee_perl_or_reason().ok()
+}
+
+/// [`resolve_debuggee_perl`] with the captured per-candidate failure reasons.
+fn resolved_debuggee_perl_or_reason() -> Result<&'static DebuggeePerl, String> {
+    let resolution = DEBUGGEE_PERL.get_or_init(|| {
+        let explicit = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some();
+        let mut diagnostics = Vec::new();
+        for candidate in &debuggee_perl_candidates() {
+            match probe_debuggee_perl(candidate) {
+                Ok(perl) => return DebuggeePerlResolution { resolved: Some(perl), diagnostics },
+                Err(reason) => {
+                    if explicit {
+                        // An explicitly pinned identity must not fall through:
+                        // surface its failure and stop.
+                        diagnostics.push(format!(
+                            "{DEBUGGEE_PERL_OVERRIDE_ENV} pin {}: {reason}",
+                            candidate.display()
+                        ));
+                        break;
+                    }
+                    diagnostics.push(format!("{}: {reason}", candidate.display()));
+                }
+            }
+        }
+        DebuggeePerlResolution { resolved: None, diagnostics }
+    });
+
+    match resolution.resolved.as_ref() {
+        Some(perl) => Ok(perl),
+        None => Err(resolution.diagnostics.join("; ")),
+    }
+}
+
+/// Resolve the debuggee perl or emit a typed skip for `test_name`.
+///
+/// Returns `None` (after printing a SKIP line carrying the per-candidate
+/// diagnostics) when no pipe-capable interpreter can be resolved. Under
+/// [`REQUIRE_PERL_ENV`] strict mode an unresolved debuggee perl is a hard
+/// failure instead of a skip, matching [`perl_available`].
+pub fn debuggee_perl_or_typed_skip(test_name: &str) -> Option<&'static DebuggeePerl> {
+    match resolved_debuggee_perl_or_reason() {
+        Ok(perl) => Some(perl),
+        Err(reason) => {
+            let strict = std::env::var(REQUIRE_PERL_ENV)
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            assert!(
+                !strict,
+                "{REQUIRE_PERL_ENV}=1 is set, which forbids the silent DAP-test \
+                 SKIP path — no pipe-capable perl debugger could be resolved: {reason}. \
+                 Set {DEBUGGEE_PERL_OVERRIDE_ENV}=<path> to pin a capable interpreter."
+            );
+            eprintln!(
+                "SKIP {test_name}: no pipe-capable perl debugger for live-session proof \
+                 ({reason}). Live DAP journeys require a perl whose perl5db operates over \
+                 piped stdio; native MSWin32 builds hang at debugger bootstrap (#12594 \
+                 item 6b). Set {DEBUGGEE_PERL_OVERRIDE_ENV}=<path> to pin an interpreter."
+            );
+            None
+        }
+    }
 }
 
 /// Wait for a named DAP event on the receiver, returning the full message.
