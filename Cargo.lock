@@ -1657,6 +1657,7 @@ dependencies = [
  "perl-ast-v2",
  "perl-position-tracking",
  "perl-token",
+ "sha2",
  "strum",
 ]
 
