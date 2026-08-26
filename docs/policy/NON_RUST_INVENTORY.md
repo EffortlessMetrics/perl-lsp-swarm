@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11943 |
-| Rust-family files | 3628 |
-| Non-Rust files | 8315 |
-| Allowlisted | 6052 |
+| Total tracked files | 11948 |
+| Rust-family files | 3629 |
+| Non-Rust files | 8319 |
+| Allowlisted | 6056 |
 | Unclassified | 2263 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 431 |
+| config | 432 |
 | documentation | 2719 |
 | generated | 2 |
 | production | 325 |
 | test | 1972 |
-| tooling | 603 |
+| tooling | 606 |
 | unclassified | 2263 |
 
 ## Unclassified files
@@ -2577,6 +2577,7 @@
 | `.ci/editor-clients/emacs-subjects.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-activation-root.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-configuration.v1.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/editor-clients/vim-vim-lsp-lifecycle-root.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-public-surface.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-recovery-root.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-subject.v1.json` | config | `non-rust-ci-config` | release/ci |
@@ -6460,6 +6461,7 @@
 | `scripts/inject-sha-assets.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/install-githooks.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/install.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/lib/cargo-toolchain-guard.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/list-gates.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/llvm.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/lsp-smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6535,6 +6537,8 @@
 | `scripts/tests/fixtures/pr_overlap/true_duplicate.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-agent-flow-control-plane-trigger.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-build-timing-receipt-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-cargo-safe-toolchain-guard.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-cargo-toolchain-guard.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-check-coverage-baseline.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-check-doc-claims-shim.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-check-features-invariants-shim.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
