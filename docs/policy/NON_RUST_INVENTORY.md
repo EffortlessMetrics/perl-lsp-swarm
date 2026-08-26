@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11929 |
-| Rust-family files | 3620 |
-| Non-Rust files | 8309 |
-| Allowlisted | 6046 |
+| Total tracked files | 11955 |
+| Rust-family files | 3640 |
+| Non-Rust files | 8315 |
+| Allowlisted | 6052 |
 | Unclassified | 2263 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 430 |
-| documentation | 2716 |
+| config | 431 |
+| documentation | 2719 |
 | generated | 2 |
 | production | 325 |
 | test | 1972 |
-| tooling | 601 |
+| tooling | 603 |
 | unclassified | 2263 |
 
 ## Unclassified files
@@ -2355,6 +2355,7 @@
 | `.changes/unreleased/product-12489-Changed-095500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12559-Fixed-213941.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12573-Changed-194700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12639-Fixed-235500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12641-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3282,6 +3283,8 @@
 | `.spec/8305-organize-imports-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8305-organize-imports-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8305-organize-imports-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8867-iterative-ast-read-traversal/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8867-iterative-ast-read-traversal/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/964-dap-stack-frame-lifecycle/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/964-dap-stack-frame-lifecycle/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/964-dap-stack-frame-lifecycle/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6181,11 +6184,11 @@
 | `schemas/perl_core_harness_runner_parity.v1.schema.json` | config | `non-rust-core-harness-runner-parity-schema` | compiler |
 | `schemas/perl_core_harness_runner_plan.v1.schema.json` | config | `non-rust-core-harness-runner-plan-schema` | compiler |
 | `schemas/perl_core_harness_runner_plan.v2.schema.json` | config | `non-rust-core-harness-runner-plan-v2-schema` | compiler |
-| `schemas/perl_core_harness_upstream_runner_discovery.v1.schema.json` | config | `non-rust-core-harness-upstream-runner-discovery-schema` | compiler |
 | `schemas/perl_core_harness_target_matrix.v1.schema.json` | config | `non-rust-core-harness-target-matrix-schema` | compiler |
 | `schemas/perl_core_harness_target_matrix_index.v1.schema.json` | config | `non-rust-core-harness-target-matrix-index-schema` | compiler |
 | `schemas/perl_core_harness_target_matrix_part.v1.schema.json` | config | `non-rust-core-harness-target-matrix-part-schema` | compiler |
 | `schemas/perl_core_harness_target_topology_drift.v1.schema.json` | config | `non-rust-core-harness-target-topology-drift-schema` | compiler |
+| `schemas/perl_core_harness_upstream_runner_discovery.v1.schema.json` | config | `non-rust-core-harness-upstream-runner-discovery-schema` | compiler |
 | `schemas/publication_runtime_identity.v1.schema.json` | config | `non-rust-publication-runtime-identity-schema` | release/ci |
 | `schemas/release_topology.v1.schema.json` | config | `non-rust-release-topology-schema` | release/ci |
 | `schemas/stage_closure_projection.v1.schema.json` | config | `non-rust-stage-closure-projection-schema` | tooling/agent-review |
@@ -6355,6 +6358,7 @@
 | `scripts/ci/fixtures/review_gate.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/generate-coverage-pack-commands.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/learned_estimate.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/main_red_refusal.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/parser_facade_authority.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/parser_facade_inventory.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/pr_plan.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6381,6 +6385,7 @@
 | `scripts/ci/test_gate_enforcement_app_bindings.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_generate_coverage_pack_commands.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_learned_estimate.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_main_red_refusal.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_parser_facade_authority.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_pr_plan.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_receipts_to_junit.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
