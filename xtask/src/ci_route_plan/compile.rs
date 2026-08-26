@@ -247,7 +247,7 @@ pub(super) fn compile(input: CompileRoutePlanInput) -> Result<CiRoutePlanV1, Str
     }
 
     let summary = summarize(&rows)?;
-    let plan = CiRoutePlanV1 {
+    let mut plan = CiRoutePlanV1 {
         schema: CI_ROUTE_PLAN_SCHEMA.to_string(),
         producer: CI_ROUTE_PLAN_PRODUCER.to_string(),
         subject: input.subject,
@@ -261,7 +261,12 @@ pub(super) fn compile(input: CompileRoutePlanInput) -> Result<CiRoutePlanV1, Str
         selection: input.selection,
         rows,
         summary,
+        // Computed immediately from the assembled plan below; the empty
+        // placeholder can never survive validation, which recomputes and
+        // compares the digest.
+        semantic_fingerprint: String::new(),
     };
+    plan.semantic_fingerprint = plan.semantic_fingerprint_of()?;
     super::validate::validate(&plan)?;
     Ok(plan)
 }

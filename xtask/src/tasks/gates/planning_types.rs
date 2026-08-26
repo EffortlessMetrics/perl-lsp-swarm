@@ -763,3 +763,154 @@ mod route_plan_seam_tests {
         assert!(compiled.rows[0].applicability == Applicability::Applicable);
     }
 }
+
+/// #10179 canonical-publication seam: adapter outputs must survive the
+/// full publication pipeline — compile, canonical encode, JSON handoff,
+/// parse, validate, and byte-identical re-encode — against the domain
+/// validator's actual behavior. This is the seam the `ci-route-plan` CLI
+/// consumes; it does not re-test adapter projection semantics (those are
+/// `route_plan_seam_tests` above).
+#[cfg(test)]
+mod route_plan_canonical_seam_tests {
+    use super::*;
+    use crate::tasks::gates::disposition::resolve_from;
+    use crate::tasks::gates::route_profile::{RequestedProfile, expand};
+    use crate::tasks::gates::{GlobalSettings, TierDefinition};
+    use chrono::NaiveDate;
+    use std::collections::HashMap;
+    use xtask::ci_route_plan::{
+        CiRoutePlanV1, CompileRoutePlanInput, RouteSelectionEvidence, RouteSubjectRef,
+    };
+
+    const TODAY: NaiveDate = NaiveDate::from_ymd_opt(2026, 8, 24).expect("fixed date");
+    const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    fn gate(name: &str, tier: &str, required: bool, quarantine: bool) -> GateDefinition {
+        GateDefinition {
+            name: name.to_string(),
+            tier: tier.to_string(),
+            description: name.to_string(),
+            required,
+            command: format!("run {name}"),
+            timeout_seconds: 60,
+            retry_count: 0,
+            budgets: None,
+            quarantine,
+            tags: Vec::new(),
+            artifacts: Vec::new(),
+            matrix: None,
+            planning: None,
+        }
+    }
+
+    fn policy(gates: Vec<GateDefinition>) -> GatePolicy {
+        let tier = |name: &str| {
+            (
+                name.to_string(),
+                TierDefinition {
+                    description: name.to_string(),
+                    target_duration_seconds: 120,
+                    enforcement: "pr".to_string(),
+                    trigger: Vec::new(),
+                },
+            )
+        };
+        GatePolicy {
+            schema_version: 1,
+            global: GlobalSettings {
+                default_timeout_seconds: 60,
+                artifact_retention_days: 0,
+                default_retry_count: 0,
+                environment: HashMap::new(),
+                toolchain: None,
+            },
+            tiers: HashMap::from([tier("pr_fast"), tier("merge_gate")]),
+            gates,
+            flake_policy: None,
+            audit: None,
+        }
+    }
+
+    /// One proof-backed run and one positive scoped noop, projected from
+    /// the real #10178 expander and #10176 resolver through the adapters.
+    fn canonical_pipeline_input() -> CompileRoutePlanInput {
+        let policy = policy(vec![
+            gate("fmt_gate", "pr_fast", true, false),
+            gate("scope_gate", "pr_fast", false, false),
+        ]);
+        let expansion = expand(&policy, RequestedProfile::PrFast, None);
+        let authority = resolve_from(&policy, None, TODAY);
+        let (dispositions, disposition_digest) = route_disposition_inputs(&authority)
+            .unwrap_or_else(|error| panic!("authority projects: {error}"));
+        CompileRoutePlanInput {
+            subject: RouteSubjectRef {
+                kind: "pull_request".to_string(),
+                head_sha: SHA.to_string(),
+                base_sha: None,
+                subject_digest: DIGEST.to_string(),
+            },
+            expansion: route_profile_expansion_input(&expansion),
+            dispositions,
+            disposition_digest,
+            workflow_digest: DIGEST.to_string(),
+            selectors: vec![
+                GateSelectorInput {
+                    gate_id: "fmt_gate".to_string(),
+                    placement: SelectorPlacement::Selected,
+                    role: Some(GatePlanningRole::AlwaysOn.into()),
+                    reason: "always on".to_string(),
+                    proof: Some(SelectorProof::Applicable),
+                },
+                GateSelectorInput {
+                    gate_id: "scope_gate".to_string(),
+                    placement: SelectorPlacement::Skipped,
+                    role: Some(GatePlanningRole::RustScoped.into()),
+                    reason: "scope selector decided".to_string(),
+                    proof: Some(SelectorProof::NotApplicableToSubject),
+                },
+            ],
+            selection: RouteSelectionEvidence {
+                base: SHA.to_string(),
+                scope_ok: true,
+                fallback_used: false,
+                fallback_reason: None,
+                package_args: Vec::new(),
+                scope: None,
+                selector_digest: DIGEST.to_string(),
+            },
+            execution: route_execution_identities(&policy),
+        }
+    }
+
+    /// Adapter outputs round-trip through the canonical publication
+    /// pipeline without reinterpretation: the published bytes reparse,
+    /// revalidate, and re-encode identically.
+    #[test]
+    fn adapter_output_round_trips_canonical_publication() {
+        let input = canonical_pipeline_input();
+        let compiled = CiRoutePlanV1::compile(input).expect("adapter output compiles");
+        let bytes = compiled.canonical_json().expect("canonical bytes");
+        let reparsed: CiRoutePlanV1 = serde_json::from_slice(&bytes).expect("bytes reparse");
+        reparsed.validate().expect("reparsed plan validates against the domain validator");
+        assert_eq!(reparsed.canonical_json().expect("re-encode"), bytes);
+    }
+
+    /// The CLI handoff shape: serializing the adapter-produced compile
+    /// input to JSON and reparsing it (what `ci-route-plan compile` does
+    /// with the input file) preserves the semantic fingerprint and bytes.
+    #[test]
+    fn adapter_input_survives_the_cli_json_handoff() {
+        let input = canonical_pipeline_input();
+        let direct = CiRoutePlanV1::compile(input.clone()).expect("direct compile");
+        let json = serde_json::to_vec(&input).expect("serialize compile input");
+        let handed_off: CompileRoutePlanInput =
+            serde_json::from_slice(&json).expect("compile input reparses");
+        let through_handoff = CiRoutePlanV1::compile(handed_off).expect("handoff compile");
+        assert_eq!(through_handoff.semantic_fingerprint, direct.semantic_fingerprint);
+        assert_eq!(
+            through_handoff.canonical_json().expect("bytes"),
+            direct.canonical_json().expect("bytes")
+        );
+    }
+}
