@@ -1501,17 +1501,13 @@ fn accepted_ranges_overlap(
     if span > (a.unsupported_source_versions.len() + b.unsupported_source_versions.len()) as u64 {
         return true;
     }
-    let mut version = start.get();
-    loop {
+    for version in start.get()..=end.get() {
         let candidate = SchemaVersion::new(version);
         if a.accepts(candidate) && b.accepts(candidate) {
             return true;
         }
-        if version == end.get() {
-            return false;
-        }
-        version += 1;
     }
+    false
 }
 
 // ---------------------------------------------------------------------------
