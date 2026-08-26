@@ -188,9 +188,12 @@ survey the lane's worktree and remote head for unpushed state — uncommitted ed
 unpushed commits, a viable but unpublished candidate. What exists is evidence; do not
 discard it to make the ledger tidy.
 
-- push surviving work-in-progress to a named salvage branch immediately, or reuse the
-  lane's existing PR if it has one, so remote CI becomes the verification of record
-  rather than a local re-proof the quiet lane can no longer run;
+- push surviving work-in-progress to a named salvage branch and **open a salvage PR**
+  for it immediately — or reuse the lane's existing PR if it has one. The hosted
+  workflows validate pull requests and main, not arbitrary branch pushes, so a
+  branch-only push starts no hosted proof; without the PR, the claim retains
+  `NOT_PROVEN`. With the salvage PR open, remote CI becomes the verification of
+  record rather than a local re-proof the quiet lane can no longer run;
 - order relaunches by dependency-gate priority, not by which lane died first;
 - type the result as synthesized/salvaged, not `FAILED_NO_RETURN`.
 
