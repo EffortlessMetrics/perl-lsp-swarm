@@ -1144,11 +1144,22 @@ pub fn validate_observation(
     // Plane law: product, instrument, and cleanup observations stay separate;
     // the reporting plane is reserved for the generic reporting/receipt
     // owners and can never be emitted by this contract's actions.
-    let expected_plane = match action.class {
-        ActionClass::UserAction | ActionClass::Observation => ObservationPlane::Product,
-        ActionClass::CompanionControl | ActionClass::TestStimulus => ObservationPlane::Instrument,
-        ActionClass::HostHandoff => ObservationPlane::Cleanup,
-    };
+    let expected_plane =
+        if matches!(action.surface, SurfaceClassification::InstrumentOnlyHook { .. }) {
+            // Route-derived refinement: an action whose only helper surface is
+            // an instrument-only hook emits instrument-plane evidence even
+            // though its class is observational — the plane must reflect how
+            // the observation can actually be obtained, not the class alone.
+            ObservationPlane::Instrument
+        } else {
+            match action.class {
+                ActionClass::UserAction | ActionClass::Observation => ObservationPlane::Product,
+                ActionClass::CompanionControl | ActionClass::TestStimulus => {
+                    ObservationPlane::Instrument
+                }
+                ActionClass::HostHandoff => ObservationPlane::Cleanup,
+            }
+        };
     if observation.plane == ObservationPlane::Reporting {
         return Err(
             "the reporting plane is reserved for the generic reporting/receipt owners".to_string()

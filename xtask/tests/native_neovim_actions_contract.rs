@@ -82,11 +82,13 @@ fn compiled_vocabulary_validates_and_serves_the_issue_action_contract() -> Resul
         ensure!(*count >= 4, "family {family:?} carries only {count} actions");
     }
     // The issue's action-contract sections are the honest denominator until
-    // the #10888 BDD ledger lands: every named operation has an action.
-    for required in [
+    // the #10888 BDD ledger lands: every named operation has an action, and
+    // the enumeration must cover the complete compiled registry row-for-row.
+    let core_denominator: &[&str] = &[
         "neovim.native.host_session.start_isolated_host",
         "neovim.native.host_session.load_canonical_config",
         "neovim.native.host_session.open_buffer",
+        "neovim.native.host_session.edit_buffer",
         "neovim.native.host_session.write_buffer",
         "neovim.native.host_session.close_buffer",
         "neovim.native.host_session.reopen_buffer",
@@ -117,7 +119,14 @@ fn compiled_vocabulary_validates_and_serves_the_issue_action_contract() -> Resul
         "neovim.native.text_sync_lifecycle.held_work_barrier",
         "neovim.native.text_sync_lifecycle.root_add_remove",
         "neovim.native.text_sync_lifecycle.post_run_observation_handoff",
-    ] {
+    ];
+    ensure!(
+        core_denominator.len() == ACTIONS.len(),
+        "the denominator enumerates {} actions but the registry carries {}; keep them row-for-row",
+        core_denominator.len(),
+        ACTIONS.len()
+    );
+    for required in core_denominator {
         ensure!(contract::action_by_id(required).is_some(), "core set omits {required}");
     }
     let again = contract::validate_compiled_contract()?;
@@ -557,6 +566,31 @@ fn unknown_observation_fields_are_rejected_by_the_schema() -> Result<()> {
     let nested = serde_json::to_string(&nested)?;
     let parsed: std::result::Result<TypedObservation, _> = serde_json::from_str(&nested);
     ensure!(parsed.is_err(), "the observed effect admitted an unknown (private-data) field");
+
+    // The internally-tagged route and evidence payloads are closed as well:
+    // an extra field inside a tagged arm fails deserialization instead of
+    // being silently dropped (verified against the toolchain's serde).
+    let mut tagged = serde_json::from_str::<serde_json::Value>(&json)?;
+    if let Some(route) = tagged.get_mut("route").and_then(|value| value.as_object_mut()) {
+        route.insert("wire_dump".to_string(), serde_json::json!("textDocument/hover ..."));
+    }
+    let tagged = serde_json::to_string(&tagged)?;
+    let parsed: std::result::Result<TypedObservation, _> = serde_json::from_str(&tagged);
+    ensure!(parsed.is_err(), "the route payload admitted an unknown (private-data) field");
+
+    let mut evidence = serde_json::from_str::<serde_json::Value>(&json)?;
+    if let Some(first) =
+        evidence.get_mut("predicate_evidence").and_then(|value| value.as_array_mut())
+        && let Some(record) = first.first_mut().and_then(|value| value.as_object_mut())
+    {
+        record.insert("raw_payload".to_string(), serde_json::json!("my $x = 1;"));
+    }
+    let evidence = serde_json::to_string(&evidence)?;
+    let parsed: std::result::Result<TypedObservation, _> = serde_json::from_str(&evidence);
+    ensure!(
+        parsed.is_err(),
+        "the predicate-evidence payload admitted an unknown (private-data) field"
+    );
     Ok(())
 }
 
@@ -610,7 +644,26 @@ fn host_handoff_and_stimulus_channels_are_closed_vocabularies() -> Result<()> {
     let mut observation =
         valid_for("neovim.native.text_sync_lifecycle.post_run_observation_handoff")?;
     observation.route = ObservedRoute::HostHandoff { handoff: "spawn_with_deadline".to_string() };
-    assert_rejects(&observation, "closed handoff vocabulary")
+    assert_rejects(&observation, "closed handoff vocabulary")?;
+
+    // The stimulus channel is class-gated first (no core action is a
+    // stimulus; additive families may add them), so a stimulus route on an
+    // ordinary action rejects at the class law - and the closed vocabulary
+    // the gate protects is pinned here so an additive family cannot invent
+    // tokens the fake would happily bind.
+    let mut observation =
+        valid_for("neovim.native.text_sync_lifecycle.post_run_observation_handoff")?;
+    observation.route = ObservedRoute::TestStimulus { stimulus: "deliberate_stimulus".to_string() };
+    assert_rejects(&observation, "ordinary action")?;
+    ensure!(
+        contract::TEST_STIMULUS_TOKENS.contains(&"deliberate_stimulus"),
+        "the fake's stimulus token must stay inside the closed vocabulary"
+    );
+    ensure!(
+        !contract::TEST_STIMULUS_TOKENS.contains(&"locally_invented_stimulus"),
+        "the closed stimulus vocabulary must not admit invented tokens"
+    );
+    Ok(())
 }
 
 #[test]
@@ -640,10 +693,10 @@ fn stale_predicate_settlement_cannot_prove_a_current_result() -> Result<()> {
     // A predicate settled one document generation before the observation
     // snapshot cannot prove the current-generation result.
     let mut observation = valid_for("neovim.native.read_methods.wait_target_diagnostic_state")?;
-    if let Some(evidence) = observation.predicate_evidence.first_mut() {
-        if let PredicateEvidence::Satisfied { settled_generations, .. } = evidence {
-            settled_generations.document_generation -= 1;
-        }
+    if let Some(PredicateEvidence::Satisfied { settled_generations, .. }) =
+        observation.predicate_evidence.first_mut()
+    {
+        settled_generations.document_generation -= 1;
     }
     assert_rejects(&observation, "stale state cannot prove a current result")?;
 
@@ -743,7 +796,14 @@ fn instrument_hooks_need_their_exact_owner() -> Result<()> {
     let observation = valid_for("neovim.native.text_sync_lifecycle.held_work_barrier")?;
     let validated = contract::validate_observation(&observation)
         .map_err(|error| anyhow::anyhow!("instrument hook positive case failed: {error}"))?;
-    ensure!(validated.plane == ObservationPlane::Product);
+    // The plane derives from the instrument-only surface even though the
+    // action class is observational: how the observation can actually be
+    // obtained is load-bearing, not the class alone.
+    ensure!(validated.plane == ObservationPlane::Instrument);
+
+    let mut product_plane = observation.clone();
+    product_plane.plane = ObservationPlane::Product;
+    assert_rejects(&product_plane, "does not match action class")?;
 
     let mut wrong_owner = observation.clone();
     wrong_owner.route = ObservedRoute::InstrumentHook {
@@ -847,14 +907,20 @@ fn run_ordering_is_strictly_increasing() -> Result<()> {
 // Vocabulary-level negative controls (table mutations)
 // ---------------------------------------------------------------------------
 
-fn validate_with(mutation: impl FnOnce(&mut Vec<ActionSpec>) -> Result<()>) -> Result<()> {
+fn validate_with(
+    needle: &str,
+    mutation: impl FnOnce(&mut Vec<ActionSpec>) -> Result<()>,
+) -> Result<()> {
     let mut table = ACTIONS.to_vec();
     mutation(&mut table)?;
     match contract::validate_table(&table) {
         Ok(_) => bail!("mutated action table was accepted"),
         Err(error) => {
             let reason = error.to_string();
-            ensure!(!reason.is_empty(), "mutation rejected without a reason");
+            ensure!(
+                reason.contains(needle),
+                "wrong table rejection reason: {reason} (wanted something containing {needle})"
+            );
             Ok(())
         }
     }
@@ -884,16 +950,16 @@ static DUPLICATE_INPUTS: &[InputBinding] = &[
 
 #[test]
 fn duplicate_and_out_of_namespace_action_ids_fail_closed() -> Result<()> {
-    validate_with(|table| {
+    validate_with("duplicate action id", |table| {
         ensure!(table.len() >= 2, "vocabulary too small to duplicate");
         table[1].action_id = table[0].action_id;
         Ok(())
     })?;
-    validate_with(|table| {
+    validate_with("outside the", |table| {
         table[0].action_id = "coc.nvim.native.host_session.open_buffer";
         Ok(())
     })?;
-    validate_with(|table| {
+    validate_with("does not spell", |table| {
         table[0].action_id = "neovim.native.host_session.open.buffer";
         Ok(())
     })
@@ -901,7 +967,7 @@ fn duplicate_and_out_of_namespace_action_ids_fail_closed() -> Result<()> {
 
 #[test]
 fn family_token_mismatch_fails_closed() -> Result<()> {
-    validate_with(|table| {
+    validate_with("does not spell", |table| {
         let index = table
             .iter()
             .position(|spec| spec.family == ActionFamily::ReadMethods)
@@ -913,19 +979,19 @@ fn family_token_mismatch_fails_closed() -> Result<()> {
 
 #[test]
 fn api_and_native_surface_grammar_escapes_fail_closed() -> Result<()> {
-    validate_with(|table| {
+    validate_with("outside the Neovim grammar", |table| {
         table[0].api_uses = COC_API;
         Ok(())
     })?;
-    validate_with(|table| {
+    validate_with("outside the Neovim grammar", |table| {
         table[0].api_uses = INJECTED_API;
         Ok(())
     })?;
-    validate_with(|table| {
+    validate_with("outside the native editor grammar", |table| {
         table[0].native_surfaces = BAD_COMMAND;
         Ok(())
     })?;
-    validate_with(|table| {
+    validate_with("outside the native editor grammar", |table| {
         table[0].native_surfaces = LONG_KEYS;
         Ok(())
     })
@@ -933,7 +999,7 @@ fn api_and_native_surface_grammar_escapes_fail_closed() -> Result<()> {
 
 #[test]
 fn instrument_hook_without_justification_fails_closed() -> Result<()> {
-    validate_with(|table| {
+    validate_with("without justification and retirement", |table| {
         let index = table
             .iter()
             .position(|spec| !spec.instrument_hooks.is_empty())
@@ -946,24 +1012,24 @@ fn instrument_hook_without_justification_fails_closed() -> Result<()> {
 #[test]
 fn surface_classification_laws_fail_closed() -> Result<()> {
     // Version-scoped surface with a non-token scope.
-    validate_with(|table| {
+    validate_with("version scope", |table| {
         table[0].surface = SurfaceClassification::PublicVersionScoped { scope: "Neovim 0.11+" };
         Ok(())
     })?;
     // Instrument-only surface without any hook.
-    validate_with(|table| {
+    validate_with("cites no instrument hook", |table| {
         table[0].surface =
             SurfaceClassification::InstrumentOnlyHook { owner: "shared_host_execution_10894" };
         table[0].instrument_hooks = NO_HOOKS;
         Ok(())
     })?;
     // Companion surface on a non-companion action.
-    validate_with(|table| {
+    validate_with("not a companion-class action", |table| {
         table[0].surface = SurfaceClassification::CompanionProtocolControl;
         Ok(())
     })?;
     // Host handoff that stops failing closed.
-    validate_with(|table| {
+    validate_with("fail-closed behind #10894", |table| {
         let index = table
             .iter()
             .position(|spec| spec.class == contract::ActionClass::HostHandoff)
@@ -975,7 +1041,7 @@ fn surface_classification_laws_fail_closed() -> Result<()> {
 
 #[test]
 fn not_exposed_actions_can_never_admit_observed() -> Result<()> {
-    validate_with(|table| {
+    validate_with("can never claim an observed result", |table| {
         let index = table
             .iter()
             .position(|spec| spec.surface == SurfaceClassification::NotExposed)
@@ -987,7 +1053,7 @@ fn not_exposed_actions_can_never_admit_observed() -> Result<()> {
 
 #[test]
 fn zero_wait_budget_and_missing_not_proven_fail_closed() -> Result<()> {
-    validate_with(|table| {
+    validate_with("zero wait budget", |table| {
         let index = table
             .iter()
             .position(|spec| !spec.required_predicates.is_empty())
@@ -995,15 +1061,21 @@ fn zero_wait_budget_and_missing_not_proven_fail_closed() -> Result<()> {
         table[index].required_predicates = ZERO_BUDGET;
         Ok(())
     })?;
-    validate_with(|table| {
-        table[0].allowed_results = OBSERVED_ONLY;
+    validate_with("must admit not_proven", |table| {
+        // Point at a public action: the NotExposed row rejects OBSERVED_ONLY
+        // through its own law, which would mask this one.
+        let index = table
+            .iter()
+            .position(|spec| spec.surface == SurfaceClassification::PublicStable)
+            .context("vocabulary carries no public-stable action")?;
+        table[index].allowed_results = OBSERVED_ONLY;
         Ok(())
     })
 }
 
 #[test]
 fn duplicate_input_names_fail_closed() -> Result<()> {
-    validate_with(|table| {
+    validate_with("duplicate input", |table| {
         table[0].inputs = DUPLICATE_INPUTS;
         Ok(())
     })

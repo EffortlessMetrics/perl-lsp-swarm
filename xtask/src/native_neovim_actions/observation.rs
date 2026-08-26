@@ -27,7 +27,7 @@ use crate::client_compat_fixture::is_reason_token;
 /// Identity of the backend that produced the observation. The fake backend is
 /// a first-class test instrument, never confused with a real host adapter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "backend", rename_all = "snake_case")]
+#[serde(tag = "backend", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BackendIdentity {
     Fake,
     HostAdapter { adapter_digest: String },
@@ -70,7 +70,7 @@ impl ObservationResult {
 /// variant is representable precisely so mismatches can be detected rather
 /// than silently coerced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "route", rename_all = "snake_case")]
+#[serde(tag = "route", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ObservedRoute {
     /// A public stable Neovim API the action declared.
     PublicStableApi { api: String },
@@ -144,7 +144,7 @@ pub enum EffectClass {
 /// production observation itself) can be detected and rejected: expectations
 /// are independent, fixture-owned facts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExpectationSource {
     FixtureAuthority,
     ObservedOutput,

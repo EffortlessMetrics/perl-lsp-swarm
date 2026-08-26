@@ -251,10 +251,16 @@ pub fn observation_for(
         _ => Some("fake_backend_limitation".to_string()),
     };
 
-    let plane = match action.class {
-        ActionClass::UserAction | ActionClass::Observation => ObservationPlane::Product,
-        ActionClass::CompanionControl | ActionClass::TestStimulus => ObservationPlane::Instrument,
-        ActionClass::HostHandoff => ObservationPlane::Cleanup,
+    let plane = if matches!(action.surface, SurfaceClassification::InstrumentOnlyHook { .. }) {
+        ObservationPlane::Instrument
+    } else {
+        match action.class {
+            ActionClass::UserAction | ActionClass::Observation => ObservationPlane::Product,
+            ActionClass::CompanionControl | ActionClass::TestStimulus => {
+                ObservationPlane::Instrument
+            }
+            ActionClass::HostHandoff => ObservationPlane::Cleanup,
+        }
     };
 
     Ok(TypedObservation {

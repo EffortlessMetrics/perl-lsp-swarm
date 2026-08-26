@@ -147,7 +147,7 @@ pub enum SubstitutionKind {
 
 /// Typed evidence for one predicate wait.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "evidence", rename_all = "snake_case")]
+#[serde(tag = "evidence", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PredicateEvidence {
     /// The named state was observed. The settling state is named by a
     /// bounded digest (elapsed time alone cannot be satisfaction), with the
