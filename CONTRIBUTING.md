@@ -54,10 +54,14 @@ just clippy-cached    # lint
 
 These route through `scripts/cargo-safe`, which sets
 `CARGO_TARGET_DIR`/`CARGO_HOME` under
-`${XDG_CACHE_HOME:-$HOME/.cache}/devplane/<repo>`, wraps `rustc` in
+`${XDG_CACHE_HOME:-$HOME/.cache}/devplane/<checkout-name>`, wraps `rustc` in
 `sccache`, and exports `SCCACHE_BASEDIRS=<worktree parent>` so sibling
-worktrees share compiler output. The manual equivalent for tools that bypass
-`just` (IDE rust-analyzer tasks):
+worktrees share compiler output. Scope note: the devplane is keyed per
+checkout directory name, so cross-worktree sharing comes from sccache by
+default; to share one full `target/` across worktrees, pin a common root
+explicitly (`DEVPLANE=<common-root>/devplane just pr-fast-cached`) and rely
+on cargo-safe's bounded flock for build serialization. The manual equivalent
+for tools that bypass `just` (IDE rust-analyzer tasks):
 
 ```bash
 export CARGO_TARGET_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/devplane/perl-lsp-swarm/target"

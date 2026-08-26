@@ -45,8 +45,10 @@ agent-pr-fast:
 # These cached recipes route through scripts/cargo-safe, which redirects
 # CARGO_TARGET_DIR/CARGO_HOME into the per-user devplane, wraps rustc in
 # sccache, and sets SCCACHE_BASEDIRS to the worktree parent so sibling
-# worktrees share compiler output. They are the documented default for local
-# multi-worktree development — see CONTRIBUTING.md "Shared build cache".
+# worktrees share compiler output. Cross-worktree sharing is sccache-based by
+# default (devplane keyed per checkout name); pin DEVPLANE explicitly for one
+# full shared target/ across worktrees. They are the documented default for
+# local multi-worktree development — see CONTRIBUTING.md "Shared build cache".
 
 # PR-fast gate through the shared devplane cache (multi-worktree default).
 pr-fast-cached: _check-tools-basic

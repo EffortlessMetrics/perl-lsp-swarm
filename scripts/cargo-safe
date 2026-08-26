@@ -57,7 +57,7 @@ fi
 heavy="${1:-}"
 
 case "$heavy" in
-  build|check|test|run|bench|doc|clippy|nextest)
+  build|check|test|run|bench|doc|clippy|nextest|xtask)
     check_disk "$devplane"
 
     if command -v flock >/dev/null 2>&1; then
