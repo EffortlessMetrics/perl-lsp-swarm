@@ -51,6 +51,10 @@ jobs:
           shared-key: corpus-windows-reparse-proof-${{ hashFiles('Cargo.lock') }}
 
       - name: Run non-skipping Windows reparse proof
+        env:
+          # The proof must never be certified by a typed privilege skip: on
+          # an unprivileged runner the helper hard-fails instead (#12567).
+          PLSW_REQUIRE_SYMLINK_PRIVILEGE: "1"
         run: >-
           cargo test --locked -p perl-corpus
           --test strict_sectioned_loading

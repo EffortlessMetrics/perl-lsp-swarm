@@ -38,11 +38,48 @@ use std::path::Path;
 
 const PRIVILEGE_NOT_HELD: i32 = 1314;
 
+/// Environment flag that turns the typed skip into a hard failure.
+///
+/// Proof surfaces (CI workflows that run a reparse-rejection test as a
+/// non-skipping proof) set this variable so an unprivileged runner fails
+/// loudly instead of reporting a vacuous pass ([#12567]).
+pub const REQUIRE_SYMLINK_PRIVILEGE_ENV: &str = "PLSW_REQUIRE_SYMLINK_PRIVILEGE";
+
+#[cfg(windows)]
+fn skips_are_forbidden() -> bool {
+    match std::env::var(REQUIRE_SYMLINK_PRIVILEGE_ENV) {
+        Ok(value) => !value.is_empty() && value != "0",
+        Err(_) => false,
+    }
+}
+
 /// Reports whether the raw OS error is the Windows "privilege not held"
 /// condition for symbolic-link creation.
 #[cfg(windows)]
 fn is_privilege_not_held(error: &io::Error) -> bool {
     error.raw_os_error() == Some(PRIVILEGE_NOT_HELD)
+}
+
+/// Pure skip decision: hard failure when proof surfaces forbid skipping,
+/// visible typed skip otherwise.
+#[cfg(windows)]
+fn privilege_skip_decision(forbid_skips: bool, what: &str) -> io::Result<Option<()>> {
+    if forbid_skips {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{what} requires SeCreateSymbolicLinkPrivilege and \
+                 {REQUIRE_SYMLINK_PRIVILEGE_ENV} forbids skipping; enable Developer Mode, \
+                 run elevated, or unset the variable for local development"
+            ),
+        ));
+    }
+    eprintln!(
+        "skipping: Windows session lacks SeCreateSymbolicLinkPrivilege \
+         (os error {PRIVILEGE_NOT_HELD}); enable Developer Mode or run elevated to \
+         execute this test"
+    );
+    Ok(None)
 }
 
 /// Creates a file symlink on Windows, or skips with a visible note.
@@ -58,12 +95,7 @@ pub fn try_create_file_symlink(original: &Path, link: &Path) -> io::Result<Optio
     match std::os::windows::fs::symlink_file(original, link) {
         Ok(()) => Ok(Some(())),
         Err(error) if is_privilege_not_held(&error) => {
-            eprintln!(
-                "skipping: Windows session lacks SeCreateSymbolicLinkPrivilege \
-                 (os error {PRIVILEGE_NOT_HELD}); enable Developer Mode or run \
-                 elevated to execute this test"
-            );
-            Ok(None)
+            privilege_skip_decision(skips_are_forbidden(), "file symlink")
         }
         Err(error) => Err(error),
     }
@@ -78,12 +110,7 @@ pub fn try_create_dir_symlink(original: &Path, link: &Path) -> io::Result<Option
     match std::os::windows::fs::symlink_dir(original, link) {
         Ok(()) => Ok(Some(())),
         Err(error) if is_privilege_not_held(&error) => {
-            eprintln!(
-                "skipping: Windows session lacks SeCreateSymbolicLinkPrivilege \
-                 (os error {PRIVILEGE_NOT_HELD}); enable Developer Mode or run \
-                 elevated to execute this test"
-            );
-            Ok(None)
+            privilege_skip_decision(skips_are_forbidden(), "dir symlink")
         }
         Err(error) => Err(error),
     }
@@ -131,6 +158,24 @@ mod tests {
             Some(PRIVILEGE_NOT_HELD),
             "unexpected 1314; the probe path should fail with the system error instead"
         );
+        Ok(())
+    }
+
+    /// Proof surfaces set REQUIRE_SYMLINK_PRIVILEGE_ENV: the skip decision
+    /// then hard-fails so an unprivileged runner can never certify a
+    /// non-skipping proof with a vacuous pass. Pure-decision pins cover both
+    /// branches deterministically without process-global env mutation.
+    #[test]
+    fn require_privilege_mode_forbids_the_typed_skip() -> anyhow::Result<()> {
+        let forced = privilege_skip_decision(true, "file symlink")
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("forbidden skips must be a hard failure"))?;
+        assert!(
+            format!("{forced}").contains(REQUIRE_SYMLINK_PRIVILEGE_ENV),
+            "failure must name the requirement variable: {forced}"
+        );
+        let skipped = privilege_skip_decision(false, "file symlink")?;
+        assert!(skipped.is_none(), "without the requirement the helper performs the typed skip");
         Ok(())
     }
 }
