@@ -178,8 +178,9 @@ in the receipt.
 The check excludes merge commits from the target-unique row population and
 records their ancestry (subject and parents) in the receipt's
 `excluded_merge_ancestry`. Every other `+` result from
-`git cherry <source> <target> <boundary>` requires a ledger row with one of
-these classifications:
+`git cherry <source> <target> <boundary>` requires a ledger row carrying either
+one of these terminal dispositions or an explicit unresolved row
+(`disposition: null`) that forces the `blocked` verdict:
 
 ```text
 port_to_swarm
@@ -204,10 +205,52 @@ ref, and the resolved full object id; the receipt is byte-deterministic
 across runs against the same repository, and the ledger identity fields must
 equal the resolved source, boundary, and target object ids exactly.
 `release_lineage_only` is an explicit exclusion, not an implicit escape hatch.
-Missing rows, unclassified rows, invalid classifications, missing evidence, or
-ledger rows that are not target-unique non-merge commits fail the command. The
-JSON receipt records the target-unique commits and their classifications so a
-promotion can be audited after the source tree is replaced.
+Missing rows, invalid classifications, missing evidence, or ledger rows that
+are not target-unique non-merge commits fail the command. The JSON receipt
+records the target-unique commits, their classifications, the derived verdict,
+and the population digest so a promotion can be audited after the source tree
+is replaced.
+
+#### Reconciliation ledger v2 validation
+
+The ledger is a typed document whose unknown fields fail closed. Its
+`population_digest` must equal the checker's recomputed digest over the sorted
+target-unique non-merge population (SHA-256 over `<commit> <subject>` lines);
+any drift fails the ledger as stale. Each entry declares its changed paths,
+which are verified against `git diff-tree` when present, plus one disposition
+and its supporting fields. The load-bearing rules:
+
+- `port_to_swarm` and `already_equivalent_in_swarm` require `source_commit`
+  to resolve to a commit reachable from the declared swarm source;
+  planned-but-unmerged ports and unreachable equivalent SHAs fail closed.
+- `superseded_by_newer_architecture` must name the current architecture owner
+  (`owner`); `deliberately_abandoned` must state the rejected behavior and
+  rationale (`rationale`).
+- `release_lineage_only` cannot cover runtime, product, or test work: any
+  changed path under `src/`, `lib/`, `bin/`, `t/`, `tests/` (or with an
+  `.rs`/`.c`/`.h`/`.hpp`/`.cpp`/`.pm`/`.pl`/`.t` extension) fails.
+- Every terminal disposition requires nonempty evidence; a terminal row may
+  not also carry `blocking_decisions`, because an unresolved decision is not
+  a sixth successful disposition.
+- A row with `disposition: null` is an explicitly unresolved row; top-level
+  `blockers` carry open decisions outside entries. Either forces the
+  `blocked` verdict and keeps the row out of `accepted_commits`.
+
+The command emits one deterministic verdict in the receipt: `pass` (exit 0),
+`blocked` (well-formed but carrying unresolved decisions; nonzero), or
+`not_proven` (malformed, stale, contradictory, unevidenced, or
+population-drifted claims; nonzero). A ledger that declares a `verdict`
+disagreeing with the derived one fails as not proven. `scaffold` writes the
+starting skeleton — one unresolved row per computed commit with real subjects
+and changed paths and no invented terminal disposition:
+
+```bash
+cargo xtask sync-divergence scaffold \
+  --source <exact-prepared-swarm-commit> \
+  --boundary <completed-reconciliation-boundary> \
+  --target <release-repository-head> \
+  --ledger docs/swarm/source-syncs/<sync>-reconciliation.json
+```
 
 **Reconciling accumulated perl-lsp-unique work.** When `perl-lsp/master` has
 drifted ahead with parallel work (release-lineage aside), identify the genuine
