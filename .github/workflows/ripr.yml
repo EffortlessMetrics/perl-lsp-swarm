@@ -25,6 +25,37 @@
 #   - pull_request runs also record github.event.pull_request.head.sha as
 #     PR_HEAD_SHA, separately from the evaluated merge ref. merge_group runs leave
 #     PR_HEAD_SHA empty because a queue ref may contain multiple PRs.
+#
+# RUNNER-SHUTDOWN-CANCELLATION resilience (#6807, #12563, umbrella escalation
+# https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11869#issuecomment-5421241568):
+# GitHub-hosted runners are intermittently evicted mid-analysis ("The runner
+# has received a shutdown signal", exit 143) with zero test failures in the
+# killed logs. The hosted lane therefore retries CANCELLATION-CLASS outcomes
+# only: a retry job chains after its predecessor exactly when the predecessor
+# concluded 'cancelled' AND did not trip the lane's self-enforced
+# TIMEOUT-BUDGET. At most two retries (three attempts total, escalating 120s /
+# 180s backoff); a third consecutive cancellation fails the gate while naming
+# the RUNNER-SHUTDOWN-CANCELLATION incident class explicitly.
+#
+# Why timeouts can never enter the retry class: needs.<job>.result exposes no
+# timed_out value (docs list only success/failure/cancelled/skipped), so a
+# platform timeout could surface as 'cancelled'. Each hosted attempt therefore
+# enforces its own 2400s TIMEOUT-BUDGET strictly below the 45m platform
+# timeout via GNU timeout wrappers and records a deadline marker; exhaustion
+# becomes an explicit non-retried failure. Any 'cancelled' conclusion thus
+# predates both budgets and means runner shutdown / external cancellation,
+# never timeout-as-cover. Semantic failures (test failures, red gap
+# attribution, lint findings) conclude as 'failure' and stop the chain
+# immediately with zero retries — a red verdict can never become green by
+# retrying. Every retry is visible: attempt counters in job names, step logs,
+# ::warning:: annotations, artifact-name rerun identity, and the aggregator
+# summary lines.
+#
+# Known residual: only the cargo xtask analysis commands are budget-guarded;
+# a catastrophic hang in pre-analysis steps (checkout/cache/install) can still
+# reach the 45m platform timer and be retried. That residual covers a hung
+# runner environment (infra recovery), never an analysis that exceeded its
+# own measured budget.
 
 name: ripr
 
@@ -697,12 +728,71 @@ jobs:
       needs.route-ripr.outputs.fallback_allowed == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    outputs:
+      lane_started: ${{ steps.lane_start.outputs.lane_started }}
+      deadline_exceeded: ${{ steps.classify.outputs.deadline_exceeded }}
     env:
       RIPR_VERSION: "0.9.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
     steps:
+      - name: Mark hosted lane start
+        id: lane_start
+        shell: bash
+        env:
+          RIPR_ATTEMPT: "1"
+        run: |
+          set -euo pipefail
+          # RUNNER-SHUTDOWN-CANCELLATION resilience (#6807). Record when this
+          # attempt started, derive its self-enforced TIMEOUT-BUDGET deadline
+          # (2400s from lane start, strictly below the 45m platform timeout so
+          # a genuine timeout can never surface as an ambiguous 'cancelled'),
+          # and install the lane_run guard used by the analysis steps below.
+          echo "lane_started=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::ripr+ hosted lane attempt ${RIPR_ATTEMPT}/3 starting (RUNNER-SHUTDOWN-CANCELLATION resilience active, #6807)"
+          lane_start_epoch="$(date +%s)"
+          echo "LANE_START_EPOCH=${lane_start_epoch}" >> "$GITHUB_ENV"
+          echo "RIPR_LANE_DEADLINE_EPOCH=$((lane_start_epoch + 2400))" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/ripr-hosted-lane"
+          cat > "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh" <<'RIPR_DEADLINE_EOF'
+          # TIMEOUT-BUDGET discriminator (#6807): run a command under GNU
+          # timeout with whatever remains of this attempt's self-enforced
+          # budget. Exit classes:
+          #   0     command succeeded
+          #   124   our budget expired -> deadline marker + rc 90 (never retried)
+          #   other passed through untouched (semantic failure or external signal;
+          #         runner shutdown lands here as process death, job conclusion
+          #         stays 'cancelled', and the retry chain consumes it)
+          lane_run() {
+            local label="$1"
+            shift
+            local now remaining rc
+            if [ -z "${RIPR_LANE_DEADLINE_EPOCH:-}" ]; then
+              echo "::error::[TIMEOUT-BUDGET] ${label}: RIPR_LANE_DEADLINE_EPOCH is unset; refusing to run unguarded"
+              return 90
+            fi
+            now="$(date +%s)"
+            remaining=$((RIPR_LANE_DEADLINE_EPOCH - now))
+            if [ "$remaining" -le 60 ]; then
+              echo "::error::[TIMEOUT-BUDGET] ${label}: hosted-lane budget exhausted before start (${remaining}s left of 2400s); classified TIMEOUT-BUDGET, NOT runner-shutdown-cancellation; not retried"
+              : > "$RUNNER_TEMP/ripr-hosted-deadline-exceeded"
+              return 90
+            fi
+            echo "[deadline] ${label}: ${remaining}s of the 2400s hosted-lane budget remain"
+            set +e
+            timeout --kill-after=30s "${remaining}s" "$@"
+            rc=$?
+            set -e
+            if [ "$rc" -eq 124 ]; then
+              echo "::error::[TIMEOUT-BUDGET] ${label}: exceeded the self-enforced 2400s hosted-lane budget; classified TIMEOUT-BUDGET, NOT runner-shutdown-cancellation; not retried"
+              : > "$RUNNER_TEMP/ripr-hosted-deadline-exceeded"
+              return 90
+            fi
+            return "$rc"
+          }
+          RIPR_DEADLINE_EOF
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -740,43 +830,69 @@ jobs:
       - name: Run ripr doctor
         run: ripr doctor
 
+      # Every cargo xtask analysis invocation below runs under the lane_run
+      # guard so budget exhaustion becomes an explicit TIMEOUT-BUDGET failure
+      # instead of drifting into the platform timeout's ambiguous conclusion.
       - name: Generate PR evidence
-        run: cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA"
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate PR evidence" cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA"
 
       - name: Generate repo-wide RIPR+ baseline receipt
         if: always()
-        run: cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate repo-wide baseline receipt" cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
 
       - name: Generate review guidance
         if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate review guidance" cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
 
       - name: Generate impacted evidence
         if: always()
-        run: cargo xtask impacted-evidence --labels-csv "$PR_LABELS"
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate impacted evidence" cargo xtask impacted-evidence --labels-csv "$PR_LABELS"
 
       - name: Generate PR evidence summary
         if: always()
-        run: cargo xtask ripr-pr-summary
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate PR evidence summary" cargo xtask ripr-pr-summary
 
       - name: Generate warning annotations
         if: always()
-        run: cargo xtask ripr-annotations
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate warning annotations" cargo xtask ripr-annotations
 
       - name: Validate PR evidence contracts
         if: always()
+        shell: bash
         run: |
-          cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
-          cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-          cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
-          cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
-          cargo xtask ripr-pr-summary --check
-          cargo xtask ripr-annotations --check
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Validate ripr-pr contract" cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
+          lane_run "Validate ripr-plus contract" cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
+          lane_run "Validate review-comments contract" cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
+          lane_run "Validate impacted-evidence contract" cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
+          lane_run "Validate pr-summary contract" cargo xtask ripr-pr-summary --check
+          lane_run "Validate annotations contract" cargo xtask ripr-annotations --check
 
       - name: Enforce new RIPR gap quality gate
         if: always()
+        shell: bash
         run: |
-          cargo xtask quality-gate \
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Evaluate quality gate" \
+            cargo xtask quality-gate \
             --mode enforce-new-ripr \
             --ripr-receipt target/receipts/quality/ripr-plus.json \
             --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
@@ -785,7 +901,8 @@ jobs:
             --ripr-head HEAD \
             --receipt target/receipts/quality/quality-gate-ripr.json \
             --summary target/receipts/quality/quality-gate-ripr.md
-          cargo xtask quality-gate \
+          lane_run "Re-check quality gate receipt" \
+            cargo xtask quality-gate \
             --mode enforce-new-ripr \
             --ripr-receipt target/receipts/quality/ripr-plus.json \
             --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
@@ -829,6 +946,574 @@ jobs:
             target/receipts/quality/quality-gate-ripr.md
           retention-days: 14
           if-no-files-found: error
+
+      - name: Classify hosted lane outcome
+        id: classify
+        if: always()
+        shell: bash
+        env:
+          RIPR_ATTEMPT: "1"
+        run: |
+          set -euo pipefail
+          # Terminal classification for retry gating (#6807). Only a
+          # self-enforced TIMEOUT-BUDGET trip sets deadline_exceeded=true;
+          # such failures are visible, named, and never retried. Runner
+          # shutdowns leave the marker absent and conclude as 'cancelled',
+          # which the retry chain consumes.
+          if [ -f "$RUNNER_TEMP/ripr-hosted-deadline-exceeded" ]; then
+            echo "deadline_exceeded=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### ripr+ hosted lane outcome (attempt ${RIPR_ATTEMPT}/3)"
+              echo ""
+              echo "- Outcome: \`TIMEOUT-BUDGET\` — the self-enforced 2400s lane budget was exceeded."
+              echo "- This failure is deliberately NOT retried (timeouts never enter the cancellation-retry class)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::ripr+ hosted lane classified TIMEOUT-BUDGET; no retry will be attempted (#6807)."
+          else
+            echo "deadline_exceeded=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Retry chain (#6807): each retry chains ONLY on its predecessor's
+  # cancellation-class outcome ('cancelled' with no TIMEOUT-BUDGET marker).
+  # Semantic failures conclude as 'failure' and stop the chain with zero
+  # retries; a third consecutive cancellation is escalated by the aggregator
+  # as an exhausted RUNNER-SHUTDOWN-CANCELLATION incident.
+  ripr-github-retry-1:
+    name: ripr+ on GitHub Hosted (retry 1/2)
+    needs:
+      - route-ripr
+      - ripr-github
+    if: >-
+      always() &&
+      needs.route-ripr.result == 'success' &&
+      needs.route-ripr.outputs.target == 'github' &&
+      needs.route-ripr.outputs.fallback_allowed == 'true' &&
+      needs.ripr-github.result == 'cancelled' &&
+      needs.ripr-github.outputs.deadline_exceeded != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      lane_started: ${{ steps.lane_start.outputs.lane_started }}
+      deadline_exceeded: ${{ steps.classify.outputs.deadline_exceeded }}
+    env:
+      RIPR_VERSION: "0.9.0"
+      BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
+      PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+      PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
+    steps:
+      - name: Backoff before hosted retry
+        shell: bash
+        env:
+          RIPR_ATTEMPT: "2"
+          RIPR_BACKOFF_SECONDS: "120"
+        run: |
+          set -euo pipefail
+          # Visible retry receipt (#6807): every attempt must be traceable in
+          # logs. The backoff also lets a flapping runner pool settle before
+          # the next attempt claims capacity.
+          echo "::warning::RUNNER-SHUTDOWN-CANCELLATION recovery: prior ripr+ GitHub-hosted attempt ended 'cancelled' with no proof for this SHA (incident class RUNNER-SHUTDOWN-CANCELLATION). Starting attempt ${RIPR_ATTEMPT}/3 after ${RIPR_BACKOFF_SECONDS}s backoff (#6807)."
+          sleep "${RIPR_BACKOFF_SECONDS}"
+
+      - name: Mark hosted lane start
+        id: lane_start
+        shell: bash
+        env:
+          RIPR_ATTEMPT: "2"
+        run: |
+          set -euo pipefail
+          # RUNNER-SHUTDOWN-CANCELLATION resilience (#6807). Record when this
+          # attempt started, derive its self-enforced TIMEOUT-BUDGET deadline
+          # (2400s from lane start, strictly below the 45m platform timeout so
+          # a genuine timeout can never surface as an ambiguous 'cancelled'),
+          # and install the lane_run guard used by the analysis steps below.
+          # The backoff step above runs before this clock starts.
+          echo "lane_started=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::ripr+ hosted lane attempt ${RIPR_ATTEMPT}/3 starting (RUNNER-SHUTDOWN-CANCELLATION resilience active, #6807)"
+          lane_start_epoch="$(date +%s)"
+          echo "LANE_START_EPOCH=${lane_start_epoch}" >> "$GITHUB_ENV"
+          echo "RIPR_LANE_DEADLINE_EPOCH=$((lane_start_epoch + 2400))" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/ripr-hosted-lane"
+          cat > "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh" <<'RIPR_DEADLINE_EOF'
+          # TIMEOUT-BUDGET discriminator (#6807): run a command under GNU
+          # timeout with whatever remains of this attempt's self-enforced
+          # budget. Exit classes:
+          #   0     command succeeded
+          #   124   our budget expired -> deadline marker + rc 90 (never retried)
+          #   other passed through untouched (semantic failure or external signal;
+          #         runner shutdown lands here as process death, job conclusion
+          #         stays 'cancelled', and the retry chain consumes it)
+          lane_run() {
+            local label="$1"
+            shift
+            local now remaining rc
+            if [ -z "${RIPR_LANE_DEADLINE_EPOCH:-}" ]; then
+              echo "::error::[TIMEOUT-BUDGET] ${label}: RIPR_LANE_DEADLINE_EPOCH is unset; refusing to run unguarded"
+              return 90
+            fi
+            now="$(date +%s)"
+            remaining=$((RIPR_LANE_DEADLINE_EPOCH - now))
+            if [ "$remaining" -le 60 ]; then
+              echo "::error::[TIMEOUT-BUDGET] ${label}: hosted-lane budget exhausted before start (${remaining}s left of 2400s); classified TIMEOUT-BUDGET, NOT runner-shutdown-cancellation; not retried"
+              : > "$RUNNER_TEMP/ripr-hosted-deadline-exceeded"
+              return 90
+            fi
+            echo "[deadline] ${label}: ${remaining}s of the 2400s hosted-lane budget remain"
+            set +e
+            timeout --kill-after=30s "${remaining}s" "$@"
+            rc=$?
+            set -e
+            if [ "$rc" -eq 124 ]; then
+              echo "::error::[TIMEOUT-BUDGET] ${label}: exceeded the self-enforced 2400s hosted-lane budget; classified TIMEOUT-BUDGET, NOT runner-shutdown-cancellation; not retried"
+              : > "$RUNNER_TEMP/ripr-hosted-deadline-exceeded"
+              return 90
+            fi
+            return "$rc"
+          }
+          RIPR_DEADLINE_EOF
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Toolchain (rust-toolchain.toml pins 1.95.0)
+        run: rustc --version
+
+      - name: Normalize base ref
+        shell: bash
+        run: |
+          # merge_group.base_ref is a full ref ("refs/heads/main"); strip prefix
+          # so subsequent steps that use $BASE_REF pass just the branch name.
+          stripped="${BASE_REF#refs/heads/}"
+          echo "BASE_REF=$stripped" >> "$GITHUB_ENV"
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+          shared-key: ripr-${{ env.RIPR_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Install ripr
+        run: cargo install ripr --version "$RIPR_VERSION" --locked
+
+      - name: Run ripr doctor
+        run: ripr doctor
+
+      # Every cargo xtask analysis invocation below runs under the lane_run
+      # guard so budget exhaustion becomes an explicit TIMEOUT-BUDGET failure
+      # instead of drifting into the platform timeout's ambiguous conclusion.
+      - name: Generate PR evidence
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate PR evidence" cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA"
+
+      - name: Generate repo-wide RIPR+ baseline receipt
+        if: always()
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate repo-wide baseline receipt" cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+
+      - name: Generate review guidance
+        if: always()
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate review guidance" cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
+
+      - name: Generate impacted evidence
+        if: always()
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate impacted evidence" cargo xtask impacted-evidence --labels-csv "$PR_LABELS"
+
+      - name: Generate PR evidence summary
+        if: always()
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate PR evidence summary" cargo xtask ripr-pr-summary
+
+      - name: Generate warning annotations
+        if: always()
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate warning annotations" cargo xtask ripr-annotations
+
+      - name: Validate PR evidence contracts
+        if: always()
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Validate ripr-pr contract" cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
+          lane_run "Validate ripr-plus contract" cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
+          lane_run "Validate review-comments contract" cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
+          lane_run "Validate impacted-evidence contract" cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
+          lane_run "Validate pr-summary contract" cargo xtask ripr-pr-summary --check
+          lane_run "Validate annotations contract" cargo xtask ripr-annotations --check
+
+      - name: Enforce new RIPR gap quality gate
+        if: always()
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Evaluate quality gate" \
+            cargo xtask quality-gate \
+            --mode enforce-new-ripr \
+            --ripr-receipt target/receipts/quality/ripr-plus.json \
+            --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
+            --review-receipt target/ripr/review/comments.json \
+            --ripr-base "origin/$BASE_REF" \
+            --ripr-head HEAD \
+            --receipt target/receipts/quality/quality-gate-ripr.json \
+            --summary target/receipts/quality/quality-gate-ripr.md
+          lane_run "Re-check quality gate receipt" \
+            cargo xtask quality-gate \
+            --mode enforce-new-ripr \
+            --ripr-receipt target/receipts/quality/ripr-plus.json \
+            --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
+            --review-receipt target/ripr/review/comments.json \
+            --ripr-base "origin/$BASE_REF" \
+            --ripr-head HEAD \
+            --receipt target/receipts/quality/quality-gate-ripr.json \
+            --summary target/receipts/quality/quality-gate-ripr.md \
+            --check
+
+      - name: Append PR evidence summary
+        if: always()
+        shell: bash
+        run: |
+          echo "ripr+ hosted lane: attempt 2/3 (cancellation-retry, #6807)" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f target/ripr/pr/summary.md ]; then
+            cat target/ripr/pr/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No RIPR PR evidence summary was produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f target/receipts/quality/quality-gate-ripr.md ]; then
+            printf '\n' >> "$GITHUB_STEP_SUMMARY"
+            cat target/receipts/quality/quality-gate-ripr.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No RIPR quality-gate summary was produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f target/ripr/review/annotations.txt ]; then
+            cat target/ripr/review/annotations.txt
+          fi
+
+      - name: Upload ripr PR evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: ripr-pr-evidence-retry-1
+          path: |
+            target/ripr/pr/**
+            target/ripr/review/**
+            target/xtask/impacted-evidence/**
+            target/receipts/quality/ripr-plus.json
+            target/receipts/quality/quality-gate-ripr.json
+            target/receipts/quality/quality-gate-ripr.md
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Classify hosted lane outcome
+        id: classify
+        if: always()
+        shell: bash
+        env:
+          RIPR_ATTEMPT: "2"
+        run: |
+          set -euo pipefail
+          # Terminal classification for retry gating (#6807). Only a
+          # self-enforced TIMEOUT-BUDGET trip sets deadline_exceeded=true;
+          # such failures are visible, named, and never retried. Runner
+          # shutdowns leave the marker absent and conclude as 'cancelled',
+          # which the retry chain consumes.
+          if [ -f "$RUNNER_TEMP/ripr-hosted-deadline-exceeded" ]; then
+            echo "deadline_exceeded=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### ripr+ hosted lane outcome (attempt ${RIPR_ATTEMPT}/3)"
+              echo ""
+              echo "- Outcome: \`TIMEOUT-BUDGET\` — the self-enforced 2400s lane budget was exceeded."
+              echo "- This failure is deliberately NOT retried (timeouts never enter the cancellation-retry class)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::ripr+ hosted lane classified TIMEOUT-BUDGET; no retry will be attempted (#6807)."
+          else
+            echo "deadline_exceeded=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Final cancellation-retry attempt (#6807). If this also concludes
+  # 'cancelled', no proof exists for the SHA and the aggregator fails the gate
+  # while naming the RUNNER-SHUTDOWN-CANCELLATION incident class explicitly.
+  ripr-github-retry-2:
+    name: ripr+ on GitHub Hosted (retry 2/2)
+    needs:
+      - route-ripr
+      - ripr-github-retry-1
+    if: >-
+      always() &&
+      needs.route-ripr.result == 'success' &&
+      needs.route-ripr.outputs.target == 'github' &&
+      needs.route-ripr.outputs.fallback_allowed == 'true' &&
+      needs.ripr-github-retry-1.result == 'cancelled' &&
+      needs.ripr-github-retry-1.outputs.deadline_exceeded != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      lane_started: ${{ steps.lane_start.outputs.lane_started }}
+      deadline_exceeded: ${{ steps.classify.outputs.deadline_exceeded }}
+    env:
+      RIPR_VERSION: "0.9.0"
+      BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
+      PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+      PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
+    steps:
+      - name: Backoff before hosted retry
+        shell: bash
+        env:
+          RIPR_ATTEMPT: "3"
+          RIPR_BACKOFF_SECONDS: "180"
+        run: |
+          set -euo pipefail
+          # Visible retry receipt (#6807): every attempt must be traceable in
+          # logs. This is the last permitted attempt; another cancellation
+          # escalates as an exhausted RUNNER-SHUTDOWN-CANCELLATION incident.
+          echo "::warning::RUNNER-SHUTDOWN-CANCELLATION recovery: prior ripr+ GitHub-hosted attempts ended 'cancelled' with no proof for this SHA (incident class RUNNER-SHUTDOWN-CANCELLATION). Starting FINAL attempt ${RIPR_ATTEMPT}/3 after ${RIPR_BACKOFF_SECONDS}s backoff (#6807); a further cancellation exhausts the retry budget."
+          sleep "${RIPR_BACKOFF_SECONDS}"
+
+      - name: Mark hosted lane start
+        id: lane_start
+        shell: bash
+        env:
+          RIPR_ATTEMPT: "3"
+        run: |
+          set -euo pipefail
+          # RUNNER-SHUTDOWN-CANCELLATION resilience (#6807). Record when this
+          # attempt started, derive its self-enforced TIMEOUT-BUDGET deadline
+          # (2400s from lane start, strictly below the 45m platform timeout so
+          # a genuine timeout can never surface as an ambiguous 'cancelled'),
+          # and install the lane_run guard used by the analysis steps below.
+          # The backoff step above runs before this clock starts.
+          echo "lane_started=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::ripr+ hosted lane attempt ${RIPR_ATTEMPT}/3 starting (RUNNER-SHUTDOWN-CANCELLATION resilience active, #6807)"
+          lane_start_epoch="$(date +%s)"
+          echo "LANE_START_EPOCH=${lane_start_epoch}" >> "$GITHUB_ENV"
+          echo "RIPR_LANE_DEADLINE_EPOCH=$((lane_start_epoch + 2400))" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/ripr-hosted-lane"
+          cat > "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh" <<'RIPR_DEADLINE_EOF'
+          # TIMEOUT-BUDGET discriminator (#6807): run a command under GNU
+          # timeout with whatever remains of this attempt's self-enforced
+          # budget. Exit classes:
+          #   0     command succeeded
+          #   124   our budget expired -> deadline marker + rc 90 (never retried)
+          #   other passed through untouched (semantic failure or external signal;
+          #         runner shutdown lands here as process death, job conclusion
+          #         stays 'cancelled', and the retry chain consumes it)
+          lane_run() {
+            local label="$1"
+            shift
+            local now remaining rc
+            if [ -z "${RIPR_LANE_DEADLINE_EPOCH:-}" ]; then
+              echo "::error::[TIMEOUT-BUDGET] ${label}: RIPR_LANE_DEADLINE_EPOCH is unset; refusing to run unguarded"
+              return 90
+            fi
+            now="$(date +%s)"
+            remaining=$((RIPR_LANE_DEADLINE_EPOCH - now))
+            if [ "$remaining" -le 60 ]; then
+              echo "::error::[TIMEOUT-BUDGET] ${label}: hosted-lane budget exhausted before start (${remaining}s left of 2400s); classified TIMEOUT-BUDGET, NOT runner-shutdown-cancellation; not retried"
+              : > "$RUNNER_TEMP/ripr-hosted-deadline-exceeded"
+              return 90
+            fi
+            echo "[deadline] ${label}: ${remaining}s of the 2400s hosted-lane budget remain"
+            set +e
+            timeout --kill-after=30s "${remaining}s" "$@"
+            rc=$?
+            set -e
+            if [ "$rc" -eq 124 ]; then
+              echo "::error::[TIMEOUT-BUDGET] ${label}: exceeded the self-enforced 2400s hosted-lane budget; classified TIMEOUT-BUDGET, NOT runner-shutdown-cancellation; not retried"
+              : > "$RUNNER_TEMP/ripr-hosted-deadline-exceeded"
+              return 90
+            fi
+            return "$rc"
+          }
+          RIPR_DEADLINE_EOF
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Toolchain (rust-toolchain.toml pins 1.95.0)
+        run: rustc --version
+
+      - name: Normalize base ref
+        shell: bash
+        run: |
+          # merge_group.base_ref is a full ref ("refs/heads/main"); strip prefix
+          # so subsequent steps that use $BASE_REF pass just the branch name.
+          stripped="${BASE_REF#refs/heads/}"
+          echo "BASE_REF=$stripped" >> "$GITHUB_ENV"
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+          shared-key: ripr-${{ env.RIPR_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Install ripr
+        run: cargo install ripr --version "$RIPR_VERSION" --locked
+
+      - name: Run ripr doctor
+        run: ripr doctor
+
+      # Every cargo xtask analysis invocation below runs under the lane_run
+      # guard so budget exhaustion becomes an explicit TIMEOUT-BUDGET failure
+      # instead of drifting into the platform timeout's ambiguous conclusion.
+      - name: Generate PR evidence
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate PR evidence" cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA"
+
+      - name: Generate repo-wide RIPR+ baseline receipt
+        if: always()
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate repo-wide baseline receipt" cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+
+      - name: Generate review guidance
+        if: always()
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate review guidance" cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
+
+      - name: Generate impacted evidence
+        if: always()
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate impacted evidence" cargo xtask impacted-evidence --labels-csv "$PR_LABELS"
+
+      - name: Generate PR evidence summary
+        if: always()
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate PR evidence summary" cargo xtask ripr-pr-summary
+
+      - name: Generate warning annotations
+        if: always()
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Generate warning annotations" cargo xtask ripr-annotations
+
+      - name: Validate PR evidence contracts
+        if: always()
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Validate ripr-pr contract" cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
+          lane_run "Validate ripr-plus contract" cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
+          lane_run "Validate review-comments contract" cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
+          lane_run "Validate impacted-evidence contract" cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
+          lane_run "Validate pr-summary contract" cargo xtask ripr-pr-summary --check
+          lane_run "Validate annotations contract" cargo xtask ripr-annotations --check
+
+      - name: Enforce new RIPR gap quality gate
+        if: always()
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/ripr-hosted-lane/deadline.sh"
+          lane_run "Evaluate quality gate" \
+            cargo xtask quality-gate \
+            --mode enforce-new-ripr \
+            --ripr-receipt target/receipts/quality/ripr-plus.json \
+            --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
+            --review-receipt target/ripr/review/comments.json \
+            --ripr-base "origin/$BASE_REF" \
+            --ripr-head HEAD \
+            --receipt target/receipts/quality/quality-gate-ripr.json \
+            --summary target/receipts/quality/quality-gate-ripr.md
+          lane_run "Re-check quality gate receipt" \
+            cargo xtask quality-gate \
+            --mode enforce-new-ripr \
+            --ripr-receipt target/receipts/quality/ripr-plus.json \
+            --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
+            --review-receipt target/ripr/review/comments.json \
+            --ripr-base "origin/$BASE_REF" \
+            --ripr-head HEAD \
+            --receipt target/receipts/quality/quality-gate-ripr.json \
+            --summary target/receipts/quality/quality-gate-ripr.md \
+            --check
+
+      - name: Append PR evidence summary
+        if: always()
+        shell: bash
+        run: |
+          echo "ripr+ hosted lane: FINAL attempt 3/3 (cancellation-retry, #6807)" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f target/ripr/pr/summary.md ]; then
+            cat target/ripr/pr/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No RIPR PR evidence summary was produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f target/receipts/quality/quality-gate-ripr.md ]; then
+            printf '\n' >> "$GITHUB_STEP_SUMMARY"
+            cat target/receipts/quality/quality-gate-ripr.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No RIPR quality-gate summary was produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f target/ripr/review/annotations.txt ]; then
+            cat target/ripr/review/annotations.txt
+          fi
+
+      - name: Upload ripr PR evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: ripr-pr-evidence-retry-2
+          path: |
+            target/ripr/pr/**
+            target/ripr/review/**
+            target/xtask/impacted-evidence/**
+            target/receipts/quality/ripr-plus.json
+            target/receipts/quality/quality-gate-ripr.json
+            target/receipts/quality/quality-gate-ripr.md
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Classify hosted lane outcome
+        id: classify
+        if: always()
+        shell: bash
+        env:
+          RIPR_ATTEMPT: "3"
+        run: |
+          set -euo pipefail
+          # Terminal classification for retry gating (#6807). Only a
+          # self-enforced TIMEOUT-BUDGET trip sets deadline_exceeded=true;
+          # such failures are visible, named, and never retried. Runner
+          # shutdowns leave the marker absent and conclude as 'cancelled',
+          # which the retry chain consumes.
+          if [ -f "$RUNNER_TEMP/ripr-hosted-deadline-exceeded" ]; then
+            echo "deadline_exceeded=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### ripr+ hosted lane outcome (attempt ${RIPR_ATTEMPT}/3)"
+              echo ""
+              echo "- Outcome: \`TIMEOUT-BUDGET\` — the self-enforced 2400s lane budget was exceeded."
+              echo "- This failure is deliberately NOT retried (timeouts never enter the cancellation-retry class)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::ripr+ hosted lane classified TIMEOUT-BUDGET; no retry will be attempted (#6807)."
+          else
+            echo "deadline_exceeded=false" >> "$GITHUB_OUTPUT"
+          fi
 
   # -------------------------------------------------------------------------
   # 2d. ripr disk-full failover -- runs ripr on GitHub-hosted when the primary
@@ -1044,6 +1729,8 @@ jobs:
       - ripr-cx53
       - ripr-cx43
       - ripr-github
+      - ripr-github-retry-1
+      - ripr-github-retry-2
       - ripr-fallback
     if: always()
     runs-on: ubuntu-latest
@@ -1058,6 +1745,8 @@ jobs:
           CX53_RESULT: ${{ needs.ripr-cx53.result }}
           CX43_RESULT: ${{ needs.ripr-cx43.result }}
           GITHUB_RESULT: ${{ needs.ripr-github.result }}
+          RETRY1_RESULT: ${{ needs.ripr-github-retry-1.result }}
+          RETRY2_RESULT: ${{ needs.ripr-github-retry-2.result }}
           FALLBACK_RESULT: ${{ needs.ripr-fallback.result }}
         run: |
           set -euo pipefail
@@ -1068,6 +1757,8 @@ jobs:
           echo "cx53_result=${CX53_RESULT:-}"
           echo "cx43_result=${CX43_RESULT:-}"
           echo "github_result=${GITHUB_RESULT:-}"
+          echo "retry1_result=${RETRY1_RESULT:-}"
+          echo "retry2_result=${RETRY2_RESULT:-}"
           echo "fallback_result=${FALLBACK_RESULT:-}"
 
           {
@@ -1079,6 +1770,8 @@ jobs:
             echo "- cx53_result: \`${CX53_RESULT:-}\`"
             echo "- cx43_result: \`${CX43_RESULT:-}\`"
             echo "- github_result: \`${GITHUB_RESULT:-}\`"
+            echo "- retry1_result: \`${RETRY1_RESULT:-}\`"
+            echo "- retry2_result: \`${RETRY2_RESULT:-}\`"
             echo "- fallback_result: \`${FALLBACK_RESULT:-}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -1102,15 +1795,17 @@ jobs:
 
           # A cancelled lane is the ABSENCE of evidence, not negative evidence.
           # The gate stays blocking — no proof was produced for this SHA — but it
-          # must not read as a ripr failure. The `github)` branch below reported
-          # this as "did not succeed: cancelled", which names the outcome but
-          # still reads as a gate failure rather than an unevaluated head (#5460).
+          # must not read as a ripr failure. This blanket check now covers only
+          # the self-hosted and failover lanes; the GitHub-hosted chain has its
+          # own bounded retry-on-cancellation policy (#6807) and is evaluated by
+          # the decision table below, which escalates only after every permitted
+          # attempt concluded 'cancelled'.
           #
           # The workflow deliberately does not cancel in-progress evidence runs
           # when a newer PR head arrives. A cancelled lane therefore still names
           # an external/manual cancellation or runner failure, not normal head
           # supersession. Keep it blocking because no proof was produced.
-          for lane_result in "$CX53_RESULT" "$CX43_RESULT" "$GITHUB_RESULT" "$FALLBACK_RESULT"; do
+          for lane_result in "$CX53_RESULT" "$CX43_RESULT" "$FALLBACK_RESULT"; do
             if [ "$lane_result" = "cancelled" ]; then
               echo "::error::ripr lane cancelled — no proof produced for this SHA. This is NOT a new RIPR gap. Normal PR synchronization does not cancel active RIPR runs; investigate an external, manual, or API cancellation and re-run this head."
               echo "ripr+ New Gap Gate: cancelled (no proof for this SHA)"
@@ -1143,11 +1838,22 @@ jobs:
                 exit 1
               fi
               ;;
+            # >>> ripr github-chain decision table (unit-tested in
+            # xtask/tests/ripr_new_gap_gate_workflow.rs; keep this block
+            # self-contained: only the github) label, the *_RESULT environment
+            # values, echo, and exit are permitted here) (#6807)
             github)
-              if [ "$GITHUB_RESULT" != "success" ]; then
-                echo "::error::ripr on GitHub-hosted did not succeed: $GITHUB_RESULT"
+              if [ "${GITHUB_RESULT:-}" = "success" ] || [ "${RETRY1_RESULT:-}" = "success" ] || [ "${RETRY2_RESULT:-}" = "success" ]; then
+                : # Some attempt produced terminal proof for this SHA.
+              elif [ "${GITHUB_RESULT:-}" = "cancelled" ] && [ "${RETRY1_RESULT:-}" = "cancelled" ] && [ "${RETRY2_RESULT:-}" = "cancelled" ]; then
+                echo "::error::RUNNER-SHUTDOWN-CANCELLATION exhausted: ripr+ on GitHub Hosted concluded 'cancelled' on attempt 1, retry 1/2, and retry 2/2 with zero test failures and no proof produced for this SHA. This is a repeat-offender infrastructure failure class (#6807, #12563), NOT a new RIPR gap. Escalate to the runner pool owner and re-run after the pool recovers."
+                echo "ripr+ New Gap Gate: failed (RUNNER-SHUTDOWN-CANCELLATION exhausted after 3 attempts — no proof for this SHA)"
+                exit 1
+              else
+                echo "::error::ripr on GitHub-hosted did not succeed: attempt1=${GITHUB_RESULT:-<unset>} retry1=${RETRY1_RESULT:-<unset>} retry2=${RETRY2_RESULT:-<unset>}. Cancellation-class outcomes retry at most twice (#6807); failures and skips stop the chain immediately."
                 exit 1
               fi
+              # <<< ripr github-chain decision table (unit-tested)
               ;;
             *)
               echo "::error::Unknown router target: ${ROUTER_TARGET:-<empty>}"

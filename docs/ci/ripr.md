@@ -146,6 +146,27 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
   the resulting no-verdict into a false required-check failure. A lane that is
   still externally or manually cancelled remains blocking because it produced
   no proof.
+- Retries runner-shutdown cancellations on the GitHub-hosted lane only, with a
+  bounded budget (#6807). When the hosted attempt concludes `cancelled` — the
+  signature of the platform-side "runner has received a shutdown signal"
+  eviction class observed in #12563 and the umbrella #11869 escalation — a
+  retry job re-runs the identical analysis after escalating backoff (120s,
+  then 180s), at most twice (three attempts total). Every retry is visible:
+  attempt counters in the job names and logs, `::warning::` annotations naming
+  the RUNNER-SHUTDOWN-CANCELLATION incident class, distinct artifact names per
+  retry (`ripr-pr-evidence-retry-1`, `-retry-2`), and per-attempt result lines
+  in the aggregator summary. A third consecutive cancellation fails the gate
+  while naming the exhausted incident class explicitly. The retry never fires
+  for semantic outcomes: test failures, red gap attribution, and lint findings
+  conclude as `failure`, stop the chain immediately with zero retries, and can
+  never turn green through retrying. Timeouts are excluded structurally:
+  `needs.<job>.result` exposes no timed-out value, so each hosted attempt
+  enforces its own TIMEOUT-BUDGET of 2400s from lane start — strictly below
+  the 45-minute platform timeout — by wrapping every analysis command in a
+  GNU `timeout` guard that records a deadline marker and fails visibly as
+  TIMEOUT-BUDGET (a non-retried class). Any `cancelled` conclusion therefore
+  predates both budgets and means genuine runner shutdown or external
+  cancellation, never timeout-as-cover.
 
 The evaluated `HEAD` in CI is a merge-test ref. It is not silently presented as
 the contributor's PR head: PR runs pass both identities to `xtask`, while

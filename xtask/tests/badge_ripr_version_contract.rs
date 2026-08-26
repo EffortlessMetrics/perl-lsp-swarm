@@ -7,8 +7,18 @@ use serde_yaml_ng::Value;
 // `seed-cache` (#12563) installs the same reviewed release to warm the rust
 // caches; it executes no analysis, but it must stay version-aligned with the
 // routed lanes, so the contract covers it too.
-const EXPECTED_RIPR_EXECUTION_JOBS: &[&str] =
-    &["ripr-cx53", "ripr-cx43", "ripr-github", "ripr-fallback", "seed-cache"];
+// `ripr-github-retry-1`/`-2` (#6807) are cancellation-retry attempts of the
+// hosted lane; each is a full execution lane installing the same reviewed
+// release, so they stay under this contract as well.
+const EXPECTED_RIPR_EXECUTION_JOBS: &[&str] = &[
+    "ripr-cx53",
+    "ripr-cx43",
+    "ripr-github",
+    "ripr-github-retry-1",
+    "ripr-github-retry-2",
+    "ripr-fallback",
+    "seed-cache",
+];
 const VARIABLE_INSTALL_COMMAND: &str = "cargo install ripr --version \"$RIPR_VERSION\" --locked";
 
 fn project_root() -> PathBuf {

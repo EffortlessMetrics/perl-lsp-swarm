@@ -233,6 +233,321 @@ fn ripr_docs_use_direct_local_proof_commands() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+#[test]
+fn hosted_cancellation_retries_are_bounded_and_visible() -> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+
+    assert!(workflow.contains("ripr-github-retry-1:"), "missing retry-1 job");
+    assert!(workflow.contains("ripr-github-retry-2:"), "missing retry-2 job");
+    assert!(
+        !workflow.contains("ripr-github-retry-3"),
+        "the cancellation-retry chain must stop after two retries (#6807)"
+    );
+    assert_eq!(
+        workflow.matches("- name: Backoff before hosted retry").count(),
+        2,
+        "both retry attempts must apply a visible backoff"
+    );
+
+    // Every retry is visible in logs, names, artifacts, and summaries (#6807).
+    for visible in [
+        "name: ripr+ on GitHub Hosted (retry 1/2)",
+        "name: ripr+ on GitHub Hosted (retry 2/2)",
+        "name: ripr-pr-evidence-retry-1",
+        "name: ripr-pr-evidence-retry-2",
+        "echo \"- retry1_result: \\`${RETRY1_RESULT:-}\\`\"",
+        "echo \"- retry2_result: \\`${RETRY2_RESULT:-}\\`\"",
+        "RUNNER-SHUTDOWN-CANCELLATION recovery",
+        "attempt ${RIPR_ATTEMPT}/3",
+    ] {
+        assert!(workflow.contains(visible), "retry visibility receipt missing: {visible}");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn hosted_retry_conditions_admit_only_cancellation_class_outcomes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+
+    let retry_1_if = job_condition(&workflow, "ripr-github-retry-1")?;
+    let retry_2_if = job_condition(&workflow, "ripr-github-retry-2")?;
+
+    // Retry fires ONLY on its predecessor's cancellation with no TIMEOUT-BUDGET
+    // marker; failure, success, and skipped predecessors never chain forward.
+    for condition in [&retry_1_if, &retry_2_if] {
+        assert!(
+            condition.contains("== 'cancelled'"),
+            "retry conditions must require a cancelled predecessor: {condition}"
+        );
+        assert!(
+            condition.contains("outputs.deadline_exceeded != 'true'"),
+            "retry conditions must exclude TIMEOUT-BUDGET outcomes: {condition}"
+        );
+        assert!(
+            !condition.contains("'failure'"),
+            "test/gate/lint failures must fail fast with zero retries: {condition}"
+        );
+        assert!(
+            !condition.contains("!= 'success'"),
+            "retries must key on cancelled exactly, not on not-success: {condition}"
+        );
+        assert!(
+            condition.contains("needs.route-ripr.outputs.target == 'github'"),
+            "the retry policy is scoped to the GitHub-hosted lane only: {condition}"
+        );
+    }
+    assert!(
+        retry_1_if.contains("needs.ripr-github.result == 'cancelled'"),
+        "retry 1 must gate on the primary attempt: {retry_1_if}"
+    );
+    assert!(
+        retry_2_if.contains("needs.ripr-github-retry-1.result == 'cancelled'"),
+        "retry 2 must gate on retry 1 so a real verdict stops the chain: {retry_2_if}"
+    );
+
+    // The blanket self-hosted cancelled loop must not observe the hosted chain,
+    // or a recovered run would be double-failed.
+    let blanket_loop = workflow
+        .lines()
+        .find(|line| line.starts_with("          for lane_result in "))
+        .ok_or("missing blanket cancelled-lane loop")?;
+    assert!(
+        blanket_loop.contains("$FALLBACK_RESULT") && !blanket_loop.contains("$GITHUB_RESULT"),
+        "hosted cancellations belong to the decision table, not the blanket loop: {blanket_loop}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn github_chain_decision_table_executes_with_bash() -> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+
+    const BEGIN: &str = "# >>> ripr github-chain decision table";
+    const END: &str = "# <<< ripr github-chain decision table";
+    assert!(
+        workflow.contains(BEGIN) && workflow.contains(END),
+        "decision-table sentinels must delimit the executable classification block"
+    );
+    let script = extract_decision_table(&workflow)?;
+
+    let Some(bash) = functional_bash() else {
+        // CI runs this suite on Linux where bash always exists; Windows dev
+        // environments without a usable bash still keep every string-contract
+        // test above as the classification surface.
+        eprintln!("skipping decision-table execution: no usable bash available");
+        return Ok(());
+    };
+
+    let temp = std::env::temp_dir().join(format!("ripr-decision-table-{}", std::process::id()));
+    fs::create_dir_all(&temp)?;
+    let script_path = temp.join("table.sh");
+    fs::write(&script_path, script)?;
+    // Git-bash on Windows rejects backslash paths in argv; forward slashes
+    // work on every platform bash supports.
+    let script_arg = script_path.to_string_lossy().replace('\\', "/");
+
+    struct Combo {
+        attempts: (&'static str, &'static str, &'static str),
+        expect_success: bool,
+        exhausted_incident: bool,
+    }
+    let combos = [
+        Combo {
+            attempts: ("success", "skipped", "skipped"),
+            expect_success: true,
+            exhausted_incident: false,
+        },
+        Combo {
+            attempts: ("cancelled", "success", "skipped"),
+            expect_success: true,
+            exhausted_incident: false,
+        },
+        Combo {
+            attempts: ("cancelled", "cancelled", "success"),
+            expect_success: true,
+            exhausted_incident: false,
+        },
+        Combo {
+            attempts: ("failure", "skipped", "skipped"),
+            expect_success: false,
+            exhausted_incident: false,
+        },
+        Combo {
+            attempts: ("cancelled", "failure", "skipped"),
+            expect_success: false,
+            exhausted_incident: false,
+        },
+        Combo {
+            // Defensive: a cancelled attempt whose successor was skipped (e.g.
+            // gating regression) must stay visibly red without incident naming.
+            attempts: ("cancelled", "skipped", "skipped"),
+            expect_success: false,
+            exhausted_incident: false,
+        },
+        Combo {
+            attempts: ("cancelled", "cancelled", "cancelled"),
+            expect_success: false,
+            exhausted_incident: true,
+        },
+    ];
+
+    let mut failures = Vec::new();
+    for combo in &combos {
+        let output = std::process::Command::new(&bash)
+            .arg(&script_arg)
+            .env("ROUTER_TARGET", "github")
+            .env("GITHUB_RESULT", combo.attempts.0)
+            .env("RETRY1_RESULT", combo.attempts.1)
+            .env("RETRY2_RESULT", combo.attempts.2)
+            .output()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let combined = format!("{stdout}{stderr}");
+        if output.status.success() != combo.expect_success {
+            failures.push(format!(
+                "attempts {:?}: expected {}, got exit {:?}",
+                combo.attempts,
+                if combo.expect_success { "success" } else { "failure" },
+                output.status.code()
+            ));
+        }
+        let names_exhausted = combined.contains("RUNNER-SHUTDOWN-CANCELLATION exhausted");
+        if names_exhausted != combo.exhausted_incident {
+            failures.push(format!(
+                "attempts {:?}: incident naming mismatch (present: {names_exhausted})",
+                combo.attempts
+            ));
+        }
+        if !combo.exhausted_incident && combined.contains("RUNNER-SHUTDOWN-CANCELLATION") {
+            failures.push(format!(
+                "attempts {:?}: incident class must be named only on exhaustion",
+                combo.attempts
+            ));
+        }
+    }
+    fs::remove_file(&script_path).ok();
+    fs::remove_dir(&temp).ok();
+    assert!(
+        failures.is_empty(),
+        "decision-table behavior drifted from the cancellation policy: {failures:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn hosted_timeout_budget_discriminator_is_wired_into_every_attempt()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+    serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&workflow).map_err(|error| {
+        format!("ripr.yml must stay parseable YAML after the retry edits: {error}")
+    })?;
+
+    // The self-enforced budget (2400s) is derived from lane start in all three
+    // attempts, so a genuine timeout can never surface as 'cancelled'.
+    assert_eq!(
+        workflow.matches("RIPR_LANE_DEADLINE_EPOCH=$((lane_start_epoch + 2400))").count(),
+        3,
+        "every hosted attempt must enforce the 2400s TIMEOUT-BUDGET"
+    );
+    assert_eq!(
+        workflow.matches("timeout --kill-after=30s \"${remaining}s\" \"$@\"").count(),
+        3,
+        "every attempt must install the GNU timeout guard"
+    );
+    for job in ["ripr-github", "ripr-github-retry-1", "ripr-github-retry-2"] {
+        let body = job_block(&workflow, job)?;
+        assert!(
+            body.contains("deadline_exceeded: ${{ steps.classify.outputs.deadline_exceeded }}"),
+            "{job} must publish the deadline classification output"
+        );
+        assert!(
+            body.contains("lane_run \"Evaluate quality gate\""),
+            "{job} quality-gate evaluation must run under the deadline guard"
+        );
+    }
+
+    Ok(())
+}
+
+fn extract_decision_table(workflow: &str) -> Result<String, Box<dyn std::error::Error>> {
+    const BEGIN: &str = "# >>> ripr github-chain decision table";
+    const END: &str = "# <<< ripr github-chain decision table";
+    let start = workflow.find(BEGIN).ok_or("missing begin sentinel")?;
+    let end = workflow.find(END).ok_or("missing end sentinel")?;
+    if end <= start {
+        return Err("decision-table sentinels are out of order".into());
+    }
+    let body = workflow[start..end].lines().skip(1).collect::<Vec<_>>().join("\n");
+    Ok(format!("set -euo pipefail\ncase \"${{ROUTER_TARGET}}\" in\n{body}\nesac\n"))
+}
+
+fn functional_bash() -> Option<std::path::PathBuf> {
+    // On Windows the PATH may expose a WSL bash stub that cannot open Win32
+    // paths; prefer an MSYS/Git-bash that shares the filesystem view.
+    let candidates: &[&str] = if cfg!(windows) {
+        &[r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files\Git\usr\bin\bash.exe", "bash"]
+    } else {
+        &["bash"]
+    };
+    candidates.iter().find_map(|candidate| {
+        std::process::Command::new(candidate)
+            .arg("-c")
+            .arg("echo ok")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|_| std::path::PathBuf::from(candidate))
+    })
+}
+
+/// Return the raw YAML text of one top-level workflow job (two-space indent).
+fn job_block<'a>(content: &'a str, job: &str) -> Result<&'a str, Box<dyn std::error::Error>> {
+    let needle = format!("  {job}:\n");
+    let start = content.find(&needle).ok_or_else(|| format!("missing top-level job `{job}`"))?;
+    let rest = &content[start..];
+    let end = rest
+        .match_indices('\n')
+        .skip(1)
+        .find_map(|(offset, _)| {
+            let line_start = offset + 1;
+            let line = &rest[line_start..];
+            // The next key indented exactly two spaces begins the next job.
+            let is_next_job = line.starts_with("  ")
+                && !line[2..].starts_with(' ')
+                && !line[2..].starts_with('#');
+            is_next_job.then_some(line_start)
+        })
+        .unwrap_or(rest.len());
+    Ok(&rest[..end])
+}
+
+fn job_condition(content: &str, job: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let block = job_block(content, job)?;
+    let start = block.find("if: >-").ok_or_else(|| format!("job `{job}` has no multiline if"))?;
+    let body = &block[start + "if: >-".len()..];
+    let mut condition = String::new();
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !trimmed.starts_with("needs.") && !trimmed.starts_with("always()") {
+            break;
+        }
+        condition.push_str(trimmed.trim_end_matches("&&"));
+        condition.push(' ');
+    }
+    Ok(condition)
+}
+
 fn fenced_block_after<'a>(content: &'a str, heading: &str) -> Option<&'a str> {
     let start = content.find(heading)?;
     let rest = &content[start..];
