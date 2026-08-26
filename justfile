@@ -93,6 +93,8 @@ check-all-targets:
     cargo check --workspace --all-targets --locked
     @echo "Compiling all targets (all features) — deep verification check..."
     cargo check --workspace --all-targets --all-features --locked
+    @echo "Compiling example test modules — cargo check --all-targets checks examples as non-test targets only, so their #[cfg(test)] code bit-rots unseen (#12650)..."
+    cargo test --workspace --examples --locked --no-run
     @echo "All targets compile clean."
 
 # Scan every tracked file for committed git conflict marker lines.
