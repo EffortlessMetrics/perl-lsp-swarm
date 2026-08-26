@@ -309,7 +309,18 @@ hello = "world"
         // governed surface: until now every loader caller used temporary
         // registries, so a malformed or unknown-field row in the real
         // registry was never detected (#2006 review finding).
-        let loaded = must(load_concept_registry());
+        // Resolve the checkout explicitly: load_concept_registry() honors
+        // PERL_CORPUS_ROOT, which points at an external corpus root that
+        // does not carry the checked-in registry (#12721 review).
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("../.."));
+        let loaded = must(load_concept_registry_from(
+            &workspace_root.join("crates/perl-corpus/concepts"),
+            &workspace_root,
+        ));
         assert!(!loaded.is_empty(), "checked-in concept registry must not be empty");
         Ok(())
     }

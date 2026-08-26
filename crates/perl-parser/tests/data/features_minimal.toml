@@ -9,100 +9,46 @@ lsp_version = "3.18.0"
 [[feature]]
 id = "lsp.completion"
 area = "textDocument"
-policy_class = "request_response"
-direction = "client_to_server"
-capability_gate = "completionProvider"
-registration = "static_capabilities"
-implementation_owner = "crates/perl-lsp-rs/src/runtime/language/completion.rs"
-state_owner = "workspace_index"
-claim_boundary = "Resolve-dependent details require completionItem/resolve client support; snippet choice varies by client."
-tests = ["crates/perl-lsp-rs-core/src/feature_catalog.rs#checked_in_override_fixtures_parse_and_validate"]
-evidence = [{ class = "integration_test", id = "feature_catalog override fixture proof" }]
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = true  # Keep enabled
 description = "Code completion"
 
 [[feature]]
 id = "lsp.hover"
 area = "textDocument"
-policy_class = "request_response"
-direction = "client_to_server"
-capability_gate = "hoverProvider"
-registration = "static_capabilities"
-implementation_owner = "crates/perl-lsp-rs/src/runtime/language/hover.rs"
-state_owner = "document_store"
-claim_boundary = "Markdown rendering assumes client markdown support; content is POD/compiler-derived only."
-tests = ["crates/perl-lsp-rs-core/src/feature_catalog.rs#checked_in_override_fixtures_parse_and_validate"]
-evidence = [{ class = "integration_test", id = "feature_catalog override fixture proof" }]
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = false  # DISABLED for testing
 description = "Hover information"
 
 [[feature]]
 id = "lsp.diagnostics"
 area = "textDocument"
-policy_class = "request_response"
-direction = "client_to_server"
-capability_gate = "fixture"
-registration = "static_capabilities"
-implementation_owner = "test fixture (gating coverage only)"
-state_owner = "test fixture"
-claim_boundary = "Test fixture for feature-gating behavior; not a production claim."
-tests = ["crates/perl-lsp-rs-core/src/feature_catalog.rs#checked_in_override_fixtures_parse_and_validate"]
-evidence = [{ class = "integration_test", id = "feature_catalog override fixture proof" }]
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = true  # Keep enabled
 description = "Error and warning diagnostics"
 
 [[feature]]
 id = "lsp.rename"
 area = "textDocument"
-policy_class = "request_response"
-direction = "client_to_server"
-capability_gate = "renameProvider.prepareProvider"
-registration = "static_capabilities"
-implementation_owner = "crates/perl-lsp-rs/src/runtime/language/rename.rs"
-state_owner = "workspace_index"
-claim_boundary = "Workspace edits arrive as one WorkspaceEdit response; no cross-file transactional atomicity guarantee."
-tests = ["crates/perl-lsp-rs-core/src/feature_catalog.rs#checked_in_override_fixtures_parse_and_validate"]
-evidence = [{ class = "integration_test", id = "feature_catalog override fixture proof" }]
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = false  # DISABLED for testing
 description = "Symbol renaming"
 
 [[feature]]
 id = "lsp.inlay_hints"
 area = "textDocument"
-policy_class = "request_response"
-direction = "client_to_server"
-capability_gate = "fixture"
-registration = "static_capabilities"
-implementation_owner = "test fixture (gating coverage only)"
-state_owner = "test fixture"
-claim_boundary = "Test fixture for feature-gating behavior; not a production claim."
-tests = ["crates/perl-lsp-rs-core/src/feature_catalog.rs#checked_in_override_fixtures_parse_and_validate"]
-evidence = [{ class = "integration_test", id = "feature_catalog override fixture proof" }]
 spec = "3.16"
-maturity = "ga"
+maturity = "not_proven"
 advertised = false  # DISABLED for testing
 description = "Inline parameter hints"
 
 [[feature]]
 id = "lsp.semantic_tokens"
 area = "textDocument"
-policy_class = "request_response"
-direction = "client_to_server"
-capability_gate = "semanticTokensProvider.full"
-registration = "static_capabilities"
-implementation_owner = "crates/perl-lsp-rs/src/runtime/language/semantic_tokens.rs"
-state_owner = "document_store"
-claim_boundary = "Legend coverage is limited to the emitted token set; delta requests are served as full re-emission."
-tests = ["crates/perl-lsp-rs-core/src/feature_catalog.rs#checked_in_override_fixtures_parse_and_validate"]
-evidence = [{ class = "integration_test", id = "feature_catalog override fixture proof" }]
 spec = "3.16"
 maturity = "preview"
 advertised = false  # DISABLED for testing
@@ -111,32 +57,14 @@ description = "Semantic highlighting"
 [[feature]]
 id = "lsp.workspace_symbols"
 area = "workspace"
-policy_class = "request_response"
-direction = "client_to_server"
-capability_gate = "fixture"
-registration = "static_capabilities"
-implementation_owner = "test fixture (gating coverage only)"
-state_owner = "test fixture"
-claim_boundary = "Test fixture for feature-gating behavior; not a production claim."
-tests = ["crates/perl-lsp-rs-core/src/feature_catalog.rs#checked_in_override_fixtures_parse_and_validate"]
-evidence = [{ class = "integration_test", id = "feature_catalog override fixture proof" }]
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = false  # DISABLED for testing
 description = "Workspace-wide symbol search"
 
 [[feature]]
 id = "lsp.pull_diagnostics"
 area = "workspace"
-policy_class = "request_response"
-direction = "client_to_server"
-capability_gate = "diagnosticProvider"
-registration = "static_capabilities"
-implementation_owner = "crates/perl-lsp-rs-core/src/providers/diagnostics/mod.rs"
-state_owner = "diagnostics_store"
-claim_boundary = "Pull diagnostics supplement and do not disable push textDocument/publishDiagnostics; identifier-based refresh is not yet claimed."
-tests = ["crates/perl-lsp-rs-core/src/feature_catalog.rs#checked_in_override_fixtures_parse_and_validate"]
-evidence = [{ class = "integration_test", id = "feature_catalog override fixture proof" }]
 spec = "3.17"
 maturity = "preview"
 advertised = false  # DISABLED for testing
@@ -145,36 +73,7 @@ description = "Pull-based diagnostics"
 [[feature]]
 id = "lsp.type_hierarchy"
 area = "textDocument"
-policy_class = "request_response"
-direction = "client_to_server"
-capability_gate = "typeHierarchyProvider"
-registration = "static_capabilities"
-implementation_owner = "missing"
-state_owner = "missing"
-claim_boundary = "Test fixture for feature-gating behavior; not a production claim."
-tests = ["crates/perl-lsp-rs-core/src/feature_catalog.rs#checked_in_override_fixtures_parse_and_validate"]
-evidence = [{ class = "integration_test", id = "feature_catalog override fixture proof" }]
 spec = "3.17"
 maturity = "planned"
 advertised = false  # Not available yet
 description = "Type hierarchy navigation"
-
-[evidence_policy]
-request_response     = ["integration_test"]
-document_sync        = ["protocol_lifecycle_test", "integration_test"]
-server_request       = ["integration_test", "protocol_lifecycle_test"]
-workspace            = ["integration_test"]
-cancellation_progress= ["integration_test", "protocol_lifecycle_test"]
-editor_dependent     = ["integration_test"]   # additionally requires a limitations note naming the editor dependency
-protocol_lifecycle   = ["protocol_lifecycle_test", "integration_test"]
-debug_adapter        = ["integration_test"]
-experimental_extension = ["integration_test"]
-
-[evidence_classes]
-integration_test          = "qualifying"
-protocol_lifecycle_test   = "qualifying"
-unit_test                 = "non_qualifying_supporting_only"
-source_presence           = "non_qualifying"
-helper_presence           = "non_qualifying"
-method_count              = "non_qualifying"
-declaration_only          = "non_qualifying"
