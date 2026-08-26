@@ -2402,10 +2402,29 @@ fn json_rpc_execute_command_error_carries_client_input_not_server_canonical_path
     use super::CommandExecutor;
 
     let workspace = tempdir()?;
-    let dir = workspace.path().join("rpc_dir_leak_probe");
-    fs::create_dir_all(&dir)?;
-    let client_form = dir.to_string_lossy().into_owned();
-    let canonical = dir.canonicalize()?;
+    // Same divergence construction as the provider-level test above: a
+    // symlinked alias on Unix, the verbatim `\\?\` prefix on Windows. Without
+    // forced divergence, a symlink-free Linux temp dir would leave canonical
+    // == client input and the leak assertion could not discriminate (#1755
+    // review).
+    let client_form;
+    let canonical: PathBuf;
+    #[cfg(unix)]
+    {
+        let real = workspace.path().join("rpc_real_dir_leak_probe");
+        fs::create_dir_all(&real)?;
+        let alias = workspace.path().join("rpc_alias_dir_leak_probe");
+        std::os::unix::fs::symlink(&real, &alias)?;
+        client_form = alias.to_string_lossy().into_owned();
+        canonical = alias.canonicalize()?;
+    }
+    #[cfg(windows)]
+    {
+        let dir = workspace.path().join("rpc_dir_leak_probe");
+        fs::create_dir_all(&dir)?;
+        client_form = dir.to_string_lossy().into_owned();
+        canonical = dir.canonicalize()?; // verbatim `\\?\`-prefixed form
+    }
     let executor = CommandExecutor::with_workspace_roots(vec![workspace.path().to_path_buf()]);
     let arguments = vec![Value::String(client_form.clone())];
     let error = executor

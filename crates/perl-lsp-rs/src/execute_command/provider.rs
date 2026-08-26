@@ -1356,15 +1356,29 @@ impl ExecuteCommandProvider {
         }
 
         if !canonical_path.exists() {
+            tracing::debug!(
+                canonical = %canonical_path.display(),
+                "executeCommand path rejected: not found"
+            );
             return Err(format!("File not found: {client_display}"));
         }
 
         if !canonical_path.is_file() {
+            tracing::debug!(
+                canonical = %canonical_path.display(),
+                "executeCommand path rejected: not a regular file"
+            );
             return Err(format!("Path is not a file: {client_display}"));
         }
 
-        std::fs::metadata(&canonical_path)
-            .map_err(|e| format!("Cannot read file metadata '{}': {}", client_display, e))?;
+        std::fs::metadata(&canonical_path).map_err(|e| {
+            tracing::debug!(
+                canonical = %canonical_path.display(),
+                error = %e,
+                "executeCommand path rejected: metadata unreadable"
+            );
+            format!("Cannot read file metadata '{}': {}", client_display, e)
+        })?;
 
         Ok(ResolvedCommandPath { canonical: canonical_path, client_display })
     }
