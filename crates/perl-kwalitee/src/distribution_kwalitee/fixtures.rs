@@ -258,9 +258,9 @@ fn walk_relative_files(root: &Path) -> Result<BTreeSet<String>, String> {
             if !file_type.is_file() {
                 return Err(format!("committed fixture contains a non-file: {}", path.display()));
             }
-            let rel = path
-                .strip_prefix(root)
-                .map_err(|_| format!("path `{}` escaped fixture root", path.display()))?;
+            let rel = path.strip_prefix(root).map_err(|error| {
+                format!("path `{}` escaped fixture root: {error}", path.display())
+            })?;
             files.insert(rel.to_string_lossy().replace('\\', "/"));
         }
     }
@@ -274,6 +274,7 @@ pub fn committed_fixture_root() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic)]
     use super::*;
     use crate::distribution_kwalitee::catalog::load_distribution_kwalitee_catalog;
 

@@ -154,6 +154,7 @@ fn validate_metric_row(metric: &CatalogMetric) -> Result<(), CatalogError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic)]
     use super::*;
     use crate::distribution_kwalitee::types::{
         Applicability, CompatibilityRelationship, ScoringRule,

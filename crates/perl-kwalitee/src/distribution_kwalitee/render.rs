@@ -61,6 +61,7 @@ fn sanitize_cell(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic)]
     use super::*;
     use crate::distribution_kwalitee::catalog::load_distribution_kwalitee_catalog;
 
