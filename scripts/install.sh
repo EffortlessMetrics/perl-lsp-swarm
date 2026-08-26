@@ -456,6 +456,27 @@ archive_file_bytes() {
     wc -c < "$1" | tr -d '[:space:]'
 }
 
+# First non-empty stderr line, with a known private path redacted and
+# length-capped. Empty when the command wrote nothing diagnosable.
+archive_command_diagnostic() {
+    local errfile="$1"
+    local needle="${2:-}"
+    local line
+    [ -s "$errfile" ] || return 0
+    line=$(awk 'NF { sub(/\r$/, ""); print; exit }' "$errfile") || return 0
+    [ -n "$line" ] || return 0
+    if [ -n "$needle" ]; then
+        line=$(printf '%s\n' "$line" | awk -v n="$needle" '{
+            while ((i = index($0, n)) > 0) {
+                $0 = substr($0, 1, i - 1) "archive" substr($0, i + length(n))
+            }
+            print
+        }')
+    fi
+    line=$(printf '%s' "$line" | cut -c1-120)
+    printf ': %s' "$line"
+}
+
 fail_archive_staging() {
     if [ -n "${STAGING_ROOT:-}" ] && [ -d "${STAGING_ROOT:-}" ]; then
         rm -rf "$STAGING_ROOT"
@@ -539,15 +560,14 @@ archive_member_is_executable_mode() {
 inspect_standalone_tar_gz() {
     local archive="$1"
     local package="$2"
-    local max_compressed max_uncompressed max_entry max_entries
+    local max_compressed max_uncompressed max_entries
     local compressed gzip_uncompressed
     local name_count i name listing type_char normalized basename_member
-    local seen_exact seen_folded listed_size folded
-    local name_file verbose_file list_dir
+    local seen_exact seen_folded folded
+    local name_file verbose_file name_err verbose_err list_dir
 
     max_compressed="$(archive_safety_limit compressed "$ARCHIVE_SAFETY_MAX_COMPRESSED_BYTES")"
     max_uncompressed="$(archive_safety_limit uncompressed "$ARCHIVE_SAFETY_MAX_UNCOMPRESSED_BYTES")"
-    max_entry="$(archive_safety_limit entry "$ARCHIVE_SAFETY_MAX_ENTRY_BYTES")"
     max_entries="$(archive_safety_limit entries "$ARCHIVE_SAFETY_MAX_ENTRIES")"
 
     compressed="$(archive_file_bytes "$archive")"
@@ -558,11 +578,13 @@ inspect_standalone_tar_gz() {
     list_dir="${STAGING_ROOT:-${TMPDIR:-/tmp}}"
     name_file="${list_dir}/.archive-names"
     verbose_file="${list_dir}/.archive-verbose"
-    if ! tar -tzf "$archive" > "$name_file" 2>/dev/null; then
-        fail_archive_staging "malformed release archive: tar listing failed"
+    name_err="${list_dir}/.archive-names.err"
+    verbose_err="${list_dir}/.archive-verbose.err"
+    if ! tar -tzf "$archive" > "$name_file" 2>"$name_err"; then
+        fail_archive_staging "malformed release archive: tar listing failed$(archive_command_diagnostic "$name_err" "$archive")"
     fi
-    if ! tar -tvzf "$archive" > "$verbose_file" 2>/dev/null; then
-        fail_archive_staging "malformed release archive: tar verbose listing failed"
+    if ! tar -tvzf "$archive" > "$verbose_file" 2>"$verbose_err"; then
+        fail_archive_staging "malformed release archive: tar verbose listing failed$(archive_command_diagnostic "$verbose_err" "$archive")"
     fi
 
     name_count="$(sed '/^$/d' "$name_file" | wc -l | tr -d '[:space:]')"
@@ -645,15 +667,10 @@ inspect_standalone_tar_gz() {
                 ;;
         esac
 
-        listed_size="$(printf '%s' "$listing" | awk '{
-            for (i = 1; i <= NF; i++) {
-                if ($i ~ /^[0-9]+$/) { print $i; exit }
-            }
-        }')"
-        if [ -n "${listed_size:-}" ] && [ "$listed_size" -gt "$max_entry" ]; then
-            fail_archive_staging "archive entry size $listed_size exceeds policy ceiling $max_entry"
-        fi
-
+        # Per-entry size is not read from `tar -tv`: BSD/macOS columns put
+        # nlink or uid in the first numeric field. gzip -l bounds the stream
+        # before extract; archive_file_bytes after each named extract is the
+        # portable per-entry ceiling.
         ACCEPTED_MEMBERS="${ACCEPTED_MEMBERS}${normalized}"$'\n'
     done < "$name_file"
 
@@ -667,6 +684,8 @@ inspect_standalone_tar_gz() {
     if [ -n "$required_missing" ]; then
         fail_archive_staging "missing required member: $required_missing"
     fi
+
+    rm -f "$name_file" "$verbose_file" "$name_err" "$verbose_err"
 }
 
 emit_archive_safety_receipt() {

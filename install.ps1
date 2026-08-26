@@ -435,17 +435,18 @@ function Invoke-StandaloneArchiveStaging {
             foreach ($item in $accepted) {
                 $dest = Join-Path $extractRoot $item.Basename
                 $source = $item.Entry.Open()
+                $sz = [int64]0
                 try {
                     $target = [IO.File]::Open($dest, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
                     try {
                         $source.CopyTo($target)
+                        $sz = $target.Length
                     } finally {
                         $target.Dispose()
                     }
                 } finally {
                     $source.Dispose()
                 }
-                $sz = (Get-Item -LiteralPath $dest).Length
                 if ($sz -gt $maxEntry) {
                     throw "archive entry size $sz exceeds policy ceiling $maxEntry"
                 }

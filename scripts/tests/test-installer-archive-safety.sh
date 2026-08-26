@@ -201,9 +201,9 @@ if [ "$LAST_STATUS" -ne 0 ] \
     && [[ "$LAST_OUTPUT" == *"entry size"* ]] \
     && assert_sentinel_untouched \
     && assert_install_untouched; then
-    pass "per-entry byte ceiling fails closed"
+    pass "per-entry byte ceiling fails closed on streamed extract"
 else
-    fail_case "per-entry byte ceiling fails closed" "status=$LAST_STATUS output=$LAST_OUTPUT"
+    fail_case "per-entry byte ceiling fails closed on streamed extract" "status=$LAST_STATUS output=$LAST_OUTPUT"
 fi
 
 sentinel_setup
