@@ -208,6 +208,15 @@ certification cannot create `REVIEW_CURRENT`.
 
 ## Useful GitHub review record
 
+Proportionality governs which form this record takes. The full record below, with the
+`semantic-review:v1` marker, is required when the cumulative diff crosses a production
+seam or an irrevocable boundary (production code, contracts, CI semantics, merge or
+release machinery). A mechanical, zero-thread lane — lint-site collapse, generated
+regeneration, allowlist row removal, comment-only edits — may instead publish a
+bounded two-line record: the proposition checked and the command or evidence that
+settled it, marked `semantic-review:v1` the same way. The two-tier practice is real at
+fleet volume; what is not sanctioned is a zero-content review on a substantive diff.
+
 ```markdown
 ## Review scope
 - Claim, cumulative seams, live consumers, prior findings, and applicable risk reviewed
