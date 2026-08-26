@@ -37,8 +37,10 @@ pub const FRAMEWORK_ADAPTER_SDK_LEGACY_VERSION: &str = "framework_adapter_sdk.v1
 ///   `SemanticFactKind` discriminants (#8921) — per this module's wire
 ///   contract, adding an enum discriminant requires a new schema version,
 ///   because `#[non_exhaustive]` does not give older consumers an
-///   unknown-variant fallback on the wire.
-pub const FRAMEWORK_ADAPTER_SCHEMA_VERSION: u32 = 2;
+///   unknown-variant fallback on the wire;
+/// - `3`: adds the `Hook` `SemanticFactKind` discriminant (#8924) under the
+///   same rule.
+pub const FRAMEWORK_ADAPTER_SCHEMA_VERSION: u32 = 3;
 
 /// Stable opaque identity for a registered adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1033,12 +1035,13 @@ mod tests {
         // `RouteHandlerContext`) must travel on schema version 2 — an older
         // consumer that accepted a v1/schema-1 result would fail
         // deserializing them.
-        assert_eq!(FRAMEWORK_ADAPTER_SCHEMA_VERSION, 2);
+        assert_eq!(FRAMEWORK_ADAPTER_SCHEMA_VERSION, 3);
         for kind in [
             SemanticFactKind::Route,
             SemanticFactKind::RoutePrefix,
             SemanticFactKind::RouteParameter,
             SemanticFactKind::RouteHandlerContext,
+            SemanticFactKind::Hook,
         ] {
             let mut envelope = envelope(Provenance::FrameworkSynthesis);
             envelope.kind = kind;
@@ -1057,7 +1060,7 @@ mod tests {
             let value = serde_json::to_value(&result)?;
             assert_eq!(
                 value["schema_version"],
-                serde_json::json!(2),
+                serde_json::json!(3),
                 "{kind:?} must only travel on the bumped schema version"
             );
         }

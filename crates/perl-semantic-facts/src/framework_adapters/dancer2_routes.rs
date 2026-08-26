@@ -471,6 +471,7 @@ fn mint_handler_context_fact(
     );
     let handler_anchor = match &declaration.route.handler {
         crate::route::RouteHandler::InlineSub { anchor } => *anchor,
+        crate::route::RouteHandler::StaticCoderef { anchor, .. } => *anchor,
         crate::route::RouteHandler::Bounded { .. } => {
             // Unreachable from the mint loop (guarded by the InlineSub match);
             // fall back to the declaration anchor rather than panicking.

@@ -2891,6 +2891,22 @@ created = "2026-08-23"
 review_after = "2026-09-23"
 
 [[allow]]
+id = "non-rust-litexl-init-completion-resolve-tests"
+path = "clients/lite-xl/tests/init_completion_resolve_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free completion resolve suite proving selection correctness independent of hover, full-item resolution without requiring completion_item.data, one shared generation-bound resolve per item subject, deferred application until the resolve terminal, resolved-field overlay feeding exactly-one validated application, typed timeout/failure refusal without partial mutation, and inertness of late resolves across edits, restarts, and provider switches; runs against the staged module or current main for red-first checks and against single-behavior mutations for falsifier checks."
+covered_by = [
+  "lua clients/lite-xl/tests/init_completion_resolve_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-25"
+review_after = "2026-09-25"
+
+[[allow]]
 id = "non-rust-litexl-init-show-document-outcome-tests"
 path = "clients/lite-xl/tests/init_show_document_outcome_test.lua"
 kind = "editor_extension_test"
@@ -3018,6 +3034,71 @@ created = "2026-08-24"
 review_after = "2026-09-24"
 
 [[allow]]
+id = "non-rust-litexl-capability-manifest"
+path = "clients/lite-xl/upstream/capability_manifest.lua"
+kind = "editor_extension"
+language = "lua"
+surface = "editor"
+classification = "production"
+owner = "editor/lite-xl"
+reason = "#11172 profile-scoped capability/affordance projection manifest: the single advertisement authority folding the exact initialize client-capability payload (advertise-requires-implemented, fails closed), pure command-availability predicates gating false affordances on implemented client consumers, bounded custom-capability claim scans, and a deterministic canonical report; pure module with no requires so any runtime or harness can load it."
+covered_by = [
+  "lua clients/lite-xl/tests/capability_manifest_test.lua",
+  "lua clients/lite-xl/tests/server_initialize_capabilities_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-25"
+review_after = "2026-09-25"
+
+[[allow]]
+id = "non-rust-litexl-capability-manifest-tests"
+path = "clients/lite-xl/tests/capability_manifest_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "#11172 manifest seam suite: required-row coverage, disposition discipline (advertise only implemented rows), closed-door negative controls for re-advertised unconsumed leaves and disposition flips without landed producers, availability-predicate truth table, custom-claim scan boundaries, and second-run generation no-diff under a time sandwich; four verified mutation falsifiers."
+covered_by = [
+  "lua clients/lite-xl/tests/capability_manifest_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-25"
+review_after = "2026-09-25"
+
+[[allow]]
+id = "non-rust-litexl-initialize-capabilities-tests"
+path = "clients/lite-xl/tests/server_initialize_capabilities_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "#11172 initialize payload suite driving the real staged Server:initialize through the actual conversion authority: exact reconciled truth-table equality, encoded-byte absence pins for unconsumed publishDiagnostics leaves, dependency-state snippetSupport honesty, custom-override merge freedom plus unsupported-claim warnings, and cross-instance determinism; four verified mutation falsifiers."
+covered_by = [
+  "lua clients/lite-xl/tests/server_initialize_capabilities_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-25"
+review_after = "2026-09-25"
+
+[[allow]]
+id = "non-rust-litexl-command-projection-tests"
+path = "clients/lite-xl/tests/init_command_projection_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "#11172 command-projection suite through the #11103 journey harness: call-hierarchy and rename send nothing under server capability alone, one explicit owner-naming refusal message each, an implemented-consumer hover control pin against vacuous green, and full lsp:* command-to-manifest-row coverage; verified mutation falsifiers cover gate deletion per sender and stripped refusal messages."
+covered_by = [
+  "lua clients/lite-xl/tests/init_command_projection_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-25"
+review_after = "2026-09-25"
+
+[[allow]]
 id = "non-rust-train-edge-contract-schema"
 path = "schemas/train_edge_contract.v1.schema.json"
 kind = "train_contract"
@@ -3114,6 +3195,69 @@ created = "2026-08-24"
 review_after = "2026-11-24"
 
 [[allow]]
+id = "non-rust-standalone-candidate-schema"
+path = "schemas/standalone_candidate.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "JSON Schema pinning the closed immutable standalone candidate manifest contract (#11179); the derived candidate identity is recomputed over canonical bytes by the checked validator."
+covered_by = [
+  "cargo test -p xtask --locked --example standalone_candidate_selection",
+  "cargo run -p xtask --locked --example standalone_candidate_selection -- --verify-fixtures fixtures/experience/standalone_candidate_selection",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-standalone-current-selection-schema"
+path = "schemas/standalone_current_selection.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "JSON Schema pinning the closed standalone current-selection record contract (#11179): monotonic generations, previous-known-good governance, and digest-only identities with no private paths."
+covered_by = [
+  "cargo test -p xtask --locked --example standalone_candidate_selection",
+  "cargo run -p xtask --locked --example standalone_candidate_selection -- --verify-fixtures fixtures/experience/standalone_candidate_selection",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-standalone-install-transition-schema"
+path = "schemas/standalone_install_transition.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "JSON Schema pinning the closed install/repair/update/rollback transition record (#11179) with four independent outcome dimensions for product units, cleanup, process startup, and PATH persistence."
+covered_by = [
+  "cargo test -p xtask --locked --example standalone_candidate_selection",
+  "cargo run -p xtask --locked --example standalone_candidate_selection -- --verify-fixtures fixtures/experience/standalone_candidate_selection",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-standalone-candidate-selection-fixtures"
+glob = "fixtures/experience/standalone_candidate_selection/**/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "release/ci"
+reason = "Synthetic vectors for the #11179 standalone candidate/current-selection contract: the required pair/server-only/source scenarios plus fail-closed falsifiers each naming its expected reason code."
+covered_by = [
+  "cargo run -p xtask --locked --example standalone_candidate_selection -- --verify-fixtures fixtures/experience/standalone_candidate_selection",
+]
+created = "2026-08-24"
+review_after = "2026-11-24"
+
+[[allow]]
 id = "non-rust-agent-review-packet-schema"
 path = "schemas/agent_review_packet.v1.schema.json"
 kind = "agent_contract"
@@ -3192,3 +3336,23 @@ covered_by = [
 ]
 created = "2026-08-24"
 review_after = "2026-11-24"
+
+# =============================================================================
+# Archived legacy material
+# =============================================================================
+
+[[allow]]
+id = "non-rust-archive-tree"
+glob = "archive/**"
+kind = "archived_source"
+language = "mixed"
+surface = "archive"
+classification = "documentation"
+owner = "parser/legacy"
+reason = "Archived legacy crates (e.g., tree-sitter-perl-rs) kept for historical reference; workspace-excluded and not built."
+covered_by = ["cargo xtask check-file-policy"]
+broad_glob_reason = "archive/ is intentionally heterogeneous: legacy C, JS, pest grammars, benchmarks, disabled Rust binaries. Workspace-excluded; not built; non-executable per existing exclusion policy."
+created = "2026-08-24"
+review_after = "2027-02-20"
+expires = "2027-08-24"
+
