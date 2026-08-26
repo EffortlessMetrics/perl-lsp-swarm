@@ -491,11 +491,17 @@ fn canonical_dancer2_route_admission(node: &Node) -> HashSet<(String, u32)> {
     use perl_semantic_facts::framework_adapters::dancer2::DslSelection;
 
     let file_id = perl_semantic_facts::FileId(0);
+    // Activation sites first: files without a `use Dancer2` site admit
+    // nothing, so the (heavier) route-context walk is skipped entirely for
+    // the common non-Dancer2 file.
+    let sites = extract_dancer2_activation_sites(node, file_id);
+    if sites.is_empty() {
+        return HashSet::new();
+    }
     let contexts = extract_dancer2_route_contexts(node, file_id);
     if contexts.routes.is_empty() {
         return HashSet::new();
     }
-    let sites = extract_dancer2_activation_sites(node, file_id);
 
     // Per-package exclusions from the first source-exact activation site
     // (the canonical activation walk also resolves per-package state from
