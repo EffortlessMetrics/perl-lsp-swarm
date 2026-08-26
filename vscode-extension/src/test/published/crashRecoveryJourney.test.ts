@@ -88,6 +88,10 @@ const RECOVERY_WINDOW_MS = 120_000;
 const QUIET_WINDOW_MS = 6_000;
 const BREAKER_EXHAUSTION_WINDOW_MS = 15_000;
 const WATCHDOG_RECOVERY_WINDOW_MS = 60_000;
+/** Per-episode wait for a post-crash generation to reach Running on a loaded
+ *  hosted runner; matches the initial demand-start bound, not a weaker
+ *  invariant — a lifecycle stuck at 'failed' still fails this window. */
+const EPISODE_RUNNING_WINDOW_MS = 120_000;
 const POLL_INTERVAL_MS = 50;
 /** Kills must land inside the stable-run grace so the budget never resets. */
 const MAX_RUN_TO_KILL_MS = 25_000;
@@ -294,7 +298,11 @@ suite('Packaged crash-recovery journey (#7848)', function () {
   // Worst-case wait arithmetic (startup + kill/recovery cycles + the real
   // watchdog interval + bounded observation windows) approaches 8 minutes on
   // a slow runner; the smoke job budget accommodates one matrix leg per job.
-  this.timeout(600_000);
+  // The breaker leg's worst case after the hosted-calibrated windows
+  // (4 episodes × (120s Running + 120s replacement) + exhaustion + explicit
+  // retry) exceeds 10 minutes; Mocha must not abort before writeLegReceipt,
+  // or the failure loses its receipt entirely.
+  this.timeout(1_200_000);
 
   (selectedLeg === 'transient' ? test : test.skip)(
     'transient leg: one unexpected crash recovers exactly once with replay and clean state',
@@ -517,8 +525,8 @@ suite('Packaged crash-recovery journey (#7848)', function () {
           try {
             await withTimeout(
               `replay readiness ${path.basename(document.uri.fsPath)}`,
-              api.waitForActiveDocumentReady!(document.uri.toString(), 60_000),
-              60_000,
+              api.waitForActiveDocumentReady!(document.uri.toString(), EPISODE_RUNNING_WINDOW_MS),
+              EPISODE_RUNNING_WINDOW_MS,
             );
             replayRows[path.basename(document.uri.fsPath)] = 'ready_in_replacement_generation';
           } catch (error: unknown) {
@@ -639,17 +647,22 @@ suite('Packaged crash-recovery journey (#7848)', function () {
             reason: `suspend failed: ${suspend.detail}`,
           };
         } else {
-          const watchdogRecovery = await awaitGenerationAdvance(
-            api,
-            binDirectory,
-            generationBeforeWatchdog ?? 0,
-            WATCHDOG_RECOVERY_WINDOW_MS,
-          );
-          // The restart's stop terminates the suspended process; resume it so
-          // a leftover cannot wedge the host teardown (kill delivered while
-          // suspended takes effect after SIGCONT).
-          const resume = resumeServerProcess(watchdogTarget.pid);
-          observations.watchdog_resume = resume;
+          let watchdogRecovery;
+          try {
+            watchdogRecovery = await awaitGenerationAdvance(
+              api,
+              binDirectory,
+              generationBeforeWatchdog ?? 0,
+              WATCHDOG_RECOVERY_WINDOW_MS,
+            );
+          } finally {
+            // The restart's stop terminates the suspended process; resume it
+            // so a leftover cannot wedge the host teardown (kill delivered
+            // while suspended takes effect after SIGCONT) — even when the
+            // generation wait itself throws.
+            const resume = resumeServerProcess(watchdogTarget.pid);
+            observations.watchdog_resume = resume;
+          }
           if (!watchdogRecovery.advanced) {
             watchdogRow = {
               status: 'not_proven',
@@ -674,14 +687,28 @@ suite('Packaged crash-recovery journey (#7848)', function () {
               dedupeSamples.every(
                 (sample) => (sample.readiness_generation ?? 0) <= recoveryGeneration,
               );
+            // A generation advance alone cannot prove the watchdog recovery:
+            // beginGeneration runs before client.start(), so a replacement
+            // that then fails to start would pass on generation movement
+            // alone. The row requires exactly one replacement process that
+            // actually reaches Running inside the observation window.
+            const replacementRunning = dedupeSamples.some(
+              (sample) =>
+                sample.server_pids.filter((pid) => pid !== watchdogTarget.pid).length === 1 &&
+                sample.lifecycle_state === 'running',
+            );
             watchdogRow = {
               status:
-                recoveryGeneration !== null && maxOverlap(dedupeSamples) <= 1 && generationStable
+                recoveryGeneration !== null &&
+                replacementRunning &&
+                maxOverlap(dedupeSamples) <= 1 &&
+                generationStable
                   ? 'pass'
                   : 'failed',
               watchdog_episode_generation: watchdogRecovery.final.readiness_generation,
               later_exit_deduped: {
                 quiet_window_ms: QUIET_WINDOW_MS * 2,
+                replacement_running: replacementRunning,
                 max_simultaneous_server_processes: maxOverlap(dedupeSamples),
                 distinct_server_pids: distinctPids(dedupeSamples),
                 suspended_pid: watchdogTarget.pid,
@@ -801,8 +828,15 @@ suite('Packaged crash-recovery journey (#7848)', function () {
         // (a pre-Running death is a startup failure, not a crash episode),
         // and measure the kill latency from the moment Running was observed
         // so the receipt proves every kill landed inside the 30s stable-run
-        // grace and could not have silently reset the budget.
-        const runningDeadline = Date.now() + 60_000;
+        // grace and could not have silently reset the budget. The bound
+        // matches the initial demand start: a post-crash restart does the
+        // same server spawn + initialization on the same loaded host, so a
+        // 60s episode window that was never validated on hosted runners
+        // falsified slow-but-healthy recoveries. The proven invariant (kill
+        // inside the 30s stable grace, measured FROM the Running
+        // observation) is unchanged; a lifecycle stuck at 'failed' still
+        // fails here with richer receipt evidence.
+        const runningDeadline = Date.now() + EPISODE_RUNNING_WINDOW_MS;
         let runningObservedAt: number | null = null;
         while (Date.now() < runningDeadline) {
           if (lifecycleState(api) === 'running') {
@@ -929,6 +963,24 @@ suite('Packaged crash-recovery journey (#7848)', function () {
               result: generationSequence,
             });
           }
+          // A budget-exceeding recovery that advances the generation and dies
+          // before the first sample would leave one stable newer generation
+          // and pass every check above: compare against the generation at the
+          // final kill, not only across samples.
+          if (
+            generationAtKill !== null &&
+            exhaustionSamples.some(
+              (sample) => (sample.readiness_generation ?? 0) > generationAtKill,
+            )
+          ) {
+            blockers.push({
+              label: 'budget_exhaustion_no_recovery_after_final_kill',
+              result: {
+                generation_at_kill: generationAtKill,
+                sampled: generationSequence,
+              },
+            });
+          }
           if (!lifecycleStates.every((state) => state !== 'running')) {
             blockers.push({
               label: 'budget_exhaustion_terminal_state',
@@ -1005,8 +1057,8 @@ suite('Packaged crash-recovery journey (#7848)', function () {
       try {
         await withTimeout(
           'post-retry readiness',
-          api.waitForActiveDocumentReady!(document.uri.toString(), 60_000),
-          60_000,
+          api.waitForActiveDocumentReady!(document.uri.toString(), EPISODE_RUNNING_WINDOW_MS),
+          EPISODE_RUNNING_WINDOW_MS,
         );
         explicitRetry.readiness = 'ready_in_retry_generation';
       } catch (error: unknown) {

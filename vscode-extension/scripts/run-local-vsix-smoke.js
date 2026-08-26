@@ -934,11 +934,11 @@ function composeCrashRecoveryReceipt({
     background_restart_after_exhaustion: backgroundAfterExhaustion,
     explicit_retry: explicitRetryRow,
     budget:
-      typeof breakerObservations.automatic_budget === 'number'
+      breakerBound && typeof breakerObservations.automatic_budget === 'number'
         ? breakerObservations.automatic_budget
         : null,
     action_required_dialog_observable:
-      breakerObservations.action_required_dialog?.observable === true,
+      breakerBound && breakerObservations.action_required_dialog?.observable === true,
   };
 
   const exhaustedRow = !breakerBound
@@ -965,7 +965,7 @@ function composeCrashRecoveryReceipt({
       : null,
     replacement_servers_never_overlapped: childrenBound
       ? Number(transientObservations.recovery_samples?.max_simultaneous_server_processes ?? 0) <=
-          1 && episodes.every((episode) => (episode.max_simultaneous_server_processes ?? 0) <= 1)
+          1 && episodes.every((episode) => (episode?.max_simultaneous_server_processes ?? 0) <= 1)
       : null,
     budget_exhaustion_spawned_no_background_server: childrenBound
       ? backgroundAfterExhaustion === false
@@ -1690,6 +1690,18 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
   writeJsonAtomic(joinedReceiptFile, joined);
 
   if (legExitCodes.transient !== 0 || legExitCodes.breaker !== 0) {
+    if (joined.verdict === 'failed') {
+      // A leg that recorded observed product failures and then exited nonzero
+      // produced evidence of a real regression; downgrading that to
+      // instrumentation uncertainty would hide it. Only exits without a
+      // bound failure verdict are integrity gaps.
+      return {
+        status: 'failed',
+        exit_codes: legExitCodes,
+        reason: 'crash_recovery_journey_leg_observed_failure',
+        recovery_verdict: joined.verdict,
+      };
+    }
     // Aligned with the composer: a leg that did not exit cleanly is an
     // execution-integrity gap (not_proven), not an observed product failure.
     return {
