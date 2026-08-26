@@ -10,7 +10,8 @@ use super::{
 /// (#10178). The lib-side domain cannot import the binary-side authority, so
 /// this set mirrors it for validation only; the authority remains the
 /// derivation owner and the adapter projects its exact value.
-const KNOWN_PROFILES: &[&str] = &["commit", "pr_fast", "merge_gate", "nightly", "all", "release"];
+const KNOWN_PROFILES: &[&str] =
+    &["commit", "pr_fast", "merge_gate", "nightly", "all", "release", "stack_local"];
 
 pub(super) fn validate(plan: &CiRoutePlanV1) -> Result<(), String> {
     if plan.schema != CI_ROUTE_PLAN_SCHEMA {
