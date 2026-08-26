@@ -119,6 +119,8 @@ pub mod breakpoint;
 pub mod command_args;
 /// DAP launch and attach configuration types (from perl-dap-config).
 pub mod config;
+/// Fixed-origin operational error classification for the #8739 DAP slice.
+mod error_class;
 /// Safe expression evaluation validation (from perl-dap-eval).
 pub mod eval;
 /// Cross-platform utilities for Perl path resolution and environment setup (from perl-dap-platform).

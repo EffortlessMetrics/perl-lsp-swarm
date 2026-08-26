@@ -124,19 +124,21 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             sample_category: Some(ErrorCategory::Protocol),
             sample_disposition: Some(disposition_for(ErrorCategory::Protocol)),
         },
+        // StackParseError / VariableParseError as wholes are origin-ambiguous
+        // (#8746). Only their fixed-origin projections implement ErrorClass (#8739).
         ErrorInventoryEntry {
-            type_name: "StackParseError",
+            type_name: "FixedOriginStackParseError",
             crate_name: "perl-dap",
             has_error_class: true,
             sample_category: Some(ErrorCategory::Bug),
             sample_disposition: Some(disposition_for(ErrorCategory::Bug)),
         },
         ErrorInventoryEntry {
-            type_name: "VariableParseError",
+            type_name: "FixedOriginVariableParseError",
             crate_name: "perl-dap",
             has_error_class: true,
-            sample_category: Some(ErrorCategory::Bug),
-            sample_disposition: Some(disposition_for(ErrorCategory::Bug)),
+            sample_category: Some(ErrorCategory::ResourceLimit),
+            sample_disposition: Some(disposition_for(ErrorCategory::ResourceLimit)),
         },
         ErrorInventoryEntry {
             type_name: "VariableReferenceError",
