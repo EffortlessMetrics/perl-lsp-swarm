@@ -19,6 +19,7 @@ on:
       - 'integrations/lsp4ij/upstream/0.20.1/dap/template.json'
       - 'scripts/ci/dap_editor_transport*.py'
       - 'scripts/tests/test_dap_editor_transport_inventory.py'
+      - 'scripts/tests/test_dap_editor_transport_security.py'
       - 'scripts/ux/neovim/perl_dap.lua'
       - 'vscode-extension/src/debugAdapter.ts'
       - '.github/workflows/dap-editor-transport.yml'
@@ -40,6 +41,7 @@ on:
       - 'integrations/lsp4ij/upstream/0.20.1/dap/template.json'
       - 'scripts/ci/dap_editor_transport*.py'
       - 'scripts/tests/test_dap_editor_transport_inventory.py'
+      - 'scripts/tests/test_dap_editor_transport_security.py'
       - 'scripts/ux/neovim/perl_dap.lua'
       - 'vscode-extension/src/debugAdapter.ts'
       - '.github/workflows/dap-editor-transport.yml'
@@ -79,12 +81,22 @@ jobs:
       - name: Run editor-transport falsifiers
         run: python3 scripts/tests/test_dap_editor_transport_inventory.py
 
+      - name: Run editor-transport security falsifiers
+        run: python3 scripts/tests/test_dap_editor_transport_security.py
+
       - name: Enforce current inventory and ruling
         run: |
           python3 scripts/ci/dap_editor_transport_inventory.py check \
             --root . \
             --manifest .ci/dap/editor-transport-inventory.v1.json \
             --receipt target/receipts/dap-editor-transport.json
+
+      - name: Enforce transport-security static instrument
+        run: |
+          python3 scripts/ci/dap_editor_transport_security.py check \
+            --root . \
+            --manifest .ci/dap/editor-transport-inventory.v1.json \
+            --receipt target/receipts/dap-editor-transport-security-static.json
 
       - name: Publish inventory summary
         shell: bash
@@ -94,9 +106,14 @@ jobs:
             echo
             echo '- Candidate: `'$DAP_TRANSPORT_CANDIDATE_SHA'`'
             echo '- Receipt: `target/receipts/dap-editor-transport.json`'
+            echo '- Security static receipt: `target/receipts/dap-editor-transport-security-static.json`'
             echo
             echo '```json'
             cat target/receipts/dap-editor-transport.json
+            echo '```'
+            echo
+            echo '```json'
+            cat target/receipts/dap-editor-transport-security-static.json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -105,6 +122,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: dap-editor-transport-${{ env.DAP_TRANSPORT_CANDIDATE_SHA }}
-          path: target/receipts/dap-editor-transport.json
+          path: |
+            target/receipts/dap-editor-transport.json
+            target/receipts/dap-editor-transport-security-static.json
           if-no-files-found: error
           retention-days: 14
