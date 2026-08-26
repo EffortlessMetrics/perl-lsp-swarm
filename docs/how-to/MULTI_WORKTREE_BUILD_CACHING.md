@@ -55,6 +55,18 @@ What `cargo-safe` does (see `scripts/cargo-safe`, 74 lines, worth reading):
 - refuses to run when the devplane filesystem is nearly full
   (`MIN_FREE_GB=40`, `MAX_USED_PCT=85`).
 
+**One honest caveat about the default devplane key.** `cargo-safe` derives
+`<repo-name>` from `basename "$(git rev-parse --show-toplevel)"`, so under
+this repository's standard `.worktrees/<slot>` layout **each worktree slot
+gets its own devplane** — separate target, Cargo home, sccache, and lock
+directories. What is shared out of the box is the *compiler output*, because
+`SCCACHE_BASEDIRS` covers the worktree parent and sccache deduplicates
+identical compile invocations across slots. If you additionally want **one
+shared target dir** across all worktrees, set `DEVPLANE` explicitly to a
+single repository-stable path (see the export block below) — with that one
+variable overridden, the wrapper's target dir, Cargo home, sccache dir, and
+build flock all land on the same shared root.
+
 One-time setup per machine:
 
 ```bash
@@ -63,10 +75,13 @@ cargo install sccache --locked   # optional but recommended
 ```
 
 If you prefer not to route every command through the wrapper, export the same
-variables once per shell — these are the exact lines `cargo-safe` applies:
+variables once per shell. Derive the devplane from the **common git dir** so
+every linked worktree resolves the same path (deriving it from the worktree's
+own toplevel basename would recreate the per-slot split):
 
 ```bash
-export DEVPLANE="${XDG_CACHE_HOME:-$HOME/.cache}/devplane/$(basename "$(git rev-parse --show-toplevel)")"
+main_root="$(dirname "$(git rev-parse --git-common-dir)")"
+export DEVPLANE="${XDG_CACHE_HOME:-$HOME/.cache}/devplane/$(basename "$main_root")"
 export CARGO_TARGET_DIR="$DEVPLANE/target"
 export CARGO_HOME="$DEVPLANE/cargo-home"
 export CARGO_INCREMENTAL=0
@@ -136,13 +151,29 @@ poison every worktree at once.
 
 ## Measuring whether it helps
 
-Do not take the strategy on faith — measure it on your box class:
+Do not take the strategy on faith — measure it on your box class. One
+measurement trap first: `scripts/build-timing-receipt.sh` (i.e. `cargo xtask
+build-timing-receipt`) **with no flags runs `cargo clean` before timing** —
+with a shared target exported, that deletes the warm artifacts you meant to
+measure. A warm-vs-cold comparison that preserves the cache:
 
-- `scripts/build-timing-receipt.sh` (i.e. `cargo xtask
-  build-timing-receipt`) records build-time receipts; compare a cold
-  per-worktree build against a second-worktree build with the devplane warm.
-- The cache-strategy measurement programme lives in **#9178**; adoption
-  evidence for this guide should land there as receipts, not anecdotes.
+```bash
+# 1. Cold baseline in a scratch worktree (receipt cleans, then times):
+scripts/build-timing-receipt.sh --clean --output artifacts/timing-cold.json
+
+# 2. Warm the devplane once from any worktree:
+just cached check --workspace --all-targets --locked
+
+# 3. Warm measurement in a *second* worktree at the same revision — no clean:
+scripts/build-timing-receipt.sh --incremental --output artifacts/timing-warm.json
+#    or, simplest honest wall-clock: time just cached check --workspace --locked
+
+# 4. Receipt-level delta:
+cargo xtask compare-build-timing artifacts/timing-cold.json artifacts/timing-warm.json
+```
+
+The cache-strategy measurement programme lives in **#9178**; adoption
+evidence for this guide should land there as receipts, not anecdotes.
 
 Expected shape on a build-bound box: first worktree pays the full cold build
 (~10m class); every subsequent sibling worktree's first build of the same
