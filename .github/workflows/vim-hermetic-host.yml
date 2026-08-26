@@ -12,6 +12,7 @@ on:
       - "crates/perl-lsp-rs-core/**"
       - "crates/perl-lsp-rs/**"
       - "crates/perl-diagnostics/**"
+      - "crates/perl-module/**"
       - "crates/perllsp/**"
       - "Cargo.toml"
       - "Cargo.lock"

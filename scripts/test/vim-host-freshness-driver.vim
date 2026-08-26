@@ -552,14 +552,19 @@ function! s:RestartAndMaterialize(index, init_before, picks_generation, state_ex
     call s:Fail('server_restart_stop_failed')
     return 0
   endif
+  " The materialization baselines are captured BEFORE the reopen: a restarted
+  " server that processes the queued didOpen while the init wait runs has
+  " already published by the time the wait returns, and baselines taken after
+  " it would wait for a second publish that never comes. The barrier's
+  " strictly-greater comparisons accept the already-arrived publish.
+  let l:update_before = VimLspHostDiagnosticsUpdatedCount()
+  let l:wire_before = VimLspHostWireMarkerCount('textDocument/publishDiagnostics')
   let l:init_expr = 'VimLspHostServerInitCount() >= ' . (a:init_before + 1)
   call VimLspHostOpenFixture(s:fixture_root . '/' . s:config_file_rel)
   if !s:WaitFor(l:init_expr, s:budget)
     call s:Fail('server_restart_init_never_arrived')
     return 0
   endif
-  let l:update_before = VimLspHostDiagnosticsUpdatedCount()
-  let l:wire_before = VimLspHostWireMarkerCount('textDocument/publishDiagnostics')
   call s:Emit('client_materialization_applied', {
         \ 'materialization_index': string(a:index),
         \ 'materialization': 'server_restart',

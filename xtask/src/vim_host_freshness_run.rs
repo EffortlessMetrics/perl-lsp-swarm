@@ -683,7 +683,7 @@ pub fn host_freshness_run(
         &observation,
         capabilities,
         diagnostics,
-        freshness_journey(&observation, &judgment),
+        freshness_journey(&observation, &judgment, &wire),
         judgment.result,
         judgment.failure_class,
         limitations,
@@ -1189,12 +1189,15 @@ pub fn evaluate_freshness_observation(
 // ---------------------------------------------------------------------------
 
 /// Compose the receipt journey: the lifecycle barrier cells (the #10944
-/// surface) plus the six #11381 catalog cells this scenario evidences.
+/// surface, judged against the run's real mined wire — the teardown-deferred
+/// shutdown cell needs the client's own exit trace) plus the six #11381
+/// catalog cells this scenario evidences.
 pub fn freshness_journey(
     observation: &ProcessObservation,
     judgment: &FreshnessJudgment,
+    wire: &WireEvidence,
 ) -> Vec<JourneyCell> {
-    let mut cells = crate::vim_host_run::outcome_journey(observation, &WireEvidence::default());
+    let mut cells = crate::vim_host_run::outcome_journey(observation, wire);
     let catalog_limitations: BTreeMap<&str, &str> = BTreeMap::from([
         (
             CELL_ROUTE,

@@ -20,6 +20,7 @@ use xtask::editor_client_compat::{
     PlatformIdentity, RegistrationState, WorkspaceFixtureIdentity,
     canonical_expectation_set_digest, fixture_digest,
 };
+use xtask::vim_host_freshness_run::freshness_journey;
 use xtask::vim_host_freshness_run::{
     CELL_CLIENT_SETTINGS, CELL_EXTERNAL_SOURCE, CELL_PROJECT_CONFIG, CELL_PROVIDER_OWNERSHIP,
     CELL_ROUTE, CELL_STALE_GENERATION, CONFIG_TOKEN, FreshnessBatch, FreshnessFixtureVariant,
@@ -848,6 +849,53 @@ fn initialize_restarts_count_outgoing_sends_only() -> Result<()> {
     ensure!(
         wire.did_change_configuration_lines.is_empty(),
         "echoed requests must not count as configuration pushes"
+    );
+    Ok(())
+}
+
+#[test]
+fn teardown_deferred_shutdown_journey_needs_the_real_wire() -> Result<()> {
+    // The pinned client can lose the job-exit callback in the stop/kill
+    // race; the receipt's shutdown cell then relies on the client's own
+    // teardown trace in the real mined wire (the #10944 substrate law). The
+    // journey must be composed from that wire — an empty one would degrade
+    // the cell to not-proven on a canonical run.
+    let dir = tempfile::tempdir()?;
+    let plan = scratch_freshness_plan(&dir.path().join("scratch"))?;
+    let mut events = complete_freshness_events(&plan_digest(&plan));
+    let last = events.len();
+    events[last - 1] = detail_event(
+        last as u64,
+        DriverEventKind::ShutdownCompleted,
+        &[("server_exited", "0"), ("exit_evidence", "deferred_to_editor_teardown")],
+    );
+    let observation = observation_with(Some(0), CleanupResult::Pass, events);
+    let judgment = evaluate_freshness_observation(
+        &plan,
+        &observation,
+        &canonical_wire(),
+        &canonical_freshness_wire(),
+        FreshnessFixtureVariant::Canonical,
+    );
+    let mut real_wire = canonical_wire();
+    real_wire.saw_client_exit_log = true;
+    let with_real_wire = freshness_journey(&observation, &judgment, &real_wire);
+    let shutdown_cell = with_real_wire
+        .iter()
+        .find(|cell| cell.id == "shutdown_completed")
+        .unwrap_or_else(|| panic!("shutdown_completed cell missing"));
+    ensure!(
+        shutdown_cell.result == ObservationResult::Pass,
+        "the teardown-deferred shutdown must pass on the client's own teardown trace"
+    );
+    let with_empty_wire = freshness_journey(&observation, &judgment, &WireEvidence::default());
+    let empty_cell = with_empty_wire
+        .iter()
+        .find(|cell| cell.id == "shutdown_completed")
+        .unwrap_or_else(|| panic!("shutdown_completed cell missing"));
+    ensure!(
+        empty_cell.result == ObservationResult::NotProven,
+        "an empty wire cannot prove the teardown-deferred exit"
     );
     Ok(())
 }
