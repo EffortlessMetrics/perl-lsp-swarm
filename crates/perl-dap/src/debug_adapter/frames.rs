@@ -5,6 +5,7 @@ use super::{
     ScopesResponseBody, Source, StackFrame, StackTraceArguments, Value, Write, json,
     lock_or_recover,
 };
+use crate::parse_origin::{DebuggerOutputOrigin, OriginatedParseInput, ParseIdentity};
 use std::collections::HashSet;
 
 const FRAME_ID_MODULUS: i32 = 100_000;
@@ -121,7 +122,12 @@ impl DebugAdapter {
 
         let parsed_frames = if let Some(lines) = framed_output_lines.as_ref() {
             let output = lines.join("\n");
-            let (parsed_frames, frame_arguments) = Self::parse_stack_frames_from_text(&output);
+            let input = OriginatedParseInput::new(
+                DebuggerOutputOrigin::DebuggerControlPayload,
+                ParseIdentity::new(),
+                &output,
+            );
+            let (parsed_frames, frame_arguments) = Self::parse_stack_frames_from_text(input);
             let visible_frames = Self::filter_user_visible_frames(parsed_frames);
             let current_frame_id = lock_or_recover(&self.session, "debug_adapter.session")
                 .as_ref()
