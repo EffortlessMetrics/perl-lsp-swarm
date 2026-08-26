@@ -648,9 +648,22 @@ describe('buildDapExecutableArgs', () => {
       undefined,
       { request: 'launch', program: '/x.pl' },
       { externalPeer: 'localhost:9000' },
-      { debuggerBackend: 'external', externalDebugger: { host: '127.0.0.1', port: 13604 } },
-      { debuggerBackend: 'external', externalDebugger: { mode: 'listen', host: '127.0.0.1' } },
-      { debuggerBackend: 'external', externalDebugger: { mode: 'listen', host: '127.0.0.1', port: 0 } },
+      {
+        debuggerBackend: 'external',
+        externalDebugger: { host: '127.0.0.1', port: 13604 },
+      },
+      {
+        debuggerBackend: 'external',
+        externalDebugger: { mode: 'listen', host: '127.0.0.1' },
+      },
+      {
+        debuggerBackend: 'external',
+        externalDebugger: {
+          mode: 'listen',
+          host: '127.0.0.1',
+          port: 0,
+        },
+      },
     ];
     for (const config of configs) {
       const args = buildDapExecutableArgs(config);
