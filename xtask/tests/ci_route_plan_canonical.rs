@@ -5,7 +5,10 @@
 //! independent Python reference generator (`generate_golden.py`) from the
 //! specified encoding contract — never by the Rust encoder — so agreement
 //! here is independent proof, not the production canonicalizer comparing
-//! itself.
+//! itself. The generator's non-mutating `--check` mode runs alongside
+//! these tests and compares every checked-in fixture byte against the
+//! generator output, so a stale or hand-edited vector cannot pass by
+//! merely agreeing with a stale Rust encoder.
 //!
 //! The schema checks parse the checked-in JSON Schema
 //! (`.ci/schemas/ci-route-plan.v1.schema.json`) and validate actual
@@ -203,6 +206,50 @@ fn golden_payload_bytes_match() {
         String::from_utf8(bytes).expect("utf-8"),
         String::from_utf8(fixture("payload-baseline.json")).expect("utf-8"),
         "the complete published artifact must equal the frozen reference payload"
+    );
+}
+
+fn python() -> &'static str {
+    if cfg!(windows) { "python" } else { "python3" }
+}
+
+#[test]
+fn golden_generator_reports_no_fixture_drift() {
+    // Non-mutating drift check: the frozen vectors must equal the
+    // independent Python generator's output byte for byte, so a stale or
+    // hand-edited fixture cannot pass the equality tests above by merely
+    // agreeing with a stale Rust encoder.
+    let output = std::process::Command::new(python())
+        .arg(Path::new(FIXTURES).join("generate_golden.py"))
+        .arg("--check")
+        .output()
+        .expect("python is available to run the golden generator");
+    assert!(
+        output.status.success(),
+        "generate_golden.py --check failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn published_payload_keys_are_the_semantic_keys_plus_derived_fields() {
+    // The payload embeds the semantic projection, so its key set is the
+    // fingerprint-preimage key set plus exactly `summary` and
+    // `semantic_fingerprint`; any other divergence between the two
+    // projections is caught here instead of drifting silently.
+    let plan = CiRoutePlanV1::compile(baseline_input()).expect("baseline compiles");
+    let payload = serde_json::to_value(plan.canonical_payload()).expect("payload value");
+    let projection = serde_json::to_value(plan.semantic_projection()).expect("projection value");
+    let mut expected: BTreeSet<&str> =
+        projection.as_object().expect("object").keys().map(String::as_str).collect();
+    expected.insert("summary");
+    expected.insert("semantic_fingerprint");
+    let payload_keys: BTreeSet<&str> =
+        payload.as_object().expect("object").keys().map(String::as_str).collect();
+    assert_eq!(
+        payload_keys, expected,
+        "published payload = semantic projection + the two derived fields only"
     );
 }
 

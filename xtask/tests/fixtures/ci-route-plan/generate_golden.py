@@ -23,12 +23,16 @@ xtask/src/ci_route_plan/canonical.rs):
 
 Regenerate the fixtures with:
     python3 xtask/tests/fixtures/ci-route-plan/generate_golden.py
+
+Verify the checked-in fixtures without writing anything (drift check):
+    python3 xtask/tests/fixtures/ci-route-plan/generate_golden.py --check
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 
 FINGERPRINT_DOMAIN = b"ci_route_plan.v1\0"
@@ -145,22 +149,54 @@ def payload(semantic: dict) -> dict:
     return complete
 
 
-def main() -> None:
-    here = Path(__file__).resolve().parent
-    vectors = {
+def build_vectors() -> dict[str, bytes]:
+    """Every fixture's expected byte content, keyed by file stem."""
+    semantic = {
         "semantic-baseline": baseline_semantic(),
         "semantic-escaping": escaping_semantic(),
     }
-    digests = {}
-    for name, semantic in vectors.items():
-        (here / f"{name}.json").write_bytes(canonical_bytes(semantic))
-        digests[name] = fingerprint(semantic)
-    (here / "payload-baseline.json").write_bytes(canonical_bytes(payload(baseline_semantic())))
-    (here / "digests.json").write_text(
-        json.dumps(digests, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    print("wrote golden vectors:", ", ".join(sorted(digests)), "+ payload-baseline.json")
+    contents = {name: canonical_bytes(value) for name, value in semantic.items()}
+    contents["payload-baseline"] = canonical_bytes(payload(baseline_semantic()))
+    digests = {name: fingerprint(value) for name, value in semantic.items()}
+    contents["digests"] = (
+        json.dumps(digests, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    return contents
+
+
+def check_vectors(here: Path, contents: dict[str, bytes]) -> int:
+    """Non-mutating drift check: compare every fixture against the
+    generator output and fail (exit 1) on any difference."""
+    drifted = [
+        name
+        for name, expected in sorted(contents.items())
+        if (here / f"{name}.json").read_bytes() != expected
+    ]
+    if drifted:
+        for name in drifted:
+            print(f"fixture drift: {name}.json differs from the generator output", file=sys.stderr)
+        print(
+            "regenerate with: python3 xtask/tests/fixtures/ci-route-plan/generate_golden.py",
+            file=sys.stderr,
+        )
+        return 1
+    print("golden fixtures match the generator output:", ", ".join(sorted(contents)))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    here = Path(__file__).resolve().parent
+    contents = build_vectors()
+    if argv == ["--check"]:
+        return check_vectors(here, contents)
+    if argv:
+        print(f"usage: {sys.argv[0]} [--check]", file=sys.stderr)
+        return 2
+    for name, expected in contents.items():
+        (here / f"{name}.json").write_bytes(expected)
+    print("wrote golden vectors:", ", ".join(sorted(contents)))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main(sys.argv[1:]))

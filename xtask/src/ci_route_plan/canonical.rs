@@ -120,24 +120,16 @@ pub struct SemanticProjection<'a> {
 
 /// The complete published payload in canonical form: the semantic
 /// projection (set-like fields normalized) plus the derived `summary` and
-/// the `semantic_fingerprint` field itself. Serializing this view — never
-/// the raw domain object — is what makes published bytes canonical: two
-/// semantically equal plans with different source orders produce identical
-/// artifacts.
+/// the `semantic_fingerprint` field itself. The projection is embedded
+/// verbatim — not re-listed — so the fingerprint preimage and the
+/// published payload share one semantic field list by construction and
+/// cannot drift apart. Serializing this view — never the raw domain
+/// object — is what makes published bytes canonical: two semantically
+/// equal plans with different source orders produce identical artifacts.
 #[derive(Debug, Clone, Serialize)]
 pub struct CanonicalPayload<'a> {
-    pub schema: &'a str,
-    pub producer: &'a str,
-    pub subject: &'a RouteSubjectRef,
-    pub requested_profile: &'a str,
-    pub included_native_tiers: Vec<&'a str>,
-    pub expansion_fingerprint: &'a str,
-    pub policy_digest: &'a str,
-    pub disposition_digest: &'a str,
-    pub workflow_digest: &'a str,
-    pub denominator: &'a [String],
-    pub selection: &'a RouteSelectionEvidence,
-    pub rows: &'a [RoutePlanRow],
+    #[serde(flatten)]
+    pub semantic: SemanticProjection<'a>,
     pub summary: &'a super::RoutePlanSummary,
     pub semantic_fingerprint: &'a str,
 }
@@ -164,21 +156,12 @@ impl CiRoutePlanV1 {
     }
 
     /// The complete payload in canonical form (set-like fields normalized,
-    /// summary and fingerprint included).
+    /// summary and fingerprint included). Built by embedding the semantic
+    /// projection, so the published field list is the fingerprint preimage
+    /// field list plus exactly the two derived fields.
     pub fn canonical_payload(&self) -> CanonicalPayload<'_> {
         CanonicalPayload {
-            schema: &self.schema,
-            producer: &self.producer,
-            subject: &self.subject,
-            requested_profile: &self.requested_profile,
-            included_native_tiers: self.canonical_tiers(),
-            expansion_fingerprint: &self.expansion_fingerprint,
-            policy_digest: &self.policy_digest,
-            disposition_digest: &self.disposition_digest,
-            workflow_digest: &self.workflow_digest,
-            denominator: &self.denominator,
-            selection: &self.selection,
-            rows: &self.rows,
+            semantic: self.semantic_projection(),
             summary: &self.summary,
             semantic_fingerprint: &self.semantic_fingerprint,
         }

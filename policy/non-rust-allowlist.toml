@@ -3871,6 +3871,7 @@ owner = "ci/route-plan"
 reason = "Independent reference-vector generator for the ci_route_plan.v1 canonical encoding (#10179): builds canonical bytes from the specified contract (json.dumps sort_keys, minimal escaping, raw UTF-8) and computes domain-separated SHA-256 fingerprints with Python hashlib, so the Rust encoder is never the sole oracle for the golden digests."
 covered_by = [
   "python3 xtask/tests/fixtures/ci-route-plan/generate_golden.py",
+  "python3 xtask/tests/fixtures/ci-route-plan/generate_golden.py --check",
   "cargo test -p xtask --locked --test ci_route_plan_canonical",
 ]
 created = "2026-08-26"

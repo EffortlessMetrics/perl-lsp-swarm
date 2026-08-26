@@ -34,16 +34,19 @@
 //!
 //! Any failure (serialization, directory creation, temp creation, write,
 //! sync, rename, directory sync, read-back) is a typed non-success. A
-//! pre-promotion failure removes this writer's temporary and any stale
-//! destination artifact, so no file remains that a later artifact upload
-//! could mistake for the requested plan; unremovable residue is named in
-//! the typed refusal. A post-promotion failure (directory sync or final
-//! read-back) leaves the destination untouched — after promotion it may
-//! hold a concurrent writer's completed artifact, which this writer must
-//! never delete — and the refusal states that this invocation could not
-//! verify the artifact. Multi-writer/shared-store semantics are
-//! explicitly not implied; downstream consumers needing them require a
-//! separate contract.
+//! failure before this writer's rename promoted (temp write, sync, temp
+//! read-back, rename) removes only the temporary this writer provably
+//! owns: any file already at the destination was never produced by this
+//! invocation and may be a concurrent publication's completed artifact,
+//! which a losing writer must never delete, so the destination is left
+//! untouched. A post-promotion failure (directory sync or final
+//! read-back) likewise leaves the destination untouched — it may hold
+//! this writer's promoted bytes or a concurrent writer's completed
+//! artifact — and the refusal states that this invocation could not
+//! verify the artifact. Consumers must trust the typed refusal, never
+//! the presence or absence of an artifact. Multi-writer/shared-store
+//! semantics are explicitly not implied; downstream consumers needing
+//! them require a separate contract.
 
 // CLI instrument: the typed refusal/success lines are this tool's interface.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
@@ -217,12 +220,6 @@ enum PublicationError {
         expected_len: usize,
         found_len: usize,
     },
-    /// A failed publication could not remove a stale destination artifact;
-    /// the original refusal is carried inside.
-    StaleDestinationRemained {
-        path: PathBuf,
-        refusal: Box<PublicationError>,
-    },
 }
 
 impl std::fmt::Display for PublicationError {
@@ -258,14 +255,6 @@ impl std::fmt::Display for PublicationError {
                     path.display()
                 )
             }
-            PublicationError::StaleDestinationRemained { path, refusal } => {
-                write!(
-                    formatter,
-                    "failed publication could not remove the stale destination artifact at {}: \
-                     it must not be consumed; original refusal: {refusal}",
-                    path.display()
-                )
-            }
         }
     }
 }
@@ -285,15 +274,18 @@ fn publish_atomically(path: &Path, bytes: &[u8]) -> Result<(), PublicationError>
     })?;
     if let Err(refusal) = write_and_verify_temp(&temp, bytes, file) {
         // Pre-promotion failure: nothing of this writer reached the
-        // destination, so a stale prior artifact there is removed too.
-        return Err(cleanup_failed_publication(path, &temp, refusal));
+        // destination. Only the temporary is provably this writer's; any
+        // file at the destination may be a concurrent publication's
+        // completed artifact and must never be removed by a losing writer.
+        return Err(cleanup_failed_publication(&temp, refusal));
     }
     match promote(&temp, path, bytes) {
         Ok(()) => Ok(()),
-        // The rename never promoted this writer's bytes; the destination
-        // (if any) is a stale prior artifact and is cleaned up.
+        // The rename never promoted this writer's bytes, so exactly like a
+        // pre-promotion failure nothing at the destination is attributable
+        // to this invocation: only the temporary is removed.
         Err(refusal @ PublicationError::Rename { .. }) => {
-            Err(cleanup_failed_publication(path, &temp, refusal))
+            Err(cleanup_failed_publication(&temp, refusal))
         }
         // Post-promotion failure (directory sync, final read-back): the
         // destination now holds either this writer's promoted bytes or a
@@ -305,27 +297,14 @@ fn publish_atomically(path: &Path, bytes: &[u8]) -> Result<(), PublicationError>
     }
 }
 
-/// Best-effort cleanup after a pre-promotion failure so no file remains
-/// that a later consumer could mistake for the requested plan: this
-/// writer's temporary is removed, and a pre-existing destination artifact
-/// (a stale plan for a previous subject at this path) is removed too — a
-/// refusal must not leave an uploadable stale verdict behind. Residue that
-/// cannot be removed is reported inside the typed refusal.
-fn cleanup_failed_publication(
-    final_path: &Path,
-    temp: &Path,
-    refusal: PublicationError,
-) -> PublicationError {
+/// Best-effort cleanup after a publication that never promoted this
+/// writer's bytes: it removes only the temporary this writer provably
+/// owns. The destination is never touched — before promotion this writer
+/// cannot attribute a destination file to itself, and the file there may
+/// be a concurrent publication's completed artifact, which a losing
+/// writer must never delete.
+fn cleanup_failed_publication(temp: &Path, refusal: PublicationError) -> PublicationError {
     drop(fs::remove_file(temp));
-    if final_path.is_file() {
-        drop(fs::remove_file(final_path));
-        if final_path.is_file() {
-            return PublicationError::StaleDestinationRemained {
-                path: final_path.to_path_buf(),
-                refusal: Box::new(refusal),
-            };
-        }
-    }
     refusal
 }
 
@@ -656,10 +635,11 @@ mod publication_spec {
     }
 
     #[test]
-    fn failed_publication_removes_a_stale_destination_artifact() {
-        // A refusal must not leave an uploadable stale verdict: the cleanup
-        // removes both the writer's temporary and any pre-existing
-        // destination artifact from a previous subject.
+    fn pre_promotion_cleanup_removes_only_the_temporary() {
+        // Corrected invariant: a refusal before promotion never deletes a
+        // destination file this invocation cannot attribute to itself —
+        // including a stale artifact from a previous subject. Consumers
+        // must trust the typed refusal, never artifact presence/absence.
         let dir = temp_dir("stale-destination");
         let target = dir.join("plan.json");
         fs::write(&target, b"stale plan for another subject").expect("stale artifact");
@@ -670,13 +650,46 @@ mod publication_spec {
             expected_len: 2,
             found_len: 7,
         };
-        let returned = cleanup_failed_publication(&target, &temp, refusal);
+        let returned = cleanup_failed_publication(&temp, refusal);
         assert!(
             matches!(returned, PublicationError::ReadBackMismatch { .. }),
             "the original refusal is preserved"
         );
         assert!(!temp.exists(), "temporary removed");
-        assert!(!target.exists(), "stale destination artifact removed");
+        assert!(target.is_file(), "a destination file is never removed by a failing writer");
+        drop(fs::remove_dir_all(&dir));
+    }
+
+    #[test]
+    fn pre_promotion_failure_never_removes_a_concurrent_writers_completed_artifact() {
+        // Interleaving regression: writer B completes the destination,
+        // then writer A hits a pre-promotion refusal (temp write, sync, or
+        // temp read-back). A's cleanup must remove only A's temporary;
+        // B's completed artifact must survive byte-for-byte.
+        let dir = temp_dir("interleaved-pre-promotion");
+        let target = dir.join("plan.json");
+        let winner = compiled_bytes();
+        publish_atomically(&target, &winner).expect("writer B completes first");
+        // Writer A's pre-promotion failure: its own unique temporary plus
+        // the typed refusal the write/sync/read-back step returns.
+        let (temp, file) = create_unique_temp(&dir).expect("writer A temp");
+        drop(file);
+        let refusal = PublicationError::ReadBackMismatch {
+            path: temp.clone(),
+            expected_len: 0,
+            found_len: 1,
+        };
+        let returned = cleanup_failed_publication(&temp, refusal);
+        assert!(
+            matches!(returned, PublicationError::ReadBackMismatch { .. }),
+            "the original refusal is preserved: {returned:?}"
+        );
+        assert!(!temp.exists(), "the losing writer's temporary is removed");
+        assert_eq!(
+            fs::read(&target).expect("writer B's completed artifact survives"),
+            winner,
+            "a pre-promotion refusal must never delete a concurrent writer's completed artifact"
+        );
         drop(fs::remove_dir_all(&dir));
     }
 
