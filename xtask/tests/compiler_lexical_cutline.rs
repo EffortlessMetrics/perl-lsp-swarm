@@ -354,3 +354,49 @@ fn static_invalid_fixture_continuation_token() -> TestResult {
     let value: Value = serde_json::from_slice(&bytes)?;
     expect_violation(&value, "unknown field `preparation_continuation`")
 }
+
+#[test]
+fn rejects_structural_drift_the_schema_owns() -> TestResult {
+    // The schema is applied, not merely parsed: removing a schema-required
+    // field the handwritten checks do not name must fail validation.
+    let root = repo_root();
+    let temp = tempfile::tempdir()?;
+    let temp_root = temp.path();
+    let schema_dest = temp_root.join(cutline::SCHEMA_PATH);
+    let manifest_dest = temp_root.join(cutline::MANIFEST_PATH);
+    std::fs::create_dir_all(schema_dest.parent().ok_or("schema parent")?)?;
+    std::fs::create_dir_all(manifest_dest.parent().ok_or("manifest parent")?)?;
+    std::fs::copy(root.join(cutline::SCHEMA_PATH), &schema_dest)?;
+    let mut manifest = canonical_manifest()?;
+    manifest.as_object_mut().ok_or("manifest object")?.remove("owner");
+    let mut bytes = serde_json::to_string_pretty(&manifest)?;
+    bytes.push('\n');
+    std::fs::write(&manifest_dest, bytes)?;
+    let error = validation_error(cutline::validate_manifest_file(temp_root));
+    assert!(
+        error.contains("schema violation"),
+        "expected a schema violation for the removed `owner` field, got:\n{error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_positive_coverage_tag_on_excluded_row() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    let case = case_mut(&mut manifest, "LX-EXC-001").ok_or("missing case")?;
+    case["coverage"] = serde_json::json!(["unicode_astral_geometry"]);
+    expect_violation(
+        &manifest,
+        "admitted-denominator tag `unicode_astral_geometry` sits on an excluded row",
+    )
+}
+
+#[test]
+fn rejects_case_listing_unrelated_existing_mutation() -> TestResult {
+    // LX-MUT-02 fails only LX-POS-001; listing it on LX-POS-002 must fail
+    // even though the mutation exists — global existence is not the pair.
+    let mut manifest = canonical_manifest()?;
+    let case = case_mut(&mut manifest, "LX-POS-002").ok_or("missing case")?;
+    case["mutations"] = serde_json::json!(["LX-MUT-01", "LX-MUT-02", "LX-MUT-07", "LX-MUT-15"]);
+    expect_violation(&manifest, "fails_rows does not name this row")
+}

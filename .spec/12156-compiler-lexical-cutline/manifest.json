@@ -3321,6 +3321,7 @@
       "expected_detection": "Anchor provenance class is not the compiler-owned #12191 anchor; provenance-asserting rows fail.",
       "fails_rows": [
         "LX-POS-001",
+        "LX-POS-002",
         "LX-POS-003"
       ],
       "mutation_id": "LX-MUT-01",

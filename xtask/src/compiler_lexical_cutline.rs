@@ -173,7 +173,7 @@ pub fn validate_manifest_bytes(bytes: &[u8]) -> Result<ValidationStats, CutlineV
 /// root, including the validator test proof path named by the test targets.
 pub fn validate_manifest_file(root: &Path) -> Result<ValidationStats, CutlineValidationError> {
     let schema_text = read_repo_text(root, SCHEMA_PATH)?;
-    let _: Value = serde_json::from_str(&schema_text).map_err(|error| {
+    let schema: Value = serde_json::from_str(&schema_text).map_err(|error| {
         CutlineValidationError::new(format!("{SCHEMA_PATH}: invalid JSON: {error}"))
     })?;
     let bytes = read_repo_bytes(root, MANIFEST_PATH)?;
@@ -181,6 +181,16 @@ pub fn validate_manifest_file(root: &Path) -> Result<ValidationStats, CutlineVal
     let value: Value = serde_json::from_slice(&bytes)
         .map_err(|error| CutlineValidationError::new(format!("manifest: invalid JSON: {error}")))?;
     let mut violations = Vec::new();
+    // The schema is the structural authority for this proof contract, so it
+    // is actually applied: parsing it as JSON alone would let a structurally
+    // invalid manifest (missing owner, claim_boundary, nested authority
+    // fields, ...) pass the advertised validation command.
+    let validator = jsonschema::validator_for(&schema).map_err(|error| {
+        CutlineValidationError::new(format!("{SCHEMA_PATH}: invalid schema: {error}"))
+    })?;
+    for error in validator.iter_errors(&value) {
+        violations.push(format!("manifest: schema violation: {error}"));
+    }
     validate_test_target_proof_paths(root, &value, &mut violations);
     finish(violations)?;
     Ok(stats)
@@ -750,7 +760,15 @@ fn validate_cases(
     if array.is_empty() {
         violations.push("manifest.cases: must not be empty".to_string());
     }
-    let mut coverage_seen = BTreeSet::new();
+    // Coverage is polarity-separated, not kind-exclusive: admitted rows feed
+    // the admitted denominator, excluded rows feed the exclusion denominator,
+    // and lifecycle rows feed both (their scenarios demonstrate positive
+    // preparation outcomes and boundary/refusal outcomes by design). A
+    // positive tag on an excluded row or an exclusion tag on an admitted row
+    // is a polarity violation — one shared set would let a tag move across
+    // polarities without failing validation.
+    let mut admitted_coverage = BTreeSet::new();
+    let mut exclusion_coverage = BTreeSet::new();
     let mut scenarios_seen = BTreeSet::new();
     for (i, value) in array.iter().enumerate() {
         let path = format!("manifest.cases[{i}]");
@@ -797,7 +815,28 @@ fn validate_cases(
             violations.push(format!("{path}: case id prefix does not match kind `{kind}`"));
         }
         for tag in string_set(case.get("coverage")) {
-            coverage_seen.insert(tag);
+            if kind == "excluded" && REQUIRED_POSITIVE_COVERAGE.contains(&tag.as_str()) {
+                violations.push(format!(
+                    "{path}.coverage: admitted-denominator tag `{tag}` sits on an excluded row"
+                ));
+            }
+            if kind == "admitted" && REQUIRED_EXCLUSION_COVERAGE.contains(&tag.as_str()) {
+                violations.push(format!(
+                    "{path}.coverage: exclusion-denominator tag `{tag}` sits on an admitted row"
+                ));
+            }
+            match kind.as_str() {
+                "admitted" => {
+                    admitted_coverage.insert(tag);
+                }
+                "excluded" => {
+                    exclusion_coverage.insert(tag);
+                }
+                _ => {
+                    admitted_coverage.insert(tag.clone());
+                    exclusion_coverage.insert(tag);
+                }
+            }
         }
         require_string(case, "summary", &path, violations);
         require_string(case, "adjacent_boundary", &path, violations);
@@ -828,13 +867,13 @@ fn validate_cases(
         }
     }
     for tag in REQUIRED_POSITIVE_COVERAGE {
-        if !coverage_seen.contains(*tag) {
+        if !admitted_coverage.contains(*tag) {
             violations
                 .push(format!("manifest.cases: admitted denominator missing coverage `{tag}`"));
         }
     }
     for tag in REQUIRED_EXCLUSION_COVERAGE {
-        if !coverage_seen.contains(*tag) {
+        if !exclusion_coverage.contains(*tag) {
             violations
                 .push(format!("manifest.cases: exclusion denominator missing coverage `{tag}`"));
         }
@@ -1355,6 +1394,7 @@ fn validate_mutations(
         expected_ids.insert(format!("LX-MUT-{number:02}"));
     }
     let mut seen = BTreeSet::new();
+    let mut fails_rows_by_mutation: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (index, value) in array.iter().enumerate() {
         let path = format!("manifest.mutations[{index}]");
         let Some(mutation) = as_object(value, &path, violations) else { continue };
@@ -1379,6 +1419,7 @@ fn validate_mutations(
         if fails_rows.is_empty() {
             violations.push(format!("{path}.fails_rows: must name at least one stable row"));
         }
+        fails_rows_by_mutation.insert(id.to_string(), fails_rows.clone());
         for row in &fails_rows {
             match case_index.get(row) {
                 None => violations.push(format!("{path}.fails_rows: unknown case `{row}`")),
@@ -1394,12 +1435,18 @@ fn validate_mutations(
         }
     }
     // Bidirectional ownership, other direction: every mutation a case lists
-    // must fail that row.
+    // must exist and must actually fail that row — listing an existing but
+    // unrelated mutation falsely claims it discriminates this row.
     for (case_id, case) in case_index {
         for mutation in &case.mutations {
-            if !seen.contains(mutation) {
-                violations
-                    .push(format!("manifest.cases:{case_id}: lists unknown mutation `{mutation}`"));
+            match fails_rows_by_mutation.get(mutation) {
+                None => violations.push(format!(
+                    "manifest.cases:{case_id}: lists unknown mutation `{mutation}`"
+                )),
+                Some(rows) if !rows.contains(case_id) => violations.push(format!(
+                    "manifest.cases:{case_id}: lists mutation `{mutation}` but its fails_rows does not name this row"
+                )),
+                Some(_) => {}
             }
         }
     }
