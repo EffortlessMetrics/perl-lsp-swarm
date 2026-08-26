@@ -97,7 +97,6 @@ fn run() -> Result<i32> {
         CliCommand::CargoPackageWorkspaceDryRun { crates } => {
             cmd_cargo_package_workspace_dry_run(&repo_root, &crates)?
         }
-        CliCommand::TestWithOverride => cmd_test_with_override(&repo_root)?,
         CliCommand::SimpleLspTest => cmd_simple_lsp_test(&repo_root)?,
         CliCommand::CheckVersionSync => cmd_check_version_sync(&repo_root)?,
         CliCommand::BumpVersion { version } => cmd_bump_version(&repo_root, &version)?,
@@ -1275,28 +1274,6 @@ fn cmd_compare_benchmarks(repo_root: &Path, args: &[String]) -> Result<i32> {
     argv.extend_from_slice(args);
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     command_status_strict(repo_root, "python3", &refs, &[])?;
-    Ok(0)
-}
-
-fn cmd_test_with_override(repo_root: &Path) -> Result<i32> {
-    println!("Testing with minimal features catalog...");
-    command_status_strict(
-        repo_root,
-        "cargo",
-        &["test", "-p", "perl-parser", "--test", "lsp_feature_gating_test", "--", "--nocapture"],
-        &[("FEATURES_TOML_OVERRIDE", "crates/perl-parser/tests/data/features_minimal.toml")],
-    )?;
-
-    println!();
-    println!("Testing with disabled features catalog...");
-    command_status_strict(
-        repo_root,
-        "cargo",
-        &["test", "-p", "perl-parser", "--test", "lsp_features_snapshot_test", "--", "--nocapture"],
-        &[("FEATURES_TOML_OVERRIDE", "crates/perl-parser/tests/data/features_disabled_test.toml")],
-    )?;
-
-    println!("✅ Override testing complete!");
     Ok(0)
 }
 
