@@ -566,7 +566,8 @@ mod tests {
         let directory = tempdir()?;
         let output = directory.path().join("child.json");
         write_verified_child_artifact(&receipt, &receipt_sha256, status, &output)?;
-        let artifact: VerifiedChildArtifact<'_> = serde_json::from_slice(&std::fs::read(output)?)?;
+        let artifact_bytes = std::fs::read(output)?;
+        let artifact: VerifiedChildArtifact<'_> = serde_json::from_slice(&artifact_bytes)?;
         assert_eq!(artifact.schema_version, "verified_child_receipt.v1");
         assert_eq!(artifact.receipt_schema_version, "first_ten_minutes.v1");
         assert_eq!(artifact.candidate_id, "v0.18.0-pre-freeze");

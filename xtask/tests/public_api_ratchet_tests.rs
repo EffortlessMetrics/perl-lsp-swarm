@@ -399,18 +399,25 @@ fn non_facade_crates_have_no_baselines() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-/// Test J (edge case & regression): perllsp baseline has exactly 2 lines (mod + re-export)
+/// Test J (regression guard): perllsp baseline preserves its structural header and accepted surface
 ///
-/// `perllsp` is a thin binary wrapper that re-exports from `perl-lsp-rs`.
-/// Its public API surface should be minimal: just the module declaration and
-/// the re-export statement. This test verifies the format is preserved as expected.
+/// `perllsp` is a thin binary wrapper that re-exports from `perl-lsp-rs`. Since PR #12030
+/// (Aug 2026) it also exposes the `claude_compat` module directly, expanding the accepted
+/// public-API surface from 2 to 81 non-empty lines. This test guards that structure:
 ///
-/// If perllsp's baseline grows significantly, it may indicate:
-/// - Additional public API was accidentally added to the lib target
-/// - The re-export pattern changed
-/// - The baseline was regenerated incorrectly
+/// - Line 1 is the top-level module declaration (`pub mod perllsp`)
+/// - Line 2 is the blanket re-export (`pub use perllsp::<<perl_lsp::*>>`)
+/// - Total non-empty lines match the frozen count established by #12030
+///
+/// A count mismatch signals that the baseline was regenerated without review (new public
+/// items were added or removed). If an intentional change is reviewed and accepted, update
+/// `EXPECTED_PERLLSP_BASELINE_LINE_COUNT` below and cite the authoritative PR.
 #[test]
 fn perllsp_baseline_has_expected_reexport_format() -> Result<(), Box<dyn std::error::Error>> {
+    // Frozen line count as of PR #12030 (Aug 2026). Update here when the surface changes
+    // intentionally and the new baseline has been reviewed and accepted.
+    const EXPECTED_PERLLSP_BASELINE_LINE_COUNT: usize = 81;
+
     let root = project_root();
     let perllsp_baseline = root.join(".ci/public-api-baselines/perllsp.txt");
 
@@ -421,9 +428,13 @@ fn perllsp_baseline_has_expected_reexport_format() -> Result<(), Box<dyn std::er
 
     assert_eq!(
         lines.len(),
-        2,
-        "perllsp baseline should have exactly 2 lines (mod + re-export), got {}. Content:\n{}",
+        EXPECTED_PERLLSP_BASELINE_LINE_COUNT,
+        "perllsp baseline has {} non-empty lines but expected {}. \
+         If the public API surface changed intentionally, regenerate the baseline, \
+         review it, and update EXPECTED_PERLLSP_BASELINE_LINE_COUNT (citing the PR). \
+         Current content:\n{}",
         lines.len(),
+        EXPECTED_PERLLSP_BASELINE_LINE_COUNT,
         content
     );
 
@@ -434,7 +445,7 @@ fn perllsp_baseline_has_expected_reexport_format() -> Result<(), Box<dyn std::er
         lines[0]
     );
 
-    // Verify second line is a re-export (uses pub use and contains <<...>>)
+    // Verify second line is the blanket re-export (uses pub use and contains <<...>>)
     assert!(
         lines[1].contains("pub use") && lines[1].contains("<<"),
         "perllsp baseline second line should be a re-export pattern, got: {}",
