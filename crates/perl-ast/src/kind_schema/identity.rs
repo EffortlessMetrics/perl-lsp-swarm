@@ -436,7 +436,7 @@ pub fn diff_structural_registries(
             changes.push(SchemaChange::AddedVariant { kind_name: (*name).to_string() });
         }
     }
-    if expected != actual {
+    if from_set.keys().eq(to_set.keys()) && expected != actual {
         changes.push(SchemaChange::ReorderedVariants { expected, actual });
     }
 

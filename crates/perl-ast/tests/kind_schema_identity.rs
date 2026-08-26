@@ -119,6 +119,21 @@ fn adding_reordering_or_removing_a_variant_or_field_changes_identity()
     let mut removed = NODE_KIND_STRUCTURAL_REGISTRY.to_vec();
     removed.remove(row_index("Program")?);
     assert_ne!(baseline, fingerprint_registry(&removed));
+    let removed_diff = diff_structural_registries(NODE_KIND_STRUCTURAL_REGISTRY, &removed);
+    assert!(
+        removed_diff.changes.iter().any(|change| matches!(
+            change,
+            SchemaChange::RemovedVariant { kind_name } if kind_name == "Program"
+        )),
+        "{removed_diff:?}"
+    );
+    assert!(
+        !removed_diff
+            .changes
+            .iter()
+            .any(|change| matches!(change, SchemaChange::ReorderedVariants { .. })),
+        "add/remove must not report ReorderedVariants: {removed_diff:?}"
+    );
 
     let mut reordered = NODE_KIND_STRUCTURAL_REGISTRY.to_vec();
     reordered.swap(0, 1);
@@ -126,6 +141,21 @@ fn adding_reordering_or_removing_a_variant_or_field_changes_identity()
         baseline,
         fingerprint_registry(&reordered),
         "declaration order is a behavior-bearing structural fact"
+    );
+    let reorder_diff = diff_structural_registries(NODE_KIND_STRUCTURAL_REGISTRY, &reordered);
+    assert!(
+        reorder_diff
+            .changes
+            .iter()
+            .any(|change| matches!(change, SchemaChange::ReorderedVariants { .. })),
+        "same-set declaration-order swap must be a reorder: {reorder_diff:?}"
+    );
+    assert!(
+        !reorder_diff.changes.iter().any(|change| matches!(
+            change,
+            SchemaChange::AddedVariant { .. } | SchemaChange::RemovedVariant { .. }
+        )),
+        "{reorder_diff:?}"
     );
 
     let mut added = NODE_KIND_STRUCTURAL_REGISTRY.to_vec();
@@ -139,6 +169,21 @@ fn adding_reordering_or_removing_a_variant_or_field_changes_identity()
         compatibility: SchemaCompatibility::Current,
     });
     assert_ne!(baseline, fingerprint_registry(&added));
+    let added_diff = diff_structural_registries(NODE_KIND_STRUCTURAL_REGISTRY, &added);
+    assert!(
+        added_diff.changes.iter().any(|change| matches!(
+            change,
+            SchemaChange::AddedVariant { kind_name } if kind_name == "SyntheticExtra"
+        )),
+        "{added_diff:?}"
+    );
+    assert!(
+        !added_diff
+            .changes
+            .iter()
+            .any(|change| matches!(change, SchemaChange::ReorderedVariants { .. })),
+        "add/remove must not report ReorderedVariants: {added_diff:?}"
+    );
 
     let mut dropped_field = NODE_KIND_STRUCTURAL_REGISTRY.to_vec();
     let idx = row_index("Assignment")?;
@@ -193,6 +238,29 @@ fn stale_checked_report_with_previous_count_fails() {
     assert!(
         matches!(stale, Err(StatusFreshnessError::StaleCheckedOutput { .. })),
         "stale count must fail closed, got {stale:?}"
+    );
+}
+
+#[test]
+fn stale_checked_report_with_same_counts_but_structural_drift_fails() {
+    let inventory = current_nodekind_inventory();
+    let current = render_checked_status_report(&inventory, "current");
+    assert!(check_status_freshness(&current, &inventory).is_ok());
+
+    let stale_row = current.replacen("statements:repeated", "statements:optional", 1);
+    assert_ne!(stale_row, current);
+    assert!(
+        stale_row.contains(&format!("variant_count={}", inventory.variant_count)),
+        "counts must remain current so this case is not the previous-count control"
+    );
+    assert!(
+        stale_row.contains(&format!("identity={}", inventory.identity.wire())),
+        "identity wire must remain current so summaries are the discriminated surface"
+    );
+    let stale = check_status_freshness(&stale_row, &inventory);
+    assert!(
+        matches!(stale, Err(StatusFreshnessError::StaleCheckedOutput { .. })),
+        "same-count field-cardinality drift must fail freshness, got {stale:?}"
     );
 }
 
