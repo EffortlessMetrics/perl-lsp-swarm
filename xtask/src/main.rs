@@ -155,6 +155,16 @@ enum Commands {
     /// declared adaptations of the landed programme train manifests.
     CheckTrainEdgeContract,
 
+    /// Feature-readiness train tooling (FR-C05 #11286): deterministic,
+    /// content-addressed builder and adversarial reviewer packets over a
+    /// bounded representative fixture registry. Offline only; invokes no
+    /// model, mutates no Git/GitHub state, and writes no repository files.
+    #[command(name = "feature-readiness-train")]
+    FeatureReadinessTrain {
+        #[command(subcommand)]
+        command: tasks::feature_readiness_packets::FeatureReadinessTrainCommand,
+    },
+
     /// Validate the dependency-neutral product-health rail/adapter registry contract.
     #[command(name = "check-product-health-rail-contract")]
     CheckProductHealthRailContract,
@@ -4609,6 +4619,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
+        Commands::FeatureReadinessTrain { command } => {
+            tasks::feature_readiness_packets::run(command)
+        }
         Commands::CheckProductHealthRailContract => product_health_rail_contract::run(),
         Commands::CheckAgentImplementationPacket { update_golden } => {
             agent_implementation_packet::run(update_golden)
