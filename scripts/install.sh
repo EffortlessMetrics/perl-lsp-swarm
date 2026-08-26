@@ -871,6 +871,23 @@ maybe_inject_install_fault() {
     fi
 }
 
+maybe_observe_product_unit() {
+    local _barrier="$1"
+    if [ "${PERL_LSP_INSTALL_OBSERVE:-}" != "$_barrier" ]; then
+        return 0
+    fi
+    if [ -z "${PERL_LSP_INSTALL_OBSERVE_FILE:-}" ]; then
+        err "PERL_LSP_INSTALL_OBSERVE_FILE is required for observation barrier $_barrier"
+    fi
+    {
+        observe_current_product_unit
+        observe_path_visible_product_unit
+    } > "$PERL_LSP_INSTALL_OBSERVE_FILE"
+    if grep -q 'state=mixed' "$PERL_LSP_INSTALL_OBSERVE_FILE"; then
+        err "path-visible product unit became mixed at $_barrier"
+    fi
+}
+
 hash_product_member() {
     local _tool
     _tool="$(select_sha256_tool)" || err "SHA-256 tool is required to bind product-unit identity"
@@ -1000,14 +1017,19 @@ commit_current_selection() {
 ensure_path_visible_selectors() {
     local _allow_fault="${1:-1}"
     local _rel=".perl-lsp/current"
-    local _store _current_dap
+    local _store _want_dap=0
     _store="$(product_store_dir)"
     if [ "$_allow_fault" = "1" ]; then
         maybe_inject_install_fault "before_selectors"
     fi
     atomic_symlink_replace "${INSTALL_DIR}/${BIN_NAME}" "${_rel}/${BIN_NAME}"
-    _current_dap="${_store}/current/${DAP_BIN_NAME}"
-    if [ -f "$_current_dap" ]; then
+    maybe_observe_product_unit "between_path_members"
+    if [ -f "${_store}/current/${DAP_BIN_NAME}" ]; then
+        _want_dap=1
+    elif [ ! -e "${_store}/current" ] && [ -n "${EXTRACT_DIR:-}" ] && [ -f "${EXTRACT_DIR}/${DAP_BIN_NAME}" ]; then
+        _want_dap=1
+    fi
+    if [ "$_want_dap" = "1" ]; then
         atomic_symlink_replace "${INSTALL_DIR}/${DAP_BIN_NAME}" "${_rel}/${DAP_BIN_NAME}"
     elif [ -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; then
         rm -f "${INSTALL_DIR}/${DAP_BIN_NAME}"
@@ -1049,6 +1071,7 @@ observe_current_product_unit() {
 
 observe_path_visible_product_unit() {
     local _server _dap _server_link _dap_link _server_dir="" _dap_dir=""
+    local _cur _cur_server="-" _cur_dap="-"
     _server="$(path_visible_member_hash "${INSTALL_DIR}/${BIN_NAME}")"
     _dap="$(path_visible_member_hash "${INSTALL_DIR}/${DAP_BIN_NAME}")"
     if [ -L "${INSTALL_DIR}/${BIN_NAME}" ]; then
@@ -1059,9 +1082,19 @@ observe_path_visible_product_unit() {
         _dap_link="$(readlink "${INSTALL_DIR}/${DAP_BIN_NAME}")"
         _dap_dir="$(dirname "$_dap_link")"
     fi
-    if [ -n "$_dap_dir" ] && [ "$_server_dir" != "$_dap_dir" ]; then
+    if [ -n "$_dap_dir" ] && [ -n "$_server_dir" ] && [ "$_server_dir" != "$_dap_dir" ]; then
         printf 'state=mixed server_sha256=%s dap_sha256=%s\n' "$_server" "$_dap"
         return 0
+    fi
+    _cur="$(observe_current_product_unit)"
+    _cur_server="$(printf '%s\n' "$_cur" | sed -n 's/.*server_sha256=\([^ ]*\).*/\1/p')"
+    _cur_dap="$(printf '%s\n' "$_cur" | sed -n 's/.*dap_sha256=\([^ ]*\).*/\1/p')"
+    if [ "$_server" != "-" ] && [ "$_dap" != "-" ]; then
+        if { [ "$_server" = "$_cur_server" ] && [ "$_dap" != "$_cur_dap" ]; } \
+            || { [ "$_server" != "$_cur_server" ] && [ "$_dap" = "$_cur_dap" ]; }; then
+            printf 'state=mixed server_sha256=%s dap_sha256=%s\n' "$_server" "$_dap"
+            return 0
+        fi
     fi
     printf 'state=path_visible server_sha256=%s dap_sha256=%s\n' "$_server" "$_dap"
 }
@@ -1114,6 +1147,7 @@ Try one of:
     promote_legacy_layout_if_needed || return
 
     _id="$(publish_immutable_candidate "$EXTRACT_DIR" "$_disposition")" || return
+    ensure_path_visible_selectors || return
     commit_current_selection "$_id" || return
     ensure_path_visible_selectors || return
 

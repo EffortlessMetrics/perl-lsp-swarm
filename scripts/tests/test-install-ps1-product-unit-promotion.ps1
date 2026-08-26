@@ -89,27 +89,20 @@ function Assert-CompletePair {
     Write-Payload -Path (Join-Path $expect "perl-dap.exe") -Payload $Dap
     $wantServer = Hash-BytesFile (Join-Path $expect "perllsp.exe")
     $wantDap = Hash-BytesFile (Join-Path $expect "perl-dap.exe")
-    $serverPath = Join-Path $script:InstallDir "perllsp.exe"
-    $dapPath = Join-Path $script:InstallDir "perl-dap.exe"
-    $sitem = Get-Item -LiteralPath $serverPath
-    $ditem = Get-Item -LiteralPath $dapPath
-    $st = $null
-    $dt = $null
-    if ($sitem.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
-        $st = $sitem.Target; if ($st -is [array]) { $st = $st[0] }
-    }
-    if ($ditem.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
-        $dt = $ditem.Target; if ($dt -is [array]) { $dt = $dt[0] }
-    }
-    if ($st -and $dt -and ([IO.Path]::GetDirectoryName([string]$st) -ne [IO.Path]::GetDirectoryName([string]$dt))) { return $false }
-    if ((Hash-BytesFile $serverPath) -ne $wantServer) { return $false }
-    if ((Hash-BytesFile $dapPath) -ne $wantDap) { return $false }
     $current = Get-StandaloneCurrentObservation -InstallDir $script:InstallDir
     $pathv = Get-StandalonePathVisibleObservation -InstallDir $script:InstallDir
     if ($current -notlike "*server_sha256=$wantServer*") { return $false }
     if ($current -notlike "*dap_sha256=$wantDap*") { return $false }
     if ($current -notlike "state=selected*") { return $false }
     if ($pathv -like "state=mixed*") { return $false }
+    if ($pathv -notlike "*server_sha256=$wantServer*") { return $false }
+    if ($pathv -notlike "*dap_sha256=$wantDap*") { return $false }
+    if (-not (Test-Path -LiteralPath (Join-Path $script:InstallDir "perllsp.cmd"))) { return $false }
+    if (-not (Test-Path -LiteralPath (Join-Path $script:InstallDir "perl-dap.cmd"))) { return $false }
+    $dir = Get-StandaloneCurrentDir -InstallDir $script:InstallDir
+    if (-not $dir) { return $false }
+    if ((Hash-BytesFile (Join-Path $dir "perllsp.exe")) -ne $wantServer) { return $false }
+    if ((Hash-BytesFile (Join-Path $dir "perl-dap.exe")) -ne $wantDap) { return $false }
     return $true
 }
 
@@ -131,17 +124,23 @@ try {
         Pass-Case "PATH selectors use atomic replace"
     }
 
-    if (-not (Select-String -Path $Installer -Pattern 'ItemType Junction' -SimpleMatch -Quiet)) {
-        Fail-Case "unelevated directory pointer fallback exists" "install.ps1 has no junction fallback for current"
+    if (Select-String -Path $Installer -Pattern 'To.bak.$PID' -SimpleMatch -Quiet) {
+        Fail-Case "pointer replace has no missing-name backup gap" "install.ps1 still moves current aside to a .bak name"
     } else {
-        Pass-Case "unelevated directory pointer fallback exists"
+        Pass-Case "pointer replace has no missing-name backup gap"
+    }
+
+    if (-not (Select-String -Path $Installer -Pattern 'Write-StandaloneCmdShim' -SimpleMatch -Quiet) -or -not (Select-String -Path $Installer -Pattern 'Write-StandalonePointerFile' -SimpleMatch -Quiet)) {
+        Fail-Case "PATH names follow a single file pointer" "install.ps1 is missing the file pointer or cmd shim helpers"
+    } else {
+        Pass-Case "PATH names follow a single file pointer"
     }
 
     Setup-Root
     Stage-Pair -Dest $ExtractDir -Server "server-a" -Dap "dap-a"
     Invoke-Promote
     $receiptOk = ($LastOutput -like "*product_unit_receipt*") -and ($LastOutput -like "*archive_pair_required*") -and ($LastOutput -notlike "*$InstallDir*")
-    $dapPathOk = ($null -ne $LastResult) -and ([string]$LastResult.DapDestPath -eq (Join-Path $InstallDir "perl-dap.exe"))
+    $dapPathOk = ($null -ne $LastResult) -and ([string]$LastResult.DapDestPath -eq (Join-Path $InstallDir "perl-dap.cmd"))
     if (($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-a" -Dap "dap-a") -and $receiptOk -and $dapPathOk) {
         Pass-Case "first archive pair publishes one current complete unit"
     } else {
@@ -193,7 +192,9 @@ try {
     Invoke-Promote
     $serverPath = Join-Path $InstallDir "perllsp.exe"
     $dapPath = Join-Path $InstallDir "perl-dap.exe"
-    if (($LastStatus -ne 0) -and -not (Test-Path -LiteralPath $serverPath) -and -not (Test-Path -LiteralPath $dapPath) -and ($LastOutput -like "*complete perllsp/perl-dap pair*")) {
+    $serverCmd = Join-Path $InstallDir "perllsp.cmd"
+    $dapCmd = Join-Path $InstallDir "perl-dap.cmd"
+    if (($LastStatus -ne 0) -and -not (Test-Path -LiteralPath $serverPath) -and -not (Test-Path -LiteralPath $dapPath) -and -not (Test-Path -LiteralPath $serverCmd) -and -not (Test-Path -LiteralPath $dapCmd) -and ($LastOutput -like "*complete perllsp/perl-dap pair*")) {
         Pass-Case "release mode rejects a missing DAP before current moves"
     } else {
         Fail-Case "release mode rejects a missing DAP before current moves" "status=$LastStatus output=$LastOutput"
@@ -210,8 +211,8 @@ try {
     Write-Payload -Path (Join-Path $expect "perllsp.exe") -Payload "legacy-server"
     Write-Payload -Path (Join-Path $expect "perl-dap.exe") -Payload "legacy-dap"
     $okLegacy = ($LastStatus -ne 0) -and
-        ((Hash-BytesFile (Join-Path $InstallDir "perllsp.exe")) -eq (Hash-BytesFile (Join-Path $expect "perllsp.exe"))) -and
-        ((Hash-BytesFile (Join-Path $InstallDir "perl-dap.exe")) -eq (Hash-BytesFile (Join-Path $expect "perl-dap.exe")))
+        ((Get-StandalonePathMemberSha256 -InstallDir $InstallDir -ExeName "perllsp.exe") -eq (Hash-BytesFile (Join-Path $expect "perllsp.exe"))) -and
+        ((Get-StandalonePathMemberSha256 -InstallDir $InstallDir -ExeName "perl-dap.exe") -eq (Hash-BytesFile (Join-Path $expect "perl-dap.exe")))
     if ($okLegacy) {
         Pass-Case "legacy regular files stay a complete pair when the new commit fails"
     } else {
@@ -235,10 +236,12 @@ try {
     $pathv = Get-StandalonePathVisibleObservation -InstallDir $InstallDir
     $expectServer = Join-Path $TempRoot "source-expect.exe"
     Write-Payload -Path $expectServer -Payload "source-server"
+    $dir = Get-StandaloneCurrentDir -InstallDir $InstallDir
     $sourceOk = ($LastStatus -eq 0) -and
-        (Test-Path -LiteralPath (Join-Path $InstallDir "perllsp.exe")) -and
-        -not (Test-Path -LiteralPath (Join-Path $InstallDir "perl-dap.exe")) -and
-        ((Hash-BytesFile (Join-Path $InstallDir "perllsp.exe")) -eq (Hash-BytesFile $expectServer)) -and
+        ($null -ne $dir) -and
+        (Test-Path -LiteralPath (Join-Path $InstallDir "perllsp.cmd")) -and
+        -not (Test-Path -LiteralPath (Join-Path $InstallDir "perl-dap.cmd")) -and
+        ((Hash-BytesFile (Join-Path $dir "perllsp.exe")) -eq (Hash-BytesFile $expectServer)) -and
         ($current -like "*advanced_source_server_only*") -and
         ($current -like "*dap_sha256=-*") -and
         ($pathv -notlike "state=mixed*")
@@ -254,9 +257,11 @@ try {
     Stage-ServerOnly -Dest $ExtractDir -Server "source-server"
     Invoke-Promote -Mode source
     $current = Get-StandaloneCurrentObservation -InstallDir $InstallDir
+    $dir = Get-StandaloneCurrentDir -InstallDir $InstallDir
     if (($LastStatus -eq 0) -and
-        ((Hash-BytesFile (Join-Path $InstallDir "perllsp.exe")) -eq (Hash-BytesFile $expectServer)) -and
-        -not (Test-Path -LiteralPath (Join-Path $InstallDir "perl-dap.exe")) -and
+        ($null -ne $dir) -and
+        ((Hash-BytesFile (Join-Path $dir "perllsp.exe")) -eq (Hash-BytesFile $expectServer)) -and
+        -not (Test-Path -LiteralPath (Join-Path $InstallDir "perl-dap.cmd")) -and
         ($current -like "*advanced_source_server_only*")) {
         Pass-Case "source upgrade does not keep the previous DAP as current"
     } else {
@@ -264,34 +269,46 @@ try {
     }
 
     Setup-Root
-    $env:PERL_LSP_INSTALL_POINTER = "unprivileged"
+    $obs = Join-Path $TempRoot "observe.txt"
+    Stage-Pair -Dest $ExtractDir -Server "server-a" -Dap "dap-a"
+    Invoke-Promote
+    Stage-Pair -Dest $ExtractDir -Server "server-b" -Dap "dap-b"
+    $env:PERL_LSP_INSTALL_OBSERVE = "between_path_members"
+    $env:PERL_LSP_INSTALL_OBSERVE_FILE = $obs
+    $env:PERL_LSP_INSTALL_POINTER = "copy"
     try {
-        Stage-Pair -Dest $ExtractDir -Server "server-a" -Dap "dap-a"
         Invoke-Promote
-        $okUnpriv = ($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-a" -Dap "dap-a")
-        Stage-Pair -Dest $ExtractDir -Server "server-b" -Dap "dap-b"
-        Invoke-Promote
-        $okUnpriv = $okUnpriv -and ($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-b" -Dap "dap-b")
-        if ($okUnpriv) {
-            Pass-Case "unelevated junction/hardlink promotion keeps complete pairs"
+        $obsText = ""
+        if (Test-Path -LiteralPath $obs) { $obsText = Get-Content -LiteralPath $obs -Raw }
+        $okObs = ($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-b" -Dap "dap-b") -and
+            ($obsText -like "*state=selected*") -and ($obsText -like "*state=path_visible*") -and
+            ($obsText -notlike "*state=mixed*") -and ($obsText -notlike "*state=none*") -and
+            ($obsText -like "*server_sha256=*") -and ($obsText -like "*dap_sha256=*") -and
+            ($obsText -notlike "*server_sha256=-*") -and ($obsText -notlike "*dap_sha256=-*")
+        if ($okObs) {
+            Pass-Case "interleaved PATH reader never sees mixed members or a missing current"
         } else {
-            Fail-Case "unelevated junction/hardlink promotion keeps complete pairs" "status=$LastStatus output=$LastOutput"
+            Fail-Case "interleaved PATH reader never sees mixed members or a missing current" "status=$LastStatus obs=$obsText output=$LastOutput"
         }
     } finally {
+        Remove-Item Env:PERL_LSP_INSTALL_OBSERVE -ErrorAction SilentlyContinue
+        Remove-Item Env:PERL_LSP_INSTALL_OBSERVE_FILE -ErrorAction SilentlyContinue
         Remove-Item Env:PERL_LSP_INSTALL_POINTER -ErrorAction SilentlyContinue
     }
 
     Setup-Root
-    $env:PERL_LSP_INSTALL_POINTER = "copy"
+    $env:PERL_LSP_INSTALL_POINTER = "unprivileged"
     try {
         Stage-Pair -Dest $ExtractDir -Server "server-a" -Dap "dap-a"
         Invoke-Promote
         Stage-Pair -Dest $ExtractDir -Server "server-b" -Dap "dap-b"
         Invoke-Promote
-        if (($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-b" -Dap "dap-b")) {
-            Pass-Case "copy fallback still publishes one complete pair"
+        $currentFile = Join-Path $InstallDir ".perl-lsp\current"
+        $isFilePointer = (Test-Path -LiteralPath $currentFile) -and -not (Get-Item -LiteralPath $currentFile).PSIsContainer
+        if (($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-b" -Dap "dap-b") -and $isFilePointer) {
+            Pass-Case "unprivileged file pointer plus cmd shims keep complete pairs"
         } else {
-            Fail-Case "copy fallback still publishes one complete pair" "status=$LastStatus output=$LastOutput"
+            Fail-Case "unprivileged file pointer plus cmd shims keep complete pairs" "status=$LastStatus output=$LastOutput filePointer=$isFilePointer"
         }
     } finally {
         Remove-Item Env:PERL_LSP_INSTALL_POINTER -ErrorAction SilentlyContinue

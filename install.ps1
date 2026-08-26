@@ -23,7 +23,9 @@ $Repo = "EffortlessMetrics/perl-lsp"
 # The release workflow packages the binary as `perllsp` on every platform
 # (see .github/workflows/release.yml — NAME="perllsp"), and every editor doc
 # / README / POSIX installer (scripts/install.sh) uses `perllsp`. Install the
-# Windows binary as `perllsp.exe` so the name matches POSIX and the docs.
+# Windows candidate stores `perllsp.exe`; PATH-visible names are `perllsp.cmd`
+# / `perl-dap.cmd` shims that follow `.perl-lsp\current` so unelevated hosts
+# never publish independent copies.
 $Name = "perllsp"
 # The release archive also carries the debug adapter (`perl-dap.exe`) — see
 # .github/workflows/release.yml, which builds `-p perl-dap` for every target.
@@ -517,6 +519,26 @@ function Invoke-ProductUnitFaultIfRequested {
     }
 }
 
+function Invoke-ProductUnitObserveIfRequested {
+    param(
+        [Parameter(Mandatory = $true)][string]$Barrier,
+        [Parameter(Mandatory = $true)][string]$InstallDir
+    )
+    if ($env:PERL_LSP_INSTALL_OBSERVE -ne $Barrier) {
+        return
+    }
+    $file = [string]$env:PERL_LSP_INSTALL_OBSERVE_FILE
+    if ([string]::IsNullOrWhiteSpace($file)) {
+        throw "PERL_LSP_INSTALL_OBSERVE_FILE is required for observation barrier $Barrier"
+    }
+    $cur = Get-StandaloneCurrentObservation -InstallDir $InstallDir
+    $path = Get-StandalonePathVisibleObservation -InstallDir $InstallDir
+    Set-Content -LiteralPath $file -Value ($cur + "`n" + $path) -Encoding ascii
+    if ($path -like "state=mixed*") {
+        throw "path-visible product unit became mixed at $Barrier"
+    }
+}
+
 function Get-ProductUnitCandidateId {
     param(
         [Parameter(Mandatory = $true)][string]$Disposition,
@@ -593,59 +615,6 @@ public static extern bool MoveFileEx(string lpExistingFileName, string lpNewFile
     }
 }
 
-function Get-StandalonePointerKindOrder {
-    param([Parameter(Mandatory = $true)][ValidateSet("Directory", "File")][string]$Surface)
-    $raw = [string]$env:PERL_LSP_INSTALL_POINTER
-    if ([string]::IsNullOrWhiteSpace($raw) -or $raw -eq "auto") {
-        if ($Surface -eq "Directory") {
-            return @("symlink", "junction")
-        }
-        return @("symlink", "hardlink", "copy")
-    }
-    if ($raw -eq "symlink") {
-        return @("symlink")
-    }
-    if ($raw -eq "unprivileged" -or $raw -eq "junction" -or $raw -eq "hardlink" -or $raw -eq "copy") {
-        if ($Surface -eq "Directory") {
-            return @("junction")
-        }
-        if ($raw -eq "copy") {
-            return @("copy")
-        }
-        if ($raw -eq "hardlink") {
-            return @("hardlink")
-        }
-        return @("hardlink", "copy")
-    }
-    throw "unknown PERL_LSP_INSTALL_POINTER=$raw"
-}
-
-function New-TemporaryStandalonePointer {
-    param(
-        [Parameter(Mandatory = $true)][string]$TmpPath,
-        [Parameter(Mandatory = $true)][string]$RelativeTarget,
-        [Parameter(Mandatory = $true)][string]$ResolvedTarget,
-        [Parameter(Mandatory = $true)][ValidateSet("symlink", "junction", "hardlink", "copy")][string]$Kind
-    )
-    if (Test-Path -LiteralPath $TmpPath) {
-        Remove-Item -LiteralPath $TmpPath -Force -Recurse -ErrorAction SilentlyContinue
-    }
-    switch ($Kind) {
-        "symlink" {
-            New-Item -ItemType SymbolicLink -Path $TmpPath -Target $RelativeTarget | Out-Null
-        }
-        "junction" {
-            New-Item -ItemType Junction -Path $TmpPath -Target $ResolvedTarget | Out-Null
-        }
-        "hardlink" {
-            New-Item -ItemType HardLink -Path $TmpPath -Target $ResolvedTarget | Out-Null
-        }
-        "copy" {
-            Copy-Item -LiteralPath $ResolvedTarget -Destination $TmpPath
-        }
-    }
-}
-
 function Invoke-StandaloneMoveFileReplace {
     param(
         [Parameter(Mandatory = $true)][string]$From,
@@ -665,44 +634,89 @@ function Invoke-StandaloneMoveFileReplace {
         return
     }
     $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-    $backup = "$To.bak.$PID.$([guid]::NewGuid().ToString("N"))"
-    if (-not [PerlLspNative.File]::MoveFileEx($To, $backup, $none)) {
-        throw "atomic pointer replace failed (win32=$code)"
-    }
-    if (-not [PerlLspNative.File]::MoveFileEx($From, $To, $none)) {
-        $code2 = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        [void][PerlLspNative.File]::MoveFileEx($backup, $To, $none)
-        throw "atomic pointer commit failed (win32=$code2)"
-    }
-    Remove-Item -LiteralPath $backup -Force -Recurse -ErrorAction SilentlyContinue
+    throw "atomic pointer replace failed (win32=$code)"
 }
 
-function Invoke-AtomicSymlinkReplace {
+function Write-StandalonePointerFile {
     param(
-        [Parameter(Mandatory = $true)][string]$LinkPath,
+        [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$RelativeTarget
     )
-    $parent = Split-Path -Parent $LinkPath
-    $resolved = [IO.Path]::GetFullPath((Join-Path $parent $RelativeTarget))
-    if (-not (Test-Path -LiteralPath $resolved)) {
-        throw "pointer target does not exist: $resolved"
+    $tmp = "$Path.tmp.$PID.$([guid]::NewGuid().ToString("N"))"
+    if (Test-Path -LiteralPath $tmp) {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
     }
-    $surface = if ((Get-Item -LiteralPath $resolved).PSIsContainer) { "Directory" } else { "File" }
-    $errors = @()
-    foreach ($kind in (Get-StandalonePointerKindOrder -Surface $surface)) {
-        $tmp = "$LinkPath.tmp.$PID.$([guid]::NewGuid().ToString("N"))"
-        try {
-            New-TemporaryStandalonePointer -TmpPath $tmp -RelativeTarget $RelativeTarget -ResolvedTarget $resolved -Kind $kind
-            Invoke-StandaloneMoveFileReplace -From $tmp -To $LinkPath
-            return
-        } catch {
-            $errors += "${kind}: $($_.Exception.Message)"
-            if (Test-Path -LiteralPath $tmp) {
-                Remove-Item -LiteralPath $tmp -Force -Recurse -ErrorAction SilentlyContinue
-            }
+    Set-Content -LiteralPath $tmp -Value $RelativeTarget -Encoding ascii -NoNewline
+    try {
+        Invoke-StandaloneMoveFileReplace -From $tmp -To $Path
+    } catch {
+        if (Test-Path -LiteralPath $tmp) {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
         }
+        throw
     }
-    throw "atomic current selection replace failed ($($errors -join '; '))"
+}
+
+function Read-StandalonePointerRelative {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Store
+    )
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $null
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.PSIsContainer -or $item.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
+        $old = $item.Target
+        if ($old -is [array]) { $old = $old[0] }
+        if ([string]::IsNullOrWhiteSpace([string]$old)) {
+            return $null
+        }
+        if ([IO.Path]::IsPathRooted([string]$old)) {
+            return "candidates\" + [IO.Path]::GetFileName([string]$old)
+        }
+        return [string]$old
+    }
+    return ((Get-Content -LiteralPath $Path -Raw).Trim())
+}
+
+function Get-StandaloneCurrentDir {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+    $store = Get-StandaloneProductStore -InstallDir $InstallDir
+    $current = Join-Path $store "current"
+    $rel = Read-StandalonePointerRelative -Path $current -Store $store
+    if ([string]::IsNullOrWhiteSpace($rel)) {
+        return $null
+    }
+    $item = Get-Item -LiteralPath $current -Force
+    if ($item.PSIsContainer) {
+        return $current
+    }
+    return [IO.Path]::GetFullPath((Join-Path $store $rel))
+}
+
+function Write-StandaloneCmdShim {
+    param(
+        [Parameter(Mandatory = $true)][string]$ShimPath,
+        [Parameter(Mandatory = $true)][string]$ExeName
+    )
+    $body = @"
+@echo off
+setlocal EnableExtensions
+set "STORE=%~dp0.perl-lsp"
+set /p TARGET=<"%STORE%\current"
+"%STORE%\%TARGET%\$ExeName" %*
+"@
+    $tmp = "$ShimPath.tmp.$PID.$([guid]::NewGuid().ToString("N"))"
+    Set-Content -LiteralPath $tmp -Value $body -Encoding ascii
+    try {
+        Invoke-StandaloneMoveFileReplace -From $tmp -To $ShimPath
+    } catch {
+        if (Test-Path -LiteralPath $tmp) {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
 }
 
 function Publish-ImmutableStandaloneCandidate {
@@ -758,37 +772,37 @@ function Set-StandaloneCurrentSelection {
     $store = Get-StandaloneProductStore -InstallDir $InstallDir
     $current = Join-Path $store "current"
     Invoke-ProductUnitFaultIfRequested -Barrier "before_commit" -AllowFault $AllowFault
-    if ((Test-Path -LiteralPath $current) -and [IO.File]::GetAttributes($current).HasFlag([IO.FileAttributes]::ReparsePoint)) {
-        $old = (Get-Item -LiteralPath $current).Target
-        if ($old -is [array]) { $old = $old[0] }
-        $oldRel = $old
-        if ([IO.Path]::IsPathRooted([string]$old)) {
-            $oldRel = "candidates\" + [IO.Path]::GetFileName([string]$old)
-        }
-        Invoke-AtomicSymlinkReplace -LinkPath (Join-Path $store "previous") -RelativeTarget $oldRel
+    $oldRel = Read-StandalonePointerRelative -Path $current -Store $store
+    if (-not [string]::IsNullOrWhiteSpace($oldRel)) {
+        Write-StandalonePointerFile -Path (Join-Path $store "previous") -RelativeTarget $oldRel
     }
-    Invoke-AtomicSymlinkReplace -LinkPath $current -RelativeTarget "candidates\$CandidateId"
+    Write-StandalonePointerFile -Path $current -RelativeTarget "candidates\$CandidateId"
 }
 
 function Set-StandalonePathVisibleSelectors {
     param(
         [Parameter(Mandatory = $true)][string]$InstallDir,
-        [bool]$AllowFault = $true
+        [bool]$AllowFault = $true,
+        [string]$Disposition = ""
     )
-    $store = Get-StandaloneProductStore -InstallDir $InstallDir
-    $relServer = ".perl-lsp\current\$Name.exe"
-    $relDap = ".perl-lsp\current\$DapName.exe"
     Invoke-ProductUnitFaultIfRequested -Barrier "before_selectors" -AllowFault $AllowFault
-    $serverDest = Join-Path $InstallDir "$Name.exe"
-    $dapDest = Join-Path $InstallDir "$DapName.exe"
-    Invoke-AtomicSymlinkReplace -LinkPath $serverDest -RelativeTarget $relServer
-    $currentDap = Join-Path $store "current\$DapName.exe"
-    if (Test-Path -LiteralPath $currentDap) {
-        Invoke-AtomicSymlinkReplace -LinkPath $dapDest -RelativeTarget $relDap
+    $serverDest = Join-Path $InstallDir "$Name.cmd"
+    $dapDest = Join-Path $InstallDir "$DapName.cmd"
+    Write-StandaloneCmdShim -ShimPath $serverDest -ExeName "$Name.exe"
+    Invoke-ProductUnitObserveIfRequested -Barrier "between_path_members" -InstallDir $InstallDir
+    $wantDap = $Disposition -ne "advanced_source_server_only" -and $Disposition -ne "historical_server_only"
+    if ($Disposition -eq "") {
+        $currentDir = Get-StandaloneCurrentDir -InstallDir $InstallDir
+        $wantDap = $currentDir -and (Test-Path -LiteralPath (Join-Path $currentDir "$DapName.exe"))
+    }
+    if ($wantDap) {
+        Write-StandaloneCmdShim -ShimPath $dapDest -ExeName "$DapName.exe"
     } elseif (Test-Path -LiteralPath $dapDest) {
-        $item = Get-Item -LiteralPath $dapDest -ErrorAction SilentlyContinue
-        if ($item -and $item.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
-            Remove-Item -LiteralPath $dapDest -Force
+        Remove-Item -LiteralPath $dapDest -Force
+    }
+    foreach ($legacyExe in @((Join-Path $InstallDir "$Name.exe"), (Join-Path $InstallDir "$DapName.exe"))) {
+        if (Test-Path -LiteralPath $legacyExe) {
+            Remove-Item -LiteralPath $legacyExe -Force
         }
     }
 }
@@ -797,62 +811,71 @@ function Get-StandaloneCurrentObservation {
     param([Parameter(Mandatory = $true)][string]$InstallDir)
     $store = Get-StandaloneProductStore -InstallDir $InstallDir
     $current = Join-Path $store "current"
-    if (-not (Test-Path -LiteralPath $current)) {
+    $dir = Get-StandaloneCurrentDir -InstallDir $InstallDir
+    if (-not $dir -or -not (Test-Path -LiteralPath $current)) {
         return "state=none"
     }
-    $item = Get-Item -LiteralPath $current
-    $target = $item.Target
-    if ($target -is [array]) { $target = $target[0] }
-    $id = [IO.Path]::GetFileName([string]$target)
-    $manifest = Join-Path $current "product_unit.v1"
+    $rel = Read-StandalonePointerRelative -Path $current -Store $store
+    $id = if ($rel) { [IO.Path]::GetFileName($rel.TrimEnd('\', '/')) } else { "" }
+    $manifest = Join-Path $dir "product_unit.v1"
     $disposition = "unknown"
     if (Test-Path -LiteralPath $manifest) {
         $disposition = ((Select-String -Path $manifest -Pattern '^disposition=(.+)$').Matches[0].Groups[1].Value)
     }
     $server = "-"
     $dap = "-"
-    $serverPath = Join-Path $current "$Name.exe"
+    $serverPath = Join-Path $dir "$Name.exe"
     if (Test-Path -LiteralPath $serverPath) {
         $server = Get-StagedMemberSha256 -Path $serverPath
     }
-    $dapPath = Join-Path $current "$DapName.exe"
+    $dapPath = Join-Path $dir "$DapName.exe"
     if (Test-Path -LiteralPath $dapPath) {
         $dap = Get-StagedMemberSha256 -Path $dapPath
     }
     return "state=selected disposition=$disposition candidate_id=$id server_sha256=$server dap_sha256=$dap"
 }
 
+function Get-StandalonePathMemberSha256 {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [Parameter(Mandatory = $true)][string]$ExeName
+    )
+    $exe = Join-Path $InstallDir $ExeName
+    $cmd = Join-Path $InstallDir ([IO.Path]::ChangeExtension($ExeName, ".cmd"))
+    if (Test-Path -LiteralPath $exe) {
+        $item = Get-Item -LiteralPath $exe -Force
+        if ($item.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
+            return Get-StagedMemberSha256 -Path $exe
+        }
+        if (-not $item.PSIsContainer) {
+            return Get-StagedMemberSha256 -Path $exe
+        }
+    }
+    if (Test-Path -LiteralPath $cmd) {
+        $dir = Get-StandaloneCurrentDir -InstallDir $InstallDir
+        if ($dir) {
+            $resolved = Join-Path $dir $ExeName
+            if (Test-Path -LiteralPath $resolved) {
+                return Get-StagedMemberSha256 -Path $resolved
+            }
+        }
+        return "-"
+    }
+    return "-"
+}
+
 function Get-StandalonePathVisibleObservation {
     param([Parameter(Mandatory = $true)][string]$InstallDir)
-    $serverPath = Join-Path $InstallDir "$Name.exe"
-    $dapPath = Join-Path $InstallDir "$DapName.exe"
-    $server = "-"
-    $dap = "-"
-    if (Test-Path -LiteralPath $serverPath) {
-        $server = Get-StagedMemberSha256 -Path $serverPath
-    }
-    if (Test-Path -LiteralPath $dapPath) {
-        $dap = Get-StagedMemberSha256 -Path $dapPath
-    }
-    $serverDir = $null
-    $dapDir = $null
-    if (Test-Path -LiteralPath $serverPath) {
-        $sitem = Get-Item -LiteralPath $serverPath
-        if ($sitem.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
-            $st = $sitem.Target
-            if ($st -is [array]) { $st = $st[0] }
-            $serverDir = [IO.Path]::GetDirectoryName([string]$st)
-        }
-    }
-    if (Test-Path -LiteralPath $dapPath) {
-        $ditem = Get-Item -LiteralPath $dapPath
-        if ($ditem.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
-            $dt = $ditem.Target
-            if ($dt -is [array]) { $dt = $dt[0] }
-            $dapDir = [IO.Path]::GetDirectoryName([string]$dt)
-        }
-    }
-    if ($dapDir -and $serverDir -and ($serverDir -ne $dapDir)) {
+    $server = Get-StandalonePathMemberSha256 -InstallDir $InstallDir -ExeName "$Name.exe"
+    $dap = Get-StandalonePathMemberSha256 -InstallDir $InstallDir -ExeName "$DapName.exe"
+    $current = Get-StandaloneCurrentObservation -InstallDir $InstallDir
+    $curServer = "-"
+    $curDap = "-"
+    if ($current -match 'server_sha256=([0-9a-f]+|-)') { $curServer = $Matches[1] }
+    if ($current -match 'dap_sha256=([0-9a-f]+|-)') { $curDap = $Matches[1] }
+    $serverMatches = ($server -eq $curServer)
+    $dapMatches = ($dap -eq $curDap)
+    if (($server -ne "-") -and ($dap -ne "-") -and ($serverMatches -xor $dapMatches)) {
         return "state=mixed server_sha256=$server dap_sha256=$dap"
     }
     return "state=path_visible server_sha256=$server dap_sha256=$dap"
@@ -898,23 +921,27 @@ function Install-StandaloneProductUnit {
         $legacyId = Publish-ImmutableStandaloneCandidate -SourceDir $legacy.Dir -InstallDir $InstallDir -Disposition $legacy.Disposition -AllowFault $false
         Remove-Item -LiteralPath $legacy.Dir -Recurse -Force -ErrorAction SilentlyContinue
         Set-StandaloneCurrentSelection -InstallDir $InstallDir -CandidateId $legacyId -AllowFault $false
-        Set-StandalonePathVisibleSelectors -InstallDir $InstallDir -AllowFault $false
+        Set-StandalonePathVisibleSelectors -InstallDir $InstallDir -AllowFault $false -Disposition $legacy.Disposition
     }
 
     $id = Publish-ImmutableStandaloneCandidate -SourceDir $ExtractDir -InstallDir $InstallDir -Disposition $disposition
+    Set-StandalonePathVisibleSelectors -InstallDir $InstallDir -Disposition $disposition
     Set-StandaloneCurrentSelection -InstallDir $InstallDir -CandidateId $id
-    Set-StandalonePathVisibleSelectors -InstallDir $InstallDir
+    Set-StandalonePathVisibleSelectors -InstallDir $InstallDir -Disposition $disposition
 
     $previous = "none"
     $prevPath = Join-Path $store "previous"
-    if (Test-Path -LiteralPath $prevPath) {
-        $pt = (Get-Item -LiteralPath $prevPath).Target
-        if ($pt -is [array]) { $pt = $pt[0] }
-        $previous = [IO.Path]::GetFileName([string]$pt)
+    $prevRel = Read-StandalonePointerRelative -Path $prevPath -Store $store
+    if (-not [string]::IsNullOrWhiteSpace($prevRel)) {
+        $previous = [IO.Path]::GetFileName($prevRel.TrimEnd('\', '/'))
     }
-    $serverHash = Get-StagedMemberSha256 -Path (Join-Path $store "current\$Name.exe")
+    $currentDir = Get-StandaloneCurrentDir -InstallDir $InstallDir
+    if (-not $currentDir) {
+        throw "product-unit current pointer did not resolve after commit"
+    }
+    $serverHash = Get-StagedMemberSha256 -Path (Join-Path $currentDir "$Name.exe")
     $dapHash = "-"
-    $currentDap = Join-Path $store "current\$DapName.exe"
+    $currentDap = Join-Path $currentDir "$DapName.exe"
     if (Test-Path -LiteralPath $currentDap) {
         $dapHash = Get-StagedMemberSha256 -Path $currentDap
     }
@@ -923,17 +950,17 @@ function Install-StandaloneProductUnit {
         throw "product-unit receipt contained a private path"
     }
     Write-Info $receipt
-    Write-Success "Installed $Name to $(Join-Path $InstallDir "$Name.exe")"
+    Write-Success "Installed $Name to $(Join-Path $InstallDir "$Name.cmd")"
     if ($dapHash -ne "-") {
-        Write-Success "Installed $DapName to $(Join-Path $InstallDir "$DapName.exe")"
+        Write-Success "Installed $DapName to $(Join-Path $InstallDir "$DapName.cmd")"
     }
     $dapDestPath = $null
     if ($dapHash -ne "-") {
-        $dapDestPath = Join-Path $InstallDir "$DapName.exe"
+        $dapDestPath = Join-Path $InstallDir "$DapName.cmd"
     }
     return [pscustomobject]@{
         DapInstalled = ($dapHash -ne "-")
-        DestPath     = (Join-Path $InstallDir "$Name.exe")
+        DestPath     = (Join-Path $InstallDir "$Name.cmd")
         DapDestPath  = $dapDestPath
         CandidateId  = $id
         Receipt      = $receipt

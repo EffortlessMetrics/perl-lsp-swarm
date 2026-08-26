@@ -336,6 +336,36 @@ else
         "$(ls -l "$(path_server)" 2>&1 || true)"
 fi
 
+setup_root
+stage_pair "$EXTRACT_DIR" "server-a" "dap-a"
+run_promote release
+stage_pair "$EXTRACT_DIR" "server-b" "dap-b"
+obs="$TMP/observe.txt"
+PERL_LSP_INSTALL_OBSERVE=between_path_members
+PERL_LSP_INSTALL_OBSERVE_FILE="$obs"
+run_promote release
+unset PERL_LSP_INSTALL_OBSERVE
+unset PERL_LSP_INSTALL_OBSERVE_FILE
+obs_text=""
+if [ -f "$obs" ]; then
+    obs_text="$(cat "$obs")"
+fi
+if [ "$LAST_STATUS" -eq 0 ] \
+    && assert_complete_pair "server-b" "dap-b" \
+    && [[ "$obs_text" == *state=selected* ]] \
+    && [[ "$obs_text" == *state=path_visible* ]] \
+    && [[ "$obs_text" != *state=mixed* ]] \
+    && [[ "$obs_text" != *state=none* ]] \
+    && [[ "$obs_text" == *server_sha256=* ]] \
+    && [[ "$obs_text" == *dap_sha256=* ]] \
+    && [[ "$obs_text" != *server_sha256=-* ]] \
+    && [[ "$obs_text" != *dap_sha256=-* ]]; then
+    pass "interleaved PATH reader never sees mixed members or a missing current"
+else
+    fail_case "interleaved PATH reader never sees mixed members or a missing current" \
+        "status=$LAST_STATUS obs=$obs_text output=$LAST_OUTPUT"
+fi
+
 if [ "$FAIL" -ne 0 ]; then
     printf 'FAILED %s  passed %s\n' "$FAIL" "$PASS" >&2
     exit 1
