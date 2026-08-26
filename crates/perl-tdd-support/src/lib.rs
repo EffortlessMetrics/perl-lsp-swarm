@@ -91,3 +91,9 @@ pub use perl_test_must::{must, must_err, must_some};
 
 /// CI Guardrail Ignored Test Monitoring and Governance.
 pub mod governance;
+
+/// Windows symlink capability helpers for tests that exercise reparse-point
+/// semantics without requiring Developer Mode ([#12567]).
+pub mod windows_fs;
+
+pub use windows_fs::{try_create_dir_symlink, try_create_file_symlink};
