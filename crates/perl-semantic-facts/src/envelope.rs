@@ -310,7 +310,7 @@ impl SemanticFactEnvelope {
             || self
                 .invalidation_dependencies
                 .iter()
-                .any(|dependency| dependency.dependency_key.is_empty())
+                .any(|dependency| dependency.dependency_key.trim().is_empty())
         {
             return true;
         }
@@ -772,6 +772,14 @@ mod tests {
             SourceGeneration::known("generation"),
         )]);
         assert_eq!(empty_dependency_key.status(), SemanticFactStatus::Degraded);
+
+        // #12668: whitespace-only keys are empty keys, matching the provider
+        // port validator's trim semantics for the same envelope.
+        let whitespace_dependency_key = exact_envelope(vec![InvalidationDependency::new(
+            "  ",
+            SourceGeneration::known("generation"),
+        )]);
+        assert_eq!(whitespace_dependency_key.status(), SemanticFactStatus::Degraded);
 
         let conflicting_dependencies = exact_envelope(vec![
             InvalidationDependency::new("module:Example", SourceGeneration::known("one")),
