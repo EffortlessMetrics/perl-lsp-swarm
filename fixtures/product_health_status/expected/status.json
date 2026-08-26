@@ -159,7 +159,7 @@
           "packet_id": "compiler-old",
           "digest": "sha256:2c902de4cfe4cd1a5b6c44588baddc52f9c2c2ce992cbd399ae2bc25db247828",
           "state": "historical",
-          "superseded_by": null
+          "superseded_by": "compiler-now"
         }
       ],
       "support_authorized": false,
@@ -709,7 +709,7 @@
       "packet_id": "compiler-old",
       "digest": "sha256:2c902de4cfe4cd1a5b6c44588baddc52f9c2c2ce992cbd399ae2bc25db247828",
       "state": "historical",
-      "superseded_by": null
+      "superseded_by": "compiler-now"
     },
     {
       "packet_id": "dap",
@@ -800,5 +800,5 @@
       "fixture.security"
     ]
   },
-  "semantic_digest": "sha256:29c112daa9c8badfbdfbadfeb70585f052b94642b97455259f824da104b1dfa3"
+  "semantic_digest": "sha256:6b7bf4a9393eb728a6934cefd108668e71a3327ff47235239e9b99eace583c93"
 }

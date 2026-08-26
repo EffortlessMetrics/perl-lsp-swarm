@@ -91,6 +91,35 @@ const META_SOURCE_RESULTS: &[RailResult] =
 const SATISFYING_RESULTS: &[RailResult] =
     &[RailResult::Pass, RailResult::PassWithDeclaredLimitations];
 
+/// Result vocabulary a single current source packet can express; the
+/// assembly-level relation states are decided by assembly, never asserted
+/// by a source.
+const SOURCE_EXPRESSIBLE_RESULTS: &[RailResult] = &[
+    RailResult::Pass,
+    RailResult::PassWithDeclaredLimitations,
+    RailResult::Failed,
+    RailResult::NotProven,
+    RailResult::Stale,
+    RailResult::Invalid,
+    RailResult::Unsupported,
+    RailResult::NotApplicable,
+];
+
+/// Deterministic state-to-result relation for every non-current state.
+/// `check` enforces it so an edited snapshot cannot pair a typed
+/// non-current state with a green result (synthetic green).
+fn expected_result_for_state(state: &str) -> Option<RailResult> {
+    match state {
+        "no_current_source" | "historical_only" => Some(RailResult::NoCurrentSource),
+        "stale_only" => Some(RailResult::Stale),
+        "invalid_only" | "source_subject_mismatch" => Some(RailResult::Invalid),
+        "conflicting_current_sources" => Some(RailResult::ConflictingCurrentSources),
+        "source_subject_missing" | "source_unavailable" => Some(RailResult::NotProven),
+        "adapter_unavailable" => Some(RailResult::Unsupported),
+        _ => None, // current_exact: coherent with its source result instead
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Source packet envelope (generic, owned by this module)
 // ---------------------------------------------------------------------------
@@ -291,6 +320,18 @@ fn digest_shape_ok(digest: &str) -> bool {
     hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// Bound an arbitrary packet identity before it can reach a finding
+/// detail: unvalidated identities never enter status output at full size.
+fn bounded_identity(text: &str) -> String {
+    if text.chars().count() > PACKET_IDENTITY_BOUND {
+        let mut bounded: String = text.chars().take(PACKET_IDENTITY_BOUND).collect();
+        bounded.push_str("…[bounded]");
+        bounded
+    } else {
+        text.to_owned()
+    }
+}
+
 fn detail_privacy_reason(packet: &SourcePacket) -> Option<String> {
     for (key, value) in &packet.detail {
         if key.len() > DETAIL_KEY_BOUND {
@@ -345,14 +386,36 @@ fn max_permitted_wording(result: &RailResult, claim_ceiling: &str) -> String {
     }
 }
 
-fn history_refs(packets: &[&LoadedPacket], superseded_by: Option<&str>) -> Vec<HistoryRef> {
+/// Successor map for one rail's packets: `target_id -> successor_id` where
+/// the successor declares `supersedes: target_id`.  History references
+/// record the *incoming* edge (who superseded this packet), never the
+/// packet's own outgoing declaration.
+type Successors = BTreeMap<String, String>;
+
+fn successors_of(packets: &[&LoadedPacket]) -> Successors {
+    let mut successors = BTreeMap::new();
+    for packet in packets {
+        if let Some(target) = &packet.packet.supersedes {
+            successors.insert(target.clone(), packet.packet.packet_id.clone());
+        }
+    }
+    successors
+}
+
+fn history_refs(
+    packets: &[&LoadedPacket],
+    successors: &Successors,
+    superseded_by_override: Option<&str>,
+) -> Vec<HistoryRef> {
     let mut history = packets
         .iter()
         .map(|p| HistoryRef {
             packet_id: p.packet.packet_id.clone(),
             digest: p.packet.digest.clone(),
             state: p.packet.state.as_str().to_owned(),
-            superseded_by: superseded_by.map(str::to_owned).or_else(|| p.packet.supersedes.clone()),
+            superseded_by: superseded_by_override
+                .map(str::to_owned)
+                .or_else(|| successors.get(&p.packet.packet_id).cloned()),
         })
         .collect::<Vec<_>>();
     history.sort_by(|a, b| a.packet_id.cmp(&b.packet_id).then(a.digest.cmp(&b.digest)));
@@ -381,10 +444,22 @@ fn load_packets(dir: &Path) -> Result<(Vec<LoadedPacket>, Vec<UnparseablePacket>
             ));
         }
     };
-    let mut files: Vec<PathBuf> = entries
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "json"))
-        .collect();
+    // Strict enumeration: an unreadable directory entry or an unstattable
+    // path is a typed instrument failure, never a silently absent packet
+    // that could turn a conflict into an unearned pass.
+    let mut files: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| {
+            format!("cannot enumerate source packet directory {}", dir.display())
+        })?;
+        let path = entry.path();
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let metadata = fs::metadata(&path)
+            .with_context(|| format!("cannot stat source packet candidate {name}"))?;
+        if metadata.is_file() && path.extension().is_some_and(|ext| ext == "json") {
+            files.push(path);
+        }
+    }
     files.sort();
     for path in files {
         let file =
@@ -459,7 +534,7 @@ fn failed_state_rail(
 ) -> StatusRail {
     let mut rail = base_rail(declared);
     rail.result = result.clone();
-    let history = history_refs(retained, None);
+    let history = history_refs(retained, &successors_of(retained), None);
     let blockers: Vec<String> =
         findings.iter().map(|f| f.code.clone()).collect::<BTreeSet<_>>().into_iter().collect();
     findings.push(Finding {
@@ -666,12 +741,10 @@ fn assemble_rail(declared: &Rail, registry: &Registry, packets: &[LoadedPacket])
         );
         return RailAssembly { rail, findings, consumed_files };
     }
-    for packet in &family {
-        consumed_files.insert(packet.file.clone());
-    }
-
     // Rail-attributed packets: same rail identity.  A packet for another
     // rail is never this rail's source, however attractive its result.
+    // Only rail-attributed files count as consumed; family packets that no
+    // declared rail claims stay visible through global findings.
     let rail_packets: Vec<&LoadedPacket> =
         family.into_iter().filter(|p| p.packet.rail_id == declared.rail_id).collect();
     if rail_packets.is_empty() {
@@ -693,6 +766,9 @@ fn assemble_rail(declared: &Rail, registry: &Registry, packets: &[LoadedPacket])
         );
         return RailAssembly { rail, findings, consumed_files };
     }
+    for packet in &rail_packets {
+        consumed_files.insert(packet.file.clone());
+    }
 
     // Exact subject matches; same-name different-subject packets are
     // another subject, never a substitute.
@@ -704,10 +780,10 @@ fn assemble_rail(declared: &Rail, registry: &Registry, packets: &[LoadedPacket])
             subject: declared.rail_id.clone(),
             detail: format!(
                 "packet {} claims rail {} but declares subject `{}` (rail subject `{}`)",
-                mismatch.packet.packet_id,
+                bounded_identity(&mismatch.packet.packet_id),
                 declared.rail_id,
-                mismatch.packet.subject,
-                declared.subject
+                bounded_identity(&mismatch.packet.subject),
+                bounded_identity(&declared.subject)
             ),
         });
     }
@@ -812,12 +888,13 @@ fn assemble_rail(declared: &Rail, registry: &Registry, packets: &[LoadedPacket])
     sorted_dedup(&mut nonclaims);
 
     let result = match &source_result {
-        RailResult::Pass if !packet.packet.limitations.is_empty() => {
+        RailResult::Pass if !limitations.is_empty() => {
             findings.push(Finding {
                 code: "result_narrowed_by_source_limitations".to_owned(),
                 subject: declared.rail_id.clone(),
-                detail: "source reports pass but declares limitations; adaptation may only narrow"
-                    .to_owned(),
+                detail:
+                    "declared or source limitations narrow a plain pass; adaptation may only narrow"
+                        .to_owned(),
             });
             RailResult::PassWithDeclaredLimitations
         }
@@ -861,9 +938,10 @@ fn assemble_rail(declared: &Rail, registry: &Registry, packets: &[LoadedPacket])
     let owner = rail.source_detail.get("owner").cloned().unwrap_or_default();
     let wake_event = rail.source_detail.get("wake_event").cloned();
 
-    let mut history = history_refs(&historical, None);
-    history.extend(history_refs(&stale, None));
-    history.extend(history_refs(&demoted, Some(packet.packet.packet_id.as_str())));
+    let successors = successors_of(&valid);
+    let mut history = history_refs(&historical, &successors, None);
+    history.extend(history_refs(&stale, &successors, None));
+    history.extend(history_refs(&demoted, &successors, Some(packet.packet.packet_id.as_str())));
     history.sort_by(|a, b| a.packet_id.cmp(&b.packet_id).then(a.digest.cmp(&b.digest)));
 
     let blockers: Vec<String> =
@@ -958,7 +1036,8 @@ pub fn assemble(
                 subject: packet.file.clone(),
                 detail: format!(
                     "unrouted packet {} ({}) was not consumed: {reason}",
-                    packet.packet.packet_id, packet.packet.schema
+                    bounded_identity(&packet.packet.packet_id),
+                    bounded_identity(&packet.packet.schema)
                 ),
             });
         }
@@ -968,7 +1047,22 @@ pub fn assemble(
                 subject: packet.file.clone(),
                 detail: format!(
                     "packet {} schema {} is accepted by no registered adapter; never decoded",
-                    packet.packet.packet_id, packet.packet.schema
+                    bounded_identity(&packet.packet.packet_id),
+                    bounded_identity(&packet.packet.schema)
+                ),
+            });
+        } else if !consumed_files.contains(&packet.file)
+            && !declared_rails.iter().any(|rail| rail.rail_id == packet.packet.rail_id)
+        {
+            // A routed-shape packet that no declared rail claims never
+            // disappears silently.
+            findings.push(Finding {
+                code: "undeclared_rail_packet".to_owned(),
+                subject: packet.file.clone(),
+                detail: format!(
+                    "packet {} answers undeclared rail {}; no rail consumed it",
+                    bounded_identity(&packet.packet.packet_id),
+                    bounded_identity(&packet.packet.rail_id)
                 ),
             });
         }
@@ -1011,8 +1105,15 @@ pub fn assemble(
 
     let rollup = rollup_from_rails(&rails);
 
+    // Recorded adapters are normalized exactly like the landed
+    // `canonical_json`: sorted by id with sorted, deduplicated accepted
+    // source schemas, so equivalent registries yield identical status bytes.
     let mut adapters = registry.adapters.clone();
     adapters.sort_by(|a, b| a.adapter_id.cmp(&b.adapter_id));
+    for adapter in &mut adapters {
+        adapter.accepted_source_schemas.sort();
+        adapter.accepted_source_schemas.dedup();
+    }
 
     let status = Status {
         schema: STATUS_SCHEMA.to_owned(),
@@ -1130,6 +1231,55 @@ pub fn validate_status(status: &Status, raw: &serde_json::Value) -> Result<()> {
     for rail in rails_raw {
         validate_object_keys(rail, STATUS_RAIL_KEYS, "status rail")?;
     }
+    // The closed shape extends to every nested object: unknown keys inside
+    // findings, history, rollup sets, or adapters are unauthenticated
+    // bytes, not silently dropped extras.  Validation walks the raw
+    // document, since re-serialized parsed values cannot carry them.
+    let nested_arrays: [(&str, &[&str]); 4] = [
+        ("findings", &["code", "subject", "detail"]),
+        ("history", &["packet_id", "digest", "state", "superseded_by"]),
+        (
+            "adapters",
+            &[
+                "schema",
+                "adapter_id",
+                "source_family",
+                "accepted_source_schemas",
+                "validator_id",
+                "subject_selector",
+                "currentness_authority",
+            ],
+        ),
+        ("required_nonsatisfying_projection", &["rail_id", "currentness_state", "result"]),
+    ];
+    for (key, keys) in nested_arrays {
+        let source = match key {
+            "required_nonsatisfying_projection" => {
+                raw.get("rollup").and_then(|r| r.get("required_nonsatisfying"))
+            }
+            _ => raw.get(key),
+        };
+        let Some(entries) = source.and_then(|v| v.as_array()) else {
+            bail!("status {key} must be an array");
+        };
+        for entry in entries {
+            validate_object_keys(entry, keys, &format!("status {key} entry"))?;
+        }
+    }
+    let Some(rollup_raw) = raw.get("rollup") else {
+        bail!("status rollup must be an object");
+    };
+    validate_object_keys(
+        rollup_raw,
+        &[
+            "required_satisfied",
+            "required_nonsatisfying",
+            "optional_conditional_not_selected",
+            "source_adapters_unavailable",
+            "current_source_conflicts",
+        ],
+        "status rollup",
+    )?;
 
     ensure!(digest_shape_ok(&status.registry_digest), "registry digest is not sha256:<64 hex>");
     ensure!(digest_shape_ok(&status.semantic_digest), "semantic digest is not sha256:<64 hex>");
@@ -1147,6 +1297,59 @@ pub fn validate_status(status: &Status, raw: &serde_json::Value) -> Result<()> {
             rail.rail.rail_id,
             rail.currentness_state
         );
+        // State/result coherence: a typed non-current state can never carry
+        // a green result or a current source identity, and a current_exact
+        // rail must carry its source identity and a source-expressible
+        // result that obeys the limitation laws.
+        if rail.currentness_state == "current_exact" {
+            let Some(source_result) = &rail.source_result else {
+                bail!(
+                    "rail {} is current_exact without a current source result",
+                    rail.rail.rail_id
+                );
+            };
+            ensure!(
+                rail.packet_id.is_some() && rail.adapter_id.is_some(),
+                "rail {} is current_exact without packet/adapter identity",
+                rail.rail.rail_id
+            );
+            ensure!(
+                SOURCE_EXPRESSIBLE_RESULTS.contains(source_result),
+                "rail {} carries a non-source result {:?}",
+                rail.rail.rail_id,
+                source_result
+            );
+            match rail.rail.result {
+                RailResult::Pass => ensure!(
+                    rail.rail.limitations.is_empty(),
+                    "rail {} is pass with declared limitations; use pass_with_declared_limitations",
+                    rail.rail.rail_id
+                ),
+                RailResult::PassWithDeclaredLimitations => ensure!(
+                    !rail.rail.limitations.is_empty(),
+                    "rail {} is a limited pass without a declared limitation",
+                    rail.rail.rail_id
+                ),
+                _ => {}
+            }
+        } else {
+            ensure!(
+                rail.source_result.is_none() && rail.packet_id.is_none(),
+                "rail {} in state {} carries current source identity",
+                rail.rail.rail_id,
+                rail.currentness_state
+            );
+            if let Some(expected) = expected_result_for_state(&rail.currentness_state) {
+                ensure!(
+                    rail.rail.result == expected,
+                    "rail {} state {} requires result {}, found {}",
+                    rail.rail.rail_id,
+                    rail.currentness_state,
+                    rail_result_name(&expected),
+                    rail_result_name(&rail.rail.result)
+                );
+            }
+        }
         ensure!(
             !rail.support_authorized,
             "rail {} asserts support_authorized; assembly structurally denies it",
@@ -1487,8 +1690,10 @@ fn compute_diff(before: &Status, after: &Status) -> DiffReport {
                     after_rail.packet_id.clone().unwrap_or_default(),
                 ),
             ];
+            let mut specific_change = false;
             for (field, was, now) in pairs {
                 if was != now {
+                    specific_change = true;
                     changes.push(DiffEntry {
                         rail_id: (*id).to_owned(),
                         field: field.to_owned(),
@@ -1497,28 +1702,60 @@ fn compute_diff(before: &Status, after: &Status) -> DiffReport {
                     });
                 }
             }
+            // Any other semantic movement (wording, limitations, history,
+            // detail, adapters) still reports one bounded entry so a
+            // non-identical diff never exits without a reason.
+            if !specific_change && before_rail != after_rail {
+                changes.push(DiffEntry {
+                    rail_id: (*id).to_owned(),
+                    field: "rail_semantics".to_owned(),
+                    before: sha256_hex(
+                        serde_json::to_string(before_rail).unwrap_or_default().as_bytes(),
+                    ),
+                    after: sha256_hex(
+                        serde_json::to_string(after_rail).unwrap_or_default().as_bytes(),
+                    ),
+                });
+            }
         }
     }
 
     let before_findings = findings_of(before);
     let after_findings = findings_of(after);
+    let identical = before.semantic_digest == after.semantic_digest;
+    let rails_added: Vec<String> = after_by_id
+        .keys()
+        .filter(|id| !before_by_id.contains_key(*id))
+        .map(|id| (*id).to_owned())
+        .collect();
+    let rails_removed: Vec<String> = before_by_id
+        .keys()
+        .filter(|id| !after_by_id.contains_key(*id))
+        .map(|id| (*id).to_owned())
+        .collect();
+    let findings_added: Vec<String> =
+        after_findings.difference(&before_findings).cloned().collect();
+    let findings_removed: Vec<String> =
+        before_findings.difference(&after_findings).cloned().collect();
+    if !identical && changes.is_empty() && rails_added.is_empty() && rails_removed.is_empty() {
+        // Status-level movement outside the rail projection (registry
+        // identity, adapters) still names itself.
+        changes.push(DiffEntry {
+            rail_id: "(status)".to_owned(),
+            field: "status_semantics".to_owned(),
+            before: before.registry_digest.clone(),
+            after: after.registry_digest.clone(),
+        });
+    }
     DiffReport {
-        identical: before.semantic_digest == after.semantic_digest,
+        identical,
         before_digest: before.semantic_digest.clone(),
         after_digest: after.semantic_digest.clone(),
-        rails_added: after_by_id
-            .keys()
-            .filter(|id| !before_by_id.contains_key(*id))
-            .map(|id| (*id).to_owned())
-            .collect(),
-        rails_removed: before_by_id
-            .keys()
-            .filter(|id| !after_by_id.contains_key(*id))
-            .map(|id| (*id).to_owned())
-            .collect(),
+        rails_added,
+        rails_removed,
         changes,
-        findings_added: after_findings.difference(&before_findings).cloned().collect(),
-        findings_removed: before_findings.difference(&after_findings).cloned().collect(),
+        findings_added,
+        findings_removed,
     }
 }
 
@@ -2316,5 +2553,192 @@ mod tests {
         show_command(&path, Some("fixture.parser"), "json").unwrap();
         assert!(show_command(&path, Some("fixture.missing"), "text").is_err());
         assert!(show_command(&path, None, "markdown").is_err());
+    }
+
+    // -- review-repair hardening -----------------------------------------------
+
+    #[test]
+    fn product_health_status_registry_limitations_narrow_a_plain_pass() {
+        // A registry rail with declared limitations plus a plain-pass
+        // packet must assemble to a limited pass: a plain pass with
+        // retained limitations would fail the landed validator in `check`.
+        let mut registry = fixture_registry_one_rail("exact:fixture", RailResult::NotProven);
+        registry.rails[0].limitations = vec!["bounded to declared harness".to_owned()];
+        let plain = packet(
+            "p",
+            "fixture.parser",
+            "fixture-subject",
+            RailResult::Pass,
+            PacketState::Current,
+        );
+        let status = assemble(&registry, &[loaded(plain)], &[]).unwrap();
+        let rail = &status.rails[0];
+        assert_eq!(rail.rail.result, RailResult::PassWithDeclaredLimitations);
+        assert!(!rail.rail.limitations.is_empty());
+        let raw = serde_json::to_value(&status).unwrap();
+        validate_status(&status, &raw)
+            .expect("assembled snapshot must satisfy its own check after narrowing");
+    }
+
+    #[test]
+    fn product_health_status_check_rejects_incoherent_state_result_pairs() {
+        let status = assemble_fixture(&root()).unwrap();
+
+        // Non-current state paired with a green result, digest recomputed.
+        let mut tampered = status.clone();
+        let rail = tampered.rails.iter_mut().find(|r| r.rail.rail_id == "fixture.dap").unwrap();
+        rail.rail.result = RailResult::Pass;
+        tampered.rollup = rollup_from_rails(&tampered.rails);
+        tampered.semantic_digest = semantic_digest_of(&tampered).unwrap();
+        let raw = serde_json::to_value(&tampered).unwrap();
+        assert!(validate_status(&tampered, &raw).is_err(), "stale rail cannot turn green");
+
+        // current_exact stripped of its source identity.
+        let mut tampered = status.clone();
+        let rail = tampered.rails.iter_mut().find(|r| r.rail.rail_id == "fixture.parser").unwrap();
+        rail.source_result = None;
+        let raw = serde_json::to_value(&tampered).unwrap();
+        assert!(validate_status(&tampered, &raw).is_err(), "current rail needs source result");
+
+        // Non-current rail carrying current source identity.
+        let mut tampered = status.clone();
+        let rail = tampered.rails.iter_mut().find(|r| r.rail.rail_id == "fixture.dap").unwrap();
+        rail.source_result = Some(RailResult::Pass);
+        let raw = serde_json::to_value(&tampered).unwrap();
+        assert!(validate_status(&tampered, &raw).is_err());
+    }
+
+    #[test]
+    fn product_health_status_mismatch_finding_is_bounded() {
+        let registry = fixture_registry_one_rail("exact:fixture", RailResult::NotProven);
+        let oversized = "s".repeat(PACKET_IDENTITY_BOUND * 4);
+        let wrong =
+            packet("p", "fixture.parser", &oversized, RailResult::Pass, PacketState::Current);
+        let status = assemble(&registry, &[loaded(wrong)], &[]).unwrap();
+        let bytes = serde_json::to_string(&status).unwrap();
+        assert!(!bytes.contains(&"s".repeat(PACKET_IDENTITY_BOUND * 2)));
+        assert!(
+            status
+                .findings
+                .iter()
+                .any(|f| f.code == "source_subject_mismatch" && f.detail.contains("[bounded]"))
+        );
+    }
+
+    #[test]
+    fn product_health_status_undeclared_rail_packet_is_visible() {
+        let registry = fixture_registry_one_rail("exact:fixture", RailResult::NotProven);
+        let ghost = packet(
+            "ghost",
+            "fixture.undeclared-rail",
+            "any-subject",
+            RailResult::Pass,
+            PacketState::Current,
+        );
+        let real = packet(
+            "p",
+            "fixture.parser",
+            "fixture-subject",
+            RailResult::Pass,
+            PacketState::Current,
+        );
+        let status = assemble(&registry, &[loaded(ghost), loaded(real)], &[]).unwrap();
+        assert!(
+            status.findings.iter().any(|f| f.code == "undeclared_rail_packet"
+                && f.detail.contains("fixture.undeclared-rail"))
+        );
+    }
+
+    #[test]
+    fn product_health_status_history_records_incoming_successor() {
+        // Historical A superseded by historical B: A records B, never the
+        // reverse reading of its own outgoing declaration.
+        let registry = fixture_registry_one_rail("exact:fixture", RailResult::NotProven);
+        let mut a = packet(
+            "a",
+            "fixture.parser",
+            "fixture-subject",
+            RailResult::Pass,
+            PacketState::Historical,
+        );
+        a.digest = sha256_of("a");
+        let mut b = packet(
+            "b",
+            "fixture.parser",
+            "fixture-subject",
+            RailResult::Failed,
+            PacketState::Historical,
+        );
+        b.digest = sha256_of("b");
+        b.supersedes = Some("a".to_owned());
+        let status = assemble(&registry, &[loaded(a), loaded(b)], &[]).unwrap();
+        let history = &status.rails[0].history;
+        let a_ref = history.iter().find(|h| h.packet_id == "a").unwrap();
+        let b_ref = history.iter().find(|h| h.packet_id == "b").unwrap();
+        assert_eq!(a_ref.superseded_by.as_deref(), Some("b"));
+        assert_eq!(b_ref.superseded_by, None);
+
+        // Committed fixture: compiler-old was superseded by the current
+        // compiler-now packet.
+        let fixture = assemble_fixture(&root()).unwrap();
+        let compiler = fixture.rails.iter().find(|r| r.rail.rail_id == "fixture.compiler").unwrap();
+        assert!(
+            compiler.history.iter().any(|h| h.packet_id == "compiler-old"
+                && h.superseded_by.as_deref() == Some("compiler-now"))
+        );
+    }
+
+    #[test]
+    fn product_health_status_check_rejects_unknown_nested_keys() {
+        let status = assemble_fixture(&root()).unwrap();
+        let mut raw = serde_json::to_value(&status).unwrap();
+        raw["findings"][0]
+            .as_object_mut()
+            .unwrap()
+            .insert("note".to_owned(), serde_json::json!("unauthenticated"));
+        let reparsed: Status = serde_json::from_value(raw.clone()).unwrap();
+        assert!(
+            validate_status(&reparsed, &raw).is_err(),
+            "unknown nested keys are unauthenticated bytes"
+        );
+    }
+
+    #[test]
+    fn product_health_status_diff_reports_non_field_semantic_changes() {
+        let before = assemble_fixture(&root()).unwrap();
+        let mut after = before.clone();
+        let rail = after.rails.iter_mut().find(|r| r.rail.rail_id == "fixture.parser").unwrap();
+        rail.rail.claim_ceiling = "narrower ceiling".to_owned();
+        after.semantic_digest = semantic_digest_of(&after).unwrap();
+        let report = compute_diff(&before, &after);
+        assert!(!report.identical);
+        assert!(
+            report
+                .changes
+                .iter()
+                .any(|c| c.rail_id == "fixture.parser" && c.field == "rail_semantics"),
+            "a ceiling-only change must still be named"
+        );
+    }
+
+    #[test]
+    fn product_health_status_equivalent_adapter_schema_order_is_identical() {
+        let mut registry = fixture_registry_one_rail("exact:fixture", RailResult::NotProven);
+        registry.adapters[0].accepted_source_schemas =
+            vec!["fixture.v1".to_owned(), "zeta.v1".to_owned(), "zeta.v1".to_owned()];
+        let mut equivalent = registry.clone();
+        equivalent.adapters[0].accepted_source_schemas =
+            vec!["zeta.v1".to_owned(), "fixture.v1".to_owned()];
+        let packets = vec![loaded(packet(
+            "p",
+            "fixture.parser",
+            "fixture-subject",
+            RailResult::Pass,
+            PacketState::Current,
+        ))];
+        let first = assemble(&registry, &packets, &[]).unwrap();
+        let second = assemble(&equivalent, &packets, &[]).unwrap();
+        assert_eq!(first.semantic_digest, second.semantic_digest);
+        assert_eq!(first.adapters, second.adapters);
     }
 }
