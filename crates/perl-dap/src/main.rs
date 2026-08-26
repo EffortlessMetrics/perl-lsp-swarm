@@ -45,11 +45,50 @@ fn native_editor_socket_retired() -> anyhow::Error {
     )
 }
 
+/// Quote a user-supplied peer spec for a pasteable migration command.
+///
+/// The error is an invitation to paste `perl-dap --stdio --external-peer …`.
+/// Unquoted whitespace or metacharacters would change argv boundaries.
+fn shell_quote(value: &str) -> String {
+    let bare = !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | ':' | '_' | '-' | '/'));
+    if bare {
+        value.to_owned()
+    } else if cfg!(windows) {
+        windows_shell_quote(value)
+    } else {
+        format!("'{}'", value.replace('\'', r"'\''"))
+    }
+}
+
+/// Quote a value for a `cmd.exe` command line.
+///
+/// The remediation is displayed to users on the host that will run it. POSIX
+/// single quotes are literal characters to `cmd.exe`, so use its double-quoted
+/// region convention instead. Percent signs remain single because this command
+/// is intended for an interactive prompt, not a batch file.
+fn windows_shell_quote(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    for character in value.chars() {
+        match character {
+            '%' => quoted.push('%'),
+            '"' => quoted.push_str("\"\""),
+            _ => quoted.push(character),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
 fn editor_socket_retired(
     external_peer: Option<&str>,
     external_peer_listen: Option<&str>,
 ) -> anyhow::Error {
     if let Some(peer_addr) = external_peer {
+        let quoted = shell_quote(peer_addr);
         return anyhow::anyhow!(
             "perl-dap editor TCP (--socket / --port) has been retired.\n\
              External-peer modes expose DAP only through child stdio.\n\
@@ -57,10 +96,11 @@ fn editor_socket_retired(
              \n\
              Use parent-owned stdio with the same debugger-peer backend:\n\
              \n\
-             \x20 perl-dap --stdio --external-peer {peer_addr}"
+             \x20 perl-dap --stdio --external-peer {quoted}"
         );
     }
     if let Some(spec) = external_peer_listen {
+        let quoted = shell_quote(spec);
         return anyhow::anyhow!(
             "perl-dap editor TCP (--socket / --port) has been retired.\n\
              External-peer modes expose DAP only through child stdio.\n\
@@ -68,7 +108,7 @@ fn editor_socket_retired(
              \n\
              Use parent-owned stdio with the same debugger-peer backend:\n\
              \n\
-             \x20 perl-dap --stdio --external-peer-listen {spec}"
+             \x20 perl-dap --stdio --external-peer-listen {quoted}"
         );
     }
     native_editor_socket_retired()
@@ -315,7 +355,7 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use super::{
         Args, DEFAULT_DAP_PORT, editor_socket_retired, native_editor_socket_retired,
-        resolve_socket_port,
+        resolve_socket_port, windows_shell_quote,
     };
     use clap::{CommandFactory, Parser};
     use perl_lsp_rs_core::product_identity::{
@@ -421,5 +461,31 @@ mod tests {
         assert!(production.contains("native_editor_socket_retired"));
         assert!(production.contains("editor_socket_retired"));
         assert!(!production.contains("fn bind_editor_listener"));
+    }
+
+    #[test]
+    fn peer_stdio_migration_quotes_metacharacter_specs() {
+        let connect = editor_socket_retired(Some("host; touch /tmp/x"), None).to_string();
+        let listen = editor_socket_retired(None, Some("a b; rm -rf /")).to_string();
+        let expected_connect = if cfg!(windows) {
+            "--external-peer \"host; touch /tmp/x\""
+        } else {
+            "--external-peer 'host; touch /tmp/x'"
+        };
+        let expected_listen = if cfg!(windows) {
+            "--external-peer-listen \"a b; rm -rf /\""
+        } else {
+            "--external-peer-listen 'a b; rm -rf /'"
+        };
+        assert!(connect.contains(expected_connect), "{connect}");
+        assert!(listen.contains(expected_listen), "{listen}");
+        assert!(!connect.contains("--socket"));
+        assert!(!listen.contains("--socket"));
+    }
+
+    #[test]
+    fn windows_remediation_uses_cmd_quoting() {
+        assert_eq!(windows_shell_quote("[::1]:13604"), "\"[::1]:13604\"");
+        assert_eq!(windows_shell_quote("100% ready\"now"), "\"100% ready\"\"now\"");
     }
 }

@@ -626,6 +626,28 @@ fn peer_connect_socket_flag_fails_before_bind_with_stdio_migration() -> Result<(
 }
 
 #[test]
+fn peer_socket_migration_quotes_metacharacter_peer_specs() -> Result<()> {
+    let occupied = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = occupied.local_addr()?.port();
+    let (status, stdout, stderr) = run_cli(&[
+        "--external-peer",
+        "host; touch /tmp/x",
+        "--socket",
+        "--port",
+        &port.to_string(),
+        "--log-level",
+        "error",
+    ])?;
+    let expected = if cfg!(windows) {
+        "perl-dap --stdio --external-peer \"host; touch /tmp/x\""
+    } else {
+        "perl-dap --stdio --external-peer 'host; touch /tmp/x'"
+    };
+    assert_editor_socket_retired(&status, &stdout, &stderr, expected)?;
+    Ok(())
+}
+
+#[test]
 fn peer_listen_port_flag_fails_before_bind_with_stdio_migration() -> Result<()> {
     let occupied = TcpListener::bind(("127.0.0.1", 0))?;
     let port = occupied.local_addr()?.port();
