@@ -192,19 +192,12 @@ pub fn load_manifest_at(
 ) -> Result<LoadedManifest, FixtureError> {
     let manifest_path = resolve_crate_relative(package_root, manifest_relative)?;
     require_under_fixtures(manifest_relative)?;
-    let text = fs::read_to_string(&manifest_path).map_err(|error| {
-        if error.kind() == ErrorKind::NotFound {
-            FixtureError::MissingSource {
-                id: "manifest".to_string(),
-                path: manifest_relative.display().to_string(),
-            }
-        } else {
-            FixtureError::Unreadable {
-                id: "manifest".to_string(),
-                path: manifest_relative.display().to_string(),
-                detail: error.to_string(),
-            }
-        }
+    reject_symlink_components("manifest", package_root, manifest_relative)?;
+    let bytes = read_regular_file("manifest", manifest_relative, &manifest_path)?;
+    let text = String::from_utf8(bytes).map_err(|error| FixtureError::Unreadable {
+        id: "manifest".to_string(),
+        path: manifest_relative.display().to_string(),
+        detail: error.to_string(),
     })?;
     let parsed: ManifestFile =
         toml::from_str(&text).map_err(|error| FixtureError::InvalidToml {

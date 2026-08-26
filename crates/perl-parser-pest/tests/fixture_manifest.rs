@@ -584,6 +584,84 @@ fn directory_symlink_component_is_rejected() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn symlink_manifest_is_rejected() -> Result<(), Box<dyn Error>> {
+    let package = TempPackage::new()?;
+    package.write_source("tests/fixtures/sources/ok.pl", b"my $x = 1;\n")?;
+    package.write_manifest(&wrap_manifest(&valid_row(
+        "ok",
+        "path",
+        "tests/fixtures/sources/ok.pl",
+    )))?;
+    let outside = tempfile::tempdir()?;
+    let target = outside.path().join("manifest.toml");
+    let manifest = package.root().join("tests/fixtures/manifest.toml");
+    fs::rename(&manifest, &target)?;
+    std::os::unix::fs::symlink(&target, &manifest)?;
+    let error = match load_manifest(package.root()) {
+        Err(error) => error,
+        Ok(_) => return Err("symlink manifest must fail".into()),
+    };
+    assert!(
+        matches!(
+            error,
+            FixtureError::SymlinkSource { ref id, ref path }
+                if id == "manifest" && path == "tests/fixtures/manifest.toml"
+        ),
+        "symlink manifest must fail closed as SymlinkSource, got {error}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_symlink_component_on_manifest_is_rejected() -> Result<(), Box<dyn Error>> {
+    let package = TempPackage::new()?;
+    package.write_source("tests/fixtures/sources/ok.pl", b"my $x = 1;\n")?;
+    package.write_manifest(&wrap_manifest(&valid_row(
+        "ok",
+        "path",
+        "tests/fixtures/sources/ok.pl",
+    )))?;
+    let fixtures = package.root().join("tests/fixtures");
+    let outside = tempfile::tempdir()?;
+    let relocated = outside.path().join("fixtures");
+    fs::rename(&fixtures, &relocated)?;
+    std::os::unix::fs::symlink(&relocated, &fixtures)?;
+    let error = match load_manifest(package.root()) {
+        Err(error) => error,
+        Ok(_) => return Err("directory symlink on the manifest path must fail".into()),
+    };
+    assert!(
+        matches!(error, FixtureError::SymlinkSource { ref id, .. } if id == "manifest"),
+        "manifest directory symlink must fail closed as SymlinkSource, got {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn non_regular_manifest_is_rejected() -> Result<(), Box<dyn Error>> {
+    let package = TempPackage::new()?;
+    let manifest = package.root().join("tests/fixtures/manifest.toml");
+    fs::create_dir_all(&manifest)?;
+    let error = match load_manifest(package.root()) {
+        Err(error) => error,
+        Ok(_) => return Err("directory manifest must fail".into()),
+    };
+    assert!(
+        matches!(
+            error,
+            FixtureError::Unreadable { ref id, ref path, ref detail }
+                if id == "manifest"
+                    && path == "tests/fixtures/manifest.toml"
+                    && detail.contains("not a regular file")
+        ),
+        "non-regular manifest must fail closed as Unreadable, got {error}"
+    );
+    Ok(())
+}
+
 #[test]
 fn family_selection_preserves_insertion_order() -> Result<(), Box<dyn Error>> {
     let package = TempPackage::new()?;
