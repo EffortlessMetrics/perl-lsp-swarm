@@ -20,7 +20,7 @@ only change with explicit, reviewed intent.
 
 ## Public API
 
-- **`Token`** -- `kind` and `text` are public; byte geometry is private. Construct with [`Token::new_checked`], [`Token::eof_at`], or [`Token::unknown_at`], and read offsets via `start()` / `end()`.
+- **`Token`** -- `text` is public; `kind()` is a read accessor; byte geometry is private. Construct with [`Token::new_checked`], [`Token::eof_at`], or [`Token::unknown_at`], and read offsets via `start()` / `end()`. Change kind with [`Token::with_kind`].
 - **`TokenRef<'src>`** -- borrowed token view with the same geometry seal; construct with [`TokenRef::new_checked`].
 - **`TokenSpan`** -- ordered byte span with private fields; construct with [`TokenSpan::try_new`].
 - **`TokenKind`** -- closed/exhaustive enum classifying every Perl token: keywords, operators, delimiters, literals, sigils, and special tokens
@@ -32,7 +32,7 @@ only change with explicit, reviewed intent.
 use perl_token::{Token, TokenKind, TokenRef};
 
 let tok = Token::new_checked(TokenKind::Identifier, "foo", 0, 3).expect("valid token");
-assert_eq!(tok.kind, TokenKind::Identifier);
+assert_eq!(tok.kind(), TokenKind::Identifier);
 assert_eq!(tok.start(), 0);
 assert_eq!(tok.end(), 3);
 

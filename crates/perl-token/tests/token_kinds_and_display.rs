@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 //! Tests for TokenKind classification, display_name coverage, and source location tracking.
 //!
 //! Supplements existing test files with:
@@ -998,9 +999,9 @@ fn token_sequence_non_overlapping_spans() {
         assert!(
             window[0].end() <= window[1].start(),
             "tokens should not overlap: {:?} ends at {} but {:?} starts at {}",
-            window[0].kind,
+            window[0].kind(),
             window[0].end(),
-            window[1].kind,
+            window[1].kind(),
             window[1].start(),
         );
     }
@@ -1074,7 +1075,7 @@ fn token_equality_with_shared_arc() {
 #[test]
 fn field_token_construction() {
     let tok = Token::new_checked(TokenKind::Field, "field", 0, 5).expect("valid token");
-    assert_eq!(tok.kind, TokenKind::Field);
+    assert_eq!(tok.kind(), TokenKind::Field);
     assert_eq!(&*tok.text, "field");
     assert_eq!(tok.start(), 0);
     assert_eq!(tok.end(), 5);
@@ -1110,15 +1111,15 @@ fn field_in_class_declaration_sequence() {
         Token::new_checked(TokenKind::Semicolon, ";", 23, 24).expect("valid token"),
         Token::new_checked(TokenKind::RightBrace, "}", 25, 26).expect("valid token"),
     ];
-    assert_eq!(tokens[0].kind, TokenKind::Class);
-    assert_eq!(tokens[3].kind, TokenKind::Field);
-    assert_eq!(tokens[4].kind, TokenKind::ScalarSigil);
+    assert_eq!(tokens[0].kind(), TokenKind::Class);
+    assert_eq!(tokens[3].kind(), TokenKind::Field);
+    assert_eq!(tokens[4].kind(), TokenKind::ScalarSigil);
 }
 
 #[test]
 fn goto_token_construction() {
     let tok = Token::new_checked(TokenKind::Goto, "goto", 0, 4).expect("valid token");
-    assert_eq!(tok.kind, TokenKind::Goto);
+    assert_eq!(tok.kind(), TokenKind::Goto);
     assert_eq!(&*tok.text, "goto");
 }
 

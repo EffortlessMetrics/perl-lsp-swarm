@@ -452,7 +452,7 @@ fn contains_format_declaration(source: &str) -> bool {
 fn shift_token(token: &Token, delta: isize) -> Option<Token> {
     let start = shift_offset(token.start(), delta);
     let end = shift_offset(token.end(), delta);
-    Token::new_checked(token.kind, token.text.clone(), start, end).ok()
+    Token::new_checked(token.kind(), token.text.clone(), start, end).ok()
 }
 
 fn replay_crosses_cached_suffix(replayed: &[Token], suffix: &[Token]) -> bool {
@@ -463,6 +463,7 @@ fn replay_crosses_cached_suffix(replayed: &[Token], suffix: &[Token]) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::token_stream::TokenKind;

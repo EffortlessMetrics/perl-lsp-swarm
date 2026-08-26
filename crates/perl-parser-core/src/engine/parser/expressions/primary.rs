@@ -4,7 +4,7 @@ impl<'a> Parser<'a> {
         // Note: qualified identifier parsing is not recursive - no guard needed
         let start_token = self.consume_token()?;
         let start = start_token.start();
-        let mut name = if start_token.kind == TokenKind::DoubleColon {
+        let mut name = if start_token.kind() == TokenKind::DoubleColon {
             // Handle absolute path like ::Foo::Bar
             "::".to_string()
         } else {
@@ -15,7 +15,7 @@ impl<'a> Parser<'a> {
         // Handle both DoubleColon tokens and separate Colon tokens (in case lexer sends :: as separate colons)
         while self.peek_kind() == Some(TokenKind::DoubleColon)
             || (self.peek_kind() == Some(TokenKind::Colon)
-                && self.tokens.peek_second().map(|t| t.kind) == Ok(TokenKind::Colon))
+                && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Colon))
         {
             if self.peek_kind() == Some(TokenKind::DoubleColon) {
                 self.consume_token()?; // consume ::
@@ -219,7 +219,7 @@ impl<'a> Parser<'a> {
     /// Inner implementation of parse_primary (called under recursion guard)
     fn parse_primary_inner(&mut self) -> ParseResult<Node> {
         let token = self.tokens.peek()?;
-        let token_kind = token.kind;
+        let token_kind = token.kind();
 
         match token_kind {
             TokenKind::Number => {
@@ -266,7 +266,7 @@ impl<'a> Parser<'a> {
             TokenKind::QuoteSingle | TokenKind::QuoteDouble => {
                 let token = self.tokens.next()?;
                 // Quote operators produce strings
-                let interpolated = matches!(token.kind, TokenKind::QuoteDouble);
+                let interpolated = matches!(token.kind(), TokenKind::QuoteDouble);
                 let text = token.text.as_ref();
 
                 // Detect unclosed bracket-style delimiters in operator strings
@@ -329,7 +329,7 @@ impl<'a> Parser<'a> {
                                     let line_ending = token.text.trim_end_matches([' ', '\t']);
                                     (line_ending.ends_with('\n') || line_ending.ends_with('\r'))
                                         && self.tokens.peek().is_ok_and(|next| {
-                                            next.kind == TokenKind::Identifier
+                                            next.kind() == TokenKind::Identifier
                                                 && next.text.as_ref() == "print"
                                         })
                                 };
@@ -573,10 +573,10 @@ impl<'a> Parser<'a> {
                 // bareword argument uses (`open(try, ...)`).
                 let second_token = self.tokens.peek_second().ok();
                 let next_is_arg_boundary = second_token.as_ref().is_some_and(|t| {
-                    matches!(t.kind, TokenKind::Comma | TokenKind::RightParen)
+                    matches!(t.kind(), TokenKind::Comma | TokenKind::RightParen)
                 });
                 let next_is_parenthesized_call =
-                    second_token.as_ref().is_some_and(|t| t.kind == TokenKind::LeftParen);
+                    second_token.as_ref().is_some_and(|t| t.kind() == TokenKind::LeftParen);
                 if self.is_keyword_hash_key_boundary()
                     || next_is_arg_boundary
                     || next_is_parenthesized_call
@@ -715,11 +715,11 @@ impl<'a> Parser<'a> {
                             let next_token = self.tokens.peek_second();
                             let next_is_fat_arrow = matches!(
                                 next_token,
-                                Ok(t) if t.kind == TokenKind::FatArrow
+                                Ok(t) if t.kind() == TokenKind::FatArrow
                             );
                             let next_is_right_brace = matches!(
                                 next_token,
-                                Ok(t) if t.kind == TokenKind::RightBrace
+                                Ok(t) if t.kind() == TokenKind::RightBrace
                             );
                             if next_is_fat_arrow || next_is_right_brace {
                                 let tok = self.tokens.next()?;
@@ -819,15 +819,15 @@ impl<'a> Parser<'a> {
                             let next_token = self.tokens.peek_second();
                             let next_is_right_brace = matches!(
                                 next_token,
-                                Ok(t) if t.kind == TokenKind::RightBrace
+                                Ok(t) if t.kind() == TokenKind::RightBrace
                             );
                             let next_is_fat_arrow = matches!(
                                 next_token,
-                                Ok(t) if t.kind == TokenKind::FatArrow
+                                Ok(t) if t.kind() == TokenKind::FatArrow
                             );
                             let next_is_comma = matches!(
                                 next_token,
-                                Ok(t) if t.kind == TokenKind::Comma
+                                Ok(t) if t.kind() == TokenKind::Comma
                             );
                             if next_is_right_brace || next_is_fat_arrow || next_is_comma {
                                 let tok = self.tokens.next()?;
@@ -1206,7 +1206,7 @@ impl<'a> Parser<'a> {
                 //   sub ( ... ) { ... }  — with prototype/signature
                 //   sub :attr { ... }    — with attribute(s), e.g. :lvalue, :shared
                 // We use peek_second() because peek() is still 'sub' (unconsumed)
-                let next = self.tokens.peek_second().ok().map(|t| t.kind);
+                let next = self.tokens.peek_second().ok().map(|t| t.kind());
                 if matches!(
                     next,
                     Some(TokenKind::LeftBrace | TokenKind::LeftParen | TokenKind::Colon)

@@ -281,7 +281,7 @@ impl<'a> Parser<'a> {
                                 if self
                                     .tokens
                                     .peek_second()
-                                    .is_ok_and(|t| t.kind == TokenKind::Star)
+                                    .is_ok_and(|t| t.kind() == TokenKind::Star)
                                 {
                                     self.tokens.next()?; // consume $#
                                     self.tokens.next()?; // consume *
@@ -824,7 +824,7 @@ impl<'a> Parser<'a> {
                                     .tokens
                                     .peek_second()
                                     .ok()
-                                    .is_some_and(|t| t.kind == TokenKind::FatArrow)))
+                                    .is_some_and(|t| t.kind() == TokenKind::FatArrow)))
                         {
                             // Qualified call with string/number literal argument — issue #2750 Pattern B.
                             // e.g. `(Carp::croak "error")`, `(utf8::downgrade $$buf or Carp::croak "Wide char")`
@@ -1015,7 +1015,7 @@ impl<'a> Parser<'a> {
                                     && self.tokens.peek().ok().is_some_and(|t| {
                                         // Scalar-variable coderef: text starts with `$`
                                         // e.g. `sort $cmp @list`, `sort $keysort (keys %h)`
-                                        t.kind == TokenKind::Identifier && t.text.starts_with('$')
+                                        t.kind() == TokenKind::Identifier && t.text.starts_with('$')
                                     })
                                 {
                                     // sort $coderef LIST — `sort $cmp @list`, `sort $cmp (keys %h)`
@@ -1267,7 +1267,7 @@ impl<'a> Parser<'a> {
             return false;
         }
         self.tokens.peek().ok().is_some_and(|token| {
-            matches!(token.kind, TokenKind::Increment | TokenKind::Decrement)
+            matches!(token.kind(), TokenKind::Increment | TokenKind::Decrement)
                 && token.start() > expr.location.end
         })
     }
@@ -1332,7 +1332,7 @@ impl<'a> Parser<'a> {
                 // quote-op start (#2467).
                 return match self.tokens.peek_second() {
                     Ok(second) => matches!(
-                        second.kind,
+                        second.kind(),
                         TokenKind::RightBrace | TokenKind::Comma | TokenKind::Eof
                     ),
                     Err(_) => true,
@@ -1423,7 +1423,7 @@ impl<'a> Parser<'a> {
         };
 
         let is_keyword_key = matches!(
-            first.kind,
+            first.kind(),
             TokenKind::WordNot
                 | TokenKind::WordAnd
                 | TokenKind::WordOr
@@ -1443,7 +1443,7 @@ impl<'a> Parser<'a> {
         self.tokens
             .peek_second()
             .ok()
-            .is_some_and(|second| matches!(second.kind, TokenKind::RightBrace | TokenKind::Comma))
+            .is_some_and(|second| matches!(second.kind(), TokenKind::RightBrace | TokenKind::Comma))
     }
 
     fn consume_as_bareword_identifier(&mut self) -> ParseResult<Node> {

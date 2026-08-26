@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 //! Extended unit tests for the `perl-token` crate.
 //!
 //! Supplements `comprehensive_unit_tests.rs` with additional coverage for:
@@ -56,7 +57,7 @@ fn token_span_with_gap_for_whitespace() {
 fn token_with_kind_is_the_supported_kind_change() {
     let tok = Token::new_checked(TokenKind::Identifier, "eval", 0, 4).expect("valid token");
     let retyped = tok.with_kind(TokenKind::Eval).expect("kind change preserves span");
-    assert_eq!(retyped.kind, TokenKind::Eval);
+    assert_eq!(retyped.kind(), TokenKind::Eval);
     assert_eq!(retyped.start(), 0);
     assert_eq!(retyped.end(), 4);
 }
@@ -501,9 +502,9 @@ fn token_sequence_hash_access() {
         Token::new_checked(TokenKind::RightBrace, "}", 9, 10).expect("valid token"),
     ];
     assert_eq!(tokens.len(), 5);
-    assert_eq!(tokens[0].kind, TokenKind::ScalarSigil);
-    assert_eq!(tokens[2].kind, TokenKind::LeftBrace);
-    assert_eq!(tokens[4].kind, TokenKind::RightBrace);
+    assert_eq!(tokens[0].kind(), TokenKind::ScalarSigil);
+    assert_eq!(tokens[2].kind(), TokenKind::LeftBrace);
+    assert_eq!(tokens[4].kind(), TokenKind::RightBrace);
 }
 
 #[test]
@@ -519,7 +520,7 @@ fn token_sequence_array_slice() {
         Token::new_checked(TokenKind::RightBracket, "]", 11, 12).expect("valid token"),
     ];
     assert_eq!(tokens.len(), 7);
-    assert_eq!(tokens[4].kind, TokenKind::Range);
+    assert_eq!(tokens[4].kind(), TokenKind::Range);
 }
 
 #[test]
@@ -541,9 +542,9 @@ fn token_sequence_if_elsif_else() {
         Token::new_checked(TokenKind::RightBrace, "}", 30, 31).expect("valid token"),
     ];
     assert_eq!(tokens.len(), 13);
-    assert_eq!(tokens[0].kind, TokenKind::If);
-    assert_eq!(tokens[5].kind, TokenKind::Elsif);
-    assert_eq!(tokens[10].kind, TokenKind::Else);
+    assert_eq!(tokens[0].kind(), TokenKind::If);
+    assert_eq!(tokens[5].kind(), TokenKind::Elsif);
+    assert_eq!(tokens[10].kind(), TokenKind::Else);
 }
 
 #[test]
@@ -554,7 +555,7 @@ fn token_sequence_use_module() {
         Token::new_checked(TokenKind::Identifier, "strict", 4, 10).expect("valid token"),
         Token::new_checked(TokenKind::Semicolon, ";", 10, 11).expect("valid token"),
     ];
-    assert_eq!(tokens[0].kind, TokenKind::Use);
+    assert_eq!(tokens[0].kind(), TokenKind::Use);
     assert_eq!(&*tokens[1].text, "strict");
 }
 
@@ -566,7 +567,7 @@ fn token_sequence_fat_comma_pair() {
         Token::new_checked(TokenKind::FatArrow, "=>", 4, 6).expect("valid token"),
         Token::new_checked(TokenKind::String, "\"value\"", 7, 14).expect("valid token"),
     ];
-    assert_eq!(tokens[1].kind, TokenKind::FatArrow);
+    assert_eq!(tokens[1].kind(), TokenKind::FatArrow);
 }
 
 #[test]
@@ -580,8 +581,8 @@ fn token_sequence_ternary_operator() {
         Token::new_checked(TokenKind::Colon, ":", 7, 8).expect("valid token"),
         Token::new_checked(TokenKind::Number, "0", 9, 10).expect("valid token"),
     ];
-    assert_eq!(tokens[2].kind, TokenKind::Question);
-    assert_eq!(tokens[4].kind, TokenKind::Colon);
+    assert_eq!(tokens[2].kind(), TokenKind::Question);
+    assert_eq!(tokens[4].kind(), TokenKind::Colon);
 }
 
 #[test]
@@ -593,8 +594,8 @@ fn token_sequence_regex_match() {
         Token::new_checked(TokenKind::Match, "=~", 5, 7).expect("valid token"),
         Token::new_checked(TokenKind::Regex, "/pattern/i", 8, 18).expect("valid token"),
     ];
-    assert_eq!(tokens[2].kind, TokenKind::Match);
-    assert_eq!(tokens[3].kind, TokenKind::Regex);
+    assert_eq!(tokens[2].kind(), TokenKind::Match);
+    assert_eq!(tokens[3].kind(), TokenKind::Regex);
 }
 
 #[test]
@@ -608,7 +609,7 @@ fn token_sequence_chained_arrow_deref() {
         Token::new_checked(TokenKind::Arrow, "->", 12, 14).expect("valid token"),
         Token::new_checked(TokenKind::Identifier, "field", 14, 19).expect("valid token"),
     ];
-    let arrows: Vec<_> = tokens.iter().filter(|t| t.kind == TokenKind::Arrow).collect();
+    let arrows: Vec<_> = tokens.iter().filter(|t| t.kind() == TokenKind::Arrow).collect();
     assert_eq!(arrows.len(), 2);
 }
 
@@ -621,7 +622,7 @@ fn token_sequence_defined_or_assign() {
         Token::new_checked(TokenKind::DefinedOrAssign, "//=", 3, 6).expect("valid token"),
         Token::new_checked(TokenKind::String, "\"default\"", 7, 16).expect("valid token"),
     ];
-    assert_eq!(tokens[2].kind, TokenKind::DefinedOrAssign);
+    assert_eq!(tokens[2].kind(), TokenKind::DefinedOrAssign);
 }
 
 #[test]
@@ -642,9 +643,9 @@ fn token_sequence_try_catch_finally() {
         Token::new_checked(TokenKind::LeftBrace, "{", 31, 32).expect("valid token"),
         Token::new_checked(TokenKind::RightBrace, "}", 33, 34).expect("valid token"),
     ];
-    assert_eq!(tokens[0].kind, TokenKind::Try);
-    assert_eq!(tokens[3].kind, TokenKind::Catch);
-    assert_eq!(tokens[10].kind, TokenKind::Finally);
+    assert_eq!(tokens[0].kind(), TokenKind::Try);
+    assert_eq!(tokens[3].kind(), TokenKind::Catch);
+    assert_eq!(tokens[10].kind(), TokenKind::Finally);
 }
 
 #[test]
@@ -660,8 +661,8 @@ fn token_sequence_class_method_perl538() {
         Token::new_checked(TokenKind::RightBrace, "}", 25, 26).expect("valid token"),
         Token::new_checked(TokenKind::RightBrace, "}", 27, 28).expect("valid token"),
     ];
-    assert_eq!(tokens[0].kind, TokenKind::Class);
-    assert_eq!(tokens[3].kind, TokenKind::Method);
+    assert_eq!(tokens[0].kind(), TokenKind::Class);
+    assert_eq!(tokens[3].kind(), TokenKind::Method);
 }
 
 #[test]
@@ -671,8 +672,8 @@ fn token_sequence_heredoc() {
         Token::new_checked(TokenKind::HeredocStart, "<<EOF", 0, 5).expect("valid token"),
         Token::new_checked(TokenKind::HeredocBody, "content\n", 6, 14).expect("valid token"),
     ];
-    assert_eq!(tokens[0].kind, TokenKind::HeredocStart);
-    assert_eq!(tokens[1].kind, TokenKind::HeredocBody);
+    assert_eq!(tokens[0].kind(), TokenKind::HeredocStart);
+    assert_eq!(tokens[1].kind(), TokenKind::HeredocBody);
     assert!(tokens[1].text.contains('\n'));
 }
 
@@ -700,8 +701,8 @@ fn token_sequence_for_loop() {
         Token::new_checked(TokenKind::LeftBrace, "{", 31, 32).expect("valid token"),
         Token::new_checked(TokenKind::RightBrace, "}", 33, 34).expect("valid token"),
     ];
-    assert_eq!(tokens[0].kind, TokenKind::For);
-    assert_eq!(tokens[15].kind, TokenKind::Increment);
+    assert_eq!(tokens[0].kind(), TokenKind::For);
+    assert_eq!(tokens[15].kind(), TokenKind::Increment);
 }
 
 #[test]
@@ -722,8 +723,8 @@ fn token_sequence_while_with_loop_control() {
         Token::new_checked(TokenKind::Semicolon, ";", 31, 32).expect("valid token"),
         Token::new_checked(TokenKind::RightBrace, "}", 33, 34).expect("valid token"),
     ];
-    assert_eq!(tokens[5].kind, TokenKind::Next);
-    assert_eq!(tokens[10].kind, TokenKind::Last);
+    assert_eq!(tokens[5].kind(), TokenKind::Next);
+    assert_eq!(tokens[10].kind(), TokenKind::Last);
 }
 
 #[test]
@@ -736,8 +737,8 @@ fn token_sequence_package_declaration() {
         Token::new_checked(TokenKind::Identifier, "Bar", 13, 16).expect("valid token"),
         Token::new_checked(TokenKind::Semicolon, ";", 16, 17).expect("valid token"),
     ];
-    assert_eq!(tokens[0].kind, TokenKind::Package);
-    assert_eq!(tokens[2].kind, TokenKind::DoubleColon);
+    assert_eq!(tokens[0].kind(), TokenKind::Package);
+    assert_eq!(tokens[2].kind(), TokenKind::DoubleColon);
 }
 
 // ===========================================================================
@@ -823,7 +824,7 @@ fn filter_tokens_by_kind() {
         Token::new_checked(TokenKind::ScalarSigil, "$", 11, 12).expect("valid token"),
         Token::new_checked(TokenKind::Identifier, "y", 12, 13).expect("valid token"),
     ];
-    let my_tokens: Vec<_> = tokens.iter().filter(|t| t.kind == TokenKind::My).collect();
+    let my_tokens: Vec<_> = tokens.iter().filter(|t| t.kind() == TokenKind::My).collect();
     assert_eq!(my_tokens.len(), 2);
 }
 
@@ -847,7 +848,7 @@ fn partition_tokens_by_category() {
         Token::new_checked(TokenKind::Minus, "-", 8, 9).expect("valid token"),
     ];
     let keywords = keyword_kinds();
-    let (kw, non_kw): (Vec<_>, Vec<_>) = tokens.iter().partition(|t| keywords.contains(&t.kind));
+    let (kw, non_kw): (Vec<_>, Vec<_>) = tokens.iter().partition(|t| keywords.contains(&t.kind()));
     assert_eq!(kw.len(), 2);
     assert_eq!(non_kw.len(), 2);
 }
@@ -871,7 +872,7 @@ fn find_first_identifier() {
         Token::new_checked(TokenKind::Identifier, "first_id", 4, 12).expect("valid token"),
         Token::new_checked(TokenKind::Identifier, "second_id", 13, 22).expect("valid token"),
     ];
-    let first = tokens.iter().find(|t| t.kind == TokenKind::Identifier).map(|t| t.text.as_ref());
+    let first = tokens.iter().find(|t| t.kind() == TokenKind::Identifier).map(|t| t.text.as_ref());
     assert_eq!(first, Some("first_id"), "should have found identifier 'first_id'");
 }
 
@@ -885,7 +886,7 @@ fn count_semicolons() {
         Token::new_checked(TokenKind::Identifier, "c", 6, 7).expect("valid token"),
         Token::new_checked(TokenKind::Semicolon, ";", 7, 8).expect("valid token"),
     ];
-    let count = tokens.iter().filter(|t| t.kind == TokenKind::Semicolon).count();
+    let count = tokens.iter().filter(|t| t.kind() == TokenKind::Semicolon).count();
     assert_eq!(count, 3);
 }
 
@@ -960,7 +961,7 @@ fn phase_blocks_are_all_distinct() {
 fn unknown_rest_token_for_budget_exceeded() {
     let tok = Token::new_checked(TokenKind::UnknownRest, "...remainder...", 500, 515)
         .expect("valid token");
-    assert_eq!(tok.kind, TokenKind::UnknownRest);
+    assert_eq!(tok.kind(), TokenKind::UnknownRest);
     assert_eq!(&*tok.text, "...remainder...");
 }
 
@@ -968,7 +969,7 @@ fn unknown_rest_token_for_budget_exceeded() {
 fn heredoc_depth_limit_token() {
     let tok =
         Token::new_checked(TokenKind::HeredocDepthLimit, "<<DEEP", 0, 6).expect("valid token");
-    assert_eq!(tok.kind, TokenKind::HeredocDepthLimit);
+    assert_eq!(tok.kind(), TokenKind::HeredocDepthLimit);
 }
 
 #[test]
@@ -976,16 +977,16 @@ fn data_marker_and_body() {
     let marker = Token::new_checked(TokenKind::DataMarker, "__END__", 0, 7).expect("valid token");
     let body =
         Token::new_checked(TokenKind::DataBody, "some trailing data", 8, 26).expect("valid token");
-    assert_eq!(marker.kind, TokenKind::DataMarker);
-    assert_eq!(body.kind, TokenKind::DataBody);
-    assert_ne!(marker.kind, body.kind);
+    assert_eq!(marker.kind(), TokenKind::DataMarker);
+    assert_eq!(body.kind(), TokenKind::DataBody);
+    assert_ne!(marker.kind(), body.kind());
 }
 
 #[test]
 fn format_body_token() {
     let tok =
         Token::new_checked(TokenKind::FormatBody, "@<<<< $name\n.", 0, 13).expect("valid token");
-    assert_eq!(tok.kind, TokenKind::FormatBody);
+    assert_eq!(tok.kind(), TokenKind::FormatBody);
 }
 
 // ===========================================================================
@@ -997,7 +998,7 @@ fn option_token_some() {
     let maybe: Option<Token> =
         Some(Token::new_checked(TokenKind::Number, "42", 0, 2).expect("valid token"));
     assert!(maybe.is_some(), "expected Some");
-    assert_eq!(maybe.as_ref().map(|t| t.kind), Some(TokenKind::Number), "expected Number token");
+    assert_eq!(maybe.as_ref().map(|t| t.kind()), Some(TokenKind::Number), "expected Number token");
 }
 
 #[test]
@@ -1014,10 +1015,10 @@ fn vec_first_and_last() {
         Token::new_checked(TokenKind::Semicolon, ";", 10, 11).expect("valid token"),
     ];
     if let Some(first) = tokens.first() {
-        assert_eq!(first.kind, TokenKind::Use);
+        assert_eq!(first.kind(), TokenKind::Use);
     }
     if let Some(last) = tokens.last() {
-        assert_eq!(last.kind, TokenKind::Semicolon);
+        assert_eq!(last.kind(), TokenKind::Semicolon);
     }
 }
 

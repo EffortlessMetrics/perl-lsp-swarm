@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 //! Comprehensive unit tests for the `perl-token` crate.
 //!
 //! Covers:
@@ -19,7 +20,7 @@ use std::sync::Arc;
 #[test]
 fn token_new_basic_fields() {
     let t = Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token");
-    assert_eq!(t.kind, TokenKind::My);
+    assert_eq!(t.kind(), TokenKind::My);
     assert_eq!(&*t.text, "my");
     assert_eq!(t.start(), 0);
     assert_eq!(t.end(), 2);
@@ -52,10 +53,11 @@ fn token_new_empty_text() {
 }
 
 #[test]
-fn token_new_zero_length_span() {
-    let t = Token::new_checked(TokenKind::Semicolon, ";", 42, 42).expect("valid token");
-    assert_eq!(t.start(), t.end());
-    assert!(t.is_empty());
+fn token_new_zero_length_span_rejects_non_eof() {
+    assert_eq!(
+        Token::new_checked(TokenKind::Semicolon, ";", 42, 42),
+        Err(perl_token::TokenSpanError::EmptySpanNotAllowed { kind: TokenKind::Semicolon, at: 42 })
+    );
 }
 
 #[test]
@@ -560,7 +562,7 @@ fn keyword_token_round_trip() {
     for (kind, text) in keywords {
         let end = offset + text.len();
         let tok = Token::new_checked(*kind, *text, offset, end).expect("valid token");
-        assert_eq!(tok.kind, *kind);
+        assert_eq!(tok.kind(), *kind);
         assert_eq!(&*tok.text, *text);
         assert_eq!(tok.start(), offset);
         assert_eq!(tok.end(), end);
@@ -637,7 +639,7 @@ fn operator_token_round_trip() {
 
     for (kind, text) in operators {
         let tok = Token::new_checked(*kind, *text, 0, text.len()).expect("valid token");
-        assert_eq!(tok.kind, *kind, "operator {text}");
+        assert_eq!(tok.kind(), *kind, "operator {text}");
         assert_eq!(&*tok.text, *text);
     }
 }
@@ -661,7 +663,7 @@ fn delimiter_token_round_trip() {
 
     for (kind, text) in delimiters {
         let tok = Token::new_checked(*kind, *text, 0, text.len()).expect("valid token");
-        assert_eq!(tok.kind, *kind, "delimiter {text}");
+        assert_eq!(tok.kind(), *kind, "delimiter {text}");
         assert_eq!(&*tok.text, *text);
     }
 }
@@ -696,7 +698,7 @@ fn literal_token_round_trip() {
 
     for (kind, text) in literals {
         let tok = Token::new_checked(*kind, *text, 0, text.len()).expect("valid token");
-        assert_eq!(tok.kind, *kind, "literal {text}");
+        assert_eq!(tok.kind(), *kind, "literal {text}");
         assert_eq!(&*tok.text, *text);
     }
 }
@@ -708,7 +710,7 @@ fn literal_token_round_trip() {
 #[test]
 fn identifier_token() {
     let tok = Token::new_checked(TokenKind::Identifier, "some_func", 0, 9).expect("valid token");
-    assert_eq!(tok.kind, TokenKind::Identifier);
+    assert_eq!(tok.kind(), TokenKind::Identifier);
     assert_eq!(&*tok.text, "some_func");
 }
 
@@ -724,7 +726,7 @@ fn sigil_tokens() {
 
     for (kind, text) in sigils {
         let tok = Token::new_checked(*kind, *text, 0, 1).expect("valid token");
-        assert_eq!(tok.kind, *kind, "sigil {text}");
+        assert_eq!(tok.kind(), *kind, "sigil {text}");
         assert_eq!(&*tok.text, *text);
     }
 }
@@ -736,14 +738,14 @@ fn sigil_tokens() {
 #[test]
 fn eof_token() {
     let tok = Token::new_checked(TokenKind::Eof, "", 500, 500).expect("valid token");
-    assert_eq!(tok.kind, TokenKind::Eof);
+    assert_eq!(tok.kind(), TokenKind::Eof);
     assert_eq!(&*tok.text, "");
 }
 
 #[test]
 fn unknown_token() {
     let tok = Token::new_checked(TokenKind::Unknown, "\x01", 0, 1).expect("valid token");
-    assert_eq!(tok.kind, TokenKind::Unknown);
+    assert_eq!(tok.kind(), TokenKind::Unknown);
 }
 
 // ---------------------------------------------------------------------------
@@ -763,12 +765,12 @@ fn token_sequence_my_x_assign_42() {
     ];
 
     assert_eq!(tokens.len(), 6);
-    assert_eq!(tokens[0].kind, TokenKind::My);
-    assert_eq!(tokens[1].kind, TokenKind::ScalarSigil);
-    assert_eq!(tokens[2].kind, TokenKind::Identifier);
-    assert_eq!(tokens[3].kind, TokenKind::Assign);
-    assert_eq!(tokens[4].kind, TokenKind::Number);
-    assert_eq!(tokens[5].kind, TokenKind::Semicolon);
+    assert_eq!(tokens[0].kind(), TokenKind::My);
+    assert_eq!(tokens[1].kind(), TokenKind::ScalarSigil);
+    assert_eq!(tokens[2].kind(), TokenKind::Identifier);
+    assert_eq!(tokens[3].kind(), TokenKind::Assign);
+    assert_eq!(tokens[4].kind(), TokenKind::Number);
+    assert_eq!(tokens[5].kind(), TokenKind::Semicolon);
 }
 
 #[test]
@@ -781,8 +783,8 @@ fn token_sequence_sub_declaration() {
         Token::new_checked(TokenKind::RightBrace, "}", 12, 13).expect("valid token"),
     ];
 
-    assert_eq!(tokens.first().map(|t| t.kind), Some(TokenKind::Sub));
-    assert_eq!(tokens.last().map(|t| t.kind), Some(TokenKind::RightBrace));
+    assert_eq!(tokens.first().map(|t| t.kind()), Some(TokenKind::Sub));
+    assert_eq!(tokens.last().map(|t| t.kind()), Some(TokenKind::RightBrace));
 }
 
 #[test]
@@ -797,7 +799,7 @@ fn token_sequence_method_call() {
         Token::new_checked(TokenKind::RightParen, ")", 13, 14).expect("valid token"),
     ];
 
-    assert_eq!(tokens[2].kind, TokenKind::Arrow);
+    assert_eq!(tokens[2].kind(), TokenKind::Arrow);
     assert_eq!(&*tokens[2].text, "->");
 }
 
@@ -813,8 +815,8 @@ fn token_sequence_package_qualified() {
     ];
 
     assert_eq!(tokens.len(), 5);
-    assert_eq!(tokens[1].kind, TokenKind::DoubleColon);
-    assert_eq!(tokens[3].kind, TokenKind::DoubleColon);
+    assert_eq!(tokens[1].kind(), TokenKind::DoubleColon);
+    assert_eq!(tokens[3].kind(), TokenKind::DoubleColon);
 }
 
 // ---------------------------------------------------------------------------

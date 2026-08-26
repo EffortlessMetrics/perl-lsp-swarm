@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use perl_token::{Token, TokenKind, TokenRef, TokenSpan, TokenSpanError};
 use std::error::Error;
 use std::sync::Arc;
@@ -13,7 +14,7 @@ fn token_ref_new_exposes_borrowed_fields() -> TestResult {
     let source = "my $name";
     let token = TokenRef::new_checked(TokenKind::My, &source[0..2], 0, 2)?;
 
-    assert_eq!(token.kind, TokenKind::My);
+    assert_eq!(token.kind(), TokenKind::My);
     assert_eq!(token.text, "my");
     assert_eq!(token.len(), 2);
     assert!(!token.is_empty());
@@ -27,7 +28,7 @@ fn token_ref_to_owned_token_is_explicit() -> TestResult {
     let borrowed = TokenRef::new_checked(TokenKind::Identifier, "value", 8, 13)?;
     let owned = borrowed.to_owned_token();
 
-    assert_eq!(owned.kind, TokenKind::Identifier);
+    assert_eq!(owned.kind(), TokenKind::Identifier);
     assert_eq!(&*owned.text, "value");
     assert_eq!(owned.span(), ordered_span(8, 13));
     assert_eq!(owned.display_name(), "identifier");
@@ -49,7 +50,7 @@ fn token_as_ref_token_roundtrips_without_changing_span() -> TestResult {
     let token = Token::new_checked(TokenKind::String, "\"abc\"", 4, 9)?;
     let borrowed = token.as_ref_token();
 
-    assert_eq!(borrowed.kind, TokenKind::String);
+    assert_eq!(borrowed.kind(), TokenKind::String);
     assert_eq!(borrowed.text, "\"abc\"");
     assert_eq!(borrowed.span(), token.span());
 
@@ -112,7 +113,7 @@ fn token_ref_new_checked_rejects_empty_non_eof() -> TestResult {
 #[test]
 fn token_ref_new_checked_allows_empty_unknown() -> TestResult {
     let token = TokenRef::new_checked(TokenKind::Unknown, "<synthetic>", 21, 21)?;
-    assert_eq!(token.kind, TokenKind::Unknown);
+    assert_eq!(token.kind(), TokenKind::Unknown);
     assert_eq!(token.span(), ordered_span(21, 21));
     assert!(token.is_empty());
     Ok(())
@@ -121,7 +122,7 @@ fn token_ref_new_checked_allows_empty_unknown() -> TestResult {
 #[test]
 fn token_ref_new_checked_allows_empty_eof() -> TestResult {
     let token = TokenRef::new_checked(TokenKind::Eof, "", 12, 12)?;
-    assert_eq!(token.kind, TokenKind::Eof);
+    assert_eq!(token.kind(), TokenKind::Eof);
     assert_eq!(token.span(), ordered_span(12, 12));
     assert!(token.is_empty());
     Ok(())

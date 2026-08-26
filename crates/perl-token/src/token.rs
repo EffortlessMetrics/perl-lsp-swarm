@@ -8,10 +8,11 @@ use crate::{TokenKind, TokenSpan, TokenSpanError};
 /// Unlike [`Token`], this type borrows source text and does not allocate.
 /// Convert to [`Token`] explicitly with [`TokenRef::to_owned_token`] or `From`.
 ///
-/// Geometry fields are private. `kind` and `text` remain public read accessors
-/// because they do not encode span ordering; changing them in place cannot
-/// create a reversed span. Use [`TokenRef::new_checked`] / [`TokenRef::with_kind`]
-/// when a kind change must preserve empty-span policy.
+/// Geometry fields are private. `text` remains a public field because replacing
+/// it cannot create a reversed or illegally empty span. `kind` is a read
+/// accessor: assignment on an empty EOF would otherwise bypass empty-span
+/// policy. Use [`TokenRef::new_checked`] / [`TokenRef::with_kind`] to change
+/// kind.
 ///
 /// This struct is `#[non_exhaustive]`: additional fields may be added later.
 /// Downstream crates cannot use struct literals.
@@ -30,11 +31,16 @@ use crate::{TokenKind, TokenSpan, TokenSpanError};
 /// use perl_token::{TokenKind, TokenRef};
 /// let _ = TokenRef::new(TokenKind::Identifier, "x", 1, 0);
 /// ```
+///
+/// ```compile_fail
+/// use perl_token::{TokenKind, TokenRef};
+/// let mut tok = TokenRef::new_checked(TokenKind::Eof, "", 0, 0).unwrap();
+/// tok.kind = TokenKind::Semicolon;
+/// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TokenRef<'src> {
-    /// Token classification for parser decision making.
-    pub kind: TokenKind,
+    kind: TokenKind,
     /// Borrowed source text slice.
     pub text: &'src str,
     start: usize,
@@ -70,6 +76,11 @@ impl<'src> TokenRef<'src> {
         end: usize,
     ) -> Result<Self, TokenSpanError> {
         Self::new_checked(kind, text, start, end)
+    }
+
+    /// Token classification for parser matching.
+    pub const fn kind(self) -> TokenKind {
+        self.kind
     }
 
     /// Starting byte position.
@@ -118,11 +129,12 @@ impl<'src> TokenRef<'src> {
 /// Stores the token kind, original source text, and byte span. The text is kept
 /// in an `Arc<str>` so buffering and lookahead can clone tokens cheaply.
 ///
-/// Geometry fields are private. Safe external code cannot create reversed,
-/// source-inconsistent, or illegally empty tokens: use [`Token::new_checked`],
-/// [`Token::eof_at`], or [`Token::unknown_at`]. `kind` and `text` remain public
-/// read accessors for parser matching and Arc sharing; use [`Token::with_kind`]
-/// when a kind change must preserve empty-span policy.
+/// Geometry fields are private. Safe external code cannot create reversed or
+/// illegally empty tokens: use [`Token::new_checked`], [`Token::eof_at`], or
+/// [`Token::unknown_at`]. `text` remains a public field for Arc sharing;
+/// replacing it cannot violate span geometry. `kind` is a read accessor so
+/// assignment on an empty EOF cannot bypass empty-span policy; use
+/// [`Token::with_kind`] to change kind.
 ///
 /// This struct is `#[non_exhaustive]`: additional fields may be added later.
 /// Downstream crates cannot use struct literals.
@@ -133,7 +145,7 @@ impl<'src> TokenRef<'src> {
 /// use perl_token::{Token, TokenKind};
 ///
 /// let tok = Token::new_checked(TokenKind::Sub, "sub", 0, 3)?;
-/// assert_eq!(tok.kind, TokenKind::Sub);
+/// assert_eq!(tok.kind(), TokenKind::Sub);
 /// assert_eq!(&*tok.text, "sub");
 /// assert_eq!(tok.start(), 0);
 /// assert_eq!(tok.end(), 3);
@@ -160,11 +172,16 @@ impl<'src> TokenRef<'src> {
 /// let mut tok = Token::new_checked(TokenKind::Identifier, "x", 0, 1).unwrap();
 /// tok.start = 4;
 /// ```
+///
+/// ```compile_fail
+/// use perl_token::{Token, TokenKind};
+/// let mut tok = Token::eof_at(0);
+/// tok.kind = TokenKind::Semicolon;
+/// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
-    /// Token classification for parser decision making.
-    pub kind: TokenKind,
+    kind: TokenKind,
     /// Original source text for precise reconstruction.
     pub text: Arc<str>,
     start: usize,
@@ -240,6 +257,11 @@ impl Token {
         end: usize,
     ) -> Result<Self, TokenSpanError> {
         Self::new_checked(TokenKind::Unknown, text, start, end)
+    }
+
+    /// Token classification for parser matching.
+    pub const fn kind(&self) -> TokenKind {
+        self.kind
     }
 
     /// Starting byte position.

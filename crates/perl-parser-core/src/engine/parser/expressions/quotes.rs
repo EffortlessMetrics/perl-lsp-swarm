@@ -7,7 +7,7 @@ impl<'a> Parser<'a> {
 
         // Get the delimiter - it might be a bracket token or other punctuation
         let delim_token = self.consume_token()?;
-        let delim_char = match delim_token.kind {
+        let delim_char = match delim_token.kind() {
             TokenKind::LeftBrace => '{',
             TokenKind::LeftBracket => '[',
             TokenKind::LeftParen => '(',
@@ -167,7 +167,7 @@ impl<'a> Parser<'a> {
         let mut modifiers = String::new();
         if op == "qr" {
             while let Ok(token) = self.tokens.peek() {
-                if token.kind == TokenKind::Identifier && token.text.len() == 1 {
+                if token.kind() == TokenKind::Identifier && token.text.len() == 1 {
                     let ch = token.text.chars().next().ok_or_else(|| {
                         ParseError::syntax("Empty identifier token", token.start())
                     })?;
@@ -247,7 +247,7 @@ impl<'a> Parser<'a> {
 
                 let mut modifiers = String::new();
                 while let Ok(token) = self.tokens.peek() {
-                    if token.kind == TokenKind::Identifier && token.text.len() == 1 {
+                    if token.kind() == TokenKind::Identifier && token.text.len() == 1 {
                         let ch = token.text.chars().next().ok_or_else(|| {
                             ParseError::syntax("Empty identifier token", token.start())
                         })?;
@@ -329,7 +329,7 @@ impl<'a> Parser<'a> {
 
         while !self.tokens.is_eof() {
             let token = self.consume_token()?;
-            if token.kind != TokenKind::String && token.text.contains(close_delim) {
+            if token.kind() != TokenKind::String && token.text.contains(close_delim) {
                 let pos = token.text.find(close_delim).ok_or_else(|| {
                     ParseError::syntax("Closing delimiter not found in token", token.start())
                 })?;
@@ -346,7 +346,7 @@ impl<'a> Parser<'a> {
         let mut modifiers = String::new();
 
         while let Ok(token) = self.tokens.peek() {
-            if token.kind != TokenKind::Identifier || token.text.len() != 1 {
+            if token.kind() != TokenKind::Identifier || token.text.len() != 1 {
                 break;
             }
 
@@ -395,7 +395,7 @@ impl<'a> Parser<'a> {
 
                 // Stop if we see a keyword that starts a new statement
                 if matches!(
-                    peek.kind,
+                    peek.kind(),
                     TokenKind::Use
                         | TokenKind::My
                         | TokenKind::Our
@@ -410,11 +410,11 @@ impl<'a> Parser<'a> {
                 }
 
                 // Also stop on semicolon (though we likely won't see it after #)
-                if matches!(peek.kind, TokenKind::Semicolon) {
+                if matches!(peek.kind(), TokenKind::Semicolon) {
                     break;
                 }
 
-                match peek.kind {
+                match peek.kind() {
                     TokenKind::Identifier | TokenKind::Number => {
                         // Check if this is a keyword that likely isn't part of the qw list
                         if matches!(peek.text.as_ref(), "use" | "constant" | "my" | "our" | "sub") {
@@ -478,7 +478,7 @@ impl<'a> Parser<'a> {
     fn parse_qw_list(&mut self) -> ParseResult<Vec<Node>> {
         // Handle different delimiters for qw
         let delimiter_token = self.tokens.peek()?.clone();
-        let close_delim = match delimiter_token.kind {
+        let close_delim = match delimiter_token.kind() {
             TokenKind::LeftParen => {
                 self.consume_token()?;
                 TokenKind::RightParen

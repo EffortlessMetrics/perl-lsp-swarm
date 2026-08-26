@@ -678,11 +678,11 @@ impl<'a> Parser<'a> {
                     let start = expr.location.start;
                     let end = right.location.end;
 
-                    if matches!(op_token.kind, TokenKind::Match | TokenKind::NotMatch) {
+                    if matches!(op_token.kind(), TokenKind::Match | TokenKind::NotMatch) {
                         if let NodeKind::Substitution { pattern, replacement, modifiers, has_embedded_code, .. } =
                             &right.kind
                         {
-                            let negated = matches!(op_token.kind, TokenKind::NotMatch);
+                            let negated = matches!(op_token.kind(), TokenKind::NotMatch);
                             expr = Node::new(
                                 NodeKind::Substitution {
                                     expr: Box::new(expr),
@@ -698,7 +698,7 @@ impl<'a> Parser<'a> {
                             search, replace, modifiers, ..
                         } = &right.kind
                         {
-                            let negated = matches!(op_token.kind, TokenKind::NotMatch);
+                            let negated = matches!(op_token.kind(), TokenKind::NotMatch);
                             expr = Node::new(
                                 NodeKind::Transliteration {
                                     expr: Box::new(expr),
@@ -712,7 +712,7 @@ impl<'a> Parser<'a> {
                         } else if let NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } =
                             &right.kind
                         {
-                            let negated = matches!(op_token.kind, TokenKind::NotMatch);
+                            let negated = matches!(op_token.kind(), TokenKind::NotMatch);
                             if let Some(replacement) = replacement {
                                 let pat = if pattern.len() >= 2 {
                                     pattern[1..pattern.len() - 1].to_string()
@@ -1022,7 +1022,7 @@ impl<'a> Parser<'a> {
                         break;
                     }
                     let is_operand_start = if let Ok(next) = self.tokens.peek_second() {
-                        match next.kind {
+                        match next.kind() {
                             TokenKind::Number
                             | TokenKind::ScalarSigil
                             | TokenKind::ArraySigil

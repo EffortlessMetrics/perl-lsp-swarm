@@ -23,9 +23,9 @@ impl<'a> Parser<'a> {
         // 2. `$var $something` (two sigiled tokens, no comma) — indirect $fh
         if !self.at_stmt_start && is_filehandle_builtin {
             // Clone the needed info to avoid multiple borrows of self.tokens.
-            let next_kind = self.tokens.peek_second().ok().map(|t| t.kind);
+            let next_kind = self.tokens.peek_second().ok().map(|t| t.kind());
             let next_text = self.tokens.peek_second().ok().map(|t| t.text.to_string());
-            let third_kind = self.tokens.peek_third().ok().map(|t| t.kind);
+            let third_kind = self.tokens.peek_third().ok().map(|t| t.kind());
             let third_text = self.tokens.peek_third().ok().map(|t| t.text.to_string());
 
             if let Some(nk) = next_kind {
@@ -61,7 +61,7 @@ impl<'a> Parser<'a> {
         // Note: peek_second() gets the token after "print" since peek() is "print"
         if name == "print" {
             if let Ok(next) = self.tokens.peek_second() {
-                if next.kind == TokenKind::String {
+                if next.kind() == TokenKind::String {
                     return false;
                 }
             }
@@ -82,7 +82,7 @@ impl<'a> Parser<'a> {
             } else {
                 return false;
             };
-            let next_kind = next_token.kind;
+            let next_kind = next_token.kind();
             let next_text = next_token.text.to_string();
 
             // These tokens *cannot* start an indirect object
@@ -124,7 +124,7 @@ impl<'a> Parser<'a> {
                 if let Ok(third) = self.tokens.peek_third() {
                     // A comma after $fh means regular argument list, NOT indirect object
                     // e.g., print $x, $y; is print both to STDOUT
-                    if third.kind == TokenKind::Comma {
+                    if third.kind() == TokenKind::Comma {
                         return false;
                     }
 
@@ -138,7 +138,7 @@ impl<'a> Parser<'a> {
                     // Verified via `perl -MO=Terse`. See issue #974.
                     let third_text = &third.text;
                     return matches!(
-                        third.kind,
+                        third.kind(),
                         TokenKind::String       // print $fh "x"
                         | TokenKind::LeftParen    // print $fh ($x)
                     ) || third_text.starts_with('$')    // print $fh $x
@@ -158,7 +158,7 @@ impl<'a> Parser<'a> {
             if matches!(next_kind, TokenKind::Identifier | TokenKind::Try) {
                 if let Ok(third) = self.tokens.peek_third() {
                     if matches!(
-                        third.kind,
+                        third.kind(),
                         TokenKind::Comma | TokenKind::Arrow | TokenKind::FatArrow
                     ) {
                         return false;
@@ -170,15 +170,15 @@ impl<'a> Parser<'a> {
 
                     let third_text = &third.text;
                     let third_starts_filehandle_argument =
-                        matches!(third.kind, TokenKind::String | TokenKind::LeftParen)
+                        matches!(third.kind(), TokenKind::String | TokenKind::LeftParen)
                             || third_text.starts_with('$')
                             || third_text.starts_with('@')
                             || third_text.starts_with('%');
                     let third_terminates_filehandle_call =
-                        Self::is_statement_terminator(Some(third.kind))
-                            || Self::is_symbolic_short_circuit_operator(Some(third.kind))
+                        Self::is_statement_terminator(Some(third.kind()))
+                            || Self::is_symbolic_short_circuit_operator(Some(third.kind()))
                             || matches!(
-                                third.kind,
+                                third.kind(),
                                 TokenKind::WordOr
                                     | TokenKind::WordAnd
                                     | TokenKind::WordXor
@@ -206,7 +206,7 @@ impl<'a> Parser<'a> {
         if name == "new" {
             // peek_second() gets the token after "new"
             if let Ok(next) = self.tokens.peek_second() {
-                if let TokenKind::Identifier = next.kind {
+                if let TokenKind::Identifier = next.kind() {
                     // Uppercase identifier after "new" suggests constructor
                     if next.text.chars().next().is_some_and(|c| c.is_uppercase()) {
                         return true;
@@ -321,21 +321,21 @@ impl<'a> Parser<'a> {
                     return false;
                 }
                 if let Ok(third) = self.tokens.peek_third() {
-                    if matches!(third.kind, TokenKind::Comma | TokenKind::FatArrow) {
+                    if matches!(third.kind(), TokenKind::Comma | TokenKind::FatArrow) {
                         return false;
                     }
                     if matches!(
-                        third.kind,
+                        third.kind(),
                         TokenKind::RightBrace | TokenKind::RightParen | TokenKind::RightBracket
                     ) {
                         return false;
                     }
-                    if third.kind == TokenKind::Arrow {
+                    if third.kind() == TokenKind::Arrow {
                         return false;
                     }
-                    if Self::is_symbolic_short_circuit_operator(Some(third.kind))
+                    if Self::is_symbolic_short_circuit_operator(Some(third.kind()))
                         || matches!(
-                            third.kind,
+                            third.kind(),
                             TokenKind::WordOr
                                 | TokenKind::WordAnd
                                 | TokenKind::WordXor
@@ -584,7 +584,7 @@ impl<'a> Parser<'a> {
         let local_has_complex_lvalue = declarator == "local"
             && self.peek_kind() == Some(TokenKind::LeftParen)
             && matches!(
-                self.tokens.peek_third().ok().map(|t| t.kind),
+                self.tokens.peek_third().ok().map(|t| t.kind()),
                 Some(TokenKind::LeftBrace | TokenKind::LeftBracket | TokenKind::Arrow)
             );
         if local_has_complex_lvalue {
@@ -718,12 +718,12 @@ impl<'a> Parser<'a> {
             let first_is_scalar =
                 s.tokens.peek().is_ok_and(|t| t.text.starts_with('$') && t.text.len() > 1);
             let first_is_filehandle_block =
-                s.tokens.peek().is_ok_and(|t| t.kind == TokenKind::LeftBrace)
+                s.tokens.peek().is_ok_and(|t| t.kind() == TokenKind::LeftBrace)
                     && s.tokens
                         .peek_second()
                         .is_ok_and(|t| t.text.starts_with('$') || t.text.starts_with('*'));
             let second_is_not_separator = s.tokens.peek_second().is_ok_and(|t| {
-                !matches!(t.kind, TokenKind::Comma | TokenKind::FatArrow | TokenKind::RightParen)
+                !matches!(t.kind(), TokenKind::Comma | TokenKind::FatArrow | TokenKind::RightParen)
             });
 
             if (first_is_scalar && second_is_not_separator) || first_is_filehandle_block {
@@ -822,7 +822,7 @@ impl<'a> Parser<'a> {
                 match s.peek_kind() {
                     Some(TokenKind::Comma) | Some(TokenKind::FatArrow) => {
                         let separator = s.consume_token()?;
-                        if separator.kind == TokenKind::Comma {
+                        if separator.kind() == TokenKind::Comma {
                             s.consume_redundant_commas()?;
                         }
                         // Handle `, =>` (comma then fat arrow) — consume the

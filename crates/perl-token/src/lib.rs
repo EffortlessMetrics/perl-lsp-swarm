@@ -14,14 +14,14 @@
 //!
 //! // Create a keyword token for `my`
 //! let token = Token::new_checked(TokenKind::My, "my", 0, 2)?;
-//! assert_eq!(token.kind, TokenKind::My);
+//! assert_eq!(token.kind(), TokenKind::My);
 //! assert_eq!(&*token.text, "my");
 //! assert_eq!(token.start(), 0);
 //! assert_eq!(token.end(), 2);
 //!
 //! // Create a numeric literal token
 //! let num = Token::new_checked(TokenKind::Number, "42", 7, 9)?;
-//! assert_eq!(num.kind, TokenKind::Number);
+//! assert_eq!(num.kind(), TokenKind::Number);
 //! assert_eq!(&*num.text, "42");
 //! # Ok::<(), perl_token::TokenSpanError>(())
 //! ```
@@ -37,6 +37,7 @@
 //! ```
 
 #![warn(missing_docs)]
+#![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used, clippy::panic))]
 
 mod kind;
 mod span;
@@ -109,7 +110,7 @@ mod tests {
     #[test]
     fn token_new_stores_fields() {
         let tok = Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token");
-        assert_eq!(tok.kind, TokenKind::My);
+        assert_eq!(tok.kind(), TokenKind::My);
         assert_eq!(&*tok.text, "my");
         assert_eq!(tok.start(), 0);
         assert_eq!(tok.end(), 2);
@@ -145,7 +146,7 @@ mod tests {
     #[test]
     fn token_try_new_allows_ordered_spans() -> Result<(), TokenSpanError> {
         let tok = Token::try_new(TokenKind::Identifier, "name", 4, 8)?;
-        assert_eq!(tok.kind, TokenKind::Identifier);
+        assert_eq!(tok.kind(), TokenKind::Identifier);
         assert_eq!(&*tok.text, "name");
         assert_eq!(tok.span(), TokenSpan::try_new(4, 8).expect("ordered span"));
         Ok(())
@@ -170,7 +171,7 @@ mod tests {
     #[test]
     fn token_new_checked_allows_empty_eof() -> Result<(), TokenSpanError> {
         let tok = Token::new_checked(TokenKind::Eof, "", 5, 5)?;
-        assert_eq!(tok.kind, TokenKind::Eof);
+        assert_eq!(tok.kind(), TokenKind::Eof);
         assert_eq!(tok.start(), 5);
         Ok(())
     }
@@ -178,7 +179,7 @@ mod tests {
     #[test]
     fn token_new_checked_allows_empty_unknown() -> Result<(), TokenSpanError> {
         let tok = Token::new_checked(TokenKind::Unknown, "", 6, 6)?;
-        assert_eq!(tok.kind, TokenKind::Unknown);
+        assert_eq!(tok.kind(), TokenKind::Unknown);
         assert_eq!(tok.start(), 6);
         assert!(tok.is_empty());
         Ok(())
@@ -187,7 +188,7 @@ mod tests {
     #[test]
     fn token_eof_at() {
         let eof = Token::eof_at(42);
-        assert_eq!(eof.kind, TokenKind::Eof);
+        assert_eq!(eof.kind(), TokenKind::Eof);
         assert_eq!(eof.start(), 42);
         assert_eq!(eof.end(), 42);
         assert!(eof.is_empty());
@@ -213,7 +214,7 @@ mod tests {
     fn token_with_kind() {
         let tok = Token::new_checked(TokenKind::Identifier, "sub", 0, 3).expect("valid token");
         let retyped = tok.with_kind(TokenKind::Sub).expect("kind change preserves span");
-        assert_eq!(retyped.kind, TokenKind::Sub);
+        assert_eq!(retyped.kind(), TokenKind::Sub);
         assert_eq!(&*retyped.text, "sub");
         assert_eq!(retyped.start(), 0);
         assert_eq!(retyped.end(), 3);
@@ -222,6 +223,15 @@ mod tests {
     #[test]
     fn token_with_kind_rejects_empty_identifier() {
         let eof = Token::eof_at(9);
+        assert_eq!(
+            eof.with_kind(TokenKind::Identifier),
+            Err(TokenSpanError::EmptySpanNotAllowed { kind: TokenKind::Identifier, at: 9 })
+        );
+    }
+
+    #[test]
+    fn token_ref_with_kind_rejects_empty_identifier() {
+        let eof = TokenRef::new_checked(TokenKind::Eof, "", 9, 9).expect("empty eof");
         assert_eq!(
             eof.with_kind(TokenKind::Identifier),
             Err(TokenSpanError::EmptySpanNotAllowed { kind: TokenKind::Identifier, at: 9 })
@@ -256,13 +266,13 @@ mod tests {
     fn token_as_ref_token_round_trip() {
         let tok = Token::new_checked(TokenKind::Sub, "sub", 0, 3).expect("valid token");
         let tok_ref = tok.as_ref_token();
-        assert_eq!(tok_ref.kind, TokenKind::Sub);
+        assert_eq!(tok_ref.kind(), TokenKind::Sub);
         assert_eq!(tok_ref.text, "sub");
         assert_eq!(tok_ref.start(), 0);
         assert_eq!(tok_ref.end(), 3);
 
         let owned: Token = tok_ref.into();
-        assert_eq!(owned.kind, TokenKind::Sub);
+        assert_eq!(owned.kind(), TokenKind::Sub);
         assert_eq!(&*owned.text, "sub");
     }
 
@@ -288,7 +298,7 @@ mod tests {
     #[test]
     fn token_ref_try_new_allows_ordered_spans() -> Result<(), TokenSpanError> {
         let r = TokenRef::try_new(TokenKind::Number, "99", 4, 6)?;
-        assert_eq!(r.kind, TokenKind::Number);
+        assert_eq!(r.kind(), TokenKind::Number);
         assert_eq!(r.text, "99");
         assert_eq!(r.span(), TokenSpan::try_new(4, 6)?);
         Ok(())
@@ -298,7 +308,7 @@ mod tests {
     fn token_ref_to_owned_token() {
         let r = TokenRef::new_checked(TokenKind::Identifier, "foo", 1, 4).expect("valid token");
         let owned = r.to_owned_token();
-        assert_eq!(owned.kind, TokenKind::Identifier);
+        assert_eq!(owned.kind(), TokenKind::Identifier);
         assert_eq!(&*owned.text, "foo");
     }
 
@@ -567,7 +577,7 @@ mod tests {
     #[test]
     fn token_ref_new_checked_allows_empty_eof() -> Result<(), Box<dyn std::error::Error>> {
         let tok = TokenRef::new_checked(TokenKind::Eof, "", 7, 7)?;
-        assert_eq!(tok.kind, TokenKind::Eof);
+        assert_eq!(tok.kind(), TokenKind::Eof);
         assert_eq!(tok.start(), 7);
         assert!(tok.is_empty());
         Ok(())
@@ -576,7 +586,7 @@ mod tests {
     #[test]
     fn token_ref_new_checked_allows_empty_unknown() -> Result<(), Box<dyn std::error::Error>> {
         let tok = TokenRef::new_checked(TokenKind::Unknown, "", 3, 3)?;
-        assert_eq!(tok.kind, TokenKind::Unknown);
+        assert_eq!(tok.kind(), TokenKind::Unknown);
         assert_eq!(tok.start(), 3);
         assert!(tok.is_empty());
         Ok(())

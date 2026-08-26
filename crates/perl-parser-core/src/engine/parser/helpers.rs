@@ -72,7 +72,7 @@ impl<'a> Parser<'a> {
     /// expression / function call.
     fn is_field_declaration_context(&mut self) -> bool {
         let next = match self.tokens.peek_second() {
-            Ok(t) => t.kind,
+            Ok(t) => t.kind(),
             Err(_) => return false,
         };
 
@@ -445,7 +445,7 @@ impl<'a> Parser<'a> {
         self.tokens
             .peek()
             .ok()
-            .is_some_and(|token| Self::is_sigil_argument_start(token.kind, token.text.as_ref()))
+            .is_some_and(|token| Self::is_sigil_argument_start(token.kind(), token.text.as_ref()))
     }
 
     fn assignment_operator_text(kind: TokenKind) -> Option<&'static str> {
@@ -479,7 +479,7 @@ impl<'a> Parser<'a> {
             .tokens
             .peek_second()
             .ok()
-            .and_then(|token| Self::assignment_operator_text(token.kind))
+            .and_then(|token| Self::assignment_operator_text(token.kind()))
             .is_none()
         {
             return Ok(false);
@@ -530,13 +530,13 @@ impl<'a> Parser<'a> {
     fn is_explicit_sub_sigil_argument_start(&mut self) -> bool {
         matches!(self.peek_kind(), Some(TokenKind::SubSigil | TokenKind::BitwiseAnd))
             && self.tokens.peek_second().is_ok_and(|token| {
-                token.kind == TokenKind::LeftBrace || Self::can_be_sub_name(token.kind)
+                token.kind() == TokenKind::LeftBrace || Self::can_be_sub_name(token.kind())
             })
     }
 
     /// Peek at the next token's kind
     fn peek_kind(&mut self) -> Option<TokenKind> {
-        self.tokens.peek().ok().map(|t| t.kind)
+        self.tokens.peek().ok().map(|t| t.kind())
     }
 
     /// Peek at the next token without consuming it
@@ -568,10 +568,10 @@ impl<'a> Parser<'a> {
     /// Expect a specific token kind
     fn expect(&mut self, kind: TokenKind) -> ParseResult<Token> {
         let token = self.tokens.next()?;
-        if token.kind != kind {
+        if token.kind() != kind {
             return Err(ParseError::unexpected(
                 kind.display_name(),
-                token.kind.display_name(),
+                token.kind().display_name(),
                 token.start(),
             ));
         }
@@ -786,7 +786,7 @@ impl<'a> Parser<'a> {
         // allowed as an assignment RHS.
         if self.peek_kind() == Some(TokenKind::Class)
             && !matches!(
-                self.tokens.peek_second().map(|t| t.kind),
+                self.tokens.peek_second().map(|t| t.kind()),
                 Ok(TokenKind::Identifier | TokenKind::DoubleColon | TokenKind::Colon)
             )
         {
@@ -796,7 +796,7 @@ impl<'a> Parser<'a> {
         // `method` starts a declaration only when the next token is an Identifier
         // (the method name), mirroring parse_statement's disambiguation guard.
         if self.peek_kind() == Some(TokenKind::Method)
-            && !matches!(self.tokens.peek_second().map(|t| t.kind), Ok(TokenKind::Identifier))
+            && !matches!(self.tokens.peek_second().map(|t| t.kind()), Ok(TokenKind::Identifier))
         {
             return false;
         }
@@ -814,7 +814,7 @@ impl<'a> Parser<'a> {
                     | TokenKind::Init
                     | TokenKind::Unitcheck
             )
-        ) && !matches!(self.tokens.peek_second().map(|t| t.kind), Ok(TokenKind::LeftBrace))
+        ) && !matches!(self.tokens.peek_second().map(|t| t.kind()), Ok(TokenKind::LeftBrace))
         {
             return false;
         }
@@ -823,7 +823,7 @@ impl<'a> Parser<'a> {
         // when followed by `(expr)`.  Without `(`, treat it as a potential
         // bareword identifier to avoid breaking user-defined `given()` subs.
         if self.peek_kind() == Some(TokenKind::Given)
-            && !matches!(self.tokens.peek_second().map(|t| t.kind), Ok(TokenKind::LeftParen))
+            && !matches!(self.tokens.peek_second().map(|t| t.kind()), Ok(TokenKind::LeftParen))
         {
             return false;
         }
@@ -831,7 +831,7 @@ impl<'a> Parser<'a> {
         // `defer` (Perl 5.36+ experimental) is a block statement when followed
         // by `{`.  Without `{`, it may appear as a hash key or bareword.
         if self.peek_kind() == Some(TokenKind::Defer)
-            && !matches!(self.tokens.peek_second().map(|t| t.kind), Ok(TokenKind::LeftBrace))
+            && !matches!(self.tokens.peek_second().map(|t| t.kind()), Ok(TokenKind::LeftBrace))
         {
             return false;
         }
@@ -882,14 +882,14 @@ impl<'a> Parser<'a> {
     fn next_token_starts_variable_declaration(&mut self) -> bool {
         self.tokens.peek_second().ok().is_some_and(|next| {
             matches!(
-                next.kind,
+                next.kind(),
                 TokenKind::ScalarSigil
                     | TokenKind::ArraySigil
                     | TokenKind::HashSigil
                     | TokenKind::SubSigil
                     | TokenKind::GlobSigil
                     | TokenKind::LeftParen
-            ) || (next.kind == TokenKind::Identifier
+            ) || (next.kind() == TokenKind::Identifier
                 && next
                     .text
                     .chars()
@@ -902,7 +902,7 @@ impl<'a> Parser<'a> {
     /// subroutine expression (`sub {}`, `sub (...) {}`, or `sub :attr {}`).
     fn next_token_starts_anonymous_sub(&mut self) -> bool {
         matches!(
-            self.tokens.peek_second().ok().map(|token| token.kind),
+            self.tokens.peek_second().ok().map(|token| token.kind()),
             Some(TokenKind::LeftBrace | TokenKind::LeftParen | TokenKind::Colon)
         )
     }
@@ -1270,7 +1270,7 @@ impl<'a> Parser<'a> {
             Err(_) => return false,
         };
 
-        match next.kind {
+        match next.kind() {
             // Sigiled variables: `func $x`, `func @arr`, `func %hash`
             TokenKind::Identifier
                 if next.text.starts_with('$')
@@ -1320,9 +1320,9 @@ impl<'a> Parser<'a> {
                     // Qualified name — check that the following token is `->`, `(`,
                     // or another explicit argument in a list-operator style call.
                     if let Ok(third) = self.tokens.peek_second() {
-                        return third.kind == TokenKind::Arrow
-                            || third.kind == TokenKind::LeftParen
-                            || Self::is_sigil_argument_start(third.kind, third.text.as_ref());
+                        return third.kind() == TokenKind::Arrow
+                            || third.kind() == TokenKind::LeftParen
+                            || Self::is_sigil_argument_start(third.kind(), third.text.as_ref());
                     }
                     return false;
                 }
@@ -1331,15 +1331,15 @@ impl<'a> Parser<'a> {
                     // Exception: if followed by `=>`, the fat-comma auto-quotes
                     // it, making it a valid bare-call argument (#5929).
                     if let Ok(third) = self.tokens.peek_second() {
-                        return third.kind == TokenKind::FatArrow;
+                        return third.kind() == TokenKind::FatArrow;
                     }
                     return false;
                 }
                 // Block-list functions (map/grep/sort/etc.) as argument: `uniq map { ... } @list`
                 if Self::is_block_list_func(&next_text) {
                     if let Ok(third) = self.tokens.peek_second() {
-                        return third.kind == TokenKind::LeftBrace
-                            || third.kind == TokenKind::LeftParen;
+                        return third.kind() == TokenKind::LeftBrace
+                            || third.kind() == TokenKind::LeftParen;
                     }
                 }
                 // Builtin functions as arguments:
@@ -1360,17 +1360,17 @@ impl<'a> Parser<'a> {
                 if Self::is_builtin_function(&next_text) {
                     if let Ok(third) = self.tokens.peek_second() {
                         let third_text: &str = &third.text;
-                        if third.kind == TokenKind::LeftParen {
+                        if third.kind() == TokenKind::LeftParen {
                             // builtin(args) — the builtin is called with parens,
                             // producing a value that is the outer function's argument.
                             return true;
                         }
-                        return Self::is_sigil_argument_start(third.kind, third_text);
+                        return Self::is_sigil_argument_start(third.kind(), third_text);
                     }
                 }
                 if next_text.starts_with(|c: char| c.is_ascii_lowercase() || c == '_') {
                     if self.tokens.peek_second().ok().is_some_and(|third| {
-                        Self::is_sigil_argument_start(third.kind, third.text.as_ref())
+                        Self::is_sigil_argument_start(third.kind(), third.text.as_ref())
                     }) {
                         return true;
                     }
@@ -1378,7 +1378,7 @@ impl<'a> Parser<'a> {
                 // Check if the next-next token is `(` — that signals a function call
                 // or `=>` (fat arrow after bareword) — that signals an auto-quoted arg
                 self.tokens.peek_second().ok().is_some_and(|t| {
-                    t.kind == TokenKind::LeftParen || t.kind == TokenKind::FatArrow
+                    t.kind() == TokenKind::LeftParen || t.kind() == TokenKind::FatArrow
                 })
             }
 

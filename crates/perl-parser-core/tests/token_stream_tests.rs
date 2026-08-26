@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use perl_parser_core::token_stream::{Token, TokenKind, TokenStream};
 use perl_tdd_support::must;
 
@@ -67,7 +68,7 @@ fn buffered_stream_synthesizes_eof_at_last_token_end() -> Result<(), Box<dyn std
     let _ = must(stream.next());
     let _ = must(stream.next());
     let eof = must(stream.next());
-    assert_eq!(eof.kind, TokenKind::Eof);
+    assert_eq!(eof.kind(), TokenKind::Eof);
     assert_eq!(eof.start(), 4);
     assert_eq!(eof.end(), 4);
     Ok(())

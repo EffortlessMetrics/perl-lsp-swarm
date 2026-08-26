@@ -56,7 +56,7 @@ impl<'a> Parser<'a> {
             return false;
         }
 
-        let second_kind = self.tokens.peek_second().ok().map(|token| token.kind);
+        let second_kind = self.tokens.peek_second().ok().map(|token| token.kind());
         if matches!(
             second_kind,
             Some(TokenKind::FatArrow | TokenKind::Arrow | TokenKind::DoubleColon)
@@ -65,7 +65,7 @@ impl<'a> Parser<'a> {
         }
 
         if second_kind == Some(TokenKind::Colon)
-            && self.tokens.peek_third().is_ok_and(|token| token.kind == TokenKind::Colon)
+            && self.tokens.peek_third().is_ok_and(|token| token.kind() == TokenKind::Colon)
         {
             return false;
         }
@@ -125,7 +125,7 @@ impl<'a> Parser<'a> {
                             if self
                                 .tokens
                                 .peek_second()
-                                .is_ok_and(|token| token.kind == TokenKind::FatArrow)
+                                .is_ok_and(|token| token.kind() == TokenKind::FatArrow)
                             {
                                 let test_token = self.tokens.next()?;
                                 let end = test_token.end();
@@ -194,7 +194,7 @@ impl<'a> Parser<'a> {
                     if self
                         .tokens
                         .peek_second()
-                        .is_ok_and(|t| t.kind == TokenKind::FatArrow)
+                        .is_ok_and(|t| t.kind() == TokenKind::FatArrow)
                     {
                         if let Some(kw_kind) = self.peek_kind() {
                             if Self::is_word_op_keyword(kw_kind) {
@@ -299,7 +299,7 @@ impl<'a> Parser<'a> {
 
                     // AC1: Disambiguate typeglob (*foo) from multiplication (*)
                     // If TokenKind is Star and it is followed by an identifier or {
-                    if op_token.kind == TokenKind::Star {
+                    if op_token.kind() == TokenKind::Star {
                         if let Some(next_kind) = self.peek_kind() {
                             let next_text = self.tokens.peek()?.text.to_string();
                             let next_is_sigil_identifier = next_kind == TokenKind::Identifier
@@ -308,7 +308,7 @@ impl<'a> Parser<'a> {
                                     .next()
                                     .is_some_and(|c| matches!(c, '$' | '@' | '%' | '&' | '*'));
                             let terminator_kind =
-                                self.tokens.peek_second().ok().map(|t| t.kind);
+                                self.tokens.peek_second().ok().map(|t| t.kind());
                             if let Some(name) = typeglob_punctuation_name(
                                 next_kind,
                                 &next_text,
@@ -389,7 +389,7 @@ impl<'a> Parser<'a> {
                                 // when a real sub-expression follows the punctuation character.
                                 TokenKind::Less => {
                                     let second_kind =
-                                        self.tokens.peek_second().ok().map(|t| t.kind);
+                                        self.tokens.peek_second().ok().map(|t| t.kind());
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
@@ -400,7 +400,7 @@ impl<'a> Parser<'a> {
                                 }
                                 TokenKind::Greater => {
                                     let second_kind =
-                                        self.tokens.peek_second().ok().map(|t| t.kind);
+                                        self.tokens.peek_second().ok().map(|t| t.kind());
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
@@ -411,7 +411,7 @@ impl<'a> Parser<'a> {
                                 }
                                 TokenKind::LeftParen => {
                                     let second_kind =
-                                        self.tokens.peek_second().ok().map(|t| t.kind);
+                                        self.tokens.peek_second().ok().map(|t| t.kind());
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
@@ -463,7 +463,7 @@ impl<'a> Parser<'a> {
                                 // typeglob; otherwise fall through (could be multiply + regex).
                                 TokenKind::Slash => {
                                     let second_kind =
-                                        self.tokens.peek_second().ok().map(|t| t.kind);
+                                        self.tokens.peek_second().ok().map(|t| t.kind());
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
@@ -477,7 +477,7 @@ impl<'a> Parser<'a> {
                                 // typeglob; otherwise fall through (could be multiply + concat).
                                 TokenKind::Dot => {
                                     let second_kind =
-                                        self.tokens.peek_second().ok().map(|t| t.kind);
+                                        self.tokens.peek_second().ok().map(|t| t.kind());
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
@@ -491,7 +491,7 @@ impl<'a> Parser<'a> {
                                 // typeglob; otherwise fall through (could be multiply + bitwise-or).
                                 TokenKind::BitwiseOr => {
                                     let second_kind =
-                                        self.tokens.peek_second().ok().map(|t| t.kind);
+                                        self.tokens.peek_second().ok().map(|t| t.kind());
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
@@ -505,7 +505,7 @@ impl<'a> Parser<'a> {
                                 // typeglob; otherwise fall through (could be label or ternary colon).
                                 TokenKind::Colon => {
                                     let second_kind =
-                                        self.tokens.peek_second().ok().map(|t| t.kind);
+                                        self.tokens.peek_second().ok().map(|t| t.kind());
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
@@ -536,7 +536,7 @@ impl<'a> Parser<'a> {
                     }
 
                     let operand = if matches!(
-                        op_token.kind,
+                        op_token.kind(),
                         TokenKind::Not | TokenKind::Backslash | TokenKind::BitwiseNot
                     ) {
                         self.parse_power()?
@@ -551,7 +551,7 @@ impl<'a> Parser<'a> {
                     );
 
                     // For typeglob (*), allow postfix chaining: *$self->{field}
-                    if op_token.kind == TokenKind::Star {
+                    if op_token.kind() == TokenKind::Star {
                         return self.parse_postfix_chain(node);
                     }
 

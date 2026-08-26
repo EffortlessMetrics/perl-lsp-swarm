@@ -750,7 +750,7 @@ impl CheckpointedIncrementalParser {
                     let start = (token.start() as isize + byte_shift).max(0) as usize;
                     let end = (token.end() as isize + byte_shift).max(0) as usize;
                     if let Ok(adjusted) =
-                        Token::new_checked(token.kind, token.text.clone(), start, end)
+                        Token::new_checked(token.kind(), token.text.clone(), start, end)
                     {
                         parser_tokens.push(adjusted);
                         self.stats.tokens_reused += 1;
@@ -808,6 +808,7 @@ impl CheckpointedIncrementalParser {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use perl_parser_core::NodeKind;

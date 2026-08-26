@@ -293,13 +293,13 @@ impl<'a> Parser<'a> {
             } else {
                 let next = self.tokens.peek_second()?;
                 matches!(
-                    next.kind,
+                    next.kind(),
                     TokenKind::ScalarSigil
                         | TokenKind::ArraySigil
                         | TokenKind::HashSigil
                         | TokenKind::SubSigil
                         | TokenKind::GlobSigil
-                ) || (next.kind == TokenKind::Identifier
+                ) || (next.kind() == TokenKind::Identifier
                     && next
                         .text
                         .chars()
@@ -694,7 +694,7 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
 
-        if self.tokens.peek_second()?.kind == TokenKind::DoubleColon {
+        if self.tokens.peek_second()?.kind() == TokenKind::DoubleColon {
             let first = self.tokens.next()?;
             return self
                 .parse_qualified_scalar_tail(first.text.to_string(), first.start(), first.end())
@@ -702,7 +702,7 @@ impl<'a> Parser<'a> {
         }
 
         if is_package_qualified_scalar_name(&self.tokens.peek()?.text)
-            && self.tokens.peek_second()?.kind == TokenKind::RightBrace
+            && self.tokens.peek_second()?.kind() == TokenKind::RightBrace
         {
             let name_token = self.tokens.next()?;
             return Ok(Some(Node::new(
@@ -753,7 +753,7 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
 
-        if self.tokens.peek_second()?.kind != TokenKind::RightBrace {
+        if self.tokens.peek_second()?.kind() != TokenKind::RightBrace {
             return Ok(None);
         }
 
@@ -875,7 +875,7 @@ impl<'a> Parser<'a> {
     /// Parse a variable when we have a sigil token first
     fn parse_variable_from_sigil(&mut self) -> ParseResult<Node> {
         let sigil_token = self.consume_token()?;
-        let sigil = match sigil_token.kind {
+        let sigil = match sigil_token.kind() {
             TokenKind::BitwiseAnd => "&".to_string(), // Handle & as sigil
             _ => sigil_token.text.to_string(),
         };
@@ -932,7 +932,7 @@ impl<'a> Parser<'a> {
                     // dereference target that must preserve the referenced name.
                     let token = self.tokens.next()?;
                     if self.tokens.peek().ok().is_some_and(|name_token| {
-                        Self::is_variable_name_kind(name_token.kind) && name_token.start() == token.end()
+                        Self::is_variable_name_kind(name_token.kind()) && name_token.start() == token.end()
                     }) {
                         let name_token = self.tokens.next()?;
                         let mut name = format!("${}", name_token.text);
@@ -1440,7 +1440,7 @@ impl<'a> Parser<'a> {
         // texts that begin with a Perl sigil character.
         while self.peek_kind() == Some(TokenKind::Colon) {
             let next_is_attr_ident = match self.tokens.peek_second() {
-                Ok(tok) if tok.kind == TokenKind::Identifier => {
+                Ok(tok) if tok.kind() == TokenKind::Identifier => {
                     let first = tok.text.chars().next();
                     !matches!(first, Some('$' | '@' | '%' | '&' | '*'))
                 }
@@ -1459,7 +1459,7 @@ impl<'a> Parser<'a> {
                 while depth > 0 && !self.tokens.is_eof() {
                     let token = self.consume_token()?;
                     end = token.end();
-                    match token.kind {
+                    match token.kind() {
                         TokenKind::LeftParen => depth += 1,
                         TokenKind::RightParen => depth -= 1,
                         _ => {}
@@ -1485,13 +1485,13 @@ impl<'a> Parser<'a> {
         match self.tokens.peek_second() {
             Ok(token) => {
                 // Check if it starts with prototype characters or looks like a prototype
-                matches!(token.kind,
+                matches!(token.kind(),
                     TokenKind::ScalarSigil | TokenKind::ArraySigil |
                     TokenKind::HashSigil | TokenKind::SubSigil |
                     TokenKind::Star | TokenKind::Semicolon |
                     TokenKind::Backslash) ||
                 // Check for special vars that look like prototypes ($$, $#, etc)
-                (token.kind == TokenKind::Identifier &&
+                (token.kind() == TokenKind::Identifier &&
                  token.text.chars().all(|c| matches!(c, '$' | '@' | '%' | '*' | '&' | ';' | '\\')))
             }
             Err(_) => false,
@@ -1502,14 +1502,14 @@ impl<'a> Parser<'a> {
     fn is_likely_prototype(&mut self) -> ParseResult<bool> {
         // We need to peek past the opening paren without consuming
         // First, ensure we're at a left paren
-        if self.tokens.peek()?.kind != TokenKind::LeftParen {
+        if self.tokens.peek()?.kind() != TokenKind::LeftParen {
             return Ok(false);
         }
 
         // Use peek_second to look at the token after the paren
         match self.tokens.peek_second() {
             Ok(token) => {
-                Ok(match token.kind {
+                Ok(match token.kind() {
                     // These are unambiguously prototype tokens.
                     // `+` means "scalar or array/hash ref" (perlsub), valid in prototypes.
                     // `++` is also valid: Perl's lexer merges two `+` into `Increment`, so
@@ -1525,7 +1525,7 @@ impl<'a> Parser<'a> {
                     // Sigils: peek past to distinguish prototype ($;@%) from signature ($x, @rest)
                     TokenKind::ScalarSigil | TokenKind::ArraySigil | TokenKind::HashSigil => {
                         match self.tokens.peek_third() {
-                            Ok(third) => !matches!(third.kind, TokenKind::Identifier),
+                            Ok(third) => !matches!(third.kind(), TokenKind::Identifier),
                             Err(_) => true, // default to prototype on error
                         }
                     }
@@ -1568,7 +1568,7 @@ impl<'a> Parser<'a> {
                             return Ok(false);
                         }
                         if let Ok(third) = self.tokens.peek_third() {
-                            let third_starts_signature = match third.kind {
+                            let third_starts_signature = match third.kind() {
                                 TokenKind::Identifier => third
                                     .text
                                     .chars()
@@ -1608,7 +1608,7 @@ impl<'a> Parser<'a> {
         while !self.tokens.is_eof() {
             let token = self.consume_token()?;
 
-            match token.kind {
+            match token.kind() {
                 TokenKind::RightParen => {
                     // End of prototype
                     break;

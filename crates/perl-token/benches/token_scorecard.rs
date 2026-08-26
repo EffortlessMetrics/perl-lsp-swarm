@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use criterion::{Criterion, criterion_group, criterion_main};
 #[path = "support/perf_scorecard.rs"]
 mod perf_scorecard;

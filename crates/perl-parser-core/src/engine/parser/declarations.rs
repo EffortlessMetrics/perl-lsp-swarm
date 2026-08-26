@@ -7,7 +7,7 @@ impl<'a> Parser<'a> {
     fn parse_package_qualified_name(&mut self) -> ParseResult<(String, SourceLocation)> {
         let leading = self.peek_kind() == Some(TokenKind::DoubleColon)
             || (self.peek_kind() == Some(TokenKind::Colon)
-                && self.tokens.peek_second().map(|t| t.kind) == Ok(TokenKind::Colon));
+                && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Colon));
         if !leading {
             return self.parse_qualified_name(true);
         }
@@ -54,7 +54,7 @@ impl<'a> Parser<'a> {
 
         while self.peek_kind() == Some(TokenKind::DoubleColon)
             || (self.peek_kind() == Some(TokenKind::Colon)
-                && self.tokens.peek_second().map(|t| t.kind) == Ok(TokenKind::Colon))
+                && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Colon))
         {
             if self.peek_kind() == Some(TokenKind::DoubleColon) {
                 let double_colon = self.tokens.next()?; // consume ::
@@ -189,12 +189,12 @@ impl<'a> Parser<'a> {
 
                         if base_name == "prototype"
                             && paren_depth == 1
-                            && token.kind == TokenKind::Identifier
+                            && token.kind() == TokenKind::Identifier
                             && token.text.as_ref() == "$)"
                         {
                             paren_depth -= 1;
                         } else {
-                            match token.kind {
+                            match token.kind() {
                                 TokenKind::LeftParen => paren_depth += 1,
                                 TokenKind::RightParen => paren_depth -= 1,
                                 _ => {}
@@ -363,7 +363,7 @@ impl<'a> Parser<'a> {
 
         while self.peek_kind() == Some(TokenKind::DoubleColon)
             || (self.peek_kind() == Some(TokenKind::Colon)
-                && self.tokens.peek_second().map(|t| t.kind) == Ok(TokenKind::Colon))
+                && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Colon))
         {
             if self.peek_kind() == Some(TokenKind::DoubleColon) {
                 let double_colon = self.tokens.next()?;
@@ -381,7 +381,7 @@ impl<'a> Parser<'a> {
                 name.push_str(&next.text);
             } else if self.peek_kind() == Some(TokenKind::DoubleColon)
                 || (self.peek_kind() == Some(TokenKind::Colon)
-                    && self.tokens.peek_second().map(|t| t.kind) == Ok(TokenKind::Colon))
+                    && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Colon))
             {
                 continue;
             } else {
@@ -408,7 +408,7 @@ impl<'a> Parser<'a> {
                 .tokens
                 .peek_second()
                 .ok()
-                .is_some_and(|token| Self::can_be_sub_name(token.kind))
+                .is_some_and(|token| Self::can_be_sub_name(token.kind()))
     }
 
     fn parse_legacy_tick_subroutine_name(&mut self) -> ParseResult<(String, SourceLocation)> {
@@ -570,7 +570,7 @@ impl<'a> Parser<'a> {
         self.tokens.next()?; // consume 'format'
 
         if self.tokens.peek().ok().is_some_and(|token| {
-            matches!(token.kind, TokenKind::String | TokenKind::Unknown)
+            matches!(token.kind(), TokenKind::String | TokenKind::Unknown)
                 && token.text.starts_with('\'')
                 && token.text.contains('=')
         }) {
@@ -579,7 +579,7 @@ impl<'a> Parser<'a> {
             let Some(assign_index) = raw.find('=') else {
                 return Err(ParseError::UnexpectedToken {
                     expected: "format assignment".to_string(),
-                    found: token.kind.display_name().to_string(),
+                    found: token.kind().display_name().to_string(),
                     location: token.start(),
                 });
             };
@@ -611,7 +611,7 @@ impl<'a> Parser<'a> {
         if self.tokens.peek().ok().is_some_and(|token| {
             let text = token.text.as_ref();
             text.starts_with('\'') && text.len() > 1
-        }) && self.tokens.peek_second().ok().is_some_and(|token| token.kind == TokenKind::Assign)
+        }) && self.tokens.peek_second().ok().is_some_and(|token| token.kind() == TokenKind::Assign)
         {
             let name_token = self.tokens.next()?;
             let assign = self.tokens.next()?;
@@ -660,7 +660,7 @@ impl<'a> Parser<'a> {
                 .tokens
                 .peek_second()
                 .ok()
-                .is_some_and(|token| Self::can_be_sub_name(token.kind))
+                .is_some_and(|token| Self::can_be_sub_name(token.kind()))
         {
             let tick = self.tokens.next()?;
             let name_token = self.tokens.next()?;
@@ -698,12 +698,12 @@ impl<'a> Parser<'a> {
 
         // Get the format body
         let body_token = self.tokens.next()?;
-        let body = if body_token.kind == TokenKind::FormatBody {
+        let body = if body_token.kind() == TokenKind::FormatBody {
             body_token.text.to_string()
         } else {
             return Err(ParseError::UnexpectedToken {
                 expected: "format body".to_string(),
-                found: body_token.kind.display_name().to_string(),
+                found: body_token.kind().display_name().to_string(),
                 location: body_token.start(),
             });
         };
@@ -792,7 +792,7 @@ impl<'a> Parser<'a> {
             // Only stitch when the dot is immediately followed by a plain
             // number (not whitespace-separated or part of a method chain).
             while self.peek_kind() == Some(TokenKind::Dot)
-                && self.tokens.peek_second().map(|t| t.kind) == Ok(TokenKind::Number)
+                && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Number)
             {
                 self.consume_token()?; // consume Dot
                 let num = self.consume_token()?; // consume Number
@@ -804,7 +804,7 @@ impl<'a> Parser<'a> {
             let first_token = self.consume_token()?;
 
                 // Check for version strings
-                if first_token.kind == TokenKind::Identifier
+                if first_token.kind() == TokenKind::Identifier
                     && first_token.text.starts_with('v')
                     && first_token.text.chars().skip(1).all(|c| c.is_numeric())
                 {
@@ -831,7 +831,7 @@ impl<'a> Parser<'a> {
                     // Version string like v5.36 (tokenized as "v" followed by number)
                     let version = self.expect(TokenKind::Number)?;
                     format!("v{}", version.text)
-                } else if first_token.kind == TokenKind::Identifier {
+                } else if first_token.kind() == TokenKind::Identifier {
                     first_token.text.to_string()
                 } else if first_token.text.chars().all(|c| c.is_alphanumeric() || c == '_')
                     && !first_token.text.is_empty()
@@ -844,7 +844,7 @@ impl<'a> Parser<'a> {
                     return Err(ParseError::syntax(
                         format!(
                             "Expected module name or version, found {}",
-                            first_token.kind.display_name()
+                            first_token.kind().display_name()
                         ),
                         first_token.start(),
                     ));
@@ -855,7 +855,7 @@ impl<'a> Parser<'a> {
         // Handle both DoubleColon tokens and separate Colon tokens (in case lexer sends :: as separate colons)
         while self.peek_kind() == Some(TokenKind::DoubleColon)
             || (self.peek_kind() == Some(TokenKind::Colon)
-                && self.tokens.peek_second().map(|t| t.kind) == Ok(TokenKind::Colon))
+                && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Colon))
         {
             if self.peek_kind() == Some(TokenKind::DoubleColon) {
                 self.consume_token()?; // consume ::
@@ -944,7 +944,7 @@ impl<'a> Parser<'a> {
                             && !self.tokens.is_eof()
                         {
                             if let Ok(tok) = self.tokens.next() {
-                                if matches!(tok.kind, TokenKind::Identifier | TokenKind::Number) {
+                                if matches!(tok.kind(), TokenKind::Identifier | TokenKind::Number) {
                                     words.push(tok.text.to_string());
                                 }
                             } else {
@@ -1419,7 +1419,7 @@ impl<'a> Parser<'a> {
         // Parse module name — accepts bare identifiers or keyword-named pragmas
         // (e.g. `no if COND, warnings`, `no feature`).
         let first_token = self.consume_token()?;
-        let mut module = if first_token.kind == TokenKind::Identifier {
+        let mut module = if first_token.kind() == TokenKind::Identifier {
             first_token.text.to_string()
         } else if first_token.text.chars().all(|c| c.is_alphanumeric() || c == '_')
             && !first_token.text.is_empty()
@@ -1430,7 +1430,7 @@ impl<'a> Parser<'a> {
             return Err(ParseError::syntax(
                 format!(
                     "Expected module name after 'no', found {}",
-                    first_token.kind.display_name()
+                    first_token.kind().display_name()
                 ),
                 first_token.start(),
             ));
@@ -1440,7 +1440,7 @@ impl<'a> Parser<'a> {
         // Handle both DoubleColon tokens and separate Colon tokens (in case lexer sends :: as separate colons)
         while self.peek_kind() == Some(TokenKind::DoubleColon)
             || (self.peek_kind() == Some(TokenKind::Colon)
-                && self.tokens.peek_second().map(|t| t.kind) == Ok(TokenKind::Colon))
+                && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Colon))
         {
             if self.peek_kind() == Some(TokenKind::DoubleColon) {
                 self.consume_token()?; // consume ::
@@ -1683,7 +1683,7 @@ impl<'a> Parser<'a> {
                     ) => break,
                     Some(TokenKind::Identifier)
                         if !consumed_any
-                            && self.tokens.peek_second().map(|t| t.kind)
+                            && self.tokens.peek_second().map(|t| t.kind())
                                 == Ok(TokenKind::FatArrow) =>
                     {
                         break;
@@ -1693,7 +1693,7 @@ impl<'a> Parser<'a> {
             }
 
             let token = self.consume_token()?;
-            match token.kind {
+            match token.kind() {
                 TokenKind::LeftParen => paren_depth += 1,
                 TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
                 TokenKind::LeftBracket => bracket_depth += 1,

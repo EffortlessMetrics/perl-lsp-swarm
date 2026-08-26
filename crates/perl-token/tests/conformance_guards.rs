@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -36,7 +37,7 @@ fn runtime_dependencies_remain_empty() -> Result<(), Box<dyn Error>> {
 #[test]
 fn token_and_token_kind_api_snapshot_is_stable() {
     let token = Token::new_checked(TokenKind::Identifier, "foo", 10, 13).expect("valid token");
-    assert_eq!(token.kind, TokenKind::Identifier);
+    assert_eq!(token.kind(), TokenKind::Identifier);
     assert_eq!(token.start(), 10);
     assert_eq!(token.end(), 13);
 

@@ -88,7 +88,7 @@ impl<'a> Parser<'a> {
         self.tokens
             .peek_second()
             .ok()
-            .map(|t| t.kind == TokenKind::FatArrow)
+            .map(|t| t.kind() == TokenKind::FatArrow)
             .unwrap_or(false)
     }
 
@@ -104,7 +104,7 @@ impl<'a> Parser<'a> {
         self.tokens
             .peek_second()
             .ok()
-            .is_some_and(|t| matches!(t.kind, TokenKind::RightBrace | TokenKind::FatArrow))
+            .is_some_and(|t| matches!(t.kind(), TokenKind::RightBrace | TokenKind::FatArrow))
     }
 
     fn is_async_sub_start(&mut self) -> bool {
@@ -114,7 +114,7 @@ impl<'a> Parser<'a> {
                 .tokens
                 .peek_second()
                 .ok()
-                .is_some_and(|t| t.kind == TokenKind::Sub)
+                .is_some_and(|t| t.kind() == TokenKind::Sub)
     }
 
     fn is_adjust_block_start(&mut self) -> bool {
@@ -125,7 +125,7 @@ impl<'a> Parser<'a> {
                 .tokens
                 .peek_second()
                 .ok()
-                .is_some_and(|t| t.kind == TokenKind::LeftBrace)
+                .is_some_and(|t| t.kind() == TokenKind::LeftBrace)
     }
 
     fn finish_subroutine_statement(&mut self, sub_node: Node) -> ParseResult<Node> {
@@ -168,11 +168,11 @@ impl<'a> Parser<'a> {
         // The lexer may be in ExpectOperator mode after a preceding block's `}`,
         // causing it to emit Division (Slash) instead of RegexMatch.  Roll back
         // and re-lex in ExpectTerm mode to get the correct token.
-        if self.tokens.peek()?.kind == TokenKind::Slash {
+        if self.tokens.peek()?.kind() == TokenKind::Slash {
             self.tokens.relex_as_term();
         }
 
-        let kind = self.tokens.peek()?.kind;
+        let kind = self.tokens.peek()?.kind();
 
         // Don't check for labels here - it breaks regular identifier parsing
         // Labels will be handled differently
@@ -203,7 +203,7 @@ impl<'a> Parser<'a> {
 
         if kind == TokenKind::Identifier {
             let keyword_text = self.tokens.peek()?.text.clone();
-            let next_kind = self.tokens.peek_second().ok().map(|t| t.kind);
+            let next_kind = self.tokens.peek_second().ok().map(|t| t.kind());
 
             if keyword_text.as_ref() == "else" && next_kind == Some(TokenKind::LeftBrace) {
                 return self.parse_orphaned_else();
@@ -244,7 +244,7 @@ impl<'a> Parser<'a> {
             // Variable declarations (`my $x`, `our @y`, ...) and scoped sub declarations
             // (`my sub helper { ... }`, `our sub helper { ... }`, `state sub memo { ... }`).
             TokenKind::My | TokenKind::Our | TokenKind::State => {
-                if matches!(self.tokens.peek_second().map(|t| t.kind), Ok(TokenKind::Sub)) {
+                if matches!(self.tokens.peek_second().map(|t| t.kind()), Ok(TokenKind::Sub)) {
                     let decl_token = self.consume_token()?;
                     let mut sub_node = self.parse_subroutine()?;
                     sub_node.location.start = decl_token.start();
@@ -345,7 +345,7 @@ impl<'a> Parser<'a> {
                     .tokens
                     .peek_second()
                     .ok()
-                    .is_some_and(|token| token.kind == TokenKind::LeftBrace) => self.parse_try(),
+                    .is_some_and(|token| token.kind() == TokenKind::LeftBrace) => self.parse_try(),
                 TokenKind::Defer => self.parse_defer(),
 
             // Loop control — next/last/redo can be followed by a word operator at statement level,
@@ -362,7 +362,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Class
                 if matches!(
-                    self.tokens.peek_second().map(|t| t.kind),
+                    self.tokens.peek_second().map(|t| t.kind()),
                     Ok(TokenKind::Identifier)
                         | Ok(TokenKind::DoubleColon)
                         | Ok(TokenKind::Colon)
@@ -375,7 +375,7 @@ impl<'a> Parser<'a> {
             // checking the next token is an Identifier (the method name).
             TokenKind::Method
                 if matches!(
-                    self.tokens.peek_second().map(|t| t.kind),
+                    self.tokens.peek_second().map(|t| t.kind()),
                     Ok(TokenKind::Identifier)
                 ) =>
             {
@@ -402,7 +402,7 @@ impl<'a> Parser<'a> {
                     .tokens
                     .peek_second()
                     .ok()
-                    .map(|t| t.kind == TokenKind::Colon)
+                    .map(|t| t.kind() == TokenKind::Colon)
                     .unwrap_or(false) =>
             {
                 self.parse_keyword_as_label()
@@ -416,7 +416,7 @@ impl<'a> Parser<'a> {
                     .tokens
                     .peek_second()
                     .ok()
-                    .map(|t| t.kind == TokenKind::LeftBrace)
+                    .map(|t| t.kind() == TokenKind::LeftBrace)
                     .unwrap_or(false) =>
             {
                 self.parse_phase_block()
@@ -437,7 +437,7 @@ impl<'a> Parser<'a> {
                     .tokens
                     .peek_second()
                     .ok()
-                    .map(|t| t.kind == TokenKind::Colon)
+                    .map(|t| t.kind() == TokenKind::Colon)
                     .unwrap_or(false) =>
             {
                 self.parse_keyword_as_label()
@@ -1145,7 +1145,7 @@ impl<'a> Parser<'a> {
             if matches!(token.text.as_ref(), "AUTOLOAD" | "DESTROY" | "CLONE" | "CLONE_SKIP") {
                 // Check if next token is a block
                 if let Ok(second) = self.tokens.peek_second() {
-                    if second.kind == TokenKind::LeftBrace {
+                    if second.kind() == TokenKind::LeftBrace {
                         return self.parse_special_block();
                     }
                 }
@@ -1326,7 +1326,7 @@ impl<'a> Parser<'a> {
                 // bare calls like `shift @arr` or `caller 1 || die`.
                 name if Self::is_nullary_builtin(name) => {
                     if self.tokens.peek_second().is_ok_and(|t| {
-                        matches!(t.kind, TokenKind::LeftParen | TokenKind::Arrow)
+                        matches!(t.kind(), TokenKind::LeftParen | TokenKind::Arrow)
                     }) {
                         self.parse_expression()
                     } else {
@@ -1665,7 +1665,7 @@ impl<'a> Parser<'a> {
         let modifier = modifier_token.text.to_string();
 
         // For 'for' and 'foreach', we parse a list expression
-        let condition = if matches!(modifier_token.kind, TokenKind::For | TokenKind::Foreach) {
+        let condition = if matches!(modifier_token.kind(), TokenKind::For | TokenKind::Foreach) {
             self.parse_expression()?
         } else {
             // For other modifiers, parse a regular expression
@@ -1833,14 +1833,14 @@ impl<'a> Parser<'a> {
         let Ok(second_token) = self.tokens.peek_second() else {
             return false;
         };
-        if second_token.kind != TokenKind::Colon {
+        if second_token.kind() != TokenKind::Colon {
             return false;
         }
 
         // Check the 3rd token (token after the colon)
         // If it can't start a statement, this is not a label
         if let Ok(third_token) = self.tokens.peek_third() {
-            if Self::third_token_cannot_start_statement(third_token.kind) {
+            if Self::third_token_cannot_start_statement(third_token.kind()) {
                 return false;
             }
         }

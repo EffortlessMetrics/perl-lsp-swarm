@@ -32,7 +32,7 @@ fn new_checked_allows_empty_eof_tokens() -> Result<(), Box<dyn std::error::Error
 #[test]
 fn new_checked_allows_empty_unknown_tokens() -> Result<(), Box<dyn std::error::Error>> {
     let tok = Token::new_checked(TokenKind::Unknown, "<synthetic>", 11, 11)?;
-    assert_eq!(tok.kind, TokenKind::Unknown);
+    assert_eq!(tok.kind(), TokenKind::Unknown);
     assert_eq!(tok.start(), 11);
     assert_eq!(tok.end(), 11);
     assert!(tok.is_empty());
@@ -42,7 +42,7 @@ fn new_checked_allows_empty_unknown_tokens() -> Result<(), Box<dyn std::error::E
 #[test]
 fn eof_at_preserves_position() -> Result<(), Box<dyn std::error::Error>> {
     let eof = Token::eof_at(123);
-    assert_eq!(eof.kind, TokenKind::Eof);
+    assert_eq!(eof.kind(), TokenKind::Eof);
     assert_eq!(eof.start(), 123);
     assert_eq!(eof.end(), 123);
     assert_eq!(&*eof.text, "");
@@ -52,7 +52,7 @@ fn eof_at_preserves_position() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn unknown_at_supports_synthetic_empty_spans() -> Result<(), Box<dyn std::error::Error>> {
     let unknown = Token::unknown_at("<synthetic>", 17, 17)?;
-    assert_eq!(unknown.kind, TokenKind::Unknown);
+    assert_eq!(unknown.kind(), TokenKind::Unknown);
     assert_eq!(unknown.start(), 17);
     assert_eq!(unknown.end(), 17);
     assert!(unknown.is_empty());
@@ -106,11 +106,11 @@ fn with_helpers_preserve_invariants() -> Result<(), Box<dyn std::error::Error>> 
     let base = Token::new_checked(TokenKind::Identifier, "name", 10, 14)?;
 
     let changed_kind = base.with_kind(TokenKind::Sub)?;
-    assert_eq!(changed_kind.kind, TokenKind::Sub);
+    assert_eq!(changed_kind.kind(), TokenKind::Sub);
     assert_eq!(changed_kind.range(), 10..14);
 
     let changed_span = changed_kind.with_span(20, 24)?;
-    assert_eq!(changed_span.kind, TokenKind::Sub);
+    assert_eq!(changed_span.kind(), TokenKind::Sub);
     assert_eq!(changed_span.range(), 20..24);
 
     let err = match changed_span.with_span(24, 20) {

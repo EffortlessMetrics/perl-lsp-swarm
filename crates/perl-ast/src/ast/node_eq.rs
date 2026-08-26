@@ -461,7 +461,8 @@ mod tests {
     }
 
     #[test]
-    fn error_expected_tokens_are_material_and_absent_from_sexp() {
+    fn error_expected_tokens_are_material_and_absent_from_sexp()
+    -> Result<(), perl_token::TokenSpanError> {
         let left = Node::new(
             NodeKind::Error {
                 message: "oops".to_string(),
@@ -486,15 +487,14 @@ mod tests {
             NodeKind::Error {
                 message: "oops".to_string(),
                 expected: vec![TokenKind::Identifier],
-                found: Some(
-                    Token::new_checked(TokenKind::Identifier, "x", 0, 1).expect("valid token"),
-                ),
+                found: Some(Token::new_checked(TokenKind::Identifier, "x", 0, 1)?),
                 partial: None,
             },
             loc(0, 1),
         );
         assert_eq!(left.to_sexp(), with_found.to_sexp());
         assert_ne!(left, with_found);
+        Ok(())
     }
 
     #[test]
