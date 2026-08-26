@@ -435,6 +435,30 @@ The release archive may have an unexpected layout."
 build_from_source() {
     need_cmd cargo
 
+    # Toolchain guard (#12593): the source build parses edition-2024 manifests;
+    # refuse a stale non-rustup cargo before any build work. The prebuilt
+    # download path above does not need cargo, so the guard lives here. In the
+    # standalone remote bootstrap (the root install.sh runs this file without
+    # its scripts/ siblings) the library cannot be sourced, so an inline
+    # floor check refuses the same confusing pre-1.85 failures instead of
+    # silently skipping the guard; from 1.85 up to the workspace rust-version,
+    # cargo's own rust-version enforcement reports the requirement cleanly.
+    _guard_lib="$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh"
+    if [ -f "$_guard_lib" ]; then
+        # shellcheck source=lib/cargo-toolchain-guard.sh
+        . "$_guard_lib" && cargo_toolchain_guard
+    else
+        _guard_version="$(cargo --version 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+\.[0-9]+(\.[0-9]+)?/) {print $i; exit}}')"
+        _guard_version="${_guard_version%%-*}"
+        _guard_major="${_guard_version%%.*}"
+        _guard_minor="${_guard_version#*.}"
+        _guard_minor="${_guard_minor%%.*}"
+        if [ -z "$_guard_major" ] || [ "$_guard_major" -lt 1 ] || { [ "$_guard_major" -eq 1 ] && [ "$_guard_minor" -lt 85 ]; }; then
+            err "cargo-toolchain-guard: REFUSED: cargo ${_guard_version:-unknown} predates edition-2024 support (needs >= 1.85; this workspace pins rustc 1.95). A stale cargo reports this as 'feature edition2024 is required' -- a toolchain problem, not a manifest problem. Install a current toolchain (https://rustup.rs)."
+        fi
+    fi
+    unset _guard_lib _guard_version _guard_major _guard_minor
+
     local _target_arg=()
 
     if [ -n "${TARGET:-}" ]; then

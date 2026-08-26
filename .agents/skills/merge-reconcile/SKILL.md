@@ -123,11 +123,46 @@ If the head moves before merge, re-read the candidate. Refresh only proof, revie
 integration dimensions affected by the new commit. Never use administrative bypass to
 discover what is failing or to outrun unresolved review/integration evidence.
 
+If an armed auto-merge has not fired, one manual probe merge through the REST endpoint
+(`gh api -X PUT repos/{owner}/{repo}/pulls/<n>/merge -f merge_method=squash -f
+sha=<current-head-sha>`, the compare-and-swap equivalent of `--match-head-commit`) is
+the sanctioned next step, not polling churn — but it is the same administrator bypass
+of legacy branch-protection checks and merges past a still-pending required context:
+probe ONLY once the required union is green on the head SHA — `ripr+ New Gap Gate` is
+its last reporter — or an explicit waiver is recorded on the PR or issue naming every
+unmet requirement (#12289's probe merged 42 minutes before the required check failed;
+#12565 confirmed the mechanism).
+
+When the protected-merge conjunction holds, the lane owns the transition: merge, or
+arm auto-merge (`gh pr merge <n> --auto --squash --match-head-commit
+<current-head-sha>`, the same compare-and-swap guard as the probe — if it rejects,
+the branch moved and the candidate must be re-read before arming) and record the
+GitHub-owned wait. A
+green ready PR with `autoMergeRequest` null and no named owner is a process gap, not a
+platform stall — #12184 sat green for 16h and #12098 for 7h because nobody owned the
+transition (#12565 census).
+
+Both the armed and the probe path require checks that can actually report on the head.
+For automation-authored PRs whose `pull_request` runs sit in `action_required` (the
+app-authored trust class), green `workflow_dispatch` runs on the same head do not
+count: the PR rollup ignores them, so required contexts read "expected" forever and
+neither auto-merge nor an honest probe can fire (#12399). A same-head rerun replays
+the same awaiting-approval event and cannot clear it. The sanctioned clearances are a
+trusted actor approving the awaiting runs, or a trusted-identity push only where a
+refresh is independently required under the no-churn contract — never merely to
+manufacture a current status; where neither is possible the candidate is `NOT_PROVEN`
+for integration. Never read dispatch-run greens as mergeable evidence.
+
 ## Reconciliation
 
 After merge or evidence-backed deliberate closure:
 
-1. verify the landed/current-main effect where applicable;
+1. verify the landed/current-main effect where applicable — during multi-landing
+   sessions, after every 2-3 landings run one non-green query over main's head
+   check-runs (`gh api repos/{owner}/{repo}/commits/main/check-runs`); the
+   2026-08-24/25 waves shipped fmt drift (#12278), dead-code clippy reds
+   (#12311/#12374-class), and a stale test expectation (#12274/#12357) that
+   cross-lane pain found late;
 2. update or close the controlling issue accurately;
 3. keep umbrella goals open when only one predicate landed;
 4. update durable contracts, proof, support claims, and changelog only within the

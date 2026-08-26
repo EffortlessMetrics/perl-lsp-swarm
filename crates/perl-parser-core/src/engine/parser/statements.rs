@@ -14,6 +14,11 @@ impl<'a> Parser<'a> {
                     NodeKind::UnknownRest,
                     SourceLocation { start: t.start, end: t.end },
                 ));
+                // The truncated program still parses "successfully": record
+                // the terminal cause at this exact branch so the Ok path of
+                // `parse_with_recovery` cannot report a clean completion for
+                // an AST whose remainder is explicitly unparsed.
+                self.ok_path_stop_cause = Some(ParseStopCause::LexerBudgetExhausted);
                 break; // Stop parsing but preserve earlier nodes
             }
 
@@ -26,6 +31,7 @@ impl<'a> Parser<'a> {
                     if matches!(
                         e,
                         ParseError::RecursionLimit
+                            | ParseError::RecursionDepthExhausted { .. }
                             | ParseError::NestingTooDeep { .. }
                             | ParseError::Cancelled
                     ) {
@@ -1705,6 +1711,7 @@ impl<'a> Parser<'a> {
                         if matches!(
                             e,
                             ParseError::RecursionLimit
+                                | ParseError::RecursionDepthExhausted { .. }
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
                         ) {

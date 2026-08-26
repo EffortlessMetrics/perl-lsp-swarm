@@ -2620,17 +2620,33 @@ enum EditorCompatCommand {
 
 #[derive(Subcommand)]
 enum VimEditorCompatCommand {
-    /// Execute the minimal hermetic host journey: start exact Vim headless,
-    /// load the pinned vim-lsp, register the canonical perllsp --stdio
-    /// server, attach to the fixture through native activation, capture the
-    /// initialize capabilities, stop the server, and prove client/host
-    /// cleanup. Writes the canonical editor-client receipt plus the retained
+    /// Execute a hermetic host journey: start exact Vim headless, load the
+    /// pinned vim-lsp, register the canonical perllsp --stdio server, attach
+    /// to the fixture through native activation, capture the initialize
+    /// capabilities, stop the server, and prove client/host cleanup. Writes
+    /// the canonical editor-client receipt plus the retained
     /// client/server/process artifacts.
+    ///
+    /// `host-lifecycle` (#10944) runs the minimal substrate journey.
+    /// `bootstrap-diagnostics` (#10946) runs the four-cell journey —
+    /// bootstrap, native root selection with wrong-root discrimination, the
+    /// diagnostics lifecycle through the client's own state, and baseline
+    /// cleanup — against the governed diagnostics fixture.
     Run {
         /// Exact client subject id (see
         /// `xtask::vim_host_run::VimClientSubject::known_ids`).
         #[arg(long)]
         subject: String,
+
+        /// Hermetic journey to execute: host-lifecycle or bootstrap-diagnostics.
+        #[arg(long, default_value = "host-lifecycle")]
+        journey: String,
+
+        /// Fixture variant for the bootstrap-diagnostics journey (canonical
+        /// must pass; defect_absent and wrong_root_decoy are negative
+        /// controls that must fail with their typed reason).
+        #[arg(long, default_value = "canonical")]
+        fixture_variant: String,
 
         /// Absolute path of the exact Vim executable to run.
         #[arg(long)]
@@ -3088,6 +3104,10 @@ enum PerlCoreHarnessCommand {
         /// Prebuilt perl-core-test-runner binary. Defaults to target/agent/perl-core-test-runner.
         #[arg(long)]
         runner_binary: Option<PathBuf>,
+
+        /// Disable bounded direct diagnostic probes for missing upstream rows.
+        #[arg(long)]
+        no_diagnostic_probes: bool,
     },
 
     /// Render the latest Perl core harness report (future slice).
@@ -4668,6 +4688,8 @@ fn run_cli(cli: Cli) -> Result<()> {
             EditorCompatCommand::Vim { command } => match command {
                 VimEditorCompatCommand::Run {
                     subject,
+                    journey,
+                    fixture_variant,
                     vim,
                     vim_lsp_dir,
                     candidate,
@@ -4676,6 +4698,71 @@ fn run_cli(cli: Cli) -> Result<()> {
                 } => {
                     let repo_root =
                         utils::project_root().map_err(|error| eyre!(error.to_string()))?;
+                    if journey == "bootstrap-diagnostics" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_diagnostics_run::DiagnosticsFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_diagnostics_run::host_diagnostics_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim bootstrap-diagnostics run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} driver_failure={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.driver_failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.driver_failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
+                                        outcome.driver_failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim bootstrap-diagnostics run did not pass: {result:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                    if journey != "host-lifecycle" {
+                        return Err(eyre!(
+                            "unknown journey {journey}: known journeys are host-lifecycle, \
+                             bootstrap-diagnostics"
+                        ));
+                    }
                     let outcome = xtask::vim_host_run::host_run_from_cli(
                         &repo_root,
                         &subject,
@@ -5536,6 +5623,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 tests,
                 output,
                 runner_binary,
+                no_diagnostic_probes,
             } => perl_core_harness::run_mode(perl_core_harness::RunConfig {
                 perl_tree,
                 host_perl,
@@ -5545,6 +5633,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 tests,
                 output,
                 runner_binary,
+                diagnostic_probes: !no_diagnostic_probes,
             }),
             PerlCoreHarnessCommand::Report => perl_core_harness::report(),
             PerlCoreHarnessCommand::Baseline {
@@ -6405,6 +6494,7 @@ mod tests {
                     tests: Vec::new(),
                     output: None,
                     runner_binary: None,
+                    no_diagnostic_probes: false,
                 },
                 "requires one or more explicit --test",
             ),
