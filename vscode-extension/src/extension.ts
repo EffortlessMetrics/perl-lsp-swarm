@@ -1796,18 +1796,13 @@ async function finalizeStartedLanguageClient(
 
   // This hook is part of the lifecycle controller so initial startup and
   // restart/reinstall generations rebuild the same client integrations.
-  // Carry both self-reported identity fields into workspace status identity
-  // (#12705): a custom or wrapper server's name is as load-bearing as its
-  // version, so it must not be discarded at the initialize boundary.
+  // Refresh both self-reported identity fields on every generation (#12705):
+  // assigning and clearing here keeps the reused status widget honest across
+  // replacement startups instead of retaining the prior server's identity,
+  // while a custom/wrapper server's name survives alongside its version.
   const serverInfo = startedClient.initializeResult?.serverInfo;
-  if (serverInfo) {
-    if (serverInfo.name) {
-      healthWidget?.setName(serverInfo.name);
-    }
-    if (serverInfo.version) {
-      healthWidget?.setVersion(serverInfo.version);
-    }
-  }
+  healthWidget?.setName(serverInfo?.name);
+  healthWidget?.setVersion(serverInfo?.version);
 
   // Offer AI inline completion once if the server advertises support (#1634).
   // Fire-and-forget; failures must not block lifecycle finalization.

@@ -223,14 +223,14 @@ export class HealthWidget {
     this._render();
   }
 
-  /** Set the server version string from the initialize handshake. */
-  setVersion(version: string): void {
+  /** Set or clear the server version reported by the current generation. */
+  setVersion(version: string | undefined): void {
     this._version = version;
     this._render();
   }
 
-  /** Set the server self-reported name from the initialize handshake. */
-  setName(name: string): void {
+  /** Set or clear the server self-reported name from the current generation. */
+  setName(name: string | undefined): void {
     this._name = name;
     this._render();
   }

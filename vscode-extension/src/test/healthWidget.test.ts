@@ -345,6 +345,23 @@ describe('HealthWidget — version display', () => {
     expect(item.text).toBe('$(check) perl-lsp v0.12.0');
   });
 
+  test('identity fields assigned for one generation clear when the next omits them', () => {
+    // A wrapper server reports its own identity, then is replaced through
+    // Restart by a server that sends no serverInfo at all (#12705).
+    const { item, widget } = makeWidget();
+    widget.setName('acme-perl-wrapper');
+    widget.setVersion('1.2.3');
+    widget.onStateChange(ClientState.Running);
+    expect(item.text).toBe('$(check) acme-perl-wrapper v1.2.3');
+
+    widget.setName(undefined);
+    widget.setVersion(undefined);
+
+    expect(widget.name).toBeUndefined();
+    expect(widget.version).toBeUndefined();
+    expect(item.text).toBe('$(check) perl-lsp');
+  });
+
   test('running state without version shows plain "perl-lsp"', () => {
     const { item, widget } = makeWidget();
     widget.onStateChange(ClientState.Running);
