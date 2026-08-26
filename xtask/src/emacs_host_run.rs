@@ -188,14 +188,16 @@ impl EmacsClientSubject {
         }
     }
 
-    /// Checked-in adapter path relative to the repository root. The two
-    /// #11745 external rows reuse the released-Eglot adapter mechanically
-    /// (plan-building digest input only); no source-subject journey is
-    /// claimed by that reuse. The #11746 lsp-mode rows have no adapter yet:
-    /// lsp-mode journey mechanics belong to the lsp-mode lanes, so plan
-    /// construction for these subjects fails closed on the missing adapter
-    /// until that lane lands one, while subject materialization through the
-    /// manifest resolver is complete without it.
+    /// Checked-in adapter path relative to the repository root. The
+    /// external Eglot rows share the external-Eglot adapter: the released
+    /// rows arrive with their declared package input and the pinned
+    /// upstream-source row rides the same adapter package-free (#8776), so
+    /// one adapter services both external source states without a copied
+    /// journey. The #11746 lsp-mode rows have no adapter yet: lsp-mode
+    /// journey mechanics belong to the lsp-mode lanes, so plan construction
+    /// for these subjects fails closed on the missing adapter until that
+    /// lane lands one, while subject materialization through the manifest
+    /// resolver is complete without it.
     pub fn adapter_relative_path(self) -> &'static str {
         match self {
             Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => {
@@ -298,23 +300,23 @@ impl EmacsClientSubject {
     }
 
     /// Whether an actual host run is supported by the current driver
-    /// adapters. The upstream-source Eglot row materializes completely
-    /// through the manifest resolver, but the released-Eglot adapter
-    /// unconditionally requires the declared package input, so a launch of
-    /// that subject is refused at the host-run boundary until its journey
-    /// lane lands a package-free source adapter.
+    /// adapters. The external Eglot adapter services the pinned
+    /// upstream-source subject package-free (#8776): the declared package
+    /// input reaches the adapter exactly for released subjects (the plan
+    /// builder enforces that shape before launch), and its absence selects
+    /// the upstream-source identity emission on the same shared journey,
+    /// so the launch table no longer refuses that row.
     pub fn launches_with_current_driver(self) -> bool {
         match self {
             Self::BundledEglotEmacs294
             | Self::BundledEglotEmacs301
             | Self::ReleasedEglotGnuElpa123
-            | Self::ReleasedEglotGnuElpa124 => true,
+            | Self::ReleasedEglotGnuElpa124
+            | Self::SourceEglotEmacsC1ad9d27 => true,
             // No lsp-mode adapter exists yet; plan construction already
             // fails closed on the missing adapter file, and the host-run
             // boundary refuses the launch with the same typed reason.
-            Self::SourceEglotEmacsC1ad9d27
-            | Self::ReleasedLspModeMelpaStable1000
-            | Self::SourceLspModeGithub6bfc593 => false,
+            Self::ReleasedLspModeMelpaStable1000 | Self::SourceLspModeGithub6bfc593 => false,
         }
     }
 }
@@ -746,10 +748,9 @@ pub fn host_run(
 ) -> Result<HostRunOutcome> {
     // A subject whose materialization is complete but whose driver adapter
     // does not exist yet is refused here, before any launch step: the
-    // released-Eglot adapter unconditionally requires the declared package
-    // input, so an upstream-source launch would die inside the driver
-    // instead of refusing at the boundary. The refusal names the boundary;
-    // the source adapter arrives with the journey lane that owns it.
+    // lsp-mode rows have no adapter, so their launch would die inside the
+    // driver instead of refusing at the boundary. The refusal names the
+    // boundary; the lsp-mode adapter arrives with its journey lane.
     ensure!(
         subject.launches_with_current_driver(),
         "subject {} has no driver adapter yet: materialization through the subject manifest is          complete, but an actual host run is unsupported until its journey lane lands an          adapter",
