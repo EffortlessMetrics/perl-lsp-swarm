@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 018385da48f0c1c4df13ea4ce7379eec24c1b11dcb711242a7daef41a8d6f58c # shrinks to raw = " "
+cc 964660b06a3d0636cc82d8501baf5f7f10d4a08c0bf0319fbddb6e121b0087d7 # shrinks to keys = ["B", "Y:h", "'Z'''ED'A", "bkKv'vH", ":''st'", "'CKa'el"], query = ""

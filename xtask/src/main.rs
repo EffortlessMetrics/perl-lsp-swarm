@@ -2363,6 +2363,15 @@ enum Commands {
         root: Option<PathBuf>,
     },
 
+    /// Architecture recurrence gate for per-row best-key workspace-symbol
+    /// matching (#10645).
+    ///
+    /// Fails when the canonical row-search seam restores geometry-based
+    /// `(uri, start_byte)` first-key deduplication, reimplements query tier
+    /// scoring locally, or stops consuming the #10794/#10645 authorities.
+    #[command(name = "check-workspace-symbol-best-key")]
+    CheckWorkspaceSymbolBestKey,
+
     /// Report (and, with `--force`, remove) stale `.claude/worktrees` entries.
     ///
     /// Defaults to a dry-run report: every agent worktree is classified
@@ -5950,6 +5959,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckNamingConsistency { root } => {
             tasks::check_naming_consistency::run_default(root)
         }
+        Commands::CheckWorkspaceSymbolBestKey => tasks::check_workspace_symbol_best_key::run(),
         Commands::WorktreeCleanup { root, force } => worktrees::cleanup(root, force),
         Commands::ValidateSwarmAgentRoster { root } => swarm_agent_roster::run(root),
         Commands::CheckAgentCapabilities { root } => agent_capability_policy::run(root),
