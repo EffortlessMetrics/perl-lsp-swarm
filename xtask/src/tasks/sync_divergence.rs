@@ -1,7 +1,9 @@
-//! `cargo xtask sync-divergence check` — fail closed on unclassified target commits.
+//! `cargo xtask sync-divergence` — fail closed on unclassified target commits
+//! and validate the typed reconciliation ledger against comparison reality.
 
 use color_eyre::eyre::{Context, Report, Result, eyre};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,6 +16,15 @@ const CLASSIFICATIONS: [&str; 5] = [
     "deliberately_abandoned",
     "release_lineage_only",
 ];
+
+/// Path segments that mark runtime, product, or test work; `release_lineage_only`
+/// may never cover them.
+const PRODUCT_PATH_SEGMENTS: [&str; 9] =
+    ["src", "lib", "bin", "t", "test", "tests", "testing", "examples", "xt"];
+
+/// File extensions that mark runtime, product, or test work; `.t` is the
+/// standard Perl test file extension.
+const PRODUCT_PATH_EXTENSIONS: [&str; 8] = ["rs", "c", "h", "hpp", "cpp", "pm", "pl", "t"];
 
 const LEDGER_SCHEMA_VERSION: u32 = 2;
 const RECEIPT_SCHEMA_VERSION: u32 = 2;
@@ -34,6 +45,40 @@ pub struct CheckConfig {
     pub working_directory: Option<PathBuf>,
 }
 
+/// Arguments for scaffolding a v2 reconciliation ledger skeleton.
+pub struct ScaffoldConfig {
+    /// Exact swarm source ref; resolved as the patch-equivalence upstream.
+    pub source: String,
+    /// Completed reconciliation boundary ref; resolved as the exclusive history floor.
+    pub boundary: String,
+    /// Release-repo target ref (normally the release repository head).
+    pub target: String,
+    /// Output reconciliation ledger path.
+    pub ledger: PathBuf,
+    /// Repository to run against; defaults to the process working directory.
+    pub working_directory: Option<PathBuf>,
+}
+
+/// The single verdict a completed validation may emit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Verdict {
+    Pass,
+    Blocked,
+    NotProven,
+}
+
+impl std::fmt::Display for Verdict {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            Verdict::Pass => "pass",
+            Verdict::Blocked => "blocked",
+            Verdict::NotProven => "not_proven",
+        };
+        write!(formatter, "{text}")
+    }
+}
+
 #[derive(Debug)]
 struct Subjects {
     source: SubjectState,
@@ -48,13 +93,13 @@ struct SubjectState {
 }
 
 impl Subjects {
+    fn from_inputs(source: &str, boundary: &str, target: &str) -> Self {
+        let state = |input: &str| SubjectState { input: input.to_string(), commit: None };
+        Self { source: state(source), boundary: state(boundary), target: state(target) }
+    }
+
     fn from_config(config: &CheckConfig) -> Self {
-        let state = |input: &String| SubjectState { input: input.clone(), commit: None };
-        Self {
-            source: state(&config.source),
-            boundary: state(&config.boundary),
-            target: state(&config.target),
-        }
+        Self::from_inputs(&config.source, &config.boundary, &config.target)
     }
 }
 
@@ -80,21 +125,45 @@ struct ResolvedShas {
     target: String,
 }
 
-#[derive(Debug, Deserialize)]
+/// The typed reconciliation ledger (schema v2). Unknown fields fail closed so
+/// a stale or foreign ledger shape cannot masquerade as v2.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Ledger {
     schema_version: u32,
     source: String,
     boundary: String,
     target: String,
+    population_digest: String,
+    #[serde(default)]
+    verdict: Option<Verdict>,
+    #[serde(default)]
+    blockers: Vec<String>,
     entries: Vec<LedgerEntry>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LedgerEntry {
     commit: String,
     subject: String,
-    classification: String,
+    /// `null` is an explicit unresolved row; anything outside the five
+    /// terminal tokens fails closed.
+    disposition: Option<String>,
+    #[serde(default)]
+    source_commit: Option<String>,
+    #[serde(default)]
+    owner: Option<String>,
+    #[serde(default)]
+    rationale: Option<String>,
+    #[serde(default)]
+    changed_paths: Vec<String>,
+    #[serde(default)]
     evidence: Vec<String>,
+    #[serde(default)]
+    release_sync_effect: Option<String>,
+    #[serde(default)]
+    blocking_decisions: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -102,11 +171,14 @@ struct Receipt {
     schema_version: u32,
     subjects: ReceiptSubjects,
     ledger: String,
+    verdict: Verdict,
+    population_digest: String,
     target_unique_commits: Vec<ReceiptCommit>,
     excluded_merge_commits: Vec<String>,
     excluded_merge_ancestry: Vec<ExcludedMerge>,
     excluded_release_lineage_commits: Vec<String>,
     accepted_commits: Vec<String>,
+    unresolved_commits: Vec<String>,
     errors: Vec<String>,
 }
 
@@ -128,7 +200,8 @@ struct ReceiptSubject {
 struct ReceiptCommit {
     commit: String,
     subject: String,
-    classification: String,
+    /// `null` marks an explicitly unresolved row.
+    classification: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -138,7 +211,7 @@ struct ExcludedMerge {
     parents: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct CherryCommit {
     commit: String,
     subject: String,
@@ -151,7 +224,8 @@ impl CherryCommit {
     }
 }
 
-/// Run the preflight and write a receipt even when validation fails.
+/// Run the preflight, validate the reconciliation ledger, and write a receipt
+/// even when validation fails.
 pub fn check(config: CheckConfig) -> Result<()> {
     let directory = config.working_directory.as_deref();
     let mut subjects = Subjects::from_config(&config);
@@ -184,21 +258,100 @@ pub fn check(config: CheckConfig) -> Result<()> {
         Err(error) => return fail_with_receipt(&config, &subjects, error),
     };
 
-    let (receipt, errors) = reconcile(&config, &ledger, &target_unique, excluded_merges, &subjects);
-    write_receipt(&config.receipt, &receipt)?;
+    let (receipt, errors) =
+        reconcile(&config, &ledger, &target_unique, excluded_merges, &subjects, directory);
+    write_json(&config.receipt, &receipt)?;
 
-    if errors.is_empty() {
-        println!(
-            "sync-divergence: checked {} target-unique non-merge commit(s)",
-            receipt.target_unique_commits.len()
-        );
-        Ok(())
-    } else {
-        Err(eyre!(
-            "sync-divergence preflight failed with {} error(s); see {}",
+    match receipt.verdict {
+        Verdict::Pass => {
+            println!(
+                "sync-divergence: reconciled {} target-unique non-merge commit(s)",
+                receipt.target_unique_commits.len()
+            );
+            Ok(())
+        }
+        Verdict::Blocked => Err(eyre!(
+            "sync-divergence reconciliation is blocked: {} unresolved decision(s) remain; see {}",
+            receipt.unresolved_commits.len() + ledger.blockers.len(),
+            config.receipt.display()
+        )),
+        Verdict::NotProven => Err(eyre!(
+            "sync-divergence reconciliation is not proven: {} error(s); see {}",
             errors.len(),
             config.receipt.display()
-        ))
+        )),
+    }
+}
+
+/// Emit a reconciliation ledger skeleton: one unresolved row per computed
+/// target-unique non-merge commit, with real subjects and changed paths and
+/// no invented terminal disposition.
+pub fn scaffold(config: ScaffoldConfig) -> Result<()> {
+    if config.ledger.exists() {
+        return Err(eyre!(
+            "scaffold ledger {} already exists; move or delete it first — \
+             scaffolding must never silently overwrite an in-progress reconciliation ledger",
+            config.ledger.display()
+        ));
+    }
+    let directory = config.working_directory.as_deref();
+    let mut subjects = Subjects::from_inputs(&config.source, &config.boundary, &config.target);
+
+    let shas = resolve_subjects(&mut subjects, directory)?;
+    ensure_boundary_bounds_target(&shas, directory)?;
+    ensure_source_not_contained_in_target(&shas, directory)?;
+    let target_unique = comparison_population(&shas, directory)?;
+
+    let mut entries = Vec::new();
+    for commit in &target_unique {
+        let changed_paths = commit_changed_paths(&commit.commit, directory)?;
+        entries.push(LedgerEntry {
+            commit: commit.commit.clone(),
+            subject: commit.subject.clone(),
+            disposition: None,
+            source_commit: None,
+            owner: None,
+            rationale: None,
+            changed_paths,
+            evidence: Vec::new(),
+            release_sync_effect: None,
+            blocking_decisions: Vec::new(),
+        });
+    }
+
+    let ledger = Ledger {
+        schema_version: LEDGER_SCHEMA_VERSION,
+        source: shas.source,
+        boundary: shas.boundary,
+        target: shas.target,
+        population_digest: compute_population_digest(&target_unique),
+        verdict: None,
+        blockers: Vec::new(),
+        entries,
+    };
+    write_json(&config.ledger, &ledger)?;
+    println!(
+        "sync-divergence: scaffolded {} unresolved reconciliation row(s) into {}",
+        ledger.entries.len(),
+        config.ledger.display()
+    );
+    Ok(())
+}
+
+#[derive(Debug, PartialEq)]
+enum RowKind {
+    Terminal(String),
+    Unresolved,
+}
+
+fn row_kind(entry: &LedgerEntry) -> RowKind {
+    match entry.disposition.as_deref() {
+        Some(classification) if CLASSIFICATIONS.contains(&classification) => {
+            RowKind::Terminal(classification.to_string())
+        }
+        // An invalid token is not a terminal disposition, so the row is
+        // nonterminal; the token error itself fails the verdict.
+        _ => RowKind::Unresolved,
     }
 }
 
@@ -208,8 +361,23 @@ fn reconcile(
     target_unique: &[CherryCommit],
     excluded_merges: Vec<ExcludedMerge>,
     subjects: &Subjects,
+    directory: Option<&Path>,
 ) -> (Receipt, Vec<String>) {
     let mut errors = Vec::new();
+
+    let digest = compute_population_digest(target_unique);
+    if ledger.population_digest != digest {
+        errors.push(format!(
+            "ledger population digest {} does not match the comparison digest {}; the ledger is stale",
+            ledger.population_digest, digest
+        ));
+    }
+    for blocker in &ledger.blockers {
+        if blocker.trim().is_empty() {
+            errors.push("ledger blockers contain an empty decision".to_string());
+        }
+    }
+
     let mut entries = BTreeMap::new();
     for entry in &ledger.entries {
         if entries.contains_key(entry.commit.as_str()) {
@@ -228,6 +396,7 @@ fn reconcile(
     let mut receipt_commits = Vec::new();
     let mut excluded_release_lineage_commits = Vec::new();
     let mut accepted_commits = Vec::new();
+    let mut unresolved_commits = Vec::new();
 
     for commit in ordered.values() {
         if commit.is_merge() {
@@ -252,33 +421,44 @@ fn reconcile(
         receipt_commits.push(ReceiptCommit {
             commit: commit.commit.clone(),
             subject: commit.subject.clone(),
-            classification: entry.classification.clone(),
+            classification: entry.disposition.clone(),
         });
 
-        if !CLASSIFICATIONS.contains(&entry.classification.as_str()) {
-            errors.push(format!(
-                "commit {} has invalid classification `{}`",
-                commit.commit, entry.classification
-            ));
-            continue;
-        }
-
-        if entry.classification == "release_lineage_only" {
-            excluded_release_lineage_commits.push(commit.commit.clone());
-        } else {
-            accepted_commits.push(commit.commit.clone());
+        match row_kind(entry) {
+            RowKind::Terminal(classification) => {
+                if classification == "release_lineage_only" {
+                    excluded_release_lineage_commits.push(commit.commit.clone());
+                } else {
+                    accepted_commits.push(commit.commit.clone());
+                }
+            }
+            RowKind::Unresolved => unresolved_commits.push(commit.commit.clone()),
         }
     }
 
     for entry in &ledger.entries {
-        if !has_evidence(entry) {
-            errors.push(format!("commit {} has no evidence", entry.commit));
-        }
+        validate_entry(entry, &shas_from(subjects), directory, &mut errors);
         if !seen.contains(entry.commit.as_str()) {
             errors.push(format!(
                 "ledger commit {} is not a non-merge target-unique commit",
                 entry.commit
             ));
+        }
+    }
+
+    let mut verdict = if !errors.is_empty() {
+        Verdict::NotProven
+    } else if unresolved_commits.len() + ledger.blockers.len() > 0 {
+        Verdict::Blocked
+    } else {
+        Verdict::Pass
+    };
+    if let Some(claimed) = ledger.verdict {
+        if claimed != verdict {
+            errors.push(format!(
+                "ledger claims verdict {claimed} but validation derived {verdict}; the ledger claim is stale or dishonest"
+            ));
+            verdict = Verdict::NotProven;
         }
     }
 
@@ -288,14 +468,216 @@ fn reconcile(
         schema_version: RECEIPT_SCHEMA_VERSION,
         subjects: ReceiptSubjects::from(subjects),
         ledger: config.ledger.display().to_string(),
+        verdict,
+        population_digest: digest,
         target_unique_commits: receipt_commits,
         excluded_merge_commits,
         excluded_merge_ancestry: excluded_merges,
         excluded_release_lineage_commits,
         accepted_commits,
+        unresolved_commits,
         errors: errors.clone(),
     };
     (receipt, errors)
+}
+
+fn shas_from(subjects: &Subjects) -> ResolvedShas {
+    let commit = |state: &SubjectState| state.commit.clone().unwrap_or_default();
+    ResolvedShas {
+        source: commit(&subjects.source),
+        boundary: commit(&subjects.boundary),
+        target: commit(&subjects.target),
+    }
+}
+
+/// Enforce the per-entry disposition rules against the ledger's own claims.
+fn validate_entry(
+    entry: &LedgerEntry,
+    shas: &ResolvedShas,
+    directory: Option<&Path>,
+    errors: &mut Vec<String>,
+) {
+    if let Some(token) = entry.disposition.as_deref() {
+        if !CLASSIFICATIONS.contains(&token) {
+            errors.push(format!(
+                "commit {} has invalid classification `{token}`; only the five terminal dispositions exist",
+                entry.commit
+            ));
+        }
+    }
+    verify_changed_paths(entry, directory, errors);
+
+    let RowKind::Terminal(classification) = row_kind(entry) else {
+        return;
+    };
+
+    // An undeclared footprint evades both the diff-tree comparison and the
+    // product/test guard below, so every terminal row must declare its real
+    // changed paths. The scaffold always populates them.
+    if entry.changed_paths.is_empty() {
+        errors.push(format!(
+            "commit {} classified `{classification}` declares no changed_paths; every terminal row must declare its changed paths so the diff-tree comparison and product/test guard cannot be evaded",
+            entry.commit
+        ));
+    }
+    if !has_evidence(entry) {
+        errors.push(format!("commit {} has no evidence", entry.commit));
+    }
+    if !entry.blocking_decisions.is_empty() {
+        errors.push(format!(
+            "commit {} carries blocking decisions but claims terminal disposition `{}`; an unresolved decision is not a sixth disposition",
+            entry.commit, classification
+        ));
+    }
+
+    match classification.as_str() {
+        "port_to_swarm" | "already_equivalent_in_swarm" => {
+            require_source_ancestor(entry, &classification, shas, directory, errors)
+        }
+        "superseded_by_newer_architecture" => {
+            let named = entry.owner.as_deref().map(str::trim).unwrap_or_default();
+            if named.is_empty() {
+                errors.push(format!(
+                    "commit {} classified `superseded_by_newer_architecture` must name the current architecture owner",
+                    entry.commit
+                ));
+            }
+        }
+        "deliberately_abandoned" => {
+            let stated = entry.rationale.as_deref().map(str::trim).unwrap_or_default();
+            if stated.is_empty() {
+                errors.push(format!(
+                    "commit {} classified `deliberately_abandoned` must state the rejected behavior and rationale",
+                    entry.commit
+                ));
+            }
+        }
+        "release_lineage_only" => {
+            if let Some(path) =
+                entry.changed_paths.iter().find(|path| is_product_or_test_path(path))
+            {
+                errors.push(format!(
+                    "commit {} classified `release_lineage_only` covers product or test path `{path}`; lineage-only cannot exclude runtime, product, or test work",
+                    entry.commit
+                ));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A port or equivalent must point at an exact commit reachable from the
+/// declared swarm source; planned-but-unmerged or unreachable identities fail.
+fn require_source_ancestor(
+    entry: &LedgerEntry,
+    classification: &str,
+    shas: &ResolvedShas,
+    directory: Option<&Path>,
+    errors: &mut Vec<String>,
+) {
+    let Some(source_commit) = entry.source_commit.as_deref() else {
+        errors.push(format!(
+            "commit {} classified `{classification}` requires the exact swarm `source_commit` it ports to or matches",
+            entry.commit
+        ));
+        return;
+    };
+    if let Err(error) = ensure_reachable_from_source(source_commit, &shas.source, directory) {
+        errors.push(format!("commit {}: {error}", entry.commit));
+    }
+}
+
+fn ensure_reachable_from_source(
+    candidate: &str,
+    source: &str,
+    directory: Option<&Path>,
+) -> Result<()> {
+    validate_subject_syntax("source_commit", candidate)?;
+    let resolved = resolve_peeled_commit("source_commit", candidate, directory)?;
+    match git_status_in(["merge-base", "--is-ancestor", &resolved, source], directory)? {
+        0 => Ok(()),
+        1 => Err(eyre!(
+            "`source_commit` `{candidate}` is not reachable from the declared swarm source {source}; a port must exist in the source before the ledger can accept it"
+        )),
+        code => Err(eyre!("git merge-base --is-ancestor exited with status {code}")),
+    }
+}
+
+/// Declared changed paths are verified against Git so a stale or cross-commit
+/// row cannot borrow another commit's footprint.
+fn verify_changed_paths(entry: &LedgerEntry, directory: Option<&Path>, errors: &mut Vec<String>) {
+    if entry.changed_paths.is_empty() {
+        return;
+    }
+    if let Err(error) = validate_subject_syntax("commit", &entry.commit) {
+        errors.push(format!(
+            "ledger changed paths for {} could not be verified: {error:#}",
+            entry.commit
+        ));
+        return;
+    }
+    match commit_changed_paths(&entry.commit, directory) {
+        Ok(actual) => {
+            let mut claimed = entry.changed_paths.clone();
+            claimed.sort();
+            claimed.dedup();
+            if claimed != actual {
+                errors.push(format!(
+                    "ledger changed paths for {} do not match Git: ledger=`{claimed:?}` Git=`{actual:?}`",
+                    entry.commit
+                ));
+            }
+        }
+        Err(error) => errors.push(format!(
+            "ledger changed paths for {} could not be verified: {error:#}",
+            entry.commit
+        )),
+    }
+}
+
+fn commit_changed_paths(commit: &str, directory: Option<&Path>) -> Result<Vec<String>> {
+    let output = git_output_in(
+        ["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit],
+        directory,
+    )?;
+    let mut paths: Vec<String> =
+        output.lines().filter(|line| !line.trim().is_empty()).map(str::to_string).collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn is_product_or_test_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    if normalized.split('/').any(|segment| PRODUCT_PATH_SEGMENTS.contains(&segment)) {
+        return true;
+    }
+    match normalized.rsplit_once('.') {
+        Some((_, extension)) => {
+            PRODUCT_PATH_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
+        }
+        None => false,
+    }
+}
+
+/// Canonical digest over the target-unique non-merge population; the ledger
+/// must reproduce it exactly or it is stale. Sorting makes the digest independent
+/// of caller ordering.
+fn compute_population_digest(target_unique: &[CherryCommit]) -> String {
+    let mut rows: Vec<(&str, String)> = target_unique
+        .iter()
+        .map(|commit| (commit.commit.as_str(), normalize_subject(&commit.subject)))
+        .collect();
+    rows.sort();
+    let mut hasher = Sha256::new();
+    for (commit, subject) in rows {
+        hasher.update(commit.as_bytes());
+        hasher.update(b" ");
+        hasher.update(subject.as_bytes());
+        hasher.update(b"\n");
+    }
+    let digest = hasher.finalize();
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn has_evidence(entry: &LedgerEntry) -> bool {
@@ -350,7 +732,7 @@ fn validate_ledger_identity(ledger: &Ledger, shas: &ResolvedShas) -> Result<()> 
 /// subject's actual outcome; a receipt must never record `commit: null` for a
 /// subject whose resolution was never attempted.
 fn resolve_subjects(subjects: &mut Subjects, directory: Option<&Path>) -> Result<ResolvedShas> {
-    let mut attempt = |label: &str, state: &mut SubjectState| -> Result<String> {
+    let attempt = |label: &str, state: &mut SubjectState| -> Result<String> {
         let resolved = resolve_subject(label, state, directory)?;
         state.commit = Some(resolved.clone());
         Ok(resolved)
@@ -376,9 +758,14 @@ fn record_outcome(outcome: Result<String>, errors: &mut Vec<String>) -> Option<S
     outcome.map_err(|error| errors.push(format!("{error:#}"))).ok()
 }
 
-fn resolve_subject(label: &str, state: &SubjectState, directory: Option<&Path>) -> Result<String> {
-    validate_subject_syntax(label, &state.input)?;
-    let peeled = format!("{}^{{commit}}", state.input);
+/// Resolve one commit-ish to a full object id through the quiet+loud probe:
+/// quiet `rev-parse --verify` resolves the id while suppressing git's
+/// refname-ambiguity warning, so the loud re-probe fails closed when a
+/// branch/tag collision would otherwise resolve by silent internal
+/// precedence. Every commit-ish identity in this task (subjects and ledger
+/// `source_commit`s) must go through this one helper.
+fn resolve_peeled_commit(label: &str, reference: &str, directory: Option<&Path>) -> Result<String> {
+    let peeled = format!("{reference}^{{commit}}");
     match git_output_in(
         ["rev-parse", "--verify", "--quiet", "--end-of-options", &peeled],
         directory,
@@ -386,7 +773,7 @@ fn resolve_subject(label: &str, state: &SubjectState, directory: Option<&Path>) 
         Ok(output) => {
             let resolved = output.trim().to_string();
             if resolved.is_empty() {
-                return Err(unresolved_subject(label, state, directory));
+                return Err(eyre!("{label} ref `{reference}` did not resolve to a commit"));
             }
             // Quiet mode suppresses git's refname-ambiguity warning, so a
             // branch+tag name collision would silently resolve by internal
@@ -395,27 +782,29 @@ fn resolve_subject(label: &str, state: &SubjectState, directory: Option<&Path>) 
                 .unwrap_or_default();
             if loud_stderr.contains("is ambiguous") {
                 return Err(eyre!(
-                    "{label} ref `{}` was ambiguous; pass a full 40-hex object id or an unambiguous ref name",
-                    state.input
+                    "{label} ref `{reference}` was ambiguous; pass a full 40-hex object id or an unambiguous ref name"
                 ));
             }
             Ok(resolved)
         }
-        Err(_) => Err(unresolved_subject(label, state, directory)),
+        Err(_) => {
+            let stderr =
+                git_stderr_in(["rev-parse", "--verify", "--end-of-options", &peeled], directory)
+                    .unwrap_or_default();
+            if stderr.contains("ambiguous") {
+                Err(eyre!(
+                    "{label} ref `{reference}` was ambiguous; pass a full 40-hex object id or an unambiguous ref name"
+                ))
+            } else {
+                Err(eyre!("{label} ref `{reference}` did not resolve to a commit"))
+            }
+        }
     }
 }
 
-fn unresolved_subject(label: &str, state: &SubjectState, directory: Option<&Path>) -> Report {
-    let peeled = format!("{}^{{commit}}", state.input);
-    let stderr = git_stderr_in(["rev-parse", "--verify", "--end-of-options", &peeled], directory)
-        .unwrap_or_default();
-    if stderr.contains("ambiguous") {
-        return eyre!(
-            "{label} ref `{}` was ambiguous; pass a full 40-hex object id or an unambiguous ref name",
-            state.input
-        );
-    }
-    eyre!("{label} ref `{}` did not resolve to a commit", state.input)
+fn resolve_subject(label: &str, state: &SubjectState, directory: Option<&Path>) -> Result<String> {
+    validate_subject_syntax(label, &state.input)?;
+    resolve_peeled_commit(label, &state.input, directory)
 }
 
 fn ensure_boundary_bounds_target(shas: &ResolvedShas, directory: Option<&Path>) -> Result<()> {
@@ -535,14 +924,17 @@ fn fail_with_receipt(config: &CheckConfig, subjects: &Subjects, error: Report) -
         schema_version: RECEIPT_SCHEMA_VERSION,
         subjects: ReceiptSubjects::from(subjects),
         ledger: config.ledger.display().to_string(),
+        verdict: Verdict::NotProven,
+        population_digest: String::new(),
         target_unique_commits: Vec::new(),
         excluded_merge_commits: Vec::new(),
         excluded_merge_ancestry: Vec::new(),
         excluded_release_lineage_commits: Vec::new(),
         accepted_commits: Vec::new(),
+        unresolved_commits: Vec::new(),
         errors: vec![message.clone()],
     };
-    write_receipt(&config.receipt, &receipt)?;
+    write_json(&config.receipt, &receipt)?;
     Err(eyre!(
         "sync-divergence preflight failed before comparison: {message}; see {}",
         config.receipt.display()
@@ -583,12 +975,12 @@ fn git_status_in<const N: usize>(args: [&str; N], directory: Option<&Path>) -> R
     Ok(output.status.code().unwrap_or(-1))
 }
 
-fn write_receipt(path: &Path, receipt: &Receipt) -> Result<()> {
+fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("creating receipt directory {}", parent.display()))?;
     }
-    let content = serde_json::to_string_pretty(receipt).context("serializing sync receipt")?;
+    let content = serde_json::to_string_pretty(value).context("serializing sync receipt")?;
     fs::write(path, format!("{content}\n"))
         .with_context(|| format!("writing sync receipt {}", path.display()))?;
     Ok(())
@@ -787,6 +1179,7 @@ mod tests {
         assert_eq!(receipt["subjects"]["target"]["commit"], swarm_tip.as_str());
         assert_eq!(receipt["target_unique_commits"].as_array().map(Vec::len), Some(0));
         assert_eq!(receipt["errors"].as_array().map(Vec::len), Some(1));
+        assert_eq!(receipt["verdict"], "not_proven");
         Ok(())
     }
 
@@ -865,8 +1258,61 @@ mod tests {
         Ok(())
     }
 
+    /// The canonical population digest is deterministic and content-sensitive.
     #[test]
-    fn success_receipt_records_resolved_identity() -> Result<()> {
+    fn population_digest_is_deterministic_and_content_sensitive() {
+        let first =
+            CherryCommit { commit: "aaa".into(), subject: "one".into(), parents: vec!["p".into()] };
+        let second =
+            CherryCommit { commit: "bbb".into(), subject: "two".into(), parents: vec!["p".into()] };
+        let ab = compute_population_digest(&[first.clone(), second]);
+        let ba_input =
+            CherryCommit { commit: "bbb".into(), subject: "two".into(), parents: vec!["p".into()] };
+        let ba = compute_population_digest(&[ba_input, first.clone()]);
+        assert_eq!(ab, ba, "digest must be order-insensitive over sorted commits");
+        let changed = CherryCommit {
+            commit: "aaa".into(),
+            subject: "one changed".into(),
+            parents: vec!["p".into()],
+        };
+        assert_ne!(
+            compute_population_digest(std::slice::from_ref(&first)),
+            compute_population_digest(std::slice::from_ref(&changed)),
+            "a subject change must change the digest"
+        );
+    }
+
+    #[test]
+    fn product_path_heuristic_flags_runtime_and_test_work() {
+        for path in [
+            "crates/perl-parser/src/lib.rs",
+            "src/main.c",
+            "include/perl.h",
+            "t/class.t",
+            "release/smoke.t",
+            "tests/smoke.pl",
+            "bin/tool",
+            "lib/Util.pm",
+            r"windows\src\lib.rs",
+        ] {
+            assert!(is_product_or_test_path(path), "`{path}` must count as product/test work");
+        }
+        for path in [
+            "docs/releases/v1.md",
+            "CHANGELOG.md",
+            "README",
+            "ci/pipeline.yml",
+            ".github/workflows/ci.yml",
+            "notes.txt",
+        ] {
+            assert!(!is_product_or_test_path(path), "`{path}` must not count as product/test work");
+        }
+    }
+
+    /// A fully classified ledger passes and the receipt records the derived
+    /// verdict, the population digest, and the consumed v2 receipt identity.
+    #[test]
+    fn success_receipt_records_resolved_identity_and_pass_verdict() -> Result<()> {
         let fixture = diverged_fixture()?;
         let path = fixture.directory.path();
         fs::write(
@@ -877,16 +1323,20 @@ mod tests {
   "source": "{}",
   "boundary": "{}",
   "target": "{}",
+  "population_digest": "{}",
+  "blockers": [],
   "entries": [
-    {{"commit": "{}", "subject": "release r0", "classification": "port_to_swarm", "evidence": ["evidence r0"]}},
-    {{"commit": "{}", "subject": "release r2", "classification": "release_lineage_only", "evidence": ["evidence r2"]}}
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": ["r0.txt"], "evidence": ["release-lineage receipt"], "release_sync_effect": "stays release-side"}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "changed_paths": ["r2.txt"], "evidence": ["ported into the swarm source"], "release_sync_effect": "carried by the source"}}
   ]
 }}"#,
                 fixture.swarm_tip,
                 fixture.base,
                 fixture.release_tip,
+                fixture_digest(&fixture)?,
                 fixture.floor_tip,
-                fixture.release_tip
+                fixture.release_tip,
+                fixture.swarm_tip,
             ),
         )?;
         let config = CheckConfig {
@@ -910,32 +1360,39 @@ mod tests {
         assert_eq!(receipt["subjects"]["boundary"]["role"].as_str(), Some("history_limit"));
         assert_eq!(receipt["subjects"]["target"]["commit"], fixture.release_tip.as_str());
         assert_eq!(receipt["subjects"]["target"]["role"].as_str(), Some("release_head"));
+        assert_eq!(receipt["verdict"], "pass");
+        assert_eq!(receipt["population_digest"], fixture_digest(&fixture)?.as_str());
         assert_eq!(receipt["target_unique_commits"].as_array().map(Vec::len), Some(2));
         assert_eq!(receipt["accepted_commits"].as_array().map(Vec::len), Some(1));
         assert_eq!(receipt["excluded_release_lineage_commits"].as_array().map(Vec::len), Some(1));
         assert_eq!(receipt["excluded_merge_commits"].as_array().map(Vec::len), Some(0));
+        assert_eq!(receipt["unresolved_commits"].as_array().map(Vec::len), Some(0));
         assert_eq!(receipt["errors"].as_array().map(Vec::len), Some(0));
         Ok(())
     }
 
-    fn diverged_ledger_json(fixture: &DivergedFixture) -> String {
-        format!(
+    fn diverged_ledger_json(fixture: &DivergedFixture) -> Result<String> {
+        Ok(format!(
             r#"{{
   "schema_version": 2,
   "source": "{}",
   "boundary": "{}",
   "target": "{}",
+  "population_digest": "{}",
+  "blockers": [],
   "entries": [
-    {{"commit": "{}", "subject": "release r0", "classification": "port_to_swarm", "evidence": ["evidence r0"]}},
-    {{"commit": "{}", "subject": "release r2", "classification": "release_lineage_only", "evidence": ["evidence r2"]}}
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": ["r0.txt"], "evidence": ["release-lineage receipt"], "release_sync_effect": "stays release-side"}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "changed_paths": ["r2.txt"], "evidence": ["ported into the swarm source"], "release_sync_effect": "carried by the source"}}
   ]
 }}"#,
             fixture.swarm_tip,
             fixture.base,
             fixture.release_tip,
+            fixture_digest(fixture)?,
             fixture.floor_tip,
-            fixture.release_tip
-        )
+            fixture.release_tip,
+            fixture.swarm_tip,
+        ))
     }
 
     /// Receipts are byte-deterministic across runs against the same repository.
@@ -943,7 +1400,7 @@ mod tests {
     fn receipts_are_byte_deterministic_across_runs() -> Result<()> {
         let fixture = diverged_fixture()?;
         let path = fixture.directory.path();
-        fs::write(path.join("ledger.json"), diverged_ledger_json(&fixture))?;
+        fs::write(path.join("ledger.json"), diverged_ledger_json(&fixture)?)?;
         let config = |receipt: &str| CheckConfig {
             source: fixture.swarm_tip.clone(),
             boundary: fixture.base.clone(),
@@ -1076,7 +1533,7 @@ mod tests {
         fs::write(
             path.join("ledger.json"),
             format!(
-                r#"{{"schema_version":2,"source":"{}","boundary":"{}","target":"{}","entries":[]}}"#,
+                r#"{{"schema_version":2,"source":"{}","boundary":"{}","target":"{}","population_digest":"x","entries":[]}}"#,
                 fixture.swarm_tip, "0123456789abcdef0123456789abcdef01234567", fixture.release_tip
             ),
         )?;
@@ -1114,6 +1571,7 @@ mod tests {
         let receipt: serde_json::Value = serde_json::from_str(&content)?;
         assert_eq!(receipt["schema_version"], RECEIPT_SCHEMA_VERSION);
         assert_eq!(receipt["subjects"]["target"]["input"], "HEAD");
+        assert_eq!(receipt["verdict"], "not_proven");
         assert_eq!(receipt["target_unique_commits"].as_array().map(Vec::len), Some(0));
         assert_eq!(receipt["errors"].as_array().map(Vec::len), Some(1));
         Ok(())
@@ -1129,26 +1587,6 @@ mod tests {
             receipt: PathBuf::from("receipt.json"),
             working_directory: None,
         };
-        let ledger = Ledger {
-            schema_version: LEDGER_SCHEMA_VERSION,
-            source: config.source.clone(),
-            boundary: config.boundary.clone(),
-            target: config.target.clone(),
-            entries: vec![
-                LedgerEntry {
-                    commit: "abc".to_string(),
-                    subject: "different subject".to_string(),
-                    classification: "not-valid".to_string(),
-                    evidence: vec!["   ".to_string()],
-                },
-                LedgerEntry {
-                    commit: "abc".to_string(),
-                    subject: "subject".to_string(),
-                    classification: "port_to_swarm".to_string(),
-                    evidence: vec!["valid evidence".to_string()],
-                },
-            ],
-        };
         let target_unique = vec![
             CherryCommit {
                 commit: "abc".to_string(),
@@ -1161,28 +1599,839 @@ mod tests {
                 parents: vec!["first".to_string(), "second".to_string()],
             },
         ];
+        let ledger = Ledger {
+            schema_version: LEDGER_SCHEMA_VERSION,
+            source: config.source.clone(),
+            boundary: config.boundary.clone(),
+            target: config.target.clone(),
+            population_digest: compute_population_digest(&target_unique),
+            verdict: None,
+            blockers: Vec::new(),
+            entries: vec![
+                LedgerEntry {
+                    commit: "abc".to_string(),
+                    subject: "different subject".to_string(),
+                    disposition: Some("release_lineage_only".to_string()),
+                    source_commit: None,
+                    owner: None,
+                    rationale: None,
+                    changed_paths: Vec::new(),
+                    evidence: vec!["   ".to_string()],
+                    release_sync_effect: None,
+                    blocking_decisions: Vec::new(),
+                },
+                LedgerEntry {
+                    commit: "abc".to_string(),
+                    subject: "subject".to_string(),
+                    disposition: Some("port_to_swarm".to_string()),
+                    source_commit: None,
+                    owner: None,
+                    rationale: None,
+                    changed_paths: Vec::new(),
+                    evidence: vec!["valid evidence".to_string()],
+                    release_sync_effect: None,
+                    blocking_decisions: Vec::new(),
+                },
+            ],
+        };
         let excluded_merges = vec![ExcludedMerge {
             commit: "zzz".to_string(),
             subject: "merge subject".to_string(),
             parents: vec!["first".to_string(), "second".to_string()],
         }];
-        let mut subjects = Subjects::from_config(&config);
+        let mut subjects = Subjects::from_inputs("source", "boundary", "target");
         subjects.source.commit = Some("source-sha".to_string());
         subjects.boundary.commit = Some("boundary-sha".to_string());
         subjects.target.commit = Some("target-sha".to_string());
 
         let (receipt, errors) =
-            reconcile(&config, &ledger, &target_unique, excluded_merges, &subjects);
+            reconcile(&config, &ledger, &target_unique, excluded_merges, &subjects, None);
         assert_eq!(receipt.target_unique_commits.len(), 1);
         assert_eq!(receipt.excluded_merge_commits, vec!["zzz"]);
         assert_eq!(receipt.excluded_merge_ancestry.len(), 1);
         assert_eq!(receipt.subjects.source.commit.as_deref(), Some("source-sha"));
         assert!(receipt.accepted_commits.is_empty());
+        assert_eq!(receipt.verdict, Verdict::NotProven);
         assert!(errors.iter().any(|error| error.contains("appears more than once")));
-        assert!(errors.iter().any(|error| error.contains("invalid classification")));
         assert!(errors.iter().any(|error| error.contains("has no evidence")));
         assert!(errors.iter().any(|error| error.contains("does not match Git")));
+        assert!(
+            errors.iter().any(|error| error.contains("requires the exact swarm `source_commit`"))
+        );
         Ok(())
+    }
+
+    /// Population completeness is exact: a missing row fails as not proven.
+    #[test]
+    fn missing_ledger_row_fails_as_not_proven() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "evidence": ["ported"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.release_tip,
+                fixture.swarm_tip,
+            ),
+        )?;
+        let error = run_check_expect_error(&fixture, path)?;
+        assert!(format!("{error:#}").contains("not proven"));
+        let receipt = receipt_value(path)?;
+        assert_eq!(receipt["verdict"], "not_proven");
+        let joined = receipt_error_text(&receipt);
+        assert!(joined.contains("missing from the reconciliation ledger"), "{joined}");
+        Ok(())
+    }
+
+    /// A suppressed commit must not sneak into the ledger as a row.
+    #[test]
+    fn extra_ledger_row_for_suppressed_commit_fails() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": ["r0.txt"], "evidence": ["release-lineage receipt"]}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "evidence": ["ported"]}},
+    {{"commit": "{}", "subject": "cherry-picked p", "disposition": "deliberately_abandoned", "rationale": "already represented", "evidence": ["represented upstream"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+                fixture.release_tip,
+                fixture.swarm_tip,
+                fixture.picked,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let receipt = receipt_value(path)?;
+        let joined = receipt_error_text(&receipt);
+        assert!(joined.contains("not a non-merge target-unique commit"), "{joined}");
+        Ok(())
+    }
+
+    /// A port whose `source_commit` exists but is not reachable from the
+    /// declared swarm source is a planned-but-unmerged port and fails closed.
+    #[test]
+    fn planned_but_unmerged_port_fails_closed() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        run_git_fixture(path, &["checkout", "--quiet", "-b", "parallel", &fixture.base])?;
+        commit_file(path, "later.txt", "later\n", "parallel work not yet in swarm")?;
+        let planned = rev_parse(path, "parallel")?;
+
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": ["r0.txt"], "evidence": ["release-lineage receipt"]}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "evidence": ["claimed port"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+                fixture.release_tip,
+                planned,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let receipt = receipt_value(path)?;
+        assert_eq!(receipt["verdict"], "not_proven");
+        let joined = receipt_error_text(&receipt);
+        assert!(joined.contains("not reachable from the declared swarm source"), "{joined}");
+        Ok(())
+    }
+
+    /// An equivalent SHA that resolves to nothing fails closed.
+    #[test]
+    fn unreachable_equivalent_sha_fails_closed() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": ["r0.txt"], "evidence": ["release-lineage receipt"]}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "already_equivalent_in_swarm", "source_commit": "0123456789abcdef0123456789abcdef01234567", "evidence": ["claimed equivalent"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+                fixture.release_tip,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let receipt = receipt_value(path)?;
+        let joined = receipt_error_text(&receipt);
+        assert!(joined.contains("did not resolve to a commit"), "{joined}");
+        Ok(())
+    }
+
+    /// Terminal dispositions require explicit evidence.
+    #[test]
+    fn terminal_row_without_evidence_fails() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": ["r0.txt"], "evidence": []}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "evidence": ["ported"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+                fixture.release_tip,
+                fixture.swarm_tip,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let receipt = receipt_value(path)?;
+        let joined = receipt_error_text(&receipt);
+        assert!(joined.contains("has no evidence"), "{joined}");
+        Ok(())
+    }
+
+    /// A sixth terminal token is rejected; only the five dispositions exist.
+    #[test]
+    fn sixth_terminal_token_fails() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "deferred_to_next_train", "evidence": ["wishful thinking"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.picked,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let receipt = receipt_value(path)?;
+        let joined = receipt_error_text(&receipt);
+        assert!(joined.contains("invalid classification `deferred_to_next_train`"), "{joined}");
+        Ok(())
+    }
+
+    /// A terminal row may not simultaneously carry open blocking decisions.
+    #[test]
+    fn blocking_decision_in_accepted_row_fails() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "port_to_swarm", "source_commit": "{}", "blocking_decisions": ["dap-architecture"], "evidence": ["ported"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+                fixture.swarm_tip,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let receipt = receipt_value(path)?;
+        let joined = receipt_error_text(&receipt);
+        assert!(
+            joined.contains("carries blocking decisions but claims terminal disposition"),
+            "{joined}"
+        );
+        Ok(())
+    }
+
+    /// An explicitly unresolved row keeps the ledger out of trouble: the
+    /// verdict is blocked, the row stays out of accepted commits, and the
+    /// receipt names it.
+    #[test]
+    fn unresolved_rows_force_a_blocked_verdict() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": null, "blocking_decisions": ["dap-architecture"], "changed_paths": ["r0.txt"]}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "changed_paths": ["r2.txt"], "evidence": ["ported"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+                fixture.release_tip,
+                fixture.swarm_tip,
+            ),
+        )?;
+        let error = run_check_expect_error(&fixture, path)?;
+        let message = format!("{error:#}");
+        assert!(message.contains("blocked"), "{message}");
+        let receipt = receipt_value(path)?;
+        assert_eq!(receipt["verdict"], "blocked");
+        assert_eq!(receipt["unresolved_commits"], serde_json::json!([fixture.floor_tip]));
+        assert_eq!(receipt["accepted_commits"], serde_json::json!([fixture.release_tip]));
+        assert_eq!(receipt["errors"].as_array().map(Vec::len), Some(0));
+        Ok(())
+    }
+
+    /// Superseded rows must name the current architecture owner.
+    #[test]
+    fn superseded_row_without_owner_fails() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "superseded_by_newer_architecture", "evidence": ["discriminating comparison receipt"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let receipt = receipt_value(path)?;
+        let joined = receipt_error_text(&receipt);
+        assert!(joined.contains("must name the current architecture owner"), "{joined}");
+        Ok(())
+    }
+
+    /// Abandoned rows must state the rejected behavior and rationale.
+    #[test]
+    fn abandoned_row_without_rationale_fails() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "deliberately_abandoned", "evidence": ["some evidence"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let receipt = receipt_value(path)?;
+        let joined = receipt_error_text(&receipt);
+        assert!(joined.contains("rejected behavior and rationale"), "{joined}");
+        Ok(())
+    }
+
+    /// Lineage-only classification cannot cover runtime, product, or test work.
+    #[test]
+    fn lineage_only_over_product_code_fails() -> Result<()> {
+        let fixture = diverged_fixture_with_product_commit()?;
+        let path = fixture.directory.path();
+        let product_tip = rev_parse(path, "main")?;
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": ["r0.txt"], "evidence": ["release-lineage receipt"]}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "evidence": ["ported"]}},
+    {{"commit": "{}", "subject": "release r3 runtime", "disposition": "release_lineage_only", "changed_paths": ["src/helper.rs"], "evidence": ["claiming lineage"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                product_tip,
+                fixture_digest_at(&fixture, &product_tip)?,
+                fixture.floor_tip,
+                fixture.release_tip,
+                fixture.swarm_tip,
+                product_tip,
+            ),
+        )?;
+        run_check_expect_error_at(&fixture, path, &product_tip)?;
+        let receipt = receipt_value(path)?;
+        let joined = receipt_error_text(&receipt);
+        assert!(joined.contains("covers product or test path `src/helper.rs`"), "{joined}");
+        Ok(())
+    }
+
+    /// A hand-written terminal row with empty changed_paths cannot borrow the
+    /// early-return in the diff-tree comparison to also skip the product/test
+    /// guard: an undeclared footprint fails closed.
+    #[test]
+    fn terminal_lineage_row_without_changed_paths_fails() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": [], "evidence": ["release-lineage receipt"]}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "changed_paths": ["r2.txt"], "evidence": ["ported"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+                fixture.release_tip,
+                fixture.swarm_tip,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let receipt = receipt_value(path)?;
+        let joined = receipt_error_text(&receipt);
+        assert!(joined.contains("declares no changed_paths"), "{joined}");
+        Ok(())
+    }
+
+    /// A ledger `source_commit` that hits a branch+tag refname collision must
+    /// fail closed on ambiguity exactly like subject resolution, instead of
+    /// quietly resolving by git's internal refname precedence.
+    #[test]
+    fn ambiguous_source_commit_fails_closed_like_subjects() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        commit_file(path, "a.txt", "a\n", "base")?;
+        run_git_fixture(path, &["branch", "dup-port-7969"])?;
+        commit_file(path, "b.txt", "b\n", "second")?;
+        run_git_fixture(path, &["tag", "dup-port-7969"])?;
+
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": ["r0.txt"], "evidence": ["release-lineage receipt"]}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "dup-port-7969", "changed_paths": ["r2.txt"], "evidence": ["ported"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+                fixture.release_tip,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let joined = receipt_error_text(&receipt_value(path)?);
+        assert!(joined.contains("source_commit ref `dup-port-7969` was ambiguous"), "{joined}");
+        Ok(())
+    }
+
+    /// Scaffolding refuses to silently overwrite an existing ledger file; an
+    /// in-progress reconciliation is never clobbered by a fresh skeleton.
+    #[test]
+    fn scaffold_refuses_to_overwrite_an_existing_ledger() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(path.join("scaffold.json"), "{\n  \"keep\": \"me\"\n}\n")?;
+        let config = ScaffoldConfig {
+            source: fixture.swarm_tip.clone(),
+            boundary: fixture.base.clone(),
+            target: fixture.release_tip.clone(),
+            ledger: path.join("scaffold.json"),
+            working_directory: Some(path.to_path_buf()),
+        };
+        let error = match scaffold(config) {
+            Err(error) => error,
+            Ok(()) => return Err(eyre!("scaffold must not overwrite an existing ledger")),
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("already exists"), "{message}");
+        assert!(message.contains("move or delete"), "{message}");
+        assert_eq!(
+            fs::read_to_string(path.join("scaffold.json"))?,
+            "{\n  \"keep\": \"me\"\n}\n",
+            "the existing ledger file must be untouched"
+        );
+        Ok(())
+    }
+
+    /// Duplicate rows fail the end-to-end preflight, giving the duplicate
+    /// population case the same end-to-end coverage as the missing-row and
+    /// extra-row fixtures.
+    #[test]
+    fn duplicate_ledger_rows_fail_end_to_end() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": ["r0.txt"], "evidence": ["release-lineage receipt"]}},
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": ["r0.txt"], "evidence": ["duplicate of the row above"]}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "evidence": ["ported"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+                fixture.floor_tip,
+                fixture.release_tip,
+                fixture.swarm_tip,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let receipt = receipt_value(path)?;
+        assert_eq!(receipt["verdict"], "not_proven");
+        let joined = receipt_error_text(&receipt);
+        assert!(joined.contains("appears more than once"), "{joined}");
+        Ok(())
+    }
+
+    /// An old v2-shaped ledger whose entries classify through a
+    /// `classification` key is rejected by `deny_unknown_fields` instead of
+    /// parsing into rows that silently lose their dispositions.
+    #[test]
+    fn old_v2_classification_key_fails_closed() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "classification": "release_lineage_only"}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+            ),
+        )?;
+        let error = run_check_expect_error(&fixture, path)?;
+        let message = format!("{error:#}");
+        assert!(message.contains("unknown field `classification`"), "{message}");
+        Ok(())
+    }
+
+    /// A stale digest fails closed: the ledger must describe this comparison.
+    #[test]
+    fn stale_population_digest_fails() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "deadbeef",
+  "entries": []
+}}"#,
+                fixture.swarm_tip, fixture.base, fixture.release_tip,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let receipt = receipt_value(path)?;
+        let joined = receipt_error_text(&receipt);
+        assert!(joined.contains("does not match the comparison digest"), "{joined}");
+        Ok(())
+    }
+
+    /// Declared changed paths are verified against Git; borrowed footprints fail.
+    #[test]
+    fn changed_paths_drift_fails() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": ["someone-elses-file.txt"], "evidence": ["release-lineage receipt"]}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "evidence": ["ported"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+                fixture.release_tip,
+                fixture.swarm_tip,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let receipt = receipt_value(path)?;
+        let joined = receipt_error_text(&receipt);
+        assert!(joined.contains("do not match Git"), "{joined}");
+        Ok(())
+    }
+
+    /// A ledger claiming `pass` while carrying an unresolved row is dishonest
+    /// and fails as not proven.
+    #[test]
+    fn verdict_claim_drift_fails() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "verdict": "pass",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": null, "blocking_decisions": ["dap-architecture"]}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "changed_paths": ["r2.txt"], "evidence": ["ported"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+                fixture.release_tip,
+                fixture.swarm_tip,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let receipt = receipt_value(path)?;
+        assert_eq!(receipt["verdict"], "not_proven");
+        let joined = receipt_error_text(&receipt);
+        assert!(joined.contains("claims verdict pass but validation derived blocked"), "{joined}");
+        Ok(())
+    }
+
+    /// The scaffold creates one explicitly unresolved row per population
+    /// commit with real subjects and changed paths, inventing no terminal
+    /// disposition; validating the scaffold yields a blocked verdict.
+    #[test]
+    fn scaffold_creates_only_unresolved_rows_and_validates_blocked() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        let config = ScaffoldConfig {
+            source: fixture.swarm_tip.clone(),
+            boundary: fixture.base.clone(),
+            target: fixture.release_tip.clone(),
+            ledger: path.join("scaffold.json"),
+            working_directory: Some(path.to_path_buf()),
+        };
+        scaffold(config)?;
+        let scaffolded: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path.join("scaffold.json"))?)?;
+        assert_eq!(scaffolded["schema_version"], LEDGER_SCHEMA_VERSION);
+        assert_eq!(scaffolded["population_digest"], fixture_digest(&fixture)?.as_str());
+        let entries = scaffolded["entries"].as_array().cloned().unwrap_or_default();
+        assert_eq!(entries.len(), 2);
+        for entry in &entries {
+            assert_eq!(entry["disposition"], serde_json::Value::Null);
+            assert_eq!(entry["evidence"].as_array().map(Vec::len), Some(0));
+            assert_eq!(entry["blocking_decisions"].as_array().map(Vec::len), Some(0));
+        }
+        assert!(entries.iter().any(|entry| entry["commit"] == fixture.floor_tip.as_str()));
+        assert!(entries.iter().any(|entry| entry["commit"] == fixture.release_tip.as_str()));
+        assert!(
+            !fs::read_to_string(path.join("scaffold.json"))?.contains(CLASSIFICATIONS[0]),
+            "the scaffold must not invent a terminal disposition"
+        );
+
+        let check_config = CheckConfig {
+            source: fixture.swarm_tip.clone(),
+            boundary: fixture.base.clone(),
+            target: fixture.release_tip.clone(),
+            ledger: path.join("scaffold.json"),
+            receipt: path.join("receipt.json"),
+            working_directory: Some(path.to_path_buf()),
+        };
+        let error = match check(check_config) {
+            Err(error) => error,
+            Ok(()) => return Err(eyre!("an unclassified scaffold must not pass")),
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("blocked"), "{message}");
+        let receipt = receipt_value(path)?;
+        assert_eq!(receipt["verdict"], "blocked");
+        assert_eq!(receipt["unresolved_commits"].as_array().map(Vec::len), Some(2));
+        Ok(())
+    }
+
+    fn run_check_expect_error(fixture: &DivergedFixture, path: &Path) -> Result<Report> {
+        run_check_expect_error_at(fixture, path, &fixture.release_tip)
+    }
+
+    fn run_check_expect_error_at(
+        fixture: &DivergedFixture,
+        path: &Path,
+        target: &str,
+    ) -> Result<Report> {
+        let config = CheckConfig {
+            source: fixture.swarm_tip.clone(),
+            boundary: fixture.base.clone(),
+            target: target.to_string(),
+            ledger: path.join("ledger.json"),
+            receipt: path.join("receipt.json"),
+            working_directory: Some(path.to_path_buf()),
+        };
+        match check(config) {
+            Err(error) => Ok(error),
+            Ok(()) => Err(eyre!("expected the reconciliation check to fail")),
+        }
+    }
+
+    fn receipt_value(path: &Path) -> Result<serde_json::Value> {
+        Ok(serde_json::from_str(&fs::read_to_string(path.join("receipt.json"))?)?)
+    }
+
+    fn receipt_error_text(receipt: &serde_json::Value) -> String {
+        receipt["errors"]
+            .as_array()
+            .map(|errors| {
+                errors.iter().filter_map(|value| value.as_str()).collect::<Vec<_>>().join("; ")
+            })
+            .unwrap_or_default()
+    }
+
+    fn fixture_population_at(fixture: &DivergedFixture, target: &str) -> Result<Vec<CherryCommit>> {
+        let shas = resolved(fixture.swarm_tip.clone(), fixture.base.clone(), target.to_string());
+        comparison_population(&shas, Some(fixture.directory.path()))
+    }
+
+    fn fixture_digest(fixture: &DivergedFixture) -> Result<String> {
+        fixture_digest_at(fixture, &fixture.release_tip)
+    }
+
+    fn fixture_digest_at(fixture: &DivergedFixture, target: &str) -> Result<String> {
+        Ok(compute_population_digest(&fixture_population_at(fixture, target)?))
     }
 
     struct DivergedFixture {
@@ -1225,6 +2474,16 @@ mod tests {
         Ok(DivergedFixture { directory, base, swarm_tip, floor_tip, picked, release_tip })
     }
 
+    /// A diverged fixture plus one release commit touching real product code,
+    /// for the lineage-only-over-product negative.
+    fn diverged_fixture_with_product_commit() -> Result<DivergedFixture> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        run_git_fixture(path, &["checkout", "--quiet", "main"])?;
+        commit_file(path, "src/helper.rs", "helper\n", "release r3 runtime")?;
+        Ok(fixture)
+    }
+
     fn resolved(source: String, boundary: String, target: String) -> ResolvedShas {
         ResolvedShas { source, boundary, target }
     }
@@ -1240,6 +2499,9 @@ mod tests {
     }
 
     fn commit_file(directory: &Path, name: &str, content: &str, message: &str) -> Result<()> {
+        if let Some(parent) = directory.join(name).parent() {
+            fs::create_dir_all(parent)?;
+        }
         fs::write(directory.join(name), content)?;
         run_git_fixture(directory, &["add", name])?;
         run_git_fixture(directory, &["commit", "--quiet", "-m", message])

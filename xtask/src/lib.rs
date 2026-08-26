@@ -9,6 +9,7 @@ pub mod ci_route_plan;
 pub mod client_compat_fixture;
 pub mod clippy_repair_corpus;
 pub mod close_proof;
+pub mod compiler_lexical_cutline;
 pub mod compiler_profile_contract;
 pub mod compiler_profile_initial_rows;
 pub mod compiler_profile_observation;

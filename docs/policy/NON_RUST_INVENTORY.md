@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11966 |
-| Rust-family files | 3638 |
-| Non-Rust files | 8328 |
-| Allowlisted | 6065 |
+| Total tracked files | 11956 |
+| Rust-family files | 3633 |
+| Non-Rust files | 8323 |
+| Allowlisted | 6060 |
 | Unclassified | 2263 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 432 |
-| documentation | 2727 |
+| documentation | 2723 |
 | generated | 2 |
 | production | 325 |
 | test | 1972 |
-| tooling | 607 |
+| tooling | 606 |
 | unclassified | 2263 |
 
 ## Unclassified files
@@ -3155,10 +3155,6 @@
 | `.spec/12186-compiler-profile-identity-closure/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12186-compiler-profile-identity-closure/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12186-compiler-profile-identity-closure/inventory.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `.spec/12188-observation-envelope-registry/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `.spec/12188-observation-envelope-registry/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `.spec/12188-observation-envelope-registry/context.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `.spec/12188-observation-envelope-registry/inventory.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12330-compiler-profile-initial-rows/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12330-compiler-profile-initial-rows/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12330-compiler-profile-initial-rows/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6534,7 +6530,6 @@
 | `scripts/test/vim-clients/vim-lsp-adapter.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-diagnostics-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
-| `scripts/test/vim-host-freshness-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_iterative_parser.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |

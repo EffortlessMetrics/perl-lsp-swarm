@@ -34,6 +34,62 @@
         "gnu_tarball_sha256": "sha256:6ccac1ae76e6af93c6de1df175e8eb406767c23da3dd2a16aa67e3124a6f138f",
         "observed_client_version_header": "1.17.30"
       }
+    },
+    {
+      "subject_id": "released_eglot_gnu_elpa_1_24",
+      "client_kind": "external_eglot",
+      "source_state": "released",
+      "emacs_release_tag": "0d67e76b94e1f0af9fe364aed8aa5db1c494c206",
+      "emacs_version_token": "30.1",
+      "client_version_hint": "1.24",
+      "client_source_relative_path": "eglot.el",
+      "client_source_sha256": "sha256:14f16148ec7c76642be39e302d048bb06c06550e6fd9095a6cdd8e186dec1a47",
+      "materialization": "explicit_input",
+      "client_library_forms": ["eglot.el"],
+      "external_package": {
+        "archive_url": "https://elpa.gnu.org/packages/eglot-1.24.tar",
+        "archive_sha256": "sha256:ec91a464e63315bb7e150cafe8c73c9707b43f76ab6cbe7b09908ec1fb03213a",
+        "attested_source_commit": "0d67e76b94e1f0af9fe364aed8aa5db1c494c206",
+        "package_requires": [
+          "emacs 26.3",
+          "eldoc 1.16.0",
+          "external-completion 0.1",
+          "flymake 1.4.5",
+          "jsonrpc 1.0.29",
+          "project 0.11.2",
+          "seq 2.23",
+          "xref 1.7.0"
+        ],
+        "minimum_emacs": "26.3",
+        "checksum_disposition": "gnu_elpa_archive_sha256_at_audit_time"
+      },
+      "digest_audit": {
+        "gnu_tarball_url": "https://elpa.gnu.org/packages/eglot-1.24.tar",
+        "gnu_tarball_sha256": "sha256:ec91a464e63315bb7e150cafe8c73c9707b43f76ab6cbe7b09908ec1fb03213a",
+        "observed_client_version_header": "1.24"
+      }
+    },
+    {
+      "subject_id": "source_eglot_emacs_c1ad9d27",
+      "client_kind": "external_eglot",
+      "source_state": "upstream_source",
+      "emacs_release_tag": "c1ad9d27207aff96a22d49ae4c6cab35a2619927",
+      "emacs_version_token": "30.1",
+      "client_version_hint": "1.24",
+      "client_source_relative_path": "lisp/progmodes/eglot.el",
+      "client_source_sha256": "sha256:c16bf52a9a03f7e1f84f6f2668271a08418064b740a398c29b0b8c4ae50fbf9e",
+      "materialization": "explicit_input",
+      "client_library_forms": ["eglot.el"],
+      "source_tree": {
+        "source_repo_url": "https://github.com/emacs-mirror/emacs",
+        "commit": "c1ad9d27207aff96a22d49ae4c6cab35a2619927",
+        "tree_sha1": "dc5475f03a6462846d36ade5a68a2e90a2578087"
+      },
+      "digest_audit": {
+        "gnu_tarball_url": "https://raw.githubusercontent.com/emacs-mirror/emacs/c1ad9d27207aff96a22d49ae4c6cab35a2619927/lisp/progmodes/eglot.el",
+        "gnu_tarball_sha256": "sha256:c16bf52a9a03f7e1f84f6f2668271a08418064b740a398c29b0b8c4ae50fbf9e",
+        "observed_client_version_header": "1.24"
+      }
     }
   ]
 }

@@ -38,16 +38,16 @@ use tasks::{
     build, build_timing, bump_version, change_set, check, check_agent_context, check_lint_policy,
     check_test_wiring, check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract,
     ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
-    ci_scope, clean, command_evidence, compare, corpus_audit, count_ratchet, cpan_corpus,
-    dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc,
-    doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features,
-    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
-    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
-    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
-    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
-    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
-    native_format, native_product_surface, native_tooling, oracle_fixture_manifest,
+    ci_scope, clean, command_evidence, compare, compiler_lexical_cutline, corpus_audit,
+    count_ratchet, cpan_corpus, dead_code, debt_report, dependency_hygiene, dev, devex_docs,
+    devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context,
+    emacs_train_specs, features, finalize_check, fix_forward, fmt, forbid_fatal_constructs,
+    forensics, gate_receipts, gates, generated_files, github, github_preflight, github_review,
+    goals, hardening, hook_checks, ignored_tests, incremental_proof, inject_sha_assets,
+    inline_completion_quality, inline_completion_smoke, install_surface_check, integration_proof,
+    intent_diff_gate, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
+    native_critic, native_format, native_product_surface, native_tooling, oracle_fixture_manifest,
     oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
     parser_ratchet, perl_core_harness, perl_kwalitee, populate_book, pre_push_plan,
     prep_crates_io_launch, product_health_rail_contract, protocol_type_substrate_matrix,
@@ -138,6 +138,14 @@ enum Commands {
 
     /// Validate declared differential real-Perl oracle fixtures.
     CheckOracleFixtureManifest,
+
+    /// List, validate, and explain the compiler lexical cut-line cases
+    /// manifest (`compiler_lexical_cutline_cases.v1`, #12156).
+    CompilerLexicalCutline {
+        /// Operation to run against the manifest.
+        #[command(subcommand)]
+        command: tasks::compiler_lexical_cutline::CompilerLexicalCutlineSubcommand,
+    },
 
     /// Validate differential real-Perl oracle receipt schema.
     CheckOracleReceiptSchema,
@@ -4059,6 +4067,22 @@ enum SyncDivergenceCommand {
         #[arg(long)]
         receipt: PathBuf,
     },
+    /// Scaffold a v2 reconciliation ledger with one unresolved row per
+    /// target-unique non-merge commit; it invents no terminal disposition.
+    Scaffold {
+        /// Exact swarm source ref; resolved as the patch-equivalence upstream.
+        #[arg(long)]
+        source: String,
+        /// Completed reconciliation boundary ref; resolved as the exclusive history floor.
+        #[arg(long)]
+        boundary: String,
+        /// Release-repo target ref (normally the release repository head).
+        #[arg(long)]
+        target: String,
+        /// Output reconciliation ledger JSON (schema v2).
+        #[arg(long)]
+        ledger: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4588,6 +4612,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckActiveGoalManifest => active_goal_manifest::run(),
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
+        Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
         Commands::CheckProductHealthRailContract => product_health_rail_contract::run(),
@@ -4872,6 +4897,15 @@ fn run_cli(cli: Cli) -> Result<()> {
                     target,
                     ledger,
                     receipt,
+                    working_directory: None,
+                })
+            }
+            SyncDivergenceCommand::Scaffold { source, boundary, target, ledger } => {
+                tasks::sync_divergence::scaffold(tasks::sync_divergence::ScaffoldConfig {
+                    source,
+                    boundary,
+                    target,
+                    ledger,
                     working_directory: None,
                 })
             }
