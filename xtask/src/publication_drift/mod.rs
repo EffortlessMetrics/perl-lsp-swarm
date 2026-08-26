@@ -282,6 +282,13 @@ mod output_tests {
     fn dangling_protected_source_rejects_before_publication_write() -> Result<()> {
         use std::os::windows::fs::symlink_file;
 
+        // Typed skip when the Windows session lacks the symlink privilege
+        // (os error 1314): the environment gap is not a product defect. With
+        // the privilege present the test runs in full below.
+        if perl_tdd_support::symlink_test_decision().skip_visibly() {
+            return Ok(());
+        }
+
         let temp = TempDir::new()?;
         let out = temp.path().join("receipt.json");
         let input = temp.path().join("observation.json");

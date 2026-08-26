@@ -41,10 +41,13 @@ children, pair/clause records). That public geometry is unchanged.
   is not machine identity, equality, or a durable metric oracle. Configured
   complete/truncated rendering stays on
   [#8832](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8832).
-- Recursive whole-tree reads such as `to_sexp`, `count_nodes`, and
-  `find_deepest_containing_offset` stay separately guarded by `MAX_AST_DEPTH`
-  and may truncate. That guard does not apply to Drop, Clone, PartialEq, or
-  Debug.
+- Recursive whole-tree reads: `count_nodes` and
+  `find_deepest_containing_offset` are iterative over the canonical child
+  visit table and return exact results. Bounded variants expose
+  `Complete` / `Truncated` / `InstrumentFailure` instead of an ordinary
+  `usize` / `Some` after a caller-selected bound. `to_sexp` stays separately
+  guarded by `MAX_AST_DEPTH` and may truncate; that projection is
+  [#8832](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8832).
 
 See the rustdoc on `Node` and the [AST compatibility contract](../../docs/reference/ast-contract.md).
 

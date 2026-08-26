@@ -28,6 +28,7 @@ from dap_editor_transport_scan import (  # noqa: E402
     scan_clients,
     scan_first_mile,
     scan_relays,
+    scan_retired_native_editor_listener,
 )
 
 
@@ -38,6 +39,7 @@ def check_inventory(root: Path, inventory: dict) -> list[str]:
         pass
     scan_errors: list[str] = []
     scan_errors.extend(scan_bind_sites(root, inventory))
+    scan_errors.extend(scan_retired_native_editor_listener(root, inventory))
     scan_errors.extend(scan_cli_flags(root, inventory))
     scan_errors.extend(scan_first_mile(root, inventory))
     scan_errors.extend(scan_clients(root, inventory))

@@ -111,7 +111,7 @@
       "paths": [
         "crates/perl-dap/src/debug_adapter/transport.rs"
       ],
-      "claim_boundary": "perl-dap --socket / run_socket is classified retire, not supported; this PR does not remove it"
+      "claim_boundary": "native run_socket / editor listener removed; --socket/--port still parse for #10566 and fail before bind on the native path"
     },
     {
       "id": "test-only-loopback",
@@ -121,9 +121,9 @@
       "authority": "test",
       "owner_issue": "#10564",
       "paths": [
-        "crates/perl-dap/tests/dap_coverage_audit_tests.rs"
+        "crates/perl-dap/tests/dap_native_editor_socket_retirement.rs"
       ],
-      "claim_boundary": "test loopback run_socket fixtures cannot satisfy a product client row"
+      "claim_boundary": "test loopback helpers cannot satisfy a product client row; native editor listener is gone from production"
     }
   ],
   "bind_sites": [
@@ -140,13 +140,6 @@
       "role": "editor",
       "transport_id": "external-peer-editor-tcp",
       "disposition": "retire"
-    },
-    {
-      "id": "native-editor-socket",
-      "path": "crates/perl-dap/src/debug_adapter/transport.rs",
-      "role": "editor",
-      "transport_id": "native-editor-tcp",
-      "disposition": "retire"
     }
   ],
   "cli_flags": [
@@ -155,14 +148,14 @@
       "flag": "--port",
       "applies_to": "perl-dap",
       "disposition": "retire",
-      "source": "TransportArgs flatten; editor bind uses DEFAULT_DAP_PORT 13603"
+      "source": "TransportArgs flatten; DEFAULT_DAP_PORT 13603 remains only for #10566 external-peer editor wrapper"
     },
     {
       "id": "perl-dap-socket",
       "flag": "--socket",
       "applies_to": "perl-dap",
       "disposition": "retire",
-      "source": "TransportArgs flatten on perl-dap Args; still present until #10565"
+      "source": "TransportArgs flatten on perl-dap Args; native use is retired (#10565); remains for #10566 external-peer editor wrapper"
     }
   ],
   "dap_to_dap_relays": [
@@ -190,7 +183,7 @@
       "forbidden_markers": [],
       "support_owner": "#7565",
       "migration": "none; stdio is already the harness contract",
-      "claim_boundary": "exact-process harness is public stdio; --socket remains classified retire in this same file",
+      "claim_boundary": "exact-process harness is public stdio; native --socket fails before bind with a --stdio migration",
       "blocks_retirement": false
     },
     {
@@ -436,5 +429,5 @@
       "blocks_retirement": false
     }
   ],
-  "digest": "da5d9aae4eda3572277bd529df79591a51c39df717e0fc5618b49e562451f1a9"
+  "digest": "1b24ad8fd9389f5cc8a69bb90590ba84ebc251906c49f17c7aa61d57bd42cb28"
 }
