@@ -355,7 +355,15 @@ fn write_runtime_identity(format: IdentityOutputFormat) -> anyhow::Result<()> {
 
 /// Perl Debug Adapter Protocol server
 #[derive(Parser, Debug)]
-#[command(name = "perl-dap", version, about, long_about = None)]
+#[command(
+    name = "perl-dap",
+    version,
+    about,
+    long_about = None,
+    after_help = "Native editor TCP is retired. `perl-dap --socket` / `--port` without \
+`--external-peer` / `--external-peer-listen` fails before bind; use `perl-dap --stdio`. \
+Those flags remain only as a deprecated editor wrapper around external-peer modes."
+)]
 struct Args {
     #[command(flatten)]
     transport: perl_lsp_rs_core::runtime::launcher::TransportArgs,
@@ -592,6 +600,14 @@ mod tests {
         assert!(!help.contains("--bridge"));
         assert!(!help.contains("Perl::LanguageServer"));
         assert!(!help.contains("BridgeAdapter"));
+        assert!(
+            help.contains("Native editor TCP is retired"),
+            "perl-dap --help must classify native --socket as retired: {help}"
+        );
+        assert!(
+            help.contains("perl-dap --stdio"),
+            "perl-dap --help must name the stdio migration: {help}"
+        );
     }
 
     #[test]

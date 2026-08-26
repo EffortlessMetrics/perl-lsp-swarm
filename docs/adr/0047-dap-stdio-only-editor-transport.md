@@ -9,13 +9,13 @@
 
 ## Context
 
-`perl-dap` still offers two editor-facing TCP listeners on current `main`:
+When this ADR was accepted, `perl-dap` offered two editor-facing TCP listeners:
 
 1. native `--socket` / `--port` → `run_socket` / `TcpListener::bind(127.0.0.1)` in
-   `crates/perl-dap/src/debug_adapter/transport.rs`;
+   `crates/perl-dap/src/debug_adapter/transport.rs` (removed by #10565);
 2. optional `--socket` wrappers around `--external-peer` and
    `--external-peer-listen` via `bind_editor_listener` in
-   `crates/perl-dap/src/main.rs`.
+   `crates/perl-dap/src/main.rs` (owned by #10566).
 
 Those listeners are unauthenticated ambient DAP endpoints. An authenticated
 editor socket would require a new out-of-band credential handoff and

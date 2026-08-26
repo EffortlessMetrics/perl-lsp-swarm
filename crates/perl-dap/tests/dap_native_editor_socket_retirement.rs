@@ -524,21 +524,20 @@ fn production_source_without_cfg_test_mods(text: &str) -> String {
 
 #[test]
 fn historical_port_connect_does_not_reach_a_stdio_adapter() -> Result<()> {
-    let mut adapter = StdioAdapter::spawn(&["--stdio", "--log-level", "error"])?;
+    let adapter = StdioAdapter::spawn(&["--stdio", "--log-level", "error"])?;
     thread::sleep(Duration::from_millis(150));
-    match TcpStream::connect_timeout(
+    if TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], HISTORICAL_NATIVE_PORT)),
         Duration::from_millis(200),
-    ) {
-        Ok(_) => {
-            let ports = child_listening_tcp_ports(adapter.pid()).unwrap_or_default();
-            if ports.contains(&HISTORICAL_NATIVE_PORT) {
-                return Err(anyhow!(
-                    "stdio adapter bound the historical native editor port {HISTORICAL_NATIVE_PORT}"
-                ));
-            }
+    )
+    .is_ok()
+    {
+        let ports = child_listening_tcp_ports(adapter.pid()).unwrap_or_default();
+        if ports.contains(&HISTORICAL_NATIVE_PORT) {
+            return Err(anyhow!(
+                "stdio adapter bound the historical native editor port {HISTORICAL_NATIVE_PORT}"
+            ));
         }
-        Err(_) => {}
     }
     assert_no_child_listeners(adapter.pid())?;
     Ok(())
