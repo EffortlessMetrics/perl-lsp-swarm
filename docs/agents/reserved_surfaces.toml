@@ -95,9 +95,9 @@ notes = "Dancer2 adapter family under parent #8910 (closed); child #8928 held an
 [[surfaces]]
 name = "collapsible-if-suppression-sweep"
 paths = ["Cargo.toml", "policy/clippy-debt.toml"]
-owner_issues = [6305, 12734, 12731, 12732]
+owner_issues = [12734, 12731, 12732]
 status = "open"
-notes = "Workspace lint governance: collapsible_if became an explicit deny after the 293-site burn-down (#6305, recorded in the root Cargo.toml workspace lints table). On 2026-08-26 four same-day lanes removed remaining blanket suppressions per crate: perl-lsp-rs (#12734), perl-semantic-analyzer (#12731), perl-parser (#12732), and workspace-lineage #12733. Per-crate site edits stayed disjoint, but the deny policy and the clippy-debt ratchet are shared: late landers refresh occupancy commentary and never silently re-widen suppressions."
+notes = "Workspace lint governance: collapsible_if became an explicit deny after the 293-site burn-down (closed authority #6305, recorded in the root Cargo.toml workspace lints table); owner_issues here carry the live sweep lanes only. On 2026-08-26 four same-day lanes removed remaining blanket suppressions per crate: perl-lsp-rs (#12734), perl-semantic-analyzer (#12731), perl-parser (#12732), and workspace-lineage #12733. Per-crate site edits stayed disjoint, but the deny policy and the clippy-debt ratchet are shared: late landers refresh occupancy commentary and never silently re-widen suppressions."
 
 [[surfaces]]
 name = "parser-consumers-facade-imports"
