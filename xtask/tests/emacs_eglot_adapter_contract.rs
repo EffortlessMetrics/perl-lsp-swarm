@@ -715,6 +715,32 @@ fn identity_evidence_and_candidate_binding_are_pinned() -> Result<()> {
             "the hermetic external adapter must never touch ambient package state: {forbidden}"
         );
     }
+    // The readability guard precedes the file read (review repair): the
+    // facts function guards `file-readable-p` before its literal insert,
+    // and the entrypoint computes facts only after the package guard — an
+    // eager `let*' binding would raise an Emacs-generic read error before
+    // the declared typed error could run.
+    let facts_defun = adapter
+        .find("(defun perl-lsp-test-released-library-facts")
+        .context("the facts function must exist")?;
+    let facts_region = &adapter[facts_defun..];
+    let facts_guard = facts_region
+        .find("(unless (file-readable-p library)")
+        .context("the facts function must guard the library's readability")?;
+    let facts_insert = facts_region
+        .find("(insert-file-contents-literally library)")
+        .context("the facts function must read the library literally")?;
+    assert!(facts_guard < facts_insert, "the readability guard must run before the file is read");
+    let package_guard =
+        adapter.find("(when package-file").context("the package requirement guard must exist")?;
+    let facts_computation = adapter
+        .find("(let ((facts (perl-lsp-test-released-library-facts library)))")
+        .context("facts must be computed through an explicit guarded binding")?;
+    assert!(
+        package_guard < facts_computation,
+        "facts must be computed after the package guard, never eagerly in the entrypoint's \
+         binding list"
+    );
     Ok(())
 }
 

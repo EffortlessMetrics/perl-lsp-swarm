@@ -57,7 +57,13 @@ text files, always for the binary package archive."
 
 Both external states require the version header: `released' and
 `upstream-source' are mandatory identity fields, so a library whose header
-cannot be read fails the run instead of degrading to a digest-only claim."
+cannot be read fails the run instead of degrading to a digest-only claim.
+The readability guard lives here, before the literal insert: the caller's
+`let*' binding evaluates this function before any body guard could run, so
+an unreadable declared file must fail with this declared error rather than
+an Emacs-generic read error."
+  (unless (file-readable-p library)
+    (error "declared external Eglot library is not readable"))
   (let ((version (with-temp-buffer
                    (insert-file-contents-literally library)
                    (lm-version))))
@@ -148,10 +154,13 @@ selects the package-free upstream-source identity.  Everything after
          ;; Optional by state, not by oversight: the run-plan builder
          ;; refuses a package input for the upstream-source subject before
          ;; launch, so a live binding here means the released identity.
-         (package-file (getenv "PERL_LSP_EMACS_CLIENT_PACKAGE"))
-         (facts (perl-lsp-test-released-library-facts library)))
-    (unless (file-readable-p library)
-      (error "declared external Eglot library is not readable"))
+         (package-file (getenv "PERL_LSP_EMACS_CLIENT_PACKAGE")))
+    ;; The declared library's identity facts (version header and raw-byte
+    ;; digest) are computed here, after the bindings and before anything is
+    ;; loaded: the facts function guards the file's readability itself —
+    ;; the first place the file is touched — so an unreadable declared
+    ;; library fails with the declared error, never an Emacs-generic read
+    ;; error from a `let*' binding that ran before a guard could.
     ;; The declared package file is part of a released subject's identity;
     ;; its digest is emitted as runtime evidence alongside the library.  An
     ;; upstream-source subject carries no package identity at all, so the
@@ -159,6 +168,7 @@ selects the package-free upstream-source identity.  Everything after
     (when package-file
       (unless (file-readable-p package-file)
         (error "released Eglot subject requires the declared package file")))
+    (let ((facts (perl-lsp-test-released-library-facts library)))
     ;; The declared file's directory is pushed to the front of `load-path'
     ;; and the resolution is then proven: `locate-library' must return
     ;; exactly the declared file.  If the Emacs build's bundled Eglot, an
@@ -244,7 +254,7 @@ selects the package-free upstream-source identity.  Everything after
             (perl-lsp-test-released-export-buffer
              (jsonrpc-events-buffer server) client-log)
             (perl-lsp-test-released-export-buffer
-             (jsonrpc-stderr-buffer server) stderr-file)))))))
+             (jsonrpc-stderr-buffer server) stderr-file))))))))
 
 (provide 'eglot-released)
 ;;; eglot-released.el ends here
