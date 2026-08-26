@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12075 |
-| Rust-family files | 3681 |
-| Non-Rust files | 8394 |
-| Allowlisted | 6160 |
+| Total tracked files | 12089 |
+| Rust-family files | 3694 |
+| Non-Rust files | 8395 |
+| Allowlisted | 6161 |
 | Unclassified | 2234 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 442 |
-| documentation | 2753 |
+| documentation | 2754 |
 | generated | 2 |
 | production | 329 |
 | test | 2020 |
@@ -4879,6 +4879,7 @@
 | `docs/how-to/LARGE_WORKSPACE_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/LSP_ERROR_HANDLING_MONITORING_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/LSP_FEATURE_DEVELOPMENT_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/NATIVE_TOOLING_MIGRATION.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/PERFORMANCE_PRESERVATION_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/PERFORMANCE_TUNING.md` | documentation | `non-rust-docs-tree` | docs |

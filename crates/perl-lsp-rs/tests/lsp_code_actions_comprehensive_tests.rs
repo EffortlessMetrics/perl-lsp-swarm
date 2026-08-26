@@ -551,10 +551,7 @@ fn test_add_missing_pragmas_refactoring() -> TestResult {
 fn test_code_actions_performance() -> TestResult {
     let (mut harness, workspace) = create_code_actions_server()?;
 
-    let start_time = std::time::Instant::now();
-
-    let _actions_result = harness.request_with_timeout(
-        "textDocument/codeAction",
+    let params = || {
         json!({
             "textDocument": {"uri": workspace.uri("refactoring.pl")},
             "range": {
@@ -565,17 +562,50 @@ fn test_code_actions_performance() -> TestResult {
                 "diagnostics": [],
                 "only": [] // Request all available actions
             }
-        }),
-        Duration::from_millis(100), // Performance requirement: <50ms
+        })
+    };
+
+    // #12784: a single raw 75ms wall-clock sample cannot survive a contended
+    // runner — scheduler noise alone can exceed it. Warm the path once
+    // (first-use initialization such as GLOBAL_VAR_ASSIGNMENT_RE is one-time
+    // cost, not this test's contract), then judge the MEDIAN of five warm-path
+    // samples: scheduler preemption inflates a minority of samples, while a
+    // genuine latency regression inflates most of them. The budget scales by
+    // the harness's environment load factor
+    // (support::lsp_harness::load_scaling_factor) so a contended CI runner
+    // gets up to 2.5x headroom while an unconstrained box keeps the raw 75ms.
+    //
+    // Sample timeout is 1500ms, deliberately below the 2s threshold at which
+    // the harness's effective_request_timeout promotes CI runs to 12s — a
+    // wedged handler is bounded at ~6x1.5s, not ~5x12s.
+    let _warmup = harness.request_with_timeout(
+        "textDocument/codeAction",
+        params(),
+        Duration::from_millis(1500),
     );
 
-    let duration = start_time.elapsed();
+    let mut samples = Vec::new();
+    for _ in 0..5 {
+        let start_time = std::time::Instant::now();
+        let _actions_result = harness.request_with_timeout(
+            "textDocument/codeAction",
+            params(),
+            Duration::from_millis(1500),
+        );
+        samples.push(start_time.elapsed());
+    }
+    samples.sort();
+    let median = samples.get(2).copied().ok_or("no samples collected")?;
+
+    let factor = support::lsp_harness::load_scaling_factor();
+    let budget = Duration::from_millis((75.0 * factor) as u64);
 
     // Performance requirement from specification: <50ms response time
+    // (75ms budget = spec + test-environment buffer, load-scaled).
     assert!(
-        duration < Duration::from_millis(75), // Slight buffer for test environment
-        "Code actions should respond within 75ms, took: {:?}",
-        duration
+        median < budget,
+        "Code actions should respond within {budget:?} (75ms x load factor {factor}); \
+         median of 5 warm-path samples: {median:?}, all samples: {samples:?}",
     );
 
     Ok(())
