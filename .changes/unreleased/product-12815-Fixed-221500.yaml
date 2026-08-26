@@ -4,6 +4,6 @@ kind: Fixed
 body: Standalone POSIX and PowerShell installers promote a verified perllsp plus perl-dap product unit through an immutable candidate directory and an atomic current pointer. Interrupted or failed transitions leave the previous complete unit in place instead of a mixed pair.
 time: 2026-08-26T22:15:00Z
 custom:
-  PR: 1
+  PR: 12815
   Slug: standalone-atomic-product-unit
   Breaking: "yes"

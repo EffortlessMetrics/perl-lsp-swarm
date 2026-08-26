@@ -836,7 +836,7 @@ function Install-StandaloneProductUnit {
     if ($dapHash -ne "-") {
         Write-Success "Installed $DapName to $(Join-Path $InstallDir "$DapName.exe")"
     }
-    return @{
+    return [pscustomobject]@{
         DapInstalled = ($dapHash -ne "-")
         DestPath     = (Join-Path $InstallDir "$Name.exe")
         CandidateId  = $id
