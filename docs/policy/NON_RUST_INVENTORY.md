@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12078 |
-| Rust-family files | 3681 |
-| Non-Rust files | 8397 |
-| Allowlisted | 6151 |
+| Total tracked files | 12095 |
+| Rust-family files | 3694 |
+| Non-Rust files | 8401 |
+| Allowlisted | 6155 |
 | Unclassified | 2246 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 440 |
-| documentation | 2746 |
+| config | 441 |
+| documentation | 2749 |
 | generated | 2 |
 | production | 328 |
 | test | 2020 |
@@ -2284,6 +2284,7 @@
 | `.agents/skills/address-review-comments/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/build-candidate/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/build-from-proof/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.agents/skills/ci-failure-triage/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/compile-spec/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/deliver-goal/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/deliver-pr/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -2753,6 +2754,7 @@
 | `.claude/skills/address-review-comments/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/build-candidate/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/build-from-proof/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.claude/skills/ci-failure-triage/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/compile-spec/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/deliver-goal/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/deliver-pr/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -2887,6 +2889,7 @@
 | `.github/workflows/release-settings-closeout.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/release.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/review-receipt-retirement.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/ripr-infra-retry.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/ripr.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/scoop-bump.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/security-reconciliation.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -4882,6 +4885,7 @@
 | `docs/how-to/LARGE_WORKSPACE_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/LSP_ERROR_HANDLING_MONITORING_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/LSP_FEATURE_DEVELOPMENT_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/NATIVE_TOOLING_MIGRATION.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/PERFORMANCE_PRESERVATION_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/PERFORMANCE_TUNING.md` | documentation | `non-rust-docs-tree` | docs |
