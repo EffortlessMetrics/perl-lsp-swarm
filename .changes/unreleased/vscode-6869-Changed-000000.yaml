@@ -1,7 +1,7 @@
 project: vscode
 component: Editor behavior
 kind: Changed
-body: Workspace status now separates the product name from runtime server state and reports the observed server identity only from a live version probe, preserved verbatim and single-line instead of asserting an executable the snapshot never established.
+body: Workspace status now separates the product name from runtime server state and reports the observed server version only from a live initialize probe, preserved verbatim and single-line instead of asserting an executable identity the snapshot never established.
 time: 2026-08-26T00:00:00Z
 custom:
   PR: 6869

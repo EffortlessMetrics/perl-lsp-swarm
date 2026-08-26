@@ -90,7 +90,11 @@ export async function showWorkspaceStatusCommand(dependencies: {
   ];
   const hasLiveServer = status.mode === 'running' || status.mode === 'indexing';
   if (hasLiveServer && status.version) {
-    lines.push(`Observed server: ${sanitizeDiagnosticField(status.version, 'unavailable')}`);
+    // The probe proves the server's self-reported version only; serverInfo.name
+    // is never carried, so the label must not claim a fuller identity (#6869).
+    lines.push(
+      `Observed server version: ${sanitizeDiagnosticField(status.version, 'unavailable')}`,
+    );
   }
   if (status.fileCount !== undefined) {
     lines.push(`Workspace files: ${status.fileCount}`);
