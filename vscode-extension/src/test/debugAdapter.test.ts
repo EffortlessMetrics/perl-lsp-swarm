@@ -642,6 +642,22 @@ describe('buildDapExecutableArgs', () => {
     expect(buildDapExecutableArgs({ debuggerBackend: 'native', program: '/x.pl' })).toEqual([]);
     expect(buildDapExecutableArgs({ request: 'launch', program: '/x.pl' })).toEqual([]);
   });
+
+  test('never emits an editor --socket or --port flag', () => {
+    const configs: Array<Record<string, unknown> | undefined> = [
+      undefined,
+      { request: 'launch', program: '/x.pl' },
+      { externalPeer: 'localhost:9000' },
+      { debuggerBackend: 'external', externalDebugger: { host: '127.0.0.1', port: 13604 } },
+      { debuggerBackend: 'external', externalDebugger: { mode: 'listen', host: '127.0.0.1' } },
+      { debuggerBackend: 'external', externalDebugger: { mode: 'listen', host: '127.0.0.1', port: 0 } },
+    ];
+    for (const config of configs) {
+      const args = buildDapExecutableArgs(config);
+      expect(args).not.toContain('--socket');
+      expect(args).not.toContain('--port');
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
