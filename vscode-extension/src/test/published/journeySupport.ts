@@ -221,9 +221,12 @@ export async function providerResult(
   }
 }
 
-export function providerPosition(document: vscode.TextDocument): vscode.Position {
-  const offset = document.getText().indexOf('$value');
-  assert.notEqual(offset, -1, 'packaged journey fixture must contain the $value probe');
+export function providerPosition(
+  document: vscode.TextDocument,
+  probe: string = '$value',
+): vscode.Position {
+  const offset = document.getText().indexOf(probe);
+  assert.notEqual(offset, -1, `packaged journey fixture must contain the ${probe} probe`);
   return document.positionAt(offset);
 }
 
@@ -352,7 +355,21 @@ export async function scanServerProcessIdentities(
         return null;
       }
       const haystack = caseInsensitive ? executable.toLowerCase() : executable;
-      return haystack.startsWith(needle) ? { pid, path: executable } : null;
+      if (!haystack.startsWith(needle)) {
+        return null;
+      }
+      // The PowerShell probe emits the pure executable path, while POSIX
+      // `ps args` appends the server arguments (`perllsp --stdio`): identity
+      // and digest checks need the real file, so reduce the POSIX row to the
+      // invoked binary — the scanned directory plus the binary name.
+      if (process.platform === 'win32') {
+        return { pid, path: executable };
+      }
+      const remainder = executable.slice(resolved.length);
+      const binaryName = remainder.split(/[ \t]/, 1)[0];
+      return binaryName === undefined || binaryName.length === 0
+        ? { pid, path: executable }
+        : { pid, path: resolved + binaryName };
     })
     .filter((entry): entry is BundledServerProcessIdentity => entry !== null);
 }

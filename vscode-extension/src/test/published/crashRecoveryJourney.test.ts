@@ -1020,7 +1020,7 @@ suite('Packaged crash-recovery journey (#7848)', function () {
         'breaker completion after retry',
         'vscode.executeCompletionItemProvider',
         document.uri,
-        providerPosition(document),
+        providerPosition(document, '$breaker'),
       );
       explicitRetry.provider = retryProvider;
       try {
