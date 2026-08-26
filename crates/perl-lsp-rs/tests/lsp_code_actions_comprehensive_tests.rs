@@ -551,10 +551,7 @@ fn test_add_missing_pragmas_refactoring() -> TestResult {
 fn test_code_actions_performance() -> TestResult {
     let (mut harness, workspace) = create_code_actions_server()?;
 
-    let start_time = std::time::Instant::now();
-
-    let _actions_result = harness.request_with_timeout(
-        "textDocument/codeAction",
+    let params = || {
         json!({
             "textDocument": {"uri": workspace.uri("refactoring.pl")},
             "range": {
@@ -565,17 +562,37 @@ fn test_code_actions_performance() -> TestResult {
                 "diagnostics": [],
                 "only": [] // Request all available actions
             }
-        }),
-        Duration::from_millis(100), // Performance requirement: <50ms
-    );
+        })
+    };
 
-    let duration = start_time.elapsed();
+    // #12784: a single raw 75ms wall-clock sample cannot survive a contended
+    // runner — scheduler noise alone can exceed it. Sample the request five
+    // times and judge the MINIMUM: scheduler preemption inflates individual
+    // samples, while a genuine latency regression inflates all of them. The
+    // budget scales by the harness's environment load factor
+    // (support::lsp_harness::load_scaling_factor) so a contended CI runner
+    // gets up to 2.5x headroom while an unconstrained box keeps the raw 75ms.
+    let mut samples = Vec::new();
+    for _ in 0..5 {
+        let start_time = std::time::Instant::now();
+        let _actions_result = harness.request_with_timeout(
+            "textDocument/codeAction",
+            params(),
+            Duration::from_secs(2),
+        );
+        samples.push(start_time.elapsed());
+    }
+    let best = samples.iter().copied().min().ok_or("no samples collected")?;
+
+    let factor = support::lsp_harness::load_scaling_factor();
+    let budget = Duration::from_millis((75.0 * factor) as u64);
 
     // Performance requirement from specification: <50ms response time
+    // (75ms budget = spec + test-environment buffer, load-scaled).
     assert!(
-        duration < Duration::from_millis(75), // Slight buffer for test environment
-        "Code actions should respond within 75ms, took: {:?}",
-        duration
+        best < budget,
+        "Code actions should respond within {budget:?} (75ms x load factor {factor}); \
+         best of 5 samples: {best:?}, all samples: {samples:?}",
     );
 
     Ok(())
