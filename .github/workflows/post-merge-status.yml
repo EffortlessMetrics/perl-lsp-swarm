@@ -38,6 +38,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      # changed=false runs close superseded automation PRs (#12606).
+      pull-requests: write
     outputs:
       changed: ${{ steps.payload.outputs.changed }}
     steps:
@@ -219,6 +221,26 @@ jobs:
       - name: Report current generated state
         if: steps.payload.outputs.changed != 'true'
         run: echo "::notice::Generated status files are already current."
+
+      # #12606: with queued runs (#10199), a stale payload PR lingers when a
+      # later run regenerates at the newest SHA, finds the canonical files
+      # already current, and skips open-pr — the earlier PR is then neither
+      # updated nor invalidated. changed=false means the committed state
+      # matches a fresh deterministic regeneration, so any open
+      # automation/post-merge-status PR is by construction a no-op or a stale
+      # payload: close it as superseded. This also closes the case where main
+      # moved after the stale write landed, which a write-time source_sha
+      # rejection (the alternative interpretation) cannot reach.
+      - name: Close superseded generated status PRs
+        if: steps.payload.outputs.changed != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          prs=$(gh pr list --state open --head automation/post-merge-status --json number --jq '.[].number')
+          for pr in $prs; do
+            gh pr close "$pr" --comment "Superseded: regeneration at ${GITHUB_SHA} found the canonical generated files already current (changed=false), so this open payload is stale (#12606)."
+          done
 
   open-pr:
     name: Open generated status PR
