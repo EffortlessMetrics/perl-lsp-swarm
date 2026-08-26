@@ -33,6 +33,13 @@ on:
     branches: [master, main]
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
+  # #12563: seed the ripr rust caches from a main-ref run so hosted PR runs
+  # restore warm artifacts instead of cold-building into the runner-eviction
+  # window. Pull_request runs stay restore-only (docs/ci/cache-policy.md):
+  # PR-created caches are scoped to the PR merge ref and cannot warm other
+  # PRs, they only burn the 10 GB quota.
+  schedule:
+    - cron: '23 11 * * *'
   workflow_dispatch: {}
 
 concurrency:
@@ -54,7 +61,9 @@ jobs:
     name: Route ripr runner
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: github.event.pull_request.draft != true || github.event_name != 'pull_request'
+    if: >-
+      (github.event.pull_request.draft != true || github.event_name != 'pull_request') &&
+      github.event_name != 'schedule'
     outputs:
       target: ${{ steps.route.outputs.target }}
       reason: ${{ steps.route.outputs.reason }}
@@ -716,16 +725,14 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ripr-${{ env.RIPR_VERSION }}-${{ hashFiles('Cargo.lock') }}
-          # #12563: the old main-only save-if could never fire (this workflow has
-          # no push/schedule trigger, so github.ref is never refs/heads/main) and
-          # every hosted run cold-built ~6.5m into the runner-eviction window.
-          # Save from every trusted run (same-repo PR, merge_group, dispatch);
-          # fork PRs — the untrusted class the router sends here — never save.
-          save-if: >-
-            ${{
-            github.event_name != 'pull_request' ||
-            github.event.pull_request.head.repo.full_name == github.repository
-            }}
+          # #12563: the old main-only save-if could never fire in this
+          # workflow, so every hosted run cold-built ~6.5m into the
+          # runner-eviction window. PR runs must stay restore-only
+          # (docs/ci/cache-policy.md): PR-created caches are scoped to the PR
+          # merge ref, cannot warm other PRs, and burn the 10 GB quota. Saves
+          # come from the scheduled main-ref seed job (and a manual main-ref
+          # dispatch) instead.
+          save-if: ${{ github.event_name == 'workflow_dispatch' }}
 
       - name: Install ripr
         run: cargo install ripr --version "$RIPR_VERSION" --locked
@@ -885,13 +892,9 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ripr-fallback-${{ env.RIPR_VERSION }}-${{ hashFiles('Cargo.lock') }}
-          # #12563: same trusted-save repair as the primary hosted job above —
-          # the main-only save-if could never fire in this workflow.
-          save-if: >-
-            ${{
-            github.event_name != 'pull_request' ||
-            github.event.pull_request.head.repo.full_name == github.repository
-            }}
+          # #12563: same restore-only repair as the primary hosted job above —
+          # the fallback key is seeded by the scheduled main-ref seed job.
+          save-if: ${{ github.event_name == 'workflow_dispatch' }}
 
       - name: Install ripr
         run: cargo install ripr --version "$RIPR_VERSION" --locked
@@ -990,7 +993,49 @@ jobs:
           if-no-files-found: error
 
   # -------------------------------------------------------------------------
-  # 3. Result aggregator -- owns the "ripr+ New Gap Gate" required-check name.
+  # 3. Cache seed (#12563) -- scheduled main-ref run that warms both ripr
+  # rust-cache keys so hosted PR runs restore instead of cold-building ~6.5m
+  # into the runner-eviction window. Pull_request runs stay restore-only
+  # (docs/ci/cache-policy.md); this job is the only writer besides a manual
+  # main-ref dispatch. Builds the same artifacts the analysis jobs build
+  # (ripr binary + xtask), under both shared keys.
+  # -------------------------------------------------------------------------
+  seed-cache:
+    name: Seed ripr rust cache
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RIPR_VERSION: "0.9.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Toolchain (rust-toolchain.toml pins 1.95.0)
+        run: rustc --version
+
+      - name: Cache cargo dependencies (primary key)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+          shared-key: ripr-${{ env.RIPR_VERSION }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install ripr
+        run: cargo install ripr --version "$RIPR_VERSION" --locked
+
+      - name: Build xtask
+        run: cargo build -p xtask --locked
+
+      - name: Cache cargo dependencies (fallback key)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+          shared-key: ripr-fallback-${{ env.RIPR_VERSION }}-${{ hashFiles('Cargo.lock') }}
+
+  # -------------------------------------------------------------------------
+  # 4. Result aggregator -- owns the "ripr+ New Gap Gate" required-check name.
   # -------------------------------------------------------------------------
   ripr:
     name: ripr+ New Gap Gate
