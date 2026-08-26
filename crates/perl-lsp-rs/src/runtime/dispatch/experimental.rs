@@ -21,13 +21,6 @@ impl LspServer {
         self.handle_test_discovery(params)
     }
 
-    // Left nested rather than collapsed into a let-chain. Collapsing it
-    // registers a new gap under `enforce-new-ripr` that this PR could not
-    // discharge: focused unit tests, an integration test, and moving this
-    // suppression between the seam and the function were all tried, and
-    // none cleared it. The nested form matches main. The exact gap-identity
-    // rule is NOT established -- see the NOT_PROVEN note on PR #9674 before
-    // assuming one. See #9528.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(super) fn handle_slow_operation_dispatch(
         &self,
