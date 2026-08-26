@@ -242,7 +242,7 @@ Use `Ctrl+Shift+P` (Command Palette) and search "Perl" to see all available comm
 ## Commands
 
 Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
-"Perl". All 37 commands the extension contributes:
+"Perl". All 36 commands the extension contributes:
 
 ### Server and setup
 

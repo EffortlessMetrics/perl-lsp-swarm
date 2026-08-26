@@ -35,7 +35,11 @@ export {
   suggestDiscoveredIncludePaths,
   validateIncludePaths,
 } from './extensionWorkspaceGuidance';
-import { runCoexistenceAdvisory, showCoexistenceStatusCommand } from './coexistenceAdvisory';
+import {
+  coexistenceReevaluationRequested,
+  runCoexistenceAdvisory,
+  showCoexistenceStatusCommand,
+} from './coexistenceAdvisory';
 import { registerCoexistenceCommandGroup } from './coexistenceCommandGroup';
 import { WhatsNewManager } from './whatsNew';
 import { generateBoilerplate } from './fileCreation';
@@ -1106,15 +1110,10 @@ async function runExtensionActivation(
         }
 
         // Advisory coexistence findings re-evaluate when an owned input
-        // changes; dedupe keeps this silent unless the finding set changed
-        // (#7214 clear/restore semantics).
-        const coexistenceInputs = [
-          'perl-lsp.formatOnSave',
-          'perl-lsp.critic.enabled',
-          'perl-lsp.critic.engine',
-          'perl-lsp.perltidyConfig',
-        ];
-        if (coexistenceInputs.some((setting) => event.affectsConfiguration(setting))) {
+        // changes; every collected input is classified live, so this block is
+        // reachable for all of them. Dedupe keeps this silent unless the
+        // finding set changed (#7214 clear/restore semantics).
+        if (coexistenceReevaluationRequested((setting) => event.affectsConfiguration(setting))) {
           await runCoexistenceAdvisory(context);
         }
       },

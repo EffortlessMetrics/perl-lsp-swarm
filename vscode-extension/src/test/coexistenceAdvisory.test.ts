@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
 import { coexistenceConflictKey } from '../coexistenceRegistry';
 import {
+  COEXISTENCE_CONFIGURATION_INPUTS,
   collectCoexistenceFindings,
+  coexistenceReevaluationRequested,
   renderCoexistenceStatusReport,
   runCoexistenceAdvisory,
 } from '../coexistenceAdvisory';
@@ -227,7 +229,16 @@ describe('coexistence advisory flow (#7214)', () => {
       },
     ];
     configure({ 'critic.enabled': true, formatOnSave: false });
+    // A folder-scoped .perltidyrc candidate must exist so the folder pass
+    // really produces a named finding whose identity the packet has to omit.
+    workspaceMock.findFiles.mockResolvedValue(['/home/dev/secret-project/.perltidyrc']);
     const findings = await collectCoexistenceFindings(makeContext(makeState()));
+    const folderScoped = findings.find(
+      (finding) =>
+        finding.scopeKind === 'workspace-folder' &&
+        finding.folderName === '/home/dev/secret-project',
+    );
+    expect(folderScoped).toBeDefined();
     expect(findings.length).toBeGreaterThan(0);
 
     // A fresh state so the finding set is treated as new and the packet
@@ -247,6 +258,72 @@ describe('coexistence advisory flow (#7214)', () => {
     expect(packet).not.toContain('/home/dev');
     // Only involved owners appear — never the full extension inventory.
     expect(packet.match(/extensionId/g) ?? []).toHaveLength(0);
+  });
+
+  test('every collected input reaches re-evaluation and nothing else does', () => {
+    // The listener contract is pinned to exactly the inputs collection reads;
+    // a new collector input that forgets this list must fail here.
+    expect([...COEXISTENCE_CONFIGURATION_INPUTS]).toEqual([
+      'perl-lsp.formatOnSave',
+      'perl-lsp.critic.enabled',
+      'perl-lsp.critic.engine',
+      'perl-lsp.perltidyConfig',
+      'editor.formatOnSave',
+      'editor.defaultFormatter',
+    ]);
+    for (const setting of COEXISTENCE_CONFIGURATION_INPUTS) {
+      expect(coexistenceReevaluationRequested((key) => key === setting)).toBe(true);
+    }
+    for (const unrelated of [
+      'perl-lsp.serverPath',
+      'perl-lsp.includePaths',
+      'workbench.colorTheme',
+    ]) {
+      expect(coexistenceReevaluationRequested((key) => key === unrelated)).toBe(false);
+    }
+  });
+
+  test('suppress-clear-restore via an editor input prunes and reports again', async () => {
+    // No other extension is installed: the explicit default resolves through
+    // the reviewed registry, making the save-ownership conflict the sole
+    // finding, driven entirely by editor-scoped inputs.
+    extensionsMock.all = [];
+    workspaceMock.workspaceFolders = [];
+    const saveInputs = {
+      formatOnSave: true,
+      'editor.formatOnSave': true,
+      'editor.defaultFormatter': 'bscan.perlnavigator',
+    };
+    const clearedInputs = { ...saveInputs, 'editor.formatOnSave': false };
+    configure(saveInputs);
+    const state = makeState();
+    const context = makeContext(state);
+
+    // Suppress the exact conflict the way the popup's "Disable for this exact
+    // conflict" action would.
+    showWarningMessage.mockResolvedValue('Disable for this exact conflict');
+    await runCoexistenceAdvisory(context);
+    const suppressedKeys = [...state.store.keys()].filter((key) =>
+      key.startsWith('perl-lsp.coexistence.suppressed.'),
+    );
+    expect(suppressedKeys).toHaveLength(1);
+
+    showWarningMessage.mockClear();
+    // Clearing the editor input removes the conflict and prunes the now-stale
+    // suppression without any notification replay in between.
+    configure(clearedInputs);
+    await runCoexistenceAdvisory(context);
+    await runCoexistenceAdvisory(context);
+    expect(showWarningMessage).not.toHaveBeenCalled();
+    expect(
+      [...state.store.keys()].some((key) => key.startsWith('perl-lsp.coexistence.suppressed.')),
+    ).toBe(false);
+
+    // Restoring the input makes the exact conflict recur and be reported again.
+    showWarningMessage.mockResolvedValue(undefined);
+    configure(saveInputs);
+    await runCoexistenceAdvisory(context);
+    expect(showWarningMessage).toHaveBeenCalledTimes(1);
   });
 
   test('the status command explains evidence sources and the clean boundary', async () => {

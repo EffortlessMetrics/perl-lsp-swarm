@@ -462,7 +462,9 @@ describe('perl-lsp trust explanation commands', () => {
       (e: MenuEntry) => e.command === 'perl-lsp.showCoexistenceStatus',
     );
     expect(entry).toBeDefined();
-    expect(entry.when).toContain('workspaceFolderCount');
+    // Exact visibility condition: a merely inverted or weakened clause would
+    // hide the status command in single-file contexts.
+    expect(entry?.when).toBe('workspaceFolderCount >= 1');
   });
 });
 

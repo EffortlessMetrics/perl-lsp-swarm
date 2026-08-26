@@ -98,7 +98,9 @@ export const REVIEWED_PERL_EXTENSIONS: readonly ReviewedPerlExtension[] = [
   },
 ];
 
-const REVIEWED_BY_ID = new Map(REVIEWED_PERL_EXTENSIONS.map((entry) => [entry.extensionId, entry]));
+const REVIEWED_BY_ID = new Map(
+  REVIEWED_PERL_EXTENSIONS.map((entry) => [entry.extensionId.trim().toLowerCase(), entry]),
+);
 
 /** Exact reviewed-identity lookup; no substring or fuzzy matching. */
 export function reviewedPerlExtension(extensionId: string): ReviewedPerlExtension | undefined {

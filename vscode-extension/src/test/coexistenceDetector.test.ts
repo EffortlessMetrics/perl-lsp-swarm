@@ -77,7 +77,7 @@ describe('typed coexistence detection (#7214)', () => {
     expect(provider?.scopeKind).toBe('user');
   });
 
-  test('both format-on-save owners are detected with the named setting owner', () => {
+  test('both format-on-save owners are detected with the canonical owner name', () => {
     const findings = detectCoexistenceFindings(
       base({
         nativeFormatOnSave: true,
@@ -86,7 +86,41 @@ describe('typed coexistence detection (#7214)', () => {
       }),
     );
     expect(classes(findings)).toEqual(['multiple_format_on_save_owners']);
-    expect(findings[0]?.otherOwner).toBe('bscan.perlnavigator');
+    expect(findings[0]?.otherOwner).toBe('Perl Navigator');
+  });
+
+  test('an explicit default that cannot own Perl formatting classifies nothing', () => {
+    const saveOwners = (observations: CoexistenceObservations) =>
+      detectCoexistenceFindings(observations).filter(
+        (finding) => finding.conflictClass === 'multiple_format_on_save_owners',
+      );
+    // A common non-Perl default and a stale marketplace id both lack any
+    // evidence of Perl formatting ownership, so neither is a conflict owner
+    // (the installed navigator still yields its own inventory-derived class).
+    for (const override of ['esbenp.prettier-vscode', 'vendor.retired-formatter']) {
+      expect(
+        saveOwners(
+          base({
+            nativeFormatOnSave: true,
+            editorFormatOnSave: true,
+            installedExtensions: [extension('bscan.perlnavigator')],
+            defaultFormatterSetting: override,
+          }),
+        ),
+      ).toEqual([]);
+    }
+    // The host provider feed is accepted as evidence even without a
+    // reviewed registry row.
+    const feedObserved = saveOwners(
+      base({
+        nativeFormatOnSave: true,
+        editorFormatOnSave: true,
+        defaultFormatterSetting: 'Vendor.Perl-Formatter',
+        perlFormatterProviderIds: ['vendor.perl-formatter'],
+      }),
+    );
+    expect(feedObserved).toHaveLength(1);
+    expect(feedObserved[0]?.otherOwner).toBe('Vendor.Perl-Formatter');
   });
 
   test('a sole other formatter owns save when no default is set', () => {
@@ -306,6 +340,40 @@ describe('typed coexistence detection (#7214)', () => {
     expect(keys.every((key) => !key.includes('root-b'))).toBe(true);
   });
 
+  test('settings-derived findings keep the scope they were observed in', () => {
+    const folderObservations = base({
+      installedExtensions: [extension('bscan.perlnavigator')],
+      nativeCriticEnabled: true,
+      nativeFormatOnSave: true,
+      editorFormatOnSave: true,
+      staleCriticEngineValue: 'legacy',
+      folderName: 'root-a',
+    });
+    const scopedClasses = new Set([
+      'native_critic_and_other_diagnostic_provider',
+      'multiple_format_on_save_owners',
+      'legacy_first_party_critic_setting_active',
+    ]);
+    for (const finding of detectCoexistenceFindings(folderObservations)) {
+      if (!scopedClasses.has(finding.conflictClass)) {
+        continue;
+      }
+      expect(finding.scopeKind).toBe('workspace-folder');
+      expect(finding.folderName).toBe('root-a');
+    }
+    // The same settings without a folder stay host-wide.
+    for (const finding of detectCoexistenceFindings({
+      ...folderObservations,
+      folderName: undefined,
+    })) {
+      if (!scopedClasses.has(finding.conflictClass)) {
+        continue;
+      }
+      expect(finding.scopeKind).toBe('user');
+      expect(finding.folderName).toBeUndefined();
+    }
+  });
+
   test('every finding names its evidence source and carries the claim boundary', () => {
     const findings = detectCoexistenceFindings(
       base({
@@ -318,7 +386,13 @@ describe('typed coexistence detection (#7214)', () => {
         folderName: 'root-a',
       }),
     );
-    expect(findings.length).toBeGreaterThanOrEqual(4);
+    expect(classes(findings).sort()).toEqual([
+      'external_tool_candidate_not_selected',
+      'legacy_first_party_critic_setting_active',
+      'multiple_format_on_save_owners',
+      'multiple_language_servers',
+      'native_critic_and_other_diagnostic_provider',
+    ]);
     for (const finding of findings) {
       expect(finding.evidenceSource.length).toBeGreaterThan(0);
       expect(finding.claimBoundary).toBe(COEXISTENCE_CLAIM_BOUNDARY);

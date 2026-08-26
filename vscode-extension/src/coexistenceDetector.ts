@@ -159,6 +159,15 @@ function diagnosticProviderFindings(
   ];
 }
 
+function observedScope(observations: CoexistenceObservations): {
+  scopeKind: CoexistenceFinding['scopeKind'];
+  folderName?: string | undefined;
+} {
+  return observations.folderName === undefined
+    ? { scopeKind: 'user' }
+    : { scopeKind: 'workspace-folder', folderName: observations.folderName };
+}
+
 function criticFindings(
   others: readonly ReviewedPerlExtension[],
   observations: CoexistenceObservations,
@@ -171,7 +180,7 @@ function criticFindings(
     .map((identity) =>
       finding({
         conflictClass: 'native_critic_and_other_diagnostic_provider',
-        scopeKind: 'user',
+        ...observedScope(observations),
         subject: identity.extensionId,
         nativeOwner: 'perl-lsp native Perl::Critic analysis',
         otherOwner: identity.canonicalName,
@@ -195,7 +204,21 @@ function resolveSaveConflictOtherOwner(
 ): { owner: string } | { ambiguous: true } | undefined {
   const override = observations.defaultFormatterSetting?.trim();
   if (override && override.toLowerCase() !== NATIVE_EXTENSION_ID) {
-    return { owner: override };
+    // An explicit default counts as an observed Perl-formatting owner only
+    // with evidence that the selected extension actually owns Perl
+    // formatting: a reviewed registry row with the formatting domain, or the
+    // host-established provider feed. Anything else (a stale id or a
+    // non-Perl default such as a web formatter) classifies nothing.
+    const identity = reviewedPerlExtension(override);
+    const ownsPerlFormatting =
+      (identity !== undefined && identity.domains.includes('formatting')) ||
+      (observations.perlFormatterProviderIds ?? []).some(
+        (id) => id.trim().toLowerCase() === override.toLowerCase(),
+      );
+    if (!ownsPerlFormatting) {
+      return undefined;
+    }
+    return { owner: identity?.canonicalName ?? override };
   }
   const formatterIds =
     observations.perlFormatterProviderIds ??
@@ -226,7 +249,7 @@ function formatOnSaveFindings(observations: CoexistenceObservations): Coexistenc
     return [
       finding({
         conflictClass: 'unknown_possible_overlap',
-        scopeKind: 'user',
+        ...observedScope(observations),
         subject: 'perl format-on-save formatter selection',
         nativeOwner: NATIVE_FORMAT_OWNER,
         evidenceSource:
@@ -242,7 +265,7 @@ function formatOnSaveFindings(observations: CoexistenceObservations): Coexistenc
   return [
     finding({
       conflictClass: 'multiple_format_on_save_owners',
-      scopeKind: 'user',
+      ...observedScope(observations),
       subject: 'perl format-on-save ownership',
       nativeOwner: NATIVE_FORMAT_OWNER,
       otherOwner: resolved.owner,
@@ -270,7 +293,7 @@ function legacyCriticFindings(observations: CoexistenceObservations): Coexistenc
   return [
     finding({
       conflictClass: 'legacy_first_party_critic_setting_active',
-      scopeKind: 'user',
+      ...observedScope(observations),
       subject: 'perl-lsp.critic.engine',
       nativeOwner: 'perl-lsp native critic (only accepted engine family)',
       otherOwner: `retired first-party setting value "${value}"`,

@@ -26,6 +26,31 @@ import {
 const SUPPRESSED_KEY_PREFIX = 'perl-lsp.coexistence.suppressed.';
 const SHOWN_SIGNATURE_KEY = 'perl-lsp.coexistence.shownSignature';
 
+/**
+ * Every configuration input `collectCoexistenceFindings` reads. The
+ * re-evaluation listener in the composition layer must watch exactly these so
+ * a change to any collected input reaches the advisory (#7214 clear/restore
+ * semantics) instead of leaving findings stale until restart.
+ */
+export const COEXISTENCE_CONFIGURATION_INPUTS: readonly string[] = [
+  'perl-lsp.formatOnSave',
+  'perl-lsp.critic.enabled',
+  'perl-lsp.critic.engine',
+  'perl-lsp.perltidyConfig',
+  'editor.formatOnSave',
+  'editor.defaultFormatter',
+];
+
+/**
+ * Whether a configuration change should re-run the advisory: true exactly when
+ * the change affects any collected input.
+ */
+export function coexistenceReevaluationRequested(
+  affectsConfiguration: (setting: string) => boolean,
+): boolean {
+  return COEXISTENCE_CONFIGURATION_INPUTS.some((setting) => affectsConfiguration(setting));
+}
+
 type Inspected<T> = { globalValue?: T; workspaceValue?: T; workspaceFolderValue?: T };
 
 function normalizeId(value: string | undefined): string {
@@ -64,7 +89,7 @@ function observedExtensions(selfId: string): ObservedExtension[] {
 }
 
 function folderSettingSnapshot(
-  scope: vscode.Uri | undefined,
+  scope: vscode.ConfigurationScope | undefined,
 ): Pick<
   CoexistenceObservations,
   | 'nativeFormatOnSave'
@@ -74,6 +99,8 @@ function folderSettingSnapshot(
   | 'staleCriticEngineValue'
   | 'perltidyProfileSelected'
 > {
+  // The explicit Perl language scope is required so `[perl]` language
+  // overrides are visible (same convention as getPerlCriticConfiguration).
   const perlLspConfig = vscode.workspace.getConfiguration('perl-lsp', scope);
   const editorConfig = vscode.workspace.getConfiguration('editor', scope);
   const perlEditorConfig = vscode.workspace.getConfiguration('[perl]', scope);
@@ -95,9 +122,12 @@ function folderSettingSnapshot(
 }
 
 /**
- * Collect observations once per workspace folder plus one user-scope pass.
- * Inventory-derived classes are user-scope and evaluated exactly once; each
- * folder pass carries only its own scoped settings and file evidence.
+ * Collect observations once per workspace folder plus one host-wide pass.
+ * Every pass carries the full inventory so settings-derived classes combine
+ * scoped settings with installed extensions; the host pass evaluates without
+ * a resource scope, each folder pass its own `{ uri, languageId: 'perl' }`
+ * snapshot and file evidence. Findings keep the scope they were observed in
+ * and are deduplicated by exact conflict identity.
  */
 export async function collectCoexistenceFindings(
   context: vscode.ExtensionContext,
@@ -112,7 +142,7 @@ export async function collectCoexistenceFindings(
   const userScopeObservations: CoexistenceObservations = {
     selfExtensionId: selfId,
     installedExtensions: inventory,
-    ...folderSettingSnapshot(undefined),
+    ...folderSettingSnapshot({ languageId: 'perl' }),
   };
   const findings = detectCoexistenceFindings(userScopeObservations);
 
@@ -132,9 +162,10 @@ export async function collectCoexistenceFindings(
     findings.push(
       ...detectCoexistenceFindings({
         selfExtensionId: selfId,
+        installedExtensions: inventory,
         folderName: folder.name || `folder-${index + 1}`,
         perltidyrcPresentInFolder: perltidyrcPresent,
-        ...folderSettingSnapshot(folder.uri),
+        ...folderSettingSnapshot({ uri: folder.uri, languageId: 'perl' }),
       }),
     );
   }
