@@ -61,7 +61,7 @@ if let Some(tree) = parser.parse("my $x = 42;") {
 | `Node::native_kind() -> &'static str` | Native v3 internal node name (e.g. `"Program"`) |
 | `Node::grammar_kind() -> String` | Compatibility alias of `kind()` |
 | `Node::is_error() -> bool` / `Node::has_error() -> bool` | Detect an error node or an error descendant |
-| `Node::to_sexp() -> String` | Tree-sitter-compatible S-expression for this subtree |
+| `Node::to_sexp() -> String` | Native debug S-expression for this subtree (not a Tree-sitter CST; see issue 8047) |
 | `Node::child_count() -> usize` | Number of direct children |
 | `Node::child(i: usize) -> Option<Node>` | `i`-th direct child |
 | `Node::children() -> impl Iterator<Item = Node>` | Iterator over direct children |
