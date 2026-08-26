@@ -1071,7 +1071,10 @@ mod tests {
                 ],
             ));
 
-            if observed == "perl" && !row.negative_control && row.expect == "perl" {
+            // The driver emits an attachment disposition for every genuinely
+            // activated row — claimed or not; the semantic event only for the
+            // rows whose #7762 expectation claims Perl support.
+            if observed == "perl" && !row.negative_control {
                 stream.push(event(
                     DriverEventKind::ActivationAttachmentObserved,
                     {
@@ -1085,19 +1088,21 @@ mod tests {
                         ("attached", "1"),
                     ],
                 ));
-                stream.push(event(
-                    DriverEventKind::ActivationSemanticObserved,
-                    {
-                        sequence += 1;
-                        sequence
-                    },
-                    &[
-                        ("row_index", index.to_string().as_str()),
-                        ("row", slug),
-                        ("state_source", "client_state"),
-                        ("errors", "1"),
-                    ],
-                ));
+                if row.expect == "perl" {
+                    stream.push(event(
+                        DriverEventKind::ActivationSemanticObserved,
+                        {
+                            sequence += 1;
+                            sequence
+                        },
+                        &[
+                            ("row_index", index.to_string().as_str()),
+                            ("row", slug),
+                            ("state_source", "client_state"),
+                            ("errors", "1"),
+                        ],
+                    ));
+                }
             } else if row.manual_override.is_some() {
                 stream.push(event(
                     DriverEventKind::ActivationOverrideApplied,

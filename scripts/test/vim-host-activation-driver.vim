@@ -72,8 +72,12 @@ if empty(s:adapter) || empty(s:event_file) || empty(s:capability_path)
   cquit 3
 endif
 
-if !exists('*json_decode') || !exists('*VimLspHostWaitFor')
-  echoerr 'vim activation driver: adapter or json support unavailable, failing closed'
+" json_decode is a builtin of the compiled editor: a build without it cannot
+" parse the delivered denominator payload at all. (The adapter's functions
+" are sourced later in this script, so they are intentionally not probed
+" here; an unusable adapter dies typed at its own load-time guard.)
+if !exists('*json_decode')
+  echoerr 'vim activation driver: json support unavailable, failing closed'
   cquit 3
 endif
 let s:rows = json_decode(s:rows_json)
