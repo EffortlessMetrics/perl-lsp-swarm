@@ -151,6 +151,8 @@ try {
     Invoke-StagingCase -Name "windows_case_collision" -Entries ($RequiredFlat + @{ Name = "Readme.md"; Bytes = [Text.Encoding]::ASCII.GetBytes("case`n") }) -Needle "case-fold collision"
     Invoke-StagingCase -Name "windows_missing_dap" -Entries ($RequiredFlat | Where-Object { $_.Name -ne "perl-dap.exe" }) -Needle "missing required member"
     Invoke-StagingCase -Name "windows_extra_executable" -Entries ($RequiredFlat + @{ Name = "helper.bat"; Bytes = [Text.Encoding]::ASCII.GetBytes("echo hi`n") }) -Needle "unexpected executable"
+    Invoke-StagingCase -Name "windows_reserved" -Entries ($RequiredFlat + @{ Name = "CON.txt"; Bytes = [Text.Encoding]::ASCII.GetBytes("reserved`n") }) -Needle "unsafe archive member"
+    Invoke-StagingCase -Name "windows_trailing_dot" -Entries ($RequiredFlat + @{ Name = "README.md."; Bytes = [Text.Encoding]::ASCII.GetBytes("trailing`n") }) -Needle "unsafe archive member"
     Invoke-StagingCase -Name "windows_symlink" -Entries ($RequiredFlat + @{ Name = "link"; Bytes = [Text.Encoding]::ASCII.GetBytes("perllsp.exe"); UnixMode = 0xA1FF }) -Needle "archive links are not accepted"
 
     $env:PERL_LSP_ARCHIVE_SAFETY_MAX_COMPRESSED_BYTES = "16"

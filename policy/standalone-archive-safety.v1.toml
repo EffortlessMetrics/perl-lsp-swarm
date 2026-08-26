@@ -33,6 +33,7 @@ reject_windows_drive_unc_prefixes = true
 reject_backslash_separators = true
 reject_alternate_data_streams = true
 reject_windows_reserved_device_names = true
+reject_trailing_dot_or_space_components = true
 
 [entries]
 admit_regular_files = true

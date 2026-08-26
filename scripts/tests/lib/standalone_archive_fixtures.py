@@ -148,6 +148,16 @@ def extra_executable(archive: tarfile.TarFile) -> None:
     _add_reg(archive, f"{PACKAGE}/helper.sh", b"#!/bin/sh\n", 0o755)
 
 
+def reserved_device_name(archive: tarfile.TarFile) -> None:
+    valid_posix(archive)
+    _add_reg(archive, f"{PACKAGE}/CON.txt", b"reserved\n")
+
+
+def trailing_dot(archive: tarfile.TarFile) -> None:
+    valid_posix(archive)
+    _add_reg(archive, f"{PACKAGE}/README.md.", b"trailing\n")
+
+
 def too_many_entries(archive: tarfile.TarFile) -> None:
     valid_posix(archive)
     for index in range(40):
@@ -271,6 +281,8 @@ TAR_CASES: dict[str, Callable[[tarfile.TarFile], None]] = {
     "missing_dap": missing_dap,
     "duplicate_server": duplicate_server,
     "extra_executable": extra_executable,
+    "reserved_device_name": reserved_device_name,
+    "trailing_dot": trailing_dot,
     "too_many_entries": too_many_entries,
     "oversized_entry": oversized_entry,
 }

@@ -177,6 +177,8 @@ run_reject case_collision "case-fold collision"
 run_reject missing_dap "missing required member"
 run_reject duplicate_server "unexpected executable"
 run_reject extra_executable "unexpected executable"
+run_reject reserved_device_name "unsafe archive member"
+run_reject trailing_dot "unsafe archive member"
 
 sentinel_setup
 make_case too_many_entries

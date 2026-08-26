@@ -514,10 +514,11 @@ normalize_archive_member_path() {
         case "$part" in
             ""|"."|"..") return 1 ;;
             *[!A-Za-z0-9._-]*) return 1 ;;
+            *.) return 1 ;;
         esac
         folded=$(printf '%s' "$part" | tr '[:upper:]' '[:lower:]')
         case "$folded" in
-            con|prn|aux|nul|com[1-9]|lpt[1-9]) return 1 ;;
+            con|prn|aux|nul|com[1-9]|lpt[1-9]|con.*|prn.*|aux.*|nul.*|com[1-9].*|lpt[1-9].*) return 1 ;;
         esac
     done
 

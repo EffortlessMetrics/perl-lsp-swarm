@@ -293,8 +293,11 @@ function ConvertTo-SafeArchiveMemberPath {
         if ($part -notmatch '^[A-Za-z0-9._-]+$') {
             throw "unsafe archive member path: $Name"
         }
+        if ($part.EndsWith(".") -or $part.EndsWith(" ")) {
+            throw "unsafe archive member path: $Name"
+        }
         $folded = $part.ToLowerInvariant()
-        if ($folded -match '^(con|prn|aux|nul|com[1-9]|lpt[1-9])$') {
+        if ($folded -match '^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$') {
             throw "unsafe archive member path: $Name"
         }
     }
