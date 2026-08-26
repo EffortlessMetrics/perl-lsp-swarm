@@ -935,7 +935,10 @@ impl<'a> PerlLexer<'a> {
         }
         let before = bytes[index - 1] as char;
         !(before.is_ascii_alphanumeric()
-            || matches!(before, '_' | '$' | '@' | '%' | '&' | '*' | ')' | ']' | '}' | '\'' | '"' | '`'))
+            || matches!(
+                before,
+                '_' | '$' | '@' | '%' | '&' | '*' | ')' | ']' | '}' | '\'' | '"' | '`'
+            ))
     }
 
     #[inline]
