@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12086 |
+| Total tracked files | 12088 |
 | Rust-family files | 3694 |
-| Non-Rust files | 8392 |
-| Allowlisted | 6146 |
+| Non-Rust files | 8394 |
+| Allowlisted | 6148 |
 | Unclassified | 2246 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 440 |
-| documentation | 2742 |
+| config | 441 |
+| documentation | 2743 |
 | generated | 2 |
 | production | 328 |
 | test | 2020 |
@@ -2343,6 +2343,7 @@
 | `.changes/unreleased/product-12639-Fixed-235500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12641-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12765-Changed-154500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2886,6 +2887,7 @@
 | `.github/workflows/release-settings-closeout.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/release.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/review-receipt-retirement.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/ripr-infra-retry.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/ripr.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/scoop-bump.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/security-reconciliation.yml` | config | `non-rust-github-workflows` | release/ci |
