@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12018 |
+| Total tracked files | 12017 |
 | Rust-family files | 3662 |
-| Non-Rust files | 8356 |
+| Non-Rust files | 8355 |
 | Allowlisted | 6092 |
-| Unclassified | 2264 |
+| Unclassified | 2263 |
 
 ## Non-Rust files by category
 
@@ -22,7 +22,7 @@
 | production | 328 |
 | test | 1986 |
 | tooling | 608 |
-| unclassified | 2264 |
+| unclassified | 2263 |
 
 ## Unclassified files
 
@@ -153,7 +153,6 @@
 | `distribution/test-release.sh` | `sh` |
 | `distribution/windows/update-manifests.ps1` | `ps1` |
 | `distribution/winget/perl-lsp.yaml` | `yaml` |
-| `fix_patch.py` | `py` |
 | `fixtures/clippy_repair_falsifiers/cases/A01-file-wide-suppression-carveout.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A02-dead-code-baseline-absorption.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A03-cfg-test-attr-general-carveout.json` | `json` |
