@@ -3280,6 +3280,74 @@ created = "2026-08-25"
 review_after = "2026-09-25"
 
 [[allow]]
+id = "non-rust-litexl-pristine-base-helpdoc"
+path = "clients/lite-xl/leaves/base/helpdoc.lua"
+kind = "upstream_evidence_snapshot"
+language = "lua"
+surface = "tooling"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Pristine upstream lite-xl-lsp helpdoc.lua at base d1432ae (blob 42d7a07f23fa9f254e28ba2ab2c858aded3122d5), byte-exact copy verified by git hash-object; required by the init.lua plugin require closure so composed profiles install cleanly."
+covered_by = [
+  "lua clients/lite-xl/tests/compose_manifest_test.lua",
+  "lua clients/lite-xl/tests/compose_integration_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-26"
+review_after = "2026-09-26"
+
+[[allow]]
+id = "non-rust-litexl-pristine-base-listbox"
+path = "clients/lite-xl/leaves/base/listbox.lua"
+kind = "upstream_evidence_snapshot"
+language = "lua"
+surface = "tooling"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Pristine upstream lite-xl-lsp listbox.lua at base d1432ae (blob 33284b02995781d897add3b44c4d66aac64d299e), byte-exact copy verified by git hash-object; required by the init.lua plugin require closure so composed profiles install cleanly."
+covered_by = [
+  "lua clients/lite-xl/tests/compose_manifest_test.lua",
+  "lua clients/lite-xl/tests/compose_integration_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-26"
+review_after = "2026-09-26"
+
+[[allow]]
+id = "non-rust-litexl-pristine-base-symbolresults"
+path = "clients/lite-xl/leaves/base/symbolresults.lua"
+kind = "upstream_evidence_snapshot"
+language = "lua"
+surface = "tooling"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Pristine upstream lite-xl-lsp symbolresults.lua at base d1432ae (blob 96c39cd5ee1b765c85c6f7dc5eb1cb90386994ad), byte-exact copy verified by git hash-object; required by the init.lua plugin require closure so composed profiles install cleanly."
+covered_by = [
+  "lua clients/lite-xl/tests/compose_manifest_test.lua",
+  "lua clients/lite-xl/tests/compose_integration_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-26"
+review_after = "2026-09-26"
+
+[[allow]]
+id = "non-rust-litexl-pristine-base-timer"
+path = "clients/lite-xl/leaves/base/timer.lua"
+kind = "upstream_evidence_snapshot"
+language = "lua"
+surface = "tooling"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Pristine upstream lite-xl-lsp timer.lua at base d1432ae (blob c25fefa44e65d1f3a8c52e555080a61195ececae), byte-exact copy verified by git hash-object; required by the diagnostics.lua/init.lua plugin require closure so composed profiles install cleanly."
+covered_by = [
+  "lua clients/lite-xl/tests/compose_manifest_test.lua",
+  "lua clients/lite-xl/tests/compose_integration_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-26"
+review_after = "2026-09-26"
+
+[[allow]]
 id = "non-rust-train-edge-contract-schema"
 path = "schemas/train_edge_contract.v1.schema.json"
 kind = "train_contract"
