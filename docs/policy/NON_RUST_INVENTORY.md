@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12066 |
-| Rust-family files | 3678 |
-| Non-Rust files | 8388 |
-| Allowlisted | 6142 |
+| Total tracked files | 12076 |
+| Rust-family files | 3682 |
+| Non-Rust files | 8394 |
+| Allowlisted | 6148 |
 | Unclassified | 2246 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 440 |
+| config | 441 |
 | documentation | 2740 |
 | generated | 2 |
 | production | 328 |
-| test | 2020 |
+| test | 2025 |
 | tooling | 612 |
 | unclassified | 2246 |
 
@@ -2699,6 +2699,7 @@
 | `.ci/release/evidence.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/risk-tags.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/agent-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/schemas/ci-route-plan.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-ux.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/generated-status-cell.schema.json` | config | `non-rust-ci-config` | release/ci |
@@ -8402,6 +8403,11 @@
 | `xtask/lsp_test/advanced_features.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `xtask/lsp_test/test_features.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `xtask/lsp_test/test_suite.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `xtask/tests/fixtures/ci-route-plan/digests.json` | test | `non-rust-ci-route-plan-golden-digests` | ci/route-plan |
+| `xtask/tests/fixtures/ci-route-plan/generate_golden.py` | test | `non-rust-ci-route-plan-golden-generator` | ci/route-plan |
+| `xtask/tests/fixtures/ci-route-plan/payload-baseline.json` | test | `non-rust-ci-route-plan-golden-payload` | ci/route-plan |
+| `xtask/tests/fixtures/ci-route-plan/semantic-baseline.json` | test | `non-rust-ci-route-plan-golden-vectors` | ci/route-plan |
+| `xtask/tests/fixtures/ci-route-plan/semantic-escaping.json` | test | `non-rust-ci-route-plan-golden-escaping` | ci/route-plan |
 | `xtask/tests/fixtures/compiler_lexical_cutline/invalid-continuation-token.json` | test | `non-rust-compiler-lexical-cutline-fixtures` | compiler |
 | `xtask/tests/fixtures/compiler_lexical_cutline/invalid-schema-version.json` | test | `non-rust-compiler-lexical-cutline-fixtures` | compiler |
 | `xtask/tests/fixtures/dependency-hygiene/machete-findings.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
