@@ -116,22 +116,23 @@ use std::fmt;
 use std::ops::ControlFlow;
 use strum::VariantNames as _;
 
-/// Maximum AST traversal depth for recursive *read* operations.
+/// Maximum AST traversal depth for recursive *read* operations that still
+/// use a call-stack guard.
 ///
-/// Guards [`Node::to_sexp`], [`Node::count_nodes`], and
-/// [`Node::find_deepest_containing_offset`] against stack-overflow panics on
-/// pathologically deep ASTs (e.g., thousands of nested blocks or expressions
-/// produced by malformed or adversarial input).
+/// Guards [`Node::to_sexp`] against stack-overflow panics on pathologically
+/// deep ASTs. Configured complete/truncated rendering of that projection is
+/// owned by issue 8832.
 ///
 /// Chosen at 512: typical Perl code nests fewer than 100 levels deep;
 /// 512 provides a comfortable safety margin while staying well within
 /// Rust's default 8 MB stack.
 ///
-/// This constant does **not** bound destruction, clone, equality, or debug
-/// formatting. [`Node`]'s [`Drop`], [`Clone`], [`PartialEq`], and [`Debug`]
-/// implementations are iterative and do not consult this limit. [`Debug`] uses
-/// its own conservative budgets (`NODE_DEBUG_MAX_*`). See [`Node`] for the
-/// full depth-safety disposition.
+/// This constant does **not** bound destruction, clone, equality, debug
+/// formatting, [`Node::count_nodes`], or
+/// [`Node::find_deepest_containing_offset`]. Those exact whole-tree reads are
+/// iterative. Bounded variants expose [`AstReadResult`] instead of consulting
+/// this ceiling. [`Debug`] uses its own conservative budgets
+/// (`NODE_DEBUG_MAX_*`). See [`Node`] for the full depth-safety disposition.
 pub const MAX_AST_DEPTH: usize = 512;
 
 thread_local! {
@@ -320,9 +321,10 @@ define_field_ids! {
 ///   Callers that need configured complete or truncated state use the
 ///   typed renderer tracked by issue 8832.
 ///
-/// Whole-tree reads such as [`Node::count_nodes`] stay separately depth-guarded
-/// and may truncate; that is not a destruction, clone, equality, or debug
-/// concern.
+/// Exact whole-tree reads such as [`Node::count_nodes`] and
+/// [`Node::find_deepest_containing_offset`] are iterative over the canonical
+/// child visit table and do not silently truncate. Bounded variants return
+/// [`AstReadResult`]. [`Node::to_sexp`] remains separately depth-guarded.
 ///
 /// # Examples
 ///
@@ -1094,43 +1096,6 @@ impl Node {
         }
     }
 
-    /// Count the total number of nodes in this subtree (inclusive).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use perl_ast::{Node, NodeKind, SourceLocation};
-    ///
-    /// let loc = SourceLocation { start: 0, end: 1 };
-    /// let leaf = Node::new(NodeKind::Number { value: "1".to_string() }, loc);
-    /// assert_eq!(leaf.count_nodes(), 1);
-    ///
-    /// let program = Node::new(
-    ///     NodeKind::Program { statements: vec![leaf] },
-    ///     loc,
-    /// );
-    /// assert_eq!(program.count_nodes(), 2);
-    /// ```
-    pub fn count_nodes(&self) -> usize {
-        self.count_nodes_impl(0)
-    }
-
-    /// Depth-bounded recursive helper for [`count_nodes`].
-    ///
-    /// Stops recursing at [`MAX_AST_DEPTH`] and counts the current node as 1,
-    /// skipping any further descendants.  This prevents stack overflow on
-    /// pathologically deep ASTs while preserving exact counts for normal inputs.
-    fn count_nodes_impl(&self, depth: usize) -> usize {
-        if depth >= MAX_AST_DEPTH {
-            return 1;
-        }
-        let mut count = 1;
-        self.for_each_child(|child| {
-            count += child.count_nodes_impl(depth + 1);
-        });
-        count
-    }
-
     /// Collect direct child nodes into a vector for convenience APIs.
     ///
     /// # Examples
@@ -1184,71 +1149,6 @@ impl Node {
     #[inline]
     pub fn contains_offset(&self, offset: usize) -> bool {
         self.location.start <= offset && offset < self.location.end
-    }
-
-    /// Find the most specific node whose source span contains `offset`.
-    ///
-    /// Returns `None` when `offset` is outside this node. Otherwise, returns this
-    /// node or the deepest descendant whose span contains the offset. This is useful
-    /// for LSP features that need to map a cursor byte offset to the smallest AST
-    /// construct at that position.
-    ///
-    /// The same half-open span semantics as [`Node::contains_offset`] apply: start
-    /// positions are inclusive and end positions are exclusive.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use perl_ast::{Node, NodeKind, SourceLocation};
-    ///
-    /// let left = Node::new(
-    ///     NodeKind::Identifier { name: "left".to_string() },
-    ///     SourceLocation { start: 0, end: 4 },
-    /// );
-    /// let right = Node::new(
-    ///     NodeKind::Number { value: "1".to_string() },
-    ///     SourceLocation { start: 7, end: 8 },
-    /// );
-    /// let expr = Node::new(
-    ///     NodeKind::Binary {
-    ///         op: "+".to_string(),
-    ///         left: Box::new(left),
-    ///         right: Box::new(right),
-    ///     },
-    ///     SourceLocation { start: 0, end: 8 },
-    /// );
-    ///
-    /// assert_eq!(
-    ///     expr.find_deepest_containing_offset(7).map(|node| node.kind.kind_name()),
-    ///     Some("Number"),
-    /// );
-    /// assert_eq!(expr.find_deepest_containing_offset(8), None);
-    /// ```
-    #[inline]
-    pub fn find_deepest_containing_offset(&self, offset: usize) -> Option<&Node> {
-        self.find_deepest_containing_offset_impl(offset, 0)
-    }
-
-    /// Depth-bounded recursive helper for [`find_deepest_containing_offset`].
-    ///
-    /// When [`MAX_AST_DEPTH`] is reached, returns `Some(self)` rather than
-    /// recursing into children.  The caller already knows `self` contains
-    /// `offset` (the outer `contains_offset` check passed), so the result
-    /// is still a valid, containing node — just not necessarily the deepest one.
-    fn find_deepest_containing_offset_impl(&self, offset: usize, depth: usize) -> Option<&Node> {
-        if !self.contains_offset(offset) {
-            return None;
-        }
-        if depth >= MAX_AST_DEPTH {
-            return Some(self);
-        }
-        let mut result = self;
-        self.for_each_child(|child| {
-            if let Some(descendant) = child.find_deepest_containing_offset_impl(offset, depth + 1) {
-                result = descendant;
-            }
-        });
-        Some(result)
     }
 
     /// Returns the byte length of this node's source span.
@@ -1341,10 +1241,15 @@ impl Drop for Node {
 mod node_clone;
 mod node_debug;
 mod node_eq;
+mod read_cursor;
 
 pub use node_debug::{
     NODE_DEBUG_MAX_BYTES, NODE_DEBUG_MAX_CHILDREN, NODE_DEBUG_MAX_DEPTH, NODE_DEBUG_MAX_NODES,
     NODE_DEBUG_MAX_PAYLOAD_CHARS, NODE_DEBUG_TRUNCATION_MARKER,
+};
+pub use read_cursor::{
+    AstReadExact, AstReadInstrumentCause, AstReadLimits, AstReadPath, AstReadPathStep,
+    AstReadResult, AstReadTruncation, AstReadWork, DeepestContainingMatch,
 };
 
 #[cfg(test)]
@@ -3522,10 +3427,9 @@ mod tests {
 // Depth-guard regression tests (--lib coverage for Codecov/Patch 95)
 // ---------------------------------------------------------------------------
 //
-// These tests verify that the three recursive AST operations — `to_sexp`,
-// `count_nodes`, and `find_deepest_containing_offset` — do NOT overflow the
-// stack on a pathologically deep input (50 000 levels), and that the depth
-// guard is transparent for shallow inputs that are well within MAX_AST_DEPTH.
+// These tests verify that `to_sexp` stays depth-guarded (#8832) and that
+// exact whole-tree reads (`count_nodes`, `find_deepest_containing_offset`)
+// complete iteratively on a pathologically deep input (50 000 levels).
 //
 // The tree is built iteratively (no recursion in the fixture builder itself),
 // so the fixture construction cannot itself overflow the stack.
@@ -3559,17 +3463,12 @@ mod depth_guard_tests {
 
     #[test]
     fn count_nodes_does_not_overflow_on_deep_input() -> TestResult {
-        // 50 000 levels deep: without the depth guard this stack-overflows.
+        // 50 000 levels deep: the exact iterative walk must return the
+        // independently constructed size, not a MAX_AST_DEPTH-truncated count.
         let deep = deep_chain(50_000);
         let count = deep.count_nodes();
         drop(deep);
-        // The guard fires at MAX_AST_DEPTH, so we count at most MAX_AST_DEPTH + 1
-        // nodes (root + one per guarded level).
-        assert!(count >= 1, "must count at least the root node");
-        assert!(
-            count <= MAX_AST_DEPTH + 2,
-            "count ({count}) must be bounded by the depth guard (MAX_AST_DEPTH={MAX_AST_DEPTH})"
-        );
+        assert_eq!(count, 50_001, "exact count must include every wrapper and the leaf");
         Ok(())
     }
 
@@ -3640,12 +3539,13 @@ mod depth_guard_tests {
 
     #[test]
     fn find_deepest_containing_offset_does_not_overflow_on_deep_input() -> TestResult {
-        // 50 000 levels deep: without the depth guard this stack-overflows.
+        // 50 000 levels deep: exact lookup must reach the leaf, not a node
+        // frozen at MAX_AST_DEPTH.
         let deep = deep_chain(50_000);
-        // Must return without panicking; result must be Some (offset 0 is inside the root).
-        assert!(
-            deep.find_deepest_containing_offset(0).is_some(),
-            "must return Some(&Node) for an in-range offset"
+        assert_eq!(
+            deep.find_deepest_containing_offset(0).map(|node| node.kind.kind_name()),
+            Some("Number"),
+            "must return the leaf, not a truncated wrapper"
         );
         drop(deep);
         Ok(())
@@ -4352,10 +4252,21 @@ mod deep_tree_destruction_tests {
                 "explicit clone stack must grow with chain depth, got {}",
                 work.max_explicit_stack_depth
             );
-            let bounded_population = cloned.count_nodes() as u64;
+            let truncated_population = match cloned
+                .count_nodes_bounded(AstReadLimits::max_depth(MAX_AST_DEPTH))
+            {
+                AstReadResult::Truncated { partial, .. } => partial as u64,
+                other => {
+                    assert!(
+                        matches!(other, AstReadResult::Truncated { .. }),
+                        "50k clone fixture must still truncate a depth-512 bounded read, got {other:?}"
+                    );
+                    0
+                }
+            };
             assert!(
-                bounded_population < work.nodes_rebuilt,
-                "work must record performed clone operations ({}) rather than depth-bounded population ({bounded_population})",
+                truncated_population < work.nodes_rebuilt,
+                "clone work must record performed rebuilds ({}) rather than a depth-512 truncated read ({truncated_population})",
                 work.nodes_rebuilt
             );
             assert_boxed_chain_eq(&original, &cloned, DEEP_DEPTH);
