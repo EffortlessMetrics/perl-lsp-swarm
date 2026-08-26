@@ -2907,6 +2907,22 @@ created = "2026-08-25"
 review_after = "2026-09-25"
 
 [[allow]]
+id = "non-rust-litexl-init-completion-item-identity-tests"
+path = "clients/lite-xl/tests/init_completion_item_identity_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Deterministic framework-free completion item identity suite proving that distinct candidates sharing one display label all remain selectable under response-scoped collision-free keys with retained source position and display text, that each duplicate resolves and applies exactly its own bytes without cross-contaminating its sibling's description or resolve state, that byte-identical duplicates follow the declared preserve-all policy with exactly-once application, and that superseded same-label rows refuse after edits or newer responses; runs against the staged module or current main for red-first checks and against single-behavior mutations for falsifier checks."
+covered_by = [
+  "lua clients/lite-xl/tests/init_completion_item_identity_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-25"
+review_after = "2026-09-25"
+
+[[allow]]
 id = "non-rust-litexl-init-show-document-outcome-tests"
 path = "clients/lite-xl/tests/init_show_document_outcome_test.lua"
 kind = "editor_extension_test"

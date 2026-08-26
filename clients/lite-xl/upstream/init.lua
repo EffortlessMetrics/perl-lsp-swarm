@@ -2221,7 +2221,7 @@ function lsp.request_completion(doc, line, col, forced)
           }
 
           local symbol_count = 1
-          for _, symbol in ipairs(result.items) do
+          for items_index, symbol in ipairs(result.items) do
             local label = symbol.label
               or (
                 symbol.textEdit
@@ -2275,13 +2275,35 @@ function lsp.request_completion(doc, line, col, forced)
             desc = desc:gsub("[%s\n]+$", "")
               :gsub("\n\n\n+", "\n\n")
 
-            symbols.items[label] = {
+            -- Local patch (#11189): display labels are not protocol item
+            -- identity, so distinct candidates sharing one label must all
+            -- remain selectable. Keys stay scoped to this exact admitted
+            -- response: the first occurrence of a label keeps its plain
+            -- label as the menu key and every later occurrence gains a
+            -- deterministic source-order suffix. Insertion bytes still come
+            -- only from the original item fields through onselect, so no
+            -- visible or inserted text is ever mutated by this identity.
+            local item_key = label
+            if symbols.items[item_key] then
+              local occurrence = 2
+              while symbols.items[label .. "#" .. occurrence] do
+                occurrence = occurrence + 1
+              end
+              item_key = label .. "#" .. occurrence
+            end
+
+            symbols.items[item_key] = {
               info = info,
               desc = desc,
               data = {
                 -- Local patch (#11108): carry the admitted request subject
                 -- so deferred edit application revalidates at select time.
                 server = server, completion_item = symbol, subject = subject,
+                -- Local patch (#11189): retained response-scoped identity of
+                -- this candidate - original result position and the exact
+                -- display text - independent of the collision-free key above.
+                item_index = items_index,
+                display_label = label,
                 -- Local patch (#11188): one structured pre-apply resolve
                 -- state per item; selection and hover share it.
                 resolve = new_completion_resolve_state(server, symbol, subject)
@@ -2294,7 +2316,7 @@ function lsp.request_completion(doc, line, col, forced)
               and
               not symbol.documentation
             then
-              symbols.items[label].onhover = autocomplete_onhover
+              symbols.items[item_key].onhover = autocomplete_onhover
             end
 
             symbol_count = symbol_count + 1
