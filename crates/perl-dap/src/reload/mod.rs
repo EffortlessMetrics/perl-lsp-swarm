@@ -47,6 +47,12 @@
 //!   for the four candidate mechanisms. Compile success is never reload
 //!   success, and no external module (for example Class::Refresh) becomes
 //!   product authority merely by being available.
+//! - **Live measurement** ([`measurement`], #10098): the controlled
+//!   real-Perl harness that records each directly measurable mechanism's
+//!   actual state limits as typed facts, and every boundary the harness
+//!   cannot measure as a typed unmeasured boundary. Measurement adds
+//!   evidence against the frozen record; it never rewrites the frozen
+//!   vocabularies.
 //!
 //! # Authority
 //!
@@ -60,6 +66,7 @@
 mod eligibility;
 mod generation;
 mod invalidation;
+mod measurement;
 mod mechanism;
 mod subject;
 mod surface;
@@ -75,6 +82,10 @@ pub use generation::{
 pub use invalidation::{
     DapObjectKind, DapReferenceBinding, InvalidationDisposition, InvalidationPlanError,
     ReloadInvalidationPlan, invalidation_plan_for, reference_is_stale, verify_invalidation_plan,
+};
+pub use measurement::{
+    MeasuredStateFact, MeasurementRecordError, MechanismMeasurement, UnmeasuredBoundary,
+    measure_mechanism_on_real_perl, verify_measurement,
 };
 pub use mechanism::{
     MechanismClaim, MechanismClaims, MechanismRecordError, ReloadMechanism, ReloadMechanismRecord,

@@ -48,7 +48,8 @@
 //! baseline registry consumed by the #10962 fan-in. Additive family catalogs
 //! (#11381 freshness in [`freshness`], #11384 format-on-save in
 //! [`save_format`], #11388 expanded activation in [`activation`], #11386
-//! server-generation recovery in [`recovery`]; later #11387 host-reopen)
+//! server-generation recovery in [`recovery`], #11387 host-reopen/repeated
+//! session in [`lifecycle`])
 //! register through this same API as sibling modules: they declare their own
 //! scenario ledger, fixture substrate, result vocabulary, and stage bound, and
 //! they can neither steal a baseline scenario nor shift a baseline cell's
@@ -63,6 +64,7 @@
 pub mod activation;
 pub mod baseline;
 pub mod freshness;
+pub mod lifecycle;
 pub mod recovery;
 pub mod save_format;
 pub mod scenario_ledger;
@@ -270,6 +272,7 @@ pub fn scenario_ledgers() -> Vec<ScenarioLedger> {
         save_format::save_action_ledger(),
         activation::activation_action_ledger(),
         recovery::recovery_action_ledger(),
+        lifecycle::lifecycle_action_ledger(),
     ]
 }
 
@@ -283,6 +286,7 @@ pub fn registry() -> Vec<CellCatalog> {
         save_format::save_catalog(),
         activation::activation_catalog(),
         recovery::recovery_catalog(),
+        lifecycle::lifecycle_catalog(),
     ]
 }
 
@@ -294,6 +298,7 @@ pub fn validate_compiled_registry() -> Result<RegistrySummary> {
     save_format::validate_family_laws()?;
     activation::validate_family_laws()?;
     recovery::validate_family_laws()?;
+    lifecycle::validate_family_laws()?;
     Ok(summary)
 }
 
