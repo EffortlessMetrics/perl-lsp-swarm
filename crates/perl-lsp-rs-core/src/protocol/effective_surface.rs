@@ -358,6 +358,44 @@ pub enum DowngradeReason {
     },
 }
 
+/// Why the file-watcher registration was withheld for one subject.
+///
+/// Exactly one cause is recorded, evaluated in admission-conjunction order,
+/// so a runtime-tuning withholding stays distinct from a client or
+/// compatibility cause (#9665 rule 6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum WatcherWithholdReason {
+    /// The client did not affirmatively declare dynamic file-watcher support.
+    ClientUnsupported,
+    /// No active workspace-symbol surface remains for the watcher to serve.
+    WorkspaceSurfaceInactive,
+    /// A reviewed runtime availability input withheld the plan.
+    RuntimeUnavailable {
+        /// Reviewed input that withheld the plan (`runtime_tuning.*`).
+        input: &'static str,
+    },
+    /// An admitted compatibility exception force-disables the flow.
+    CompatibilityException {
+        /// The admitted exception.
+        exception: KnownException,
+    },
+}
+
+/// Typed file-watcher registration decision for one subject.
+///
+/// Still a plan-level decision: activation belongs to S04.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum WatcherPlanDecision {
+    /// The watcher registration is part of the plan.
+    Planned,
+    /// The plan omits the watcher registration for exactly one reviewed cause.
+    Withheld(WatcherWithholdReason),
+}
+
 /// Planned dynamic registration descriptor (a plan — never active state).
 ///
 /// Active registration state requires accepted client success through the
@@ -466,14 +504,17 @@ pub struct TextSyncContract {
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum DiagnosticTransport {
-    /// Client declared `textDocument.diagnostic` and no compatibility
-    /// exception retains push publishing; push is suppressed.
+    /// Client declared `textDocument.diagnostic`, the final surface
+    /// advertises the pull family, and no compatibility exception retains
+    /// push publishing; push is suppressed.
     PullPreferred,
     /// Push publishing remains the transport.
     PushOnly(PushTransportReason),
 }
 
 /// Why push publishing remains active.
+///
+/// Every cause is a reviewed final-selection fact, never an ambient probe.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
@@ -482,6 +523,10 @@ pub enum PushTransportReason {
     NoClientSignal,
     /// A compatibility exception retains push publishing.
     ClientCompatibility(KnownException),
+    /// The final surface does not advertise pull diagnostics (profile
+    /// exclusion or configuration suppression), so the client was never
+    /// offered the transport whose absence would justify suppressing push.
+    PullNotAdvertised,
 }
 
 /// Refresh-request families tracked by the plan.
@@ -644,7 +689,7 @@ impl SurfaceInputs {
             "compatibility_exceptions": exceptions,
             "client": self.client,
             "command_ids": self.command_ids,
-            "runtime_reviewed_input_count": 0_usize,
+            "runtime": self.runtime,
         });
         let serialized = serde_json::to_string(&payload).unwrap_or_default();
         let digest_bytes = Sha256::digest(serialized.as_bytes());
@@ -698,6 +743,9 @@ pub struct EffectiveLspSurface {
     pub server_capabilities: serde_json::Value,
     /// The one dynamic registration/unregistration plan.
     pub registration_plan: RegistrationPlan,
+    /// Typed file-watcher plan decision (planned, or the exact reviewed
+    /// withholding cause).
+    pub watcher_registration_decision: WatcherPlanDecision,
     /// Planned refresh-request decisions.
     pub refresh_plan: BTreeMap<RefreshFamily, RefreshDecision>,
     /// Effective advertised feature IDs, derived after suppression.
@@ -886,6 +934,21 @@ impl EffectiveLspSurface {
             && flags.workspace_symbol
             && inputs.runtime.file_watchers_enabled
             && !jetbrains_watcher_off;
+        let watcher_registration_decision = if watcher_admitted {
+            WatcherPlanDecision::Planned
+        } else if !client.dynamic_file_watcher_registration.is_supported() {
+            WatcherPlanDecision::Withheld(WatcherWithholdReason::ClientUnsupported)
+        } else if !flags.workspace_symbol {
+            WatcherPlanDecision::Withheld(WatcherWithholdReason::WorkspaceSurfaceInactive)
+        } else if !inputs.runtime.file_watchers_enabled {
+            WatcherPlanDecision::Withheld(WatcherWithholdReason::RuntimeUnavailable {
+                input: "runtime_tuning.file_watchers",
+            })
+        } else {
+            WatcherPlanDecision::Withheld(WatcherWithholdReason::CompatibilityException {
+                exception: KnownException::JetBrainsWatcherForceDisable,
+            })
+        };
         if watcher_admitted {
             registrations.push(PlannedDynamic {
                 registration_id: "perl-didChangeWatchedFiles",
@@ -905,7 +968,21 @@ impl EffectiveLspSurface {
         let refresh_plan = build_refresh_plan(&flags, &client.refresh_supports);
 
         // ---- effective identities (derived AFTER suppression) -------------
-        let advertised_feature_ids = flags.to_feature_ids();
+        // Identities come from the final family outcomes (#9665 item 5),
+        // never the pre-client flag set: a family withheld for any reviewed
+        // reason contributes no advertised ID. Families without a canonical
+        // `lsp.*` configuration identity (position encoding, text sync,
+        // workspace, experimental stream) contribute none either.
+        let advertised_feature_ids: Vec<&'static str> = {
+            let mut ids = BTreeSet::new();
+            for (family, outcome) in &families {
+                let feature_id = family.feature_id();
+                if feature_id != "n/a" && outcome.is_effectively_advertised() {
+                    ids.insert(feature_id);
+                }
+            }
+            ids.into_iter().collect()
+        };
         #[allow(unused_mut)]
         let mut command_ids = if flags.execute_command {
             inputs.command_ids.clone()
@@ -931,7 +1008,14 @@ impl EffectiveLspSurface {
         };
 
         // ---- diagnostic transport ------------------------------------------
-        let diagnostic_transport = if client.diagnostic_pull.is_present() {
+        // Pull is preferred only when the final surface actually advertises
+        // the pull family (the same predicate that projects
+        // `diagnosticProvider`); suppressing push for a transport the client
+        // was never offered would lose diagnostics.
+        let diagnostic_transport = if !projects_static(&families, CapabilityFamily::PullDiagnostic)
+        {
+            DiagnosticTransport::PushOnly(PushTransportReason::PullNotAdvertised)
+        } else if client.diagnostic_pull.is_present() {
             if opencode_retained {
                 DiagnosticTransport::PushOnly(PushTransportReason::ClientCompatibility(
                     KnownException::OpenCodePushDiagnosticsRetention,
@@ -961,6 +1045,7 @@ impl EffectiveLspSurface {
             families,
             server_capabilities,
             registration_plan,
+            watcher_registration_decision,
             refresh_plan,
             advertised_feature_ids,
             command_ids,

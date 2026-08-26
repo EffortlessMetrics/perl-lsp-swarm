@@ -22,6 +22,7 @@ use super::capabilities::{apply_disabled_feature_id, disabled_feature_ids_from_i
 use perl_lsp_rs_core::features::policy::FeatureProfile;
 use perl_lsp_rs_core::protocol::capabilities::{BuildFlags, get_supported_commands};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
 
 use perl_lsp_rs_core::protocol::effective_surface::{
@@ -156,10 +157,21 @@ fn assert_initialize_matches_model(params: Value) -> EffectiveLspSurface {
         Some(&surface.server_capabilities),
         "model projection must equal the shipped initialize capabilities"
     );
-    assert_eq!(
-        server.advertised_feature_ids.lock().clone(),
-        surface.advertised_feature_ids,
-        "effective advertised identities must derive from the same selection"
+    // The model derives identities from final family outcomes (#9665 item
+    // 5); the shipped runtime still persists post-configuration flag IDs
+    // (`capabilities.rs`). The one permitted live disagreement is the
+    // inline-completion tri-state row (MUT_INLINE_COMPLETION_TRI_STATE,
+    // #9662): without a client declaration the wire omits the provider while
+    // the runtime ID list keeps it. S03 owns removing this twin delta; any
+    // other divergence fails here.
+    let runtime_ids: BTreeSet<&str> = server.advertised_feature_ids.lock().clone().into_iter().collect();
+    let model_ids: BTreeSet<&str> = surface.advertised_feature_ids.iter().copied().collect();
+    let disagreements: Vec<&str> =
+        runtime_ids.symmetric_difference(&model_ids).copied().collect();
+    assert!(
+        disagreements.iter().all(|id| *id == "lsp.inline_completion"),
+        "only the inline-completion tri-state twin may disagree with the \
+         model's effective identities (S03 owns removal): {disagreements:?}"
     );
     surface
 }

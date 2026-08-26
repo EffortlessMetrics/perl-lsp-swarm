@@ -14,7 +14,7 @@ use super::{
     CapabilityFamily, ClientFact, ClientSurfaceEvidence, DiagnosticTransport, DowngradeReason,
     EffectiveLspSurface, FamilyOutcome, FileOperationFacts, KnownException, PlannedDynamic,
     PositionEncoding, PushTransportReason, RefreshFamily, RegistrationOptionsShape,
-    SuppressionReason, SurfaceInputs,
+    SuppressionReason, SurfaceInputs, WatcherPlanDecision, WatcherWithholdReason,
 };
 use crate::features::policy::FeatureProfile;
 use crate::protocol::capabilities::{BuildFlags, capabilities_json, get_supported_commands};
@@ -68,6 +68,23 @@ fn digest_changes_when_configuration_generation_changes() {
     let plain = build_ok(&bare_inputs(FeatureProfile::Production));
     let suppressed = build_ok(&with_disabled);
     assert_ne!(plain.input_digest, suppressed.input_digest);
+}
+
+#[test]
+fn digest_binds_the_reviewed_runtime_input() {
+    // Two subjects that differ only in runtime tuning must not share a
+    // receipt: the registration plans differ, so the digest must identify
+    // which runtime decision produced each (#9665 item 8).
+    let mut tuned_off = bare_inputs(FeatureProfile::Production);
+    tuned_off.client.dynamic_file_watcher_registration = ClientFact::Supported;
+    tuned_off.runtime.file_watchers_enabled = false;
+    let mut tuned_on = tuned_off.clone();
+    tuned_on.runtime.file_watchers_enabled = true;
+
+    let off = build_ok(&tuned_off);
+    let on = build_ok(&tuned_on);
+    assert_ne!(off.input_digest, on.input_digest);
+    assert_ne!(off.registration_plan, on.registration_plan);
 }
 
 #[test]
@@ -283,12 +300,22 @@ fn watcher_registration_requires_claimed_support_active_symbol_and_no_jetbrains_
         }] => {}
         other => panic!("expected watcher registration with relative patterns, got {other:?}"),
     }
+    assert_eq!(
+        admitted.watcher_registration_decision,
+        WatcherPlanDecision::Planned,
+        "the admitted subject records a typed planned decision"
+    );
 
-    // Without claimed support: no registration.
+    // Without claimed support: no registration, and the cause is the
+    // client's missing declaration.
     let mut unclaimed = base();
     unclaimed.client.dynamic_file_watcher_registration = ClientFact::DeclaredFalse;
     let refused = build_ok(&unclaimed);
     assert!(refused.registration_plan.registrations.is_empty());
+    assert_eq!(
+        refused.watcher_registration_decision,
+        WatcherPlanDecision::Withheld(WatcherWithholdReason::ClientUnsupported),
+    );
 
     // With the JetBrains compatibility exception: force-disabled.
     let mut jetbrains = base();
@@ -297,6 +324,12 @@ fn watcher_registration_requires_claimed_support_active_symbol_and_no_jetbrains_
     assert!(
         forced_off.registration_plan.registrations.is_empty(),
         "compatibility exception removes the planned registration"
+    );
+    assert_eq!(
+        forced_off.watcher_registration_decision,
+        WatcherPlanDecision::Withheld(WatcherWithholdReason::CompatibilityException {
+            exception: KnownException::JetBrainsWatcherForceDisable,
+        }),
     );
     assert!(forced_off
         .compatibility_exceptions_applied
@@ -428,6 +461,13 @@ fn runtime_tuning_file_watchers_gate_suppresses_only_the_registration_plan() {
         surface.families.get(&CapabilityFamily::WorkspaceSymbol) == Some(&FamilyOutcome::Static),
         "tuning gates the plan, never the advertised static surface"
     );
+    assert_eq!(
+        surface.watcher_registration_decision,
+        WatcherPlanDecision::Withheld(WatcherWithholdReason::RuntimeUnavailable {
+            input: "runtime_tuning.file_watchers",
+        }),
+        "runtime withholding is a typed decision, not a silently empty plan"
+    );
 }
 
 #[test]
@@ -449,6 +489,33 @@ fn advertised_ids_are_derived_after_configuration_suppression() {
     // Wire agrees: completionProvider absent after suppression.
     assert!(surface.server_capabilities.get("completionProvider").is_none());
     assert!(surface.server_capabilities.get("semanticTokensProvider").is_none());
+}
+
+#[test]
+fn advertised_ids_derive_from_final_family_outcomes_not_client_unsuppressed_flags() {
+    // Compiled in but never declared by the client: the final family outcome
+    // is UnadvertisedUnsupported, so the effective identity must be absent
+    // even though the post-configuration flag set still carries it
+    // (#9665 item 5 and its negative control).
+    let no_signal = build_ok(&bare_inputs(FeatureProfile::Production));
+    assert_eq!(
+        no_signal.families.get(&CapabilityFamily::InlineCompletion),
+        Some(&FamilyOutcome::UnadvertisedUnsupported),
+    );
+    assert!(
+        !no_signal.advertised_feature_ids.contains(&"lsp.inline_completion"),
+        "an unadvertised family must not appear in effective identities"
+    );
+
+    // Declared with dynamic support: delivered through the plan, identity
+    // present (the downgraded outcome is effectively advertised).
+    let mut client = bare_client();
+    client.inline_completion = ClientFact::Supported;
+    client.inline_completion_dynamic_registration = ClientFact::Supported;
+    let mut declared = bare_inputs(FeatureProfile::Production);
+    declared.client = client;
+    let planned = build_ok(&declared);
+    assert!(planned.advertised_feature_ids.contains(&"lsp.inline_completion"));
 }
 
 #[test]
@@ -511,6 +578,24 @@ fn opencode_compatibility_downgrades_transport_but_not_advertisement() {
     assert_eq!(
         silent.diagnostic_transport,
         DiagnosticTransport::PushOnly(PushTransportReason::NoClientSignal)
+    );
+}
+
+#[test]
+fn transport_requires_an_effectively_advertised_pull_family() {
+    // The client declares pull diagnostics, but configuration suppressed
+    // lsp.pull_diagnostics: diagnosticProvider is absent from the final
+    // surface, so push publishing must remain instead of being suppressed
+    // for a transport the server never offered.
+    let mut suppressed = bare_inputs(FeatureProfile::Production);
+    suppressed.client.diagnostic_pull = ClientFact::Supported;
+    suppressed.disabled_feature_ids.insert("lsp.pull_diagnostics".to_string());
+    let surface = build_ok(&suppressed);
+    assert!(surface.server_capabilities.get("diagnosticProvider").is_none());
+    assert_eq!(
+        surface.diagnostic_transport,
+        DiagnosticTransport::PushOnly(PushTransportReason::PullNotAdvertised),
+        "push survives when pull is withheld by configuration"
     );
 }
 
