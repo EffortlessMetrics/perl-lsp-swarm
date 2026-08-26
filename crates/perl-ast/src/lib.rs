@@ -65,8 +65,10 @@
 //! bound, and truncation is visible. Rust [`Debug`] is not machine identity.
 //! Exact whole-tree reads (`count_nodes`, `find_deepest_containing_offset`) are
 //! iterative over the #8424 visit table and do not silently truncate; bounded
-//! variants expose [`AstReadResult`]. [`Node::to_sexp`] remains separately
-//! depth-guarded. See [`Node`] for the operation-by-operation contract.
+//! variants expose [`AstReadResult`]. [`Node::render_debug_sexp`] is the iterative
+//! bounded native debug renderer (`Complete` / `Truncated` / `InstrumentFailure`).
+//! [`Node::to_sexp`] is a `String` convenience over that engine and cannot prove
+//! completeness. See [`Node`] for the operation-by-operation contract.
 
 pub mod ast;
 /// Static classification metadata for [`NodeKind`] variants: categories and flags.
@@ -92,7 +94,9 @@ pub use ast::GotoTargetForm;
 pub use ast::{
     AstReadExact, AstReadInstrumentCause, AstReadLimits, AstReadPath, AstReadPathStep,
     AstReadResult, AstReadTruncation, AstReadWork, DeepestContainingMatch, FieldId,
-    NATIVE_DEBUG_SEXP_DEPTH_LIMIT_MARKER, NATIVE_DEBUG_SEXP_GRAMMAR, Node, NodeKind,
+    NATIVE_DEBUG_SEXP_DEPTH_LIMIT_MARKER, NATIVE_DEBUG_SEXP_GRAMMAR,
+    NativeDebugSexpInstrumentCause, NativeDebugSexpLimits, NativeDebugSexpOmitted,
+    NativeDebugSexpResult, NativeDebugSexpTruncation, NativeDebugSexpWork, Node, NodeKind,
 };
 /// Exhaustive AST invariant policy types and registry.
 pub use invariant_policy::{

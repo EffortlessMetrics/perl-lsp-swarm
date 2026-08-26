@@ -35,6 +35,36 @@
 //! assert_eq!(TokenKind::Identifier.display_name(), "identifier");
 //! assert_eq!(TokenKind::Eof.display_name(), "end of input");
 //! ```
+//!
+//! # Evolution policy (#2898)
+//!
+//! | Type | Disposition |
+//! |------|-------------|
+//! | [`TokenKind`] | closed / exhaustive public enum |
+//! | [`Token`], [`TokenRef`], [`TokenSpan`], [`TokenSpanError`], [`TokenCategory`], [`TokenKindMetadata`] | `#[non_exhaustive]` |
+//! | `TokenOrigin`, `TokenStatus` | not types in this crate |
+//!
+//! ```compile_fail
+//! use perl_token::TokenOrigin;
+//! ```
+//!
+//! ```compile_fail
+//! use perl_token::TokenStatus;
+//! ```
+//!
+//! Crate-private construction after proven invariants (`from_ordered`,
+//! `from_valid_parts`) is not part of the public API:
+//!
+//! ```compile_fail
+//! use perl_token::TokenSpan;
+//! let _ = TokenSpan::from_ordered(0, 1);
+//! ```
+//!
+//! ```compile_fail
+//! use perl_token::{Token, TokenKind};
+//! use std::sync::Arc;
+//! let _ = Token::from_valid_parts(TokenKind::Identifier, Arc::from("x"), 0, 1);
+//! ```
 
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used, clippy::panic))]
@@ -104,6 +134,15 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("Identifier"));
         assert!(msg.contains("7"));
+    }
+
+    #[test]
+    fn token_span_error_display_text_length_mismatch() {
+        let err = TokenSpanError::TextLengthMismatch { text_len: 5, span_len: 1, start: 0, end: 1 };
+        let msg = err.to_string();
+        assert!(msg.contains("5"));
+        assert!(msg.contains("1"));
+        assert!(msg.contains("0"));
     }
 
     // --- Token ---
@@ -598,6 +637,14 @@ mod tests {
         assert_eq!(
             TokenRef::new_checked(TokenKind::Identifier, "", 5, 5),
             Err(TokenSpanError::EmptySpanNotAllowed { kind: TokenKind::Identifier, at: 5 })
+        );
+    }
+
+    #[test]
+    fn token_ref_new_checked_rejects_text_length_mismatch() {
+        assert_eq!(
+            TokenRef::new_checked(TokenKind::Identifier, "hello", 0, 1),
+            Err(TokenSpanError::TextLengthMismatch { text_len: 5, span_len: 1, start: 0, end: 1 })
         );
     }
 }
