@@ -297,6 +297,54 @@ fn nested_and_concurrent_walks_do_not_share_state() {
 }
 
 #[test]
+fn wide_program_count_is_linear_in_statement_count() {
+    const WIDTH: usize = 8_192;
+    let statements: Vec<Node> = (0..WIDTH).map(|i| number_leaf(i, i + 1)).collect();
+    let program = Node::new(NodeKind::Program { statements }, loc(0, WIDTH));
+    let expected = WIDTH + 1;
+    match program.count_nodes_exact() {
+        AstReadExact::Complete { value, work } => {
+            assert_eq!(value, expected, "wide Program count must equal statements + root");
+            assert_eq!(work.edges_visited, WIDTH);
+        }
+        other => {
+            assert!(
+                matches!(other, AstReadExact::Complete { .. }),
+                "wide Program exact count must complete, got {other:?}"
+            );
+        }
+    }
+    assert_eq!(
+        program.find_deepest_containing_offset(WIDTH - 1).map(|node| node.kind.kind_name()),
+        Some("Number"),
+        "lookup into the last statement must not quadratic-walk earlier siblings to death"
+    );
+}
+
+#[test]
+fn child_outside_root_span_cannot_match() {
+    let child = number_leaf(5, 8);
+    let root = Node::new(NodeKind::Program { statements: vec![child] }, loc(0, 3));
+    assert_eq!(
+        root.find_deepest_containing_offset(5),
+        None,
+        "a recovery child outside the root span must not win at an offset the root does not contain"
+    );
+    match root.find_deepest_containing_offset_exact(5) {
+        AstReadExact::Complete { value: None, work } => {
+            assert_eq!(work.nodes_visited, 0);
+            assert_eq!(work.edges_visited, 0);
+        }
+        other => {
+            assert!(
+                matches!(other, AstReadExact::Complete { value: None, .. }),
+                "expected complete None without descending, got {other:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn bounded_node_limit_is_independent_of_depth_limit() {
     let tree = deep_chain(8);
     match tree.count_nodes_bounded(AstReadLimits::max_nodes(3)) {

@@ -8,7 +8,6 @@
 
 use super::{FieldId, Node};
 use std::cmp::Ordering;
-use std::ops::ControlFlow;
 
 /// Counted nodes and child edges actually walked by one read.
 ///
@@ -53,6 +52,9 @@ pub enum AstReadTruncation {
 pub enum AstReadInstrumentCause {
     /// A checked node, edge, or child-index counter overflowed `usize`.
     WorkCounterOverflow,
+    /// An exact walk observed truncation even though no caller bound was
+    /// installed. This is an internal invariant failure, not a depth guard.
+    UnexpectedTruncation,
 }
 
 /// Caller-selected bounds for [`Node::count_nodes_bounded`] and
@@ -167,9 +169,13 @@ impl PartialOrd for AstReadPathStep {
 
 impl Ord for AstReadPathStep {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Visit-table sibling order, not FieldId name order: If/HashLiteral
-        // interleave reused field names, so name order is not canonical.
-        self.sibling_ordinal.cmp(&other.sibling_ordinal)
+        // Sibling ordinal is canonical visit order. Field name and kind are
+        // diagnostic identity: they must participate so Eq and Ord agree for
+        // public values that callers may insert into BTreeSet/BTreeMap.
+        self.sibling_ordinal
+            .cmp(&other.sibling_ordinal)
+            .then_with(|| self.field.map(FieldId::name).cmp(&other.field.map(FieldId::name)))
+            .then_with(|| self.kind_name.cmp(other.kind_name))
     }
 }
 
@@ -227,6 +233,22 @@ struct Frame<'a> {
     sibling_ordinal: usize,
     next_child: usize,
     yielded: bool,
+    children_loaded: bool,
+    children: Vec<(Option<FieldId>, &'a Node)>,
+}
+
+impl<'a> Frame<'a> {
+    fn new(node: &'a Node, field: Option<FieldId>, sibling_ordinal: usize) -> Self {
+        Self {
+            node,
+            field,
+            sibling_ordinal,
+            next_child: 0,
+            yielded: false,
+            children_loaded: false,
+            children: Vec::new(),
+        }
+    }
 }
 
 /// Internal borrowed DFS cursor. The stack is the canonical path.
@@ -242,38 +264,20 @@ enum Step<'a> {
     Done,
 }
 
-fn nth_child(node: &Node, index: usize) -> Option<(Option<FieldId>, &Node)> {
-    let mut current = 0usize;
-    let mut found = None;
-    let _ = node.try_for_each_child_with_field(|field, child| {
-        if current == index {
-            found = Some((field, child));
-            ControlFlow::Break(())
-        } else {
-            match current.checked_add(1) {
-                Some(next) => {
-                    current = next;
-                    ControlFlow::Continue(())
-                }
-                None => ControlFlow::Break(()),
-            }
-        }
-    });
-    found
+/// Load one node's children through the #8424 visit table once.
+///
+/// A later `next_child` index is O(1) into this snapshot. Restarting the
+/// visit table from child 0 on every sibling would be O(k²) at a `Program`
+/// with tens of thousands of statements.
+fn load_children(node: &Node) -> Vec<(Option<FieldId>, &Node)> {
+    let mut children = Vec::new();
+    node.for_each_child_with_field(|field, child| children.push((field, child)));
+    children
 }
 
 impl<'a> AstReadCursor<'a> {
     fn new(root: &'a Node) -> Self {
-        Self {
-            stack: vec![Frame {
-                node: root,
-                field: None,
-                sibling_ordinal: 0,
-                next_child: 0,
-                yielded: false,
-            }],
-            work: AstReadWork::default(),
-        }
+        Self { stack: vec![Frame::new(root, None, 0)], work: AstReadWork::default() }
     }
 
     fn depth(&self) -> usize {
@@ -330,21 +334,32 @@ impl<'a> AstReadCursor<'a> {
                 return Ok(Step::Node(node));
             }
 
-            let (parent, next_child) = match self.stack.last() {
-                Some(frame) => (frame.node, frame.next_child),
-                None => return Ok(Step::Done),
+            let next = {
+                let frame = match self.stack.last_mut() {
+                    Some(frame) => frame,
+                    None => return Ok(Step::Done),
+                };
+                if !frame.children_loaded {
+                    frame.children = load_children(frame.node);
+                    frame.children_loaded = true;
+                }
+                match frame.children.get(frame.next_child).copied() {
+                    None => None,
+                    Some((field, child)) => {
+                        let ordinal = frame.next_child;
+                        frame.next_child = frame
+                            .next_child
+                            .checked_add(1)
+                            .ok_or(AstReadInstrumentCause::WorkCounterOverflow)?;
+                        Some((field, child, ordinal))
+                    }
+                }
             };
-            match nth_child(parent, next_child) {
+            match next {
                 None => {
                     self.stack.pop();
                 }
-                Some((field, child)) => {
-                    let incremented = next_child
-                        .checked_add(1)
-                        .ok_or(AstReadInstrumentCause::WorkCounterOverflow)?;
-                    if let Some(frame) = self.stack.last_mut() {
-                        frame.next_child = incremented;
-                    }
+                Some((field, child, ordinal)) => {
                     if !should_descend(child) {
                         continue;
                     }
@@ -368,13 +383,7 @@ impl<'a> AstReadCursor<'a> {
                         .edges_visited
                         .checked_add(1)
                         .ok_or(AstReadInstrumentCause::WorkCounterOverflow)?;
-                    self.stack.push(Frame {
-                        node: child,
-                        field,
-                        sibling_ordinal: next_child,
-                        next_child: 0,
-                        yielded: false,
-                    });
+                    self.stack.push(Frame::new(child, field, ordinal));
                 }
             }
         }
@@ -407,11 +416,16 @@ fn walk_count(root: &Node, limits: AstReadLimits) -> AstReadResult<usize> {
     }
 }
 
-fn match_is_better(
-    best: &DeepestContainingMatch<'_>,
-    candidate: &DeepestContainingMatch<'_>,
-) -> bool {
-    candidate.depth > best.depth || (candidate.depth == best.depth && candidate.path < best.path)
+fn finish_match<'a>(
+    root: &'a Node,
+    best_node: Option<&'a Node>,
+    best_depth: usize,
+) -> Option<DeepestContainingMatch<'a>> {
+    best_node.map(|node| DeepestContainingMatch {
+        node,
+        depth: best_depth,
+        path: path_to(root, node),
+    })
 }
 
 fn walk_deepest<'a>(
@@ -419,26 +433,60 @@ fn walk_deepest<'a>(
     offset: usize,
     limits: AstReadLimits,
 ) -> AstReadResult<Option<DeepestContainingMatch<'a>>> {
+    // Preserve the pre-#8867 contract: a child whose span lies outside the
+    // walk root cannot match, even if the child itself contains `offset`.
+    if !root.contains_offset(offset) {
+        return AstReadResult::Complete { value: None, work: AstReadWork::default() };
+    }
     let mut cursor = AstReadCursor::new(root);
-    let mut best = None;
+    let mut best_node: Option<&Node> = None;
+    let mut best_depth = 0usize;
     loop {
         match cursor.advance(limits, |child| child.contains_offset(offset)) {
             Ok(Step::Node(node)) => {
                 if node.contains_offset(offset) {
-                    let candidate =
-                        DeepestContainingMatch { node, depth: cursor.depth(), path: cursor.path() };
-                    if best.as_ref().is_none_or(|current| match_is_better(current, &candidate)) {
-                        best = Some(candidate);
+                    let depth = cursor.depth();
+                    // Visit order is the canonical #8424 sequence, so the first
+                    // node at a given depth is the earliest path. Keep it unless
+                    // a strictly deeper containing node appears.
+                    if best_node.is_none() || depth > best_depth {
+                        best_node = Some(node);
+                        best_depth = depth;
                     }
                 }
             }
             Ok(Step::Truncated(reason)) => {
-                return AstReadResult::Truncated { reason, partial: best, work: cursor.work };
+                return AstReadResult::Truncated {
+                    reason,
+                    partial: finish_match(root, best_node, best_depth),
+                    work: cursor.work,
+                };
             }
             Ok(Step::Done) => {
-                return AstReadResult::Complete { value: best, work: cursor.work };
+                return AstReadResult::Complete {
+                    value: finish_match(root, best_node, best_depth),
+                    work: cursor.work,
+                };
             }
             Err(cause) => return AstReadResult::InstrumentFailure { cause },
+        }
+    }
+}
+
+/// Reconstruct the canonical visit-table path from `root` to `target`.
+///
+/// The walk already identified `target`. Materializing the path once at the
+/// end keeps a 50k-deep lookup from cloning path steps on every ancestor.
+fn path_to<'a>(root: &'a Node, target: &'a Node) -> AstReadPath {
+    if std::ptr::eq(root, target) {
+        return AstReadPath::default();
+    }
+    let mut cursor = AstReadCursor::new(root);
+    loop {
+        match cursor.advance(AstReadLimits::default(), |_| true) {
+            Ok(Step::Node(node)) if std::ptr::eq(node, target) => return cursor.path(),
+            Ok(Step::Node(_)) => {}
+            Ok(Step::Done | Step::Truncated(_)) | Err(_) => return AstReadPath::default(),
         }
     }
 }
@@ -449,7 +497,7 @@ fn exact_from_result<T>(result: AstReadResult<T>) -> AstReadExact<T> {
         AstReadResult::Truncated { .. } => AstReadExact::InstrumentFailure {
             // Exact walks never install a bound. Observing truncation here is
             // an internal invariant failure, not a depth-guard success.
-            cause: AstReadInstrumentCause::WorkCounterOverflow,
+            cause: AstReadInstrumentCause::UnexpectedTruncation,
         },
         AstReadResult::InstrumentFailure { cause } => AstReadExact::InstrumentFailure { cause },
     }
@@ -461,6 +509,12 @@ impl Node {
     /// The walk is iterative over [`Self::try_for_each_child_with_field`]. It
     /// cannot return a silently truncated size: callers that need incompleteness
     /// use [`Self::count_nodes_bounded`].
+    ///
+    /// [`AstReadExact::InstrumentFailure`] cannot arise from a finite owned
+    /// tree: a `usize` work counter cannot overflow while the tree remains
+    /// addressable. This convenience wrapper maps that unreachable arm to `0`
+    /// rather than panicking in library code. Call [`Self::count_nodes_exact`]
+    /// when the typed failure arm must be distinguished.
     ///
     /// # Examples
     ///
@@ -662,6 +716,72 @@ mod tests {
                 "{}: read cursor must emit the #8424 visit sequence",
                 fixture.sample.kind.kind_name()
             );
+        }
+    }
+
+    #[test]
+    fn path_step_ord_agrees_with_eq_when_ordinals_match() {
+        use std::collections::BTreeSet;
+        let left = AstReadPathStep {
+            field: Some(FieldId::EXPRESSION),
+            sibling_ordinal: 0,
+            kind_name: "Number",
+        };
+        let right = AstReadPathStep {
+            field: Some(FieldId::STATEMENTS),
+            sibling_ordinal: 0,
+            kind_name: "Identifier",
+        };
+        assert_ne!(left, right);
+        let mut set = BTreeSet::new();
+        assert!(set.insert(left));
+        assert!(
+            set.insert(right),
+            "Ord that ignores field/kind would collapse distinct Eq values in BTreeSet"
+        );
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn wide_program_loads_children_once_and_counts_exactly() {
+        const WIDTH: usize = 4_096;
+        let statements: Vec<Node> = (0..WIDTH)
+            .map(|i| {
+                Node::new(
+                    NodeKind::Number { value: "1".into() },
+                    SourceLocation { start: i, end: i + 1 },
+                )
+            })
+            .collect();
+        let program =
+            Node::new(NodeKind::Program { statements }, SourceLocation { start: 0, end: WIDTH });
+        let expected = WIDTH + 1;
+        match program.count_nodes_exact() {
+            AstReadExact::Complete { value, work } => {
+                assert_eq!(value, expected);
+                assert_eq!(work.nodes_visited, expected);
+                assert_eq!(work.edges_visited, WIDTH);
+            }
+            other => {
+                assert!(
+                    matches!(other, AstReadExact::Complete { .. }),
+                    "wide Program exact count must complete, got {other:?}"
+                );
+            }
+        }
+        let mut cursor = AstReadCursor::new(&program);
+        match cursor.advance(AstReadLimits::default(), |_| true) {
+            Ok(Step::Node(node)) => assert!(std::ptr::eq(node, &program)),
+            other => {
+                assert!(matches!(other, Ok(Step::Node(_))), "expected root yield, got {other:?}");
+            }
+        }
+        let _ = cursor.advance(AstReadLimits::default(), |_| true);
+        let frame = cursor.stack.first();
+        assert!(frame.is_some(), "root frame remains while children are walked");
+        if let Some(frame) = frame {
+            assert!(frame.children_loaded);
+            assert_eq!(frame.children.len(), WIDTH);
         }
     }
 
