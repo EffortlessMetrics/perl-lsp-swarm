@@ -409,14 +409,20 @@ fn non_facade_crates_have_no_baselines() -> Result<(), Box<dyn std::error::Error
 /// This test pins:
 /// - line 1: the crate module declaration;
 /// - line 2: the wholesale `perl_lsp` re-export;
-/// - every later line: an item inside a facade-owned module declared in the
-///   baseline itself (`pub mod perllsp::<name>`).
+/// - the accepted facade-owned module set (`ACCEPTED_FACADE_MODULES`): every
+///   `pub mod perllsp::<name>` declaration must be one of them, and every
+///   remaining item's path must start inside one of them.
 ///
-/// A lost re-export, a renamed module declaration, or a root-level public item
-/// outside those modules (an accidental lib-target addition) fails here before
-/// CI's cargo-public-api diff runs.
+/// A lost re-export, a renamed module declaration, an undeclared new module,
+/// or a root-level public item (an accidental lib-target addition) fails here
+/// before CI's cargo-public-api diff runs.
 #[test]
 fn perllsp_baseline_has_expected_reexport_format() -> Result<(), Box<dyn std::error::Error>> {
+    /// Facade-owned modules accepted on top of the wholesale re-export. A new
+    /// intentional module extends this list in the same reviewed change that
+    /// lands it and refreshes the baseline (#12030 recipe).
+    const ACCEPTED_FACADE_MODULES: [&str; 1] = ["claude_compat"];
+
     let root = project_root();
     let perllsp_baseline = root.join(".ci/public-api-baselines/perllsp.txt");
 
@@ -446,22 +452,34 @@ fn perllsp_baseline_has_expected_reexport_format() -> Result<(), Box<dyn std::er
         lines[1]
     );
 
-    // Facade-owned modules are declared in the baseline as `pub mod perllsp::<name>`;
-    // every remaining item must live inside one of them. Root-level items beyond
-    // the re-export would mean the lib target grew its own public API again.
-    let owned_prefixes: Vec<String> = lines[1..]
-        .iter()
-        .filter_map(|line| line.strip_prefix("pub mod perllsp::"))
-        .map(|module| format!("perllsp::{module}::"))
-        .collect();
+    // Every declared facade-owned module must be accepted, and every remaining
+    // item's path must start inside one of them. The item path begins at the
+    // first `perllsp::` occurrence; signature types referenced later in the
+    // line must never satisfy the check. Root-level items beyond the re-export
+    // would mean the lib target grew its own public API again.
+    for line in &lines[1..] {
+        let Some(declared) = line.strip_prefix("pub mod perllsp::") else {
+            continue;
+        };
+        assert!(
+            ACCEPTED_FACADE_MODULES.contains(&declared),
+            "perllsp baseline declares module 'perllsp::{declared}' outside the accepted facade-owned set {ACCEPTED_FACADE_MODULES:?} (extend the set in the same reviewed change): {line}"
+        );
+    }
 
     for line in &lines[1..] {
         if *line == "pub use perllsp::<<perl_lsp::*>>" || line.starts_with("pub mod perllsp::") {
             continue;
         }
+        let path_start = line.find("perllsp::");
+        assert!(path_start.is_some(), "perllsp baseline item has no perllsp:: path: {line}");
+        // The assert above guarantees `Some`; `unwrap_or` keeps the repo's
+        // `clippy::panic`/`expect_used` denials out of this test.
+        let after_crate = &line[path_start.unwrap_or(0) + "perllsp::".len()..];
         assert!(
-            owned_prefixes.iter().any(|prefix| line.contains(prefix.as_str())),
-            "perllsp baseline item is not under a facade-owned module (accidental lib-target API?): {line}"
+            ACCEPTED_FACADE_MODULES.iter().any(|module| after_crate.starts_with(module)
+                && after_crate[module.len()..].starts_with("::")),
+            "perllsp baseline item path is not under an accepted facade-owned module {ACCEPTED_FACADE_MODULES:?} (accidental lib-target API?): {line}"
         );
     }
 
