@@ -1,4 +1,4 @@
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -9,11 +9,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use xtask::editor_client_compat::{
-    canonical_expectation_set_digest, fixture_digest, CapabilityIdentity, ClientSourceState,
-    DiagnosticMode, DiagnosticsIdentity, EditorClientCompatReceipt, EvidenceStage, FailureClass,
-    HostIdentity, IntegrationIdentity, IntegrationMode, JourneyCell, ObservationResult,
-    PlatformIdentity, RegistrationState, ServerIdentity, WorkspaceFixtureIdentity,
-    CANONICAL_EXPECTATION_SET_ID, SCHEMA_VERSION as RECEIPT_SCHEMA_VERSION,
+    CANONICAL_EXPECTATION_SET_ID, CapabilityIdentity, ClientSourceState, DiagnosticMode,
+    DiagnosticsIdentity, EditorClientCompatReceipt, EvidenceStage, FailureClass, HostIdentity,
+    IntegrationIdentity, IntegrationMode, JourneyCell, ObservationResult, PlatformIdentity,
+    RegistrationState, SCHEMA_VERSION as RECEIPT_SCHEMA_VERSION, ServerIdentity,
+    WorkspaceFixtureIdentity, canonical_expectation_set_digest, fixture_digest,
 };
 
 pub const RUN_PLAN_SCHEMA_VERSION: &str = "emacs_host_run_plan.v1";
@@ -29,12 +29,12 @@ mod process;
 
 #[cfg(test)]
 pub use fake_host::{
-    run_fake_host_entry, stop_test_descendant, supervision_command, supervision_plan,
-    FAKE_HOST_MODE_ENV,
+    FAKE_HOST_MODE_ENV, run_fake_host_entry, stop_test_descendant, supervision_command,
+    supervision_plan,
 };
 pub use process::{
-    parse_process_snapshot, parse_windows_process_snapshot, run_owned_process, surviving_processes,
-    ProcessObservation, ProcessProbeLine,
+    ProcessObservation, parse_process_snapshot, parse_windows_process_snapshot, run_owned_process,
+    surviving_processes,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

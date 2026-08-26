@@ -6,11 +6,11 @@
 //! gone. An unavailable or unparseable probe is `not_proven`, never `pass`.
 
 use super::{
+    DriverEvent, DriverEventKind, EmacsHostRunPlan, HermeticLayout, MAX_CAPTURE_BYTES,
     bytes_sha256, file_sha256, lifecycle_rank, parse_driver_events, validate_driver_events,
-    validate_safe_identity, DriverEvent, DriverEventKind, EmacsHostRunPlan, HermeticLayout,
-    MAX_CAPTURE_BYTES,
+    validate_safe_identity,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -138,11 +138,7 @@ fn candidate_needle(plan: &EmacsHostRunPlan) -> String {
 }
 
 fn parse_probe(text: &str) -> Result<Vec<ProcessProbeLine>> {
-    if cfg!(windows) {
-        parse_windows_process_snapshot(text)
-    } else {
-        parse_process_snapshot(text)
-    }
+    if cfg!(windows) { parse_windows_process_snapshot(text) } else { parse_process_snapshot(text) }
 }
 
 /// Execute one owned host process under a parent-owned deadline. Cleanup
@@ -459,12 +455,15 @@ fn sanitize_text(bytes: &[u8], plan: &EmacsHostRunPlan, layout: &HermeticLayout)
 }
 
 fn redact_resident_private_paths(text: &mut String) {
+    // The `regex` crate cannot compile lookbehind. These patterns are
+    // deliberately lookaround-free so they actually run: a failed compile
+    // would otherwise silently leave private paths in durable artifacts.
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     let patterns = PATTERNS.get_or_init(|| {
         [
-            r#"(?:^|(?<=[\s"'`(=,:;\[]))(/(?:[A-Za-z0-9._@+-]+/)+[A-Za-z0-9._@+-]*)"#,
-            r#"(?:^|(?<=[\s"'`(=,:;\[]))[A-Za-z]:[/\\][A-Za-z0-9._@+-]+(?:[/\\][A-Za-z0-9._@+-]+)*"#,
-            r#"(?:^|(?<=[\s"'`(=,:;\[]))(?:\\[A-Za-z0-9._@+-]+){2,}"#,
+            r#"/(?:[A-Za-z0-9._@+-]+/){1,}[A-Za-z0-9._@+-]*"#,
+            r#"[A-Za-z]:[/\\][A-Za-z0-9._@+-]+(?:[/\\][A-Za-z0-9._@+-]+)*"#,
+            r#"(?:\\[A-Za-z0-9._@+-]+){2,}"#,
         ]
         .into_iter()
         .filter_map(|pattern| Regex::new(pattern).ok())
@@ -476,11 +475,7 @@ fn redact_resident_private_paths(text: &mut String) {
 }
 
 fn bound_capture(bytes: &[u8]) -> &[u8] {
-    if bytes.len() <= MAX_CAPTURE_BYTES {
-        bytes
-    } else {
-        &bytes[..MAX_CAPTURE_BYTES]
-    }
+    if bytes.len() <= MAX_CAPTURE_BYTES { bytes } else { &bytes[..MAX_CAPTURE_BYTES] }
 }
 
 pub fn parse_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine>> {

@@ -5,19 +5,20 @@
 //! test-only supervisor.
 
 use super::{
-    EmacsClientKind, EmacsHostPaths, EmacsHostRunIdentity, EmacsHostRunPlan, HermeticLayout,
-    DRIVER_SCHEMA_VERSION, MAX_CAPTURE_BYTES, RUN_PLAN_SCHEMA_VERSION,
+    DRIVER_SCHEMA_VERSION, EmacsClientKind, EmacsHostPaths, EmacsHostRunIdentity, EmacsHostRunPlan,
+    HermeticLayout, MAX_CAPTURE_BYTES, RUN_PLAN_SCHEMA_VERSION,
 };
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 use xtask::editor_client_compat::{
-    canonical_expectation_set_digest, fixture_digest, ClientSourceState, EvidenceStage,
-    PlatformIdentity, RegistrationState, WorkspaceFixtureIdentity, CANONICAL_EXPECTATION_SET_ID,
+    CANONICAL_EXPECTATION_SET_ID, ClientSourceState, EvidenceStage, PlatformIdentity,
+    RegistrationState, WorkspaceFixtureIdentity, canonical_expectation_set_digest, fixture_digest,
 };
 
 /// Environment switch selecting fake-host behavior. Without it the child is
@@ -243,13 +244,27 @@ fn spawn_surviving_descendant(mut command: Command) -> Result<u32> {
     Ok(pid)
 }
 
+fn child_write_stdout(line: &str) -> Result<()> {
+    let mut stdout = io::stdout().lock();
+    writeln!(stdout, "{line}").context("writing fake-host stdout")?;
+    stdout.flush().context("flushing fake-host stdout")?;
+    Ok(())
+}
+
+fn child_write_stderr(line: &str) -> Result<()> {
+    let mut stderr = io::stderr().lock();
+    writeln!(stderr, "{line}").context("writing fake-host stderr")?;
+    stderr.flush().context("flushing fake-host stderr")?;
+    Ok(())
+}
+
 /// Fixture entry: never returns. The supervised process boundary observes
 /// the fixture's real exit status.
 pub fn run_fake_host_entry(mode: &str) -> ! {
     match run_fake_host_mode(mode) {
         Ok(code) => std::process::exit(code),
         Err(error) => {
-            eprintln!("supervision fixture failed: {error:#}");
+            let _ = child_write_stderr(&format!("supervision fixture failed: {error:#}"));
             std::process::exit(9);
         }
     }
@@ -268,7 +283,7 @@ fn run_fake_host_mode(mode: &str) -> Result<i32> {
                 fs::write(child_required_env(name_env)?, content)
                     .with_context(|| format!("writing distinct capture for {name_env}"))?;
             }
-            println!("clean supervision stdout");
+            child_write_stdout("clean supervision stdout")?;
             child_emit_lifecycle(&event_file, &mut sequence, None)?;
             Ok(0)
         }
@@ -276,10 +291,10 @@ fn run_fake_host_mode(mode: &str) -> Result<i32> {
             let home = std::env::var_os("HOME")
                 .map(|value| value.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            println!("{home}");
-            println!("/home/observer/.netrc");
-            println!("C:\\Users\\observer\\secret-token.txt");
-            println!("\\Users\\observer\\secret-token.txt");
+            child_write_stdout(&home)?;
+            child_write_stdout("/home/observer/.netrc")?;
+            child_write_stdout("C:\\Users\\observer\\secret-token.txt")?;
+            child_write_stdout("\\Users\\observer\\secret-token.txt")?;
             child_emit_lifecycle(&event_file, &mut sequence, None)?;
             Ok(0)
         }

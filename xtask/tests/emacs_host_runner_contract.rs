@@ -6,10 +6,10 @@
 #[path = "support/emacs_host_runner.rs"]
 mod emacs_host_runner;
 
-use anyhow::{bail, ensure, Context as _, Result};
+use anyhow::{Context as _, Result, bail, ensure};
 use emacs_host_runner::{
-    default_not_proven_diagnostics, validate_driver_events, DriverEvent, DriverEventKind,
-    DRIVER_SCHEMA_VERSION, RUN_PLAN_SCHEMA_VERSION,
+    DRIVER_SCHEMA_VERSION, DriverEvent, DriverEventKind, RUN_PLAN_SCHEMA_VERSION,
+    default_not_proven_diagnostics, validate_driver_events,
 };
 use std::collections::BTreeMap;
 use xtask::editor_client_compat::{DiagnosticMode, DiagnosticsIdentity};
@@ -156,8 +156,8 @@ fn fixture_subject_manifest() -> Result<xtask::emacs_subject_manifest::SubjectMa
     use sha2::{Digest as ShaDigest, Sha256};
     use xtask::editor_client_compat::ClientSourceState;
     use xtask::emacs_subject_manifest::{
-        DigestAudit, MaterializationMethod, SubjectClientKind, SubjectManifest, SubjectRow,
-        MANIFEST_SCHEMA_VERSION,
+        DigestAudit, MANIFEST_SCHEMA_VERSION, MaterializationMethod, SubjectClientKind,
+        SubjectManifest, SubjectRow,
     };
     let mut hasher = Sha256::new();
     hasher.update(b";; fake bundled eglot.el\n");
@@ -1054,6 +1054,19 @@ impl Drop for LeakGuard {
             emacs_host_runner::stop_test_descendant(*pid);
         }
     }
+}
+
+/// Windows `tasklist` rows expose image name, not argv. The parser must keep
+/// that identity so a unique `perllsp-{tag}.exe` leak can be attributed.
+#[test]
+fn windows_tasklist_snapshot_parses_image_and_pid() -> Result<()> {
+    let lines = emacs_host_runner::parse_windows_process_snapshot(
+        "\"perllsp-leakneg.exe\",\"4242\",\"Console\",\"1\",\"1,024 K\"\n",
+    )?;
+    ensure!(lines.len() == 1);
+    ensure!(lines[0].pid == 4242);
+    ensure!(lines[0].args == "perllsp-leakneg.exe");
+    Ok(())
 }
 
 /// The comparison is scoped to the exact candidate identity: a decoy with the
