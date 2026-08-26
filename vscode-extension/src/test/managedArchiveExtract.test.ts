@@ -492,8 +492,8 @@ describe('extractManagedArchive', () => {
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
       if (process.platform === 'win32' && (err.code === 'EPERM' || err.errno === 1314)) {
-        console.warn(
-          'skipping Windows junction fixture: SeCreateSymbolicLinkPrivilege is not held',
+        process.stderr.write(
+          'skipping Windows junction fixture: SeCreateSymbolicLinkPrivilege is not held\n',
         );
         return;
       }
