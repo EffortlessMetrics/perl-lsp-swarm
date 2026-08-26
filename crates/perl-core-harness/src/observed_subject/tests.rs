@@ -797,3 +797,176 @@ fn freshness_helper_reports_current_and_stale() -> Result<()> {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Review-driven falsifiers: plan forgery, redundant partials, receipt relabels
+// ---------------------------------------------------------------------------
+
+fn rebind_digest(mut receipt: ObservedRunnerSubjectV1) -> Result<ObservedRunnerSubjectV1> {
+    receipt.payload_digest =
+        observed_subject_payload_digest(&receipt.payload).map_err(|error| eyre!(error))?;
+    Ok(receipt)
+}
+
+#[test]
+fn forged_plan_membership_refused_by_matrix_rebuild() -> Result<()> {
+    let members = ["t/base/if.t", "t/base/cond.t"];
+    let fixture = JoinFixture::new(&members)?;
+    // Internally coherent foreign membership wearing this stream's raw digest:
+    // structure checks and field agreement pass, so only the full matrix +
+    // bytes rebuild can refuse it.
+    let forged = build_runner_plan(
+        &matrix()?,
+        TARGET,
+        RunnerKind::Test,
+        b"t/base/if.t\nt/base/renamed.t\n",
+        RunnerScheduling::default(),
+    )
+    .map_err(|error| eyre!(error))?;
+    let mut forged = forged;
+    forged.raw_discovery_digest = sha_hex(fixture.scenario.stdout.as_bytes());
+    let trace_bytes = fixture.scenario.emit_complete(&members)?;
+    let trace = build_invocation_trace_receipt(&fixture.scenario.input(trace_bytes))
+        .map_err(|error| eyre!(error))?;
+    let input = ObservedRunnerSubjectInput {
+        producer: producer_from(&fixture.scenario.parent),
+        plan: forged,
+        discovery: fixture.scenario.parent.clone(),
+        trace,
+        equivalence: Some(default_equivalence()),
+    };
+    let error = build_observed_runner_subject(&matrix()?, &input)
+        .err()
+        .ok_or_else(|| eyre!("forged plan membership must be refused"))?;
+    assert!(error.contains("does not match"), "rebuild refusal: {error}");
+    Ok(())
+}
+
+#[test]
+fn partial_observation_beside_complete_projection_blocks_completion() -> Result<()> {
+    let members = ["t/base/if.t"];
+    let fixture = JoinFixture::new(&members)?;
+    let mut partial = all_observed_fields("t/base/if.t");
+    partial.include_roots =
+        EffectiveInvocationField::NotObserved { reason: "instrument dropped frame".to_string() };
+    let bytes = fixture.scenario.emit_custom([
+        ("t/base/if.t".to_string(), all_observed_fields("t/base/if.t")),
+        ("t/base/if.t".to_string(), partial),
+    ])?;
+    let receipt = fixture.join_custom(bytes)?;
+    // The member keeps its complete projection, but the accepted second
+    // observation destroys exact one-to-one; completion is refused.
+    assert_eq!(receipt.payload.state, ObservedSubjectState::PartialUnobservedFields);
+    assert_eq!(receipt.payload.work.joined_rows, 1);
+    assert_eq!(receipt.payload.work.partial_invocation_rows, 1);
+    let redundant = diagnostics_for(&receipt.payload, "fields.redundant_partial")
+        .into_iter()
+        .next()
+        .ok_or_else(|| eyre!("the redundant partial must be named"))?;
+    assert_eq!(redundant.member_path.as_deref(), Some("t/base/if.t"));
+    Ok(())
+}
+
+#[test]
+fn relabeled_complete_receipt_rejected_by_shape_validation() -> Result<()> {
+    let members = ["t/base/if.t", "t/base/cond.t"];
+    let fixture = JoinFixture::new(&members)?;
+    let missing = fixture.join_with(&["t/base/if.t"])?;
+    let mut relabeled = missing;
+    relabeled.payload.state = ObservedSubjectState::CompleteCurrent;
+    let relabeled = rebind_digest(relabeled)?;
+    let error = validate_observed_runner_subject_shape(&relabeled)
+        .err()
+        .ok_or_else(|| eyre!("a relabeled complete state must fail"))?;
+    assert!(error.contains("fully joined"), "coherence refusal: {error}");
+    Ok(())
+}
+
+#[test]
+fn emptied_complete_receipt_rejected_by_shape_validation() -> Result<()> {
+    let members = ["t/base/if.t"];
+    let fixture = JoinFixture::new(&members)?;
+    let receipt = fixture.join_with(&members)?;
+    let mut emptied = receipt.clone();
+    emptied.payload.rows.clear();
+    emptied.payload.work.joined_rows = 0;
+    for field in [
+        "missing_invocation_rows",
+        "extra_invocation_rows",
+        "duplicate_invocation_rows",
+        "conflicting_invocation_rows",
+        "partial_invocation_rows",
+    ] {
+        set_work_counter(&mut emptied.payload.work, field, 0)?;
+    }
+    let emptied = rebind_digest(emptied)?;
+    let error = validate_observed_runner_subject_shape(&emptied)
+        .err()
+        .ok_or_else(|| eyre!("an emptied complete receipt must fail"))?;
+    assert!(error.contains("fully joined"), "emptiness refusal: {error}");
+    Ok(())
+}
+
+#[test]
+fn counterfeit_row_counter_rejected_even_when_state_partial() -> Result<()> {
+    let members = ["t/base/if.t", "t/base/cond.t"];
+    let fixture = JoinFixture::new(&members)?;
+    let receipt = fixture.join_with(&["t/base/if.t"])?;
+    let mut tampered = receipt;
+    set_work_counter(&mut tampered.payload.work, "missing_invocation_rows", 7)?;
+    let tampered = rebind_digest(tampered)?;
+    let error = validate_observed_runner_subject_shape(&tampered)
+        .err()
+        .ok_or_else(|| eyre!("counterfeit row counters must fail"))?;
+    assert!(
+        error.contains("records 7 but its retained rows derive 1"),
+        "named counter disagreement: {error}"
+    );
+    Ok(())
+}
+
+fn set_work_counter(
+    work: &mut crate::observed_subject::model::JoinWork,
+    field: &str,
+    value: u64,
+) -> Result<()> {
+    match field {
+        "joined_rows" => work.joined_rows = value,
+        "missing_invocation_rows" => work.missing_invocation_rows = value,
+        "extra_invocation_rows" => work.extra_invocation_rows = value,
+        "duplicate_invocation_rows" => work.duplicate_invocation_rows = value,
+        "conflicting_invocation_rows" => work.conflicting_invocation_rows = value,
+        "partial_invocation_rows" => work.partial_invocation_rows = value,
+        other => return Err(eyre!("fixture helper does not touch counter {other}")),
+    }
+    Ok(())
+}
+
+#[test]
+fn normalized_identity_tamper_breaks_row_fingerprint() -> Result<()> {
+    let members = ["t/base/if.t"];
+    let fixture = JoinFixture::new(&members)?;
+    let receipt = fixture.join_with(&members)?;
+    let mut tampered = receipt;
+    let item = tampered.payload.rows[0]
+        .normalized
+        .as_mut()
+        .ok_or_else(|| eyre!("joined rows retain their normalized source identity"))?;
+    item.canonical_path.push('x');
+    // The outer digest alone cannot hide the tamper: shape validation
+    // recomputes each row fingerprint, which covers every field including the
+    // normalized source identity.
+    let recomputed = crate::observed_subject::build::row_fingerprint(&tampered.payload.rows[0])
+        .map_err(|error| eyre!(error))?;
+    assert_ne!(
+        recomputed, tampered.payload.rows[0].row_fingerprint,
+        "the normalized identity participates in the row fingerprint"
+    );
+    tampered.payload_digest =
+        observed_subject_payload_digest(&tampered.payload).map_err(|error| eyre!(error))?;
+    let error = validate_observed_runner_subject_shape(&tampered)
+        .err()
+        .ok_or_else(|| eyre!("tampered normalized identity must fail"))?;
+    assert!(error.contains("fingerprint"), "fingerprint refusal: {error}");
+    Ok(())
+}

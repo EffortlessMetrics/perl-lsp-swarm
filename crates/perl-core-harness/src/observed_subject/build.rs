@@ -50,7 +50,7 @@ pub fn build_observed_runner_subject(
     crate::observed_discovery::validate_observed_discovery_receipt(matrix, &input.discovery)?;
     let discovery = &input.discovery.payload;
     bind_producer(&input.producer, discovery)?;
-    validate_plan_binding(&input.plan, discovery)?;
+    validate_plan_binding(matrix, &input.plan, discovery)?;
     validate_invocation_trace_receipt(&input.discovery, &input.trace)?;
 
     // Stage 3: perform the denominator arithmetic.
@@ -213,12 +213,36 @@ pub fn build_observed_runner_subject(
                     )
                 }
             }
-            [single] => (
-                SubjectJoinDisposition::Joined,
-                Some(single.sequence),
-                Some(single.digest.clone()),
-                fields_for(&trace.rows, single.sequence),
-            ),
+            [single] => {
+                // A redundant partial observation beside a complete projection
+                // for the same member is itself a shortfall: it must never be
+                // silently absorbed by an otherwise one-to-one join.
+                let redundant_partials = trace
+                    .rows
+                    .iter()
+                    .filter(|invocation| {
+                        matches!(invocation.disposition, TraceRowDisposition::Accepted)
+                            && invocation.state == InvocationObservationState::ObservedPartial
+                            && invocation.subject.parent_member_path == member_path
+                    })
+                    .count();
+                if redundant_partials > 0 {
+                    outcomes.partial_fields += 1;
+                    diagnostics.push(SubjectDiagnostic {
+                        field: "fields.redundant_partial".to_string(),
+                        member_path: Some(member_path.to_string()),
+                        detail: "accepted partial observation beside a complete projection; \
+                                 the observation side is not exactly one-to-one"
+                            .to_string(),
+                    });
+                }
+                (
+                    SubjectJoinDisposition::Joined,
+                    Some(single.sequence),
+                    Some(single.digest.clone()),
+                    fields_for(&trace.rows, single.sequence),
+                )
+            }
             multiple => {
                 let digests_equal =
                     multiple.windows(2).all(|pair| pair[0].digest == pair[1].digest);
@@ -540,9 +564,15 @@ fn bind_producer(
 }
 
 /// Revalidate the independent plan structurally and byte-bind it to the
-/// observed discovery stream it claims to have been reconstructed from.
-fn validate_plan_binding(plan: &RunnerPlan, discovery: &DiscoveryPayload) -> Result<(), String> {
-    crate::build::validate_runner_plan(plan)?;
+/// observed discovery stream it claims to have been reconstructed from. The
+/// final full-authority rebuild proves items, order, membership, and
+/// scheduling are exactly what this matrix and these observed bytes produce;
+/// a coherent forgery carrying the right digests cannot pass it.
+fn validate_plan_binding(
+    matrix: &crate::model::UpstreamTargetMatrix,
+    plan: &RunnerPlan,
+    discovery: &DiscoveryPayload,
+) -> Result<(), String> {
     let subject = &discovery.subject;
     let disagreements = [
         ("matrix_fingerprint", plan.matrix_fingerprint != subject.matrix_fingerprint),
@@ -556,7 +586,8 @@ fn validate_plan_binding(plan: &RunnerPlan, discovery: &DiscoveryPayload) -> Res
             "runner plan field {field} disagrees with the observed discovery subject"
         ));
     }
-    let raw_digest = crate::build::sha256_bytes(&discovery.stdout.bytes()?);
+    let raw_bytes = discovery.stdout.bytes()?;
+    let raw_digest = crate::build::sha256_bytes(&raw_bytes);
     if plan.raw_discovery_digest != raw_digest {
         return Err(format!(
             "runner plan field raw_discovery_digest {} does not match the observed \
@@ -565,7 +596,7 @@ fn validate_plan_binding(plan: &RunnerPlan, discovery: &DiscoveryPayload) -> Res
             plan.raw_discovery_digest
         ));
     }
-    Ok(())
+    crate::build::validate_runner_plan_against(matrix, &raw_bytes, plan)
 }
 
 /// Assemble the agreed identity snapshot recorded by the join.
@@ -708,6 +739,7 @@ pub(crate) fn row_fingerprint(row: &ObservedRunnerSubjectRow) -> Result<String, 
         discovery_ordinal: &'a Option<u32>,
         discovery_raw_text: &'a Option<String>,
         framing: &'a Option<FingerprintFrame>,
+        normalized: &'a Option<crate::runner_model::RunnerSourceItem>,
         invocation_sequence: &'a Option<u32>,
         projection_digest: &'a Option<String>,
         field_counts: &'a FieldStateCounts,
@@ -718,6 +750,7 @@ pub(crate) fn row_fingerprint(row: &ObservedRunnerSubjectRow) -> Result<String, 
         discovery_ordinal: &row.discovery_ordinal,
         discovery_raw_text: &row.discovery_raw_text,
         framing: &row.framing,
+        normalized: &row.normalized,
         invocation_sequence: &row.invocation_sequence,
         projection_digest: &row.projection_digest,
         field_counts: &row.field_counts,
@@ -726,6 +759,78 @@ pub(crate) fn row_fingerprint(row: &ObservedRunnerSubjectRow) -> Result<String, 
     let bytes = serde_json::to_vec(&basis)
         .map_err(|error| format!("serializing joined row fingerprint basis: {error}"))?;
     Ok(crate::build::sha256_bytes(&bytes))
+}
+
+/// Re-derive state/accounting coherence from the retained payload rows alone.
+///
+/// A persisted receipt can always be re-digested after tampering, so its
+/// self-traveled laws must include internal agreement between the aggregate
+/// state, the work counters, and the retained rows. This closes relabel-to-
+/// complete and emptied-receipt counterfeits without input access. Full
+/// input-side proof remains `check_observed_runner_subject`, which rebuilds
+/// the entire receipt from its exact inputs.
+pub(crate) fn coherence_error(payload: &ObservedRunnerSubjectPayload) -> Result<(), String> {
+    let rows = &payload.rows;
+    fn count_of(
+        rows: &[ObservedRunnerSubjectRow],
+        pred: impl Fn(&SubjectJoinDisposition) -> bool,
+    ) -> u64 {
+        rows.iter().filter(|row| pred(&row.disposition)).count() as u64
+    }
+    let counters = [
+        (
+            "joined_rows",
+            payload.work.joined_rows,
+            count_of(rows, |d| matches!(d, SubjectJoinDisposition::Joined)),
+        ),
+        (
+            "missing_invocation_rows",
+            payload.work.missing_invocation_rows,
+            count_of(rows, |d| matches!(d, SubjectJoinDisposition::MissingInvocation)),
+        ),
+        (
+            "extra_invocation_rows",
+            payload.work.extra_invocation_rows,
+            count_of(rows, |d| matches!(d, SubjectJoinDisposition::ExtraInvocation { .. })),
+        ),
+        (
+            "duplicate_invocation_rows",
+            payload.work.duplicate_invocation_rows,
+            count_of(rows, |d| matches!(d, SubjectJoinDisposition::DuplicateInvocation { .. })),
+        ),
+        (
+            "conflicting_invocation_rows",
+            payload.work.conflicting_invocation_rows,
+            count_of(rows, |d| matches!(d, SubjectJoinDisposition::ConflictingInvocation { .. })),
+        ),
+    ];
+    for (field, recorded, derived) in counters {
+        if recorded != derived {
+            return Err(format!(
+                "work counter {field} records {recorded} but its retained rows derive \
+                 {derived}; state and accounting contradict the payload"
+            ));
+        }
+    }
+    // Partial-field rows may exceed their joined-row markers when an accepted
+    // partial observation sits beside a complete projection for the same
+    // member, so only the direction is law here.
+    let partial_field_rows =
+        count_of(rows, |d| matches!(d, SubjectJoinDisposition::PartialFields { .. }));
+    if payload.work.partial_invocation_rows < partial_field_rows {
+        return Err(format!(
+            "work counter partial_invocation_rows records {} below its retained {} \
+             partial-field rows; state and accounting contradict the payload",
+            payload.work.partial_invocation_rows, partial_field_rows
+        ));
+    }
+
+    let all_joined =
+        rows.iter().all(|row| matches!(row.disposition, SubjectJoinDisposition::Joined));
+    if payload.state.is_complete() && (rows.is_empty() || !all_joined) {
+        return Err("complete_current subjects retain at least one fully joined row".to_string());
+    }
+    Ok(())
 }
 
 /// Baseline work accounting with every structural-zero invariant at zero.

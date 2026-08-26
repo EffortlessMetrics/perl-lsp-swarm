@@ -3,12 +3,13 @@
 //! The subject is a join, not a capture: it retains no raw streams to
 //! re-decode. Its standalone validation therefore re-proves the laws that
 //! travel with the receipt itself — exact schema identity, sorted mandatory
-//! limitations, fixed claim boundary, recomputed row fingerprints, recomputed
-//! payload digest, evidence-class vocabulary, and every structural-zero work
-//! invariant — and rejects any nonzero counterfeit outright. Full input-side
-//! agreement is proven by [`crate::observed_subject::build::
-//! check_observed_runner_subject`], which rebuilds the receipt from its exact
-//! inputs and compares.
+//! limitations, fixed claim boundary, recomputed row fingerprints (covering
+//! every row field including the normalized source identity), state and work
+//! coherence re-derived from the retained rows, recomputed payload digest,
+//! evidence-class vocabulary, and every structural-zero work invariant — and
+//! rejects any nonzero counterfeit outright. Full input-side agreement is
+//! proven by [`crate::observed_subject::build::check_observed_runner_subject`],
+//! which rebuilds the receipt from its exact inputs and compares.
 
 use crate::observed_subject::build::{observed_subject_payload_digest, required_limitations};
 use crate::observed_subject::model::{
@@ -59,6 +60,9 @@ pub fn validate_observed_runner_subject_shape(
         }
     }
     reject_counterfeit_work(&receipt.payload.work)?;
+    // State/accounting coherence is re-derived from the retained rows so a
+    // re-digested relabel cannot pass standalone validation.
+    crate::observed_subject::build::coherence_error(&receipt.payload)?;
     let digest = observed_subject_payload_digest(&receipt.payload)?;
     if digest != receipt.payload_digest {
         return Err(format!(
