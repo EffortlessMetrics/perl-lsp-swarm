@@ -375,8 +375,8 @@ fn test_related_information_forwarded() -> Result<(), Box<dyn std::error::Error>
 // (lsp_critical_user_stories.rs, TEST 4) pins codeDescription.href to the OWASP
 // SQL injection reference, carried here by the registered PL607 code.
 #[test]
-fn test_sql_injection_code_description_is_owasp_referenced() -> Result<(), Box<dyn std::error::Error>>
-{
+fn test_sql_injection_code_description_is_owasp_referenced()
+-> Result<(), Box<dyn std::error::Error>> {
     let uri = "file:///test_sql_injection.pl";
     let content = concat!(
         "use strict; use warnings;\n",
