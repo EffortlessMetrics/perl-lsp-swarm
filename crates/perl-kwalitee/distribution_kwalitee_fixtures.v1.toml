@@ -25,6 +25,7 @@ committed_files = [
   "LICENSE",
   "MANIFEST",
   "META.json",
+  "META.yml",
   "Makefile.PL",
   "README",
   "lib/Acme/CatalogFreeze.pm",

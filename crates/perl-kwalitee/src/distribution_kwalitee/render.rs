@@ -21,7 +21,9 @@ pub fn render_distribution_kwalitee_catalog_markdown(
     out.push_str("- scoring: `compatible_core_score = passed applicable cpants_offline_core / applicable cpants_offline_core`\n");
     out.push_str("- extra, experimental, site analogue, native extension, and deferred rows never enter the compatible core score\n");
     out.push_str("- invalid input has no ordinary score\n");
+    out.push_str("- authoring trees are not staged input and have no ordinary score\n");
     out.push_str("- unverified required core evidence stays in the denominator; strict staged evaluation is incomplete\n");
+    out.push_str("- a NotApplicable observation cannot drop an applicable core row from the denominator\n");
     out.push_str(&format!("- production runtime: `{}`\n", catalog.production_runtime));
     out.push_str(&format!("- oracle role: `{}`\n", catalog.oracle_role));
     out.push_str(&format!("- Module::CPANTS::Analyse: `{}`\n", catalog.cpants_analyse_version));

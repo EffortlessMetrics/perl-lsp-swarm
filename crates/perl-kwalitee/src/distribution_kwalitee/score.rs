@@ -14,6 +14,12 @@ pub fn derive_compatible_core_score(
     input_role: InputRole,
     observations: &[MetricObservation],
 ) -> Result<CompatibleCoreScore, CatalogError> {
+    if input_role == InputRole::AuthoringTree {
+        return Ok(CompatibleCoreScore::InvalidInput {
+            reason: "authoring trees are not a staged distribution input".to_string(),
+        });
+    }
+
     let mut seen = BTreeMap::new();
     for observation in observations {
         if catalog.metric.iter().all(|metric| metric.id != observation.id) {
@@ -78,13 +84,15 @@ fn core_row_status(
         return CoreRow::NotApplicable;
     }
     match observed {
-        Some(ObservationStatus::NotApplicable) => CoreRow::NotApplicable,
         Some(ObservationStatus::Pass) => CoreRow::Pass,
         Some(ObservationStatus::Fail) => CoreRow::Fail,
-        Some(ObservationStatus::Unverified | ObservationStatus::Limitation) | None => {
-            CoreRow::Unverified
-        }
-        Some(ObservationStatus::InvalidInput) => CoreRow::Unverified,
+        Some(
+            ObservationStatus::NotApplicable
+            | ObservationStatus::Unverified
+            | ObservationStatus::Limitation
+            | ObservationStatus::InvalidInput,
+        )
+        | None => CoreRow::Unverified,
     }
 }
 
@@ -93,7 +101,7 @@ mod tests {
     #![allow(clippy::panic)]
     use super::*;
     use crate::distribution_kwalitee::catalog::load_distribution_kwalitee_catalog;
-    use crate::distribution_kwalitee::types::MetricClass;
+    use crate::distribution_kwalitee::types::{Applicability, MetricClass};
 
     fn catalog() -> DistributionKwaliteeCatalog {
         load_distribution_kwalitee_catalog().expect("catalog")
@@ -277,5 +285,55 @@ mod tests {
             derive_compatible_core_score(&catalog, InputRole::StagedDirectory, &observations)
                 .expect("score");
         assert!(matches!(score, CompatibleCoreScore::Incomplete { unverified: 1, .. }));
+    }
+
+    #[test]
+    fn extra_invalid_input_still_has_no_ordinary_score() {
+        let catalog = catalog();
+        let observations =
+            vec![MetricObservation::new("cpants.has_meta_json", ObservationStatus::InvalidInput)];
+        let score =
+            derive_compatible_core_score(&catalog, InputRole::StagedDirectory, &observations)
+                .expect("score");
+        assert!(matches!(score, CompatibleCoreScore::InvalidInput { .. }));
+        assert_eq!(score.ratio(), None);
+    }
+
+    #[test]
+    fn authoring_tree_has_no_ordinary_score() {
+        let catalog = catalog();
+        let score = derive_compatible_core_score(
+            &catalog,
+            InputRole::AuthoringTree,
+            &pass_all_directory(&catalog),
+        )
+        .expect("score");
+        assert!(matches!(score, CompatibleCoreScore::InvalidInput { .. }));
+        assert_eq!(score.ratio(), None);
+        assert!(!score.strict_complete());
+        assert!(!Applicability::AllDistributions.applies_to(InputRole::AuthoringTree));
+        assert!(!Applicability::ArchiveInput.applies_to(InputRole::AuthoringTree));
+    }
+
+    #[test]
+    fn not_applicable_on_applicable_core_stays_in_the_denominator() {
+        let catalog = catalog();
+        let mut observations = pass_all_directory(&catalog);
+        let readme = observations
+            .iter_mut()
+            .find(|observation| observation.id == "cpants.has_readme")
+            .expect("readme");
+        readme.status = ObservationStatus::NotApplicable;
+        let score =
+            derive_compatible_core_score(&catalog, InputRole::StagedDirectory, &observations)
+                .expect("score");
+        match score {
+            CompatibleCoreScore::Incomplete { passed, applicable, unverified } => {
+                assert_eq!(unverified, 1);
+                assert_eq!(passed, applicable.saturating_sub(1));
+                assert!(!score.strict_complete());
+            }
+            other => panic!("expected incomplete, got {other:?}"),
+        }
     }
 }

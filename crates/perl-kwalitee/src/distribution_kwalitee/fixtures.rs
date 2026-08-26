@@ -83,6 +83,15 @@ fn validate_fixture_row(fixture: &DistributionKwaliteeFixture) -> Result<(), Fix
             reason: "id, intended_proposition, and owning_issue are required".into(),
         });
     }
+    if fixture.id.contains(['/', '\\'])
+        || fixture.id.split(['/', '\\']).any(|part| part == "." || part == "..")
+        || Path::new(&fixture.id).is_absolute()
+    {
+        return Err(FixtureError::InvalidFixture {
+            id: fixture.id.clone(),
+            reason: "fixture id must be a single relative path segment".into(),
+        });
+    }
     match (fixture.content_status, fixture.committed_files.is_empty()) {
         (ContentStatus::Committed, true) => {
             return Err(FixtureError::InvalidFixture {
@@ -168,6 +177,7 @@ pub fn validate_catalog_fixture_binding(
                 metric.id
             )));
         }
+        let mut has_own_defect = false;
         for fixture_id in &metric.fixture_ids {
             let Some(fixture) = fixtures.get(fixture_id.as_str()) else {
                 return Err(FixtureError::Binding(format!(
@@ -175,20 +185,22 @@ pub fn validate_catalog_fixture_binding(
                     metric.id
                 )));
             };
-            if *fixture_id != "minimal_valid"
-                && fixture.kind == FixtureKind::SingleDefect
-                && fixture.primary_fail.first().map(String::as_str) != Some(metric.id.as_str())
-                && !fixture.permitted_cascades.iter().any(|cascade| cascade == &metric.id)
-            {
-                // A metric may name a positive control plus its own defect fixture.
-                // Defect fixtures owned by a different metric are not allowed.
-                if fixture.primary_fail.iter().all(|fail| fail != &metric.id) {
+            if fixture.kind == FixtureKind::SingleDefect {
+                if fixture.primary_fail.iter().any(|fail| fail == &metric.id) {
+                    has_own_defect = true;
+                } else {
                     return Err(FixtureError::Binding(format!(
                         "metric `{}` names defect fixture `{fixture_id}` that does not fail it",
                         metric.id
                     )));
                 }
             }
+        }
+        if !has_own_defect {
+            return Err(FixtureError::Binding(format!(
+                "metric `{}` must name a single-defect fixture that fails it",
+                metric.id
+            )));
         }
     }
 
@@ -377,6 +389,17 @@ committed_files = []
     }
 
     #[test]
+    fn catalog_row_without_defect_fixture_fails_binding() {
+        let mut catalog = load_distribution_kwalitee_catalog().expect("catalog");
+        catalog.metric[0].fixture_ids = vec!["minimal_valid".into()];
+        let contract = load_distribution_kwalitee_fixture_contract().expect("fixtures");
+        let error =
+            validate_catalog_fixture_binding(&catalog, &contract, &committed_fixture_root())
+                .expect_err("missing defect");
+        assert!(matches!(error, FixtureError::Binding(_)));
+    }
+
+    #[test]
     fn fixture_referencing_unknown_metric_fails_binding() {
         let catalog = load_distribution_kwalitee_catalog().expect("catalog");
         let mut contract = load_distribution_kwalitee_fixture_contract().expect("fixtures");
@@ -407,6 +430,12 @@ committed_files = []
         row = row.replace("content_status = \"reserved\"", "content_status = \"committed\"");
         row = row.replace("committed_files = []", r#"committed_files = ["../secret"]"#);
         let toml = format!("{}{row}", envelope());
+        assert!(matches!(parse_fixture_contract(&toml), Err(FixtureError::InvalidFixture { .. })));
+    }
+
+    #[test]
+    fn parent_dir_fixture_id_fails() {
+        let toml = format!("{}{}", envelope(), reserved_pass("../secret"));
         assert!(matches!(parse_fixture_contract(&toml), Err(FixtureError::InvalidFixture { .. })));
     }
 

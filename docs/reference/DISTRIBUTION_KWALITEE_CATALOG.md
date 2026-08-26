@@ -12,7 +12,9 @@
 - scoring: `compatible_core_score = passed applicable cpants_offline_core / applicable cpants_offline_core`
 - extra, experimental, site analogue, native extension, and deferred rows never enter the compatible core score
 - invalid input has no ordinary score
+- authoring trees are not staged input and have no ordinary score
 - unverified required core evidence stays in the denominator; strict staged evaluation is incomplete
+- a NotApplicable observation cannot drop an applicable core row from the denominator
 - production runtime: `native_rust_offline`
 - oracle role: `test_only_pinned_cpants`
 - Module::CPANTS::Analyse: `1.03`

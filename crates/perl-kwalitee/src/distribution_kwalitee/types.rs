@@ -103,7 +103,9 @@ impl Applicability {
     /// Whether the metric is in scope for this input role.
     pub fn applies_to(self, input_role: InputRole) -> bool {
         match self {
-            Self::AllDistributions => true,
+            Self::AllDistributions => {
+                matches!(input_role, InputRole::StagedDirectory | InputRole::Archive)
+            }
             Self::ArchiveInput => matches!(input_role, InputRole::Archive),
         }
     }
