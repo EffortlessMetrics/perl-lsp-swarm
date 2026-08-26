@@ -193,6 +193,18 @@ else
   pass "refusal (non-WSL): no WSL paragraph"
 fi
 
+# A cargo between 1.85 and the workspace pin can parse edition-2024; the
+# refusal must name the workspace policy, not a nonexistent parse limitation.
+REFUSAL_MID="${TMPDIR_BASE}/refusal-mid.msg"
+cargo_guard_print_refusal "/usr/bin/cargo" "1.90.0" "1.95" "1.95.0" 0 "" 2> "$REFUSAL_MID"
+assert_contains "refusal (1.90): names workspace toolchain policy" \
+  "the refusal is workspace toolchain policy, not a manifest defect" "$REFUSAL_MID"
+if grep -Fq "cannot parse edition-2024" "$REFUSAL_MID"; then
+  fail "refusal (1.90): must not claim an edition-2024 parse limitation"
+else
+  pass "refusal (1.90): no false edition-2024 claim"
+fi
+
 # ── full guard against a fake stale cargo (WSL-shaped and plain) ──────────────
 
 write_stale_cargo() {
@@ -281,6 +293,78 @@ fi
 assert_contains "guard: non-shim note reports the ignored pin" \
   "is not a rustup shim, so the rust-toolchain.toml pin (1.95.0) is not in effect" \
   "${TMPDIR_BASE}/new.err"
+
+# ── probe runs from the repository root, not the caller's directory ──────────
+# A rustup shim picks its toolchain from the nearest rust-toolchain.toml
+# relative to the current directory. A stub that would report an older cargo
+# from a different working directory must not fool the guard when the guarded
+# entrypoint will really run inside this repository.
+
+CWD_BIN="${TMPDIR_BASE}/cwd-bin"
+mkdir -p "$CWD_BIN"
+cat > "${CWD_BIN}/cargo" <<STUB
+#!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then
+  if [ -f "./caller-project-marker" ]; then
+    printf 'cargo 1.70.0 (caller-pinned stub)\n'
+  else
+    printf 'cargo 1.96.1 (repo-pinned stub)\n'
+  fi
+  exit 0
+fi
+exit 0
+STUB
+chmod +x "${CWD_BIN}/cargo"
+
+OTHER_PROJECT="${TMPDIR_BASE}/other-project"
+mkdir -p "$OTHER_PROJECT"
+touch "${OTHER_PROJECT}/caller-project-marker"
+
+code=0
+(
+  cd "$OTHER_PROJECT"
+  PATH="${CWD_BIN}:$PATH" bash -c ". \"$LIB\"; cargo_toolchain_guard"
+) 2> "${TMPDIR_BASE}/cwd.err" || code=$?
+if [[ "$code" -eq 0 ]]; then
+  pass "guard: probes from the repo root, ignoring the caller's pinned directory"
+else
+  fail "guard: probe must run from the repository root, got exit ${code}"
+  cat "${TMPDIR_BASE}/cwd.err" || true
+fi
+
+# ── install.sh standalone bootstrap: inline floor when the lib is absent ─────
+# install.sh supports Linux and macOS only; on Windows it exits before the
+# source-build path, so the standalone checks run only where they can.
+
+if [[ "${OSTYPE:-}" != msys* && "${OSTYPE:-}" != cygwin* && "${OS:-}" != "Windows_NT" ]]; then
+  STANDALONE_DIR="${TMPDIR_BASE}/standalone"
+  mkdir -p "$STANDALONE_DIR"
+  cp "${REPO_ROOT}/scripts/install.sh" "${STANDALONE_DIR}/install.sh"
+
+  code=0
+  (
+    cd "$STANDALONE_DIR"
+    PATH="${STALE_BIN}:$PATH" BUILD_FROM_SOURCE=1 bash ./install.sh
+  ) > "${TMPDIR_BASE}/standalone.out" 2> "${TMPDIR_BASE}/standalone.err" || code=$?
+  if [[ "$code" -ne 0 ]] && grep -Fq "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/standalone.err"; then
+    pass "install.sh standalone: stale cargo refused without the guard library"
+  else
+    fail "install.sh standalone: expected typed refusal with stale cargo, got exit ${code}"
+  fi
+
+  code=0
+  (
+    cd "$STANDALONE_DIR"
+    PATH="${NEW_BIN}:$PATH" BUILD_FROM_SOURCE=1 bash ./install.sh
+  ) > "${TMPDIR_BASE}/standalone-new.out" 2> "${TMPDIR_BASE}/standalone-new.err" || code=$?
+  if grep -Fq "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/standalone-new.err"; then
+    fail "install.sh standalone: satisfying cargo must not hit the guard refusal"
+  else
+    pass "install.sh standalone: satisfying cargo proceeds past the guard"
+  fi
+else
+  pass "install.sh standalone: skipped on Windows (installer supports Linux/macOS only)"
+fi
 
 # ── entrypoint coverage consistency ───────────────────────────────────────────
 # Every repo bash entrypoint that invokes cargo as a command must source the

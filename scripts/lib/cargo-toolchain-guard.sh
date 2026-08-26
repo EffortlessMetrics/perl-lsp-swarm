@@ -144,7 +144,11 @@ cargo_guard_print_refusal() {
     printf '; rust-toolchain.toml pins %s, which only rustup shims honor' "$pin" >&2
   fi
   printf '\n' >&2
-  printf '  why: cargo %s cannot parse edition-2024 manifests, so builds fail with "feature '\''edition2024'\'' is required" -- a toolchain-selection problem, not a broken manifest. Do not downgrade the manifest.\n' "$actual" >&2
+  if cargo_guard_version_ge "$actual" "1.85"; then
+    printf '  why: cargo %s can parse edition-2024 manifests, but this workspace pins rust-version %s — the refusal is workspace toolchain policy, not a manifest defect. Do not downgrade the manifest.\n' "$actual" "$required" >&2
+  else
+    printf '  why: cargo %s cannot parse edition-2024 manifests, so builds fail with "feature '\''edition2024'\'' is required" -- a toolchain-selection problem, not a broken manifest. Do not downgrade the manifest.\n' "$actual" >&2
+  fi
   if [ "$wsl" = "1" ]; then
     printf 'WSL detected%s: non-login WSL bash (how shebang entrypoints run) resolves /usr/bin/cargo, the Ubuntu apt cargo, which is not a rustup shim and ignores rust-toolchain.toml.\n' "${detail:+ (${detail})}" >&2
     printf '  fix: run this entrypoint from the Windows toolchain (Git Bash or pwsh, where the rustup shim in ~/.cargo/bin resolves first), or install rustup inside WSL (https://rustup.rs) and make sure ~/.cargo/bin precedes /usr/bin in PATH for non-login shells.\n' >&2
@@ -170,7 +174,12 @@ cargo_toolchain_guard() {
     exit "$CARGO_GUARD_EXIT_CODE"
   fi
 
-  if ! probe="$("$resolved" --version 2>&1)"; then
+  # Probe from the repository root, not the caller's directory: a rustup shim
+  # selects its toolchain from the nearest rust-toolchain.toml relative to the
+  # current directory, so a wrapper invoked from inside another pinned Rust
+  # project would otherwise be judged against the caller's toolchain rather
+  # than the one the entrypoint will actually use after it enters the repo.
+  if ! probe="$(cd "$CARGO_GUARD_REPO_ROOT" 2>/dev/null && "$resolved" --version 2>&1)"; then
     printf 'cargo-toolchain-guard: REFUSED: `%s --version` failed at %s: %s\n' "cargo" "$resolved" "${probe:-<no output>}" >&2
     printf '  fix: repair or remove this cargo from PATH; the workspace needs >= %s.\n' "$required" >&2
     exit "$CARGO_GUARD_EXIT_CODE"

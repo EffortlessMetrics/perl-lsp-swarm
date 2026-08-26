@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# cargo-toolchain-guard: exempt — this wrapper delegates through
-# `rustup run <pinned-toolchain> cargo`, which forces the pinned toolchain, so
-# a PATH-cargo guard would inspect the wrong binary here.
-
 MODE="${1:-check}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
@@ -26,6 +22,10 @@ fi
 CARGO_CMD=(cargo)
 if [ -n "${TOOLCHAIN:-}" ] && [ -n "$RUSTUP_CMD" ]; then
   CARGO_CMD=("$RUSTUP_CMD" run "$TOOLCHAIN" cargo)
+else
+  # No rustup (or no pin): the plain PATH cargo is what runs, so the
+  # toolchain guard applies — this is exactly the WSL apt-cargo case (#12593).
+  . "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
 fi
 
 case "$MODE" in
