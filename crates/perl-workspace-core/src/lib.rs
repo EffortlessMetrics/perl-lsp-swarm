@@ -23,6 +23,8 @@
 //! - A [`FactClasses`] selector so a request only pays for what it asks for.
 //! - A framework-neutral [`TestItemSnapshot`] contract that references the
 //!   canonical source-identity program without inventing path identity locally.
+//! - A canonical discovery producer that emits validated generation-bound
+//!   snapshots from accepted source, parser, and optional framework facts.
 //!
 //! # What it must never depend on
 //!
@@ -71,6 +73,7 @@ pub mod shard;
 pub mod symbol;
 pub mod test;
 pub mod test_item;
+pub mod test_item_discovery;
 
 /// The fact-schema version this crate emits. Bump on any breaking model change.
 pub const SCHEMA_VERSION: u32 = 2;
@@ -108,5 +111,11 @@ pub use test::TestFact;
 pub use test_item::{
     SOURCE_IDENTITY_REF_SCHEMA_VERSION, SourceIdentityRef, TEST_ITEM_SCHEMA_VERSION,
     TestFrameworkIdentity, TestItem, TestItemCapabilities, TestItemDelta, TestItemDeltaError,
-    TestItemId, TestItemKind, TestItemName, TestItemSnapshot, TestItemValidationError,
+    TestItemId, TestItemKind, TestItemName, TestItemPublicationError, TestItemSnapshot,
+    TestItemValidationError,
+};
+pub use test_item_discovery::{
+    CompatibilityMismatch, CompatibilityMismatchKind, NamedSubroutinePolicy, ParserBackedSubtest,
+    TestItemDiscoveryError, TestItemDiscoveryRequest, compare_with_parser_backed,
+    discover_test_item_snapshot, parser_backed_subtests,
 };
