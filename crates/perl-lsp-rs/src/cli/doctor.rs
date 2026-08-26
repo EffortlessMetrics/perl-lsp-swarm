@@ -663,8 +663,7 @@ const DETAIL_MAX_CHARS: usize = 240;
 const WINDOWS_ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
 
 /// Prescribed enablement step for the symlink privilege finding (#12595).
-const FIX_SYMLINK_PRIVILEGE: &str =
-    "Settings > Privacy & security > For developers > Developer Mode: On, or run from an elevated shell";
+const FIX_SYMLINK_PRIVILEGE: &str = "Settings > Privacy & security > For developers > Developer Mode: On, or run from an elevated shell";
 
 /// Copyable rustup bootstrap; guidance only — doctor never executes it.
 const RUSTUP_INSTALL_ONE_LINER: &str =
@@ -944,6 +943,25 @@ fn run_file_symlink_probe(target: &Path, link: &Path) -> SymlinkPrivilegeReport 
 
 // ── Cargo per shell flavor ─────────────────────────────────────────────────
 
+/// Parse the first `major.minor.patch` word of a `cargo --version` line such
+/// as `cargo 1.95.0 (8f3d0b0ac 2026-01-30)`; distro builds append their own
+/// suffixes after the patch number.
+fn parse_cargo_version_line(line: &str) -> Option<VersionTriple> {
+    line.split_whitespace().find_map(parse_version_word)
+}
+
+fn parse_version_word(word: &str) -> Option<VersionTriple> {
+    let core = word.trim_end_matches(|character: char| !character.is_ascii_digit());
+    let mut parts = core.split('.');
+    let major = parts.next().and_then(|part| part.parse::<u64>().ok())?;
+    let minor = parts.next().and_then(|part| part.parse::<u64>().ok())?;
+    let patch_text = parts.next()?;
+    let patch_digits: String =
+        patch_text.chars().take_while(|character| character.is_ascii_digit()).collect();
+    let patch = patch_digits.parse::<u64>().ok()?;
+    Some((major, minor, patch))
+}
+
 /// How a reachable cargo was installed, decided purely from its resolved
 /// path: rustup shims live under `.cargo/bin`/`.rustup` and honor
 /// rust-toolchain.toml; anything else (apt/distro cargo) ignores it.
@@ -959,6 +977,18 @@ impl CargoProvenance {
             Self::RustupShim => PROVENANCE_RUSTUP_SHIM,
             Self::NonRustup => PROVENANCE_NON_RUSTUP,
         }
+    }
+}
+
+/// How a reachable cargo was installed, decided purely from its resolved
+/// path: rustup shims live under `.cargo/bin`/`.rustup` and honor
+/// rust-toolchain.toml; anything else (apt/distro cargo) ignores it.
+fn classify_cargo_provenance(cargo_path: &str) -> CargoProvenance {
+    let normalized = cargo_path.to_lowercase().replace('\\', "/");
+    if normalized.contains(".cargo/bin") || normalized.contains(".rustup") {
+        CargoProvenance::RustupShim
+    } else {
+        CargoProvenance::NonRustup
     }
 }
 
@@ -982,10 +1012,10 @@ fn probe_git_bash_cargo() -> CargoToolchainReport {
             "no bash.exe on PATH (Git Bash not detected)",
         );
     };
-    if classify_windows_bash_path(&bash_exe.to_string_lossy()) == WindowsBashKind::WslSystem32 {
+    if classify_windows_bash_path(&bash_exe.to_string_lossy()) == WindowsBashKind::WslShim {
         return unreachable_cargo_report(
             FLAVOR_GIT_BASH,
-            "PATH bash.exe resolves to the WSL System32 shim, not Git Bash",
+            "PATH bash.exe resolves to a WSL shim (System32/WindowsApps), not Git Bash",
         );
     }
     let mut command = Command::new(&bash_exe);
@@ -1010,43 +1040,69 @@ fn probe_wsl_cargo() -> CargoToolchainReport {
 
 const SHELL_CARGO_PROBE_SCRIPT: &str = "command -v cargo && cargo --version";
 
-/// Parse the first `major.minor.patch` word of a `cargo --version` line such
-/// as `cargo 1.95.0 (8f3d0b0ac 2026-01-30)`; distro builds append their own
-/// suffixes after the patch number.
-fn parse_cargo_version_line(_line: &str) -> Option<VersionTriple> {
-    None // scaffolding placeholder (#12595 red-first); replaced by the probing implementation
-}
-
-/// Scaffolding placeholder (#12595 red-first): assumes every reachable cargo
-/// is a healthy rustup shim until the probing implementation lands.
-fn classify_cargo_provenance(_cargo_path: &str) -> CargoProvenance {
-    CargoProvenance::RustupShim
-}
-
-/// Which provider owns a Windows `bash.exe` resolution: System32 hosts the
-/// WSL shim; Git/MSYS/Cygwin provide native POSIX bashes.
+/// Which provider owns a Windows `bash.exe` resolution: System32 and the
+/// WindowsApps alias both host WSL shims; Git/MSYS/Cygwin provide native
+/// POSIX bashes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WindowsBashKind {
     PosixProvider,
-    WslSystem32,
+    WslShim,
     OtherProvider,
 }
 
-/// Scaffolding placeholder (#12595 red-first): classifies every bash as an
-/// unknown provider until the probing implementation lands.
-fn classify_windows_bash_path(_path_text: &str) -> WindowsBashKind {
-    WindowsBashKind::OtherProvider
+fn classify_windows_bash_path(path_text: &str) -> WindowsBashKind {
+    let normalized = path_text.to_lowercase().replace('\\', "/");
+    if normalized.contains("/system32/")
+        || normalized.ends_with("/system32/bash.exe")
+        || normalized.contains("/windowsapps/")
+    {
+        // Both the System32 binary and the WindowsApps execution alias are
+        // WSL entry points: a cargo probed through them resolves inside the
+        // WSL filesystem, not in a native POSIX environment.
+        WindowsBashKind::WslShim
+    } else if normalized.contains("git")
+        || normalized.contains("msys")
+        || normalized.contains("cygwin")
+    {
+        WindowsBashKind::PosixProvider
+    } else {
+        WindowsBashKind::OtherProvider
+    }
 }
 
 /// Decode child-process output. `wsl.exe` emits UTF-16LE through pipes while
 /// ordinary children stay UTF-8, so both shapes must land as readable text.
 fn decode_shell_output(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).trim_start_matches('\u{feff}').to_owned()
+    if looks_like_utf16le(bytes) {
+        let units: Vec<u16> =
+            bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+    .trim_start_matches('\u{feff}')
+    .to_owned()
 }
 
-/// Extract the `v5.42.2`-style token from a `perl --version` banner.
-fn extract_perl_version(_version_output: &str) -> Option<String> {
-    None // scaffolding placeholder (#12595 red-first)
+/// Odd-index NUL bytes dominate only in UTF-16LE ASCII text, which is the
+/// shape this conservative heuristic accepts.
+fn looks_like_utf16le(bytes: &[u8]) -> bool {
+    if bytes.len() < 4 || !bytes.len().is_multiple_of(2) {
+        return false;
+    }
+    let odd_zeroes = bytes.iter().skip(1).step_by(2).filter(|byte| **byte == 0).count();
+    odd_zeroes * 3 > bytes.len()
+}
+
+/// Extract the `v5.42.2`-style token from a `perl --version` banner such as
+/// "This is perl 5, version 42, subversion 2 (v5.42.2) built for ...".
+fn extract_perl_version(version_output: &str) -> Option<String> {
+    version_output.split_whitespace().find_map(|word| {
+        let candidate = word.trim_matches(|character: char| "() ,;".contains(character));
+        let digits = candidate.strip_prefix('v').unwrap_or(candidate);
+        let starts_numeric = digits.starts_with(|character: char| character.is_ascii_digit());
+        (starts_numeric && digits.contains('.')).then(|| candidate.to_string())
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1068,19 +1124,51 @@ impl PerlIdentityKind {
     }
 }
 
-/// Scaffolding placeholder (#12595 red-first): classifies every perl as an
-/// unknown identity until the probing implementation lands.
-fn classify_perl_identity(_path_text: &str, _windows_host: bool) -> PerlIdentityKind {
-    PerlIdentityKind::Unknown
+/// Classify a perl binary's identity from its path alone. On a Windows host
+/// a POSIX-rooted `/usr/bin/perl*` resolution belongs to an MSYS/Cygwin
+/// environment; the same path on Unix is the system perl.
+fn classify_perl_identity(path_text: &str, windows_host: bool) -> PerlIdentityKind {
+    let normalized = path_text.to_lowercase().replace('\\', "/");
+    if normalized.contains("msys64")
+        || normalized.contains("cygwin64")
+        || normalized.contains("/msys")
+        || normalized.contains("/cygwin")
+    {
+        return PerlIdentityKind::MsysCygwin;
+    }
+    if normalized.contains("strawberry") {
+        return PerlIdentityKind::Strawberry;
+    }
+    let posix_rooted_perl =
+        normalized == "/usr/bin/perl" || normalized.ends_with("/usr/bin/perl.exe");
+    let unix_system_perl =
+        normalized.starts_with("/usr/bin/perl") || normalized.starts_with("/usr/local/bin/perl");
+    if posix_rooted_perl && windows_host {
+        PerlIdentityKind::MsysCygwin
+    } else if unix_system_perl {
+        PerlIdentityKind::SystemUnix
+    } else {
+        PerlIdentityKind::Unknown
+    }
 }
 
 /// Distinct additional named perl identities among `discovered`, excluding
 /// the primary kind and unnamed resolutions.
 fn other_named_identities(
-    _primary: PerlIdentityKind,
-    _discovered: &[PerlIdentityKind],
+    primary: PerlIdentityKind,
+    discovered: &[PerlIdentityKind],
 ) -> Vec<&'static str> {
-    Vec::new() // scaffolding placeholder (#12595 red-first)
+    let mut others: Vec<&'static str> = Vec::new();
+    for kind in discovered {
+        if *kind == primary || *kind == PerlIdentityKind::Unknown {
+            continue;
+        }
+        let code = kind.code();
+        if !others.contains(&code) {
+            others.push(code);
+        }
+    }
+    others
 }
 
 /// Fixed, well-known default install locations probed for additional perl
@@ -1106,7 +1194,10 @@ fn probe_perl_identity(windows_host: bool) -> PerlIdentityReport {
             identity: IDENTITY_UNKNOWN,
             other_identities: Vec::new(),
             error: Some("perl not found on PATH".to_string()),
-            fix: Some(if windows_host { FIX_PERL_MISSING_WINDOWS } else { FIX_PERL_MISSING_UNIX }.to_string()),
+            fix: Some(
+                if windows_host { FIX_PERL_MISSING_WINDOWS } else { FIX_PERL_MISSING_UNIX }
+                    .to_string(),
+            ),
         };
     };
 
@@ -1132,8 +1223,7 @@ fn probe_perl_identity(windows_host: bool) -> PerlIdentityReport {
         .map(|candidate| classify_perl_identity(&candidate.display().to_string(), windows_host))
         .collect();
     let other_identities = other_named_identities(identity, &discovered);
-    let status =
-        if other_identities.is_empty() { STATUS_PRESENT } else { STATUS_DIVERGENT };
+    let status = if other_identities.is_empty() { STATUS_PRESENT } else { STATUS_DIVERGENT };
 
     PerlIdentityReport {
         status,
@@ -1202,23 +1292,25 @@ fn cargo_report_from_output(
     output: ProbeOutput,
 ) -> CargoToolchainReport {
     match output {
-        Ok(process_output) if process_output.status.success() => {
-            finish_reachable_cargo_report(flavor, Some(binary), &decode_shell_output(&process_output.stdout))
-        }
+        Ok(process_output) if process_output.status.success() => finish_reachable_cargo_report(
+            flavor,
+            Some(binary),
+            &decode_shell_output(&process_output.stdout),
+        ),
         Ok(_) | Err(_) => failed_probe_cargo_report(flavor, output),
     }
 }
 
 /// Shell-mediated probe result (`command -v cargo && cargo --version`):
 /// the first output line is the resolved cargo path, the rest is its banner.
-fn shell_cargo_report_from_output(flavor: &'static str, output: ProbeOutput) -> CargoToolchainReport {
+fn shell_cargo_report_from_output(
+    flavor: &'static str,
+    output: ProbeOutput,
+) -> CargoToolchainReport {
     match output {
         Ok(process_output) if process_output.status.success() => {
             let decoded = decode_shell_output(&process_output.stdout);
-            let mut lines = decoded
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty());
+            let mut lines = decoded.lines().map(str::trim).filter(|line| !line.is_empty());
             let cargo_path = lines.next().map(PathBuf::from);
             let version_text = lines.collect::<Vec<_>>().join(" ");
             finish_reachable_cargo_report(flavor, cargo_path, &version_text)
@@ -1247,14 +1339,10 @@ fn finish_reachable_cargo_report(
     binary: Option<PathBuf>,
     version_output: &str,
 ) -> CargoToolchainReport {
-    let version_line = version_output
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(String::from);
+    let version_line =
+        version_output.lines().map(str::trim).find(|line| !line.is_empty()).map(String::from);
     let parsed_version = version_line.as_deref().and_then(parse_cargo_version_line);
-    let provenance =
-        binary.as_deref().and_then(Path::to_str).map(classify_cargo_provenance);
+    let provenance = binary.as_deref().and_then(Path::to_str).map(classify_cargo_provenance);
     let (status, meets_workspace_pin) = reachable_cargo_status(provenance, parsed_version);
     CargoToolchainReport {
         flavor,
@@ -1315,20 +1403,20 @@ fn git_bash_flavor_report() -> BashFlavorReport {
             status: STATUS_MISSING,
             bash_path: None,
             runs_repo_entrypoints: None,
-            note: "no bash.exe on PATH; repository .sh entrypoints cannot run natively"
-                .to_string(),
+            note: "no bash.exe on PATH; repository .sh entrypoints cannot run natively".to_string(),
             fix: Some(FIX_BASH_INSTALL_GIT_WINDOWS.to_string()),
         },
         Some(bash_exe)
             if classify_windows_bash_path(&bash_exe.to_string_lossy())
-                == WindowsBashKind::WslSystem32 =>
+                == WindowsBashKind::WslShim =>
         {
             BashFlavorReport {
                 flavor: FLAVOR_GIT_BASH,
                 status: STATUS_MISSING,
                 bash_path: Some(bash_exe.display().to_string()),
                 runs_repo_entrypoints: None,
-                note: "PATH bash.exe is the WSL System32 shim, not Git Bash".to_string(),
+                note: "PATH bash.exe is a WSL shim (System32/WindowsApps), not Git Bash"
+                    .to_string(),
                 fix: Some(FIX_BASH_INSTALL_GIT_WINDOWS.to_string()),
             }
         }
@@ -1485,12 +1573,8 @@ fn render_dev_environment_report(report: &DevEnvironmentReport) -> String {
     }
 
     out.push_str("\nClaim boundary:\n");
-    out.push_str(
-        "  Read-only probes. Doctor creates and removes one temporary symlink, asks\n",
-    );
-    out.push_str(
-        "  reachable shells for cargo/perl versions, and never installs, moves, or\n",
-    );
+    out.push_str("  Read-only probes. Doctor creates and removes one temporary symlink, asks\n");
+    out.push_str("  reachable shells for cargo/perl versions, and never installs, moves, or\n");
     out.push_str("  configures anything.\n");
     out
 }
@@ -2694,7 +2778,10 @@ mod tests {
             parse_cargo_version_line("cargo 1.95.0 (8f3d0b0ac 2026-01-30)"),
             Some((1, 95, 0))
         );
-        assert_eq!(parse_cargo_version_line("cargo 1.75.0 (2ca31a4c3 2023-12-26)"), Some((1, 75, 0)));
+        assert_eq!(
+            parse_cargo_version_line("cargo 1.75.0 (2ca31a4c3 2023-12-26)"),
+            Some((1, 75, 0))
+        );
     }
 
     #[test]
@@ -2755,7 +2842,14 @@ mod tests {
     fn classify_windows_bash_path_separates_wsl_shim_from_git_bash() {
         assert_eq!(
             classify_windows_bash_path(r"C:\Windows\System32\bash.exe"),
-            WindowsBashKind::WslSystem32
+            WindowsBashKind::WslShim
+        );
+        assert_eq!(
+            classify_windows_bash_path(
+                r"C:\Users\dev\AppData\Local\Microsoft\WindowsApps\bash.EXE"
+            ),
+            WindowsBashKind::WslShim,
+            "the WindowsApps execution alias is a WSL shim, not Git Bash"
         );
         assert_eq!(
             classify_windows_bash_path(r"C:\Program Files\Git\bin\bash.exe"),
@@ -2834,13 +2928,17 @@ mod tests {
         );
         assert_eq!(others, vec!["strawberry"]);
 
-        assert!(other_named_identities(PerlIdentityKind::Strawberry, &[PerlIdentityKind::Strawberry])
-            .is_empty());
-        assert!(other_named_identities(
-            PerlIdentityKind::Unknown,
-            &[PerlIdentityKind::Unknown, PerlIdentityKind::Unknown]
-        )
-        .is_empty());
+        assert!(
+            other_named_identities(PerlIdentityKind::Strawberry, &[PerlIdentityKind::Strawberry])
+                .is_empty()
+        );
+        assert!(
+            other_named_identities(
+                PerlIdentityKind::Unknown,
+                &[PerlIdentityKind::Unknown, PerlIdentityKind::Unknown]
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -2866,9 +2964,7 @@ mod tests {
         let windows_candidates = common_perl_candidate_paths(true);
         assert_eq!(windows_candidates.len(), 3);
         assert!(
-            windows_candidates
-                .iter()
-                .any(|path| path.display().to_string().contains("Strawberry"))
+            windows_candidates.iter().any(|path| path.display().to_string().contains("Strawberry"))
         );
         assert_eq!(common_perl_candidate_paths(false).len(), 1);
     }
@@ -2884,8 +2980,8 @@ mod tests {
             .ok_or("native non-rustup finding must carry a fix")?;
         assert!(native_non_rustup.contains("sh.rustup.rs"));
 
-        let stale =
-            cargo_fix_line(FLAVOR_GIT_BASH, STATUS_STALE).ok_or("stale finding must carry a fix")?;
+        let stale = cargo_fix_line(FLAVOR_GIT_BASH, STATUS_STALE)
+            .ok_or("stale finding must carry a fix")?;
         assert!(stale.contains("rustup toolchain install 1.95.0"));
 
         let missing = cargo_fix_line(FLAVOR_NATIVE_SHELL, STATUS_MISSING)
@@ -3008,10 +3104,7 @@ mod tests {
             .pointer("/symlink_privilege/status")
             .and_then(Value::as_str)
             .ok_or("symlink_privilege.status field")?;
-        assert!(
-            allowed.contains(&symlink_status),
-            "unexpected symlink status {symlink_status}"
-        );
+        assert!(allowed.contains(&symlink_status), "unexpected symlink status {symlink_status}");
         if cfg!(windows) {
             assert_ne!(
                 symlink_status, STATUS_NOT_APPLICABLE,
@@ -3040,10 +3133,8 @@ mod tests {
             }
         }
 
-        let bash_rows = json
-            .get("bash_flavors")
-            .and_then(Value::as_array)
-            .ok_or("bash_flavors array")?;
+        let bash_rows =
+            json.get("bash_flavors").and_then(Value::as_array).ok_or("bash_flavors array")?;
         assert_eq!(bash_rows.len(), 3, "one row per flavor on every host");
         for row in bash_rows {
             let status = row.get("status").and_then(Value::as_str).ok_or("bash row status")?;

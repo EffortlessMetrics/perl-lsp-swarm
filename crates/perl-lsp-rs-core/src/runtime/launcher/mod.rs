@@ -1889,13 +1889,8 @@ mod tests {
             parse_args(["perl-lsp", "--doctor", "--external-tools", "--dev-environment"]).is_err()
         );
         assert!(
-            parse_args([
-                "perl-lsp",
-                "--doctor",
-                "--critic-compatibility",
-                "--dev-environment"
-            ])
-            .is_err()
+            parse_args(["perl-lsp", "--doctor", "--critic-compatibility", "--dev-environment"])
+                .is_err()
         );
     }
 
