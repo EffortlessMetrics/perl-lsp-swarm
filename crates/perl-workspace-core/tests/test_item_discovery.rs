@@ -356,6 +356,14 @@ fn qualified_test_more_subtest_is_discovered_local_package_is_not() {
     let names = names(&snapshot);
     assert!(names.contains(&TestItemName::Named("qualified".to_string())));
     assert!(!names.contains(&TestItemName::Named("nope".to_string())));
+    let ast = parse(source);
+    let extras: Vec<_> =
+        compare_with_parser_backed(&snapshot, &parser_backed_subtests(&ast, source))
+            .into_iter()
+            .filter(|mismatch| mismatch.kind == CompatibilityMismatchKind::ExtraItem)
+            .map(|mismatch| mismatch.detail)
+            .collect();
+    assert_eq!(extras, vec!["file_item".to_string(), "subtest".to_string()]);
 }
 
 #[test]

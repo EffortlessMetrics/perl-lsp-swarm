@@ -153,7 +153,14 @@ pub fn discover_test_item_snapshot(
     if request.parse_status != ParseStatus::Failed && request.parse_status != ParseStatus::NotParsed
     {
         let mut calls = Vec::new();
-        collect_subtest_calls(request.ast, request.source, &index, source_len, &mut calls);
+        collect_subtest_calls(
+            request.ast,
+            request.source,
+            &index,
+            source_len,
+            SubtestNameSet::Canonical,
+            &mut calls,
+        );
         append_subtest_items(request, &digest, &file, &calls, &mut items);
 
         if request.named_subroutine_policy == NamedSubroutinePolicy::ConservativeFileScope {
@@ -182,13 +189,17 @@ pub fn discover_test_item_snapshot(
 }
 
 /// Reconstruct the current parser-backed subtest tree for compatibility comparison.
+///
+/// This oracle matches the live `perl-lsp-rs-core` call-name set: bare
+/// `subtest` / `subtest_buffered` / `subtest_streamed` only. Qualified
+/// `Test::More::subtest` items are canonical extras, not legacy hits.
 pub fn parser_backed_subtests(ast: &Node, source: &str) -> Vec<ParserBackedSubtest> {
     let Ok(source_len) = u32::try_from(source.len()) else {
         return Vec::new();
     };
     let index = Utf8LineIndex::new(source);
     let mut calls = Vec::new();
-    collect_subtest_calls(ast, source, &index, source_len, &mut calls);
+    collect_subtest_calls(ast, source, &index, source_len, SubtestNameSet::LegacyBare, &mut calls);
     calls.into_iter().map(parser_backed_from_call).collect()
 }
 
@@ -486,19 +497,28 @@ fn push_parse_limitations(parse_status: ParseStatus, limitations: &mut Vec<Strin
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubtestNameSet {
+    /// Exact call names used by current `perl-lsp-rs-core` subtest discovery.
+    LegacyBare,
+    /// Canonical producer names, including reviewed Test::More / Test2 qualified forms.
+    Canonical,
+}
+
 fn collect_subtest_calls(
     node: &Node,
     source: &str,
     index: &Utf8LineIndex,
     source_len: u32,
+    names: SubtestNameSet,
     out: &mut Vec<SubtestCall>,
 ) {
-    if let Some(call) = try_as_subtest(node, source, index, source_len) {
+    if let Some(call) = try_as_subtest(node, source, index, source_len, names) {
         out.push(call);
         return;
     }
     for child in structural_children(node) {
-        collect_subtest_calls(child, source, index, source_len, out);
+        collect_subtest_calls(child, source, index, source_len, names, out);
     }
 }
 
@@ -507,11 +527,12 @@ fn try_as_subtest(
     source: &str,
     index: &Utf8LineIndex,
     source_len: u32,
+    names: SubtestNameSet,
 ) -> Option<SubtestCall> {
     let NodeKind::FunctionCall { name, args } = &node.kind else {
         return None;
     };
-    if !is_subtest_call_name(name) {
+    if !is_subtest_call_name(name, names) {
         return None;
     }
     let first = args.first()?;
@@ -527,7 +548,7 @@ fn try_as_subtest(
     let mut children = Vec::new();
     for arg in args.iter().skip(1) {
         if let NodeKind::Subroutine { body, .. } = &arg.kind {
-            collect_subtest_calls(body, source, index, source_len, &mut children);
+            collect_subtest_calls(body, source, index, source_len, names, &mut children);
         }
     }
     Some(SubtestCall { name, range, name_range, children })
@@ -583,18 +604,25 @@ fn collect_named_test_subs_in_scope(
     }
 }
 
-fn is_subtest_call_name(name: &str) -> bool {
-    let (prefix, bare) = match name.rsplit_once("::") {
-        Some((prefix, bare)) => (Some(prefix), bare),
-        None => (None, name),
-    };
-    if !matches!(bare, "subtest" | "subtest_buffered" | "subtest_streamed") {
-        return false;
-    }
-    match prefix {
-        None => true,
-        Some(prefix) if prefix == "Test::More" || prefix.starts_with("Test2") => true,
-        Some(_) => false,
+fn is_subtest_call_name(name: &str, names: SubtestNameSet) -> bool {
+    match names {
+        SubtestNameSet::LegacyBare => {
+            matches!(name, "subtest" | "subtest_buffered" | "subtest_streamed")
+        }
+        SubtestNameSet::Canonical => {
+            let (prefix, bare) = match name.rsplit_once("::") {
+                Some((prefix, bare)) => (Some(prefix), bare),
+                None => (None, name),
+            };
+            if !matches!(bare, "subtest" | "subtest_buffered" | "subtest_streamed") {
+                return false;
+            }
+            match prefix {
+                None => true,
+                Some(prefix) if prefix == "Test::More" || prefix.starts_with("Test2") => true,
+                Some(_) => false,
+            }
+        }
     }
 }
 
