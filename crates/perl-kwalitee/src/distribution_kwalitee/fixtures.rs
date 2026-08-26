@@ -440,6 +440,12 @@ committed_files = []
     }
 
     #[test]
+    fn nested_fixture_id_fails() {
+        let toml = format!("{}{}", envelope(), reserved_pass("nested/id"));
+        assert!(matches!(parse_fixture_contract(&toml), Err(FixtureError::InvalidFixture { .. })));
+    }
+
+    #[test]
     fn catalog_version_drift_fails_binding() {
         let catalog = load_distribution_kwalitee_catalog().expect("catalog");
         let mut contract = load_distribution_kwalitee_fixture_contract().expect("fixtures");

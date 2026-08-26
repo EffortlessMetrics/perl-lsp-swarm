@@ -128,6 +128,10 @@ mod tests {
             .collect()
     }
 
+    fn directory_core_count(catalog: &DistributionKwaliteeCatalog) -> u32 {
+        pass_all_directory(catalog).len() as u32
+    }
+
     #[test]
     fn all_applicable_core_pass_is_complete_and_unweighted() {
         let catalog = catalog();
@@ -137,14 +141,7 @@ mod tests {
             &pass_all_directory(&catalog),
         )
         .expect("score");
-        let directory_core = catalog
-            .metric
-            .iter()
-            .filter(|metric| {
-                metric.class == MetricClass::CpantsOfflineCore
-                    && metric.applicability.applies_to(InputRole::StagedDirectory)
-            })
-            .count() as u32;
+        let directory_core = directory_core_count(&catalog);
         assert_eq!(
             score,
             CompatibleCoreScore::Complete { passed: directory_core, applicable: directory_core }
@@ -179,13 +176,15 @@ mod tests {
             .find(|observation| observation.id == "cpants.has_manifest")
             .expect("manifest");
         manifest.status = ObservationStatus::Unverified;
+        let directory_core = directory_core_count(&catalog);
         let score =
             derive_compatible_core_score(&catalog, InputRole::StagedDirectory, &observations)
                 .expect("score");
         match score {
             CompatibleCoreScore::Incomplete { passed, applicable, unverified } => {
+                assert_eq!(applicable, directory_core);
                 assert_eq!(unverified, 1);
-                assert_eq!(passed, applicable.saturating_sub(1));
+                assert_eq!(passed, directory_core.saturating_sub(1));
                 assert!(!score.strict_complete());
             }
             other => panic!("expected incomplete, got {other:?}"),
@@ -197,11 +196,16 @@ mod tests {
         let catalog = catalog();
         let mut observations = pass_all_directory(&catalog);
         observations.retain(|observation| observation.id != "cpants.has_tests");
+        let directory_core = directory_core_count(&catalog);
         let score =
             derive_compatible_core_score(&catalog, InputRole::StagedDirectory, &observations)
                 .expect("score");
         match score {
-            CompatibleCoreScore::Incomplete { unverified, .. } => assert_eq!(unverified, 1),
+            CompatibleCoreScore::Incomplete { passed, applicable, unverified } => {
+                assert_eq!(applicable, directory_core);
+                assert_eq!(unverified, 1);
+                assert_eq!(passed, directory_core.saturating_sub(1));
+            }
             other => panic!("expected incomplete, got {other:?}"),
         }
     }
@@ -228,7 +232,9 @@ mod tests {
         )
         .expect("score");
         let all_core = core_ids(&catalog).len() as u32;
+        let directory_core = directory_core_count(&catalog);
         let ratio = score.ratio().expect("ratio");
+        assert_eq!(ratio, (directory_core, directory_core));
         assert!(ratio.1 < all_core, "archive metrics must drop out of the directory denominator");
     }
 
@@ -241,12 +247,14 @@ mod tests {
             .find(|observation| observation.id == "cpants.has_readme")
             .expect("readme");
         readme.status = ObservationStatus::Fail;
+        let directory_core = directory_core_count(&catalog);
         let score =
             derive_compatible_core_score(&catalog, InputRole::StagedDirectory, &observations)
                 .expect("score");
         match score {
             CompatibleCoreScore::Complete { passed, applicable } => {
-                assert_eq!(passed, applicable.saturating_sub(1));
+                assert_eq!(applicable, directory_core);
+                assert_eq!(passed, directory_core.saturating_sub(1));
             }
             other => panic!("expected complete, got {other:?}"),
         }
@@ -281,10 +289,18 @@ mod tests {
             .find(|observation| observation.id == "cpants.use_strict")
             .expect("use_strict");
         row.status = ObservationStatus::Limitation;
+        let directory_core = directory_core_count(&catalog);
         let score =
             derive_compatible_core_score(&catalog, InputRole::StagedDirectory, &observations)
                 .expect("score");
-        assert!(matches!(score, CompatibleCoreScore::Incomplete { unverified: 1, .. }));
+        match score {
+            CompatibleCoreScore::Incomplete { passed, applicable, unverified } => {
+                assert_eq!(applicable, directory_core);
+                assert_eq!(unverified, 1);
+                assert_eq!(passed, directory_core.saturating_sub(1));
+            }
+            other => panic!("expected incomplete, got {other:?}"),
+        }
     }
 
     #[test]
@@ -327,10 +343,12 @@ mod tests {
         let score =
             derive_compatible_core_score(&catalog, InputRole::StagedDirectory, &observations)
                 .expect("score");
+        let directory_core = directory_core_count(&catalog);
         match score {
             CompatibleCoreScore::Incomplete { passed, applicable, unverified } => {
+                assert_eq!(applicable, directory_core);
                 assert_eq!(unverified, 1);
-                assert_eq!(passed, applicable.saturating_sub(1));
+                assert_eq!(passed, directory_core.saturating_sub(1));
                 assert!(!score.strict_complete());
             }
             other => panic!("expected incomplete, got {other:?}"),
