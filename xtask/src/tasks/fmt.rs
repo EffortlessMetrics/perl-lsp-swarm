@@ -1436,19 +1436,31 @@ mod tests {
 
     #[test]
     fn a_package_outside_the_repository_root_owns_nothing() {
-        // strip_prefix fails, the dir stays absolute, and an absolute dir can
-        // never prefix-match a repository-relative git path. Those files fall
-        // through to the gate rather than being misattributed.
+        let repo_root = Path::new("/somewhere/else");
         let metadata = sample_metadata();
-        let packages = super::workspace_packages(&metadata, Path::new("/somewhere/else"));
-        assert!(
-            packages.iter().all(|package| package.dir.is_absolute()),
-            "packages outside the given root must keep absolute dirs: {packages:?}"
-        );
-        assert_eq!(
-            super::owning_package(Path::new("crates/perl-parser/src/lib.rs"), &packages),
-            None
-        );
+        let packages = super::workspace_packages(&metadata, repo_root);
+        // `strip_prefix` fails, so every dir keeps its own form instead of being
+        // relativized under the given root. Whether that form counts as
+        // "absolute" is host-dependent (`Path::is_absolute` demands a drive
+        // prefix on Windows, which a root-led path lacks), so the portable pin
+        // is the actual invariant: nothing was absorbed into the root.
+        for package in &packages {
+            assert!(
+                !package.dir.starts_with(repo_root),
+                "an outside-root package dir must never be relativized under the root: {package:?}"
+            );
+        }
+        // The user-visible consequence: no repository-relative git path may be
+        // attributed to any of them — including each package's own would-be
+        // relative location, exactly where a wrong relativize step would
+        // fabricate ownership (an empty dir owns every path).
+        for git_path in ["crates/perl-parser/src/lib.rs", "xtask/src/main.rs"] {
+            assert_eq!(
+                super::owning_package(Path::new(git_path), &packages),
+                None,
+                "no outside-root package may own {git_path}"
+            );
+        }
     }
 
     #[test]
