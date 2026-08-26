@@ -425,6 +425,14 @@ function Invoke-StandaloneArchiveStaging {
                 throw "mixed flat and nested archive layout is not accepted"
             }
 
+            $declaredTotal = [int64]0
+            foreach ($item in $accepted) {
+                $declaredTotal += $item.Entry.Length
+                if ($declaredTotal -gt $maxUncompressed) {
+                    throw "archive uncompressed size $declaredTotal exceeds policy ceiling $maxUncompressed"
+                }
+            }
+
             $extractRoot = $stagingRoot
             if ($nestedCount -eq $accepted.Count) {
                 $extractRoot = Join-Path $stagingRoot $PackageName
@@ -432,6 +440,7 @@ function Invoke-StandaloneArchiveStaging {
             }
 
             $actualTotal = [int64]0
+            $buffer = New-Object byte[] 65536
             foreach ($item in $accepted) {
                 $dest = Join-Path $extractRoot $item.Basename
                 $source = $item.Entry.Open()
@@ -439,20 +448,22 @@ function Invoke-StandaloneArchiveStaging {
                 try {
                     $target = [IO.File]::Open($dest, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
                     try {
-                        $source.CopyTo($target)
-                        $sz = $target.Length
+                        while (($n = $source.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                            if (($sz + $n) -gt $maxEntry) {
+                                throw "archive entry size $($sz + $n) exceeds policy ceiling $maxEntry"
+                            }
+                            if (($actualTotal + $n) -gt $maxUncompressed) {
+                                throw "archive uncompressed size $($actualTotal + $n) exceeds policy ceiling $maxUncompressed"
+                            }
+                            $target.Write($buffer, 0, $n)
+                            $sz += $n
+                            $actualTotal += $n
+                        }
                     } finally {
                         $target.Dispose()
                     }
                 } finally {
                     $source.Dispose()
-                }
-                if ($sz -gt $maxEntry) {
-                    throw "archive entry size $sz exceeds policy ceiling $maxEntry"
-                }
-                $actualTotal += $sz
-                if ($actualTotal -gt $maxUncompressed) {
-                    throw "archive uncompressed size $actualTotal exceeds policy ceiling $maxUncompressed"
                 }
             }
 

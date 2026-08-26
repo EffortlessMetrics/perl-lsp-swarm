@@ -77,7 +77,7 @@ if ($PolicyId -eq $TomlId) {
     Fail-Case "embedded policy id matches policy/standalone-archive-safety.v1.toml" "adapter=$PolicyId toml=$TomlId"
 }
 
-if (Select-String -Path $Installer -Pattern 'Expand-Archive -Path \$ZipPath' -SimpleMatch -Quiet) {
+if (Select-String -Path $Installer -Pattern 'Expand-Archive -Path $ZipPath' -SimpleMatch -Quiet) {
     Fail-Case "PowerShell Expand-Archive is not the extract path" "install.ps1 still calls Expand-Archive"
 } else {
     Pass-Case "PowerShell Expand-Archive is not the extract path"
@@ -158,6 +158,10 @@ try {
     $env:PERL_LSP_ARCHIVE_SAFETY_MAX_COMPRESSED_BYTES = "16"
     Invoke-StagingCase -Name "windows_compressed_ceiling" -Entries $RequiredFlat -Needle "compressed size"
     Remove-Item Env:PERL_LSP_ARCHIVE_SAFETY_MAX_COMPRESSED_BYTES
+
+    $env:PERL_LSP_ARCHIVE_SAFETY_MAX_UNCOMPRESSED_BYTES = "32"
+    Invoke-StagingCase -Name "windows_uncompressed_ceiling" -Entries $RequiredFlat -Needle "uncompressed size"
+    Remove-Item Env:PERL_LSP_ARCHIVE_SAFETY_MAX_UNCOMPRESSED_BYTES
 
     $OversizedFlat = foreach ($Item in $RequiredFlat) {
         if ($Item.Name -eq "README.md") {

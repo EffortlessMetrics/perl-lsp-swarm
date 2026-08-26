@@ -223,6 +223,19 @@ else
 fi
 
 sentinel_setup
+make_case valid_posix
+ARCHIVE_PATH="$TMP/valid_posix.tar.gz"
+PERL_LSP_ARCHIVE_SAFETY_MAX_UNCOMPRESSED_BYTES=8 run_extract
+if [ "$LAST_STATUS" -ne 0 ] \
+    && [[ "$LAST_OUTPUT" == *"uncompressed size"* ]] \
+    && assert_sentinel_untouched \
+    && assert_install_untouched; then
+    pass "uncompressed-size ceiling fails before listing extract"
+else
+    fail_case "uncompressed-size ceiling fails before listing extract" "status=$LAST_STATUS output=$LAST_OUTPUT"
+fi
+
+sentinel_setup
 python3 "$FIXTURE_PY" --case truncated_garbage --out "$TMP/truncated_garbage.tar.gz"
 ARCHIVE_PATH="$TMP/truncated_garbage.tar.gz"
 run_extract

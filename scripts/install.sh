@@ -565,6 +565,7 @@ inspect_standalone_tar_gz() {
     local name_count i name listing type_char normalized basename_member
     local seen_exact seen_folded folded
     local name_file verbose_file name_err verbose_err list_dir
+    local bound_file gzip_err max_plus bound_status bound_bytes
 
     max_compressed="$(archive_safety_limit compressed "$ARCHIVE_SAFETY_MAX_COMPRESSED_BYTES")"
     max_uncompressed="$(archive_safety_limit uncompressed "$ARCHIVE_SAFETY_MAX_UNCOMPRESSED_BYTES")"
@@ -575,17 +576,43 @@ inspect_standalone_tar_gz() {
         fail_archive_staging "archive compressed size $compressed exceeds policy ceiling $max_compressed"
     fi
 
+    gzip_uncompressed="$(gzip -l "$archive" 2>/dev/null | awk 'NR==2 { print $2 }' | tr -d ',')"
+    case "$gzip_uncompressed" in
+        ''|*[!0-9]*) gzip_uncompressed="" ;;
+    esac
+    if [ -n "$gzip_uncompressed" ] && [ "$gzip_uncompressed" -gt "$max_uncompressed" ]; then
+        fail_archive_staging "archive uncompressed size $gzip_uncompressed exceeds policy ceiling $max_uncompressed"
+    fi
+
     list_dir="${STAGING_ROOT:-${TMPDIR:-/tmp}}"
     name_file="${list_dir}/.archive-names"
     verbose_file="${list_dir}/.archive-verbose"
     name_err="${list_dir}/.archive-names.err"
     verbose_err="${list_dir}/.archive-verbose.err"
-    if ! tar -tzf "$archive" > "$name_file" 2>"$name_err"; then
+    bound_file="${list_dir}/.bounded-tar"
+    gzip_err="${list_dir}/.bounded-tar.err"
+    max_plus=$((max_uncompressed + 1))
+    set +e
+    gzip -dc "$archive" 2>"$gzip_err" | head -c "$max_plus" > "$bound_file"
+    bound_status=$?
+    set -e
+    bound_bytes="$(archive_file_bytes "$bound_file")"
+    if [ "$bound_bytes" -gt "$max_uncompressed" ]; then
+        fail_archive_staging "archive uncompressed size $bound_bytes exceeds policy ceiling $max_uncompressed"
+    fi
+    if [ "$bound_bytes" -eq 0 ]; then
+        fail_archive_staging "malformed release archive: gzip decompress failed$(archive_command_diagnostic "$gzip_err" "$archive")"
+    fi
+    if [ "$bound_status" -ne 0 ] && [ "$bound_status" -ne 141 ]; then
+        fail_archive_staging "malformed release archive: gzip decompress failed$(archive_command_diagnostic "$gzip_err" "$archive")"
+    fi
+    if ! tar -tf "$bound_file" > "$name_file" 2>"$name_err"; then
         fail_archive_staging "malformed release archive: tar listing failed$(archive_command_diagnostic "$name_err" "$archive")"
     fi
-    if ! tar -tvzf "$archive" > "$verbose_file" 2>"$verbose_err"; then
+    if ! tar -tvf "$bound_file" > "$verbose_file" 2>"$verbose_err"; then
         fail_archive_staging "malformed release archive: tar verbose listing failed$(archive_command_diagnostic "$verbose_err" "$archive")"
     fi
+    rm -f "$bound_file" "$gzip_err"
 
     name_count="$(sed '/^$/d' "$name_file" | wc -l | tr -d '[:space:]')"
     if [ "$name_count" != "$(sed '/^$/d' "$verbose_file" | wc -l | tr -d '[:space:]')" ]; then
@@ -593,14 +620,6 @@ inspect_standalone_tar_gz() {
     fi
     if [ "$name_count" -gt "$max_entries" ]; then
         fail_archive_staging "archive entry count $name_count exceeds policy ceiling $max_entries"
-    fi
-
-    gzip_uncompressed="$(gzip -l "$archive" 2>/dev/null | awk 'NR==2 { print $2 }' | tr -d ',')"
-    case "$gzip_uncompressed" in
-        ''|*[!0-9]*) gzip_uncompressed="" ;;
-    esac
-    if [ -n "$gzip_uncompressed" ] && [ "$gzip_uncompressed" -gt "$max_uncompressed" ]; then
-        fail_archive_staging "archive uncompressed size $gzip_uncompressed exceeds policy ceiling $max_uncompressed"
     fi
 
     seen_exact=$'\n'
@@ -668,9 +687,9 @@ inspect_standalone_tar_gz() {
         esac
 
         # Per-entry size is not read from `tar -tv`: BSD/macOS columns put
-        # nlink or uid in the first numeric field. gzip -l bounds the stream
-        # before extract; archive_file_bytes after each named extract is the
-        # portable per-entry ceiling.
+        # nlink or uid in the first numeric field. gzip -l and a capped
+        # gzip -dc bound expansion before listing; named extract is capped
+        # with head -c against the remaining uncompressed budget.
         ACCEPTED_MEMBERS="${ACCEPTED_MEMBERS}${normalized}"$'\n'
     done < "$name_file"
 
@@ -711,8 +730,8 @@ emit_archive_safety_receipt() {
 }
 
 extract_archive() {
-    local package tar_flags member dest actual_total sz sha_tool leftover
-    local max_uncompressed max_entry
+    local package member dest actual_total sz sha_tool leftover
+    local max_uncompressed max_entry cap remain extract_err extract_status
 
     info "inspecting release archive"
     [ -n "${ARCHIVE_PATH:-}" ] || err "archive path is not set"
@@ -726,28 +745,37 @@ extract_archive() {
     STAGING_ROOT="$(mktemp -d "${TMPDIR}/perl-lsp-stage.XXXXXX")" || err "unable to create private staging root"
     inspect_standalone_tar_gz "$ARCHIVE_PATH" "$package"
 
-    tar_flags=""
-    if tar --help 2>/dev/null | grep -q -- '--no-same-owner'; then
-        tar_flags="--no-same-owner"
-    fi
-    if tar --help 2>/dev/null | grep -q -- '--no-same-permissions'; then
-        tar_flags="${tar_flags} --no-same-permissions"
-    fi
-
+    mkdir -p "${STAGING_ROOT}/${package}"
+    extract_err="${STAGING_ROOT}/.extract.err"
     actual_total=0
     while IFS= read -r member; do
         [ -n "$member" ] || continue
-        # shellcheck disable=SC2086
-        if ! tar -xzf "$ARCHIVE_PATH" -C "$STAGING_ROOT" $tar_flags -- "$member"; then
-            fail_archive_staging "failed to extract accepted member $member"
-        fi
         dest="${STAGING_ROOT}/${member}"
+        remain=$((max_uncompressed - actual_total))
+        cap="$max_entry"
+        if [ "$remain" -lt "$cap" ]; then
+            cap="$remain"
+        fi
+        if [ "$cap" -le 0 ]; then
+            fail_archive_staging "archive uncompressed size $actual_total exceeds policy ceiling $max_uncompressed"
+        fi
+        mkdir -p "$(dirname "$dest")"
+        set +e
+        tar -xOzf "$ARCHIVE_PATH" -- "$member" 2>"$extract_err" | head -c $((cap + 1)) > "$dest"
+        extract_status=$?
+        set -e
         if [ -L "$dest" ] || [ ! -f "$dest" ]; then
             fail_archive_staging "staged member is not a regular file: $member"
         fi
         sz="$(archive_file_bytes "$dest")"
         if [ "$sz" -gt "$max_entry" ]; then
             fail_archive_staging "archive entry size $sz exceeds policy ceiling $max_entry"
+        fi
+        if [ "$sz" -gt "$cap" ]; then
+            fail_archive_staging "archive uncompressed size $((actual_total + sz)) exceeds policy ceiling $max_uncompressed"
+        fi
+        if [ "$extract_status" -ne 0 ] && [ "$extract_status" -ne 141 ]; then
+            fail_archive_staging "failed to extract accepted member $member$(archive_command_diagnostic "$extract_err" "$ARCHIVE_PATH")"
         fi
         actual_total=$((actual_total + sz))
         if [ "$actual_total" -gt "$max_uncompressed" ]; then
@@ -756,6 +784,7 @@ extract_archive() {
     done <<EOF
 ${ACCEPTED_MEMBERS}
 EOF
+    rm -f "$extract_err"
 
     leftover="$(find "$STAGING_ROOT" \( -type l -o -type b -o -type c -o -type p -o -type s \) 2>/dev/null || true)"
     if [ -n "$leftover" ]; then
