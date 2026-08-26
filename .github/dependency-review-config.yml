@@ -19,6 +19,10 @@ vulnerability-check: true
 license-check: true
 allow-licenses:
   - MIT
+  # MIT-0 (MIT No Attribution): OSI-approved, strictly more permissive than
+  # MIT; mirrors the deny.toml admission for jsonschema's borrow-or-share
+  # transitive dep (#12156).
+  - MIT-0
   - Apache-2.0
   - Apache-2.0 WITH LLVM-exception
   - BSD-2-Clause
