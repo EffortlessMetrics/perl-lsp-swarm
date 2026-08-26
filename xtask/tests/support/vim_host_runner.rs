@@ -745,6 +745,17 @@ pub enum DriverEventKind {
     DefectStateObserved,
     DefectFixApplied,
     CurrentStateObserved,
+    /// #11390 freshness-generation events. Unlike every #10944/#10946 kind,
+    /// these four may repeat within one journey: the freshness journey walks
+    /// multiple source/config generations in a single host run. Each carries a
+    /// monotone 1-based index detail with a per-kind cap, so an unordered,
+    /// duplicated, or overlong barrier stream is rejected here even before the
+    /// scenario judgment checks the exact phase sequence. The two earlier
+    /// journeys never emit them.
+    ExternalMutationApplied,
+    StaleGenerationHeld,
+    ClientMaterializationApplied,
+    GenerationCurrentObserved,
     ShutdownStarted,
     ShutdownCompleted,
     DriverFailed,
@@ -787,6 +798,11 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
     ensure!(!events.is_empty(), "driver emitted no events");
     let mut singleton = BTreeSet::new();
     let mut last_lifecycle_rank = 0_u8;
+    // Monotone last-seen indexes for the #11390 repeating freshness kinds.
+    let mut freshness_mutation_index = 0_u32;
+    let mut freshness_hold_index = 0_u32;
+    let mut freshness_materialization_index = 0_u32;
+    let mut freshness_generation_index = 0_u32;
 
     for (index, event) in events.iter().enumerate() {
         ensure!(event.schema_version == DRIVER_SCHEMA_VERSION, "unexpected driver event schema");
@@ -892,6 +908,114 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 );
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
+            DriverEventKind::ExternalMutationApplied => {
+                validate_repeating_freshness_event(
+                    event,
+                    "mutation_index",
+                    EXTERNAL_MUTATION_CAP,
+                    &mut freshness_mutation_index,
+                )?;
+                ensure!(
+                    matches!(
+                        event.details.get("mutation").map(String::as_str),
+                        Some("in_place") | Some("atomic_replace")
+                    ),
+                    "external_mutation_applied must name in_place or atomic_replace"
+                );
+                ensure!(
+                    matches!(
+                        event.details.get("target").map(String::as_str),
+                        Some("governed") | Some("decoy") | Some("project_config")
+                    ),
+                    "external_mutation_applied must name the governed, decoy, or project_config \
+                     target"
+                );
+                ensure!(
+                    event.details.contains_key("disk_generation"),
+                    "external_mutation_applied must name the new on-disk generation"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::StaleGenerationHeld => {
+                validate_repeating_freshness_event(
+                    event,
+                    "hold_index",
+                    STALE_GENERATION_HOLD_CAP,
+                    &mut freshness_hold_index,
+                )?;
+                ensure!(
+                    event.details.contains_key("held_generation")
+                        && event.details.contains_key("current_generation"),
+                    "stale_generation_held must name the held and current generations"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("window_ms")
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .is_some_and(|window| window >= MIN_STALE_WINDOW_MS),
+                    "stale_generation_held must carry a bounded observation window of at least \
+                     {MIN_STALE_WINDOW_MS}ms"
+                );
+                ensure!(
+                    event.details.get("wire_batches_unchanged") == Some(&"1".to_string()),
+                    "stale_generation_held must prove the client's wire push count did not move"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::ClientMaterializationApplied => {
+                validate_repeating_freshness_event(
+                    event,
+                    "materialization_index",
+                    CLIENT_MATERIALIZATION_CAP,
+                    &mut freshness_materialization_index,
+                )?;
+                ensure!(
+                    matches!(
+                        event.details.get("materialization").map(String::as_str),
+                        Some("client_close_reopen")
+                            | Some("settings_push")
+                            | Some("server_restart")
+                    ),
+                    "client_materialization_applied must name the exact client route that \
+                     materialized the generation"
+                );
+                ensure!(
+                    event.details.contains_key("picks_generation"),
+                    "client_materialization_applied must name the generation it picks up"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::GenerationCurrentObserved => {
+                validate_repeating_freshness_event(
+                    event,
+                    "generation_index",
+                    GENERATION_CURRENT_CAP,
+                    &mut freshness_generation_index,
+                )?;
+                ensure!(
+                    event.details.get("state_source") == Some(&"client_state".to_string()),
+                    "generation_current_observed must come from the client's own diagnostics state"
+                );
+                ensure!(
+                    event.details.get("barrier") == Some(&"diagnostics_event_and_wire".to_string()),
+                    "generation_current_observed must bind the deterministic currentness barrier"
+                );
+                ensure!(
+                    event.details.get("errors").is_some_and(|value| value.parse::<u32>().is_ok())
+                        && event
+                            .details
+                            .get("warnings")
+                            .is_some_and(|value| value.parse::<u32>().is_ok()),
+                    "generation_current_observed must report numeric client-state error and \
+                     warning counts"
+                );
+                ensure!(
+                    event.details.contains_key("generation"),
+                    "generation_current_observed must name the accepted generation"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
             kind => {
                 ensure!(singleton.insert(kind), "duplicate singleton driver event");
                 let rank = lifecycle_rank(kind);
@@ -946,10 +1070,57 @@ fn lifecycle_rank(kind: DriverEventKind) -> u8 {
         DriverEventKind::DefectStateObserved => 41,
         DriverEventKind::DefectFixApplied => 42,
         DriverEventKind::CurrentStateObserved => 43,
+        // The #11390 freshness-generation tier: the four repeating kinds share
+        // one rank (their phases interleave legitimately — a mutation, its
+        // stale-hold window, its materialization, its current observation),
+        // with per-kind monotone indexes carrying the order. All strictly
+        // before shutdown.
+        DriverEventKind::ExternalMutationApplied
+        | DriverEventKind::StaleGenerationHeld
+        | DriverEventKind::ClientMaterializationApplied
+        | DriverEventKind::GenerationCurrentObserved => 44,
         DriverEventKind::ShutdownStarted => 50,
         DriverEventKind::ShutdownCompleted => 51,
         DriverEventKind::DriverFailed => 51,
     }
+}
+
+/// Per-kind occurrence caps for the #11390 repeating freshness events. The
+/// caps bound the authored journeys (mutations across source and config
+/// generations; holds for each stale window; materializations for each reload,
+/// push, and restart; one current observation per accepted generation); a
+/// stream exceeding a cap is an instrument fault, never evidence.
+pub const EXTERNAL_MUTATION_CAP: u32 = 6;
+pub const STALE_GENERATION_HOLD_CAP: u32 = 6;
+pub const CLIENT_MATERIALIZATION_CAP: u32 = 10;
+pub const GENERATION_CURRENT_CAP: u32 = 12;
+/// The minimum honest absence-observation window for a stale-generation hold:
+/// below this the "no spontaneous republish" claim carries no observation.
+pub const MIN_STALE_WINDOW_MS: u64 = 2000;
+
+/// Validate one repeating #11390 freshness event: its index detail is numeric,
+/// exactly one greater than the last seen index for its kind (monotone,
+/// gap-free), and within the kind's cap.
+fn validate_repeating_freshness_event(
+    event: &DriverEvent,
+    index_key: &str,
+    cap: u32,
+    last_index: &mut u32,
+) -> Result<()> {
+    let index = event
+        .details
+        .get(index_key)
+        .and_then(|value| value.parse::<u32>().ok())
+        .with_context(|| format!("freshness event omitted a numeric {index_key}"))?;
+    ensure!(
+        index == *last_index + 1,
+        "freshness event {index_key} {} is not exactly one greater than the last seen {}",
+        index,
+        *last_index
+    );
+    ensure!(index <= cap, "freshness event {index_key} {index} exceeds the journey cap {cap}");
+    *last_index = index;
+    Ok(())
 }
 
 /// Advance the observed lifecycle rank, rejecting any event that arrives out

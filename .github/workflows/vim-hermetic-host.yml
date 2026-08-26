@@ -6,6 +6,7 @@ on:
       - "xtask/**"
       - "scripts/test/vim-host-driver.vim"
       - "scripts/test/vim-host-diagnostics-driver.vim"
+      - "scripts/test/vim-host-freshness-driver.vim"
       - "scripts/test/vim-clients/**"
       - ".ci/editor-clients/vim-vim-lsp-*.json"
       - "crates/perl-lsp-rs-core/**"
@@ -177,6 +178,109 @@ jobs:
             exit 1
           fi
 
+      - name: Run the #11390 freshness-generations journey (canonical)
+        run: >-
+          cargo run --quiet --locked -p xtask --
+          editor-compat vim run
+          --subject pinned_vim_lsp_upstream
+          --journey freshness-generations
+          --fixture-variant canonical
+          --vim "$(command -v vim)"
+          --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"
+          --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"
+          --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/freshness-canonical"
+          --timeout-ms 600000
+
+      - name: Bind the six freshness cells (fail closed on any non-pass)
+        run: |
+          set -euo pipefail
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/freshness-canonical/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "freshness-generations result: ${result}"
+          [ "${result}" = "pass" ]
+          for cell in \
+            vim.vim_lsp.freshness.route \
+            vim.vim_lsp.freshness.external_source \
+            vim.vim_lsp.freshness.project_config \
+            vim.vim_lsp.freshness.client_settings \
+            vim.vim_lsp.freshness.stale_generation_rejected \
+            vim.vim_lsp.freshness.provider_ownership; do
+            observed="$(jq -r --arg id "${cell}" '.journey[] | select(.id == $id) | .result' "${receipt}")"
+            echo "cell ${cell}: ${observed}"
+            [ "${observed}" = "pass" ]
+          done
+          [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/freshness-canonical/hermetic/raw/vim-lsp-client.log" ]
+
+      - name: Freshness negative control — wrong root must fail typed
+        run: |
+          set -euo pipefail
+          # Same law as the #10946 controls: exit 0 means the typed
+          # root_mismatch failure was observed and validated.
+          cargo run --quiet --locked -p xtask -- \
+            editor-compat vim run \
+            --subject pinned_vim_lsp_upstream \
+            --journey freshness-generations \
+            --fixture-variant wrong_root_decoy \
+            --vim "$(command -v vim)" \
+            --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject" \
+            --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp" \
+            --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/freshness-wrong-root" \
+            --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/freshness-wrong-root/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "wrong_root_decoy control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Freshness negative control — claimed live reload must fail typed
+        run: |
+          set -euo pipefail
+          # The claimed-transparent-freshness control: after the external
+          # mutation the journey demands a spontaneous semantic update no
+          # watcher route can deliver, and must fail with the typed reason.
+          cargo run --quiet --locked -p xtask -- \
+            editor-compat vim run \
+            --subject pinned_vim_lsp_upstream \
+            --journey freshness-generations \
+            --fixture-variant live_reload_claimed \
+            --vim "$(command -v vim)" \
+            --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject" \
+            --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp" \
+            --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/freshness-live-reload-claimed" \
+            --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/freshness-live-reload-claimed/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "live_reload_claimed control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Freshness negative control — ambient (unadmitted) path must fail typed
+        run: |
+          set -euo pipefail
+          # The ambient-path control: the settings push carries an absolute
+          # include path the server must reject (#4998), the discriminator
+          # stays, and the journey fails with the typed reason.
+          cargo run --quiet --locked -p xtask -- \
+            editor-compat vim run \
+            --subject pinned_vim_lsp_upstream \
+            --journey freshness-generations \
+            --fixture-variant ambient_path_only \
+            --vim "$(command -v vim)" \
+            --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject" \
+            --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp" \
+            --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/freshness-ambient-path" \
+            --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/freshness-ambient-path/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "ambient_path_only control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Prove no candidate process survives the freshness journeys
+        run: |
+          if pgrep -f '[p]erllsp([[:space:]]|$)' >/dev/null; then
+            echo "a perllsp process survived the freshness host runs" >&2
+            pgrep -af '[p]erllsp([[:space:]]|$)' >&2 || true
+            exit 1
+          fi
+
       - name: Upload the run evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -194,4 +298,12 @@ jobs:
             target/vim-host-runs/ci/diagnostics-defect-absent/hermetic/artifacts/
             target/vim-host-runs/ci/diagnostics-wrong-root/receipt.json
             target/vim-host-runs/ci/diagnostics-wrong-root/hermetic/artifacts/
+            target/vim-host-runs/ci/freshness-canonical/receipt.json
+            target/vim-host-runs/ci/freshness-canonical/hermetic/artifacts/
+            target/vim-host-runs/ci/freshness-wrong-root/receipt.json
+            target/vim-host-runs/ci/freshness-wrong-root/hermetic/artifacts/
+            target/vim-host-runs/ci/freshness-live-reload-claimed/receipt.json
+            target/vim-host-runs/ci/freshness-live-reload-claimed/hermetic/artifacts/
+            target/vim-host-runs/ci/freshness-ambient-path/receipt.json
+            target/vim-host-runs/ci/freshness-ambient-path/hermetic/artifacts/
           if-no-files-found: warn

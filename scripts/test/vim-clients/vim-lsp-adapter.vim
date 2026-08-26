@@ -53,7 +53,19 @@
 "                                   wire marker appears at least n times
 "   VimLspHostWireMarkerCount(m)    current count of the wire marker in the
 "                                   client log (generation observation)
+"   VimLspHostStableWireWindow(m, ms)
+"                                   bounded absence window: -1 when the wire
+"                                   marker count moved inside the window,
+"                                   else the unchanged count (#11390)
+"   VimLspHostCloseBuffer()         close (bwipeout) the current buffer
 "   VimLspHostCloseReopen()         close and reopen the current buffer
+"   VimLspHostServerInitCount()     how many lsp_server_init events fired
+"                                   (process-generation observation)
+"   VimLspHostBufferEnabledCount()  how many lsp_buffer_enabled events fired
+"   VimLspHostUpdateWorkspaceConfig(paths)
+"                                   the stable public settings channel:
+"                                   lsp#update_workspace_config over a
+"                                   comma-separated relative include-path list
 "   VimLspHostStopServer()          stop the server through vim-lsp
 "   VimLspHostStopServerAndWait()   stop + bounded wait for client exit
 "                                   evidence (one bounded stop re-issue)
@@ -325,13 +337,68 @@ function! s:WireMarkerCount() abort
 endfunction
 
 function! VimLspHostCloseReopen() abort
-  " Close and reopen the current buffer through the real client path.
-  " Exposed for successor leaves; the minimal harness journey does not call
-  " it.
+  " Close and reopen the current buffer through the real client path:
+  " bwipeout fires the client's textDocument/didClose, the fresh edit fires
+  " native detection and textDocument/didOpen with the current disk bytes.
+  " The #11390 freshness explicit-reload route.
   let l:path = expand('%:p')
   silent bwipeout!
   execute 'silent edit ' . fnameescape(l:path)
   return v:true
+endfunction
+
+function! VimLspHostCloseBuffer() abort
+  " Close the current buffer through the real client didClose path without
+  " reopening (#11390 buffer transitions between governed files).
+  silent bwipeout!
+  return v:true
+endfunction
+
+function! VimLspHostServerInitCount() abort
+  " How many times the client emitted its public server-init event: the
+  " process-generation observation for restart routes (#11390).
+  return g:perllsp_vim_host_server_init
+endfunction
+
+function! VimLspHostBufferEnabledCount() abort
+  return g:perllsp_vim_host_buffer_enabled
+endfunction
+
+function! VimLspHostUpdateWorkspaceConfig(include_paths_csv) abort
+  " The stable public settings channel (#11369-classified
+  " lsp#update_workspace_config): merges the delivered include-path list into
+  " the registered workspace configuration and pushes
+  " workspace/didChangeConfiguration to the server. The caller owns the
+  " channel's content (Rust-authored); this adapter owns only the push.
+  call lsp#update_workspace_config(s:server_name, {
+        \ 'perl': {
+        \   'workspace': {
+        \     'includePaths': split(a:include_paths_csv, ',', v:false),
+        \   },
+        \ },
+        \ })
+  return a:include_paths_csv
+endfunction
+
+function! VimLspHostStableWireWindow(marker, window_ms) abort
+  " Bounded absence window over the client's own protocol log: observes that
+  " the exact wire marker's count does not move for window_ms. Returns the
+  " unchanged count, or -1 the moment the count moves — a spontaneous
+  " republish inside a hold window is a typed route violation, never a silent
+  " pass. Poll granularity 100ms; no fixed sleep is used as a positive
+  " barrier anywhere else in this harness.
+  let s:wire_needle = '"method":"' . a:marker . '"'
+  let l:before = s:WireMarkerCount()
+  let l:start = reltime()
+  while v:true
+    if s:WireMarkerCount() != l:before
+      return -1
+    endif
+    if reltimefloat(reltime(l:start)) * 1000.0 >= a:window_ms
+      return l:before
+    endif
+    sleep 100m
+  endwhile
 endfunction
 
 function! VimLspHostStopServer() abort
@@ -354,12 +421,21 @@ function! VimLspHostStopServerAndWait() abort
   if l:grace < 5000
     let l:grace = 5000
   endif
+  " Per-stop exit generation (#11390 restart routes): the session-global
+  " exit counter is stale across restarts, so waiting for `> 0` would return
+  " immediately on the second stop — before the process actually died — and
+  " the next lazy start would see the old lsp_id and never start. The exit
+  " generation is captured before the stop and baked into the waited
+  " expression (adapter scope law).
+  let l:exit_before = g:perllsp_vim_host_server_exit
+  let l:exit_expr = 'g:perllsp_vim_host_server_exit > ' . l:exit_before
+        \ . ' || !VimLspHostServerRunning()'
   call VimLspHostStopServer()
-  if VimLspHostWaitFor('g:perllsp_vim_host_server_exit > 0 || !VimLspHostServerRunning()', l:grace)
+  if VimLspHostWaitFor(l:exit_expr, l:grace)
     return 1
   endif
   call VimLspHostStopServer()
-  return VimLspHostWaitFor('g:perllsp_vim_host_server_exit > 0 || !VimLspHostServerRunning()', l:grace)
+  return VimLspHostWaitFor(l:exit_expr, l:grace)
 endfunction
 
 function! VimLspHostQuit() abort
