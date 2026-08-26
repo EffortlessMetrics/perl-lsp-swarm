@@ -1,7 +1,8 @@
 //! Half-open original-source byte ranges and derived UTF-8 line/column projection.
 
 use super::failure::OutcomeError;
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 
 /// Half-open byte range `[start, end)` over the caller's original source.
@@ -9,8 +10,7 @@ use std::fmt;
 /// Line and column are not stored. Project them with
 /// [`SourceRange::line_column`] when a display form is needed.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub struct SourceRange {
     start: usize,
     end: usize,
@@ -71,8 +71,11 @@ impl SourceRange {
         self.start == self.end
     }
 
-    /// Fail if this range is out of bounds or not on a UTF-8 character boundary.
+    /// Fail if this range is inverted, out of bounds, or not on a UTF-8 character boundary.
     pub fn check_over_source(self, source: &str) -> Result<(), OutcomeError> {
+        if self.start > self.end {
+            return Err(OutcomeError::InvertedRange { start: self.start, end: self.end });
+        }
         let source_len = source.len();
         if self.end > source_len {
             return Err(OutcomeError::OutOfBounds { start: self.start, end: self.end, source_len });
@@ -142,6 +145,19 @@ impl SourceLineColumn {
 impl fmt::Display for SourceRange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[{}, {})", self.start, self.end)
+    }
+}
+
+impl<'de> Deserialize<'de> for SourceRange {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct SourceRangeWire {
+            start: usize,
+            end: usize,
+        }
+        let wire = SourceRangeWire::deserialize(deserializer)?;
+        Self::try_new(wire.start, wire.end).map_err(D::Error::custom)
     }
 }
 

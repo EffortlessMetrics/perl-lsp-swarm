@@ -148,9 +148,17 @@ fn overlapping_recovery_helper_fails_without_panicking() -> Result<(), Box<dyn E
 
     let empty = SourceRange::try_over_source(3, 3, source)?;
     match SourceRange::sort_and_check_disjoint(vec![empty, empty]) {
-        Err(OutcomeError::OverlappingRecovery { .. }) => Ok(()),
-        other => Err(format!("duplicate empty ranges must overlap, got {other:?}").into()),
+        Err(OutcomeError::OverlappingRecovery { .. }) => {}
+        other => return Err(format!("duplicate empty ranges must overlap, got {other:?}").into()),
     }
+
+    match serde_json::from_str::<SourceRange>(r#"{"start":5,"end":2}"#) {
+        Err(_) => {}
+        Ok(range) => {
+            return Err(format!("inverted serde range must fail, got {range}").into());
+        }
+    }
+    Ok(())
 }
 
 #[test]
@@ -197,6 +205,27 @@ fn diagnostics_order_deterministically_by_range_kind_and_message() -> Result<(),
         source,
     )?;
     assert_eq!(ordered, again);
+
+    let skip = ParseDiagnostic::new(
+        ParseDiagnosticKind::SkippedSource,
+        SourceRange::try_over_source(0, 2, source)?,
+        "same",
+        None,
+        Some(RecoveryAction::Skip),
+    );
+    let resume = ParseDiagnostic::new(
+        ParseDiagnosticKind::SkippedSource,
+        SourceRange::try_over_source(0, 2, source)?,
+        "same",
+        None,
+        Some(RecoveryAction::ResumeAfter),
+    );
+    let action_first =
+        ParseDiagnostic::ordered_for_source(vec![resume.clone(), skip.clone()], source)?;
+    let action_second = ParseDiagnostic::ordered_for_source(vec![skip, resume], source)?;
+    assert_eq!(action_first, action_second);
+    assert_eq!(action_first[0].recovery_action(), Some(RecoveryAction::Skip));
+    assert_eq!(action_first[1].recovery_action(), Some(RecoveryAction::ResumeAfter));
     Ok(())
 }
 

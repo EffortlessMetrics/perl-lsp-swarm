@@ -84,6 +84,17 @@ impl ParseDiagnosticKind {
 }
 
 impl RecoveryAction {
+    /// Stable sort rank. Lower ranks precede later actions at the same diagnostic.
+    #[must_use]
+    pub const fn sort_rank(self) -> u8 {
+        match self {
+            Self::Skip => 0,
+            Self::ResumeAfter => 1,
+            Self::ReplaceWithErrorNode => 2,
+            Self::RetainOriginalError => 3,
+        }
+    }
+
     /// Stable kebab-case machine name.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -139,7 +150,7 @@ impl ParseDiagnostic {
         self.recovery_action
     }
 
-    /// Sort diagnostics by range, then kind rank, then message, then detail.
+    /// Sort diagnostics by range, then kind rank, then message, then detail, then action.
     pub fn sort_slice(diagnostics: &mut [Self]) {
         diagnostics.sort_by(|left, right| {
             left.range
@@ -149,6 +160,10 @@ impl ParseDiagnostic {
                 .then(left.kind.sort_rank().cmp(&right.kind.sort_rank()))
                 .then(left.message.cmp(&right.message))
                 .then(left.detail.cmp(&right.detail))
+                .then(
+                    recovery_action_sort_rank(left.recovery_action)
+                        .cmp(&recovery_action_sort_rank(right.recovery_action)),
+                )
         });
     }
 
@@ -163,5 +178,12 @@ impl ParseDiagnostic {
         }
         Self::sort_slice(&mut diagnostics);
         Ok(diagnostics)
+    }
+}
+
+fn recovery_action_sort_rank(action: Option<RecoveryAction>) -> u8 {
+    match action {
+        None => 0,
+        Some(action) => action.sort_rank().saturating_add(1),
     }
 }
