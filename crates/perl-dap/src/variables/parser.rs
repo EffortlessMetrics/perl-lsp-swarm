@@ -32,17 +32,32 @@ pub enum VariableParseError {
     RegexError(#[from] regex::Error),
 }
 
-impl perl_parser_core::ErrorClass for VariableParseError {
-    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+/// Classifiable portion of [`VariableParseError`].
+///
+/// Unrecognized and unterminated variants are intentionally absent. Those
+/// failures may be negotiated engine-payload contract violations or
+/// best-effort debuggee prose; #8746 attaches origin before they can be
+/// classified.
+#[derive(Debug, Clone, Copy)]
+pub enum FixedOriginVariableParseError<'a> {
+    /// Configured parse-depth bound was exceeded.
+    MaxDepthExceeded(usize),
+    /// Internal constant regex failed to compile — adapter bug.
+    RegexError(&'a regex::Error),
+}
+
+impl VariableParseError {
+    /// Returns the fixed-origin view when the variant does not depend on parse mode.
+    #[must_use]
+    pub fn as_fixed_origin(&self) -> Option<FixedOriginVariableParseError<'_>> {
         match self {
-            // Nesting safety limit exceeded — a resource-protection guard.
-            Self::MaxDepthExceeded(_) => perl_parser_core::ErrorCategory::ResourceLimit,
-            // All other variants are adapter/parser gaps: malformed engine
-            // output or constant regex compilation failures.
+            Self::MaxDepthExceeded(depth) => {
+                Some(FixedOriginVariableParseError::MaxDepthExceeded(*depth))
+            }
+            Self::RegexError(error) => Some(FixedOriginVariableParseError::RegexError(error)),
             Self::UnrecognizedFormat(_)
             | Self::UnterminatedString
-            | Self::UnterminatedCollection
-            | Self::RegexError(_) => perl_parser_core::ErrorCategory::Bug,
+            | Self::UnterminatedCollection => None,
         }
     }
 }

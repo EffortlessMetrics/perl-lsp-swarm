@@ -20,14 +20,24 @@ pub enum StackParseError {
     RegexError(#[from] regex::Error),
 }
 
-impl perl_parser_core::ErrorClass for StackParseError {
-    fn error_class(&self) -> perl_parser_core::ErrorCategory {
-        // Both variants are adapter/parser gaps — the engine output shape
-        // or our regex constants are outside user control.
+/// Classifiable portion of [`StackParseError`].
+///
+/// [`StackParseError::UnrecognizedFormat`] is intentionally absent. That
+/// variant may be a negotiated engine-frame contract violation or best-effort
+/// debuggee prose; #8746 attaches origin before it can be classified.
+#[derive(Debug, Clone, Copy)]
+pub enum FixedOriginStackParseError<'a> {
+    /// Internal constant regex failed to compile — adapter bug.
+    RegexError(&'a regex::Error),
+}
+
+impl StackParseError {
+    /// Returns the fixed-origin view when the variant does not depend on parse mode.
+    #[must_use]
+    pub fn as_fixed_origin(&self) -> Option<FixedOriginStackParseError<'_>> {
         match self {
-            Self::UnrecognizedFormat(_) | Self::RegexError(_) => {
-                perl_parser_core::ErrorCategory::Bug
-            }
+            Self::RegexError(error) => Some(FixedOriginStackParseError::RegexError(error)),
+            Self::UnrecognizedFormat(_) => None,
         }
     }
 }

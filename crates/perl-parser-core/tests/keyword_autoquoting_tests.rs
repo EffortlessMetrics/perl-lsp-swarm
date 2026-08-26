@@ -17,47 +17,47 @@ fn parse_ok(src: &str) -> String {
 fn if_before_fat_arrow_in_hash_assignment() -> Result<(), Box<dyn std::error::Error>> {
     let sexp = parse_ok("my %h = (if => 1, for => 2, while => 3);");
     // All three keywords should be treated as string keys
-    assert!(sexp.contains("(string \"if\")"), "if should be autoquoted: {sexp}");
-    assert!(sexp.contains("(string \"for\")"), "for should be autoquoted: {sexp}");
-    assert!(sexp.contains("(string \"while\")"), "while should be autoquoted: {sexp}");
+    assert!(sexp.contains("(string (value if))"), "if should be autoquoted: {sexp}");
+    assert!(sexp.contains("(string (value for))"), "for should be autoquoted: {sexp}");
+    assert!(sexp.contains("(string (value while))"), "while should be autoquoted: {sexp}");
     Ok(())
 }
 
 #[test]
 fn my_and_use_before_fat_arrow() -> Result<(), Box<dyn std::error::Error>> {
     let sexp = parse_ok("my %h = (my => \"value\", use => \"something\");");
-    assert!(sexp.contains("(string \"my\")"), "my should be autoquoted: {sexp}");
-    assert!(sexp.contains("(string \"use\")"), "use should be autoquoted: {sexp}");
+    assert!(sexp.contains("(string (value my))"), "my should be autoquoted: {sexp}");
+    assert!(sexp.contains("(string (value use))"), "use should be autoquoted: {sexp}");
     Ok(())
 }
 
 #[test]
 fn return_before_fat_arrow() -> Result<(), Box<dyn std::error::Error>> {
     let sexp = parse_ok("my %h = (return => 1);");
-    assert!(sexp.contains("(string \"return\")"), "return should be autoquoted: {sexp}");
+    assert!(sexp.contains("(string (value return))"), "return should be autoquoted: {sexp}");
     Ok(())
 }
 
 #[test]
 fn unless_before_fat_arrow() -> Result<(), Box<dyn std::error::Error>> {
     let sexp = parse_ok("my %h = (unless => 1);");
-    assert!(sexp.contains("(string \"unless\")"), "unless should be autoquoted: {sexp}");
+    assert!(sexp.contains("(string (value unless))"), "unless should be autoquoted: {sexp}");
     Ok(())
 }
 
 #[test]
 fn next_last_redo_before_fat_arrow() -> Result<(), Box<dyn std::error::Error>> {
     let sexp = parse_ok("my %h = (next => 1, last => 2, redo => 3);");
-    assert!(sexp.contains("(string \"next\")"), "next should be autoquoted: {sexp}");
-    assert!(sexp.contains("(string \"last\")"), "last should be autoquoted: {sexp}");
-    assert!(sexp.contains("(string \"redo\")"), "redo should be autoquoted: {sexp}");
+    assert!(sexp.contains("(string (value next))"), "next should be autoquoted: {sexp}");
+    assert!(sexp.contains("(string (value last))"), "last should be autoquoted: {sexp}");
+    assert!(sexp.contains("(string (value redo))"), "redo should be autoquoted: {sexp}");
     Ok(())
 }
 
 #[test]
 fn sub_before_fat_arrow() -> Result<(), Box<dyn std::error::Error>> {
     let sexp = parse_ok("my %h = (sub => \\&handler);");
-    assert!(sexp.contains("(string \"sub\")"), "sub should be autoquoted: {sexp}");
+    assert!(sexp.contains("(string (value sub))"), "sub should be autoquoted: {sexp}");
     Ok(())
 }
 
@@ -67,7 +67,7 @@ fn sub_before_fat_arrow() -> Result<(), Box<dyn std::error::Error>> {
 fn keyword_autoquoted_in_function_call() -> Result<(), Box<dyn std::error::Error>> {
     let sexp = parse_ok("func(return => 1);");
     assert!(
-        sexp.contains("(string \"return\")"),
+        sexp.contains("(string (value return))"),
         "return should be autoquoted in func call: {sexp}"
     );
     Ok(())
@@ -76,7 +76,7 @@ fn keyword_autoquoted_in_function_call() -> Result<(), Box<dyn std::error::Error
 #[test]
 fn keyword_autoquoted_in_function_call_if() -> Result<(), Box<dyn std::error::Error>> {
     let sexp = parse_ok("func(if => 1);");
-    assert!(sexp.contains("(string \"if\")"), "if should be autoquoted in func call: {sexp}");
+    assert!(sexp.contains("(string (value if))"), "if should be autoquoted in func call: {sexp}");
     Ok(())
 }
 
@@ -95,7 +95,10 @@ fn keyword_in_brace_hash_constructor() -> Result<(), Box<dyn std::error::Error>>
 fn bare_if_fat_arrow_at_statement_level() -> Result<(), Box<dyn std::error::Error>> {
     // `if => 1;` at statement level should be an expression, not an if-statement
     let sexp = parse_ok("if => 1;");
-    assert!(sexp.contains("(string \"if\")"), "if should be autoquoted at statement level: {sexp}");
+    assert!(
+        sexp.contains("(string (value if))"),
+        "if should be autoquoted at statement level: {sexp}"
+    );
     Ok(())
 }
 
@@ -103,7 +106,7 @@ fn bare_if_fat_arrow_at_statement_level() -> Result<(), Box<dyn std::error::Erro
 fn bare_return_fat_arrow_at_statement_level() -> Result<(), Box<dyn std::error::Error>> {
     let sexp = parse_ok("return => 1;");
     assert!(
-        sexp.contains("(string \"return\")"),
+        sexp.contains("(string (value return))"),
         "return should be autoquoted at statement level: {sexp}"
     );
     Ok(())
@@ -113,7 +116,7 @@ fn bare_return_fat_arrow_at_statement_level() -> Result<(), Box<dyn std::error::
 fn bare_for_fat_arrow_at_statement_level() -> Result<(), Box<dyn std::error::Error>> {
     let sexp = parse_ok("for => 1;");
     assert!(
-        sexp.contains("(string \"for\")"),
+        sexp.contains("(string (value for))"),
         "for should be autoquoted at statement level: {sexp}"
     );
     Ok(())
@@ -122,9 +125,9 @@ fn bare_for_fat_arrow_at_statement_level() -> Result<(), Box<dyn std::error::Err
 #[test]
 fn multiple_keyword_pairs_at_statement_level() -> Result<(), Box<dyn std::error::Error>> {
     let sexp = parse_ok("if => 1, for => 2, while => 3;");
-    assert!(sexp.contains("(string \"if\")"), "if should be autoquoted: {sexp}");
-    assert!(sexp.contains("(string \"for\")"), "for should be autoquoted: {sexp}");
-    assert!(sexp.contains("(string \"while\")"), "while should be autoquoted: {sexp}");
+    assert!(sexp.contains("(string (value if))"), "if should be autoquoted: {sexp}");
+    assert!(sexp.contains("(string (value for))"), "for should be autoquoted: {sexp}");
+    assert!(sexp.contains("(string (value while))"), "while should be autoquoted: {sexp}");
     Ok(())
 }
 
@@ -214,7 +217,7 @@ fn begin_end_before_fat_arrow() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn regular_bareword_autoquoted() -> Result<(), Box<dyn std::error::Error>> {
     let sexp = parse_ok("my %h = (foo => 1, bar => 2);");
-    assert!(sexp.contains("(string \"foo\")"), "foo should be autoquoted: {sexp}");
-    assert!(sexp.contains("(string \"bar\")"), "bar should be autoquoted: {sexp}");
+    assert!(sexp.contains("(string (value foo))"), "foo should be autoquoted: {sexp}");
+    assert!(sexp.contains("(string (value bar))"), "bar should be autoquoted: {sexp}");
     Ok(())
 }

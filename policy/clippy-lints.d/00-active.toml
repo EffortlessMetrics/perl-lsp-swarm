@@ -71,6 +71,13 @@ class = "async"
 reason = "Primitive mutex candidates remain visible while #9884 classifies compound invariants and memory-order requirements before any atomic conversion."
 
 [[lint]]
+name = "clippy::collapsible_if"
+level = "deny"
+status = "active"
+class = "style"
+reason = "Activated by #6305 after the 293-site burn-down (#6375-#6380), a warn-forced zero-finding all-targets remeasurement, and 38 fresh test-target fixes; historical blanket allows still mask 257 force-warn-measured sites owned by #12730-#12736."
+
+[[lint]]
 name = "clippy::collapsible_match"
 level = "allow"
 status = "active"

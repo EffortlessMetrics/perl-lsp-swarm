@@ -7,7 +7,7 @@ impl<'a> Parser<'a> {
     fn parse_builtin_block(&mut self) -> ParseResult<Node> {
         self.with_recursion_guard(|s| {
             let start_token = s.tokens.next()?; // consume {
-            let start = start_token.start;
+            let start = start_token.start();
 
             let mut statements = Vec::new();
 
@@ -41,7 +41,7 @@ impl<'a> Parser<'a> {
     fn parse_hash_or_block_inner(&mut self, _expect_block: bool) -> ParseResult<Node> {
         self.check_recursion()?;
         let start_token = self.tokens.next()?; // consume {
-        let start = start_token.start;
+        let start = start_token.start();
 
         // Peek ahead to determine if it's a hash or block
         // For empty {}, decide based on context
@@ -51,7 +51,7 @@ impl<'a> Parser<'a> {
             // `self.tokens.next()` does NOT update `last_end_position`, so we must
             // read the token's `.end` field directly.  See #3357.
             let close_brace = self.tokens.next()?; // consume }
-            let end = close_brace.end;
+            let end = close_brace.end();
 
             // For empty braces, default to hash (correct for most functions)
             // Functions like sort/map/grep have special handling that creates blocks
@@ -133,7 +133,7 @@ impl<'a> Parser<'a> {
             // Using `previous_position()` here would give the end of the last
             // *inner* token (before `}`), making the node span exclude the brace.
             let close_brace = self.tokens.next()?; // consume }
-            let end = close_brace.end;
+            let end = close_brace.end();
 
             // Decompose first_expr to consume its kind by move, avoiding clones
             let (first_kind, first_loc) = first_expr.into_parts();

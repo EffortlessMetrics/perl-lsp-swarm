@@ -521,10 +521,10 @@ fn test_recovery_unclosed_qw() -> Result<(), String> {
     ) {
         return Err(format!("recovered statements had unexpected shapes: {sexp}"));
     }
-    if !sexp.contains("@ items")
-        || !sexp.contains("\"word1\"")
-        || !sexp.contains("\"word2\"")
-        || !sexp.contains("$ x")
+    if !sexp.contains("(sigil @) (name items)")
+        || !sexp.contains("(value word1)")
+        || !sexp.contains("(value word2)")
+        || !sexp.contains("(sigil $) (name x)")
         || !sexp.contains("print")
     {
         return Err(format!("qw recovery did not preserve declaration/print boundaries: {sexp}"));
@@ -597,7 +597,7 @@ fn test_unclosed_qw_keeps_same_line_keyword_as_word() -> Result<(), String> {
     let mut parser = Parser::new(code);
     let ast = parser.parse().map_err(|error| format!("parser did not recover: {error}"))?;
     let sexp = ast.to_sexp();
-    if !sexp.contains("\"my\"") || !sexp.contains("\"word2\"") || !sexp.contains("print") {
+    if !sexp.contains("(value my)") || !sexp.contains("(value word2)") || !sexp.contains("print") {
         return Err(format!("same-line qw keyword triggered false synchronization: {sexp}"));
     }
     if parser.errors().is_empty() {
@@ -617,10 +617,10 @@ fn test_closed_qw_keeps_statement_keywords_as_words() -> Result<(), String> {
     let sexp = ast.to_sexp();
     if statements.len() != 1
         || !parser.errors().is_empty()
-        || !sexp.contains("\"word1\"")
-        || !sexp.contains("\"my\"")
-        || !sexp.contains("\"print\"")
-        || !sexp.contains("\"word2\"")
+        || !sexp.contains("(value word1)")
+        || !sexp.contains("(value my)")
+        || !sexp.contains("(value print)")
+        || !sexp.contains("(value word2)")
     {
         return Err(format!("closed qw changed behavior: {}", ast.to_sexp()));
     }
@@ -639,10 +639,10 @@ fn test_closed_multiline_qw_keeps_statement_keywords_as_words() -> Result<(), St
     let sexp = ast.to_sexp();
     if statements.len() != 1
         || !parser.errors().is_empty()
-        || !sexp.contains("\"word1\"")
-        || !sexp.contains("\"my\"")
-        || !sexp.contains("\"print\"")
-        || !sexp.contains("\"word3\"")
+        || !sexp.contains("(value word1)")
+        || !sexp.contains("(value my)")
+        || !sexp.contains("(value print)")
+        || !sexp.contains("(value word3)")
     {
         return Err(format!("closed multiline qw changed behavior: {sexp}"));
     }
@@ -656,10 +656,10 @@ fn test_closed_multiline_qw_keeps_line_start_keywords_as_words() -> Result<(), S
     let ast = parser.parse().map_err(|error| format!("closed multiline qw failed: {error}"))?;
     let sexp = ast.to_sexp();
     if !parser.errors().is_empty()
-        || !sexp.contains("\"word1\"")
-        || !sexp.contains("\"my\"")
-        || !sexp.contains("\"print\"")
-        || !sexp.contains("\"word2\"")
+        || !sexp.contains("(value word1)")
+        || !sexp.contains("(value my)")
+        || !sexp.contains("(value print)")
+        || !sexp.contains("(value word2)")
     {
         return Err(format!("closed multiline qw changed behavior: {sexp}"));
     }
@@ -677,8 +677,8 @@ fn test_unclosed_spaced_qw_recovers_following_declaration() -> Result<(), String
     let sexp = ast.to_sexp();
     if statements.len() != 3
         || parser.errors().is_empty()
-        || !sexp.contains("\"word1\"")
-        || !sexp.contains("\"word2\"")
+        || !sexp.contains("(value word1)")
+        || !sexp.contains("(value word2)")
         || sexp.contains("\"(word1\"")
     {
         return Err(format!("spaced qw recovery lost following statements: {}", ast.to_sexp()));
@@ -694,9 +694,9 @@ fn test_closed_multiline_qw_keeps_declaration_shaped_words() -> Result<(), Strin
         parser.parse().map_err(|error| format!("closed declaration-like qw failed: {error}"))?;
     let sexp = ast.to_sexp();
     if !parser.errors().is_empty()
-        || !sexp.contains("\"my\"")
+        || !sexp.contains("(value my)")
         || !sexp.contains("\"$x;\"")
-        || !sexp.contains("\"word2\"")
+        || !sexp.contains("(value word2)")
     {
         return Err(format!("closed declaration-like qw changed behavior: {sexp}"));
     }
@@ -749,7 +749,7 @@ fn test_unclosed_qw_recovers_named_subroutine_after_cr_only_line_break() -> Resu
             statements.get(1).map(|statement| &statement.kind),
             Some(NodeKind::Subroutine { .. })
         )
-        || !sexp.contains("(sub run")
+        || !sexp.contains("(sub (name run)")
         || parser.errors().is_empty()
     {
         return Err(format!("CR-only named subroutine was swallowed: {sexp}"));
@@ -823,10 +823,10 @@ fn test_unclosed_qw_recovers_parenthesized_lexical_declaration() -> Result<(), S
 #[test]
 fn test_unclosed_qw_recovers_compact_lexical_declarations() -> Result<(), String> {
     for (declaration, variable) in [
-        ("my$x = 1;", "$ x"),
-        ("our@x = ();", "@ x"),
-        ("state%x = ();", "% x"),
-        ("local$x = 1;", "$ x"),
+        ("my$x = 1;", "(sigil $) (name x)"),
+        ("our@x = ();", "(sigil @) (name x)"),
+        ("state%x = ();", "(sigil %) (name x)"),
+        ("local$x = 1;", "(sigil $) (name x)"),
     ] {
         let code = format!("my @items = qw(word\n{declaration}\nprint 1;");
         let mut parser = Parser::new(&code);
@@ -921,7 +921,10 @@ fn test_unclosed_qw_recovers_semicolonless_trailing_declaration() -> Result<(), 
     {
         return Err(format!("semicolonless trailing declaration was swallowed: {sexp}"));
     }
-    if !sexp.contains("\"word1\"") || !sexp.contains("\"word2\"") || !sexp.contains("$ x") {
+    if !sexp.contains("(value word1)")
+        || !sexp.contains("(value word2)")
+        || !sexp.contains("(sigil $) (name x)")
+    {
         return Err(format!("recovery lost qw words or trailing declaration: {sexp}"));
     }
     if parser.errors().is_empty() {
@@ -947,7 +950,7 @@ fn test_unclosed_qw_recovers_semicolonless_trailing_print() -> Result<(), String
             Some(NodeKind::ExpressionStatement { .. })
         )
         || !sexp.contains("print")
-        || !sexp.contains("\"word1\"")
+        || !sexp.contains("(value word1)")
     {
         return Err(format!("semicolonless trailing print was swallowed: {sexp}"));
     }
@@ -961,10 +964,10 @@ fn test_unclosed_qw_recovers_semicolonless_trailing_print() -> Result<(), String
 fn test_unclosed_qw_recovers_semicolonless_compact_declarations() -> Result<(), String> {
     // #4494: sigil-adjacent declaration keywords must recover at EOF without a semicolon.
     for (declaration, variable) in [
-        ("my$x = 1", "$ x"),
-        ("our@x = ()", "@ x"),
-        ("state%x = ()", "% x"),
-        ("local$x = 1", "$ x"),
+        ("my$x = 1", "(sigil $) (name x)"),
+        ("our@x = ()", "(sigil @) (name x)"),
+        ("state%x = ()", "(sigil %) (name x)"),
+        ("local$x = 1", "(sigil $) (name x)"),
     ] {
         let code = format!("my @items = qw(word\n{declaration}");
         let mut parser = Parser::new(&code);
@@ -1019,9 +1022,9 @@ fn test_closed_qw_semicolonless_keeps_keyword_words_at_eof() -> Result<(), Strin
     let sexp = ast.to_sexp();
     if statements.len() != 1
         || !parser.errors().is_empty()
-        || !sexp.contains("\"word1\"")
-        || !sexp.contains("\"my\"")
-        || !sexp.contains("\"word2\"")
+        || !sexp.contains("(value word1)")
+        || !sexp.contains("(value my)")
+        || !sexp.contains("(value word2)")
     {
         return Err(format!("closed eof qw changed behavior: {sexp}"));
     }
@@ -1079,7 +1082,7 @@ fn test_unclosed_qw_semicolonless_recovers_regex_match_statement() -> Result<(),
             statements.get(1).map(|node| &node.kind),
             Some(NodeKind::ExpressionStatement { .. })
         )
-        || !sexp.contains("\"word1\"")
+        || !sexp.contains("(value word1)")
         || parser.errors().is_empty()
     {
         return Err(format!("closed trailing match failed to recover: {sexp}"));
@@ -1097,46 +1100,56 @@ fn test_unclosed_qw_recovers_block_form_starters() -> Result<(), String> {
     // starter parsed into its *own* declaration/phase/expression node, not merely that
     // the statement count rose (a fallback Error node would also lift the count).
     for (label, code, swallowed_marker, recovered_head) in [
-        ("sub block", "my @a = qw(word\nsub run { print 1; }", "\"sub\"", "(sub run"),
-        ("sub multiline block", "my @a = qw(word\nsub run\n{ print 1; }", "\"sub\"", "(sub run"),
+        ("sub block", "my @a = qw(word\nsub run { print 1; }", "(value sub)", "(sub (name run"),
+        (
+            "sub multiline block",
+            "my @a = qw(word\nsub run\n{ print 1; }",
+            "(value sub)",
+            "(sub (name run",
+        ),
         (
             "sub multiline prototype block",
             "my @a = qw(word\nsub run\n($) { print 1; }",
-            "\"sub\"",
-            "(sub run",
+            "(value sub)",
+            "(sub (name run",
         ),
         (
             "sub multiline prototype string block",
             "my @a = qw(word\nsub run\n($x = \")\") { print 1; }",
-            "\"sub\"",
-            "(sub run",
+            "(value sub)",
+            "(sub (name run",
         ),
         (
             "sub multiline prototype regex block",
             "my @a = qw(word\nsub run\n($x = m/'foo/) { print 1; }",
-            "\"sub\"",
-            "(sub run",
+            "(value sub)",
+            "(sub (name run",
         ),
-        ("package block", "my @a = qw(word\npackage Foo { 1; }", "\"package\"", "(package Foo"),
+        (
+            "package block",
+            "my @a = qw(word\npackage Foo { 1; }",
+            "(value package)",
+            "(package (name Foo",
+        ),
         (
             "package multiline block",
             "my @a = qw(word\npackage Foo\n{ 1; }",
-            "\"package\"",
-            "(package Foo",
+            "(value package)",
+            "(package (name Foo",
         ),
         (
             "package version block",
             "my @a = qw(word\npackage Foo 1.23 { 1; }",
-            "\"package\"",
-            "(package Foo",
+            "(value package)",
+            "(package (name Foo",
         ),
-        ("package semi", "my @a = qw(word\npackage Foo;", "\"package\"", "(package Foo"),
-        ("class block", "my @a = qw(word\nclass Foo { 1; }", "\"class\"", "(class Foo"),
-        ("BEGIN block", "my @a = qw(word\nBEGIN { 1; }", "\"BEGIN\"", "(BEGIN"),
-        ("END block", "my @a = qw(word\nEND { 1; }", "\"END\"", "(END"),
-        ("INIT block", "my @a = qw(word\nINIT { 1; }", "\"INIT\"", "(INIT"),
-        ("CHECK block", "my @a = qw(word\nCHECK { 1; }", "\"CHECK\"", "(CHECK"),
-        ("UNITCHECK block", "my @a = qw(word\nUNITCHECK { 1; }", "\"UNITCHECK\"", "(UNITCHECK"),
+        ("package semi", "my @a = qw(word\npackage Foo;", "(value package)", "(package (name Foo"),
+        ("class block", "my @a = qw(word\nclass Foo { 1; }", "(value class)", "(class (name Foo"),
+        ("BEGIN block", "my @a = qw(word\nBEGIN { 1; }", "(value BEGIN)", "(BEGIN"),
+        ("END block", "my @a = qw(word\nEND { 1; }", "(value END)", "(END"),
+        ("INIT block", "my @a = qw(word\nINIT { 1; }", "(value INIT)", "(INIT"),
+        ("CHECK block", "my @a = qw(word\nCHECK { 1; }", "(value CHECK)", "(CHECK"),
+        ("UNITCHECK block", "my @a = qw(word\nUNITCHECK { 1; }", "(value UNITCHECK)", "(UNITCHECK"),
         ("print paren", "my @a = qw(word\nprint(\"hi\");", "\"print(\\\"hi\\\");\"", "print"),
     ] {
         let mut parser = Parser::new(code);
@@ -1163,7 +1176,7 @@ fn test_unclosed_qw_recovers_block_form_starters() -> Result<(), String> {
                 recovered.to_sexp()
             ));
         }
-        if !sexp.contains("\"word\"") {
+        if !sexp.contains("(value word)") {
             return Err(format!("[{label}] lost the recovered qw content: {sexp}"));
         }
         if parser.errors().is_empty() {
@@ -1182,14 +1195,14 @@ fn test_unclosed_qw_recovers_leading_qualified_declarations() -> Result<(), Stri
             "sub leading-qualified",
             "my @a = qw(word\nsub ::PCDATA { 1; }",
             "PCDATA",
-            "\"sub\"",
+            "(value sub)",
             "sub",
         ),
         (
             "package leading-qualified",
             "my @a = qw(word\npackage ::My::App { 1; }",
             "My::App",
-            "\"package\"",
+            "(value package)",
             "package",
         ),
     ] {
@@ -1221,8 +1234,8 @@ fn test_unclosed_qw_recovers_leading_qualified_declarations() -> Result<(), Stri
 #[test]
 fn test_unclosed_qw_rejects_extra_named_header_words() -> Result<(), String> {
     for (label, code, marker) in [
-        ("sub extra header", "my @a = qw(word\nsub run extra { 1; }", "\"sub\""),
-        ("package extra header", "my @a = qw(word\npackage Foo extra { 1; }", "\"package\""),
+        ("sub extra header", "my @a = qw(word\nsub run extra { 1; }", "(value sub)"),
+        ("package extra header", "my @a = qw(word\npackage Foo extra { 1; }", "(value package)"),
     ] {
         let mut parser = Parser::new(code);
         let ast = parser.parse().map_err(|error| format!("[{label}] parse failed: {error}"))?;
@@ -1243,11 +1256,16 @@ fn test_unclosed_qw_rejects_extra_named_header_words() -> Result<(), String> {
 #[test]
 fn test_unclosed_qw_block_starter_recovers_before_trailing_statement() -> Result<(), String> {
     for (label, code, recovered_head, trailing_is_decl) in [
-        ("sub then my", "my @a = qw(word\nsub run { print 1; }\nmy $x = 1;", "(sub run", true),
+        (
+            "sub then my",
+            "my @a = qw(word\nsub run { print 1; }\nmy $x = 1;",
+            "(sub (name run",
+            true,
+        ),
         (
             "package then print",
             "my @a = qw(word\npackage Foo { 1; }\nprint 2;",
-            "(package Foo",
+            "(package (name Foo",
             false,
         ),
         ("BEGIN then my", "my @a = qw(word\nBEGIN { 1; }\nmy $y = 2;", "(BEGIN", true),
@@ -1281,7 +1299,7 @@ fn test_unclosed_qw_block_starter_recovers_before_trailing_statement() -> Result
                 trailing.kind
             ));
         }
-        if !sexp.contains("\"word\"") {
+        if !sexp.contains("(value word)") {
             return Err(format!("[{label}] lost the recovered qw content: {sexp}"));
         }
     }
@@ -1303,7 +1321,7 @@ fn test_unclosed_qw_block_starter_word_without_shape_stays_word() -> Result<(), 
             return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
         };
         let sexp = ast.to_sexp();
-        if statements.len() != 1 || !sexp.contains("\"more\"") {
+        if statements.len() != 1 || !sexp.contains("(value more)") {
             return Err(format!("[{label}] keyword-like word triggered a false boundary: {sexp}"));
         }
         if parser.errors().is_empty() {
@@ -1329,7 +1347,7 @@ fn test_unclosed_qw_block_starter_comment_does_not_fake_name() -> Result<(), Str
             return Err(format!("[{label}] expected program root, got {}", ast.to_sexp()));
         };
         let sexp = ast.to_sexp();
-        if statements.len() != 1 || !sexp.contains(&format!("\"{retained_word}\"")) {
+        if statements.len() != 1 || !sexp.contains(&format!("(value {retained_word})")) {
             return Err(format!("[{label}] comment faked a block-starter name: {sexp}"));
         }
         if parser.errors().is_empty() {
@@ -1366,8 +1384,8 @@ fn test_synchronize_preserves_phaser_blocks() -> Result<(), String> {
 #[test]
 fn test_unclosed_qw_recovers_keyword_and_vstring_sub_names() -> Result<(), String> {
     for (label, code, recovered) in [
-        ("keyword name", "my @a = qw(word\nsub return { 1; }", "(sub return"),
-        ("v-string name", "my @a = qw(word\nsub v5 { 1; }", "(sub v5"),
+        ("keyword name", "my @a = qw(word\nsub return { 1; }", "(sub (name return"),
+        ("v-string name", "my @a = qw(word\nsub v5 { 1; }", "(sub (name v5"),
     ] {
         let mut parser = Parser::new(code);
         let ast = parser.parse().map_err(|error| format!("[{label}] did not recover: {error}"))?;
@@ -1433,7 +1451,7 @@ fn test_unclosed_qw_rejects_mismatched_block_delimiters() -> Result<(), String> 
         return Err(format!("expected program root, got {}", ast.to_sexp()));
     };
     let sexp = ast.to_sexp();
-    if statements.len() != 1 || !sexp.contains("\"sub\"") || parser.errors().is_empty() {
+    if statements.len() != 1 || !sexp.contains("(value sub)") || parser.errors().is_empty() {
         return Err(format!("mismatched block became a false boundary: {sexp}"));
     }
     Ok(())
@@ -1494,8 +1512,8 @@ fn test_unclosed_qw_parenthesized_print_recovers() -> Result<(), String> {
 #[test]
 fn test_unclosed_qw_block_starter_word_does_not_borrow_later_statement() -> Result<(), String> {
     for (label, code, keyword_word) in [
-        ("sub then return-hashref", "my @a = qw(word\nsub\nreturn { a => 1 };", "\"sub\""),
-        ("package then return", "my @a = qw(word\npackage\nreturn 5;", "\"package\""),
+        ("sub then return-hashref", "my @a = qw(word\nsub\nreturn { a => 1 };", "(value sub)"),
+        ("package then return", "my @a = qw(word\npackage\nreturn 5;", "(value package)"),
         (
             "class then method call",
             "my @a = qw(word\nclass->new(1)->run({ x => 1 });",
@@ -1574,7 +1592,7 @@ fn test_unclosed_qw_recovers_block_after_multibyte_content() -> Result<(), Strin
     let sexp = ast.to_sexp();
     if statements.len() != 2
         || !matches!(&statements[1].kind, NodeKind::Subroutine { .. })
-        || !sexp.contains("sub run")
+        || !sexp.contains("(sub (name run)")
         || parser.errors().is_empty()
     {
         return Err(format!("multibyte block recovery lost the sub: {sexp}"));
