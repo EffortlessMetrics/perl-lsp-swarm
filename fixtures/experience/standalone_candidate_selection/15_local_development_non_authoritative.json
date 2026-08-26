@@ -1,0 +1,44 @@
+{
+  "packet_schema": "standalone_candidate_selection_vector.v1",
+  "expectation": {
+    "verdict": "reject",
+    "reason_code": "local_development_non_authoritative"
+  },
+  "candidates": [
+    {
+      "schema_version": "standalone_candidate.v1",
+      "policy_version": "v1",
+      "route_mode": "first_party_posix",
+      "source_mode": "explicit_local_development",
+      "transaction_id": "tx-11179-build-l",
+      "attempt_id": "at-11179-build-l",
+      "created_by_operation": "install",
+      "resolved_subject_digest": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "stage_dag_digest": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "release_display_version": "0.19.0-local",
+      "release_topology_digest": "d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6",
+      "target_platform": "linux",
+      "target_triple": "x86_64-unknown-linux-gnu",
+      "target_libc": "gnu",
+      "product_unit_disposition": "advanced_source_server_only",
+      "dap_preview_maturity": false,
+      "candidate_generation": 7,
+      "members": [
+        {
+          "role": "perllsp_server",
+          "artifact_sha256": "fafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafa",
+          "observation_packet_sha256": "fbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfb",
+          "subject_binding": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        }
+      ],
+      "limitations": [
+        "local development output is explicitly non-authoritative"
+      ],
+      "candidate_id": "c06b3caa8a8a9d37ea4218390a43d3240a3334bf23383b06f8d4b8fb577158bd",
+      "manifest_sha256": "9cf095810f679485c8681e86c13a110e888c92bd3236115ff2e1dd95390c12a2"
+    }
+  ],
+  "prior_selection": null,
+  "next_selection": null,
+  "transition": null
+}

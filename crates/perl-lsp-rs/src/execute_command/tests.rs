@@ -1848,7 +1848,7 @@ fn test_method_return_values_not_defaults() -> Result<(), Box<dyn std::error::Er
     fs::write(&temp_file, test_content)?;
 
     // Test run_file doesn't return Ok(Default::default())
-    let result = provider.run_file(&temp_file);
+    let result = provider.run_file(&temp_file, &temp_file.to_string_lossy());
     assert!(result.is_ok(), "run_file should succeed");
     let result_value = result?;
     assert_ne!(result_value, Value::Object(serde_json::Map::new()), "Should not be empty object");
@@ -1864,7 +1864,7 @@ fn test_method_return_values_not_defaults() -> Result<(), Box<dyn std::error::Er
     let sub_file = tmp.path().join("test_sub_return.pl");
     fs::write(&sub_file, sub_content)?;
 
-    let result = provider.run_test_sub(&sub_file, "test_func");
+    let result = provider.run_test_sub(&sub_file, "test_func", &sub_file.to_string_lossy());
     assert!(result.is_ok(), "run_test_sub should succeed");
     let result_value = result?;
     assert_ne!(result_value, Value::Object(serde_json::Map::new()), "Should not be empty object");
@@ -2249,4 +2249,204 @@ fn test_run_test_command_does_not_execute_planted_cwd_binary() {
         !marker_exists,
         "SECURITY: planted CWD batch file was EXECUTED via run_test_command — the RCE is live (#3028)"
     );
+}
+
+// ============= #1755: CLIENT-FACING ERRORS MUST NOT LEAK SERVER PATHS =============
+//
+// The server's canonicalized absolute paths (resolved symlinks, Windows
+// verbatim `\\?\` prefixes, volume layout) describe the server's own
+// filesystem
+// view. Error strings returned to the client must instead name the operation
+// and the client-visible input. Each test below first forces a divergence
+// between the client-supplied form and the server-canonical form so the
+// assertions can tell the two apart, then asserts:
+//   - usefulness: the operation and the client-sent input stay named;
+//   - no leak:    the server-canonical form never appears.
+
+/// Shared #1755 assertions for one client-facing error string.
+fn assert_no_canonical_leak(
+    error: &str,
+    operation: &str,
+    client_input: &str,
+    canonical: &std::path::Path,
+) {
+    assert!(
+        error.contains(operation),
+        "error must still name the operation ({operation}): {error}"
+    );
+    assert!(
+        error.contains(client_input),
+        "error must still name the client-visible input ({client_input}): {error}"
+    );
+    let canonical_display = canonical.display().to_string();
+    assert_ne!(
+        canonical_display, client_input,
+        "test setup must make the canonical and client forms diverge"
+    );
+    assert!(
+        !error.contains(&canonical_display),
+        "error must not embed the server-canonical path ({canonical_display}): {error}"
+    );
+}
+
+#[test]
+fn path_validation_error_names_client_input_not_server_canonical_path()
+-> Result<(), Box<dyn std::error::Error>> {
+    let workspace = tempdir()?;
+    // A directory: canonicalize succeeds and `is_file` then fails, so
+    // `perl.runFile` deterministically returns the "Path is not a file"
+    // client-facing error without needing a Perl interpreter.
+    let client_form;
+    let canonical: PathBuf;
+    #[cfg(unix)]
+    {
+        let real = workspace.path().join("real_dir_leak_probe");
+        fs::create_dir_all(&real)?;
+        let alias = workspace.path().join("alias_dir_leak_probe");
+        std::os::unix::fs::symlink(&real, &alias)?;
+        client_form = alias.to_string_lossy().into_owned();
+        canonical = alias.canonicalize()?;
+    }
+    #[cfg(windows)]
+    {
+        let dir = workspace.path().join("dir_leak_probe");
+        fs::create_dir_all(&dir)?;
+        client_form = dir.to_string_lossy().into_owned();
+        canonical = dir.canonicalize()?; // verbatim `\\?\`-prefixed form
+    }
+    let provider =
+        ExecuteCommandProvider::with_workspace_roots(vec![workspace.path().to_path_buf()]);
+    let error = provider
+        .execute_command("perl.runFile", vec![Value::String(client_form.clone())])
+        .err()
+        .ok_or("expected path validation error")?;
+    assert_no_canonical_leak(&error, "Path is not a file", &client_form, &canonical);
+    Ok(())
+}
+
+#[test]
+fn traversal_error_names_client_input_not_server_canonical_path()
+-> Result<(), Box<dyn std::error::Error>> {
+    let workspace = tempdir()?;
+    let outside = tempdir()?;
+    let outside_file = outside.path().join("outside_leak_probe.pl");
+    fs::write(&outside_file, "print 'outside';")?;
+    let client_form = outside_file.to_string_lossy().into_owned();
+    let canonical = outside_file.canonicalize()?;
+    let provider =
+        ExecuteCommandProvider::with_workspace_roots(vec![workspace.path().to_path_buf()]);
+    let error = provider
+        .execute_command("perl.runFile", vec![Value::String(client_form.clone())])
+        .err()
+        .ok_or("expected traversal error")?;
+    assert!(
+        error.contains("Path traversal detected"),
+        "error must still name the operation: {error}"
+    );
+    assert!(
+        error.contains(&client_form),
+        "error must still name the client-visible input: {error}"
+    );
+    if canonical.display().to_string() != client_form {
+        // On Windows the canonical form carries a verbatim `\\?\` prefix;
+        // on macOS the system temp dir is itself a symlink (/var ->
+        // /private/var) so canonicalization rewrites the client's path.
+        assert!(
+            !error.contains(&canonical.display().to_string()),
+            "error must not embed the server-canonical path: {error}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn missing_interpreter_error_names_client_input_not_server_canonical_path()
+-> Result<(), Box<dyn std::error::Error>> {
+    let workspace = tempdir()?;
+    let file = workspace.path().join("no_interp_leak_probe.pl");
+    fs::write(&file, "print 'x';")?;
+    let client_form = file.to_string_lossy().into_owned();
+    let canonical = file.canonicalize()?;
+    // No workspace config attached: `perl_command_for` cannot build an oracle
+    // and must name the client-supplied form, not the canonical path.
+    let provider =
+        ExecuteCommandProvider::with_workspace_roots(vec![workspace.path().to_path_buf()]);
+    let error = provider.run_file(&file, &client_form).err().ok_or("expected interpreter error")?;
+    assert!(
+        error.contains("Cannot run Perl command for"),
+        "error must still name the operation: {error}"
+    );
+    assert!(
+        error.contains(&client_form),
+        "error must still name the client-visible input: {error}"
+    );
+    #[cfg(windows)]
+    assert!(
+        !error.contains(&canonical.display().to_string()),
+        "error must not embed the server-canonical verbatim path ({}): {error}",
+        canonical.display()
+    );
+    #[cfg(unix)]
+    if canonical.display().to_string() != client_form {
+        assert!(
+            !error.contains(&canonical.display().to_string()),
+            "error must not embed the server-canonical path: {error}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn json_rpc_execute_command_error_carries_client_input_not_server_canonical_path()
+-> Result<(), Box<dyn std::error::Error>> {
+    use super::CommandExecutor;
+
+    let workspace = tempdir()?;
+    // Same divergence construction as the provider-level test above: a
+    // symlinked alias on Unix, the verbatim `\\?\` prefix on Windows. Without
+    // forced divergence, a symlink-free Linux temp dir would leave canonical
+    // == client input and the leak assertion could not discriminate (#1755
+    // review).
+    let client_form;
+    let canonical: PathBuf;
+    #[cfg(unix)]
+    {
+        let real = workspace.path().join("rpc_real_dir_leak_probe");
+        fs::create_dir_all(&real)?;
+        let alias = workspace.path().join("rpc_alias_dir_leak_probe");
+        std::os::unix::fs::symlink(&real, &alias)?;
+        client_form = alias.to_string_lossy().into_owned();
+        canonical = alias.canonicalize()?;
+    }
+    #[cfg(windows)]
+    {
+        let dir = workspace.path().join("rpc_dir_leak_probe");
+        fs::create_dir_all(&dir)?;
+        client_form = dir.to_string_lossy().into_owned();
+        canonical = dir.canonicalize()?; // verbatim `\\?\`-prefixed form
+    }
+    let executor = CommandExecutor::with_workspace_roots(vec![workspace.path().to_path_buf()]);
+    let arguments = vec![Value::String(client_form.clone())];
+    let error = executor
+        .execute("perl.runFile", Some(&arguments))
+        .err()
+        .ok_or("expected JSON-RPC error")?;
+    assert!(
+        error.message.contains("Path is not a file"),
+        "JSON-RPC message must still name the operation: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains(&client_form),
+        "JSON-RPC message must still name the client-visible input: {}",
+        error.message
+    );
+    let original = error
+        .data
+        .as_ref()
+        .and_then(|data| data.get("originalError"))
+        .and_then(Value::as_str)
+        .ok_or("expected originalError in error data")?;
+    assert_no_canonical_leak(original, "Path is not a file", &client_form, &canonical);
+    Ok(())
 }

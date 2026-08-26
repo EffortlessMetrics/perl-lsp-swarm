@@ -19,6 +19,7 @@ const DISCOVERY_DECLARATION_LIMITATION: &str =
 const DIRECT_FALLBACK_LIMITATION: &str = "direct_fallback_missing_upstream_selection_context";
 const ALTERNATE_RUNNER_LIMITATION: &str = "alternate_runner_requires_membership_parity_evidence";
 
+#[cfg(test)]
 pub(crate) fn build_runner_plan(
     matrix: &UpstreamTargetMatrix,
     target_id: &str,
@@ -256,7 +257,7 @@ pub(crate) fn runner_plan_digest(plan: &RunnerPlan) -> Result<String, String> {
     sha256_json(plan)
 }
 
-fn find_target<'a>(
+pub(crate) fn find_target<'a>(
     matrix: &'a UpstreamTargetMatrix,
     target_id: &str,
 ) -> Result<&'a TargetMatrixEntry, String> {
@@ -267,7 +268,7 @@ fn find_target<'a>(
         .ok_or_else(|| format!("target matrix has no target {target_id}"))
 }
 
-fn effective_selection(
+pub(crate) fn effective_selection(
     matrix: &UpstreamTargetMatrix,
     entry: &TargetMatrixEntry,
 ) -> Result<(Vec<crate::model::TargetSelector>, Vec<TargetScriptForm>), String> {
@@ -297,7 +298,7 @@ fn effective_selection(
     }
 }
 
-fn effective_selection_authority(
+pub(crate) fn effective_selection_authority(
     matrix: &UpstreamTargetMatrix,
     entry: &TargetMatrixEntry,
 ) -> Result<TargetAuthority, String> {

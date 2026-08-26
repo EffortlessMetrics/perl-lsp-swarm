@@ -8,7 +8,7 @@ user-invocable: false
 
 Verify candidate, branch, base, worktree, controlling issue, an equivalent active candidate, and any actual same-branch/worktree writer collision. Do not infer ownership from touched-file or nearby-symbol overlap.
 
-Publish ready only when applicable focused/affected proof and negative protection are current; hardening, simplification, and local candidate review are complete; the worktree is clean; the issue/claim/contract are current; and Changie/changelog, support, migration, and release dispositions are complete or not applicable.
+Publish ready only when applicable focused/affected proof and negative protection are current; hardening, simplification, and local candidate review are complete; the worktree is clean; the published file set matches the intended worktree change set — compare `gh pr diff --name-only <n>` or the created PR's file list against the intended changed paths, because a squash or partial stage must not silently drop an intended file; the branch head passes `cargo fmt -p <pkg> -- --check` and its merge-base result is classified — the head check is binding, the base check diagnostic, naming inherited base-redness at publish time so a drift-repair candidate whose base is red by construction still publishes; the issue/claim/contract are current; and Changie/changelog, support, migration, and release dispositions are complete or not applicable.
 
 Otherwise return to `build-candidate`. Draft only for a named remote-only proof, real collaboration, early visible ownership, or protected integration experiment. Record that reason and its completion condition in the PR body.
 
