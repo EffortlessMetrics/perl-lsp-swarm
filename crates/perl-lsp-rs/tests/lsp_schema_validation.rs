@@ -3,7 +3,6 @@
 //! Validates that all LSP messages conform to the Language Server Protocol 3.17 specification
 //! using strict JSON schema validation.
 
-#![allow(clippy::collapsible_if)]
 // Integration tests print diagnostic output for CI troubleshooting; this is
 // not the LSP server's stdio transport, so print_stdout doesn't apply the
 // way it does to production code.
@@ -163,10 +162,10 @@ fn validate_diagnostic(diag: &Value) -> Result<(), String> {
     } else {
         validate_markup_content(message)
             .map_err(|e| format!("Diagnostic.message MarkupContent: {e}"))?;
-        if let Some(value) = message.get("value").and_then(Value::as_str) {
-            if value.is_empty() {
-                return Err("Diagnostic.message MarkupContent.value cannot be empty".into());
-            }
+        if let Some(value) = message.get("value").and_then(Value::as_str)
+            && value.is_empty()
+        {
+            return Err("Diagnostic.message MarkupContent.value cannot be empty".into());
         }
     }
 
@@ -178,16 +177,17 @@ fn validate_diagnostic(diag: &Value) -> Result<(), String> {
         }
     }
 
-    if let Some(code) = diag.get("code") {
-        if !code.is_string() && !code.is_number() {
-            return Err("code must be string or number".into());
-        }
+    if let Some(code) = diag.get("code")
+        && !code.is_string()
+        && !code.is_number()
+    {
+        return Err("code must be string or number".into());
     }
 
-    if let Some(source) = diag.get("source") {
-        if !source.is_string() {
-            return Err("source must be string".into());
-        }
+    if let Some(source) = diag.get("source")
+        && !source.is_string()
+    {
+        return Err("source must be string".into());
     }
 
     // 3.15+ fields
@@ -1512,10 +1512,10 @@ fn validate_partial_result_contract(exchange: &[Value]) -> Result<(), String> {
     let mut pr_tokens = HashSet::new();
 
     for m in exchange {
-        if m.get("method").and_then(|s| s.as_str()) == Some("$/progress") {
-            if let Some(t) = m.get("params").and_then(|p| p.get("token")) {
-                pr_tokens.insert(t.clone());
-            }
+        if m.get("method").and_then(|s| s.as_str()) == Some("$/progress")
+            && let Some(t) = m.get("params").and_then(|p| p.get("token"))
+        {
+            pr_tokens.insert(t.clone());
         }
     }
     if pr_tokens.is_empty() {
@@ -1529,10 +1529,10 @@ fn validate_partial_result_contract(exchange: &[Value]) -> Result<(), String> {
         .ok_or("no final response found for partial result stream")?;
 
     // If result is an array, it must be empty
-    if let Some(arr) = resp["result"].as_array() {
-        if !arr.is_empty() {
-            return Err("final response must be empty when partialResultToken is used".into());
-        }
+    if let Some(arr) = resp["result"].as_array()
+        && !arr.is_empty()
+    {
+        return Err("final response must be empty when partialResultToken is used".into());
     }
     Ok(())
 }
