@@ -465,14 +465,10 @@ fn bounded_diagnostic(bytes: &[u8]) -> String {
 /// (the driver appends and restarts its sequence), so a retry into the same
 /// directory would either fail parsing or misattribute stale artifacts. The
 /// runner refuses instead of cleaning: nothing here owns destructive
-/// deletion of a caller-supplied path.
+/// deletion of a caller-supplied path. The stale-receipt law is owned by
+/// `crate::editor_host`.
 pub fn ensure_fresh_output_root(out_root: &Path) -> Result<()> {
-    ensure!(
-        !out_root.exists(),
-        "output root already exists; use a fresh directory for each host run: {}",
-        out_root.display()
-    );
-    Ok(())
+    crate::editor_host::FreshReceiptTarget::refuse_existing(out_root, "output root")
 }
 
 /// Extract a standalone 40-hex commit-like token from a version line, if it
@@ -855,9 +851,22 @@ pub fn host_run(
             subject.journey_selector()
         ),
     );
+    // Fresh-receipt law (#10894): the receipt is reserved by this run's
+    // identity composite, refuses any pre-existing file, and its write refuses
+    // to overwrite — a stale prior receipt can never satisfy this run.
     let receipt_path = run.out_root.join("receipt.json");
-    fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt)?)
-        .with_context(|| format!("writing receipt {}", receipt_path.display()))?;
+    let subject_digest = crate::editor_host::sha256_bytes(
+        format!(
+            "{}\n{}\n{}\n",
+            plan.identity.candidate_sha,
+            plan.identity.candidate_artifact_sha256,
+            plan.identity.driver_sha256
+        )
+        .as_bytes(),
+    )?;
+    let receipt_target =
+        crate::editor_host::FreshReceiptTarget::reserve(receipt_path.clone(), subject_digest)?;
+    receipt_target.write(&serde_json::to_vec_pretty(&receipt)?)?;
     Ok(HostRunOutcome {
         receipt_path,
         result: outcome.result,
