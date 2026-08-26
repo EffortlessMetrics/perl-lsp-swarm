@@ -2755,6 +2755,21 @@ created = "2026-08-25"
 review_after = "2026-11-25"
 
 [[allow]]
+id = "non-rust-core-harness-upstream-effective-invocation-trace-schema"
+path = "schemas/perl_core_harness_upstream_effective_invocation_trace.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Published JSON Schema for the versioned perl_core_harness.upstream_effective_invocation_trace.v1 receipt; strict JSONL framing, typed field observation states, parent receipt re-binding, plan projection records, and work invariants are exercised by the Rust invocation-trace contract tests (#12284)."
+covered_by = [
+  "cargo test -p perl-core-harness --locked --lib invocation_trace",
+]
+created = "2026-08-25"
+review_after = "2026-11-25"
+
+[[allow]]
 id = "non-rust-core-harness-runner-parity-schema"
 path = "schemas/perl_core_harness_runner_parity.v1.schema.json"
 kind = "compiler_contract"
