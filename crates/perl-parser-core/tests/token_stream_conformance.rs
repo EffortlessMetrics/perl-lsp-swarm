@@ -15,7 +15,7 @@ fn parser_kinds_for(input: &str) -> Vec<TokenKind> {
         raw.push(token);
     }
 
-    TokenStream::lexer_tokens_to_parser_tokens(raw).into_iter().map(|t| t.kind).collect()
+    TokenStream::lexer_tokens_to_parser_tokens(raw).into_iter().map(|t| t.kind()).collect()
 }
 
 fn converted_kind(token_type: TokenType, text: &str) -> Option<TokenKind> {
@@ -27,7 +27,7 @@ fn converted_kind(token_type: TokenType, text: &str) -> Option<TokenKind> {
     }])
     .into_iter()
     .next()
-    .map(|token| token.kind)
+    .map(|token| token.kind())
 }
 
 fn delimiter_token_type(kind: TokenKind) -> Option<TokenType> {
@@ -165,7 +165,7 @@ fn hash_and_sub_sigils_as_identifier_tokens_keep_sigil_kind() {
     ];
     let kinds = TokenStream::lexer_tokens_to_parser_tokens(raw)
         .into_iter()
-        .map(|t| t.kind)
+        .map(|t| t.kind())
         .collect::<Vec<_>>();
     assert_eq!(
         kinds,

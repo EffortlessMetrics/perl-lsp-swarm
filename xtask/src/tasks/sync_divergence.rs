@@ -453,13 +453,13 @@ fn reconcile(
     } else {
         Verdict::Pass
     };
-    if let Some(claimed) = ledger.verdict {
-        if claimed != verdict {
-            errors.push(format!(
-                "ledger claims verdict {claimed} but validation derived {verdict}; the ledger claim is stale or dishonest"
-            ));
-            verdict = Verdict::NotProven;
-        }
+    if let Some(claimed) = ledger.verdict
+        && claimed != verdict
+    {
+        errors.push(format!(
+            "ledger claims verdict {claimed} but validation derived {verdict}; the ledger claim is stale or dishonest"
+        ));
+        verdict = Verdict::NotProven;
     }
 
     let excluded_merge_commits =
@@ -497,13 +497,13 @@ fn validate_entry(
     directory: Option<&Path>,
     errors: &mut Vec<String>,
 ) {
-    if let Some(token) = entry.disposition.as_deref() {
-        if !CLASSIFICATIONS.contains(&token) {
-            errors.push(format!(
-                "commit {} has invalid classification `{token}`; only the five terminal dispositions exist",
-                entry.commit
-            ));
-        }
+    if let Some(token) = entry.disposition.as_deref()
+        && !CLASSIFICATIONS.contains(&token)
+    {
+        errors.push(format!(
+            "commit {} has invalid classification `{token}`; only the five terminal dispositions exist",
+            entry.commit
+        ));
     }
     verify_changed_paths(entry, directory, errors);
 
