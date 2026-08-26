@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 442 |
-| documentation | 2754 |
+| documentation | 2753 |
 | generated | 2 |
 | production | 329 |
 | test | 2020 |
-| tooling | 614 |
+| tooling | 615 |
 | unclassified | 2234 |
 
 ## Unclassified files
@@ -3977,7 +3977,7 @@
 | `crates/perl-parser/examples/lsp_demo.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-parser/examples/lsp_demo.sh` | documentation | `non-rust-parser-example-scripts-sh` | docs |
 | `crates/perl-parser/examples/lsp_server.rs.disabled` | documentation | `non-rust-disabled-artifacts` | parser/legacy |
-| `crates/perl-parser/examples/simple_lsp_test.sh` | documentation | `non-rust-parser-example-scripts-sh` | docs |
+| `crates/perl-parser/examples/simple_lsp_test.sh` | tooling | `non-rust-parser-simple-lsp-test-wrapper` | release/ci |
 | `crates/perl-parser/examples/test_lsp.py` | documentation | `non-rust-parser-example-scripts-py` | docs |
 | `crates/perl-parser/examples/test_lsp_minimal.py` | documentation | `non-rust-parser-example-scripts-py` | docs |
 | `crates/perl-parser/features_sot.toml` | config | `non-rust-crate-features-sot` | lsp/features |
@@ -3985,7 +3985,7 @@
 | `crates/perl-parser/src/README_checkpoint.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/src/README_error_recovery.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/src/README_trivia.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `crates/perl-parser/src/refactor/import_optimizer.rst` | documentation | `non-rust-refactor-design-docs` | docs |
+| `crates/perl-parser/src/refactor/import_optimizer.rst` | documentation | `non-rust-refactor-design-docs` | parser/legacy |
 | `crates/perl-parser/templates/module.pl.template` | documentation | `non-rust-perl-parser-templates` | parser/lsp-fixtures |
 | `crates/perl-parser/templates/script.pl.template` | documentation | `non-rust-perl-parser-templates` | parser/lsp-fixtures |
 | `crates/perl-parser/templates/test.pl.template` | documentation | `non-rust-perl-parser-templates` | parser/lsp-fixtures |

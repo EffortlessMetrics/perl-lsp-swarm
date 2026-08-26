@@ -3581,18 +3581,18 @@ review_after = "2027-02-22"
 
 [[allow]]
 id = "non-rust-refactor-design-docs"
-glob = "crates/*/src/refactor/*.rst"
-kind = "design_documentation"
-language = "rst"
-surface = "docs"
+path = "crates/perl-parser/src/refactor/import_optimizer.rst"
+kind = "archived_source"
+language = "rust"
+surface = "archive"
 classification = "documentation"
-owner = "docs"
-reason = "reStructuredText design notes co-located with the refactor module implementations (import_optimizer.rst documents the algorithm its sibling .rs implements). They belong to the policy-managed surface because they are tracked prose living under crate src/ where only Rust is allowed by default."
+owner = "parser/legacy"
+reason = "Mis-suffixed archived source: the file carries .rst but its content is obsolete Rust (imports, structs, impl blocks of a superseded import-optimizer implementation). Receipted exactly so history stays visible without letting future mis-suffixed Rust be absorbed as prose."
 covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-08-26"
-review_after = "2027-02-22"
+review_after = "2026-11-24"
 
 [[allow]]
 id = "non-rust-pest-grammar"
@@ -3626,20 +3626,35 @@ review_after = "2027-02-22"
 
 [[allow]]
 id = "non-rust-disabled-artifacts"
-glob = "**/*.disabled"
+glob = "crates/perl-parser/**/*.disabled"
 kind = "archived_source"
 language = "mixed"
 surface = "archive"
 classification = "documentation"
 owner = "parser/legacy"
-reason = "Files renamed with a `.disabled` suffix keep history while opting out of build/test execution until a delete-or-restore decision is made."
+reason = "Files renamed with a `.disabled` suffix keep history while opting out of build/test execution until a delete-or-restore decision is made. Scoped to the owning crate so archive/ keeps its own attribution and no other crate silently inherits parser/legacy ownership."
 covered_by = [
   "cargo xtask check-file-policy",
 ]
-broad_glob_reason = ".disabled artifacts appear across src/, tests/, and examples/ of multiple crates and any future parked source should land here by construction."
+broad_glob_reason = "Parked sources may sit under src/, tests/, or examples/ anywhere inside the owning crate."
 created = "2026-08-26"
 review_after = "2026-11-24"
 expires = "2027-02-22"
+
+[[allow]]
+id = "non-rust-parser-simple-lsp-test-wrapper"
+path = "crates/perl-parser/examples/simple_lsp_test.sh"
+kind = "ci_smoke_wrapper"
+language = "shell"
+surface = "ci"
+classification = "tooling"
+owner = "release/ci"
+reason = "Mode-100755 wrapper whose sole behavior is exec-ing the perl-ci-hygiene `simple-lsp-test` LSP smoke runner (POSIX pipeline, unsupported on Windows hosts); receipted as live tooling with behavioral coverage rather than documentation-by-example."
+covered_by = [
+  "cargo run -p perl-ci-hygiene -- simple-lsp-test",
+]
+created = "2026-08-26"
+review_after = "2027-02-22"
 
 [[allow]]
 id = "non-rust-parser-example-scripts-sh"
@@ -3649,7 +3664,7 @@ language = "shell"
 surface = "docs"
 classification = "documentation"
 owner = "docs"
-reason = "Demonstration shell scripts showing how to drive the parser LSP locally; documentation-by-example that no CI lane executes, receipted so new sibling scripts cannot appear unclassified."
+reason = "Hand-run demonstration script printing canned LSP exchanges against a local server; documentation-by-example that no CI lane executes, receipted so new sibling demo scripts cannot appear unclassified."
 covered_by = [
   "cargo xtask check-file-policy",
 ]
