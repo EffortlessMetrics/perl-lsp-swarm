@@ -471,6 +471,10 @@ fn perllsp_baseline_has_expected_reexport_format() -> Result<(), Box<dyn std::er
         if *line == "pub use perllsp::<<perl_lsp::*>>" || line.starts_with("pub mod perllsp::") {
             continue;
         }
+        assert!(
+            !line.starts_with("pub use "),
+            "perllsp baseline carries a non-wholesale root-level re-export (only 'pub use perllsp::<<perl_lsp::*>>' is accepted): {line}"
+        );
         let path_start = line.find("perllsp::");
         assert!(path_start.is_some(), "perllsp baseline item has no perllsp:: path: {line}");
         // The assert above guarantees `Some`; `unwrap_or` keeps the repo's
