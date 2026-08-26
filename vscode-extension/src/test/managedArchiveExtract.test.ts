@@ -176,6 +176,36 @@ function unixSymlinkZip(name: string, target: string): Buffer {
   return Buffer.concat([local, nameBytes, data, header, nameBytes, end]);
 }
 
+function windowsReparseZip(name: string, target: string): Buffer {
+  const nameBytes = Buffer.from(name, 'utf8');
+  const data = Buffer.from(target, 'utf8');
+  const crc = zlib.crc32(data);
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt32LE(crc, 14);
+  local.writeUInt32LE(data.length, 18);
+  local.writeUInt32LE(data.length, 22);
+  local.writeUInt16LE(nameBytes.length, 26);
+  const header = Buffer.alloc(46);
+  header.writeUInt32LE(0x02014b50, 0);
+  header.writeUInt16LE((11 << 8) | 20, 4); // NTFS made-by
+  header.writeUInt16LE(20, 6);
+  header.writeUInt32LE(crc, 16);
+  header.writeUInt32LE(data.length, 20);
+  header.writeUInt32LE(data.length, 24);
+  header.writeUInt16LE(nameBytes.length, 28);
+  header.writeUInt32LE(0x00000400, 38); // FILE_ATTRIBUTE_REPARSE_POINT
+  header.writeUInt32LE(0, 42);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(header.length + nameBytes.length, 12);
+  end.writeUInt32LE(local.length + nameBytes.length + data.length, 16);
+  return Buffer.concat([local, nameBytes, data, header, nameBytes, end]);
+}
+
 const VALID_POSIX = [
   { name: 'perllsp-0.17.0-x86_64-unknown-linux-gnu/', type: '5' },
   {
@@ -437,6 +467,54 @@ describe('extractManagedArchive', () => {
       }),
     ).rejects.toThrow(/archive links are not accepted/);
     assertOutsideUnchanged();
+  });
+
+  test('rejects a zip windows reparse/junction member before writing', async () => {
+    const archivePath = path.join(tmpDir, 'reparse.zip');
+    fs.writeFileSync(archivePath, windowsReparseZip('perllsp.exe', '../outside-sentinel'));
+    await expect(
+      extractManagedArchive({
+        archivePath,
+        extractDir,
+        format: 'zip',
+        windows: true,
+        limits: { ...TEST_LIMITS, maxUncompressedBytes: 1024, maxEntries: 8 },
+      }),
+    ).rejects.toThrow(/archive links are not accepted/);
+    assertOutsideUnchanged();
+  });
+
+  test('rejects extractDir when it is a host symlink or junction alias', async () => {
+    const decoy = path.join(tmpDir, 'decoy');
+    fs.mkdirSync(decoy);
+    try {
+      fs.symlinkSync(decoy, extractDir, process.platform === 'win32' ? 'junction' : undefined);
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (process.platform === 'win32' && (err.code === 'EPERM' || err.errno === 1314)) {
+        console.warn(
+          'skipping Windows junction fixture: SeCreateSymbolicLinkPrivilege is not held',
+        );
+        return;
+      }
+      throw error;
+    }
+    expect(fs.lstatSync(extractDir).isSymbolicLink()).toBe(true);
+
+    const archivePath = path.join(tmpDir, 'ok.tar.gz');
+    writeTarGz(archivePath, VALID_POSIX);
+    await expect(
+      extractManagedArchive({
+        archivePath,
+        extractDir,
+        format: 'tar.gz',
+        windows: false,
+        limits: { ...TEST_LIMITS, maxUncompressedBytes: 1024, maxEntryBytes: 256, maxEntries: 8 },
+      }),
+    ).rejects.toThrow(/symlink or reparse point/);
+    expect(fs.readFileSync(sentinelPath, 'utf8')).toBe('untouched');
+    expect(fs.existsSync(path.join(decoy, 'perllsp'))).toBe(false);
+    expect(fs.existsSync(path.join(decoy, 'perl-dap'))).toBe(false);
   });
 
   test('rejects a FIFO tar entry', async () => {

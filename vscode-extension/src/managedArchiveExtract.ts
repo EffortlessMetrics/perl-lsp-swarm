@@ -26,6 +26,8 @@ const UNIX_S_IFMT = 0xf000;
 const UNIX_S_IFDIR = 0x4000;
 const UNIX_S_IFREG = 0x8000;
 const UNIX_MADE_UNIX = 3;
+const DOS_FILE_ATTRIBUTE_DEVICE = 0x40;
+const DOS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400;
 
 export interface ExtractedManagedArchive {
   serverPath: string;
@@ -88,7 +90,34 @@ function throwIfCancelled(token: CancellationTokenLike | undefined, message: str
 }
 
 function removeExtractTree(extractDir: string): void {
+  try {
+    if (fs.lstatSync(extractDir).isSymbolicLink()) {
+      fs.unlinkSync(extractDir);
+      return;
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      return;
+    }
+  }
   fs.rmSync(extractDir, { recursive: true, force: true });
+}
+
+function assertNotReparsePath(candidate: string): void {
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(candidate);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      return;
+    }
+    throw error;
+  }
+  if (st.isSymbolicLink()) {
+    throw new Error(`archive extraction path is a symlink or reparse point: ${candidate}`);
+  }
 }
 
 function inflatedTarCeiling(limits: ManagedArchiveSafetyLimits): number {
@@ -202,6 +231,12 @@ function classifyZipEntry(entry: {
 }): 'file' | 'directory' | 'link' | 'special' {
   if (entry.isDirectory) {
     return 'directory';
+  }
+  if ((entry.attr & DOS_FILE_ATTRIBUTE_REPARSE_POINT) !== 0) {
+    return 'link';
+  }
+  if ((entry.attr & DOS_FILE_ATTRIBUTE_DEVICE) !== 0) {
+    return 'special';
   }
   const mode = zipUnixMode(entry);
   if (mode === null) {
@@ -389,7 +424,9 @@ function writeBoundedBuffer(
   if (data.length > remaining) {
     throw new Error(`archive exceeds remaining uncompressed budget (${remaining} bytes)`);
   }
+  assertNotReparsePath(destPath);
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
+  assertNotReparsePath(destPath);
   fs.writeFileSync(destPath, data);
   return data.length;
 }
@@ -483,6 +520,7 @@ async function extractTarMembers(
     }
     const destPath = path.join(extractDir, destName);
     fs.mkdirSync(extractDir, { recursive: true });
+    assertNotReparsePath(destPath);
     const out = fs.createWriteStream(destPath);
     let written = 0;
     pending.push(
@@ -541,7 +579,9 @@ export async function extractManagedArchive(
   const { archivePath, extractDir, format, windows, cancellationToken } = options;
 
   throwIfCancelled(cancellationToken, 'Archive extraction cancelled');
+  assertNotReparsePath(extractDir);
   fs.mkdirSync(extractDir, { recursive: true });
+  assertNotReparsePath(extractDir);
 
   try {
     const inspected =

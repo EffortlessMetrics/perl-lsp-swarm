@@ -75,6 +75,15 @@ describe('vscode-managed-archive-safety.v1', () => {
     expect(() => normalizeManagedArchiveMemberPath('CON.txt', limits)).toThrow(
       /unsafe archive member path/,
     );
+    expect(() => normalizeManagedArchiveMemberPath('aux', limits)).toThrow(
+      /unsafe archive member path/,
+    );
+    expect(() => normalizeManagedArchiveMemberPath('perllsp.', limits)).toThrow(
+      /unsafe archive member path/,
+    );
+    expect(() => normalizeManagedArchiveMemberPath('perllsp ', limits)).toThrow(
+      /unsafe archive member path/,
+    );
     expect(() => normalizeManagedArchiveMemberPath('perllsp/./bin', limits)).toThrow(
       /unsafe archive member path/,
     );
