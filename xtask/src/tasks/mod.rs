@@ -45,6 +45,7 @@ pub mod commit_checks;
 pub mod compare;
 #[cfg(feature = "parser-tasks")]
 pub mod compare_parsers;
+pub mod compiler_lexical_cutline;
 pub mod compiler_oracle;
 pub mod compiler_profile;
 #[cfg(feature = "legacy")]
