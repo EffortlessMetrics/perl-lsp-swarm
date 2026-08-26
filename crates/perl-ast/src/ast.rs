@@ -4252,10 +4252,21 @@ mod deep_tree_destruction_tests {
                 "explicit clone stack must grow with chain depth, got {}",
                 work.max_explicit_stack_depth
             );
-            let bounded_population = cloned.count_nodes() as u64;
+            let truncated_population = match cloned
+                .count_nodes_bounded(AstReadLimits::max_depth(MAX_AST_DEPTH))
+            {
+                AstReadResult::Truncated { partial, .. } => partial as u64,
+                other => {
+                    assert!(
+                        matches!(other, AstReadResult::Truncated { .. }),
+                        "50k clone fixture must still truncate a depth-512 bounded read, got {other:?}"
+                    );
+                    0
+                }
+            };
             assert!(
-                bounded_population < work.nodes_rebuilt,
-                "work must record performed clone operations ({}) rather than depth-bounded population ({bounded_population})",
+                truncated_population < work.nodes_rebuilt,
+                "clone work must record performed rebuilds ({}) rather than a depth-512 truncated read ({truncated_population})",
                 work.nodes_rebuilt
             );
             assert_boxed_chain_eq(&original, &cloned, DEEP_DEPTH);
