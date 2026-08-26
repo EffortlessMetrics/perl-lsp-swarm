@@ -157,8 +157,9 @@ same direction or from different ones.
 
 
    A `COMMENTED` review is only a GitHub fact; it does not become substantive merely
-   because a human submitted it. When the cumulative conclusion is `REVIEW_CURRENT`,
-   append one subject-bound marker generated from the current PR diff:
+   because a human submitted it. When the cumulative conclusion is `REVIEW_CURRENT`
+   for a diff crossing a production seam or irrevocable boundary, append one
+   subject-bound marker generated from the current PR diff:
 
    ```bash
    python3 scripts/ci/check-pr-semantic-review-currentness.py      <pr> <owner/repo> --emit-marker
@@ -251,6 +252,14 @@ certification cannot create `REVIEW_CURRENT`.
 ## Next action
 - Repair, focused re-review, live integration evaluation, closeout, or named follow-up
 ```
+
+Scale the published record to the seam. The full template above plus a fresh
+`semantic-review:v1` marker is required when the diff crosses a production seam or
+irrevocable boundary. A mechanical, zero-substantive-thread lane may instead publish
+a bounded short record — two lines naming the proposition checked and its outcome,
+still inside one submitted `COMMENT` review that names an explicit substantive review
+result. This proportionality rule replaces one-mode ceremony; it never licenses an
+empty verdict.
 
 Do not submit only `LGTM`, `review complete`, reviewer identity, head SHA, check
 summary, or status line. A clean review is valid when it records what was examined,

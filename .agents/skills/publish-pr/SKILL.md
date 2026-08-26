@@ -64,6 +64,12 @@ For an existing draft, inspect that named condition. When it is complete, re-eva
 
 Do not claim hosted proof, formal review, or merge readiness before current GitHub evidence exists.
 
+A candidate whose cumulative diff is mechanical — generated regeneration, lint-site
+collapse, allowlist row removal — may publish a reduced index of only `## Claim`,
+`## Proof`, and `## What this does not establish`, mirroring `$review-pr`'s
+mechanical carve-out. These named classes are the carve-out; anything else uses the
+full index above rather than improvising a reduction.
+
 ## Enforcement status is part of the claim
 
 When a candidate adds or changes a gate, check, linting check, ratchet, or policy, state in the body whether it is **required** or **advisory**, resolved against live protection rather than intent. A body implying a gate blocks merge when it runs advisory overstates the claim, and that overstatement survives the merge as documentation.
@@ -85,7 +91,9 @@ still presents as one coherent candidate.
 Where a reviewer has already pushed, read what landed and verify it against observed
 behavior before adopting it — a reviewer's push carries no proof, so restate it — or
 replace it and say why in the thread. Treat the result as a new authored candidate and
-invalidate the affected review dimensions.
+invalidate the affected review dimensions. Adopt by fast-forward plus affected
+re-proof; do not force-push over a foreign commit — rebase the branch so the foreign
+head remains an ancestor.
 
 Recreating a closed PR is separate. If the existing head and base branches still exist
 and GitHub permits reopening, reopen and preserve the review record. A fresh PR is needed

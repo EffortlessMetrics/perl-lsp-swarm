@@ -144,6 +144,14 @@ waiting on GitHub may hold no local resource at all.
 - a local timing or flake-rate measurement taken under saturation is `NOT_PROVEN` and
   must be reported as such rather than as a number.
 
+Fleet width is an admission input alongside host width. When many lanes fly:
+
+- treat the shared GitHub API budget as a shared resource — widen poll/probe spacing
+  as active lane count rises, and prefer event-driven wakes over polling;
+- expect usage-window mortality — push early and name the resume point so every brief
+  and branch stays recoverable by a stranger who never saw this runtime;
+- order relaunches by dependency-gate priority, not launch order.
+
 ## A quiet agent is not a result
 
 Only a typed return ends a lane. An idle signal, a terminated process, an exhausted
@@ -167,6 +175,21 @@ branch, worktree, remote head, and durable subject, then choose salvage, wait, s
 explicit reassignment. Reassignment follows those checks and is never the default
 consequence of silence; treating quiet as an unowned claim is what puts two writers on
 one candidate.
+
+### Salvage revive
+
+Salvage has a written procedure. Before returning `NOT_PROVEN` or reassigning a quiet
+lane:
+
+1. Survey the worktree and the remote head for unpushed state — uncommitted changes,
+   unpushed commits, an armed-but-unfired auto-merge.
+2. Push salvaged work immediately: reuse the existing PR branch when one exists, or
+   push WIP to a named salvage branch and open its PR without waiting for polish.
+   Remote CI then becomes the verification of record — red salvage runs are repair
+   targets, not failures to hide.
+3. Order the relaunch inventory by dependency-gate priority, not by original launch
+   order.
+4. Return the result typed as synthesized/salvaged rather than `FAILED_NO_RETURN`.
 
 Silence is also not spare capacity and not completion. A lane holding a current wait
 condition is not stalled, and re-tasking it discards work in flight.

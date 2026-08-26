@@ -129,9 +129,12 @@ sha=<current-head-sha>`, the compare-and-swap equivalent of `--match-head-commit
 the sanctioned next step, not polling churn — but it is the same administrator bypass
 of legacy branch-protection checks and merges past a still-pending required context:
 probe ONLY once the required union is green on the head SHA — `ripr+ New Gap Gate` is
-its last reporter — or an explicit waiver is recorded on the PR or issue naming every
-unmet requirement (#12289's probe merged 42 minutes before the required check failed;
-#12565 confirmed the mechanism).
+its last reporter — or an explicit waiver is recorded on the PR or issue by the
+accountable lane root, naming every unmet requirement and the reason each is safe to
+outrun — never waived merely to save wall-clock (#12289's probe merged 42 minutes
+before the required check failed; #12565 confirmed the mechanism). This skill is the
+single source of the manual-probe mechanism; `$finish-pr` points here instead of
+duplicating it.
 
 When the protected-merge conjunction holds, the lane owns the transition: merge, or
 arm auto-merge (`gh pr merge <n> --auto --squash --match-head-commit
