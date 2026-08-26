@@ -61,6 +61,18 @@ on:
       - 'scripts/tests/test-worktree-manager.sh'
       - '.cargo/config.toml'
       - 'scripts/tests/test-target-isolation.sh'
+      # Toolchain guard for bash entrypoints (issue #12593): the coverage
+      # consistency test scans every cargo-invoking scripts/*.sh, so any
+      # script change re-proves that none of them dodges the guard.
+      - 'scripts/lib/cargo-toolchain-guard.sh'
+      - 'scripts/*.sh'
+      - 'scripts/cargo-safe'
+      - 'scripts/fuzz-bounded'
+      - '.github/run_all_tests.sh'
+      - 'scripts/tests/test-cargo-toolchain-guard.sh'
+      - 'scripts/tests/test-cargo-safe-toolchain-guard.sh'
+      - 'rust-toolchain.toml'
+      - 'Cargo.toml'
       - '.github/workflows/publish-dry-run.yml'
       - '.github/workflows/ci-gate-self-tests.yml'
   workflow_dispatch: {}
@@ -382,4 +394,37 @@ jobs:
             echo "## Target-dir isolation self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The per-worktree target-dir isolation contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  cargo-toolchain-guard-self-test:
+    name: Entrypoint cargo toolchain guard self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410b181273ba90b1  # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: stable
+
+      - name: Run guard decision-function and coverage self-test
+        run: bash scripts/tests/test-cargo-toolchain-guard.sh
+
+      - name: Run guard entrypoint integration self-test
+        run: bash scripts/tests/test-cargo-safe-toolchain-guard.sh
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "## Cargo toolchain guard self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The entrypoint toolchain guard (issue #12593) refuses a stale non-rustup cargo (the WSL /usr/bin/cargo 1.75 shape) with exit 78 and a remediation message before any build work, passes a satisfying cargo through to delegation, keeps the real-toolchain happy path green, and the coverage check proves every cargo-invoking scripts/*.sh plus cargo-safe and .github/run_all_tests.sh either runs the guard or carries an explicit exemption." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Cargo toolchain guard self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The guard contract regressed — a bash entrypoint could again hand builds to a cargo older than the workspace rust-version and surface it as a manifest parse error. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
           fi

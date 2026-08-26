@@ -1,0 +1,345 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+LIB="${REPO_ROOT}/scripts/lib/cargo-toolchain-guard.sh"
+
+PASS=0
+FAIL=0
+TMPDIR_BASE=""
+
+cleanup() {
+  if [[ -n "${TMPDIR_BASE:-}" && -d "${TMPDIR_BASE}" ]]; then
+    rm -rf "${TMPDIR_BASE}"
+  fi
+}
+trap cleanup EXIT
+
+pass() {
+  printf 'PASS %s\n' "$1"
+  PASS=$((PASS + 1))
+}
+
+fail() {
+  printf 'FAIL %s\n' "$1"
+  FAIL=$((FAIL + 1))
+}
+
+expect_eq() {
+  local label="$1" expected="$2" actual="$3"
+  if [[ "$expected" == "$actual" ]]; then
+    pass "$label"
+  else
+    fail "$label (expected '${expected}', got '${actual}')"
+  fi
+}
+
+expect_true() {
+  local label="$1"
+  shift
+  if "$@"; then
+    pass "$label"
+  else
+    fail "$label (expected true)"
+  fi
+}
+
+expect_false() {
+  local label="$1"
+  shift
+  if "$@"; then
+    fail "$label (expected false)"
+  else
+    pass "$label"
+  fi
+}
+
+assert_contains() {
+  local label="$1" needle="$2" haystack_file="$3"
+  if grep -Fq -- "$needle" "$haystack_file"; then
+    pass "$label"
+  else
+    fail "$label (missing: $needle)"
+  fi
+}
+
+echo "=== cargo-toolchain-guard library test suite ==="
+echo ""
+
+if [[ ! -f "$LIB" ]]; then
+  echo "ERROR: guard library not found at ${LIB}"
+  exit 1
+fi
+
+# The library is designed to be sourced; its helpers take explicit arguments.
+# shellcheck source=../lib/cargo-toolchain-guard.sh
+. "$LIB"
+
+# ── version parsing ───────────────────────────────────────────────────────────
+
+expect_eq "parse stable release" "1.75.0" \
+  "$(cargo_guard_parse_version 'cargo 1.75.0 (d6df253b1 2023-11-01)')"
+expect_eq "parse pinned release" "1.95.0" \
+  "$(cargo_guard_parse_version 'cargo 1.95.0 (f2d3ce0bd 2026-03-21)')"
+expect_eq "parse nightly strips prerelease" "1.96.0" \
+  "$(cargo_guard_parse_version 'cargo 1.96.0-nightly (0abc123 2026-04-01)')"
+expect_eq "parse beta strips prerelease" "1.85.0" \
+  "$(cargo_guard_parse_version 'cargo 1.85.0-beta.1 (hash 2024-12-01)')"
+expect_eq "parse two-component version" "1.95" \
+  "$(cargo_guard_parse_version 'cargo 1.95')"
+expect_eq "parse garbage yields empty" "" \
+  "$(cargo_guard_parse_version 'this is not cargo output')"
+expect_eq "parse empty yields empty" "" \
+  "$(cargo_guard_parse_version '')"
+
+# ── version comparison ────────────────────────────────────────────────────────
+
+expect_true  "1.95.0 >= 1.95"      cargo_guard_version_ge 1.95.0 1.95
+expect_true  "1.96.1 >= 1.95"      cargo_guard_version_ge 1.96.1 1.95
+expect_true  "2.0.0 >= 1.95"       cargo_guard_version_ge 2.0.0 1.95
+expect_true  "1.95.1 >= 1.95.0"    cargo_guard_version_ge 1.95.1 1.95.0
+expect_true  "1.95 >= 1.95.0"      cargo_guard_version_ge 1.95 1.95.0
+expect_false "1.94.9 < 1.95"       cargo_guard_version_ge 1.94.9 1.95
+expect_false "1.75.0 < 1.95"       cargo_guard_version_ge 1.75.0 1.95
+expect_false "1.95.0 < 1.95.1"     cargo_guard_version_ge 1.95.0 1.95.1
+expect_false "1.9.0 < 1.95 (minor is numeric, not decimal)" \
+  cargo_guard_version_ge 1.9.0 1.95
+
+# ── rustup shim-path detection ────────────────────────────────────────────────
+
+expect_true  "shim: ~/.cargo/bin/cargo" \
+  cargo_guard_is_rustup_shim "/home/steven/.cargo/bin/cargo"
+expect_true  "shim: windows-mounted home" \
+  cargo_guard_is_rustup_shim "/mnt/c/Users/steven/.cargo/bin/cargo.exe"
+expect_true  "shim: windows separators normalize" \
+  cargo_guard_is_rustup_shim 'C:\Users\steven\.cargo\bin\cargo.exe'
+expect_true  "shim: rustup toolchain binary" \
+  cargo_guard_is_rustup_shim "/home/steven/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo"
+expect_false "not shim: /usr/bin/cargo (WSL apt cargo)" \
+  cargo_guard_is_rustup_shim "/usr/bin/cargo"
+expect_false "not shim: /usr/local/bin/cargo" \
+  cargo_guard_is_rustup_shim "/usr/local/bin/cargo"
+expect_false "not shim: /opt/cargo/bin/cargo" \
+  cargo_guard_is_rustup_shim "/opt/cargo/bin/cargo"
+
+# ── required/pinned version sources ───────────────────────────────────────────
+
+TMPDIR_BASE="$(mktemp -d)"
+FAKE_REPO="${TMPDIR_BASE}/fake-repo"
+mkdir -p "$FAKE_REPO"
+
+expect_eq "required: workspace Cargo.toml rust-version wins" "1.95" \
+  "$(cargo_guard_required_version "$REPO_ROOT")"
+expect_eq "pin: rust-toolchain.toml channel" "1.95.0" \
+  "$(cargo_guard_pin_version "$REPO_ROOT")"
+
+printf '%s\n' 'rust-version = "1.42"' > "${FAKE_REPO}/Cargo.toml"
+expect_eq "required: reads rust-version from given root" "1.42" \
+  "$(cargo_guard_required_version "$FAKE_REPO")"
+
+rm -f "${FAKE_REPO}/Cargo.toml"
+printf '%s\n' '[toolchain]' 'channel = "1.50.0"' > "${FAKE_REPO}/rust-toolchain.toml"
+expect_eq "required: falls back to rust-toolchain.toml channel" "1.50.0" \
+  "$(cargo_guard_required_version "$FAKE_REPO")"
+
+rm -rf "$FAKE_REPO"
+mkdir -p "$FAKE_REPO"
+guard_out="$(cargo_guard_required_version "$FAKE_REPO" || true)"
+if [[ -z "$guard_out" ]]; then
+  pass "required: empty repo root yields empty (guard applies documented default)"
+else
+  fail "required: empty repo root should yield empty, got '${guard_out}'"
+fi
+
+# ── refusal message contents (pure builder) ───────────────────────────────────
+
+REFUSAL="${TMPDIR_BASE}/refusal.msg"
+cargo_guard_print_refusal "/usr/bin/cargo" "1.75.0" "1.95" "1.95.0" 1 "WSL_DISTRO_NAME=Ubuntu" 2> "$REFUSAL"
+
+assert_contains "refusal: typed REFUSED banner" \
+  "cargo-toolchain-guard: REFUSED" "$REFUSAL"
+assert_contains "refusal: names resolved cargo path" \
+  "resolved cargo : /usr/bin/cargo (cargo 1.75.0)" "$REFUSAL"
+assert_contains "refusal: names workspace rust-version" \
+  "workspace needs: rust-version 1.95 (Cargo.toml)" "$REFUSAL"
+assert_contains "refusal: names rust-toolchain.toml pin" \
+  "rust-toolchain.toml pins 1.95.0, which only rustup shims honor" "$REFUSAL"
+assert_contains "refusal: explains edition-2024 confusion" \
+  "feature 'edition2024' is required" "$REFUSAL"
+assert_contains "refusal: forbids the manifest downgrade" \
+  "Do not downgrade the manifest" "$REFUSAL"
+assert_contains "refusal: names WSL non-login root cause" \
+  "non-login WSL bash" "$REFUSAL"
+assert_contains "refusal: names apt cargo /usr/bin/cargo" \
+  "Ubuntu apt cargo" "$REFUSAL"
+assert_contains "refusal: remediation installs rustup inside WSL" \
+  "install rustup inside WSL" "$REFUSAL"
+assert_contains "refusal: remediation names PATH ordering" \
+  "~/.cargo/bin precedes /usr/bin in PATH" "$REFUSAL"
+
+REFUSAL_NOWSL="${TMPDIR_BASE}/refusal-nowsl.msg"
+cargo_guard_print_refusal "/opt/cargo/bin/cargo" "1.84.0" "1.95" "1.95.0" 0 "" 2> "$REFUSAL_NOWSL"
+assert_contains "refusal (non-WSL): typed REFUSED banner" \
+  "cargo-toolchain-guard: REFUSED" "$REFUSAL_NOWSL"
+assert_contains "refusal (non-WSL): generic rustup remediation" \
+  "rustup install 1.95.0" "$REFUSAL_NOWSL"
+if grep -Fq "WSL detected" "$REFUSAL_NOWSL"; then
+  fail "refusal (non-WSL): must not claim WSL context"
+else
+  pass "refusal (non-WSL): no WSL paragraph"
+fi
+
+# ── full guard against a fake stale cargo (WSL-shaped and plain) ──────────────
+
+write_stale_cargo() {
+  local bin_dir="$1"
+  local version="$2"
+  mkdir -p "$bin_dir"
+  cat > "${bin_dir}/cargo" <<STUB
+#!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then
+  printf 'cargo %s (stub 2023-11-01)\n' "$version"
+  exit 0
+fi
+printf 'stale-cargo-stub-ran\n'
+exit 0
+STUB
+  chmod +x "${bin_dir}/cargo"
+}
+
+STALE_BIN="${TMPDIR_BASE}/stale-bin"
+write_stale_cargo "$STALE_BIN" "1.75.0"
+
+code=0
+PATH="${STALE_BIN}:$PATH" WSL_DISTRO_NAME=Ubuntu \
+  bash -c ". \"$LIB\"; cargo_toolchain_guard" 2> "${TMPDIR_BASE}/stale-wsl.err" || code=$?
+if [[ "$code" -eq 78 ]]; then
+  pass "guard: stale cargo refuses with typed exit 78 (got ${code})"
+else
+  fail "guard: stale cargo must refuse with exit 78, got ${code}"
+fi
+assert_contains "guard: stale refusal names resolved path" \
+  "${STALE_BIN}/cargo (cargo 1.75.0)" "${TMPDIR_BASE}/stale-wsl.err"
+assert_contains "guard: stale refusal explains WSL remediation" \
+  "install rustup inside WSL" "${TMPDIR_BASE}/stale-wsl.err"
+
+code=0
+PATH="${STALE_BIN}:$PATH" \
+  bash -c ". \"$LIB\"; cargo_toolchain_guard" 2> "${TMPDIR_BASE}/stale-plain.err" || code=$?
+if [[ "$code" -eq 78 ]]; then
+  pass "guard: stale cargo (no WSL env) still refuses with 78"
+else
+  fail "guard: stale cargo (no WSL env) must refuse with exit 78, got ${code}"
+fi
+
+# ── full guard with no cargo on PATH ──────────────────────────────────────────
+
+code=0
+env -i "$(command -v bash)" -c ". \"$LIB\"; cargo_toolchain_guard" \
+  2> "${TMPDIR_BASE}/missing.err" || code=$?
+if [[ "$code" -eq 78 ]]; then
+  pass "guard: missing cargo refuses with typed exit 78 (got ${code})"
+else
+  fail "guard: missing cargo must refuse with exit 78, got ${code}"
+fi
+assert_contains "guard: missing cargo message names the requirement" \
+  "no cargo found on PATH" "${TMPDIR_BASE}/missing.err"
+
+# ── full guard with unparseable --version output ──────────────────────────────
+
+BROKEN_BIN="${TMPDIR_BASE}/broken-bin"
+mkdir -p "$BROKEN_BIN"
+printf '#!/usr/bin/env bash\necho "not a real version line"\n' > "${BROKEN_BIN}/cargo"
+chmod +x "${BROKEN_BIN}/cargo"
+
+code=0
+PATH="${BROKEN_BIN}:$PATH" \
+  bash -c ". \"$LIB\"; cargo_toolchain_guard" 2> "${TMPDIR_BASE}/broken.err" || code=$?
+if [[ "$code" -eq 78 ]]; then
+  pass "guard: unparseable --version refuses with typed exit 78"
+else
+  fail "guard: unparseable --version must refuse with exit 78, got ${code}"
+fi
+
+# ── full guard with a satisfying non-shim cargo: note, not refusal ────────────
+
+NEW_BIN="${TMPDIR_BASE}/new-bin"
+write_stale_cargo "$NEW_BIN" "1.96.1"
+
+code=0
+PATH="${NEW_BIN}:$PATH" \
+  bash -c ". \"$LIB\"; cargo_toolchain_guard" 2> "${TMPDIR_BASE}/new.err" || code=$?
+if [[ "$code" -eq 0 ]]; then
+  pass "guard: satisfying non-shim cargo passes"
+else
+  fail "guard: satisfying non-shim cargo must pass, got exit ${code}"
+fi
+assert_contains "guard: non-shim note reports the ignored pin" \
+  "is not a rustup shim, so the rust-toolchain.toml pin (1.95.0) is not in effect" \
+  "${TMPDIR_BASE}/new.err"
+
+# ── entrypoint coverage consistency ───────────────────────────────────────────
+# Every repo bash entrypoint that invokes cargo as a command must source the
+# guard library and call cargo_toolchain_guard, or carry an explicit
+# "cargo-toolchain-guard: exempt" marker with a reason. This keeps future
+# scripts from silently dodging the guard (issue #12593).
+
+invokes_cargo() {
+  awk '
+    {
+      line = $0
+      sub(/^[ \t]+/, "", line)
+      if (line ~ /^#/) next
+      if (line ~ /^(echo|printf)[ \t]/) next
+      n = split(line, segs, /[;|&]+|\$\(/)
+      for (i = 1; i <= n; i++) {
+        s = segs[i]
+        sub(/^[ \t]+/, "", s)
+        while (s ~ /^(if|then|elif|else|while|until|!|exec|env)[ \t]+/)
+          sub(/^(if|then|elif|else|while|until|!|exec|env)[ \t]+/, "", s)
+        while (s ~ /^[A-Za-z_][A-Za-z0-9_]*=[^ ]*[ \t]+/)
+          sub(/^[A-Za-z_][A-Za-z0-9_]*=[^ ]*[ \t]+/, "", s)
+        if (s ~ /^cargo([ \t(]|$)/) { found = 1; exit }
+      }
+    }
+    END { exit !found }
+  ' "$1"
+}
+
+ENTRYPOINTS=(scripts/*.sh scripts/cargo-safe scripts/fuzz-bounded .github/run_all_tests.sh)
+for entry in "${ENTRYPOINTS[@]}"; do
+  [[ -f "$entry" ]] || continue
+  if ! invokes_cargo "$entry"; then
+    continue
+  fi
+  if grep -q "cargo-toolchain-guard: exempt" "$entry"; then
+    pass "coverage: ${entry} invokes cargo with an explicit exemption"
+    continue
+  fi
+  if grep -q "cargo_toolchain_guard" "$entry"; then
+    pass "coverage: ${entry} invokes cargo and runs the guard"
+  else
+    fail "coverage: ${entry} invokes cargo but never calls cargo_toolchain_guard"
+  fi
+done
+
+# The two front doors named by the issue are guarded no matter what the
+# line-level detector sees.
+for frontdoor in scripts/cargo-safe .github/run_all_tests.sh; do
+  if grep -q "cargo_toolchain_guard" "$frontdoor"; then
+    pass "front door guarded: ${frontdoor}"
+  else
+    fail "front door guarded: ${frontdoor} must call cargo_toolchain_guard"
+  fi
+done
+
+TOTAL=$((PASS + FAIL))
+echo ""
+echo "=== Results: ${PASS}/${TOTAL} passed ==="
+
+if [[ "$FAIL" -gt 0 ]]; then
+  exit 1
+fi
+
+exit 0

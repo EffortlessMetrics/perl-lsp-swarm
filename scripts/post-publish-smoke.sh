@@ -24,6 +24,14 @@
 
 set -uo pipefail
 
+# Toolchain guard (#12593): refuse a stale non-rustup cargo before any build
+# work — only when this run will actually invoke cargo install. The
+# SKIP_INSTALL=1 mode assumes binaries are already installed and may run on a
+# cargo-less box.
+if [[ "${SKIP_INSTALL:-0}" != "1" ]]; then
+  . "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+fi
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

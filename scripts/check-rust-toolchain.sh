@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# cargo-toolchain-guard: exempt — this wrapper delegates through
+# `rustup run <pinned-toolchain> cargo`, which forces the pinned toolchain, so
+# a PATH-cargo guard would inspect the wrong binary here.
+
 MODE="${1:-check}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"

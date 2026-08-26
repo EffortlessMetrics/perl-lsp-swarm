@@ -435,6 +435,11 @@ The release archive may have an unexpected layout."
 build_from_source() {
     need_cmd cargo
 
+    # Toolchain guard (#12593): the source build parses edition-2024 manifests;
+    # refuse a stale non-rustup cargo before any build work. The prebuilt
+    # download path above does not need cargo, so the guard lives here.
+    . "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
     local _target_arg=()
 
     if [ -n "${TARGET:-}" ]; then

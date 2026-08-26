@@ -11,6 +11,11 @@
 
 set -euo pipefail
 
+# cargo-toolchain-guard: exempt — install-surface checks prefer a prebuilt
+# target/debug/xtask and treat cargo as one fallback rung in a ladder, so a
+# PATH-cargo guard would refuse legitimate prebuilt-only runs on cargo-less
+# boxes.
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"

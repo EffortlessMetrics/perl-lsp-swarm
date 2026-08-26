@@ -143,3 +143,29 @@ Run in order for a release. See [CONTRIBUTING.md](../CONTRIBUTING.md#release-wor
 | `test-lsp-cancellation.sh` | Test LSP request cancellation behavior |
 | `render-linux-packages.py` | Build Linux distribution packages |
 | `DEPRECATED_RELEASE_SCRIPTS.md` | Index of scripts removed from the release workflow |
+
+## Cargo toolchain guard (Windows bash prerequisite)
+
+Every bash entrypoint that invokes cargo (`scripts/cargo-safe`, the
+cargo-invoking `scripts/*.sh`, `scripts/fuzz-bounded`, and
+`.github/run_all_tests.sh`) sources `lib/cargo-toolchain-guard.sh` before any
+build work. The guard resolves the cargo the entrypoint is about to use and
+refuses with exit 78 and a remediation message when it is older than the
+workspace `rust-version` (see `Cargo.toml`), or when `cargo --version` cannot
+be read. On Windows, prefer running these entrypoints from Git Bash or pwsh
+where the rustup shim resolves first: WSL **non-login** bash (exactly how
+`#!/usr/bin/env bash` shebangs run) resolves `/usr/bin/cargo` — Ubuntu's apt
+cargo, which is not a rustup shim, ignores `rust-toolchain.toml`, and reports
+edition-2024 manifests as broken. If you must use WSL, install rustup inside
+it and make sure `~/.cargo/bin` precedes `/usr/bin` in PATH for non-login
+shells. That failure shape and its remediation are the reason the guard
+exists (issue #12593); environment-level doctor detection is a separate claim
+(#12595).
+
+A cargo-invoking entrypoint must either call the guard or carry an explicit
+`cargo-toolchain-guard: exempt` marker with a reason; the coverage check in
+`scripts/tests/test-cargo-toolchain-guard.sh` enforces this for new scripts.
+Self-tests: `scripts/tests/test-cargo-toolchain-guard.sh` (decision
+functions, refusal contents, coverage) and
+`scripts/tests/test-cargo-safe-toolchain-guard.sh` (entrypoint integration
+with a stubbed stale cargo).
