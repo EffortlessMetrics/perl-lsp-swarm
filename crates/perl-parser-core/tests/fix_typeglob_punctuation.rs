@@ -61,3 +61,34 @@ fn punctuation_typeglobs_can_be_declared_together() {
     assert_typeglob_rhs(source, "`");
     assert_typeglob_rhs(source, "'");
 }
+
+#[test]
+fn quote_typeglob_does_not_swallow_the_following_statement() {
+    // The lexer used to run unterminated-string recovery on the quote
+    // character, silently consuming the rest of the line (same-line form) or
+    // producing an Error node (newline form).
+    for source in [
+        "*STDOUT = *`; my $x = 1;",
+        "*STDOUT = *`;\nmy $x = 1;",
+        "*STDERR = *';\nmy $x = 1;",
+        "*LIST_SEPARATOR = *\";\nmy $x = 1;",
+    ] {
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+        let sexp = format!("{ast:?}");
+        assert!(
+            sexp.contains("VariableDeclaration"),
+            "statement after the quote typeglob was swallowed in {source:?}"
+        );
+    }
+}
+
+#[test]
+fn multiplication_by_a_string_is_not_a_typeglob() {
+    // `$a * "..."` is multiplication: the glob-sigil rescue must not fire
+    // when an operand precedes the star.
+    let mut parser = Parser::new("my $b = $a * \"ops\";");
+    let ast = must(parser.parse());
+    let sexp = format!("{ast:?}");
+    assert!(sexp.contains("String"), "string operand lost to the typeglob rescue: {sexp}");
+}
