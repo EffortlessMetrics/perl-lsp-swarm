@@ -58,13 +58,13 @@ pub(super) fn handle_function_call<'a>(
     // lint (`PL900`) owns this diagnostic with a version-specific message, so the
     // gate stands down there to avoid a duplicate warning on the same `say`; the
     // bare-`say`-with-no-version case (which `version_compat` skips) stays ours.
-    if let Some(feature) = feature_for_keyword(name) {
-        if !pragma_state.has_feature(feature)
-            && !context.has_declared_version()
-            && !context.has_imported_bareword(name)
-            && !context.has_defined_sub(name)
-        {
-            issues.push(ScopeIssue {
+    if let Some(feature) = feature_for_keyword(name)
+        && !pragma_state.has_feature(feature)
+        && !context.has_declared_version()
+        && !context.has_imported_bareword(name)
+        && !context.has_defined_sub(name)
+    {
+        issues.push(ScopeIssue {
                 kind: IssueKind::FeatureNotEnabled,
                 variable_name: name.to_string(),
                 line: context.get_line(node.location.start),
@@ -73,7 +73,6 @@ pub(super) fn handle_function_call<'a>(
                     "'{name}' requires `use feature '{feature}'` (or a `use vX.Y` bundle that enables it)"
                 ),
             });
-        }
     }
 
     // Builtins that default to $_ when called with zero arguments implicitly

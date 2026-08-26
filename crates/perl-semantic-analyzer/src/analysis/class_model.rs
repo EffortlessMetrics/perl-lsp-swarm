@@ -456,18 +456,15 @@ impl ClassModelBuilder {
             NodeKind::ExpressionStatement { expression } => {
                 if let NodeKind::FunctionCall { name, args } = &expression.kind
                     && name == "push"
+                    && let Some(first_arg) = args.first()
+                    && let NodeKind::Variable { sigil, name: var_name } = &first_arg.kind
+                    && sigil == "@"
+                    && var_name == "ISA"
                 {
-                    if let Some(first_arg) = args.first() {
-                        if let NodeKind::Variable { sigil, name: var_name } = &first_arg.kind
-                            && sigil == "@"
-                            && var_name == "ISA"
-                        {
-                            for arg in args.iter().skip(1) {
-                                self.extract_isa_from_node(arg);
-                            }
-                            return;
-                        }
+                    for arg in args.iter().skip(1) {
+                        self.extract_isa_from_node(arg);
                     }
+                    return;
                 }
                 // Fall through: visit the inner expression for assignments, etc.
                 self.visit_node(expression);
@@ -782,32 +779,30 @@ impl ClassModelBuilder {
                     if matches!(&expression.kind, NodeKind::Identifier { name } if name == "has")
             );
 
-            if is_has_marker {
-                if let NodeKind::ExpressionStatement { expression } = &second.kind {
-                    let has_location =
-                        SourceLocation { start: first.location.start, end: second.location.end };
+            if is_has_marker && let NodeKind::ExpressionStatement { expression } = &second.kind {
+                let has_location =
+                    SourceLocation { start: first.location.start, end: second.location.end };
 
-                    match &expression.kind {
-                        NodeKind::HashLiteral { pairs } => {
-                            self.extract_has_from_pairs(pairs, has_location, false);
-                            return Some(2);
-                        }
-                        NodeKind::ArrayLiteral { elements } => {
-                            if let Some(Node { kind: NodeKind::HashLiteral { pairs }, .. }) =
-                                elements.last()
-                            {
-                                let mut names = Vec::new();
-                                for el in elements.iter().take(elements.len() - 1) {
-                                    names.extend(collect_symbol_names(el));
-                                }
-                                if !names.is_empty() {
-                                    self.extract_has_with_names(&names, pairs, has_location);
-                                    return Some(2);
-                                }
+                match &expression.kind {
+                    NodeKind::HashLiteral { pairs } => {
+                        self.extract_has_from_pairs(pairs, has_location, false);
+                        return Some(2);
+                    }
+                    NodeKind::ArrayLiteral { elements } => {
+                        if let Some(Node { kind: NodeKind::HashLiteral { pairs }, .. }) =
+                            elements.last()
+                        {
+                            let mut names = Vec::new();
+                            for el in elements.iter().take(elements.len() - 1) {
+                                names.extend(collect_symbol_names(el));
+                            }
+                            if !names.is_empty() {
+                                self.extract_has_with_names(&names, pairs, has_location);
+                                return Some(2);
                             }
                         }
-                        _ => {}
                     }
+                    _ => {}
                 }
             }
         }
@@ -1764,15 +1759,15 @@ fn expand_arg_to_names(arg: &str) -> Vec<String> {
             '<' => '>',
             c => c,
         };
-        if let (Some(start), Some(end)) = (arg.find(open), arg.rfind(close)) {
-            if start < end {
-                let content = &arg[start + 1..end];
-                return content
-                    .split_whitespace()
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
-                    .collect();
-            }
+        if let (Some(start), Some(end)) = (arg.find(open), arg.rfind(close))
+            && start < end
+        {
+            let content = &arg[start + 1..end];
+            return content
+                .split_whitespace()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
         }
     }
     // Quoted string or bare identifier

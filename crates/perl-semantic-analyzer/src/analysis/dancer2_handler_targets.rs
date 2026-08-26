@@ -320,13 +320,12 @@ mod tests {
     }
 
     fn find_call_operand<'a>(node: &'a Node, call_name: &str, found: &mut Option<&'a Node>) {
-        if let NodeKind::FunctionCall { name, args } = &node.kind {
-            if name == call_name {
-                if let Some(last) = args.last() {
-                    *found = Some(last);
-                    return;
-                }
-            }
+        if let NodeKind::FunctionCall { name, args } = &node.kind
+            && name == call_name
+            && let Some(last) = args.last()
+        {
+            *found = Some(last);
+            return;
         }
         for child in node.children() {
             find_call_operand(child, call_name, found);

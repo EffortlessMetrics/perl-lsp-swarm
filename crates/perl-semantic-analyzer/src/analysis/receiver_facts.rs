@@ -551,10 +551,11 @@ fn all_packages_from_type_fact(fact: &TypeFact) -> Vec<String> {
     let mut packages: Vec<String> = all_packages_from_type(&fact.ty);
 
     // If no package was found from the type itself, check the shape field.
-    if packages.is_empty() && !contains_union(&fact.ty) {
-        if let Some(ShapeFact::Object(shape)) = &fact.shape {
-            packages.push(shape.package.clone());
-        }
+    if packages.is_empty()
+        && !contains_union(&fact.ty)
+        && let Some(ShapeFact::Object(shape)) = &fact.shape
+    {
+        packages.push(shape.package.clone());
     }
 
     packages
@@ -619,10 +620,10 @@ mod tests {
     }
 
     fn method_call_named<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
-        if let NodeKind::MethodCall { method, .. } = &node.kind {
-            if method == name {
-                return Some(node);
-            }
+        if let NodeKind::MethodCall { method, .. } = &node.kind
+            && method == name
+        {
+            return Some(node);
         }
 
         match &node.kind {
