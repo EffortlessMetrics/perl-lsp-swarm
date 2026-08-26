@@ -1,0 +1,249 @@
+//! Typed critic rule-proof manifest model (`critic_rule_proof.v1`).
+
+use serde::{Deserialize, Serialize};
+
+pub const SCHEMA_VERSION: &str = "critic_rule_proof.v1";
+pub const MANIFEST_NAME: &str = "critic-rule-proof";
+pub const MANIFEST_PATH: &str = "fixtures/critic-rule-proof/manifest.json";
+pub const SCHEMA_PATH: &str = "schemas/critic_rule_proof.v1.schema.json";
+pub const STATUS_PATH: &str = "docs/project/status/critic_rule_proof.md";
+pub const FIXTURE_ROOT: &str = "fixtures/critic-rule-proof";
+pub const ISSUE: u32 = 6973;
+
+/// Closed evidence-class vocabulary for one rule-proof case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceClass {
+    PositiveFinding,
+    NearMissNegative,
+    ProjectShapedFalsePositive,
+    FileLevelSuppression,
+    CanonicalIdentity,
+    SourceRangeAndSeverity,
+    RemediationClass,
+    AutomaticFixRoundTrip,
+    Boundary,
+}
+
+impl EvidenceClass {
+    /// Stable snake_case spelling used in schema, status, and errors.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PositiveFinding => "positive_finding",
+            Self::NearMissNegative => "near_miss_negative",
+            Self::ProjectShapedFalsePositive => "project_shaped_false_positive",
+            Self::FileLevelSuppression => "file_level_suppression",
+            Self::CanonicalIdentity => "canonical_identity",
+            Self::SourceRangeAndSeverity => "source_range_and_severity",
+            Self::RemediationClass => "remediation_class",
+            Self::AutomaticFixRoundTrip => "automatic_fix_round_trip",
+            Self::Boundary => "boundary",
+        }
+    }
+
+    /// Every evidence class the schema admits, in status-table order.
+    #[must_use]
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::PositiveFinding,
+            Self::NearMissNegative,
+            Self::ProjectShapedFalsePositive,
+            Self::FileLevelSuppression,
+            Self::CanonicalIdentity,
+            Self::SourceRangeAndSeverity,
+            Self::RemediationClass,
+            Self::AutomaticFixRoundTrip,
+            Self::Boundary,
+        ]
+    }
+
+    /// Classes every pilot rule must exhibit. Automatic round-trip is required
+    /// only when `declared_remediation` is `automatic_candidate`.
+    #[must_use]
+    pub const fn required_for_every_pilot_rule(self) -> bool {
+        !matches!(self, Self::AutomaticFixRoundTrip)
+    }
+}
+
+/// Native critic profile named by a case or rule row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProofProfile {
+    Recommended,
+    Strict,
+}
+
+impl ProofProfile {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Recommended => "recommended",
+            Self::Strict => "strict",
+        }
+    }
+}
+
+/// Whether the fixture is expected to parse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParseExpectation {
+    Ok,
+    Error,
+}
+
+/// Static remediation eligibility named by the proof contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProofRemediation {
+    None,
+    Manual,
+    PreviewCandidate,
+    AutomaticCandidate,
+}
+
+impl ProofRemediation {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Manual => "manual",
+            Self::PreviewCandidate => "preview_candidate",
+            Self::AutomaticCandidate => "automatic_candidate",
+        }
+    }
+
+    #[must_use]
+    pub const fn automatic_round_trip_applicable(self) -> bool {
+        matches!(self, Self::AutomaticCandidate)
+    }
+}
+
+/// Native critic severity spelling used by the proof contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProofSeverity {
+    Gentle,
+    Stern,
+    Harsh,
+    Cruel,
+    Brutal,
+}
+
+impl ProofSeverity {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Gentle => "gentle",
+            Self::Stern => "stern",
+            Self::Harsh => "harsh",
+            Self::Cruel => "cruel",
+            Self::Brutal => "brutal",
+        }
+    }
+}
+
+/// Apply policy for an automatic-fix round trip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FixApply {
+    Automatic,
+    Forbidden,
+}
+
+/// One compatibility alias row copied from the identity registry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AliasRecord {
+    pub origin: String,
+    pub code: String,
+    pub shape: String,
+}
+
+/// Fixture identity and digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FixtureRecord {
+    pub digest: String,
+}
+
+/// One governed native rule in the pilot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuleRecord {
+    pub rule_id: String,
+    pub canonical_id: String,
+    pub profile: ProofProfile,
+    pub declared_remediation: ProofRemediation,
+    pub identity_aliases: Vec<AliasRecord>,
+}
+
+/// One expected finding location and identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectedFinding {
+    pub rule_id: String,
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub excerpt: String,
+    pub severity: ProofSeverity,
+    pub remediation_eligibility: ProofRemediation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix_title: Option<String>,
+}
+
+/// Apply/reparse/re-diagnose contract for automatic edits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FixRoundTrip {
+    pub apply: FixApply,
+    pub expect_reparse: ParseExpectation,
+    pub expect_target_removed: bool,
+    pub expect_no_new_governed: bool,
+}
+
+/// One proof case bound to a fixture and proposition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaseRecord {
+    pub case_id: String,
+    pub rule_id: String,
+    pub evidence_classes: Vec<EvidenceClass>,
+    pub fixture: String,
+    pub profile: ProofProfile,
+    pub include: Vec<String>,
+    pub parse_expectation: ParseExpectation,
+    pub expected_findings: Vec<ExpectedFinding>,
+    pub expected_non_findings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix_round_trip: Option<FixRoundTrip>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suppression_selector: Option<String>,
+    pub proposition: String,
+}
+
+/// Versioned rule-proof manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuleProofManifest {
+    #[serde(rename = "$schema", default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    pub schema_version: String,
+    pub manifest: String,
+    pub issue: u32,
+    pub owner: String,
+    pub status: String,
+    pub updated: String,
+    pub claim_boundary: String,
+    pub evidence_classes: Vec<EvidenceClass>,
+    pub fixtures: std::collections::BTreeMap<String, FixtureRecord>,
+    pub rules: Vec<RuleRecord>,
+    pub cases: Vec<CaseRecord>,
+}
+
+impl RuleProofManifest {
+    #[must_use]
+    pub fn rule(&self, rule_id: &str) -> Option<&RuleRecord> {
+        self.rules.iter().find(|rule| rule.rule_id == rule_id)
+    }
+}

@@ -39,9 +39,9 @@ use tasks::{
     check_test_wiring, check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract,
     ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
     ci_scope, clean, clippy_cost_measure, command_evidence, compare, compiler_lexical_cutline,
-    corpus_audit, count_ratchet, cpan_corpus, dead_code, debt_report, dependency_hygiene, dev,
-    devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
-    emacs_train_context, emacs_train_specs, features, finalize_check, fix_forward, fmt,
+    corpus_audit, count_ratchet, cpan_corpus, critic_rule_proof, dead_code, debt_report,
+    dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate,
+    edge_cases, emacs_train_context, emacs_train_specs, features, finalize_check, fix_forward, fmt,
     forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files, github,
     github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
     incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
@@ -145,6 +145,14 @@ enum Commands {
         /// Operation to run against the manifest.
         #[command(subcommand)]
         command: tasks::compiler_lexical_cutline::CompilerLexicalCutlineSubcommand,
+    },
+
+    /// Validate the versioned critic rule-proof manifest, live fixture
+    /// propositions, and generated status (`critic_rule_proof.v1`, #6973).
+    CriticRuleProof {
+        /// Operation to run against the rule-proof manifest.
+        #[command(subcommand)]
+        command: tasks::critic_rule_proof::CriticRuleProofSubcommand,
     },
 
     /// Validate differential real-Perl oracle receipt schema.
@@ -4633,6 +4641,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
+        Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
         Commands::CheckProductHealthRailContract => product_health_rail_contract::run(),
