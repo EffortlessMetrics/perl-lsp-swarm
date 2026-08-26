@@ -1058,3 +1058,79 @@ fn run_plan_boundary_rejects_a_repacked_archive() -> Result<()> {
     );
     Ok(())
 }
+
+/// A change in the declared external identity that leaves the client bytes
+/// and commit untouched — a corrected tree object id, a dependency entry —
+/// still makes the old cache entry stale: every declared external fact
+/// keys the cache, not just the archive bytes (review finding on the
+/// initial candidate).
+#[test]
+fn declared_external_identity_changes_make_the_cache_entry_stale() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let emacs = fixture_emacs(root.path())?;
+    let input = fixture_input_dir(root.path(), SOURCE_EGLOT_BYTES, None)?;
+    let client_path = input.join("eglot.el");
+    let manifest = fixture_manifest();
+    let cache = root.path().join("cache");
+    resolve(
+        &manifest,
+        "source_eglot_emacs_c1ad9d27",
+        &default_request(&emacs, Some(&client_path), None, &cache),
+    )?;
+
+    // The re-audited row corrects the tree object id; the commit and file
+    // digest stay identical, so only the declared external identity moved.
+    let mut corrected_tree = fixture_manifest();
+    corrected_tree.subjects[1].source_tree = Some(SourceTreeIdentity {
+        source_repo_url: "https://github.com/emacs-mirror/emacs".to_string(),
+        commit: SOURCE_TREE_COMMIT.to_string(),
+        tree_sha1: "aa55d5f03a6462846d36ade5a68a2e90a2578087".to_string(),
+    });
+    corrected_tree.validate().expect("the corrected tree row must itself be valid");
+    let failure = resolve(
+        &corrected_tree,
+        "source_eglot_emacs_c1ad9d27",
+        &default_request(&emacs, Some(&client_path), None, &cache),
+    )
+    .expect_err("a changed declared external identity must refuse the old entry");
+    match rejection_of(&failure) {
+        SubjectRejection::StaleCacheEntry { subject_id, reason, .. } => {
+            assert_eq!(subject_id, "source_eglot_emacs_c1ad9d27");
+            assert!(
+                reason.contains("different declared external identity"),
+                "the reason must name the external-identity difference: {reason}"
+            );
+        }
+        other => panic!("expected StaleCacheEntry, got {other:?}"),
+    }
+    Ok(())
+}
+
+/// A source-subject launch is refused at the host-run boundary with a typed
+/// error, not a driver crash: the released adapter unconditionally requires
+/// the declared package input, so until a package-free source adapter
+/// exists the launch is unsupported (review finding on the initial
+/// candidate).
+#[test]
+fn source_subject_launches_are_refused_at_the_host_run_boundary() {
+    let subject = EmacsClientSubject::from_id("source_eglot_emacs_c1ad9d27").expect("registry row");
+    let run = emacs_host_run::EmacsHostRunInputs {
+        emacs_executable: PathBuf::from("/nonexistent/emacs"),
+        candidate_executable: PathBuf::from("/nonexistent/perllsp"),
+        client_source: PathBuf::from("/nonexistent/eglot.el"),
+        client_package: None,
+        out_root: PathBuf::from("/nonexistent/out"),
+        timeout_ms: 0,
+    };
+    let error = emacs_host_run::host_run(Path::new("/nonexistent/repo"), subject, &run)
+        .err()
+        .expect("a source-subject launch must refuse before any launch step");
+    assert!(
+        error.to_string().contains("no driver adapter yet"),
+        "the refusal must name the missing-adapter boundary: {error}"
+    );
+    assert!(
+        !error.to_string().contains("driver entrypoint"),
+        "the refusal happens before any driver machinery runs: {error}"
+    );
+}

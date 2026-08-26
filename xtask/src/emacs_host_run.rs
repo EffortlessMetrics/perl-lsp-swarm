@@ -259,6 +259,22 @@ impl EmacsClientSubject {
             Self::ReleasedEglotGnuElpa123 => false,
         }
     }
+
+    /// Whether an actual host run is supported by the current driver
+    /// adapters. The upstream-source Eglot row materializes completely
+    /// through the manifest resolver, but the released-Eglot adapter
+    /// unconditionally requires the declared package input, so a launch of
+    /// that subject is refused at the host-run boundary until its journey
+    /// lane lands a package-free source adapter.
+    pub fn launches_with_current_driver(self) -> bool {
+        match self {
+            Self::BundledEglotEmacs294
+            | Self::BundledEglotEmacs301
+            | Self::ReleasedEglotGnuElpa123
+            | Self::ReleasedEglotGnuElpa124 => true,
+            Self::SourceEglotEmacsC1ad9d27 => false,
+        }
+    }
 }
 
 /// Inputs for one client-subject host run.  Every path must be absolute and
@@ -686,6 +702,17 @@ pub fn host_run(
     subject: EmacsClientSubject,
     run: &EmacsHostRunInputs,
 ) -> Result<HostRunOutcome> {
+    // A subject whose materialization is complete but whose driver adapter
+    // does not exist yet is refused here, before any launch step: the
+    // released-Eglot adapter unconditionally requires the declared package
+    // input, so an upstream-source launch would die inside the driver
+    // instead of refusing at the boundary. The refusal names the boundary;
+    // the source adapter arrives with the journey lane that owns it.
+    ensure!(
+        subject.launches_with_current_driver(),
+        "subject {} has no driver adapter yet: materialization through the subject manifest is          complete, but an actual host run is unsupported until its journey lane lands an          adapter",
+        subject.id()
+    );
     ensure_fresh_output_root(&run.out_root)?;
     let commit = candidate_commit_identity(repo_root)?;
     let candidate_version =

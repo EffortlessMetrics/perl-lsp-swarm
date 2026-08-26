@@ -804,12 +804,15 @@ pub struct CompleteSubjectIdentity {
     pub emacs_build_sha256: String,
     pub resolved_library_form: String,
     pub resolved_client_sha256: String,
-    /// The exact package archive digest of a released external subject;
-    /// `None` for bundled and upstream-source subjects, which carry no
-    /// package/archive identity. Part of the identity so the same version
-    /// over different package bytes never reuses one cache entry.
+    /// sha256 over the row's complete declared external identity block —
+    /// the released package identity (archive URL and bytes, attested
+    /// commit, dependencies, minimum Emacs, checksum disposition) or the
+    /// upstream source-tree identity (repo, commit, tree object id). Part
+    /// of the identity so every declared external fact, not just the
+    /// archive bytes, keys the cache: a corrected tree id or dependency
+    /// entry never reuses an old entry. `None` for bundled subjects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub external_archive_sha256: Option<String>,
+    pub external_identity_sha256: Option<String>,
 }
 
 /// One immutable cache entry record. Carries intended input only: there is
@@ -1105,6 +1108,10 @@ pub fn resolve(
         }
         (None, None) => None,
     };
+    // The complete declared external identity (every package or tree fact,
+    // not just the validated archive bytes) keys the cache, so a corrected
+    // tree id or dependency entry cannot silently reuse an old entry.
+    let external_identity_sha256 = declared_external_identity_digest(row)?;
 
     let emacs_build_sha256 = file_digest(&canonical_executable)?;
     if let Some(version_line) = request.probed_emacs_version
@@ -1133,7 +1140,7 @@ pub fn resolve(
         emacs_build_sha256: emacs_build_sha256.clone(),
         resolved_library_form: form,
         resolved_client_sha256: resolved_digest.clone(),
-        external_archive_sha256: external_archive_sha256.clone(),
+        external_identity_sha256: external_identity_sha256.clone(),
     };
     let cache_key = identity_cache_key(&identity)?;
     let cache_entry = request.cache_root.join(&cache_key);
@@ -1318,7 +1325,39 @@ fn identity_difference(
     if stale.resolved_library_form != current.resolved_library_form {
         return "the cache holds this subject bound to a different library form".to_string();
     }
+    if stale.external_identity_sha256 != current.external_identity_sha256 {
+        return "the cache holds this subject bound to a different declared external identity"
+            .to_string();
+    }
     "the cache holds this subject bound to a different complete identity".to_string()
+}
+
+/// sha256 over the row's complete declared external identity block. The
+/// serialized block carries every external fact (archive URL and bytes,
+/// attested commit, dependencies, minimum Emacs, checksum disposition; or
+/// repo, commit, and tree object id), so any declared change — including a
+/// corrected tree id that leaves the client bytes and commit untouched —
+/// changes this digest and therefore the cache key. Bundled rows have no
+/// external block and bind `None`.
+fn declared_external_identity_digest(row: &SubjectRow) -> Result<Option<String>, ResolveFailure> {
+    let digest = match (&row.external_package, &row.source_tree) {
+        (Some(package), None) => serde_json::to_vec(package),
+        (None, Some(tree)) => serde_json::to_vec(tree),
+        (None, None) => return Ok(None),
+        // Manifest validation refuses the both-blocks combination before
+        // resolution; reaching it here means the caller bypassed
+        // validation, which fails closed rather than picking one.
+        (Some(_), Some(_)) => {
+            return Err(ResolveFailure::Instrument(
+                "a subject row declares both a package and a source-tree identity, which \
+                 manifest validation refuses"
+                    .to_string(),
+            ));
+        }
+    };
+    digest.map(|bytes| Some(prefixed_sha256(&bytes))).map_err(|error| {
+        ResolveFailure::Instrument(format!("serializing the declared external identity: {error}"))
+    })
 }
 
 fn ambient_layout_marker(client_source: &Path, installation_root: &Path) -> Option<String> {
