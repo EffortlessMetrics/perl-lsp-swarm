@@ -977,7 +977,7 @@ pub fn help_text() -> String {
     out.push_str(checking_guidance::CHECK_PROJECT_FLAG);
     out.push_str(" [dir]\n");
     out.push_str(
-        "  Need configured Perl's compile observation?    editor Perl: Check Syntax / DAP (`perl -c`)\n",
+        "  Need real-Perl compile observation?            editor Perl: Check Syntax / DAP (`perl -c`)\n",
     );
     out.push_str(
         "  Advisories remain visible but non-blocking. `--check-project` can PASS below 100% clean.\n",

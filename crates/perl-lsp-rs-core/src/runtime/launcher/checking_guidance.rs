@@ -38,7 +38,7 @@ mod guard {
         "Advisories remain visible but non-blocking",
         "Need fast native feedback on listed files?",
         "Need a project parser coverage metric?",
-        "Need configured Perl's compile observation?",
+        "Need real-Perl compile observation?",
         "perl -c",
     ];
 
@@ -451,6 +451,10 @@ mod tests {
         for flag in UNSHIPPED_PERLLSP_FLAGS {
             assert!(!help.contains(flag), "help must not advertise unshipped {flag}");
         }
+        assert!(
+            !help.contains("Need configured Perl's compile observation?"),
+            "help must not imply Check Syntax uses the configured DAP interpreter"
+        );
         assert!(help.contains(CHECK_FLAG));
         assert!(help.contains(CHECK_PROJECT_FLAG));
     }
@@ -507,7 +511,7 @@ mod tests {
         for needle in [
             "Need fast native feedback on listed files?",
             "Need a project parser coverage metric?",
-            "Need configured Perl's compile observation?",
+            "Need real-Perl compile observation?",
             CHECK_FLAG,
             CHECK_PROJECT_FLAG,
             "80%",

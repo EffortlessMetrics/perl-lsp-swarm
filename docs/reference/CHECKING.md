@@ -8,7 +8,7 @@ behavior, not the planned command split on #10766 / #10672.
 ```text
 Need fast native feedback on listed files?          perllsp --check <files...>
 Need a project parser coverage metric?              perllsp --check-project [dir]
-Need configured Perl's compile observation?         editor Perl: Check Syntax / DAP (`perl -c`)
+Need real-Perl compile observation?                 editor Perl: Check Syntax / DAP (`perl -c`)
 ```
 
 The hinge is the validator and the claim, not marketing language.
