@@ -52,6 +52,10 @@
 //! Family laws beyond the shared model (all fail-closed):
 //!
 //! - the ledger mirrors exactly the landed #11380 host-reopen actions;
+//! - the declared fixture substrate is pinned to the lifecycle-root
+//!   denominator artifact plus the #11369 authorities, and every cell cites
+//!   that complete substrate as its fixture owners, so the catalog cannot
+//!   stop citing the authority that owns its rows through a reviewed edit;
 //! - the registered cells are exactly the 8 denominator stages: a missing
 //!   stage cell, a duplicate stage registration, or a cell outside the finite
 //!   #11387 denominator (a relabeled server restart, a baseline cleanup row,
@@ -620,6 +624,18 @@ pub fn validate_lifecycle_catalog(catalog: &CellCatalog, ledger: &ScenarioLedger
         declared == expected,
         "lifecycle result vocabulary drifted from the #11387 dispositions"
     );
+    // The declared substrate is pinned: the lifecycle-root denominator
+    // artifact and the #11369 authorities cannot be dropped (the catalog
+    // would stop citing the authority that owns its rows) or widened (an
+    // unlanded authority would enter through a reviewed edit) — the shared
+    // non-empty-substrate law alone cannot see either drift.
+    let declared_substrate: BTreeSet<&str> =
+        catalog.fixture_substrate.iter().map(String::as_str).collect();
+    let pinned_substrate: BTreeSet<&str> = LIFECYCLE_FIXTURE_SUBSTRATE.iter().copied().collect();
+    ensure!(
+        declared_substrate == pinned_substrate,
+        "lifecycle fixture substrate drifted from the pinned #11387 substrate; the lifecycle-root denominator artifact and the #11369 authorities cannot be dropped or widened"
+    );
 
     let actions = host_reopen_action_ids();
     let scenarios: BTreeSet<&str> = ledger.scenarios.iter().map(|s| s.id.as_str()).collect();
@@ -686,6 +702,16 @@ pub fn validate_lifecycle_catalog(catalog: &CellCatalog, ledger: &ScenarioLedger
         ensure!(
             declared_owners == expected_owners,
             "cell {} scenario owners drifted from the pinned {stage} stage owner set; the lifecycle-entry paths that distinguish this stage from a server restart or a buffer reopen cannot be dropped or widened",
+            cell.cell_id
+        );
+        // Every cell cites the complete pinned substrate as its fixture
+        // owners, so no cell can stop citing the lifecycle-root denominator
+        // artifact while the catalog-level substrate stays pinned.
+        let declared_fixture_owners: BTreeSet<&str> =
+            cell.fixture_owners.iter().map(String::as_str).collect();
+        ensure!(
+            declared_fixture_owners == pinned_substrate,
+            "cell {} fixture owners drifted from the pinned #11387 substrate; a cell that stops citing the lifecycle-root denominator artifact or a #11369 authority fails closed",
             cell.cell_id
         );
         ensure!(

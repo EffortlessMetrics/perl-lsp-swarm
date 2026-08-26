@@ -3288,6 +3288,47 @@ fn lifecycle_fixture_substrate_is_landed_on_disk() -> Result<()> {
     Ok(())
 }
 
+/// The substrate pin (review finding on #12663): dropping the lifecycle-root
+/// denominator artifact from the declared substrate — even consistently,
+/// from every cell's fixture owners too, so the shared non-empty-substrate
+/// and owner-membership laws stay satisfied — or widening the substrate with
+/// an unlanded authority both fail the family law.
+#[test]
+fn lifecycle_fixture_substrate_is_pinned_fail_closed() -> Result<()> {
+    // Dropping the denominator artifact from the substrate and from every
+    // cell's fixture owners would leave a shared-law-valid catalog that no
+    // longer cites the authority owning its rows; the family pin fails it.
+    assert_lifecycle_rejects(
+        |catalog| {
+            catalog.fixture_substrate.retain(|fixture| fixture != "vim-vim-lsp-lifecycle-root.v1");
+            for cell in &mut catalog.cells {
+                cell.fixture_owners.retain(|fixture| fixture != "vim-vim-lsp-lifecycle-root.v1");
+            }
+            Ok(())
+        },
+        "lifecycle fixture substrate drifted",
+    )?;
+    // Widening the substrate with an invented authority fails the same pin.
+    assert_lifecycle_rejects(
+        |catalog| {
+            catalog.fixture_substrate.push("vim-vim-lsp-lifecycle-future.v1".to_string());
+            Ok(())
+        },
+        "lifecycle fixture substrate drifted",
+    )?;
+    // A single cell dropping the denominator artifact from its own fixture
+    // owners fails the per-cell pin even while the catalog substrate stays
+    // pinned.
+    assert_lifecycle_rejects(
+        |catalog| {
+            let cell = lifecycle_cell_mut(catalog, "vim.vim_lsp.lifecycle.host_reopen")?;
+            cell.fixture_owners.retain(|fixture| fixture != "vim-vim-lsp-lifecycle-root.v1");
+            Ok(())
+        },
+        "fixture owners drifted from the pinned #11387 substrate",
+    )
+}
+
 #[test]
 fn lifecycle_family_registration_leaves_earlier_catalogs_byte_identical() -> Result<()> {
     let before = catalog::validate_compiled_registry()?;
