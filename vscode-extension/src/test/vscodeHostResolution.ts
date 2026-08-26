@@ -36,6 +36,17 @@ export function classifyHostResolutionError(error: unknown): HostResolutionDispo
   if (message.includes('cache')) {
     return 'cache';
   }
+  // Catalog misses must win over broad network tokens: `@vscode/test-electron`
+  // reports `Invalid version <id>` while still showing "Resolving version...",
+  // and archive/CDN misses often look like `Failed to download ... HTTP 404`.
+  if (
+    message.includes('404') ||
+    message.includes('invalid version') ||
+    message.includes('not found') ||
+    message.includes('release')
+  ) {
+    return 'unavailable';
+  }
   if (
     message.includes('network') ||
     message.includes('econn') ||
@@ -50,7 +61,7 @@ export function classifyHostResolutionError(error: unknown): HostResolutionDispo
   if (message.includes('runner') || message.includes('spawn')) {
     return 'runner';
   }
-  if (message.includes('version') || message.includes('release') || message.includes('404')) {
+  if (message.includes('version')) {
     return 'unavailable';
   }
   return 'runner';

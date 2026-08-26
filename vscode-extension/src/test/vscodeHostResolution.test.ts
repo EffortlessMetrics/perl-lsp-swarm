@@ -53,6 +53,20 @@ describe('VS Code host resolution receipts', () => {
     expect(classifyHostResolutionError(new Error('unexpected resolver abort'))).toBe('runner');
   });
 
+  test('treats HTTP 404 and Invalid version catalog misses as unavailable, not network', () => {
+    expect(
+      classifyHostResolutionError(
+        new Error(
+          'Failed to download vscode 1.125.0 from https://update.code.visualstudio.com/1.125.0/linux-x64/stable HTTP 404',
+        ),
+      ),
+    ).toBe('unavailable');
+    expect(classifyHostResolutionError(new Error('Invalid version 1.125.0'))).toBe('unavailable');
+    expect(classifyHostResolutionError(new Error('network request failed with HTTP 503'))).toBe(
+      'network',
+    );
+  });
+
   test('writes the resolver error and environment identity to a receipt', () => {
     const root = tempReceiptRoot();
     const receiptPath = writeHostResolutionFailureReceipt(
