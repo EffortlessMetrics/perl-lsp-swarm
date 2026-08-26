@@ -98,12 +98,66 @@ describe('navigation command implementations', () => {
     await showWorkspaceStatusCommand({ getWorkspaceStatus });
 
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-      'Perl LSP workspace status\nServer: running\nVersion: perllsp 0.17.0\nWorkspace files: 12\nDiagnostics: 2 errors\nWorkspace index: legacy server (enhanced readiness unavailable)',
+      'Perl LSP workspace status\nProduct: perl-lsp\nServer state: running\nObserved server: perllsp 0.17.0\nWorkspace files: 12\nDiagnostics: 2 errors\nWorkspace index: legacy server (enhanced readiness unavailable)',
       'Run Health Check',
       'Show Output',
       'Open Actions',
     );
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl-lsp.showOutput');
+  });
+
+  test('preserves a compatibility or custom server identity verbatim', async () => {
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(undefined);
+
+    await showWorkspaceStatusCommand({
+      getWorkspaceStatus: () => ({
+        mode: 'running',
+        version: 'perl-lsp 0.17.0 (compatibility wrapper)',
+      }),
+    });
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'Perl LSP workspace status\nProduct: perl-lsp\nServer state: running\nObserved server: perl-lsp 0.17.0 (compatibility wrapper)\nWorkspace index: legacy server (enhanced readiness unavailable)',
+      'Run Health Check',
+      'Show Output',
+      'Open Actions',
+    );
+  });
+
+  test('keeps an injected observed identity single-line and control-safe', async () => {
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(undefined);
+
+    await showWorkspaceStatusCommand({
+      getWorkspaceStatus: () => ({
+        mode: 'running',
+        version: 'perllsp 0.17.0\tdebug\u001b[31m\nWorkspace index: ready',
+      }),
+    });
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'Perl LSP workspace status\nProduct: perl-lsp\nServer state: running\nObserved server: perllsp 0.17.0\\u0009debug\\u001b[31m\nWorkspace index: legacy server (enhanced readiness unavailable)',
+      'Run Health Check',
+      'Show Output',
+      'Open Actions',
+    );
+  });
+
+  test('renders an unprovable observed identity as unavailable instead of asserting it', async () => {
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(undefined);
+
+    await showWorkspaceStatusCommand({
+      getWorkspaceStatus: () => ({
+        mode: 'running',
+        version: '   ',
+      }),
+    });
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'Perl LSP workspace status\nProduct: perl-lsp\nServer state: running\nObserved server: unavailable\nWorkspace index: legacy server (enhanced readiness unavailable)',
+      'Run Health Check',
+      'Show Output',
+      'Open Actions',
+    );
   });
 
   test('shows lifecycle, readiness, and active-document status', async () => {
@@ -121,7 +175,7 @@ describe('navigation command implementations', () => {
     });
 
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-      'Perl LSP workspace status\nServer: running\nLifecycle: ready_limited\nWorkspace index: ready_limited\nActive document: not ready\nCoverage: Workspace file limit reached\nNext: Wait for the active document to become ready.',
+      'Perl LSP workspace status\nProduct: perl-lsp\nServer state: running\nLifecycle: ready_limited\nWorkspace index: ready_limited\nActive document: not ready\nCoverage: Workspace file limit reached\nNext: Wait for the active document to become ready.',
       'Run Health Check',
       'Show Output',
       'Open Actions',
@@ -140,7 +194,7 @@ describe('navigation command implementations', () => {
     });
 
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-      'Perl LSP workspace status\nServer: running\nWorkspace index: legacy server (enhanced readiness unavailable)',
+      'Perl LSP workspace status\nProduct: perl-lsp\nServer state: running\nWorkspace index: legacy server (enhanced readiness unavailable)',
       'Run Health Check',
       'Show Output',
       'Open Actions',
@@ -160,7 +214,7 @@ describe('navigation command implementations', () => {
     });
 
     expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
-      'Perl LSP workspace status\nServer: stopped\nLifecycle: failed\nDetail: Managed server binary is missing.\nNext: Reinstall the server.',
+      'Perl LSP workspace status\nProduct: perl-lsp\nServer state: stopped\nLifecycle: failed\nDetail: Managed server binary is missing.\nNext: Reinstall the server.',
       'Restart Server',
       'Run Health Check',
       'Show Output',
@@ -168,7 +222,7 @@ describe('navigation command implementations', () => {
     );
   });
 
-  test('offers restart for a stopped workspace', async () => {
+  test('never renders a stale observed identity for a stopped server', async () => {
     (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce('Restart Server');
 
     await showWorkspaceStatusCommand({
@@ -179,7 +233,7 @@ describe('navigation command implementations', () => {
     });
 
     expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
-      'Perl LSP workspace status\nServer: stopped',
+      'Perl LSP workspace status\nProduct: perl-lsp\nServer state: stopped',
       'Restart Server',
       'Run Health Check',
       'Show Output',
