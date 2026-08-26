@@ -58,6 +58,11 @@ pub mod observed_discovery {
     /// Strict constructors, payload digests, freshness, and matrix adapter.
     #[path = "build.rs"]
     pub mod build;
+    /// Exact supervised `t/TEST` capture route producing strict receipts
+    /// (#12283): selector argv from target-contract authority, one bounded
+    /// supervised process, byte-exact envelopes, and #12281 receipt assembly.
+    #[path = "capture.rs"]
+    pub mod capture;
     /// Strict byte-level stream decoder and observation-state derivation.
     #[path = "decode.rs"]
     pub mod decode;
@@ -76,7 +81,12 @@ pub mod observed_discovery {
         build_observed_discovery_receipt, check_observed_discovery_against,
         discovery_payload_digest, receipt_freshness,
     };
+    pub use capture::{ObserveDiscoveryConfig, observe_discovery, observe_discovery_command};
     pub use decode::derive_observation_state;
+    // The runner-plan vocabulary is already part of this module's public
+    // payload types; re-export the two enums external consumers need to build
+    // or inspect receipts without reaching into the crate-private module.
+    pub use crate::runner_model::{DiscoveryFrame, RunnerKind};
     pub use model::{
         DiscoveryObservationState, DiscoveryPayload, DiscoverySubjectIdentity, EnvironmentIdentity,
         EvidenceClass, InvocationObservation, LineFraming, MemberDisposition,
