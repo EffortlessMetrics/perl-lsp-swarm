@@ -2900,7 +2900,13 @@ impl SymbolExtractor {
 
         let search_start = object.location.end.min(self.source.len());
         let search_end = search_start.saturating_add(160).min(self.source.len());
-        if search_start >= search_end || !self.source.is_char_boundary(search_start) {
+        // The window end must also be a char boundary: `min(len)` alone does
+        // not prevent landing inside a multi-byte char near the cap or EOF
+        // (fuzz crash at this slice on adversarial Unicode method calls).
+        if search_start >= search_end
+            || !self.source.is_char_boundary(search_start)
+            || !self.source.is_char_boundary(search_end)
+        {
             return call_node.location;
         }
 
@@ -3317,17 +3323,31 @@ impl SymbolExtractor {
             Err(_) => return, // Skip variable extraction if regex fails
         };
 
-        // The value includes quotes, so strip them
-        let content = if value.len() >= 2 { &value[1..value.len() - 1] } else { value };
+        // The value includes quotes, so strip them. Quote bytes are ASCII, so a
+        // matching first/last quote byte is always a char boundary; arbitrary
+        // trailing bytes are not (fuzz inputs like `qx\xA2,` panicked on the
+        // unchecked byte slice here).
+        let content = match (value.as_bytes().first(), value.as_bytes().last()) {
+            (Some(&first), Some(&last))
+                if value.len() >= 2 && matches!(first | last, b'"' | b'\'') =>
+            {
+                &value[1..value.len() - 1]
+            }
+            _ => value,
+        };
 
         for cap in scalar_re.captures_iter(content) {
             if let Some(m) = cap.get(0) {
-                let var_name = if m.as_str().starts_with("${") && m.as_str().ends_with("}") {
+                // `\w` is Unicode-aware, so a `${...}` capture may end in a
+                // multi-byte char; strip the braces by pattern instead of byte
+                // slicing to stay on char boundaries.
+                let raw = m.as_str();
+                let scalar = raw.strip_prefix("${").and_then(|s| s.strip_suffix('}'));
+                let var_name = match scalar {
                     // Handle ${var} format
-                    &m.as_str()[2..m.as_str().len() - 1]
-                } else {
-                    // Handle $var format
-                    &m.as_str()[1..]
+                    Some(name) => name,
+                    // Handle $var format ('$', is one byte, so [1..] is safe)
+                    None => &raw[1..],
                 };
 
                 // Calculate the location within the original string
@@ -4557,5 +4577,69 @@ sub jump {
             !has_lowercase_foo_subroutine,
             "should NOT have Subroutine symbol for lowercase 'foo'"
         );
+    }
+
+    // ── Char-boundary regressions (CI Nightly fuzz crashes, 2026-08-26) ──
+
+    /// The quote-strip in `extract_vars_from_string` used to slice
+    /// `[1..len-1]` by raw byte index. Interpolated-string values whose first
+    /// or last byte is not an ASCII quote (multi-byte Unicode content) panicked
+    /// with "byte index N is not a char boundary" (fuzz targets
+    /// parser_integration / structured_perl_programs).
+    #[test]
+    fn extract_vars_from_string_survives_non_ascii_boundaries() {
+        let mut extractor = SymbolExtractor::new_with_source("");
+        let loc = SourceLocation { start: 0, end: 0 };
+
+        // Properly quoted string containing multi-byte chars: must still find
+        // the scalar reference and not panic.
+        extractor.extract_vars_from_string("\"$pay \u{1F980}\"", loc);
+
+        // Unquoted / adversarial shapes: old code sliced these unconditionally.
+        // First shape panics on the END index (last byte sits inside a
+        // multi-byte char); second shape panics on the START index (mirrors the
+        // structured_perl_programs crash whose content began with U+1F980).
+        extractor.extract_vars_from_string("\u{00A2}", loc);
+        extractor.extract_vars_from_string("\u{1F980}x", loc);
+    }
+
+    /// `${name}` captures can end in a multi-byte char (`\w` is
+    /// Unicode-aware); brace stripping used to slice bytes off the tail.
+    #[test]
+    fn extract_vars_from_string_handles_unicode_braced_name() {
+        let mut extractor = SymbolExtractor::new_with_source("");
+        let loc = SourceLocation { start: 0, end: 0 };
+        extractor.extract_vars_from_string("\"${caf\u{00E9}}\"", loc);
+    }
+
+    /// `method_reference_location` bounded its scan window by `min(len)` but
+    /// never verified the window END was a char boundary; a window landing
+    /// inside a multi-byte char panicked on the slice (fuzz target
+    /// semantic_model).
+    #[test]
+    fn method_reference_location_survives_window_on_multibyte_char() {
+        use crate::{Node, NodeKind};
+
+        // Byte offset 159..163 is a 4-byte emoji; start+160 lands inside it.
+        let source = format!("{}{}", "a".repeat(159), "\u{1F980} b");
+        let extractor = SymbolExtractor::new_with_source(&source);
+        let call_node = Node::new(
+            NodeKind::ExpressionStatement {
+                expression: Box::new(Node::new(
+                    NodeKind::Program { statements: Vec::new() },
+                    SourceLocation { start: 0, end: 0 },
+                )),
+            },
+            SourceLocation { start: 0, end: 0 },
+        );
+        let object = Node::new(
+            NodeKind::Program { statements: Vec::new() },
+            SourceLocation { start: 0, end: 0 },
+        );
+
+        // Must fall back to the call node location instead of panicking.
+        let location = extractor.method_reference_location(&call_node, &object, "foo");
+        assert_eq!(location.start, call_node.location.start);
+        assert_eq!(location.end, call_node.location.end);
     }
 }

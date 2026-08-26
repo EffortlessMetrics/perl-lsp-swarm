@@ -124,6 +124,21 @@ harness = false
 name = "cpan_patterns_benchmark"
 harness = false
 
+# Criterion benches: `harness = false` is REQUIRED for every bench that the
+# nightly "Performance Benchmarks" job invokes with `-- --noplot` (a
+# Criterion-only flag). Without an explicit [[bench]] stanza these targets fall
+# back to libtest autodiscovery (harness = true), and libtest rejects the flag:
+#   error: Unrecognized option: 'noplot'
+# See fuzz-informed CI diagnosis 2026-08-26; positions_bench and
+# substitution_performance were silently autodiscovered before this stanza.
+[[bench]]
+name = "positions_bench"
+harness = false
+
+[[bench]]
+name = "substitution_performance"
+harness = false
+
 [[example]]
 name = "test_incremental_v2"
 required-features = ["incremental"]

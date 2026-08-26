@@ -2301,7 +2301,20 @@ public-api-check:
             FAILED=1
             continue
         fi
-        ./scripts/cargo-safe public-api -p "$crate" --simplified 2>/dev/null | grep "^pub " > "/tmp/${crate}-current.txt" || true
+        ./scripts/cargo-safe public-api -p "$crate" --simplified > "/tmp/${crate}-raw.txt" 2> "/tmp/${crate}-stderr.txt" || true
+        grep "^pub " "/tmp/${crate}-raw.txt" > "/tmp/${crate}-current.txt" || true
+        # An empty extraction is a TOOL failure (bad toolchain, sandbox, or
+        # wrapper error), not API drift. Swallowing it used to diff against the
+        # baseline as "everything removed" and made the real cause
+        # undiagnosable in CI (Nightly Public API Surface Check has been red on
+        # this signature since at least 2026-05-21, run 26205525731).
+        if [ ! -s "/tmp/${crate}-current.txt" ]; then
+            echo "FAIL ${crate}: cargo public-api produced no output — tool invocation failed, this is NOT an API drift"
+            echo "--- cargo public-api stderr for ${crate}: ---"
+            cat "/tmp/${crate}-stderr.txt" || true
+            FAILED=1
+            continue
+        fi
         if ! diff -u "$BASELINE" "/tmp/${crate}-current.txt" > "/tmp/${crate}-diff.txt" 2>&1; then
             echo "FAIL Public API changed in ${crate}:"
             cat "/tmp/${crate}-diff.txt"
