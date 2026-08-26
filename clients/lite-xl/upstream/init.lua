@@ -1257,7 +1257,9 @@ local function config_file_stamp(file_path)
     and system.get_file_info
     and system.get_file_info(file_path)
   if info then
-    return tostring(info.mtime or info.size or "present")
+    -- Lite XL reports modification time as `modified`; `mtime` keeps the
+    -- stamp honest under alternative runtimes of the same family.
+    return tostring(info.modified or info.mtime or info.size or "present")
   end
   return "absent"
 end
@@ -1339,7 +1341,9 @@ function lsp.get_workspace_settings(server, workspace)
   else
     local position = 1
     stamp_paths = {}
-    for _, path in pairs(paths) do
+    -- Sequential iteration (#10653): the trusted user-owned root must be
+    -- the visited first position structurally, never by hash-order luck.
+    for _, path in ipairs(paths) do
       if path then
         local settings_new = nil
         path = path:gsub("\\+$", ""):gsub("/+$", "")
@@ -1388,16 +1392,23 @@ function lsp.get_workspace_settings(server, workspace)
               local settings_json = file:read("*a")
               file:close()
               local ok_decode, decoded = pcall(json.decode, settings_json)
-              if ok_decode and type(decoded) == "table" then
+              if
+                ok_decode
+                and type(decoded) == "table"
+                and not json.is_array(decoded)
+                and not json.is_null(decoded)
+              then
                 settings_new = decoded
               else
                 -- Fail safely (#10653): malformed project data becomes one
                 -- bounded configuration error and an empty value, never an
-                -- executable fallback.
+                -- executable fallback. Array/null JSON roots are rejected
+                -- here too (#10653 review): a non-object root must not be
+                -- able to replace accumulated user/server settings.
                 core.error(
                   "[LSP]: ignoring malformed project configuration '%s' (%s)",
                   project_json,
-                  ok_decode and "configuration is not an object"
+                  ok_decode and "configuration is not a JSON object"
                     or tostring(decoded)
                 )
               end

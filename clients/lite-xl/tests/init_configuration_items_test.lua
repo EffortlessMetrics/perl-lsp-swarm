@@ -677,7 +677,10 @@ local function with_config_scenario(scenario, fn)
   os.time = function() return epoch end
   system.get_file_info = function(path)
     if scenario.mtimes and scenario.mtimes[path] then
-      return { mtime = scenario.mtimes[path], size = 128 }
+      -- Lite XL exposes the modification timestamp as `modified` (#10653
+      -- review); the fixture mirrors the production field name so
+      -- same-byte-length content edits still invalidate the stamp.
+      return { modified = scenario.mtimes[path], size = 128 }
     end
     return nil
   end
@@ -949,6 +952,60 @@ do
       "an out-of-root hostile scope answers empty defaults")
     ok(#project_lua_loads(lua_loads) == 0,
       "a hostile scopeUri cannot cause arbitrary config-path execution")
+  end)
+end
+
+do
+  -- non_object_project_roots_rejected: valid-JSON but non-object roots
+  -- (array, null) are typed configuration errors — they must neither merge
+  -- as settings nor replace accumulated user/server values (#10653 review).
+  local lsp = fresh_module_load()
+  local json = require "plugins.lsp.json"
+  local client = start_captured_client(lsp, { perl = { alpha = "A" } })
+  log_records = {}
+  with_config_scenario({
+    files = {
+      ["C:\\proj/.lite_lsp.json"] = "[]",
+    },
+    mtimes = { ["C:\\proj"] = 5, ["C:\\proj/.lite_lsp.json"] = 5 },
+  }, function()
+    local r = deliver(client, "workspace/configuration", 64,
+      { items = json.decode(
+        '[{"section":"perl.alpha","scopeUri":"file:///C:/proj"},' ..
+        '{"section":"perl.absent","scopeUri":"file:///C:/proj"}]') })
+    ok(r and not r.listener_error,
+      "an array-root project file does not crash the lookup")
+    ok(r[1] and r[1].error == nil and type(r[1].result) == "table"
+      and #r[1].result == 2 and r[1].result[1] == "A"
+      and json.is_null(r[1].result[2]),
+      "an array-root project file cannot wipe accumulated server settings")
+    local saw_typed_error = false
+    for _, record in ipairs(log_records) do
+      if record:find("ignoring malformed project configuration", 1, true) then
+        saw_typed_error = true
+      end
+    end
+    ok(saw_typed_error,
+      "an array-root project file reports the bounded not-an-object error")
+  end)
+
+  -- null-root variant through a fresh module/cache.
+  local lsp2 = fresh_module_load()
+  local json2 = require "plugins.lsp.json"
+  local client2 = start_captured_client(lsp2, { perl = { alpha = "A" } })
+  log_records = {}
+  with_config_scenario({
+    files = {
+      ["C:\\proj/.lite_lsp.json"] = "null",
+    },
+    mtimes = { ["C:\\proj"] = 5, ["C:\\proj/.lite_lsp.json"] = 5 },
+  }, function()
+    local r = deliver(client2, "workspace/configuration", 65,
+      { items = json.decode(
+        '[{"section":"perl.alpha","scopeUri":"file:///C:/proj"}]') })
+    ok(r and not r.listener_error
+      and r[1] and type(r[1].result) == "table" and r[1].result[1] == "A",
+      "a null-root project file keeps accumulated server settings")
   end)
 end
 
