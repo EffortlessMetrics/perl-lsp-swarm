@@ -293,6 +293,10 @@ fn near_miss_fixture_that_starts_producing_a_finding_fails_live_check() -> TestR
     let mut manifest = canonical_manifest()?;
     case_mut(&mut manifest, "CRP-ASSIGN-NEAR-001").expect("near")["fixture"] =
         json!("assignment_in_condition/positive.pl");
+    manifest["fixtures"]
+        .as_object_mut()
+        .expect("fixtures")
+        .remove("assignment_in_condition/near_miss.pl");
     let typed =
         validate_manifest_value(&repo_root(), &manifest).map_err(|error| error.to_string())?;
     let error = proof::execute_manifest(&repo_root(), &typed)
