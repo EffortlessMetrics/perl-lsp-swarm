@@ -159,6 +159,17 @@ try {
     Invoke-StagingCase -Name "windows_compressed_ceiling" -Entries $RequiredFlat -Needle "compressed size"
     Remove-Item Env:PERL_LSP_ARCHIVE_SAFETY_MAX_COMPRESSED_BYTES
 
+    $OversizedFlat = foreach ($Item in $RequiredFlat) {
+        if ($Item.Name -eq "README.md") {
+            @{ Name = $Item.Name; Bytes = [byte[]]::new(64); UnixMode = $Item.UnixMode }
+        } else {
+            $Item
+        }
+    }
+    $env:PERL_LSP_ARCHIVE_SAFETY_MAX_ENTRY_BYTES = "32"
+    Invoke-StagingCase -Name "windows_oversized_entry" -Entries $OversizedFlat -Needle "entry size"
+    Remove-Item Env:PERL_LSP_ARCHIVE_SAFETY_MAX_ENTRY_BYTES
+
     $Garbage = Join-Path $TempRoot "garbage.zip"
     Set-Content -LiteralPath $Garbage -Encoding ascii -Value "not-a-zip`n"
     $CaseRoot = Join-Path $TempRoot "malformed"

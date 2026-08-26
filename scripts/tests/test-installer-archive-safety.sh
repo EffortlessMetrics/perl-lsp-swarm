@@ -196,7 +196,10 @@ fi
 sentinel_setup
 make_case oversized_entry
 ARCHIVE_PATH="$TMP/oversized_entry.tar.gz"
-PERL_LSP_ARCHIVE_SAFETY_MAX_ENTRY_BYTES=8 run_extract
+# 32 is above every valid topology member in the fixture and below the
+# 64-byte README. That isolates the streamed per-entry ceiling from uid
+# columns that a GNU tar -tv first-numeric parse used to treat as size.
+PERL_LSP_ARCHIVE_SAFETY_MAX_ENTRY_BYTES=32 run_extract
 if [ "$LAST_STATUS" -ne 0 ] \
     && [[ "$LAST_OUTPUT" == *"entry size"* ]] \
     && assert_sentinel_untouched \

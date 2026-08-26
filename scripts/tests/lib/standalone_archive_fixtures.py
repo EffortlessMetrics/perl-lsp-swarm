@@ -165,8 +165,15 @@ def too_many_entries(archive: tarfile.TarFile) -> None:
 
 
 def oversized_entry(archive: tarfile.TarFile) -> None:
-    valid_posix(archive)
+    # Unique topology: one required member over the test ceiling. Do not
+    # append a second README.md — that is duplicate_path, and a GNU-biased
+    # tar -tv size parse used to fail closed on uid/nlink instead.
+    _add_dir(archive, PACKAGE)
+    _add_reg(archive, f"{PACKAGE}/perllsp", POSIX_FILES["perllsp"], 0o755)
+    _add_reg(archive, f"{PACKAGE}/perl-dap", POSIX_FILES["perl-dap"], 0o755)
     _add_reg(archive, f"{PACKAGE}/README.md", b"x" * 64)
+    for name in ("LICENSE-APACHE", "LICENSE-MIT", "SHA256SUMS.txt"):
+        _add_reg(archive, f"{PACKAGE}/{name}", POSIX_FILES[name])
 
 
 def truncated_garbage(dest: Path) -> None:
