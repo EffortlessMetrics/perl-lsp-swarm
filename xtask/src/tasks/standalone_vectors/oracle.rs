@@ -269,6 +269,26 @@ pub fn validate_vector(vector: &Vector) -> Result<(), OracleError> {
                     vector.vector_id
                 )));
             }
+            // #12642 review: claim-ceiling derivation reads the resolved
+            // subject's topology maturity even when the terminal lands on the
+            // fallback branch. Pin fallback-subject maturity to the resolved
+            // subject's so a fallback vector cannot mint a claim ceiling its
+            // actual source does not support. Modes without a topology carry
+            // no maturity claim, so the pin applies only when both have one.
+            if let Some(fallback) = &vector.fallback_subject {
+                if let (Some(resolved_topology), Some(fallback_topology)) =
+                    (&vector.resolved_subject.topology, &fallback.topology)
+                {
+                    if resolved_topology.maturity != fallback_topology.maturity {
+                        return Err(OracleError::CorpusRule(format!(
+                            "{}: fallback subject maturity {:?} != resolved subject maturity {:?}",
+                            vector.vector_id,
+                            fallback_topology.maturity,
+                            resolved_topology.maturity
+                        )));
+                    }
+                }
+            }
         }
         Mode::ExactRegistrySource => {
             if vector.resolved_subject.registry_subject.is_none() {
