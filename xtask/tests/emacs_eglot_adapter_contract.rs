@@ -717,3 +717,97 @@ fn identity_evidence_and_candidate_binding_are_pinned() -> Result<()> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// 7. Runtime version-evidence judgment (review repair on the P2 finding)
+// ---------------------------------------------------------------------------
+
+/// The runtime version cross-check covers both external Eglot states: a
+/// stale audited version hint (planned version disagreeing with the
+/// digest-pinned bytes' own header) must surface as a limitation instead of
+/// writing a Pass receipt with the wrong planned version, and absent
+/// version evidence is a mismatch, never a silent pass. Bundled subjects
+/// keep their digest-authoritative law: their installed forms can carry an
+/// unreadable header, so no version judgment applies there.
+#[test]
+fn runtime_version_evidence_is_enforced_for_both_external_states() {
+    use emacs_host_run::emacs_host_runner::EmacsClientKind;
+    use xtask::emacs_host_run::external_version_evidence_mismatch;
+
+    // Upstream-source: the state this slice made launchable.
+    let mismatch = external_version_evidence_mismatch(
+        EmacsClientKind::ExternalEglot,
+        ClientSourceState::UpstreamSource,
+        Some("1.25"),
+        "1.24",
+    )
+    .expect("a stale audited hint must surface as runtime evidence mismatch");
+    assert!(
+        mismatch.contains("runtime client version 1.25")
+            && mismatch.contains("pinned subject version 1.24"),
+        "the mismatch must name both versions: {mismatch}"
+    );
+    assert_eq!(
+        external_version_evidence_mismatch(
+            EmacsClientKind::ExternalEglot,
+            ClientSourceState::UpstreamSource,
+            Some("1.24"),
+            "1.24",
+        ),
+        None,
+        "matching evidence passes"
+    );
+    let absent = external_version_evidence_mismatch(
+        EmacsClientKind::ExternalEglot,
+        ClientSourceState::UpstreamSource,
+        None,
+        "1.24",
+    )
+    .expect("absent version evidence must be a mismatch for external states");
+    assert!(
+        absent.contains("no version evidence"),
+        "the mismatch must name the missing evidence: {absent}"
+    );
+
+    // Released: the pre-existing law, unchanged in strength.
+    assert!(
+        external_version_evidence_mismatch(
+            EmacsClientKind::ExternalEglot,
+            ClientSourceState::Released,
+            Some("1.23"),
+            "1.24",
+        )
+        .is_some()
+    );
+    assert_eq!(
+        external_version_evidence_mismatch(
+            EmacsClientKind::ExternalEglot,
+            ClientSourceState::Released,
+            Some("1.24"),
+            "1.24",
+        ),
+        None
+    );
+
+    // Bundled: digest-authoritative, no version judgment — even an
+    // unreadable ("version_unavailable") or disagreeing header does not
+    // fail a bundled run through this seam.
+    assert_eq!(
+        external_version_evidence_mismatch(
+            EmacsClientKind::BundledEglot,
+            ClientSourceState::Bundled,
+            Some("version_unavailable"),
+            "1.17.30",
+        ),
+        None
+    );
+    assert_eq!(
+        external_version_evidence_mismatch(
+            EmacsClientKind::BundledEglot,
+            ClientSourceState::Bundled,
+            None,
+            "1.17.30",
+        ),
+        None
+    );
+}

@@ -873,8 +873,39 @@ struct OutcomeJudgment {
     runtime_version_mismatch: Option<String>,
 }
 
+/// Runtime version-evidence judgment for external client subjects
+/// (#8776 review repair): `version` is a required identity field for the
+/// released and upstream-source Eglot states, so the version header the
+/// adapter read from the loaded file must equal the registry pin byte for
+/// byte, and absent evidence is a mismatch — never a silent pass — because
+/// the external adapters fail their run on an unreadable header before
+/// this judgment is reached. Bundled subjects keep their looser law:
+/// installed builds ship compiled/compressed forms whose header can be
+/// unreadable, so their identity stays digest-authoritative.
+///
+/// Public so the adapter contract tests pin the judgment without a host.
+pub fn external_version_evidence_mismatch(
+    kind: emacs_host_runner::EmacsClientKind,
+    source_state: ClientSourceState,
+    observed: Option<&str>,
+    planned: &str,
+) -> Option<String> {
+    let external_eglot_state = kind == emacs_host_runner::EmacsClientKind::ExternalEglot
+        && matches!(source_state, ClientSourceState::Released | ClientSourceState::UpstreamSource);
+    if !external_eglot_state {
+        return None;
+    }
+    match observed {
+        Some(observed) if observed != planned => Some(format!(
+            "runtime client version {observed} does not match the pinned subject version {planned}"
+        )),
+        Some(_) => None,
+        None => Some("external Eglot client_loaded event carried no version evidence".to_string()),
+    }
+}
+
 /// Cross-check the adapter's runtime identity attestation (the loaded client
-/// library digest, and — for released subjects, where the version is a
+/// library digest, and — for external Eglot subjects, where the version is a
 /// required identity field — the observed version header) against the run
 /// plan, then judge the run.
 fn evaluate_observation(
@@ -898,25 +929,12 @@ fn evaluate_observation(
         Some(observed) => observed == planned_digest,
         None => false,
     };
-    // `released` is a required identity field for released subjects: the
-    // version header the adapter read from the loaded file must equal the
-    // registry pin, byte for byte, or the run cannot be this subject.
-    let runtime_version_mismatch = (plan.identity.client.source_state
-        == ClientSourceState::Released)
-        .then(|| {
-            client_loaded
-                .and_then(|event| event.details.get("version"))
-                .map(|observed| (observed.to_string(), plan.identity.client.version.clone()))
-        })
-        .flatten()
-        .and_then(|(observed, planned)| {
-            (observed != planned).then(|| {
-                format!(
-                    "runtime client version {observed} does not match the pinned subject version \
-                     {planned}"
-                )
-            })
-        });
+    let runtime_version_mismatch = external_version_evidence_mismatch(
+        plan.identity.client.kind,
+        plan.identity.client.source_state,
+        client_loaded.and_then(|event| event.details.get("version")).map(String::as_str),
+        &plan.identity.client.version,
+    );
     let driver_failed = observation
         .events
         .iter()
