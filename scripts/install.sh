@@ -418,16 +418,392 @@ The download may be corrupted. Delete any cached files and retry."
     EXTRACT_DIR="${TMPDIR}/${BIN_NAME}-${VERSION_NUM}-${TARGET}"
 }
 
-# ── Extract ────────────────────────────────────────────────────────────────────
+# ── Archive safety (#8352) ─────────────────────────────────────────────────────
+# Inspect the verified tar.gz before any member is written. Extract only the
+# topology-required regular files into a new private staging root. Limits and
+# membership match policy/standalone-archive-safety.v1.toml; installers embed
+# the constants because they must run without a git checkout.
+
+ARCHIVE_SAFETY_POLICY_ID="standalone-archive-safety.v1"
+ARCHIVE_SAFETY_MAX_COMPRESSED_BYTES=268435456
+ARCHIVE_SAFETY_MAX_UNCOMPRESSED_BYTES=536870912
+ARCHIVE_SAFETY_MAX_ENTRY_BYTES=268435456
+ARCHIVE_SAFETY_MAX_ENTRIES=32
+ARCHIVE_SAFETY_MAX_PATH_BYTES=255
+ARCHIVE_SAFETY_MAX_PATH_DEPTH=3
+
+archive_safety_policy_id() {
+    printf '%s\n' "$ARCHIVE_SAFETY_POLICY_ID"
+}
+
+archive_safety_limit() {
+    local name="$1" default="$2" override=""
+    case "$name" in
+        compressed) override="${PERL_LSP_ARCHIVE_SAFETY_MAX_COMPRESSED_BYTES:-}" ;;
+        uncompressed) override="${PERL_LSP_ARCHIVE_SAFETY_MAX_UNCOMPRESSED_BYTES:-}" ;;
+        entry) override="${PERL_LSP_ARCHIVE_SAFETY_MAX_ENTRY_BYTES:-}" ;;
+        entries) override="${PERL_LSP_ARCHIVE_SAFETY_MAX_ENTRIES:-}" ;;
+        *) override="" ;;
+    esac
+    if [ -n "$override" ]; then
+        printf '%s\n' "$override"
+    else
+        printf '%s\n' "$default"
+    fi
+}
+
+archive_file_bytes() {
+    wc -c < "$1" | tr -d '[:space:]'
+}
+
+# First non-empty stderr line, with a known private path redacted and
+# length-capped. Empty when the command wrote nothing diagnosable.
+archive_command_diagnostic() {
+    local errfile="$1"
+    local needle="${2:-}"
+    local line
+    [ -s "$errfile" ] || return 0
+    line=$(awk 'NF { sub(/\r$/, ""); print; exit }' "$errfile") || return 0
+    [ -n "$line" ] || return 0
+    if [ -n "$needle" ]; then
+        line=$(printf '%s\n' "$line" | awk -v n="$needle" '{
+            while ((i = index($0, n)) > 0) {
+                $0 = substr($0, 1, i - 1) "archive" substr($0, i + length(n))
+            }
+            print
+        }')
+    fi
+    line=$(printf '%s' "$line" | cut -c1-120)
+    printf ': %s' "$line"
+}
+
+fail_archive_staging() {
+    if [ -n "${STAGING_ROOT:-}" ] && [ -d "${STAGING_ROOT:-}" ]; then
+        rm -rf "$STAGING_ROOT"
+    fi
+    STAGING_ROOT=""
+    err "$1"
+}
+
+# Print a canonical relative member path or return 1. Shared with the
+# PowerShell adapter's semantic rules (drive/UNC/parent/aliases/reserved).
+normalize_archive_member_path() {
+    local raw="$1"
+    local inspect part rest depth folded
+    local max_path max_depth
+
+    max_path="$ARCHIVE_SAFETY_MAX_PATH_BYTES"
+    max_depth="$ARCHIVE_SAFETY_MAX_PATH_DEPTH"
+
+    case "$raw" in
+        *$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+        *'\\'*) return 1 ;;
+        *:*) return 1 ;;
+        /*) return 1 ;;
+        //*) return 1 ;;
+        [A-Za-z]:*) return 1 ;;
+        "") return 1 ;;
+    esac
+
+    if [ "${#raw}" -gt "$max_path" ]; then
+        return 1
+    fi
+
+    inspect="$raw"
+    case "$inspect" in
+        */) inspect="${inspect%/}" ;;
+    esac
+    [ -n "$inspect" ] || return 1
+
+    depth=0
+    rest="$inspect"
+    while [ -n "$rest" ]; do
+        case "$rest" in
+            */*)
+                part="${rest%%/*}"
+                rest="${rest#*/}"
+                ;;
+            *)
+                part="$rest"
+                rest=""
+                ;;
+        esac
+        depth=$((depth + 1))
+        if [ "$depth" -gt "$max_depth" ]; then
+            return 1
+        fi
+        case "$part" in
+            ""|"."|"..") return 1 ;;
+            *[!A-Za-z0-9._-]*) return 1 ;;
+            *.) return 1 ;;
+        esac
+        folded=$(printf '%s' "$part" | tr '[:upper:]' '[:lower:]')
+        case "$folded" in
+            con|prn|aux|nul|com[1-9]|lpt[1-9]|con.*|prn.*|aux.*|nul.*|com[1-9].*|lpt[1-9].*) return 1 ;;
+        esac
+    done
+
+    printf '%s\n' "$inspect"
+}
+
+archive_member_is_executable_mode() {
+    local listing="$1"
+    local mode
+    mode="$(printf '%s' "$listing" | cut -c2-10)"
+    # owner/group/other execute bits are columns 3, 6, and 9 of the 9-char mode.
+    case "$mode" in
+        ??x*|?????x*|????????x) return 0 ;;
+    esac
+    return 1
+}
+
+inspect_standalone_tar_gz() {
+    local archive="$1"
+    local package="$2"
+    local max_compressed max_uncompressed max_entries
+    local compressed gzip_uncompressed
+    local name_count i name listing type_char normalized basename_member
+    local seen_exact seen_folded folded
+    local name_file verbose_file name_err verbose_err list_dir
+    local bound_file gzip_err max_plus bound_status bound_bytes
+
+    max_compressed="$(archive_safety_limit compressed "$ARCHIVE_SAFETY_MAX_COMPRESSED_BYTES")"
+    max_uncompressed="$(archive_safety_limit uncompressed "$ARCHIVE_SAFETY_MAX_UNCOMPRESSED_BYTES")"
+    max_entries="$(archive_safety_limit entries "$ARCHIVE_SAFETY_MAX_ENTRIES")"
+
+    compressed="$(archive_file_bytes "$archive")"
+    if [ "$compressed" -gt "$max_compressed" ]; then
+        fail_archive_staging "archive compressed size $compressed exceeds policy ceiling $max_compressed"
+    fi
+
+    gzip_uncompressed="$(gzip -l "$archive" 2>/dev/null | awk 'NR==2 { print $2 }' | tr -d ',')"
+    case "$gzip_uncompressed" in
+        ''|*[!0-9]*) gzip_uncompressed="" ;;
+    esac
+    if [ -n "$gzip_uncompressed" ] && [ "$gzip_uncompressed" -gt "$max_uncompressed" ]; then
+        fail_archive_staging "archive uncompressed size $gzip_uncompressed exceeds policy ceiling $max_uncompressed"
+    fi
+
+    list_dir="${STAGING_ROOT:-${TMPDIR:-/tmp}}"
+    name_file="${list_dir}/.archive-names"
+    verbose_file="${list_dir}/.archive-verbose"
+    name_err="${list_dir}/.archive-names.err"
+    verbose_err="${list_dir}/.archive-verbose.err"
+    bound_file="${list_dir}/.bounded-tar"
+    gzip_err="${list_dir}/.bounded-tar.err"
+    max_plus=$((max_uncompressed + 1))
+    set +e
+    gzip -dc "$archive" 2>"$gzip_err" | head -c "$max_plus" > "$bound_file"
+    bound_status=$?
+    set -e
+    bound_bytes="$(archive_file_bytes "$bound_file")"
+    if [ "$bound_bytes" -gt "$max_uncompressed" ]; then
+        fail_archive_staging "archive uncompressed size $bound_bytes exceeds policy ceiling $max_uncompressed"
+    fi
+    if [ "$bound_bytes" -eq 0 ]; then
+        fail_archive_staging "malformed release archive: gzip decompress failed$(archive_command_diagnostic "$gzip_err" "$archive")"
+    fi
+    if [ "$bound_status" -ne 0 ] && [ "$bound_status" -ne 141 ]; then
+        fail_archive_staging "malformed release archive: gzip decompress failed$(archive_command_diagnostic "$gzip_err" "$archive")"
+    fi
+    if ! tar -tf "$bound_file" > "$name_file" 2>"$name_err"; then
+        fail_archive_staging "malformed release archive: tar listing failed$(archive_command_diagnostic "$name_err" "$archive")"
+    fi
+    if ! tar -tvf "$bound_file" > "$verbose_file" 2>"$verbose_err"; then
+        fail_archive_staging "malformed release archive: tar verbose listing failed$(archive_command_diagnostic "$verbose_err" "$archive")"
+    fi
+    rm -f "$bound_file" "$gzip_err"
+
+    name_count="$(sed '/^$/d' "$name_file" | wc -l | tr -d '[:space:]')"
+    if [ "$name_count" != "$(sed '/^$/d' "$verbose_file" | wc -l | tr -d '[:space:]')" ]; then
+        fail_archive_staging "malformed release archive: tar listing counts disagree"
+    fi
+    if [ "$name_count" -gt "$max_entries" ]; then
+        fail_archive_staging "archive entry count $name_count exceeds policy ceiling $max_entries"
+    fi
+
+    seen_exact=$'\n'
+    seen_folded=$'\n'
+    ACCEPTED_MEMBERS=""
+
+    i=0
+    while IFS= read -r name; do
+        i=$((i + 1))
+        [ -n "$name" ] || continue
+        listing="$(sed -n "${i}p" "$verbose_file")"
+        type_char="$(printf '%s' "$listing" | cut -c1)"
+        normalized="$(normalize_archive_member_path "$name")" || fail_archive_staging "unsafe archive member path: $name"
+        case "$seen_exact" in
+            *$'\n'"$normalized"$'\n'*) fail_archive_staging "duplicate archive member: $normalized" ;;
+        esac
+        seen_exact="${seen_exact}${normalized}"$'\n'
+        folded=$(printf '%s' "$normalized" | tr '[:upper:]' '[:lower:]')
+        case "$seen_folded" in
+            *$'\n'"$folded"$'\n'*) fail_archive_staging "case-fold collision: $normalized" ;;
+        esac
+        seen_folded="${seen_folded}${folded}"$'\n'
+
+        case "$type_char" in
+            d)
+                if [ "$normalized" != "$package" ]; then
+                    fail_archive_staging "unexpected directory member: $normalized"
+                fi
+                continue
+                ;;
+            l|h)
+                fail_archive_staging "archive links are not accepted: $normalized"
+                ;;
+            -)
+                ;;
+            *)
+                fail_archive_staging "special archive entry type is not accepted: $normalized"
+                ;;
+        esac
+
+        case "$normalized" in
+            "$package"/*) ;;
+            *) fail_archive_staging "member is outside the package directory: $normalized" ;;
+        esac
+
+        basename_member="${normalized##*/}"
+        if archive_member_is_executable_mode "$listing"; then
+            case "$basename_member" in
+                perllsp|perl-dap) ;;
+                *) fail_archive_staging "unexpected executable member: $normalized" ;;
+            esac
+        fi
+        case "$basename_member" in
+            perl-lsp|perl-lsp.exe|perllsp.exe)
+                fail_archive_staging "unexpected executable member: $normalized"
+                ;;
+            perllsp|perl-dap|README.md|LICENSE-APACHE|LICENSE-MIT|SHA256SUMS.txt)
+                if [ "$normalized" != "${package}/${basename_member}" ]; then
+                    fail_archive_staging "required member has a noncanonical path: $normalized"
+                fi
+                ;;
+            *)
+                fail_archive_staging "unexpected archive member: $normalized"
+                ;;
+        esac
+
+        # Per-entry size is not read from `tar -tv`: BSD/macOS columns put
+        # nlink or uid in the first numeric field. gzip -l and a capped
+        # gzip -dc bound expansion before listing; named extract is capped
+        # with head -c against the remaining uncompressed budget.
+        ACCEPTED_MEMBERS="${ACCEPTED_MEMBERS}${normalized}"$'\n'
+    done < "$name_file"
+
+    required_missing=""
+    for file_ok in perllsp perl-dap README.md LICENSE-APACHE LICENSE-MIT SHA256SUMS.txt; do
+        case "$ACCEPTED_MEMBERS" in
+            *"$package/$file_ok"$'\n'*) ;;
+            *) required_missing="${required_missing}${file_ok} " ;;
+        esac
+    done
+    if [ -n "$required_missing" ]; then
+        fail_archive_staging "missing required member: $required_missing"
+    fi
+
+    rm -f "$name_file" "$verbose_file" "$name_err" "$verbose_err"
+}
+
+emit_archive_safety_receipt() {
+    local archive="$1" package="$2" sha_tool="$3"
+    local archive_hash member_line member basename_member member_hash
+    local receipt
+
+    archive_hash="$(calculate_sha256 "$sha_tool" "$archive")" || fail_archive_staging "unable to digest verified archive"
+    receipt="archive_safety_receipt policy=${ARCHIVE_SAFETY_POLICY_ID} layout=posix_nested_v1 archive_sha256=${archive_hash} members="
+    member_line=""
+    for member in perllsp perl-dap README.md LICENSE-APACHE LICENSE-MIT SHA256SUMS.txt; do
+        member_hash="$(calculate_sha256 "$sha_tool" "${STAGING_ROOT}/${package}/${member}")" || fail_archive_staging "unable to digest staged member $member"
+        if [ -n "$member_line" ]; then
+            member_line="${member_line},"
+        fi
+        member_line="${member_line}${member}:${member_hash}"
+    done
+    receipt="${receipt}${member_line}"
+    case "$receipt" in
+        */tmp/*|*/var/*|*"$TMPDIR"*) fail_archive_staging "archive safety receipt contained a private path" ;;
+    esac
+    info "$receipt"
+}
 
 extract_archive() {
-    info "extracting archive"
-    tar -xzf "$ARCHIVE_PATH" -C "$TMPDIR"
+    local package member dest actual_total sz sha_tool leftover
+    local max_uncompressed max_entry cap remain extract_err extract_status
 
-    if [ ! -d "$EXTRACT_DIR" ]; then
-        err "expected directory not found after extraction: $EXTRACT_DIR
+    info "inspecting release archive"
+    [ -n "${ARCHIVE_PATH:-}" ] || err "archive path is not set"
+    [ -n "${TMPDIR:-}" ] || err "staging parent is not set"
+    [ -f "$ARCHIVE_PATH" ] || err "verified archive is missing"
+
+    package="${BIN_NAME}-${VERSION_NUM}-${TARGET}"
+    max_uncompressed="$(archive_safety_limit uncompressed "$ARCHIVE_SAFETY_MAX_UNCOMPRESSED_BYTES")"
+    max_entry="$(archive_safety_limit entry "$ARCHIVE_SAFETY_MAX_ENTRY_BYTES")"
+
+    STAGING_ROOT="$(mktemp -d "${TMPDIR}/perl-lsp-stage.XXXXXX")" || err "unable to create private staging root"
+    inspect_standalone_tar_gz "$ARCHIVE_PATH" "$package"
+
+    mkdir -p "${STAGING_ROOT}/${package}"
+    extract_err="${STAGING_ROOT}/.extract.err"
+    actual_total=0
+    while IFS= read -r member; do
+        [ -n "$member" ] || continue
+        dest="${STAGING_ROOT}/${member}"
+        remain=$((max_uncompressed - actual_total))
+        cap="$max_entry"
+        if [ "$remain" -lt "$cap" ]; then
+            cap="$remain"
+        fi
+        if [ "$cap" -le 0 ]; then
+            fail_archive_staging "archive uncompressed size $actual_total exceeds policy ceiling $max_uncompressed"
+        fi
+        mkdir -p "$(dirname "$dest")"
+        set +e
+        tar -xOzf "$ARCHIVE_PATH" -- "$member" 2>"$extract_err" | head -c $((cap + 1)) > "$dest"
+        extract_status=$?
+        set -e
+        if [ -L "$dest" ] || [ ! -f "$dest" ]; then
+            fail_archive_staging "staged member is not a regular file: $member"
+        fi
+        sz="$(archive_file_bytes "$dest")"
+        if [ "$sz" -gt "$max_entry" ]; then
+            fail_archive_staging "archive entry size $sz exceeds policy ceiling $max_entry"
+        fi
+        if [ "$sz" -gt "$cap" ]; then
+            fail_archive_staging "archive uncompressed size $((actual_total + sz)) exceeds policy ceiling $max_uncompressed"
+        fi
+        if [ "$extract_status" -ne 0 ] && [ "$extract_status" -ne 141 ]; then
+            fail_archive_staging "failed to extract accepted member $member$(archive_command_diagnostic "$extract_err" "$ARCHIVE_PATH")"
+        fi
+        actual_total=$((actual_total + sz))
+        if [ "$actual_total" -gt "$max_uncompressed" ]; then
+            fail_archive_staging "archive uncompressed size $actual_total exceeds policy ceiling $max_uncompressed"
+        fi
+    done <<EOF
+${ACCEPTED_MEMBERS}
+EOF
+    rm -f "$extract_err"
+
+    leftover="$(find "$STAGING_ROOT" \( -type l -o -type b -o -type c -o -type p -o -type s \) 2>/dev/null || true)"
+    if [ -n "$leftover" ]; then
+        fail_archive_staging "staging contained a non-regular entry after extract"
+    fi
+
+    EXTRACT_DIR="${STAGING_ROOT}/${package}"
+    if [ ! -f "${EXTRACT_DIR}/${BIN_NAME}" ] || [ ! -f "${EXTRACT_DIR}/${DAP_BIN_NAME}" ]; then
+        fail_archive_staging "expected directory not found after extraction: ${package}
 The release archive may have an unexpected layout."
     fi
+
+    chmod 0755 "${EXTRACT_DIR}/${BIN_NAME}" "${EXTRACT_DIR}/${DAP_BIN_NAME}"
+    chmod 0644 "${EXTRACT_DIR}/README.md" "${EXTRACT_DIR}/LICENSE-APACHE" \
+        "${EXTRACT_DIR}/LICENSE-MIT" "${EXTRACT_DIR}/SHA256SUMS.txt"
+
+    sha_tool="$(select_sha256_tool)" || fail_archive_staging "SHA-256 tool is required to bind staged member identities"
+    emit_archive_safety_receipt "$ARCHIVE_PATH" "$package" "$sha_tool"
+    info "staged accepted topology members"
 }
 
 # ── Source build ───────────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 //! Focused tests targeting previously-uncovered branches in `perl-pod`.
 //!
 //! Each test is labelled with the branch it exercises.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_pod::{extract_pod, extract_pod_from_file};
 use std::io::Write;

@@ -1,5 +1,5 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"if ($str =~ /^hello/i) { print \\\"matched\\\"; }\")"
 ---
-(source_file (if (match (variable $ str) (regex "/^hello/" "i")) (block (expression_statement (call print ((string_interpolated "\"matched\"")))))))
+(source_file (statements (if (condition (match (pattern /^hello/) (modifiers i) (expr (variable (sigil $) (name str))))) (then_branch (block (statements (expression_statement (expression (call (name print) (args (string_interpolated (value "\"matched\"") (interpolated true))))))))))))

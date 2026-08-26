@@ -713,6 +713,11 @@ do
   else
     ok(resolve_entry.timeout_callback ~= nil,
       "caseF: resolve request carries its timeout disposition seam")
+    -- #10657 review pin: the pending resolve defers applying the selection,
+    -- so it must carry the explicit short window instead of falling through
+    -- to the patient single-send default policy.
+    ok(resolve_entry.timeout == 2,
+      "caseF: resolve keeps the explicit short responsiveness window")
     for index = #server.outbound, 1, -1 do
       if server.outbound[index].method == "completionItem/resolve" then
         table.remove(server.outbound, index)
