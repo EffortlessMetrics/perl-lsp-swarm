@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12074 |
+| Total tracked files | 12075 |
 | Rust-family files | 3681 |
-| Non-Rust files | 8393 |
-| Allowlisted | 6147 |
-| Unclassified | 2246 |
+| Non-Rust files | 8394 |
+| Allowlisted | 6160 |
+| Unclassified | 2234 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 440 |
-| documentation | 2743 |
+| config | 442 |
+| documentation | 2753 |
 | generated | 2 |
-| production | 328 |
+| production | 329 |
 | test | 2020 |
 | tooling | 614 |
-| unclassified | 2246 |
+| unclassified | 2234 |
 
 ## Unclassified files
 
@@ -110,18 +110,6 @@
 | `crates/perl-lsp-ux-tests/fixtures/editor_ux_scorecard_measurements.json` | `json` |
 | `crates/perl-lsp-ux-tests/fixtures/golden_editor_workload.json` | `json` |
 | `crates/perl-parser-core/libcheck_unwrap.rlib` | `rlib` |
-| `crates/perl-parser-pest/src/grammar.pest` | `pest` |
-| `crates/perl-parser/examples/lsp_demo.sh` | `sh` |
-| `crates/perl-parser/examples/lsp_server.rs.disabled` | `disabled` |
-| `crates/perl-parser/examples/simple_lsp_test.sh` | `sh` |
-| `crates/perl-parser/examples/test_lsp.py` | `py` |
-| `crates/perl-parser/examples/test_lsp_minimal.py` | `py` |
-| `crates/perl-parser/src/refactor/import_optimizer.rst` | `rst` |
-| `crates/perl-parser/templates/module.pl.template` | `template` |
-| `crates/perl-parser/templates/script.pl.template` | `template` |
-| `crates/perl-parser/templates/test.pl.template` | `template` |
-| `crates/perl-parser/tests/fixtures/.perltidyrc` | `` |
-| `crates/perl-parser/tests/run_all_e2e_tests.rs.disabled` | `disabled` |
 | `crates/perl-parser/tests/test_with_override.sh` | `sh` |
 | `crates/perl-workspace/tests/fixtures/semantic_scorecard/manifest.json` | `json` |
 | `distribution/build-packages.sh` | `sh` |
@@ -2887,6 +2875,7 @@
 | `.github/workflows/release-settings-closeout.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/release.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/review-receipt-retirement.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/ripr-infra-retry.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/ripr.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/scoop-bump.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/security-reconciliation.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3957,6 +3946,7 @@
 | `crates/perl-parser-pest/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-parser-pest/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser-pest/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-parser-pest/src/grammar.pest` | production | `non-rust-pest-grammar` | parser/legacy-pest |
 | `crates/perl-parser-pest/tests/fixtures/manifest.toml` | test | `non-rust-parser-pest-fixture-manifest` | parser/pest-fixtures |
 | `crates/perl-parser-pest/tests/fixtures/sources/assignment-exponentiation/chained-assign.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-parser-pest/tests/fixtures/sources/assignment-exponentiation/power.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -3985,11 +3975,20 @@
 | `crates/perl-parser/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/examples/lsp_demo.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser/examples/lsp_demo.sh` | documentation | `non-rust-parser-example-scripts-sh` | docs |
+| `crates/perl-parser/examples/lsp_server.rs.disabled` | documentation | `non-rust-disabled-artifacts` | parser/legacy |
+| `crates/perl-parser/examples/simple_lsp_test.sh` | documentation | `non-rust-parser-example-scripts-sh` | docs |
+| `crates/perl-parser/examples/test_lsp.py` | documentation | `non-rust-parser-example-scripts-py` | docs |
+| `crates/perl-parser/examples/test_lsp_minimal.py` | documentation | `non-rust-parser-example-scripts-py` | docs |
 | `crates/perl-parser/features_sot.toml` | config | `non-rust-crate-features-sot` | lsp/features |
 | `crates/perl-parser/incremental_authority.json` | tooling | `non-rust-incremental-authority-contract` | parser/incremental |
 | `crates/perl-parser/src/README_checkpoint.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/src/README_error_recovery.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/src/README_trivia.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-parser/src/refactor/import_optimizer.rst` | documentation | `non-rust-refactor-design-docs` | docs |
+| `crates/perl-parser/templates/module.pl.template` | documentation | `non-rust-perl-parser-templates` | parser/lsp-fixtures |
+| `crates/perl-parser/templates/script.pl.template` | documentation | `non-rust-perl-parser-templates` | parser/lsp-fixtures |
+| `crates/perl-parser/templates/test.pl.template` | documentation | `non-rust-perl-parser-templates` | parser/lsp-fixtures |
 | `crates/perl-parser/test_anon_sub.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-parser/test_bare_builtins.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-parser/test_format_simple.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -4016,6 +4015,7 @@
 | `crates/perl-parser/tests/data/features_disabled_test.toml` | test | `non-rust-parser-test-data-toml` | parser/lsp-fixtures |
 | `crates/perl-parser/tests/data/features_minimal.toml` | test | `non-rust-parser-test-data-toml` | parser/lsp-fixtures |
 | `crates/perl-parser/tests/documentation_validation_mutation_hardening.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
+| `crates/perl-parser/tests/fixtures/.perltidyrc` | config | `non-rust-perltidy-fixture-config` | parser/lsp-fixtures |
 | `crates/perl-parser/tests/fixtures/completion_test.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-parser/tests/fixtures/diagnostics_test.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-parser/tests/fixtures/hover_test.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -4028,6 +4028,7 @@
 | `crates/perl-parser/tests/prop_invariants.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-parser/tests/prop_quote_like.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-parser/tests/prop_whitespace_idempotence.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
+| `crates/perl-parser/tests/run_all_e2e_tests.rs.disabled` | documentation | `non-rust-disabled-artifacts` | parser/legacy |
 | `crates/perl-parser/tests/snapshots/ast_snap__ast_anonymous_sub.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__ast_array_operations.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__ast_attributes_and_prototype_sub.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
