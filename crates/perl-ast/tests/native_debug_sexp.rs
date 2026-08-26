@@ -421,12 +421,13 @@ fn chained_ops_are_payloads_not_bare_tokens() {
 }
 
 #[test]
-fn recovery_nodes_remain_visible_under_their_owning_field() {
+fn recovery_nodes_remain_visible_under_their_owning_field() -> Result<(), perl_token::TokenSpanError>
+{
     let error = Node::new(
         NodeKind::Error {
             message: "oops".to_string(),
             expected: vec![TokenKind::Identifier],
-            found: Some(Token::new(TokenKind::Number, "1", 0, 1)),
+            found: Some(Token::new_checked(TokenKind::Number, "1", 0, 1)?),
             partial: Some(Box::new(num("1"))),
         },
         loc(),
@@ -449,6 +450,7 @@ fn recovery_nodes_remain_visible_under_their_owning_field() {
     assert!(sexp.contains("(partial "), "partial nested: {sexp}");
     assert!(sexp.contains("(missing_expression)"), "missing visible: {sexp}");
     assert!(sexp.contains("(UNKNOWN_REST)"), "unknown visible: {sexp}");
+    Ok(())
 }
 
 #[test]

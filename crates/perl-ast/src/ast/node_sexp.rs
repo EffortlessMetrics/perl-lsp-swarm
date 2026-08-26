@@ -378,7 +378,7 @@ fn write_found_token(out: &mut String, token: &Token) {
     out.push('(');
     write_atom(out, "found");
     out.push(' ');
-    write_atom(out, &format!("{:?}", token.kind));
+    write_atom(out, &format!("{:?}", token.kind()));
     out.push(' ');
     write_atom(out, token.text.as_ref());
     out.push(')');
