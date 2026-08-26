@@ -49,7 +49,7 @@ preliminary packet that still owns open decisions; nothing here is greenwashed.
 | `0cf55ae9ba` | DAP legacy bridge deprecation | superseded_by_newer_architecture |
 | `4f0de95797` | test-source panic ratchet | superseded_by_newer_architecture |
 | `3334976917` | installer asset-name + curl-pipe fix | superseded_by_newer_architecture |
-| `cd60f9289d` | RTK removal from goals | superseded_by_newer_architecture |
+| `cd60f9289d` | goals: drop the retired wrapper proof-command dependency | superseded_by_newer_architecture |
 | `a3e51152e4` | cache-warm workflow + policy lint registration | superseded_by_newer_architecture |
 | `1fe56093a6` | vscode onboarding health-check routing | already_equivalent_in_swarm (`529678c2360e3c6b0c3c8eaf645d90d81d242994`) |
 
