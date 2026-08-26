@@ -164,6 +164,11 @@ fn local_sub_named_subtest_is_not_a_subtest_item() {
     let source = "sub subtest { ok(1); }\nok(1);\n";
     let snapshot = discover(source, 1, &source_ref(1), NamedSubroutinePolicy::Off, None);
     assert!(snapshot.items.iter().all(|item| item.kind != TestItemKind::Subtest));
+    let conservative =
+        discover(source, 1, &source_ref(1), NamedSubroutinePolicy::ConservativeFileScope, None);
+    assert!(conservative.items.iter().all(|item| {
+        item.kind != TestItemKind::Subtest && item.kind != TestItemKind::NamedSubroutine
+    }));
 }
 
 #[test]
@@ -364,6 +369,34 @@ fn qualified_test_more_subtest_is_discovered_local_package_is_not() {
             .map(|mismatch| mismatch.detail)
             .collect();
     assert_eq!(extras, vec!["file_item".to_string(), "subtest".to_string()]);
+}
+
+#[test]
+fn mixed_qualified_then_bare_pairs_by_range_not_sibling_index() {
+    let source = "Test::More::subtest('a' => sub { ok(1); });\nsubtest 'b' => sub { ok(1); };\n";
+    let snapshot = discover(source, 1, &source_ref(1), NamedSubroutinePolicy::Off, None);
+    let ast = parse(source);
+    let mismatches = compare_with_parser_backed(&snapshot, &parser_backed_subtests(&ast, source));
+    assert!(mismatches.iter().all(|mismatch| {
+        mismatch.kind != CompatibilityMismatchKind::NameStateMismatch
+            && mismatch.kind != CompatibilityMismatchKind::RangeMismatch
+            && mismatch.kind != CompatibilityMismatchKind::MissingItem
+    }));
+    let extras: Vec<_> = mismatches
+        .iter()
+        .filter(|mismatch| mismatch.kind == CompatibilityMismatchKind::ExtraItem)
+        .map(|mismatch| mismatch.detail.as_str())
+        .collect();
+    assert_eq!(extras, vec!["file_item", "subtest"]);
+    let extra_id = mismatches
+        .iter()
+        .find(|mismatch| {
+            mismatch.kind == CompatibilityMismatchKind::ExtraItem && mismatch.detail == "subtest"
+        })
+        .and_then(|mismatch| mismatch.snapshot_id.as_ref())
+        .expect("qualified extra");
+    let extra = snapshot.item(extra_id).expect("extra item");
+    assert_eq!(extra.name, TestItemName::Named("a".to_string()));
 }
 
 #[test]

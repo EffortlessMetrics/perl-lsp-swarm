@@ -246,41 +246,43 @@ fn compare_trees(
 ) {
     let snapshot_subtests: Vec<&TestItem> =
         snapshot_children.into_iter().filter(|item| item.kind == TestItemKind::Subtest).collect();
-    let paired = snapshot_subtests.len().min(legacy_children.len());
-    for index in 0..paired {
-        let item = snapshot_subtests[index];
-        let legacy = &legacy_children[index];
+    let mut unmatched_legacy: Vec<&ParserBackedSubtest> = legacy_children.iter().collect();
+    for item in snapshot_subtests {
+        let Some(legacy_index) = unmatched_legacy.iter().position(|legacy| {
+            item.range == legacy.range || item.range.start_byte == legacy.range.start_byte
+        }) else {
+            mismatches.push(CompatibilityMismatch {
+                kind: CompatibilityMismatchKind::ExtraItem,
+                snapshot_id: Some(item.id.clone()),
+                detail: "subtest".to_string(),
+            });
+            continue;
+        };
+        let legacy = unmatched_legacy.remove(legacy_index);
         if item.name != legacy.name {
             mismatches.push(CompatibilityMismatch {
                 kind: CompatibilityMismatchKind::NameStateMismatch,
                 snapshot_id: Some(item.id.clone()),
-                detail: format!("sibling_index={index}"),
+                detail: format!("start_byte={}", item.range.start_byte),
             });
         }
         if item.range != legacy.range || item.name_range != Some(legacy.name_range) {
             mismatches.push(CompatibilityMismatch {
                 kind: CompatibilityMismatchKind::RangeMismatch,
                 snapshot_id: Some(item.id.clone()),
-                detail: format!("sibling_index={index}"),
+                detail: format!("start_byte={}", item.range.start_byte),
             });
         }
         if item.generation != snapshot.generation || item.source_digest != snapshot.source_digest {
             mismatches.push(CompatibilityMismatch {
                 kind: CompatibilityMismatchKind::FreshnessMismatch,
                 snapshot_id: Some(item.id.clone()),
-                detail: format!("sibling_index={index}"),
+                detail: format!("start_byte={}", item.range.start_byte),
             });
         }
         compare_trees(snapshot, snapshot.children_of(&item.id), &legacy.children, mismatches);
     }
-    for item in snapshot_subtests.iter().skip(paired) {
-        mismatches.push(CompatibilityMismatch {
-            kind: CompatibilityMismatchKind::ExtraItem,
-            snapshot_id: Some(item.id.clone()),
-            detail: "subtest".to_string(),
-        });
-    }
-    for _legacy in legacy_children.iter().skip(paired) {
+    for _legacy in unmatched_legacy {
         mismatches.push(CompatibilityMismatch {
             kind: CompatibilityMismatchKind::MissingItem,
             snapshot_id: None,
