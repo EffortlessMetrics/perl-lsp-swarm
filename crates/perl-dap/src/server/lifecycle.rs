@@ -1,30 +1,12 @@
 use crate::debug_adapter::DebugAdapter;
 use crate::server::config::DapConfig;
 
-/// Marks a failure opening the native DAP TCP listener, before a client session exists.
-///
-/// The operating-system error remains the source in the `anyhow` chain so
-/// callers that historically downcast socket failures to `std::io::Error`
-/// keep that compatibility surface.
-#[derive(Debug, thiserror::Error)]
-#[error("failed to bind DAP socket on 127.0.0.1:{port}")]
-pub struct DapSocketBindError {
-    /// The requested local port.
-    pub port: u16,
-}
-
-impl perl_parser_core::ErrorClass for DapSocketBindError {
-    fn error_class(&self) -> perl_parser_core::ErrorCategory {
-        // OS-level socket bind failure — external resource/port unavailable.
-        perl_parser_core::ErrorCategory::Infra
-    }
-}
-
 /// Native DAP server lifecycle.
 ///
 /// `DapServer` owns the supported product runtime: the built-in
 /// [`DebugAdapter`] driving the local Perl debugger. Historical proxying to an
-/// alternate DAP implementation is not part of this lifecycle.
+/// alternate DAP implementation is not part of this lifecycle. Native editor
+/// TCP (`run_socket`) is retired; production admission is stdio only.
 pub struct DapServer {
     /// Server configuration.
     pub config: DapConfig,
@@ -62,17 +44,5 @@ impl DapServer {
     /// Returns an error when the DAP transport or native adapter session fails.
     pub fn run(&mut self) -> anyhow::Result<()> {
         self.adapter.run().map_err(Into::into)
-    }
-
-    /// Run the native DAP server over TCP socket transport.
-    ///
-    /// This binds to `127.0.0.1:<port>` and serves one DAP client session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the listener cannot bind or the accepted DAP
-    /// session fails.
-    pub fn run_socket(&mut self, port: u16) -> anyhow::Result<()> {
-        self.adapter.run_socket(port)
     }
 }
