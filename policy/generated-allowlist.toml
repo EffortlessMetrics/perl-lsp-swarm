@@ -40,7 +40,6 @@ broad_glob_reason = "The directory is a mixed tool-maintained surface: update-st
 covered_by = ["cargo xtask check-generated"]
 created = "2026-08-24"
 review_after = "2026-11-22"
-broad_glob_reason = "Status pages are generated across the status-document subtree."
 
 [[allow]]
 id = "generated-non-rust-inventory"
