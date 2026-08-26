@@ -479,8 +479,9 @@ mod tests {
         };
         assert!(connect.contains(expected_connect), "{connect}");
         assert!(listen.contains(expected_listen), "{listen}");
-        assert!(!connect.contains("--socket"));
-        assert!(!listen.contains("--socket"));
+        assert!(connect.contains("perl-dap --stdio --external-peer"), "{connect}");
+        assert!(!connect.contains(&format!("{expected_connect} --socket")), "{connect}");
+        assert!(!listen.contains(&format!("{expected_listen} --socket")), "{listen}");
     }
 
     #[test]
