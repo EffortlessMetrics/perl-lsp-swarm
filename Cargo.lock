@@ -2054,6 +2054,7 @@ dependencies = [
  "pest_derive",
  "regex",
  "serde",
+ "serde_json",
  "sha2",
  "stacker",
  "tempfile",
