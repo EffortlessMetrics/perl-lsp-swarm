@@ -14,7 +14,7 @@ use perl_dap::peer_protocol::{
     PROTOCOL_VERSION, PeerFrameDecoder, PeerReportedCapabilities, encode_message,
 };
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -195,6 +195,7 @@ struct StdioAdapter {
     stdin: Option<std::process::ChildStdin>,
     rx: Receiver<std::result::Result<DapMessage, String>>,
     stderr: Option<thread::JoinHandle<String>>,
+    pending: VecDeque<DapMessage>,
 }
 
 impl StdioAdapter {
@@ -209,7 +210,13 @@ impl StdioAdapter {
         let stdin = child.stdin.take().context("child stdin was not piped")?;
         let stdout = child.stdout.take().context("child stdout was not piped")?;
         let stderr = drain_pipe(child.stderr.take());
-        Ok(Self { child, stdin: Some(stdin), rx: spawn_frame_reader(stdout), stderr: Some(stderr) })
+        Ok(Self {
+            child,
+            stdin: Some(stdin),
+            rx: spawn_frame_reader(stdout),
+            stderr: Some(stderr),
+            pending: VecDeque::new(),
+        })
     }
 
     fn pid(&self) -> u32 {
@@ -230,8 +237,8 @@ impl StdioAdapter {
         Ok(())
     }
 
-    fn wait_for_response(&self, request_seq: i64, command: &str) -> Result<DapMessage> {
-        wait_for_message(&self.rx, format!("response `{command}` #{request_seq}"), |msg| {
+    fn wait_for_response(&mut self, request_seq: i64, command: &str) -> Result<DapMessage> {
+        self.wait_for_message(format!("response `{command}` #{request_seq}"), |msg| {
             matches!(
                 msg,
                 DapMessage::Response { request_seq: actual, command: actual_command, .. }
@@ -240,12 +247,53 @@ impl StdioAdapter {
         })
     }
 
-    fn wait_for_event(&self, name: &str) -> Result<DapMessage> {
-        wait_for_message(
-            &self.rx,
+    fn wait_for_event(&mut self, name: &str) -> Result<DapMessage> {
+        self.wait_for_message(
             format!("event `{name}`"),
             |msg| matches!(msg, DapMessage::Event { event, .. } if event == name),
         )
+    }
+
+    fn wait_for_message(
+        &mut self,
+        description: String,
+        matches_message: impl Fn(&DapMessage) -> bool,
+    ) -> Result<DapMessage> {
+        if let Some(index) = self.pending.iter().position(&matches_message) {
+            return self.pending.remove(index).ok_or_else(|| {
+                anyhow!("pending DAP message vanished while waiting for {description}")
+            });
+        }
+        let deadline = Instant::now() + STDIO_TIMEOUT;
+        let mut observed = Vec::new();
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(anyhow!("timeout waiting for {description}; observed {observed:?}"));
+            }
+            match self.rx.recv_timeout(deadline.saturating_duration_since(now)) {
+                Ok(Ok(message)) if matches_message(&message) => return Ok(message),
+                Ok(Ok(message)) => {
+                    observed.push(format!("{message:?}"));
+                    self.pending.push_back(message);
+                }
+                Ok(Err(error)) => {
+                    return Err(anyhow!(
+                        "DAP reader failed while waiting for {description}: {error}"
+                    ));
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(anyhow!(
+                        "timeout waiting for {description}; observed {observed:?}"
+                    ));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(anyhow!(
+                        "DAP reader disconnected while waiting for {description}; observed {observed:?}"
+                    ));
+                }
+            }
+        }
     }
 
     fn close_stdin(mut self) -> Result<(Option<ExitStatus>, String)> {
@@ -321,39 +369,6 @@ fn read_framed_message<R: Read>(reader: &mut R) -> Result<DapMessage> {
     let mut body = vec![0_u8; content_length];
     reader.read_exact(&mut body).context("failed to read DAP frame body")?;
     serde_json::from_slice(&body).context("DAP frame body was not a DapMessage")
-}
-
-fn wait_for_message<F>(
-    rx: &Receiver<std::result::Result<DapMessage, String>>,
-    description: String,
-    matches_message: F,
-) -> Result<DapMessage>
-where
-    F: Fn(&DapMessage) -> bool,
-{
-    let deadline = Instant::now() + STDIO_TIMEOUT;
-    let mut observed = Vec::new();
-    loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return Err(anyhow!("timeout waiting for {description}; observed {observed:?}"));
-        }
-        match rx.recv_timeout(deadline.saturating_duration_since(now)) {
-            Ok(Ok(message)) if matches_message(&message) => return Ok(message),
-            Ok(Ok(message)) => observed.push(format!("{message:?}")),
-            Ok(Err(error)) => {
-                return Err(anyhow!("DAP reader failed while waiting for {description}: {error}"));
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                return Err(anyhow!("timeout waiting for {description}; observed {observed:?}"));
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                return Err(anyhow!(
-                    "DAP reader disconnected while waiting for {description}; observed {observed:?}"
-                ));
-            }
-        }
-    }
 }
 
 /// Fake debugger peer that *listens* so `perl-dap --external-peer` can connect.
