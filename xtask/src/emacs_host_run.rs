@@ -53,6 +53,11 @@ pub enum EmacsClientSubject {
     /// Upstream-source Eglot pinned to the emacs.git commit
     /// `c1ad9d27207aff96a22d49ae4c6cab35a2619927` (#11745).
     SourceEglotEmacsC1ad9d27,
+    /// Released lsp-mode 10.0.0 from MELPA Stable, manifest-bound (#11746).
+    ReleasedLspModeMelpaStable1000,
+    /// Upstream-source lsp-mode pinned to the emacs-lsp/lsp-mode commit
+    /// `6bfc593d7b1bc0dd656f09ffce52cc085ebced05` (#11746).
+    SourceLspModeGithub6bfc593,
 }
 
 impl EmacsClientSubject {
@@ -65,6 +70,8 @@ impl EmacsClientSubject {
             "released_eglot_gnu_elpa_1_23" => Ok(Self::ReleasedEglotGnuElpa123),
             "released_eglot_gnu_elpa_1_24" => Ok(Self::ReleasedEglotGnuElpa124),
             "source_eglot_emacs_c1ad9d27" => Ok(Self::SourceEglotEmacsC1ad9d27),
+            "released_lsp_mode_melpa_stable_10_0_0" => Ok(Self::ReleasedLspModeMelpaStable1000),
+            "source_lsp_mode_github_6bfc593" => Ok(Self::SourceLspModeGithub6bfc593),
             _ => bail!(
                 "unknown client subject {id}: known subjects are {}",
                 Self::known_ids().join(", ")
@@ -80,6 +87,8 @@ impl EmacsClientSubject {
             "released_eglot_gnu_elpa_1_23",
             "released_eglot_gnu_elpa_1_24",
             "source_eglot_emacs_c1ad9d27",
+            "released_lsp_mode_melpa_stable_10_0_0",
+            "source_lsp_mode_github_6bfc593",
         ]
     }
 
@@ -90,6 +99,8 @@ impl EmacsClientSubject {
             Self::ReleasedEglotGnuElpa123 => "released_eglot_gnu_elpa_1_23",
             Self::ReleasedEglotGnuElpa124 => "released_eglot_gnu_elpa_1_24",
             Self::SourceEglotEmacsC1ad9d27 => "source_eglot_emacs_c1ad9d27",
+            Self::ReleasedLspModeMelpaStable1000 => "released_lsp_mode_melpa_stable_10_0_0",
+            Self::SourceLspModeGithub6bfc593 => "source_lsp_mode_github_6bfc593",
         }
     }
 
@@ -102,7 +113,9 @@ impl EmacsClientSubject {
             Self::BundledEglotEmacs301
             | Self::ReleasedEglotGnuElpa123
             | Self::ReleasedEglotGnuElpa124
-            | Self::SourceEglotEmacsC1ad9d27 => "30.1",
+            | Self::SourceEglotEmacsC1ad9d27
+            | Self::ReleasedLspModeMelpaStable1000
+            | Self::SourceLspModeGithub6bfc593 => "30.1",
         }
     }
 
@@ -141,9 +154,12 @@ impl EmacsClientSubject {
                 // registry cannot drift apart.
                 Ok(crate::emacs_subject_manifest::runner_client_subject(row, source_sha256, None))
             }
-            // The manifest-bound external rows (#11745) draw every identity
-            // field from their checked rows the same way.
-            Self::ReleasedEglotGnuElpa124 | Self::SourceEglotEmacsC1ad9d27 => {
+            // The manifest-bound external rows (#11745/#11746) draw every
+            // identity field from their checked rows the same way.
+            Self::ReleasedEglotGnuElpa124
+            | Self::SourceEglotEmacsC1ad9d27
+            | Self::ReleasedLspModeMelpaStable1000
+            | Self::SourceLspModeGithub6bfc593 => {
                 let row = manifest.row_for(self.id()).with_context(|| {
                     format!(
                         "external subject {} must be a row of the checked subject manifest",
@@ -172,10 +188,16 @@ impl EmacsClientSubject {
         }
     }
 
-    /// Checked-in adapter path relative to the repository root. The two
-    /// #11745 external rows reuse the released-Eglot adapter mechanically
-    /// (plan-building digest input only); no source-subject journey is
-    /// claimed by that reuse.
+    /// Checked-in adapter path relative to the repository root. The
+    /// external Eglot rows share the external-Eglot adapter: the released
+    /// rows arrive with their declared package input and the pinned
+    /// upstream-source row rides the same adapter package-free (#8776), so
+    /// one adapter services both external source states without a copied
+    /// journey. The #11746 lsp-mode rows have no adapter yet: lsp-mode
+    /// journey mechanics belong to the lsp-mode lanes, so plan construction
+    /// for these subjects fails closed on the missing adapter until that
+    /// lane lands one, while subject materialization through the manifest
+    /// resolver is complete without it.
     pub fn adapter_relative_path(self) -> &'static str {
         match self {
             Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => {
@@ -184,6 +206,9 @@ impl EmacsClientSubject {
             Self::ReleasedEglotGnuElpa123
             | Self::ReleasedEglotGnuElpa124
             | Self::SourceEglotEmacsC1ad9d27 => "scripts/test/emacs-clients/eglot-released.el",
+            Self::ReleasedLspModeMelpaStable1000 | Self::SourceLspModeGithub6bfc593 => {
+                "scripts/test/emacs-clients/lsp-mode.el"
+            }
         }
     }
 
@@ -198,6 +223,9 @@ impl EmacsClientSubject {
             | Self::SourceEglotEmacsC1ad9d27 => {
                 "scripts/test/emacs-clients/eglot-released-config.el"
             }
+            Self::ReleasedLspModeMelpaStable1000 | Self::SourceLspModeGithub6bfc593 => {
+                "scripts/test/emacs-clients/lsp-mode-config.el"
+            }
         }
     }
 
@@ -209,6 +237,8 @@ impl EmacsClientSubject {
                 "released_eglot_lifecycle.v1"
             }
             Self::SourceEglotEmacsC1ad9d27 => "source_eglot_lifecycle.v1",
+            Self::ReleasedLspModeMelpaStable1000 => "released_lsp_mode_lifecycle.v1",
+            Self::SourceLspModeGithub6bfc593 => "source_lsp_mode_lifecycle.v1",
         }
     }
 
@@ -220,6 +250,8 @@ impl EmacsClientSubject {
                 "released_eglot_lifecycle_v1"
             }
             Self::SourceEglotEmacsC1ad9d27 => "source_eglot_lifecycle_v1",
+            Self::ReleasedLspModeMelpaStable1000 => "released_lsp_mode_lifecycle_v1",
+            Self::SourceLspModeGithub6bfc593 => "source_lsp_mode_lifecycle_v1",
         }
     }
 
@@ -229,8 +261,11 @@ impl EmacsClientSubject {
         match self {
             Self::BundledEglotEmacs294
             | Self::BundledEglotEmacs301
-            | Self::SourceEglotEmacsC1ad9d27 => false,
-            Self::ReleasedEglotGnuElpa123 | Self::ReleasedEglotGnuElpa124 => true,
+            | Self::SourceEglotEmacsC1ad9d27
+            | Self::SourceLspModeGithub6bfc593 => false,
+            Self::ReleasedEglotGnuElpa123
+            | Self::ReleasedEglotGnuElpa124
+            | Self::ReleasedLspModeMelpaStable1000 => true,
         }
     }
 
@@ -241,38 +276,47 @@ impl EmacsClientSubject {
             Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => true,
             Self::ReleasedEglotGnuElpa123
             | Self::ReleasedEglotGnuElpa124
-            | Self::SourceEglotEmacsC1ad9d27 => false,
+            | Self::SourceEglotEmacsC1ad9d27
+            | Self::ReleasedLspModeMelpaStable1000
+            | Self::SourceLspModeGithub6bfc593 => false,
         }
     }
 
     /// Whether run-plan construction routes this subject through the
     /// checked subject manifest resolver (#11744). Every bundled row and
-    /// the manifest-bound external rows (#11745) do; the slice-2 released
-    /// row predates the manifest and keeps its landed explicit-input
-    /// mechanics until it is superseded.
+    /// the manifest-bound external rows (#11745/#11746) do; the slice-2
+    /// released row predates the manifest and keeps its landed
+    /// explicit-input mechanics until it is superseded.
     pub fn resolves_through_subject_manifest(self) -> bool {
         match self {
             Self::BundledEglotEmacs294
             | Self::BundledEglotEmacs301
             | Self::ReleasedEglotGnuElpa124
-            | Self::SourceEglotEmacsC1ad9d27 => true,
+            | Self::SourceEglotEmacsC1ad9d27
+            | Self::ReleasedLspModeMelpaStable1000
+            | Self::SourceLspModeGithub6bfc593 => true,
             Self::ReleasedEglotGnuElpa123 => false,
         }
     }
 
     /// Whether an actual host run is supported by the current driver
-    /// adapters. The upstream-source Eglot row materializes completely
-    /// through the manifest resolver, but the released-Eglot adapter
-    /// unconditionally requires the declared package input, so a launch of
-    /// that subject is refused at the host-run boundary until its journey
-    /// lane lands a package-free source adapter.
+    /// adapters. The external Eglot adapter services the pinned
+    /// upstream-source subject package-free (#8776): the declared package
+    /// input reaches the adapter exactly for released subjects (the plan
+    /// builder enforces that shape before launch), and its absence selects
+    /// the upstream-source identity emission on the same shared journey,
+    /// so the launch table no longer refuses that row.
     pub fn launches_with_current_driver(self) -> bool {
         match self {
             Self::BundledEglotEmacs294
             | Self::BundledEglotEmacs301
             | Self::ReleasedEglotGnuElpa123
-            | Self::ReleasedEglotGnuElpa124 => true,
-            Self::SourceEglotEmacsC1ad9d27 => false,
+            | Self::ReleasedEglotGnuElpa124
+            | Self::SourceEglotEmacsC1ad9d27 => true,
+            // No lsp-mode adapter exists yet; plan construction already
+            // fails closed on the missing adapter file, and the host-run
+            // boundary refuses the launch with the same typed reason.
+            Self::ReleasedLspModeMelpaStable1000 | Self::SourceLspModeGithub6bfc593 => false,
         }
     }
 }
@@ -704,10 +748,9 @@ pub fn host_run(
 ) -> Result<HostRunOutcome> {
     // A subject whose materialization is complete but whose driver adapter
     // does not exist yet is refused here, before any launch step: the
-    // released-Eglot adapter unconditionally requires the declared package
-    // input, so an upstream-source launch would die inside the driver
-    // instead of refusing at the boundary. The refusal names the boundary;
-    // the source adapter arrives with the journey lane that owns it.
+    // lsp-mode rows have no adapter, so their launch would die inside the
+    // driver instead of refusing at the boundary. The refusal names the
+    // boundary; the lsp-mode adapter arrives with its journey lane.
     ensure!(
         subject.launches_with_current_driver(),
         "subject {} has no driver adapter yet: materialization through the subject manifest is          complete, but an actual host run is unsupported until its journey lane lands an          adapter",
@@ -830,8 +873,39 @@ struct OutcomeJudgment {
     runtime_version_mismatch: Option<String>,
 }
 
+/// Runtime version-evidence judgment for external client subjects
+/// (#8776 review repair): `version` is a required identity field for the
+/// released and upstream-source Eglot states, so the version header the
+/// adapter read from the loaded file must equal the registry pin byte for
+/// byte, and absent evidence is a mismatch — never a silent pass — because
+/// the external adapters fail their run on an unreadable header before
+/// this judgment is reached. Bundled subjects keep their looser law:
+/// installed builds ship compiled/compressed forms whose header can be
+/// unreadable, so their identity stays digest-authoritative.
+///
+/// Public so the adapter contract tests pin the judgment without a host.
+pub fn external_version_evidence_mismatch(
+    kind: emacs_host_runner::EmacsClientKind,
+    source_state: ClientSourceState,
+    observed: Option<&str>,
+    planned: &str,
+) -> Option<String> {
+    let external_eglot_state = kind == emacs_host_runner::EmacsClientKind::ExternalEglot
+        && matches!(source_state, ClientSourceState::Released | ClientSourceState::UpstreamSource);
+    if !external_eglot_state {
+        return None;
+    }
+    match observed {
+        Some(observed) if observed != planned => Some(format!(
+            "runtime client version {observed} does not match the pinned subject version {planned}"
+        )),
+        Some(_) => None,
+        None => Some("external Eglot client_loaded event carried no version evidence".to_string()),
+    }
+}
+
 /// Cross-check the adapter's runtime identity attestation (the loaded client
-/// library digest, and — for released subjects, where the version is a
+/// library digest, and — for external Eglot subjects, where the version is a
 /// required identity field — the observed version header) against the run
 /// plan, then judge the run.
 fn evaluate_observation(
@@ -855,25 +929,12 @@ fn evaluate_observation(
         Some(observed) => observed == planned_digest,
         None => false,
     };
-    // `released` is a required identity field for released subjects: the
-    // version header the adapter read from the loaded file must equal the
-    // registry pin, byte for byte, or the run cannot be this subject.
-    let runtime_version_mismatch = (plan.identity.client.source_state
-        == ClientSourceState::Released)
-        .then(|| {
-            client_loaded
-                .and_then(|event| event.details.get("version"))
-                .map(|observed| (observed.to_string(), plan.identity.client.version.clone()))
-        })
-        .flatten()
-        .and_then(|(observed, planned)| {
-            (observed != planned).then(|| {
-                format!(
-                    "runtime client version {observed} does not match the pinned subject version \
-                     {planned}"
-                )
-            })
-        });
+    let runtime_version_mismatch = external_version_evidence_mismatch(
+        plan.identity.client.kind,
+        plan.identity.client.source_state,
+        client_loaded.and_then(|event| event.details.get("version")).map(String::as_str),
+        &plan.identity.client.version,
+    );
     let driver_failed = observation
         .events
         .iter()

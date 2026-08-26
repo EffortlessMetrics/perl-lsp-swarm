@@ -365,6 +365,8 @@ proptest = "1.11.0"
 criterion = "0.8.1"
 # Dev-only: compile-time trait-bound contracts (e.g. assert_not_impl_any!).
 static_assertions = "1.1"
+# Snapshot testing authority shared by all workspace consumers.
+insta = "1.47.2"
 
 # Profile for development - slightly optimized for better performance
 [profile.dev]
@@ -411,6 +413,11 @@ await_holding_lock = "deny"
 await_holding_refcell_ref = "deny"
 # mutex_atomic: prefer proper Mutex over atomic-loaded Mutex guards (#2899).
 mutex_atomic = "warn"
+# collapsible_if: activated by #6305 after the 293-site burn-down (#6375-#6380)
+# and a warn-forced zero-finding all-targets remeasurement plus 38 fresh fixes.
+# Seven crates retain historical blanket allows over 257 force-warn-measured
+# sites; those residuals are owned by #12730-#12736.
+collapsible_if = "deny"
 # collapsible_match: ~20 lib sites across perl-lsp-rs-core; tracked in #8561; defer to post-0.14.0 cleanup.
 collapsible_match = { level = "allow", priority = 1 }
 decimal_bitwise_operands = "warn"
@@ -425,6 +432,9 @@ print_stderr = "deny"
 print_stdout = "deny"
 # same_length_and_capacity: protects raw-parts reconstruction from length/capacity identity errors (#1804).
 same_length_and_capacity = "deny"
+# ptr_arg: zero-copy signature discipline — public APIs prefer &str/&[T]/&Path over
+# &String/&Vec<T>/&PathBuf (#2313); activated after a zero-site pierced measurement.
+ptr_arg = "deny"
 # disallowed_fields: architectural seam protection (#6114).
 # The actual field denylist lives in clippy.toml `disallowed-fields = []`.
 disallowed_fields = "deny"

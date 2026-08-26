@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11956 |
-| Rust-family files | 3633 |
-| Non-Rust files | 8323 |
-| Allowlisted | 6060 |
-| Unclassified | 2263 |
+| Total tracked files | 12066 |
+| Rust-family files | 3678 |
+| Non-Rust files | 8388 |
+| Allowlisted | 6142 |
+| Unclassified | 2246 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 432 |
-| documentation | 2723 |
+| config | 440 |
+| documentation | 2740 |
 | generated | 2 |
-| production | 325 |
-| test | 1972 |
-| tooling | 606 |
-| unclassified | 2263 |
+| production | 328 |
+| test | 2020 |
+| tooling | 612 |
+| unclassified | 2246 |
 
 ## Unclassified files
 
@@ -63,22 +63,10 @@
 | `aqua.yaml` | `yaml` |
 | `book/book.toml` | `toml` |
 | `contracts/actual_host_receipt.v1.schema.json` | `json` |
-| `crates/perl-corpus/concepts/incremental.toml` | `toml` |
-| `crates/perl-corpus/concepts/lexer.toml` | `toml` |
-| `crates/perl-corpus/concepts/parser.toml` | `toml` |
-| `crates/perl-corpus/concepts/positions.toml` | `toml` |
-| `crates/perl-corpus/concepts/recovery.toml` | `toml` |
-| `crates/perl-corpus/concepts/tree_sitter.toml` | `toml` |
 | `crates/perl-corpus/fixtures/differential_oracle/manifest.json` | `json` |
 | `crates/perl-corpus/fixtures/parser_accuracy/manifest.json` | `json` |
 | `crates/perl-corpus/fuzz/crash-b6dd6f9afe3c18f3efa0b5bb8454be7744f2a458` | `` |
 | `crates/perl-corpus/fuzz/heredoc_boundary_fix_validation.txt` | `txt` |
-| `crates/perl-corpus/tests/perl-corpus/ambiguity/regex_vs_division.meta.toml` | `toml` |
-| `crates/perl-corpus/tests/perl-corpus/heredoc/data_section_boundary.meta.toml` | `toml` |
-| `crates/perl-corpus/tests/perl-corpus/position/crlf_utf16_span.meta.toml` | `toml` |
-| `crates/perl-corpus/tests/perl-corpus/quote_like/custom_delimiter.meta.toml` | `toml` |
-| `crates/perl-corpus/tests/perl-corpus/recovery/missing_closing_brace.meta.toml` | `toml` |
-| `crates/perl-dap/features_sot.toml` | `toml` |
 | `crates/perl-dap/tests/fixtures/corpus/corpus_manifest.json` | `json` |
 | `crates/perl-dap/tests/fixtures/golden_transcripts/breakpoint_sequence.json` | `json` |
 | `crates/perl-dap/tests/fixtures/golden_transcripts/comprehensive_session_sequence.json` | `json` |
@@ -104,8 +92,6 @@
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/regex_literal_preserve.expected-diagnostics.txt` | `txt` |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/substitution_literal_preserve.expected-diagnostics.txt` | `txt` |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/transliteration_literal_preserve.expected-diagnostics.txt` | `txt` |
-| `crates/perl-lsp-rs-core/features_sot.toml` | `toml` |
-| `crates/perl-lsp-rs/features_sot.toml` | `toml` |
 | `crates/perl-lsp-rs/src/features/inlay_hints_provider_tests.txt` | `txt` |
 | `crates/perl-lsp-rs/tests/fixtures/cancellation/edge_cases/malformed_requests.json` | `json` |
 | `crates/perl-lsp-rs/tests/fixtures/cancellation/edge_cases/race_conditions.json` | `json` |
@@ -130,13 +116,10 @@
 | `crates/perl-parser/examples/simple_lsp_test.sh` | `sh` |
 | `crates/perl-parser/examples/test_lsp.py` | `py` |
 | `crates/perl-parser/examples/test_lsp_minimal.py` | `py` |
-| `crates/perl-parser/features_sot.toml` | `toml` |
 | `crates/perl-parser/src/refactor/import_optimizer.rst` | `rst` |
 | `crates/perl-parser/templates/module.pl.template` | `template` |
 | `crates/perl-parser/templates/script.pl.template` | `template` |
 | `crates/perl-parser/templates/test.pl.template` | `template` |
-| `crates/perl-parser/tests/data/features_disabled_test.toml` | `toml` |
-| `crates/perl-parser/tests/data/features_minimal.toml` | `toml` |
 | `crates/perl-parser/tests/fixtures/.perltidyrc` | `` |
 | `crates/perl-parser/tests/run_all_e2e_tests.rs.disabled` | `disabled` |
 | `crates/perl-parser/tests/test_with_override.sh` | `sh` |
@@ -2336,6 +2319,7 @@
 | `.changes/unreleased/product-10100-Added-025500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10532-Added-121200.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10533-Fixed-121500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-10566-Security-093000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11613-Fixed-181500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11739-Fixed-001500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11740-Fixed-200900.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2352,11 +2336,13 @@
 | `.changes/unreleased/product-12213-Added-053344.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12425-Changed-064000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12428-Changed-071500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12470-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12489-Changed-095500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12559-Fixed-213941.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12573-Changed-194700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12639-Fixed-235500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12641-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2501,9 +2487,11 @@
 | `.changes/unreleased/product-8063-Changed-214000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-8250-Added-223800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-8311-Changed-164000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-8352-Security-114500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9103-Added-211500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9450-Added-125043.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9487-Added-740216.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-9489-Added-314720.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9516-Added-235900.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9593-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9593-Security-000001.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3151,10 +3139,19 @@
 | `.spec/12121-semantic-identity-contract/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12121-semantic-identity-contract/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12121-semantic-identity-contract/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12156-compiler-lexical-cutline/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12156-compiler-lexical-cutline/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12156-compiler-lexical-cutline/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12156-compiler-lexical-cutline/inventory.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12156-compiler-lexical-cutline/manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/12186-compiler-profile-identity-closure/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12186-compiler-profile-identity-closure/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12186-compiler-profile-identity-closure/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12186-compiler-profile-identity-closure/inventory.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12188-observation-envelope-registry/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12188-observation-envelope-registry/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12188-observation-envelope-registry/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12188-observation-envelope-registry/inventory.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12330-compiler-profile-initial-rows/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12330-compiler-profile-initial-rows/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12330-compiler-profile-initial-rows/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3524,8 +3521,22 @@
 | `ci/unwrap_prod_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/unwrap_server_impl_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/xtask_wrapper.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `clients/lite-xl/candidate_manifest.lua` | production | `non-rust-litexl-candidate-manifest` | editor/lite-xl |
+| `clients/lite-xl/compose.lua` | production | `non-rust-litexl-composer` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/diagnostics.lua` | test | `non-rust-litexl-pristine-base-diagnostics` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/helpdoc.lua` | test | `non-rust-litexl-pristine-base-helpdoc` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/init.lua` | test | `non-rust-litexl-pristine-base-init` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/json.lua` | test | `non-rust-litexl-pristine-base-json` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/listbox.lua` | test | `non-rust-litexl-pristine-base-listbox` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/server.lua` | test | `non-rust-litexl-pristine-base-server` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/symbolresults.lua` | test | `non-rust-litexl-pristine-base-symbolresults` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/timer.lua` | test | `non-rust-litexl-pristine-base-timer` | editor/lite-xl |
+| `clients/lite-xl/leaves/base/util.lua` | test | `non-rust-litexl-pristine-base-util` | editor/lite-xl |
 | `clients/lite-xl/tests/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `clients/lite-xl/tests/capability_manifest_test.lua` | test | `non-rust-litexl-capability-manifest-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/compose_integration_test.lua` | test | `non-rust-litexl-compose-integration-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/compose_manifest_test.lua` | test | `non-rust-litexl-compose-manifest-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/compose_materializer_test.lua` | test | `non-rust-litexl-compose-materializer-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/diagnostic_position_test.lua` | test | `non-rust-litexl-diagnostic-position-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/diagnostics_currentness_test.lua` | test | `non-rust-litexl-diagnostics-currentness-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/harness.lua` | test | `non-rust-litexl-journey-harness` | editor/lite-xl |
@@ -3621,6 +3632,12 @@
 | `crates/perl-corpus/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-corpus/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-corpus/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-corpus/concepts/incremental.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
+| `crates/perl-corpus/concepts/lexer.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
+| `crates/perl-corpus/concepts/parser.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
+| `crates/perl-corpus/concepts/positions.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
+| `crates/perl-corpus/concepts/recovery.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
+| `crates/perl-corpus/concepts/tree_sitter.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
 | `crates/perl-corpus/fixtures/parser_accuracy/autoload_boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-corpus/fixtures/parser_accuracy/bad_heredoc_terminator.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-corpus/fixtures/parser_accuracy/control_do_until.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -3680,16 +3697,22 @@
 | `crates/perl-corpus/fuzz/transliteration_parser_issue.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-corpus/tests/fixtures/loading/plain_delimiters.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-corpus/tests/fixtures/loading/sectioned.txt` | test | `non-rust-corpus-loading-fixtures` | parser/lsp-fixtures |
+| `crates/perl-corpus/tests/perl-corpus/ambiguity/regex_vs_division.meta.toml` | test | `non-rust-corpus-meta-toml` | parser/corpus |
 | `crates/perl-corpus/tests/perl-corpus/ambiguity/regex_vs_division.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-corpus/tests/perl-corpus/heredoc/data_section_boundary.meta.toml` | test | `non-rust-corpus-meta-toml` | parser/corpus |
 | `crates/perl-corpus/tests/perl-corpus/heredoc/data_section_boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-corpus/tests/perl-corpus/position/crlf_utf16_span.meta.toml` | test | `non-rust-corpus-meta-toml` | parser/corpus |
 | `crates/perl-corpus/tests/perl-corpus/position/crlf_utf16_span.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-corpus/tests/perl-corpus/quote_like/custom_delimiter.meta.toml` | test | `non-rust-corpus-meta-toml` | parser/corpus |
 | `crates/perl-corpus/tests/perl-corpus/quote_like/custom_delimiter.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-corpus/tests/perl-corpus/recovery/missing_closing_brace.meta.toml` | test | `non-rust-corpus-meta-toml` | parser/corpus |
 | `crates/perl-corpus/tests/perl-corpus/recovery/missing_closing_brace.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-dap/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-dap/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-dap/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-dap/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-dap/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-dap/features_sot.toml` | config | `non-rust-crate-features-sot` | lsp/features |
 | `crates/perl-dap/tests/fixtures/FIXTURE_INDEX.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-dap/tests/fixtures/args.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-dap/tests/fixtures/breakpoints_begin_end.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -3818,6 +3841,7 @@
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/transliteration_literal_preserve.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-lsp-rs-core/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-lsp-rs-core/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-lsp-rs-core/features_sot.toml` | config | `non-rust-crate-features-sot` | lsp/features |
 | `crates/perl-lsp-rs-core/protocol_schema_source.json` | config | `non-rust-lsp-protocol-schema-source` | lsp |
 | `crates/perl-lsp-rs-core/tests/runtime_cancellation_property.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__duplicate_declaration_and_shadowing.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
@@ -3839,6 +3863,7 @@
 | `crates/perl-lsp-rs/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-lsp-rs/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-lsp-rs/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-lsp-rs/features_sot.toml` | config | `non-rust-crate-features-sot` | lsp/features |
 | `crates/perl-lsp-rs/src/runtime/language/snapshots/perl_lsp__runtime__language__references_tier_scorecard_tests__routing_matrix__references_representative_replay_receipt.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs/tests/fixtures/Module.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `crates/perl-lsp-rs/tests/fixtures/cancellation/edge_cases/recovery_scenarios.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -3929,6 +3954,27 @@
 | `crates/perl-parser-pest/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-parser-pest/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser-pest/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-parser-pest/tests/fixtures/manifest.toml` | test | `non-rust-parser-pest-fixture-manifest` | parser/pest-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/assignment-exponentiation/chained-assign.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/assignment-exponentiation/power.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/bitwise-not/spaced-tilde.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/declaration-control-flow/foreach-my.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/declaration-control-flow/if-block.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/declaration-control-flow/simple-scalar.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/heredoc/bare-eof.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/heredoc/q-placeholder.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/nested-call/nested-multi.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/quoting-context/comment-double-dollar.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/quoting-context/qq-heredoc-token.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/quoting-context/regex-bitnot.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/recovery/strict-invalid.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/recovery/valid-invalid-valid.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/scalar-deref/double-dollar.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/statement-modifier/print-if.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/unicode-newline/bare-cr.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/unicode-newline/crlf.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/unicode-newline/identifier.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser-pest/tests/fixtures/sources/unicode-newline/lf.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-parser/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-parser/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
@@ -3936,6 +3982,7 @@
 | `crates/perl-parser/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/examples/lsp_demo.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser/features_sot.toml` | config | `non-rust-crate-features-sot` | lsp/features |
 | `crates/perl-parser/incremental_authority.json` | tooling | `non-rust-incremental-authority-contract` | parser/incremental |
 | `crates/perl-parser/src/README_checkpoint.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/src/README_error_recovery.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3963,6 +4010,8 @@
 | `crates/perl-parser/tests/README_e2e_tests.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/tests/UNHAPPY_PATH_COVERAGE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/tests/ast_invariant_property_mutation_hardening.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
+| `crates/perl-parser/tests/data/features_disabled_test.toml` | test | `non-rust-parser-test-data-toml` | parser/lsp-fixtures |
+| `crates/perl-parser/tests/data/features_minimal.toml` | test | `non-rust-parser-test-data-toml` | parser/lsp-fixtures |
 | `crates/perl-parser/tests/documentation_validation_mutation_hardening.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-parser/tests/fixtures/completion_test.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-parser/tests/fixtures/diagnostics_test.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -4208,6 +4257,7 @@
 | `docs/EDITORS/TRAE_SETUP.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/EDITORS/VIM_SETUP.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/EDITORS/VS_CODE_SETUP.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/EDITORS/ZED_DAP_SUPPORT.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/EDITORS/ZED_SETUP.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/EDITORS/lsp4ij-perl-lsp.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/EXTENSION.md` | documentation | `non-rust-docs-tree` | docs |
@@ -5896,6 +5946,9 @@
 | `docs/swarm/source-syncs/2026-07-15-recover-perl-lsp-10000.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/swarm/source-syncs/2026-07-15-workspace-capabilities-bd3eb11b2.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/swarm/source-syncs/2026-07-23-recover-perl-lsp-646c34b-audit.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/swarm/source-syncs/2026-08-26-post-4977-preliminary-receipt.json` | documentation | `non-rust-docs-tree` | docs |
+| `docs/swarm/source-syncs/2026-08-26-post-4977-preliminary-reconciliation.json` | documentation | `non-rust-docs-tree` | docs |
+| `docs/swarm/source-syncs/2026-08-26-post-4977-preliminary-reconciliation.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/swarm/sync-protocol.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/tutorials/AI_BUILD_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/tutorials/COMPREHENSIVE_TESTING_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6168,11 +6221,13 @@
 | `policy/review-surfaces.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ripr-suppressions.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/semantic-token-classes.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/standalone-archive-safety.v1.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/trust-lanes.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ub-review.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/workflow-contracts.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/workspace-runtime-ownership.v1.tsv` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/workspace-symbol-classes.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/zed-dap-support.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `ripr.toml` | config | `non-rust-ripr-toml` | quality/ripr |
 | `ripr/pr/repo-exposure.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `rust-analyzer.toml` | tooling | `non-rust-rust-analyzer-toml` | developer-experience |
@@ -6180,6 +6235,7 @@
 | `schemas/agent_review_finding.v1.schema.json` | config | `non-rust-agent-review-finding-schema` | tooling/agent-review |
 | `schemas/agent_review_packet.v1.schema.json` | config | `non-rust-agent-review-packet-schema` | tooling/agent-review |
 | `schemas/binary_identity_protocol.v1.schema.json` | config | `non-rust-binary-identity-schema` | identity |
+| `schemas/compiler_lexical_cutline_cases.v1.schema.json` | config | `non-rust-compiler-lexical-cutline-schema` | compiler |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
 | `schemas/loaded_module_reload_family.v1.schema.json` | config | `non-rust-loaded-module-reload-family-schema` | identity |
 | `schemas/perl_builtin_semantics.v1.schema.json` | config | `non-rust-compiler-builtin-semantics-schema` | compiler |
@@ -6193,6 +6249,7 @@
 | `schemas/perl_core_harness_target_matrix_index.v1.schema.json` | config | `non-rust-core-harness-target-matrix-index-schema` | compiler |
 | `schemas/perl_core_harness_target_matrix_part.v1.schema.json` | config | `non-rust-core-harness-target-matrix-part-schema` | compiler |
 | `schemas/perl_core_harness_target_topology_drift.v1.schema.json` | config | `non-rust-core-harness-target-topology-drift-schema` | compiler |
+| `schemas/perl_core_harness_upstream_effective_invocation_trace.v1.schema.json` | config | `non-rust-core-harness-upstream-effective-invocation-trace-schema` | compiler |
 | `schemas/perl_core_harness_upstream_runner_discovery.v1.schema.json` | config | `non-rust-core-harness-upstream-runner-discovery-schema` | compiler |
 | `schemas/publication_runtime_identity.v1.schema.json` | config | `non-rust-publication-runtime-identity-schema` | release/ci |
 | `schemas/release_topology.v1.schema.json` | config | `non-rust-release-topology-schema` | release/ci |
@@ -6530,6 +6587,7 @@
 | `scripts/test/vim-clients/vim-lsp-adapter.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-diagnostics-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-host-freshness-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_iterative_parser.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6539,6 +6597,7 @@
 | `scripts/tests/fixtures/pr_overlap/complementary.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/pr_overlap/shared_base_isolated.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/pr_overlap/true_duplicate.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/lib/standalone_archive_fixtures.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-agent-flow-control-plane-trigger.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-build-timing-receipt-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-cargo-safe-toolchain-guard.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6570,8 +6629,10 @@
 | `scripts/tests/test-install-bootstrap-identity.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-githooks-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-path-contract.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-install-ps1-archive-safety.ps1` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-ps1-checksum-required.ps1` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-target-selection.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-installer-archive-safety.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-installer-checksum-required.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-installer-termux-detection.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-installer-zero-args.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6668,6 +6729,7 @@
 | `scripts/zed_assets/dap_process.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/zed_assets/dap_producer.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/zed_assets/dap_public.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/zed_assets/dap_support.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/zed_assets/dap_validation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/zed_assets/framing.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/zed_assets/github_io.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -8251,6 +8313,7 @@
 | `vscode-extension/src/test/packagedServerVersion.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/podPreview.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/activationFailureJourney.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/published/crashRecoveryJourney.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/harness/extension.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/harness/package.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/published/journeySupport.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -8339,6 +8402,8 @@
 | `xtask/lsp_test/advanced_features.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `xtask/lsp_test/test_features.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `xtask/lsp_test/test_suite.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `xtask/tests/fixtures/compiler_lexical_cutline/invalid-continuation-token.json` | test | `non-rust-compiler-lexical-cutline-fixtures` | compiler |
+| `xtask/tests/fixtures/compiler_lexical_cutline/invalid-schema-version.json` | test | `non-rust-compiler-lexical-cutline-fixtures` | compiler |
 | `xtask/tests/fixtures/dependency-hygiene/machete-findings.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-malformed.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-ignored-used.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |

@@ -10,10 +10,10 @@
 //! use perl_parser_core::tokens::token_stream::{TokenKind, TokenStream};
 //!
 //! let mut stream = TokenStream::new("my $x = 42;");
-//! assert!(matches!(stream.peek(), Ok(token) if token.kind == TokenKind::My));
+//! assert!(matches!(stream.peek(), Ok(token) if token.kind() == TokenKind::My));
 //!
 //! while let Ok(token) = stream.next() {
-//!     if token.kind == TokenKind::Eof {
+//!     if token.kind() == TokenKind::Eof {
 //!         break;
 //!     }
 //! }
@@ -28,16 +28,16 @@
 //! use perl_parser_core::tokens::token_stream::{Token, TokenKind, TokenStream};
 //!
 //! let tokens = vec![
-//!     Token::new(TokenKind::My, "my", 0, 2),
-//!     Token::new(TokenKind::ScalarSigil, "$", 3, 4),
-//!     Token::new(TokenKind::Identifier, "x", 4, 5),
-//!     Token::new(TokenKind::Assign, "=", 6, 7),
-//!     Token::new(TokenKind::Number, "1", 8, 9),
-//!     Token::new(TokenKind::Semicolon, ";", 9, 10),
-//!     Token::new(TokenKind::Eof, "", 10, 10),
+//!     Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token"),
+//!     Token::new_checked(TokenKind::ScalarSigil, "$", 3, 4).expect("valid token"),
+//!     Token::new_checked(TokenKind::Identifier, "x", 4, 5).expect("valid token"),
+//!     Token::new_checked(TokenKind::Assign, "=", 6, 7).expect("valid token"),
+//!     Token::new_checked(TokenKind::Number, "1", 8, 9).expect("valid token"),
+//!     Token::new_checked(TokenKind::Semicolon, ";", 9, 10).expect("valid token"),
+//!     Token::new_checked(TokenKind::Eof, "", 10, 10).expect("valid token"),
 //! ];
 //! let mut stream = TokenStream::from_vec(tokens);
-//! assert!(matches!(stream.peek(), Ok(t) if t.kind == TokenKind::My));
+//! assert!(matches!(stream.peek(), Ok(t) if t.kind() == TokenKind::My));
 //! ```
 
 use crate::syntax::error::{ParseError, ParseResult};
@@ -106,16 +106,16 @@ impl<'a> TokenStream<'a> {
     /// use perl_parser_core::tokens::token_stream::{Token, TokenKind, TokenStream};
     ///
     /// let tokens = vec![
-    ///     Token::new(TokenKind::My, "my", 0, 2),
-    ///     Token::new(TokenKind::Eof, "", 2, 2),
+    ///     Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token"),
+    ///     Token::new_checked(TokenKind::Eof, "", 2, 2).expect("valid token"),
     /// ];
     /// let mut stream = TokenStream::from_vec(tokens);
-    /// assert!(matches!(stream.peek(), Ok(t) if t.kind == TokenKind::My));
+    /// assert!(matches!(stream.peek(), Ok(t) if t.kind() == TokenKind::My));
     /// ```
     pub fn from_vec(tokens: Vec<Token>) -> Self {
         let buffered_eof_pos = tokens
             .last()
-            .map(|token| if token.kind == TokenKind::Eof { token.start } else { token.end })
+            .map(|token| if token.kind() == TokenKind::Eof { token.start() } else { token.end() })
             .unwrap_or(0);
 
         TokenStream {
@@ -154,7 +154,7 @@ impl<'a> TokenStream<'a> {
     /// // Convert to parser tokens and build a stream
     /// let parser_tokens = TokenStream::lexer_tokens_to_parser_tokens(raw);
     /// let mut stream = TokenStream::from_vec(parser_tokens);
-    /// assert!(matches!(stream.peek(), Ok(t) if t.kind == TokenKind::My));
+    /// assert!(matches!(stream.peek(), Ok(t) if t.kind() == TokenKind::My));
     /// ```
     pub fn lexer_tokens_to_parser_tokens(tokens: Vec<LexerToken>) -> Vec<Token> {
         tokens
@@ -186,7 +186,7 @@ impl<'a> TokenStream<'a> {
         if let Some(token) = self.peeked.take() {
             // Make EOF sticky - if we're returning EOF, put it back in the peek buffer
             // so future peeks still see EOF instead of getting an error
-            if token.kind == TokenKind::Eof {
+            if token.kind() == TokenKind::Eof {
                 self.peeked = Some(token.clone());
             } else {
                 self.peeked = self.peeked_second.take();
@@ -196,7 +196,7 @@ impl<'a> TokenStream<'a> {
         } else {
             let token = self.next_token()?;
             // Make EOF sticky for fresh tokens too
-            if token.kind == TokenKind::Eof {
+            if token.kind() == TokenKind::Eof {
                 self.peeked = Some(token.clone());
             }
             Ok(token)
@@ -205,7 +205,7 @@ impl<'a> TokenStream<'a> {
 
     /// Check if we're at the end of input
     pub fn is_eof(&mut self) -> bool {
-        matches!(self.peek(), Ok(token) if token.kind == TokenKind::Eof)
+        matches!(self.peek(), Ok(token) if token.kind() == TokenKind::Eof)
     }
 
     /// Peek at the second token (two tokens ahead)
@@ -275,14 +275,14 @@ impl<'a> TokenStream<'a> {
     /// In buffered mode the peek cache is cleared but no re-lexing occurs â€”
     /// token kinds are fixed from the original lex pass.
     pub fn relex_as_term(&mut self) {
-        if let TokenStreamInner::Lexer(ref mut lexer) = self.inner {
-            if let Some(ref token) = self.peeked {
-                use perl_lexer::Checkpointable;
-                let pos = token.start;
-                // Build a checkpoint at the peeked token's position with ExpectTerm mode
-                let cp = perl_lexer::LexerCheckpoint::at_position(pos);
-                lexer.restore(&cp);
-            }
+        if let TokenStreamInner::Lexer(ref mut lexer) = self.inner
+            && let Some(ref token) = self.peeked
+        {
+            use perl_lexer::Checkpointable;
+            let pos = token.start();
+            // Build a checkpoint at the peeked token's position with ExpectTerm mode
+            let cp = perl_lexer::LexerCheckpoint::at_position(pos);
+            lexer.restore(&cp);
         }
         // Both modes: clear the peek cache.
         self.peeked = None;
@@ -301,7 +301,7 @@ impl<'a> TokenStream<'a> {
     pub fn peek_fresh_kind(&mut self) -> Option<TokenKind> {
         self.invalidate_peek();
         match self.peek() {
-            Ok(token) => Some(token.kind),
+            Ok(token) => Some(token.kind()),
             Err(_) => None,
         }
     }
@@ -326,12 +326,12 @@ impl<'a> TokenStream<'a> {
                 LexerTokenType::Whitespace | LexerTokenType::Newline => continue,
                 LexerTokenType::Comment(_) => continue,
                 LexerTokenType::EOF => {
-                    return Ok(Token {
-                        kind: TokenKind::Eof,
-                        text: String::new().into(),
-                        start: lexer_token.start,
-                        end: lexer_token.end,
-                    });
+                    return Ok(token_from_lexer_parts(
+                        TokenKind::Eof,
+                        "",
+                        lexer_token.start,
+                        lexer_token.end,
+                    ));
                 }
                 _ => {
                     return Ok(Self::convert_lexer_token(lexer_token));
@@ -348,7 +348,7 @@ impl<'a> TokenStream<'a> {
         match buf.pop_front() {
             Some(token) => {
                 *buffered_eof_pos =
-                    if token.kind == TokenKind::Eof { token.start } else { token.end };
+                    if token.kind() == TokenKind::Eof { token.start() } else { token.end() };
                 Ok(token)
             }
             // Synthesise EOF at the most recently known source position.
@@ -482,6 +482,29 @@ impl<'a> TokenStream<'a> {
             _ => TokenKind::Unknown,
         };
 
-        Token { kind, text: token.text, start: token.start, end: token.end }
+        token_from_lexer_parts(kind, token.text, token.start, token.end)
+    }
+}
+
+/// Convert lexer geometry into a parser token without panicking.
+///
+/// Ordered spans keep the mapped kind. Reversed or illegally empty geometry
+/// becomes a [`TokenKind::Unknown`] token on the ordered span, or EOF at the
+/// lower bound if even that constructor is unavailable.
+fn token_from_lexer_parts(
+    kind: TokenKind,
+    text: impl Into<std::sync::Arc<str>>,
+    start: usize,
+    end: usize,
+) -> Token {
+    let text = text.into();
+    match Token::new_checked(kind, std::sync::Arc::clone(&text), start, end) {
+        Ok(token) => token,
+        Err(_) => {
+            let ordered_start = start.min(end);
+            let ordered_end = start.max(end);
+            Token::unknown_at(text, ordered_start, ordered_end)
+                .unwrap_or_else(|_| Token::eof_at(ordered_start))
+        }
     }
 }

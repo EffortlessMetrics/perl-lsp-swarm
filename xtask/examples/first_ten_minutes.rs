@@ -200,12 +200,12 @@ struct Receipt {
     limitations: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(deny_unknown_fields)]
 struct VerifiedChildArtifact<'a> {
-    owner_issue: &'a str,
-    schema_version: &'a str,
-    receipt_schema_version: &'a str,
+    owner_issue: &'static str,
+    schema_version: &'static str,
+    receipt_schema_version: &'static str,
     candidate_id: &'a str,
     frozen_product_sha: &'a str,
     artifact_set_id: &'a str,
@@ -544,11 +544,32 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Receipt, ReceiptStatus, StepStatus, VerifiedChildArtifact, load, sha256_hex, validate,
+        OWNER_ISSUE, Receipt, ReceiptStatus, StepStatus, load, sha256_hex, validate,
         validate_raw_shape, write_verified_child_artifact,
     };
     use color_eyre::eyre::Result;
+    use serde::Deserialize;
     use tempfile::tempdir;
+
+    /// Owned strict mirror of the written verified-child envelope. Decoding
+    /// through this type enforces every required field, its type, and
+    /// `deny_unknown_fields` without the borrowed `&'static`/`&'a` mixing
+    /// that makes the write-side struct's derive unsatisfiable from input
+    /// data (the trap behind #12650).
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct VerifiedChildArtifactExpectation {
+        owner_issue: String,
+        schema_version: String,
+        receipt_schema_version: String,
+        candidate_id: String,
+        frozen_product_sha: String,
+        artifact_set_id: String,
+        source_receipt_sha256: String,
+        status: ReceiptStatus,
+        claim_boundary: String,
+        limitation: Option<String>,
+    }
 
     fn fixture(content: &str) -> Result<Receipt> {
         let raw: serde_json::Value = serde_json::from_str(content)?;
@@ -566,13 +587,18 @@ mod tests {
         let directory = tempdir()?;
         let output = directory.path().join("child.json");
         write_verified_child_artifact(&receipt, &receipt_sha256, status, &output)?;
-        let artifact_bytes = std::fs::read(&output)?;
-        let artifact = serde_json::from_slice::<VerifiedChildArtifact>(&artifact_bytes)?;
+        let artifact: VerifiedChildArtifactExpectation =
+            serde_json::from_slice(&std::fs::read(output)?)?;
+        assert_eq!(artifact.owner_issue, OWNER_ISSUE);
         assert_eq!(artifact.schema_version, "verified_child_receipt.v1");
         assert_eq!(artifact.receipt_schema_version, "first_ten_minutes.v1");
         assert_eq!(artifact.candidate_id, "v0.18.0-pre-freeze");
+        assert_eq!(artifact.frozen_product_sha, receipt.candidate.repository_sha);
+        assert_eq!(artifact.artifact_set_id, receipt.candidate.artifact_set_id);
         assert_eq!(artifact.source_receipt_sha256, receipt_sha256);
         assert_eq!(artifact.status, ReceiptStatus::Pass);
+        assert_eq!(artifact.claim_boundary, receipt.claim_boundary);
+        assert_eq!(artifact.limitation.as_deref(), receipt.limitations.first().map(String::as_str));
         Ok(())
     }
 
@@ -737,18 +763,12 @@ mod tests {
             .and_then(serde_json::Value::as_array_mut)
             .and_then(|steps| steps.first_mut())
             .and_then(serde_json::Value::as_object_mut)
-            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no steps"))?
-            .entry("limitations")
-            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-        let limitations = limitations
-            .as_array_mut()
-            .ok_or_else(|| color_eyre::eyre::eyre!("step limitations is not an array"))?;
-        // Inject our own duplicate pair: the fixture's own limitation set may
-        // legitimately be empty, so the discriminator cannot depend on
-        // pre-existing entries.
-        let probe: serde_json::Value = "duplicate-limitation-probe".into();
-        limitations.push(probe.clone());
-        limitations.push(probe);
+            .and_then(|step| step.get_mut("limitations"))
+            .and_then(serde_json::Value::as_array_mut)
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no step limitations"))?;
+        let seeded = "synthetic step limitation for duplicate rejection".to_string();
+        limitations.push(serde_json::Value::String(seeded.clone()));
+        limitations.push(serde_json::Value::String(seeded));
         if validate_raw_shape(&raw).is_ok() {
             return Err(color_eyre::eyre::eyre!(
                 "duplicate steps[].limitations unexpectedly passed raw validation"

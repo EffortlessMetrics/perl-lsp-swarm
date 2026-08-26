@@ -8,6 +8,7 @@
 //!
 //! It intentionally does **not** parse Perl, implement LSP providers, or own workspace
 //! storage backends.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use serde::{Deserialize, Serialize};
 
