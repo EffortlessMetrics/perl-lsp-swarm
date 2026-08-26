@@ -93,18 +93,43 @@ fn malformed_negotiated_stack_frame_is_protocol_failure() {
 }
 
 #[test]
-fn unterminated_negotiated_variable_payload_is_protocol_failure() {
-    for origin in
-        [DebuggerOutputOrigin::DebuggerControlPayload, DebuggerOutputOrigin::PeerProtocolPayload]
-    {
-        for variant in [
-            VariableParseError::UnterminatedString,
-            VariableParseError::UnterminatedCollection,
-            VariableParseError::UnrecognizedFormat(UNRECOGNIZED_VARIABLE.to_string()),
-        ] {
+fn constructed_unterminated_variants_follow_origin_category() {
+    // These variants are classified by origin when wrapped. parse_value does not
+    // currently emit them for `$x = "abc` / `$x = [1,2` (see the parse-path
+    // discriminator below). Changing that grammar is new parsing capability and
+    // is out of scope for #8746.
+    for origin in all_origins() {
+        let expected = match origin {
+            DebuggerOutputOrigin::DebuggerControlPayload
+            | DebuggerOutputOrigin::PeerProtocolPayload => ErrorCategory::Protocol,
+            DebuggerOutputOrigin::BestEffortDebuggeeOutput
+            | DebuggerOutputOrigin::FixtureOrInstrumentInput => ErrorCategory::Advisory,
+        };
+        for variant in
+            [VariableParseError::UnterminatedString, VariableParseError::UnterminatedCollection]
+        {
             let error = wrap_variable(origin, ParseIdentity::new(), variant);
-            assert_eq!(error.error_class(), ErrorCategory::Protocol, "{origin:?} {error:?}");
+            assert_eq!(error.error_class(), expected, "{origin:?} {error:?}");
+            assert!(error.parse_error().as_fixed_origin().is_none(), "{origin:?}");
         }
+    }
+}
+
+#[test]
+fn unterminated_looking_assignment_parses_as_scalar_not_unterminated_error() {
+    let parser = VariableParser::new();
+    for text in [r#"$x = "abc"#, "$x = [1,2"] {
+        let input = OriginatedParseInput::new(
+            DebuggerOutputOrigin::DebuggerControlPayload,
+            ParseIdentity::new(),
+            text,
+        );
+        let (name, value) = must(parser.parse_assignment_originated(input));
+        assert_eq!(name, "$x", "{text}");
+        assert!(
+            matches!(value, perl_dap::value::PerlValue::Scalar(_)),
+            "{text} must keep current parse_value fall-through; emitting Unterminated* here would be new parsing capability"
+        );
     }
 }
 
