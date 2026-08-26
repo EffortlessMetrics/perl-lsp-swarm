@@ -236,3 +236,179 @@ pub(crate) fn decode_malformed(
     !outcome.is_complete()
         || rows.iter().any(|row| matches!(row.disposition, MemberDisposition::MalformedRow))
 }
+
+#[cfg(test)]
+mod contract_tests {
+    //! Focused unit proof for the strict stream decoder: `decode_stream`,
+    //! `work_from_rows`, `derive_observation_state`, and `decode_malformed`
+    //! are exercised directly on both sides of each branch, keeping every
+    //! framing, classification, and state-derivation seam on a static test
+    //! path independent of the receipt constructor.
+
+    use super::{
+        DecodedStream, StreamDecodeOutcome, decode_malformed, decode_stream,
+        derive_observation_state, work_from_rows,
+    };
+    use crate::model::{TargetScriptForm, TargetSelector};
+    use crate::observed_discovery::model::{
+        DiscoveryObservationState, LineFraming, MemberDisposition, ProcessCompletion,
+    };
+    use crate::runner_model::DiscoveryFrame;
+
+    fn selectors() -> Vec<TargetSelector> {
+        vec![TargetSelector::RecursiveRoot { path: "base".to_string() }]
+    }
+
+    fn forms() -> Vec<TargetScriptForm> {
+        vec![TargetScriptForm::DotT]
+    }
+
+    fn decode(raw: &[u8]) -> Result<DecodedStream, String> {
+        decode_stream(raw, DiscoveryFrame::CanonicalRepositoryPath, &selectors(), &forms())
+    }
+
+    #[test]
+    fn stream_malformed_on_invalid_utf8_keeps_typed_outcome_and_zero_rows() {
+        let decoded = decode(&[b't', b'/', 0xff, b'\n']).expect("decode never errors on framing");
+        assert!(matches!(decoded.outcome, StreamDecodeOutcome::Malformed { .. }));
+        assert!(decoded.rows.is_empty());
+        assert_eq!(decoded.normalization_attempts, 0);
+    }
+
+    #[test]
+    fn framing_is_typed_per_line_and_final_row_is_eof() {
+        let decoded = decode(b"t/base/if.t\r\nt/base/op.t\nt/base/last.t").expect("decode");
+        assert_eq!(decoded.rows.len(), 3);
+        assert_eq!(decoded.rows[0].framing, LineFraming::Crlf);
+        assert_eq!(decoded.rows[1].framing, LineFraming::Lf);
+        assert_eq!(decoded.rows[2].framing, LineFraming::Eof);
+        assert_eq!(decoded.rows.iter().map(|row| row.ordinal).collect::<Vec<_>>(), [0, 1, 2]);
+    }
+
+    #[test]
+    fn blank_and_whitespace_drifted_rows_are_malformed_not_repaired() {
+        let decoded = decode(b"t/base/if.t\n\n t/base/op.t\n").expect("decode");
+        // The blank line is itself a retained malformed row: the decoder
+        // never drops or repairs rows, and the whitespace-drifted spelling
+        // joins it as malformed without reaching the normalizer.
+        assert_eq!(decoded.rows.len(), 3);
+        assert!(matches!(decoded.rows[0].disposition, MemberDisposition::Accepted));
+        assert!(matches!(decoded.rows[1].disposition, MemberDisposition::MalformedRow));
+        assert!(matches!(decoded.rows[2].disposition, MemberDisposition::MalformedRow));
+        let decoded = decode(b"   \n").expect("decode");
+        assert!(matches!(decoded.rows[0].disposition, MemberDisposition::MalformedRow));
+    }
+
+    #[test]
+    fn classification_resolves_every_disposition_directly() {
+        // Accepted member, then the same raw spelling again (duplicate of the
+        // canonical), then a member outside the selection, then an
+        // unsupported form, then a control-byte row (malformed).
+        let raw = b"t/base/if.t\nt/base/if.t\nt/other/a.t\nREADME\nctrl\tx\n";
+        let decoded = decode(raw).expect("decode");
+        let dispositions: Vec<&MemberDisposition> =
+            decoded.rows.iter().map(|row| &row.disposition).collect();
+        assert!(matches!(dispositions[0], MemberDisposition::Accepted));
+        match &dispositions[1] {
+            MemberDisposition::DuplicateOfCanonical { canonical_path } => {
+                assert_eq!(canonical_path, "t/base/if.t");
+            }
+            other => panic!("expected duplicate of canonical, got {other:?}"),
+        }
+        assert!(matches!(dispositions[2], MemberDisposition::OutsideTargetSelection));
+        assert!(matches!(dispositions[3], MemberDisposition::UnsupportedSourceForm));
+        assert!(matches!(dispositions[4], MemberDisposition::MalformedRow));
+    }
+
+    #[test]
+    fn conflicting_canonical_spellings_collapse_only_under_a_resolving_frame() {
+        // Under the runner-t-relative frame, two different raw spellings
+        // resolve to one canonical: the second is a conflict, not a second
+        // accepted member. Under the canonical frame the same drifted
+        // spelling is an unsupported form instead of being silently folded.
+        let raw = b"base/if.t\n./base/if.t\n";
+        let decoded =
+            decode_stream(raw, DiscoveryFrame::RunnerTDirectoryRelative, &selectors(), &forms())
+                .expect("decode");
+        assert!(matches!(decoded.rows[0].disposition, MemberDisposition::Accepted));
+        assert!(matches!(
+            decoded.rows[1].disposition,
+            MemberDisposition::ConflictingCanonical { .. }
+        ));
+    }
+
+    #[test]
+    fn work_counters_are_derived_per_disposition() {
+        let raw = b"t/base/a.t\nt/base/a.t\nt/other/b.t\n";
+        let decoded = decode(raw).expect("decode");
+        let work = work_from_rows(raw.len(), 2, &decoded.rows, decoded.normalization_attempts, 4);
+        assert_eq!(work.decoded_rows, 3);
+        assert_eq!(work.accepted_rows, 1);
+        assert_eq!(work.duplicate_rows, 1);
+        assert_eq!(work.out_of_target_rows, 1);
+        assert_eq!(work.raw_stdout_bytes, raw.len() as u64);
+        assert_eq!(work.raw_stderr_bytes, 2);
+        assert_eq!(work.terminal_subject_validations, 4);
+    }
+
+    #[test]
+    fn observation_state_derivation_follows_the_declared_precedence() {
+        use DiscoveryObservationState as State;
+        use ProcessCompletion as Completion;
+        let exit = Completion::ExitStatus { code: 0 };
+        assert_eq!(
+            derive_observation_state(Completion::Unknown, false, false, true, true),
+            State::NotProven
+        );
+        assert_eq!(
+            derive_observation_state(Completion::InstrumentFailed, false, false, true, true),
+            State::InstrumentFailed
+        );
+        assert_eq!(
+            derive_observation_state(Completion::Cancelled, false, false, true, true),
+            State::Cancelled
+        );
+        assert_eq!(
+            derive_observation_state(
+                Completion::TimedOut { deadline_millis: 1_000 },
+                false,
+                false,
+                true,
+                true
+            ),
+            State::TimedOut
+        );
+        assert_eq!(derive_observation_state(exit, true, false, true, true), State::MalformedOutput);
+        assert_eq!(derive_observation_state(exit, false, true, true, true), State::OutputTruncated);
+        assert_eq!(
+            derive_observation_state(exit, false, false, false, true),
+            State::SubjectMismatch
+        );
+        assert_eq!(
+            derive_observation_state(Completion::ExitStatus { code: 2 }, false, false, true, true),
+            State::RunnerFailed
+        );
+        assert_eq!(
+            derive_observation_state(Completion::Signalled { signal: 9 }, false, false, true, true),
+            State::RunnerFailed
+        );
+        assert_eq!(
+            derive_observation_state(exit, false, false, true, false),
+            State::ObservedPartial
+        );
+        assert_eq!(
+            derive_observation_state(exit, false, false, true, true),
+            State::ObservedComplete
+        );
+    }
+
+    #[test]
+    fn decode_malformed_reads_the_outcome_and_every_row_disposition() {
+        let complete = decode(b"t/base/a.t\n").expect("decode");
+        assert!(!decode_malformed(&complete.outcome, &complete.rows));
+        let drifted = decode(b" t/base/a.t\n").expect("decode");
+        assert!(decode_malformed(&drifted.outcome, &drifted.rows));
+        let malformed_outcome = StreamDecodeOutcome::Malformed { reason: "utf8".to_string() };
+        assert!(decode_malformed(&malformed_outcome, &[]));
+    }
+}
