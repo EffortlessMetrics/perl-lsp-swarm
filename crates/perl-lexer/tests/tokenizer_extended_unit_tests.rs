@@ -373,8 +373,8 @@ fn ext_token_start_end_offsets() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("my $x");
     let t = must(s.next());
     // "my" starts at 0, ends at 2
-    assert_eq!(t.start, 0);
-    assert_eq!(t.end, 2);
+    assert_eq!(t.start(), 0);
+    assert_eq!(t.end(), 2);
     Ok(())
 }
 
@@ -384,8 +384,8 @@ fn ext_token_offsets_with_leading_whitespace() -> Result<(), Box<dyn std::error:
     let t = must(s.next());
     assert_eq!(t.kind, TokenKind::Number);
     // Starts after 3 spaces
-    assert_eq!(t.start, 3);
-    assert_eq!(t.end, 5);
+    assert_eq!(t.start(), 3);
+    assert_eq!(t.end(), 5);
     Ok(())
 }
 
@@ -398,9 +398,9 @@ fn ext_token_offsets_monotonically_increase() -> Result<(), Box<dyn std::error::
         if t.kind == TokenKind::Eof {
             break;
         }
-        assert!(t.start >= prev_end, "start {} < prev_end {}", t.start, prev_end);
-        assert!(t.end > t.start, "end {} <= start {}", t.end, t.start);
-        prev_end = t.end;
+        assert!(t.start() >= prev_end, "start {} < prev_end {}", t.start(), prev_end);
+        assert!(t.end() > t.start(), "end {} <= start {}", t.end(), t.start());
+        prev_end = t.end();
     }
     Ok(())
 }

@@ -3,7 +3,7 @@ impl<'a> Parser<'a> {
     fn parse_qualified_identifier(&mut self) -> ParseResult<Node> {
         // Note: qualified identifier parsing is not recursive - no guard needed
         let start_token = self.consume_token()?;
-        let start = start_token.start;
+        let start = start_token.start();
         let mut name = if start_token.kind == TokenKind::DoubleColon {
             // Handle absolute path like ::Foo::Bar
             "::".to_string()
@@ -226,7 +226,7 @@ impl<'a> Parser<'a> {
                 let token = self.tokens.next()?;
                 Ok(Node::new(
                     NodeKind::Number { value: token.text.to_string() },
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 ))
             }
 
@@ -234,7 +234,7 @@ impl<'a> Parser<'a> {
                 let token = self.tokens.next()?;
                 Ok(Node::new(
                     NodeKind::VString { value: token.text.to_string() },
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 ))
             }
 
@@ -243,11 +243,11 @@ impl<'a> Parser<'a> {
                 // Check if it's a double-quoted string (interpolated)
                 let interpolated = token.text.starts_with('"');
                 if interpolated {
-                    self.record_unclosed_interpolation_delimiter(&token.text, token.start);
+                    self.record_unclosed_interpolation_delimiter(&token.text, token.start());
                 }
                 Ok(Node::new(
                     NodeKind::String { value: token.text.to_string(), interpolated },
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 ))
             }
 
@@ -255,11 +255,11 @@ impl<'a> Parser<'a> {
                 let token = self.tokens.next()?;
                 let (pattern, body, modifiers) = quote_parser::extract_regex_parts(&token.text);
 
-                let has_embedded_code = self.analyze_regex_body_for_ast(&body, token.start)?;
+                let has_embedded_code = self.analyze_regex_body_for_ast(&body, token.start())?;
 
                 Ok(Node::new(
                     NodeKind::Regex { pattern, replacement: None, modifiers, has_embedded_code },
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 ))
             }
 
@@ -286,20 +286,20 @@ impl<'a> Parser<'a> {
                             format!(
                                 "Unclosed {operator} delimiter in string operator before end of file"
                             ),
-                            token.start,
+                            token.start(),
                         ));
                     }
                 }
 
                 Ok(Node::new(
                     NodeKind::String { value: text.to_string(), interpolated },
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 ))
             }
 
             TokenKind::QuoteWords => {
                 let token = self.tokens.next()?;
-                let start = token.start;
+                let start = token.start();
                 let text = &token.text;
 
                 // Parse qw(...) to extract words
@@ -356,7 +356,7 @@ impl<'a> Parser<'a> {
                                 start,
                                 word,
                                 &mut search_offset,
-                                token.end,
+                                token.end(),
                             );
                             Node::new(
                                 NodeKind::String { value: word.to_string(), interpolated: false },
@@ -367,13 +367,13 @@ impl<'a> Parser<'a> {
 
                     Ok(Node::new(
                         NodeKind::ArrayLiteral { elements: words },
-                        SourceLocation { start, end: token.end },
+                        SourceLocation { start, end: token.end() },
                     ))
                 } else {
                     // Fallback - shouldn't happen with proper lexer
                     Ok(Node::new(
                         NodeKind::String { value: token.text.to_string(), interpolated: false },
-                        SourceLocation { start, end: token.end },
+                        SourceLocation { start, end: token.end() },
                     ))
                 }
             }
@@ -383,7 +383,7 @@ impl<'a> Parser<'a> {
                 // qx/backticks - for now treat as a string
                 Ok(Node::new(
                     NodeKind::String { value: token.text.to_string(), interpolated: true },
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 ))
             }
 
@@ -421,14 +421,14 @@ impl<'a> Parser<'a> {
                             };
                             ParseError::SyntaxError {
                                 message,
-                                location: token.start,
+                                location: token.start(),
                             }
                         },
                     )?;
 
                 // The `e`/`ee` modifier evaluates the replacement as Perl code — equivalent to
                 // eval — so it counts as embedded code regardless of the pattern body (#975).
-                let has_embedded_code = self.analyze_regex_body_for_ast(&pattern, token.start)?
+                let has_embedded_code = self.analyze_regex_body_for_ast(&pattern, token.start())?
                     || modifiers.contains('e');
 
                 // Substitution as a standalone expression (will be used with =~ later)
@@ -436,7 +436,7 @@ impl<'a> Parser<'a> {
                     NodeKind::Substitution {
                         expr: Box::new(Node::new(
                             NodeKind::Identifier { name: String::from("$_") },
-                            SourceLocation { start: token.start, end: token.start },
+                            SourceLocation { start: token.start(), end: token.start() },
                         )),
                         pattern,
                         replacement,
@@ -444,7 +444,7 @@ impl<'a> Parser<'a> {
                         has_embedded_code,
                         negated: false,
                     },
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 ))
             }
 
@@ -481,7 +481,7 @@ impl<'a> Parser<'a> {
                             };
                             ParseError::SyntaxError {
                                 message,
-                                location: token.start,
+                                location: token.start(),
                             }
                         },
                     )?;
@@ -491,22 +491,22 @@ impl<'a> Parser<'a> {
                     NodeKind::Transliteration {
                         expr: Box::new(Node::new(
                             NodeKind::Identifier { name: String::from("$_") },
-                            SourceLocation { start: token.start, end: token.start },
+                            SourceLocation { start: token.start(), end: token.start() },
                         )),
                         search,
                         replace,
                         modifiers,
                         negated: false,
                     },
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 ))
             }
 
             TokenKind::HeredocStart => {
                 let start_token = self.tokens.next()?;
                 let text = &start_token.text;
-                let start = start_token.start;
-                let end = start_token.end;
+                let start = start_token.start();
+                let end = start_token.end();
 
                 // Parse heredoc delimiter from the token text
                 let (delimiter, interpolated, indented, command) = parse_heredoc_delimiter(text);
@@ -536,7 +536,7 @@ impl<'a> Parser<'a> {
                 let token = self.tokens.next()?;
                 Err(ParseError::syntax(
                     format!("Heredoc depth limit exceeded (max {})", MAX_HEREDOC_DEPTH),
-                    token.start,
+                    token.start(),
                 ))
             }
 
@@ -546,7 +546,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start, end: token.end },
+                        SourceLocation { start: token.start(), end: token.end() },
                     ))
                 } else {
                     self.parse_eval()
@@ -559,7 +559,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start, end: token.end },
+                        SourceLocation { start: token.start(), end: token.end() },
                     ))
                 } else {
                     self.parse_do()
@@ -584,7 +584,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start, end: token.end },
+                        SourceLocation { start: token.start(), end: token.end() },
                     ))
                 } else {
                     self.parse_try()
@@ -597,7 +597,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start, end: token.end },
+                        SourceLocation { start: token.start(), end: token.end() },
                     ))
                 } else {
                     self.parse_defer()
@@ -611,7 +611,7 @@ impl<'a> Parser<'a> {
                 // Only the exact `<<>>` shape is an I/O operator; anything else that
                 // reaches primary with a LeftShift token is not a valid expression
                 // here — return an error so the caller's recovery logic can handle it.
-                let start = self.consume_token()?.start; // consume <<
+                let start = self.consume_token()?.start(); // consume <<
                 if self.peek_kind() == Some(TokenKind::RightShift) {
                     self.consume_token()?; // consume >>
                     let end = self.previous_position();
@@ -627,7 +627,7 @@ impl<'a> Parser<'a> {
 
             TokenKind::Less => {
                 // Could be diamond operator <> or <FILEHANDLE>
-                let start = self.consume_token()?.start; // consume <
+                let start = self.consume_token()?.start(); // consume <
 
                 if self.peek_kind() == Some(TokenKind::Greater) {
                     // Diamond operator <>
@@ -728,7 +728,7 @@ impl<'a> Parser<'a> {
                                         value: tok.text.to_string(),
                                         interpolated: false,
                                     },
-                                    SourceLocation { start: tok.start, end: tok.end },
+                                    SourceLocation { start: tok.start(), end: tok.end() },
                                 ))
                             } else {
                                 self.parse_quote_operator()
@@ -739,12 +739,12 @@ impl<'a> Parser<'a> {
                                 let tok = self.tokens.next()?;
                                 return Ok(Node::new(
                                     NodeKind::Identifier { name: tok.text.to_string() },
-                                    SourceLocation { start: tok.start, end: tok.end },
+                                    SourceLocation { start: tok.start(), end: tok.end() },
                                 ));
                             }
 
                             let token = self.tokens.next()?;
-                            let start = token.start;
+                            let start = token.start();
                             let variable = if matches!(
                                 self.peek_kind(),
                                 Some(
@@ -794,12 +794,12 @@ impl<'a> Parser<'a> {
                                 let tok = self.tokens.next()?;
                                 return Ok(Node::new(
                                     NodeKind::Identifier { name: tok.text.to_string() },
-                                    SourceLocation { start: tok.start, end: tok.end },
+                                    SourceLocation { start: tok.start(), end: tok.end() },
                                 ));
                             }
 
                             let token = self.tokens.next()?;
-                            let start = token.start;
+                            let start = token.start();
                             let variable = Box::new(self.parse_assignment()?);
                             let end = self.previous_position();
                             Ok(Node::new(
@@ -833,12 +833,12 @@ impl<'a> Parser<'a> {
                                 let tok = self.tokens.next()?;
                                 return Ok(Node::new(
                                     NodeKind::Identifier { name: tok.text.to_string() },
-                                    SourceLocation { start: tok.start, end: tok.end },
+                                    SourceLocation { start: tok.start(), end: tok.end() },
                                 ));
                             }
 
                             let new_token = self.tokens.next()?;
-                            let start = new_token.start;
+                            let start = new_token.start();
 
                             // If `new` is followed immediately by `(`, treat it as a
                             // plain function call rather than an indirect constructor.
@@ -912,7 +912,7 @@ impl<'a> Parser<'a> {
 
             TokenKind::LeftParen => {
                 let start_token = self.tokens.next()?; // consume (
-                let start = start_token.start;
+                let start = start_token.start();
 
                 // Inside parentheses we are no longer at statement start.
                 // This prevents the indirect-call heuristic from firing on
@@ -924,7 +924,7 @@ impl<'a> Parser<'a> {
                     let end_token = self.tokens.next()?;
                     return Ok(Node::new(
                         NodeKind::ArrayLiteral { elements: vec![] },
-                        SourceLocation { start, end: end_token.end },
+                        SourceLocation { start, end: end_token.end() },
                     ));
                 }
 
@@ -1113,7 +1113,7 @@ impl<'a> Parser<'a> {
                 // consumed at this level rather than being swallowed into a single
                 // inner expression by parse_expression -> parse_comma.
                 let start_token = self.tokens.next()?; // consume [
-                let start = start_token.start;
+                let start = start_token.start();
 
                 let mut elements = Vec::new();
 
@@ -1187,7 +1187,7 @@ impl<'a> Parser<'a> {
                 let token = self.tokens.next()?;
                 Ok(Node::new(
                     NodeKind::Ellipsis,
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 ))
             }
 
@@ -1195,7 +1195,7 @@ impl<'a> Parser<'a> {
                 let token = self.tokens.next()?;
                 Ok(Node::new(
                     NodeKind::Undef,
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 ))
             }
 
@@ -1218,7 +1218,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start, end: token.end },
+                        SourceLocation { start: token.start(), end: token.end() },
                     ))
                 }
             }
@@ -1236,7 +1236,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start, end: token.end },
+                        SourceLocation { start: token.start(), end: token.end() },
                     ))
                 } else {
                     self.parse_local_statement()
@@ -1250,7 +1250,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start, end: token.end },
+                        SourceLocation { start: token.start(), end: token.end() },
                     ))
                 } else {
                     self.parse_declaration_expression()
@@ -1291,7 +1291,7 @@ impl<'a> Parser<'a> {
                 let token = self.tokens.next()?;
                 Ok(Node::new(
                     NodeKind::Identifier { name: token.text.to_string() },
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 ))
             }
 
@@ -1304,7 +1304,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start, end: token.end },
+                        SourceLocation { start: token.start(), end: token.end() },
                     ))
                 } else {
                     self.parse_return_expr()
@@ -1316,7 +1316,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start, end: token.end },
+                        SourceLocation { start: token.start(), end: token.end() },
                     ))
                 } else {
                     self.parse_loop_control()

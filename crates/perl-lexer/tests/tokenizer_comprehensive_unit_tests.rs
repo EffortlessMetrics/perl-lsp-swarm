@@ -1443,9 +1443,9 @@ fn token_stream_token_positions_are_monotonic() -> Result<(), Box<dyn std::error
         if t.kind == TokenKind::Eof {
             break;
         }
-        assert!(t.start >= prev_start, "token starts should be non-decreasing");
-        assert!(t.end > t.start, "token end should be after start");
-        prev_start = t.start;
+        assert!(t.start() >= prev_start, "token starts should be non-decreasing");
+        assert!(t.end() > t.start(), "token end should be after start");
+        prev_start = t.start();
     }
     Ok(())
 }

@@ -187,15 +187,15 @@ impl TokenCache {
             }
 
             let before_tokens: Vec<Token> =
-                segment.tokens.iter().filter(|token| token.end <= start).cloned().collect();
+                segment.tokens.iter().filter(|token| token.end() <= start).cloned().collect();
             if let (Some(first), Some(last)) = (before_tokens.first(), before_tokens.last()) {
-                rebuilt_segments.push(TokenSegment::new(first.start, last.end, before_tokens));
+                rebuilt_segments.push(TokenSegment::new(first.start(), last.end(), before_tokens));
             }
 
             let after_tokens: Vec<Token> =
-                segment.tokens.iter().filter(|token| token.start >= end).cloned().collect();
+                segment.tokens.iter().filter(|token| token.start() >= end).cloned().collect();
             if let (Some(first), Some(last)) = (after_tokens.first(), after_tokens.last()) {
-                rebuilt_segments.push(TokenSegment::new(first.start, last.end, after_tokens));
+                rebuilt_segments.push(TokenSegment::new(first.start(), last.end(), after_tokens));
             }
         }
 
@@ -272,7 +272,7 @@ impl TokenCache {
         let mut all_tokens = Vec::new();
         for segment in &self.segments {
             for token in &segment.tokens {
-                if token.start >= position {
+                if token.start() >= position {
                     all_tokens.push(token.clone());
                 }
             }
@@ -298,7 +298,7 @@ impl TokenCache {
         let mut all_tokens = Vec::new();
         for segment in &self.segments {
             for token in &segment.tokens {
-                if token.end <= position {
+                if token.end() <= position {
                     all_tokens.push(token.clone());
                 }
             }
@@ -310,14 +310,14 @@ impl TokenCache {
     fn count_segments_with_tokens_before(&self, position: usize) -> usize {
         self.segments
             .iter()
-            .filter(|segment| segment.tokens.iter().any(|token| token.end <= position))
+            .filter(|segment| segment.tokens.iter().any(|token| token.end() <= position))
             .count()
     }
 
     fn count_segments_with_tokens_after(&self, position: usize) -> usize {
         self.segments
             .iter()
-            .filter(|segment| segment.tokens.iter().any(|token| token.start >= position))
+            .filter(|segment| segment.tokens.iter().any(|token| token.start() >= position))
             .count()
     }
 
@@ -589,8 +589,8 @@ impl CheckpointedIncrementalParser {
         let parser_tokens = TokenStream::lexer_tokens_to_parser_tokens(raw_tokens);
 
         if let (Some(first), Some(last)) = (parser_tokens.first(), parser_tokens.last()) {
-            let start = first.start;
-            let end = last.end;
+            let start = first.start();
+            let end = last.end();
             self.token_cache.cache_tokens(start, end, parser_tokens);
         }
 
@@ -747,14 +747,14 @@ impl CheckpointedIncrementalParser {
                 for token in cached {
                     // Adjust byte positions to account for the inserted/removed bytes.
                     // Use max(0) to prevent underflow on negative shifts (#2457).
-                    let adjusted = Token {
-                        kind: token.kind,
-                        text: token.text.clone(),
-                        start: (token.start as isize + byte_shift).max(0) as usize,
-                        end: (token.end as isize + byte_shift).max(0) as usize,
-                    };
-                    parser_tokens.push(adjusted);
-                    self.stats.tokens_reused += 1;
+                    let start = (token.start() as isize + byte_shift).max(0) as usize;
+                    let end = (token.end() as isize + byte_shift).max(0) as usize;
+                    if let Ok(adjusted) =
+                        Token::new_checked(token.kind, token.text.clone(), start, end)
+                    {
+                        parser_tokens.push(adjusted);
+                        self.stats.tokens_reused += 1;
+                    }
                 }
             } else {
                 self.stats.cache_misses += 1;
@@ -782,8 +782,8 @@ impl CheckpointedIncrementalParser {
         if let (Some(first), Some(last)) =
             (newly_lexed_parser_tokens.first(), newly_lexed_parser_tokens.last())
         {
-            let start = first.start;
-            let end = last.end;
+            let start = first.start();
+            let end = last.end();
             self.token_cache.cache_tokens(start, end, newly_lexed_parser_tokens);
         }
 
@@ -983,10 +983,10 @@ mod tests {
     fn test_invalidate_range_splits_segment_and_preserves_non_overlapping_tokens() {
         let mut cache = TokenCache::new();
         let tokens = vec![
-            Token::new(TokenKind::Identifier, "a", 0, 10),
-            Token::new(TokenKind::Identifier, "b", 10, 20),
-            Token::new(TokenKind::Identifier, "c", 20, 30),
-            Token::new(TokenKind::Identifier, "d", 30, 40),
+            Token::new_checked(TokenKind::Identifier, "a", 0, 10).expect("valid token"),
+            Token::new_checked(TokenKind::Identifier, "b", 10, 20).expect("valid token"),
+            Token::new_checked(TokenKind::Identifier, "c", 20, 30).expect("valid token"),
+            Token::new_checked(TokenKind::Identifier, "d", 30, 40).expect("valid token"),
         ];
         cache.cache_tokens(0, 40, tokens);
 
@@ -1032,8 +1032,8 @@ mod tests {
         // A range that doesn't touch any segment must leave the cache intact.
         let mut cache = TokenCache::new();
         let tokens = vec![
-            Token::new(TokenKind::Identifier, "a", 0, 10),
-            Token::new(TokenKind::Identifier, "b", 10, 20),
+            Token::new_checked(TokenKind::Identifier, "a", 0, 10).expect("valid token"),
+            Token::new_checked(TokenKind::Identifier, "b", 10, 20).expect("valid token"),
         ];
         cache.cache_tokens(0, 20, tokens);
 
@@ -1056,10 +1056,10 @@ mod tests {
         // on both sides must produce two sub-segments, neither empty.
         let mut cache = TokenCache::new();
         let tokens = vec![
-            Token::new(TokenKind::Identifier, "a", 0, 5),
-            Token::new(TokenKind::Identifier, "b", 5, 10),
-            Token::new(TokenKind::Identifier, "c", 10, 15),
-            Token::new(TokenKind::Identifier, "d", 15, 20),
+            Token::new_checked(TokenKind::Identifier, "a", 0, 5).expect("valid token"),
+            Token::new_checked(TokenKind::Identifier, "b", 5, 10).expect("valid token"),
+            Token::new_checked(TokenKind::Identifier, "c", 10, 15).expect("valid token"),
+            Token::new_checked(TokenKind::Identifier, "d", 15, 20).expect("valid token"),
         ];
         cache.cache_tokens(0, 20, tokens);
 
@@ -1082,9 +1082,21 @@ mod tests {
     #[test]
     fn test_get_segments_in_range_returns_only_overlapping_segments_in_order() {
         let mut cache = TokenCache::new();
-        cache.cache_tokens(30, 40, vec![Token::new(TokenKind::Identifier, "c", 30, 40)]);
-        cache.cache_tokens(0, 10, vec![Token::new(TokenKind::Identifier, "a", 0, 10)]);
-        cache.cache_tokens(15, 25, vec![Token::new(TokenKind::Identifier, "b", 15, 25)]);
+        cache.cache_tokens(
+            30,
+            40,
+            vec![Token::new_checked(TokenKind::Identifier, "c", 30, 40).expect("valid token")],
+        );
+        cache.cache_tokens(
+            0,
+            10,
+            vec![Token::new_checked(TokenKind::Identifier, "a", 0, 10).expect("valid token")],
+        );
+        cache.cache_tokens(
+            15,
+            25,
+            vec![Token::new_checked(TokenKind::Identifier, "b", 15, 25).expect("valid token")],
+        );
 
         let segments = cache.get_segments_in_range(8, 31);
 
@@ -1103,14 +1115,29 @@ mod tests {
     #[test]
     fn test_add_segment_replaces_overlaps_without_dropping_neighbors() {
         let mut cache = TokenCache::new();
-        cache.cache_tokens(0, 10, vec![Token::new(TokenKind::Identifier, "a", 0, 10)]);
-        cache.cache_tokens(20, 30, vec![Token::new(TokenKind::Identifier, "b", 20, 30)]);
-        cache.cache_tokens(40, 50, vec![Token::new(TokenKind::Identifier, "c", 40, 50)]);
+        cache.cache_tokens(
+            0,
+            10,
+            vec![Token::new_checked(TokenKind::Identifier, "a", 0, 10).expect("valid token")],
+        );
+        cache.cache_tokens(
+            20,
+            30,
+            vec![Token::new_checked(TokenKind::Identifier, "b", 20, 30).expect("valid token")],
+        );
+        cache.cache_tokens(
+            40,
+            50,
+            vec![Token::new_checked(TokenKind::Identifier, "c", 40, 50).expect("valid token")],
+        );
 
         cache.add_segment(TokenSegment::new(
             25,
             45,
-            vec![Token::new(TokenKind::Identifier, "replacement", 25, 45)],
+            vec![
+                Token::new_checked(TokenKind::Identifier, "replacement", 25, 45)
+                    .expect("valid token"),
+            ],
         ));
 
         assert_eq!(cache.segments.len(), 2, "new segment should replace both overlaps");
@@ -1138,16 +1165,16 @@ mod tests {
             0,
             20,
             vec![
-                Token::new(TokenKind::Identifier, "a", 0, 5),
-                Token::new(TokenKind::Identifier, "b", 10, 20),
+                Token::new_checked(TokenKind::Identifier, "a", 0, 5).expect("valid token"),
+                Token::new_checked(TokenKind::Identifier, "b", 10, 20).expect("valid token"),
             ],
         );
         cache.cache_tokens(
             30,
             50,
             vec![
-                Token::new(TokenKind::Identifier, "c", 30, 35),
-                Token::new(TokenKind::Identifier, "d", 45, 50),
+                Token::new_checked(TokenKind::Identifier, "c", 30, 35).expect("valid token"),
+                Token::new_checked(TokenKind::Identifier, "d", 45, 50).expect("valid token"),
             ],
         );
 
@@ -1169,8 +1196,8 @@ mod tests {
         // apply exactly once when the cached tokens are consumed.
         let mut cache = TokenCache::new();
         let tokens = vec![
-            Token::new(TokenKind::Identifier, "x", 100, 110),
-            Token::new(TokenKind::Identifier, "y", 110, 120),
+            Token::new_checked(TokenKind::Identifier, "x", 100, 110).expect("valid token"),
+            Token::new_checked(TokenKind::Identifier, "y", 110, 120).expect("valid token"),
         ];
         cache.cache_tokens(100, 120, tokens);
 
@@ -1184,15 +1211,18 @@ mod tests {
         // But individual token positions must remain at their original values so
         // Phase-3's byte_shift application later yields the right final position.
         assert_eq!(
-            cache.segments[0].tokens[0].start, 100,
+            cache.segments[0].tokens[0].start(),
+            100,
             "token start must NOT be shifted by adjust_positions"
         );
         assert_eq!(
-            cache.segments[0].tokens[0].end, 110,
+            cache.segments[0].tokens[0].end(),
+            110,
             "token end must NOT be shifted by adjust_positions"
         );
         assert_eq!(
-            cache.segments[0].tokens[1].start, 110,
+            cache.segments[0].tokens[1].start(),
+            110,
             "token start must NOT be shifted by adjust_positions"
         );
     }

@@ -429,7 +429,7 @@ impl<'a> Parser<'a> {
                 let token = self.consume_token()?;
                 Node::new(
                     NodeKind::Identifier { name: token.text.to_string() },
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 )
             } else {
                 self.parse_primary()?
@@ -594,7 +594,7 @@ impl<'a> Parser<'a> {
 
             let initializer = if self.peek_kind() == Some(TokenKind::Assign) {
                 let op_token = self.tokens.next()?; // consume =
-                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                     missing
                 } else {
                     self.parse_assignment()?
@@ -640,7 +640,7 @@ impl<'a> Parser<'a> {
 
             let initializer = if self.peek_kind() == Some(TokenKind::Assign) {
                 let op_token = self.tokens.next()?; // consume =
-                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                     missing
                 } else {
                     self.parse_assignment()?
@@ -670,7 +670,7 @@ impl<'a> Parser<'a> {
 
             let initializer = if self.peek_kind() == Some(TokenKind::Assign) {
                 let op_token = self.tokens.next()?; // consume =
-                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                     missing
                 } else {
                     self.parse_assignment()?

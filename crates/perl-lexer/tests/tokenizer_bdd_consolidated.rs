@@ -65,9 +65,9 @@ fn bdd_given_raw_lexer_tokens_when_converted_then_trivia_is_filtered_and_eof_is_
 fn bdd_given_buffered_tokens_when_peek_is_invalidated_then_cursor_advances_from_current_position()
 -> Result<(), Box<dyn std::error::Error>> {
     let tokens = vec![
-        Token::new(TokenKind::My, "my", 0, 2),
-        Token::new(TokenKind::Identifier, "$x", 3, 5),
-        Token::new(TokenKind::Semicolon, ";", 5, 6),
+        Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "$x", 3, 5).expect("valid token"),
+        Token::new_checked(TokenKind::Semicolon, ";", 5, 6).expect("valid token"),
     ];
     let mut stream = TokenStream::from_vec(tokens);
 

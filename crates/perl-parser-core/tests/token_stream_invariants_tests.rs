@@ -136,7 +136,9 @@ fn empty_buffered_stream_is_eof_immediately() -> Result<(), Box<dyn std::error::
 #[test]
 fn single_token_buffered_lookahead_beyond_gives_eof_extended()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut stream = TokenStream::from_vec(vec![Token::new(TokenKind::Number, "42", 0, 2)]);
+    let mut stream = TokenStream::from_vec(vec![
+        Token::new_checked(TokenKind::Number, "42", 0, 2).expect("valid token"),
+    ]);
 
     let first_kind = must(stream.peek()).kind;
     assert_eq!(first_kind, TokenKind::Number, "first token must be Number");
@@ -188,9 +190,9 @@ fn on_stmt_boundary_in_buffered_mode_clears_cache_stream_remains_usable()
 -> Result<(), Box<dyn std::error::Error>> {
     // Use a multi-token buffered stream.
     let tokens = vec![
-        Token::new(TokenKind::My, "my", 0, 2),
-        Token::new(TokenKind::Identifier, "x", 3, 4),
-        Token::new(TokenKind::Semicolon, ";", 4, 5),
+        Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "x", 3, 4).expect("valid token"),
+        Token::new_checked(TokenKind::Semicolon, ";", 4, 5).expect("valid token"),
     ];
     let mut stream = TokenStream::from_vec(tokens);
 
@@ -288,9 +290,9 @@ fn invalidate_peek_clears_cache_stream_reaches_eof() -> Result<(), Box<dyn std::
 fn invalidate_peek_on_buffered_stream_drops_cached_window() -> Result<(), Box<dyn std::error::Error>>
 {
     let tokens = vec![
-        Token::new(TokenKind::My, "my", 0, 2),
-        Token::new(TokenKind::Identifier, "x", 3, 4),
-        Token::new(TokenKind::Semicolon, ";", 4, 5),
+        Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "x", 3, 4).expect("valid token"),
+        Token::new_checked(TokenKind::Semicolon, ";", 4, 5).expect("valid token"),
     ];
     let mut stream = TokenStream::from_vec(tokens);
 
@@ -360,8 +362,10 @@ fn from_vec_and_live_lex_produce_identical_sequences() -> Result<(), Box<dyn std
 /// the stream must continue producing the same tokens unchanged.
 #[test]
 fn enter_format_mode_is_noop_in_buffered_mode() -> Result<(), Box<dyn std::error::Error>> {
-    let tokens =
-        vec![Token::new(TokenKind::My, "my", 0, 2), Token::new(TokenKind::Identifier, "x", 3, 4)];
+    let tokens = vec![
+        Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "x", 3, 4).expect("valid token"),
+    ];
     let mut stream = TokenStream::from_vec(tokens);
 
     // This should be a no-op without panicking.

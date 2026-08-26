@@ -486,7 +486,9 @@ mod tests {
             NodeKind::Error {
                 message: "oops".to_string(),
                 expected: vec![TokenKind::Identifier],
-                found: Some(Token::new(TokenKind::Identifier, "x", 0, 1)),
+                found: Some(
+                    Token::new_checked(TokenKind::Identifier, "x", 0, 1).expect("valid token"),
+                ),
                 partial: None,
             },
             loc(0, 1),

@@ -1793,7 +1793,7 @@ fn token_literal_preserve_region_overlapping(
             _ => continue,
         };
         // A token overlaps the range if its byte span intersects [range_byte_start, range_byte_end).
-        if token.start < range_byte_end && token.end > range_byte_start {
+        if token.start() < range_byte_end && token.end() > range_byte_start {
             return Some(kind_label);
         }
     }

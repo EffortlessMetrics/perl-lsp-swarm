@@ -119,7 +119,7 @@ impl<'a> Parser<'a> {
                 {
                     let op_token = self.consume_token()?;
                     let start = expr.location.start;
-                    let end = op_token.end;
+                    let end = op_token.end();
 
                     record_postfix_layer()?;
                     expr = Node::new(
@@ -1268,7 +1268,7 @@ impl<'a> Parser<'a> {
         }
         self.tokens.peek().ok().is_some_and(|token| {
             matches!(token.kind, TokenKind::Increment | TokenKind::Decrement)
-                && token.start > expr.location.end
+                && token.start() > expr.location.end
         })
     }
 
@@ -1348,7 +1348,7 @@ impl<'a> Parser<'a> {
         let token = self.tokens.next()?;
         Ok(Node::new(
             NodeKind::String { value: token.text.to_string(), interpolated: false },
-            SourceLocation { start: token.start, end: token.end },
+            SourceLocation { start: token.start(), end: token.end() },
         ))
     }
 
@@ -1450,7 +1450,7 @@ impl<'a> Parser<'a> {
         let token = self.tokens.next()?;
         Ok(Node::new(
             NodeKind::Identifier { name: token.text.to_string() },
-            SourceLocation { start: token.start, end: token.end },
+            SourceLocation { start: token.start(), end: token.end() },
         ))
     }
 

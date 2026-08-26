@@ -513,7 +513,7 @@ impl<'a> Parser<'a> {
         };
 
         let op_token = self.tokens.next()?;
-        let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+        let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
             missing
         } else {
             self.parse_assignment()?
@@ -572,16 +572,16 @@ impl<'a> Parser<'a> {
             return Err(ParseError::unexpected(
                 kind.display_name(),
                 token.kind.display_name(),
-                token.start,
+                token.start(),
             ));
         }
-        self.last_end_position = token.end;
+        self.last_end_position = token.end();
         Ok(token)
     }
 
     /// Get current position
     fn current_position(&mut self) -> usize {
-        self.tokens.peek().map(|t| t.start).unwrap_or_else(|_| {
+        self.tokens.peek().map(|t| t.start()).unwrap_or_else(|_| {
             // Default position when no token available
             0
         })
@@ -595,7 +595,7 @@ impl<'a> Parser<'a> {
     /// Consume next token and track position
     fn consume_token(&mut self) -> ParseResult<Token> {
         let token = self.tokens.next()?;
-        self.last_end_position = token.end;
+        self.last_end_position = token.end();
         Ok(token)
     }
 

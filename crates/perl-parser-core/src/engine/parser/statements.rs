@@ -12,7 +12,7 @@ impl<'a> Parser<'a> {
                 let t = self.consume_token()?;
                 statements.push(Node::new(
                     NodeKind::UnknownRest,
-                    SourceLocation { start: t.start, end: t.end },
+                    SourceLocation { start: t.start(), end: t.end() },
                 ));
                 // The truncated program still parses "successfully": record
                 // the terminal cause at this exact branch so the Ok path of
@@ -187,7 +187,7 @@ impl<'a> Parser<'a> {
             // Produce a String node (autoquoting) and continue as an expression statement
             let key_node = Node::new(
                 NodeKind::String { value: token.text.to_string(), interpolated: false },
-                SourceLocation { start: token.start, end: token.end },
+                SourceLocation { start: token.start(), end: token.end() },
             );
             // Now parse the rest of the expression (=> value, more pairs, etc.)
             // Re-enter the comma parser with the key already consumed
@@ -221,7 +221,7 @@ impl<'a> Parser<'a> {
         let mut stmt = if self.is_async_sub_start() {
             let async_token = self.consume_token()?;
             let mut sub_node = self.parse_subroutine()?;
-            sub_node.location.start = async_token.start;
+            sub_node.location.start = async_token.start();
             if let NodeKind::Subroutine { attributes, .. } = &mut sub_node.kind
                 && !attributes.iter().any(|attr| attr == "async")
             {
@@ -247,14 +247,14 @@ impl<'a> Parser<'a> {
                 if matches!(self.tokens.peek_second().map(|t| t.kind), Ok(TokenKind::Sub)) {
                     let decl_token = self.consume_token()?;
                     let mut sub_node = self.parse_subroutine()?;
-                    sub_node.location.start = decl_token.start;
+                    sub_node.location.start = decl_token.start();
                     // Inject the declarator into the Subroutine node
                     if let NodeKind::Subroutine { declarator, name, .. } = &mut sub_node.kind {
                         *declarator = Some(decl_token.text.to_string());
                         if name.is_none() {
                             self.errors.push(ParseError::syntax(
                                 "Expected subroutine name after scoped declarator",
-                                decl_token.start,
+                                decl_token.start(),
                             ));
                         }
                     }
@@ -489,7 +489,7 @@ impl<'a> Parser<'a> {
                     #[cfg_attr(not(test), allow(unused_variables))]
                     let (text, token_start, token_end) = {
                         let token = self.tokens.peek()?;
-                        (token.text.clone(), token.start, token.end)
+                        (token.text.clone(), token.start(), token.end())
                     };
                     if self.is_unknown_lowercase_bareword_call_pattern(&text) {
                         // The predicate stays the sole dispatch authority. The test-only
@@ -573,7 +573,7 @@ impl<'a> Parser<'a> {
             let semi_token = self.consume_token()?;
             // Track cursor after semicolon for heredoc content collection
             if self.pending_heredocs.is_empty() {
-                self.byte_cursor = semi_token.end;
+                self.byte_cursor = semi_token.end();
             }
             return Ok(());
         }
@@ -1318,7 +1318,7 @@ impl<'a> Parser<'a> {
         // Check if it's a builtin that can take arguments without parens
         if let Ok(token) = self.tokens.peek() {
             let token_text = token.text.clone();
-            let token_start = token.start;
+            let token_start = token.start();
 
             match token_text.as_ref() {
                 // Parenthesized nullary builtins are handled by the general

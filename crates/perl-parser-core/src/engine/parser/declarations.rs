@@ -14,10 +14,10 @@ impl<'a> Parser<'a> {
 
         let lead_start = self.current_position();
         let lead_end = if self.peek_kind() == Some(TokenKind::DoubleColon) {
-            self.tokens.next()?.end // consume '::'
+            self.tokens.next()?.end() // consume '::'
         } else {
             self.tokens.next()?; // consume first ':'
-            self.tokens.next()?.end // consume second ':'
+            self.tokens.next()?.end() // consume second ':'
         };
 
         if self.peek_kind().is_some_and(Self::can_be_sub_name) {
@@ -41,8 +41,8 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::Identifier)?
         };
         let mut name = first.text.to_string();
-        let name_start = first.start;
-        let mut name_end = first.end;
+        let name_start = first.start();
+        let mut name_end = first.end();
 
         if !allow_trailing_separator && name.ends_with("::") {
             return Err(ParseError::UnexpectedToken {
@@ -58,18 +58,18 @@ impl<'a> Parser<'a> {
         {
             if self.peek_kind() == Some(TokenKind::DoubleColon) {
                 let double_colon = self.tokens.next()?; // consume ::
-                name_end = double_colon.end;
+                name_end = double_colon.end();
             } else {
                 self.tokens.next()?; // consume first :
                 let second_colon = self.tokens.next()?; // consume second :
-                name_end = second_colon.end;
+                name_end = second_colon.end();
             }
 
             name.push_str("::");
 
             if self.peek_kind().is_some_and(Self::can_be_sub_name) {
                 let next = self.consume_token()?;
-                name_end = next.end;
+                name_end = next.end();
                 name.push_str(&next.text);
             } else if allow_trailing_separator {
                 break;
@@ -261,17 +261,17 @@ impl<'a> Parser<'a> {
         let (name, name_span) = if self.peek_kind() == Some(TokenKind::DoubleColon) {
             // Leading :: qualifier — subroutine in the main package (e.g., sub ::PCDATA { })
             let dc_token = self.tokens.next()?; // consume '::'
-            let name_start = dc_token.start;
+            let name_start = dc_token.start();
             if self.peek_kind().is_some_and(Self::can_be_sub_name) {
                 // sub ::PCDATA or sub ::DB_File::splice
                 let ident_token = self.tokens.next()?;
                 let full_name = format!("::{}", ident_token.text);
-                (Some(full_name), Some(SourceLocation { start: name_start, end: ident_token.end }))
+                (Some(full_name), Some(SourceLocation { start: name_start, end: ident_token.end() }))
             } else {
                 // sub :: with no following name — treat as name "::"
                 (
                     Some("::".to_string()),
-                    Some(SourceLocation { start: name_start, end: dc_token.end }),
+                    Some(SourceLocation { start: name_start, end: dc_token.end() }),
                 )
             }
         } else if self.peek_kind().is_some_and(Self::can_be_sub_name) {
@@ -358,8 +358,8 @@ impl<'a> Parser<'a> {
     fn parse_subroutine_name(&mut self) -> ParseResult<(String, SourceLocation)> {
         let first = self.tokens.next()?;
         let mut name = first.text.to_string();
-        let start = first.start;
-        let mut end = first.end;
+        let start = first.start();
+        let mut end = first.end();
 
         while self.peek_kind() == Some(TokenKind::DoubleColon)
             || (self.peek_kind() == Some(TokenKind::Colon)
@@ -367,17 +367,17 @@ impl<'a> Parser<'a> {
         {
             if self.peek_kind() == Some(TokenKind::DoubleColon) {
                 let double_colon = self.tokens.next()?;
-                end = double_colon.end;
+                end = double_colon.end();
             } else {
                 self.tokens.next()?;
                 let second_colon = self.tokens.next()?;
-                end = second_colon.end;
+                end = second_colon.end();
             }
             name.push_str("::");
 
             if self.peek_kind().is_some_and(Self::can_be_sub_name) {
                 let next = self.tokens.next()?;
-                end = next.end;
+                end = next.end();
                 name.push_str(&next.text);
             } else if self.peek_kind() == Some(TokenKind::DoubleColon)
                 || (self.peek_kind() == Some(TokenKind::Colon)
@@ -416,7 +416,7 @@ impl<'a> Parser<'a> {
         let package_name = package.text.trim_matches('\'');
         let sub_name = self.tokens.next()?;
         let name = format!("{package_name}::{}", sub_name.text);
-        Ok((name, SourceLocation { start: package.start, end: sub_name.end }))
+        Ok((name, SourceLocation { start: package.start(), end: sub_name.end() }))
     }
 
     /// Parse class declaration (Perl 5.38+)
@@ -510,8 +510,8 @@ impl<'a> Parser<'a> {
         let name_token = self.expect(TokenKind::Identifier)?;
         let name = name_token.text.to_string();
         let name_span = Some(SourceLocation {
-            start: name_token.start,
-            end: name_token.end,
+            start: name_token.start(),
+            end: name_token.end(),
         });
 
         let mut attributes = self.parse_declaration_attributes()?;
@@ -580,18 +580,18 @@ impl<'a> Parser<'a> {
                 return Err(ParseError::UnexpectedToken {
                     expected: "format assignment".to_string(),
                     found: token.kind.display_name().to_string(),
-                    location: token.start,
+                    location: token.start(),
                 });
             };
             let name = raw[1..assign_index].trim().to_string();
             let mut body = raw[assign_index + 1..].to_string();
-            let mut end = token.end;
+            let mut end = token.end();
             if let Some(terminator_start) = body.find("\n.") {
                 body.truncate(terminator_start + 1);
             } else {
                 while !self.tokens.is_eof() {
                     let body_token = self.tokens.next()?;
-                    end = body_token.end;
+                    end = body_token.end();
                     if body_token.text.as_ref() == "." {
                         break;
                     }
@@ -599,8 +599,8 @@ impl<'a> Parser<'a> {
                 }
             }
             let name_span = Some(SourceLocation {
-                start: token.start,
-                end: token.start + assign_index,
+                start: token.start(),
+                end: token.start() + assign_index,
             });
             return Ok(Node::new(
                 NodeKind::Format { name, name_span, body },
@@ -616,18 +616,18 @@ impl<'a> Parser<'a> {
             let name_token = self.tokens.next()?;
             let assign = self.tokens.next()?;
             let mut body = String::new();
-            let mut end = assign.end;
+            let mut end = assign.end();
             while !self.tokens.is_eof() {
                 let body_token = self.tokens.next()?;
-                end = body_token.end;
+                end = body_token.end();
                 if body_token.text.as_ref() == "." {
                     break;
                 }
                 body.push_str(body_token.text.as_ref());
             }
             let name_span = Some(SourceLocation {
-                start: name_token.start,
-                end: name_token.end,
+                start: name_token.start(),
+                end: name_token.end(),
             });
             return Ok(Node::new(
                 NodeKind::Format {
@@ -647,8 +647,8 @@ impl<'a> Parser<'a> {
             let double_colon = self.tokens.next()?;
             let name_token = self.expect(TokenKind::Identifier)?;
             let span = SourceLocation {
-                start: double_colon.start,
-                end: name_token.end,
+                start: double_colon.start(),
+                end: name_token.end(),
             };
             (format!("::{}", name_token.text), Some(span))
         } else if self
@@ -665,8 +665,8 @@ impl<'a> Parser<'a> {
             let tick = self.tokens.next()?;
             let name_token = self.tokens.next()?;
             let span = SourceLocation {
-                start: tick.start,
-                end: name_token.end,
+                start: tick.start(),
+                end: name_token.end(),
             };
             (name_token.text.to_string(), Some(span))
         } else if self.peek_kind() == Some(TokenKind::String)
@@ -676,16 +676,16 @@ impl<'a> Parser<'a> {
         {
             let name_token = self.tokens.next()?;
             let span = SourceLocation {
-                start: name_token.start,
-                end: name_token.end,
+                start: name_token.start(),
+                end: name_token.end(),
             };
             (name_token.text.trim_matches('\'').to_string(), Some(span))
         } else {
             // Named format
             let name_token = self.expect(TokenKind::Identifier)?;
             let span = SourceLocation {
-                start: name_token.start,
-                end: name_token.end,
+                start: name_token.start(),
+                end: name_token.end(),
             };
             (name_token.text.to_string(), Some(span))
         };
@@ -704,7 +704,7 @@ impl<'a> Parser<'a> {
             return Err(ParseError::UnexpectedToken {
                 expected: "format body".to_string(),
                 found: body_token.kind.display_name().to_string(),
-                location: body_token.start,
+                location: body_token.start(),
             });
         };
 
@@ -846,7 +846,7 @@ impl<'a> Parser<'a> {
                             "Expected module name or version, found {}",
                             first_token.kind.display_name()
                         ),
-                        first_token.start,
+                        first_token.start(),
                     ));
                 }
             };
@@ -1342,7 +1342,7 @@ impl<'a> Parser<'a> {
         let name = name_token.text.to_string();
 
         // Capture name_span from token for precise LSP navigation
-        let name_span = Some(SourceLocation { start: name_token.start, end: name_token.end });
+        let name_span = Some(SourceLocation { start: name_token.start(), end: name_token.end() });
 
         let block = self.parse_block()?;
         let end = block.location.end;
@@ -1369,7 +1369,7 @@ impl<'a> Parser<'a> {
         let phase = phase_token.text.to_string();
 
         // Capture phase_span from token for precise LSP navigation
-        let phase_span = Some(SourceLocation { start: phase_token.start, end: phase_token.end });
+        let phase_span = Some(SourceLocation { start: phase_token.start(), end: phase_token.end() });
 
         // Phase blocks must be followed by a block
         if self.peek_kind() != Some(TokenKind::LeftBrace) {
@@ -1432,7 +1432,7 @@ impl<'a> Parser<'a> {
                     "Expected module name after 'no', found {}",
                     first_token.kind.display_name()
                 ),
-                first_token.start,
+                first_token.start(),
             ));
         };
 

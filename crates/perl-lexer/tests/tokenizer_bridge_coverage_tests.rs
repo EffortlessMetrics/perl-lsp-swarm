@@ -455,8 +455,8 @@ fn token_positions_are_correct_for_simple_source() -> Result<(), Box<dyn std::er
     let mut s = TokenStream::new("my $x");
     let t = must(s.next());
     assert_eq!(t.kind, TokenKind::My);
-    assert_eq!(t.start, 0);
-    assert_eq!(t.end, 2);
+    assert_eq!(t.start(), 0);
+    assert_eq!(t.end(), 2);
     Ok(())
 }
 
@@ -466,8 +466,8 @@ fn token_positions_account_for_whitespace() -> Result<(), Box<dyn std::error::Er
     let mut s = TokenStream::new("   42");
     let t = must(s.next());
     assert_eq!(t.kind, TokenKind::Number);
-    assert_eq!(t.start, 3);
-    assert_eq!(t.end, 5);
+    assert_eq!(t.start(), 3);
+    assert_eq!(t.end(), 5);
     Ok(())
 }
 
@@ -478,7 +478,7 @@ fn token_positions_account_for_comments() -> Result<(), Box<dyn std::error::Erro
     let mut s = TokenStream::new(src);
     let t = must(s.next());
     assert_eq!(t.kind, TokenKind::Number);
-    assert!(t.start >= 10, "Number should start after comment, start={}", t.start);
+    assert!(t.start() >= 10, "Number should start after comment, start={}", t.start());
     Ok(())
 }
 
