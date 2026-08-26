@@ -6,7 +6,8 @@ use crate::model::{
 };
 use crate::normalize::{matches_any_selector, normalize_source_item, source_form_allowed};
 use crate::runner_model::{
-    InvocationCaptureStatus, RUNNER_PLAN_SCHEMA_VERSION, RunnerKind, RunnerPlan, RunnerScheduling,
+    DiscoveryFrame, InvocationCaptureStatus, RUNNER_PLAN_SCHEMA_VERSION, RunnerKind, RunnerPlan,
+    RunnerScheduling, SOURCE_NORMALIZATION_SCHEMA_VERSION,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -18,11 +19,30 @@ const DISCOVERY_DECLARATION_LIMITATION: &str =
 const DIRECT_FALLBACK_LIMITATION: &str = "direct_fallback_missing_upstream_selection_context";
 const ALTERNATE_RUNNER_LIMITATION: &str = "alternate_runner_requires_membership_parity_evidence";
 
+#[cfg(test)]
 pub(crate) fn build_runner_plan(
     matrix: &UpstreamTargetMatrix,
     target_id: &str,
     runner: RunnerKind,
     raw_discovery: &[u8],
+    scheduling: RunnerScheduling,
+) -> Result<RunnerPlan, String> {
+    build_runner_plan_with_frame(
+        matrix,
+        target_id,
+        runner,
+        raw_discovery,
+        DiscoveryFrame::CanonicalRepositoryPath,
+        scheduling,
+    )
+}
+
+pub(crate) fn build_runner_plan_with_frame(
+    matrix: &UpstreamTargetMatrix,
+    target_id: &str,
+    runner: RunnerKind,
+    raw_discovery: &[u8],
+    discovery_frame: DiscoveryFrame,
     scheduling: RunnerScheduling,
 ) -> Result<RunnerPlan, String> {
     matrix.validate()?;
@@ -38,7 +58,7 @@ pub(crate) fn build_runner_plan(
     let mut source_items = Vec::new();
     let mut seen = BTreeSet::new();
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
-        let item = normalize_source_item(line)?;
+        let item = normalize_source_item(line, discovery_frame)?;
         if !source_form_allowed(item.source_form, &script_forms) {
             return Err(format!(
                 "target {target_id} does not allow source form {:?} for {}",
@@ -87,6 +107,8 @@ pub(crate) fn build_runner_plan(
         runner_entrypoint: runner.entrypoint().to_string(),
         canonical_selection_entrypoint: canonical_authority.entrypoint,
         raw_discovery_digest,
+        normalization_schema: SOURCE_NORMALIZATION_SCHEMA_VERSION.to_string(),
+        discovery_frame,
         source_items,
         normalized_order,
         normalized_membership,
@@ -106,6 +128,12 @@ pub(crate) fn validate_runner_plan(plan: &RunnerPlan) -> Result<(), String> {
     validate_sha256(&plan.matrix_fingerprint, "matrix fingerprint")?;
     validate_sha256(&plan.target_contract_digest, "target contract digest")?;
     validate_sha256(&plan.raw_discovery_digest, "raw discovery digest")?;
+    if plan.normalization_schema != SOURCE_NORMALIZATION_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported source normalization schema {}",
+            plan.normalization_schema
+        ));
+    }
     validate_stable_id(&plan.target_id, "target ID")?;
     if plan.runner_entrypoint != plan.runner.entrypoint() {
         return Err(format!(
@@ -134,7 +162,7 @@ pub(crate) fn validate_runner_plan(plan: &RunnerPlan) -> Result<(), String> {
 
     let mut seen = BTreeSet::new();
     for item in &plan.source_items {
-        let normalized = normalize_source_item(&item.raw_path)?;
+        let normalized = normalize_source_item(&item.raw_path, item.discovery_frame)?;
         if normalized != *item {
             return Err(format!(
                 "runner source item {} disagrees with normalized raw path",
@@ -207,11 +235,12 @@ pub(crate) fn validate_runner_plan_against(
     plan: &RunnerPlan,
 ) -> Result<(), String> {
     validate_runner_plan(plan)?;
-    let rebuilt = build_runner_plan(
+    let rebuilt = build_runner_plan_with_frame(
         matrix,
         &plan.target_id,
         plan.runner,
         raw_discovery,
+        plan.discovery_frame,
         plan.scheduling.clone(),
     )?;
     if rebuilt != *plan {
@@ -228,7 +257,7 @@ pub(crate) fn runner_plan_digest(plan: &RunnerPlan) -> Result<String, String> {
     sha256_json(plan)
 }
 
-fn find_target<'a>(
+pub(crate) fn find_target<'a>(
     matrix: &'a UpstreamTargetMatrix,
     target_id: &str,
 ) -> Result<&'a TargetMatrixEntry, String> {
@@ -239,7 +268,7 @@ fn find_target<'a>(
         .ok_or_else(|| format!("target matrix has no target {target_id}"))
 }
 
-fn effective_selection(
+pub(crate) fn effective_selection(
     matrix: &UpstreamTargetMatrix,
     entry: &TargetMatrixEntry,
 ) -> Result<(Vec<crate::model::TargetSelector>, Vec<TargetScriptForm>), String> {
@@ -269,7 +298,7 @@ fn effective_selection(
     }
 }
 
-fn effective_selection_authority(
+pub(crate) fn effective_selection_authority(
     matrix: &UpstreamTargetMatrix,
     entry: &TargetMatrixEntry,
 ) -> Result<TargetAuthority, String> {

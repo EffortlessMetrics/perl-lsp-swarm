@@ -1,0 +1,453 @@
+{
+  "schema_version": 2,
+  "source": "7eea107b67d56944e883103f4624ceb32198824d",
+  "boundary": "ed546227c1233d8171cc758dc30f38505544112f",
+  "target": "287a4275794411040eda128c98c92e823cf9aba1",
+  "population_digest": "c5dc7bd6c5711d5adbdc788447ccefc3c7d63684a407995faf9bee05d9c68d6c",
+  "verdict": "blocked",
+  "blockers": [
+    "pending_port: test(lsp) dependency roots reach providers (#3553) has no coverage in crates/perl-lsp-rs/tests at source 7eea107b6; drive a bounded swarm port PR before final freeze (#7983)",
+    "publication_sync_contract_ownership: rows 07cf813f6/c4e03ab73 add scripts/publication_sync_check.py + schemas/publication_sync.v2.schema.json + tests absent from swarm; decide whether swarm adopts that harness or its validate_public_release_claims.py / verify-publication-facts.sh stack owns the invariant",
+    "dependency_currency_lag: swarm Cargo.lock at source holds regex-automata 0.4.16 (< release 0.4.18); surface as a swarm-side upgrade follow-up, not as a port of a lockfile-only commit"
+  ],
+  "entries": [
+    {
+      "commit": "0375bf19a9289c5a285c1cb5c96fb8ab3578da4c",
+      "subject": "chore(deps)(deps): bump softprops/action-gh-release",
+      "disposition": "release_lineage_only",
+      "source_commit": null,
+      "owner": "EffortlessMetrics/perl-lsp publication pipeline (.github/workflows/release.yml)",
+      "rationale": null,
+      "changed_paths": [
+        ".github/workflows/release.yml"
+      ],
+      "evidence": [
+        "git show 0375bf19a: dependabot action-version bump confined to the release repository's publish workflow; no runtime, product, or test path touched"
+      ],
+      "release_sync_effect": "exclude",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "07cf813f6b8af58a3b3d15e68786d1ee77302852",
+      "subject": "fix(ci): close inherited-packet, body-edit, and control-dir gaps (#10088)",
+      "disposition": null,
+      "source_commit": null,
+      "owner": null,
+      "rationale": null,
+      "changed_paths": [
+        ".github/workflows/publication-sync-contract.yml",
+        "scripts/publication_sync_check.py",
+        "scripts/tests/test-publication-sync-contract.py"
+      ],
+      "evidence": [
+        "git ls-tree at source 7eea107b6: scripts/publication_sync_check.py and schemas/publication_sync.v2.schema.json do not exist in swarm",
+        "swarm has differently shaped publication verification (scripts/validate_public_release_claims.py, scripts/verify-publication-facts.sh, scripts/check-v2-bundle-sync.sh); coverage comparison against the python harness is an open ownership decision",
+        "row stays explicitly unresolved because the changed set includes a test path, so release_lineage_only can never cover it"
+      ],
+      "release_sync_effect": null,
+      "blocking_decisions": [
+        "publication_sync_contract_ownership"
+      ]
+    },
+    {
+      "commit": "0cf55ae9ba3a91b4a26c0ddae6c4395a5a137439",
+      "subject": "chore(dap): deprecate legacy bridge API (#9951) (#10029)",
+      "disposition": "superseded_by_newer_architecture",
+      "source_commit": null,
+      "owner": "crates/perl-dap current architecture in swarm (debug_adapter/, backend/, feature_catalog.rs fresh-reference stack)",
+      "rationale": null,
+      "changed_paths": [
+        "crates/perl-dap/src/bridge_adapter.rs",
+        "crates/perl-dap/src/lib.rs",
+        "crates/perl-dap/src/server/lifecycle.rs",
+        "crates/perl-dap/src/server/mode.rs",
+        "crates/perl-dap/tests/dap_dependency_tests.rs"
+      ],
+      "evidence": [
+        "git ls-tree at target 287a42757: the deprecated bridge_adapter.rs and server/{lifecycle,mode}.rs belong to the release line's server/bridge stack",
+        "git ls-tree at source 7eea107b6: swarm perl-dap has no bridge_adapter.rs and no src/server/ module set; it evolved debug_adapter/, backend/, breakpoint_oracle.rs instead, so there is no legacy bridge API in swarm to deprecate",
+        "this population contains no competing dispatcher implementation beyond this internal deprecation; DAP-line convergence itself follows the #4348 promotion, flagged for review rather than a separate dap_dispatch ruling"
+      ],
+      "release_sync_effect": "none",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "1148fcbfa226832a37325f832207ca3e748b38ff",
+      "subject": "chore(deps)(deps): bump tokio in the tokio group across 1 directory (#10040)",
+      "disposition": "deliberately_abandoned",
+      "source_commit": null,
+      "owner": null,
+      "rationale": "Cargo.lock-only dependabot currency bump (tokio 1.52.3 -> 1.53.1); importing the release repository's lockfile patch is rejected because swarm resolves its own dependency graph, and swarm's lock at source already pins tokio 1.53.1",
+      "changed_paths": [
+        "Cargo.lock"
+      ],
+      "evidence": [
+        "git show 1148fcbfa -- Cargo.lock: tokio 1.52.3 -> 1.53.1, no other path",
+        "git grep at source 7eea107b6: Cargo.lock tokio version = 1.53.1"
+      ],
+      "release_sync_effect": "none",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "1517e39451bc29b68bff4f1ed447a4cfb218bd22",
+      "subject": "chore(deps)(deps): bump dtolnay/rust-toolchain (#10042)",
+      "disposition": "release_lineage_only",
+      "source_commit": null,
+      "owner": "EffortlessMetrics/perl-lsp CI governance (.github/workflows action pins)",
+      "rationale": null,
+      "changed_paths": [
+        ".github/workflows/agent-capability-gate.yml",
+        ".github/workflows/brew-bump.yml",
+        ".github/workflows/changelog-advisory.yml",
+        ".github/workflows/ci-gate-self-tests.yml",
+        ".github/workflows/ci-nightly.yml",
+        ".github/workflows/ci-security.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/docs-deploy.yml",
+        ".github/workflows/em-ci-routed-rust.yml",
+        ".github/workflows/flake-detection.yml",
+        ".github/workflows/lsp-318-claim-guard.yml",
+        ".github/workflows/perl-version-matrix.yml",
+        ".github/workflows/post-merge-corpus-ratchet.yml",
+        ".github/workflows/post-merge-status.yml",
+        ".github/workflows/post-publish-smoke.yml",
+        ".github/workflows/publish-crates.yml",
+        ".github/workflows/publish-dry-run.yml",
+        ".github/workflows/release-orchestration.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/ux-regression-gate.yml",
+        ".github/workflows/version-bump.yml",
+        ".github/workflows/vscode-current-source-linux-smoke.yml",
+        ".github/workflows/workflow-contracts-advisory.yml",
+        ".github/workflows/workflow-policy.yml",
+        ".github/workflows/workflow-trigger-lint.yml"
+      ],
+      "evidence": [
+        "git show 1517e3945: dependabot toolchain-action version bump across 25 workflow files only; swarm maintains its own workflow action pins independently"
+      ],
+      "release_sync_effect": "exclude",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "1fe56093a6b3529ae3456edcba9e21fa276b45f9",
+      "subject": "docs(vscode): route onboarding health checks through extension (#0000) (#10023)",
+      "disposition": "already_equivalent_in_swarm",
+      "source_commit": "529678c2360e3c6b0c3c8eaf645d90d81d242994",
+      "owner": null,
+      "rationale": null,
+      "changed_paths": [
+        "docs/tutorials/GETTING_STARTED.md",
+        "vscode-extension/package.json",
+        "vscode-extension/src/test/walkthrough.test.ts"
+      ],
+      "evidence": [
+        "swarm commit 529678c2360e3c6b0c3c8eaf645d90d81d242994 'docs(vscode): route onboarding health checks through extension (#6183) (#6182)' landed the same change earlier; merge-base --is-ancestor confirms it is reachable from source 7eea107b6",
+        "current-state corroboration at source: vscode-extension/package.json:950 contributes perl-lsp.runHealthCheck and walkthrough.test.ts:145 asserts the verify-perl step exposes it",
+        "residual wording differences in description text and GETTING_STARTED are copy-level, not behavioral"
+      ],
+      "release_sync_effect": "none",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "239942e6d8ce22e0b2b4f4da123ad10679c84f31",
+      "subject": "chore(deps)(deps): bump EffortlessMetrics/ub-review (#10065)",
+      "disposition": "release_lineage_only",
+      "source_commit": null,
+      "owner": "EffortlessMetrics/perl-lsp CI governance (.github/workflows/ub-review.yml)",
+      "rationale": null,
+      "changed_paths": [
+        ".github/workflows/ub-review.yml"
+      ],
+      "evidence": [
+        "git show 239942e6d: dependabot action bump confined to one release-repository review workflow"
+      ],
+      "release_sync_effect": "exclude",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "2819142b0b7937b6f64644dee1bd37f23264d109",
+      "subject": "docs(agent): require decision shapes in specs (#7128) (#10027)",
+      "disposition": "release_lineage_only",
+      "source_commit": null,
+      "owner": "EffortlessMetrics/perl-lsp process governance (.claude agent definitions and reference gates doc)",
+      "rationale": null,
+      "changed_paths": [
+        ".claude/agents/spec-planner.md",
+        ".claude/commands/spec-planner-plan.md",
+        "docs/reference/PIPELINE_GATES.md"
+      ],
+      "evidence": [
+        "changed set is markdown process documentation only; swarm maintains its own .claude agent/commands tree and docs/agents authority model independently of the release repository's copies"
+      ],
+      "release_sync_effect": "exclude",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "333497691787e5d7ed6789a21c42360b4dca08fb",
+      "subject": "fix(install): correct the Windows installer asset name and the curl-pipe bootstrap (#10067)",
+      "disposition": "superseded_by_newer_architecture",
+      "source_commit": null,
+      "owner": "swarm installer rearchitecture: install.ps1 asset probing with x64-emulation fallback plus wrapper-model bootstrap (scripts/install.sh line 5: the canonical installer is not itself a mutable curl-pipe authority)",
+      "rationale": null,
+      "changed_paths": [
+        ".github/workflows/ci-gate-self-tests.yml",
+        "install.ps1",
+        "install.sh",
+        "scripts/install.sh",
+        "scripts/tests/test-installer-zero-args.sh"
+      ],
+      "evidence": [
+        "release fix renames the requested asset to perllsp and guards bare BASH_SOURCE expansion under curl|bash",
+        "swarm install.ps1 at source 7eea107b6 probes actual release assets for both naming schemes and falls back to the x64 build under emulation when a native ARM64 asset is absent (lines 142-298), subsuming the asset-name fix",
+        "swarm scripts/install.sh replaces the curl-pipe bootstrap with a wrapper model, eliminating the unbound-variable failure mode the release fix patched"
+      ],
+      "release_sync_effect": "none",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "4f0de95797a6769d237b5aea77990683acfd0367",
+      "subject": "fix(ci): ratchet test-source panic usage (#4904) (#10024)",
+      "disposition": "superseded_by_newer_architecture",
+      "source_commit": null,
+      "owner": "crates/perl-ci-hygiene/src/commands/panic_test plus .ci/debt-ledger.yaml baseline infrastructure",
+      "rationale": null,
+      "changed_paths": [
+        ".ci/debt-ledger.yaml",
+        "ci/panic_test_baseline.txt",
+        "ci/unwrap_test_baseline.txt",
+        "crates/perl-ci-hygiene/src/cli.rs",
+        "crates/perl-ci-hygiene/src/main.rs",
+        "justfile"
+      ],
+      "evidence": [
+        "swarm at source 7eea107b6 has no ci/panic_test_baseline.txt or ci/unwrap_test_baseline.txt; it owns .ci/debt-ledger.yaml, crates/perl-ci-hygiene/src/commands/panic_test/mod.rs, and tests/test_quality_baseline_infrastructure.rs instead",
+        "the flat cli.rs/main.rs shape the release patch modifies no longer exists in swarm's perl-ci-hygiene, which grew a commands/ module structure"
+      ],
+      "release_sync_effect": "none",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "666981ab5571a8e7844cd6232f2b48a567391e93",
+      "subject": "chore(deps)(deps): bump docker/login-action from 4.4.0 to 4.6.0 (#10064)",
+      "disposition": "release_lineage_only",
+      "source_commit": null,
+      "owner": "EffortlessMetrics/perl-lsp publication pipeline (.github/workflows/docker-publish.yml)",
+      "rationale": null,
+      "changed_paths": [
+        ".github/workflows/docker-publish.yml"
+      ],
+      "evidence": [
+        "git show 666981ab5: dependabot action bump to the release-only docker publish workflow"
+      ],
+      "release_sync_effect": "exclude",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "71916684b1b34b504d01082a201a3c97821430f4",
+      "subject": "test(lsp): prove dependency roots reach providers (#3553)",
+      "disposition": null,
+      "source_commit": null,
+      "owner": null,
+      "rationale": null,
+      "changed_paths": [
+        "crates/perl-lsp-rs/tests/dependency_manager_lsp_tests.rs"
+      ],
+      "evidence": [
+        "git ls-tree at source 7eea107b6: crates/perl-lsp-rs/tests contains no dependency_manager_lsp_tests.rs",
+        "git grep for dependency_manager/DependencyManager across crates/perl-lsp-rs/tests at source returns nothing, so no differently shaped coverage was found",
+        "test authority is genuinely absent from swarm; a planned port cannot satisfy port_to_swarm until merged, so the row stays explicitly unresolved and drives the follow-up port PR"
+      ],
+      "release_sync_effect": null,
+      "blocking_decisions": [
+        "pending_port: dependency roots reach providers test"
+      ]
+    },
+    {
+      "commit": "846603420bb20c05bbfa9a77e363ea0f3155b277",
+      "subject": "docs(semantic): consolidate Wave 2 scope and sequencing in canonical plan (#0000)",
+      "disposition": "release_lineage_only",
+      "source_commit": null,
+      "owner": "EffortlessMetrics/perl-lsp project-planning documentation (docs/project/SEMANTIC_SUBSTRATE_FIRST_WAVE_PLAN.md)",
+      "rationale": null,
+      "changed_paths": [
+        "docs/project/SEMANTIC_SUBSTRATE_FIRST_WAVE_PLAN.md"
+      ],
+      "evidence": [
+        "single planning markdown file; semantic-substrate work proceeds in swarm under its own plan documents, so the release-side plan copy is lineage documentation"
+      ],
+      "release_sync_effect": "exclude",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "939e9b0eee1c046c9a42d01cd28470c4c6c2010a",
+      "subject": "chore(deps)(deps-dev): bump source-map in /vscode-extension (#10037)",
+      "disposition": "deliberately_abandoned",
+      "source_commit": null,
+      "owner": null,
+      "rationale": "dev-dependency manifest bump (source-map 0.7.6 -> 0.8.0); swarm's vscode-extension/package.json at source already pins source-map 0.8.0, so importing the release-side bump adds nothing",
+      "changed_paths": [
+        "vscode-extension/package-lock.json",
+        "vscode-extension/package.json"
+      ],
+      "evidence": [
+        "git show 939e9b0ee: source-map 0.7.6 -> 0.8.0",
+        "git grep at source 7eea107b6: vscode-extension/package.json:1456 has \"source-map\": \"0.8.0\""
+      ],
+      "release_sync_effect": "none",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "a3e51152e463e3815772b23b9026a73de6b04d01",
+      "subject": "ci(cache): warm merge-gate artifacts after merges (#4827) (#10026)",
+      "disposition": "superseded_by_newer_architecture",
+      "source_commit": null,
+      "owner": "swarm xtask/src/tasks/workflow_policy_lint.rs authority over swarm's own workflow inventory",
+      "rationale": null,
+      "changed_paths": [
+        ".github/workflows/post-merge-cache-warm.yml",
+        "xtask/src/tasks/workflow_policy_lint.rs"
+      ],
+      "evidence": [
+        "git show a3e51152: adds a release-repository post-merge cache-warm workflow and registers it in the release side's workflow-policy lint",
+        "the touched xtask/src/tasks/workflow_policy_lint.rs exists in swarm as an independently evolved authority governing swarm's own workflow set; the release-side registration concerns a workflow absent from swarm's inventory, so there is no product behavior to port"
+      ],
+      "release_sync_effect": "none",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "c4e03ab73649c625aa5bf29a1b6ddb5ed256199e",
+      "subject": "ci(sync): require the audited 0.18.0-rc.1 publication join (#10088)",
+      "disposition": null,
+      "source_commit": null,
+      "owner": null,
+      "rationale": null,
+      "changed_paths": [
+        ".ci/policies/required-checks.toml",
+        ".github/PULL_REQUEST_TEMPLATE.md",
+        ".github/workflows/publication-sync-contract.yml",
+        "schemas/publication_sync.v2.schema.json",
+        "scripts/publication_sync_check.py",
+        "scripts/tests/test-publication-sync-contract.py"
+      ],
+      "evidence": [
+        "introduces the publication-sync schema v2 and binds the audited 0.18.0-rc.1 join into release-required checks; none of scripts/publication_sync_check.py, schemas/publication_sync.v2.schema.json exists in swarm at source",
+        "same open ownership decision as 07cf813f6: adopt the release harness in swarm or declare the existing swarm publication verification stack the owner",
+        "row remains unresolved; the test path forbids a wholesale release_lineage_only classification"
+      ],
+      "release_sync_effect": null,
+      "blocking_decisions": [
+        "publication_sync_contract_ownership"
+      ]
+    },
+    {
+      "commit": "c636be32cc37f98a7739c7cca7e47f4cb9ae8858",
+      "subject": "docs(changelog): backfill 0.15.1 through 0.17.0 (#9960) (#9957)",
+      "disposition": "release_lineage_only",
+      "source_commit": null,
+      "owner": "EffortlessMetrics/perl-lsp release documentation (CHANGELOG.md)",
+      "rationale": null,
+      "changed_paths": [
+        "CHANGELOG.md"
+      ],
+      "evidence": [
+        "changelog backfill for released versions is publication-repository history by definition; swarm's own changelog ledger evolves independently"
+      ],
+      "release_sync_effect": "exclude",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "ca493c617e6ab02ed3fe75b568f5c30b928b69ac",
+      "subject": "chore(deps)(deps): bump the dependencies group across 1 directory with 9 updates (#10068)",
+      "disposition": "deliberately_abandoned",
+      "source_commit": null,
+      "owner": null,
+      "rationale": "Cargo.lock-only dependabot group bump; every bumped package is already present at the bumped-or-newer version in swarm's lock at source except regex-automata (swarm 0.4.16 vs release 0.4.18), which is surfaced as a blocker-level follow-up. similar resolves twice in swarm (2.7.0 transitive via insta, 3.2.0 direct for xtask's \"3.1\" requirement), so the direct side already exceeds the release bump. Importing the release lockfile patch is rejected",
+      "changed_paths": [
+        "Cargo.lock"
+      ],
+      "evidence": [
+        "git show ca493c617 -- Cargo.lock lists the bumped pairs",
+        "swarm Cargo.lock at source 7eea107b6: anyhow 1.0.104, clap 4.6.6, clap_builder 4.6.6, clap_derive 4.6.4, glob 0.3.4, regex 1.13.1, regex-automata 0.4.16 (lag), stacker 0.1.25, thiserror 2.0.20, toml 1.1.4+spec, which 8.0.5",
+        "similar appears twice in swarm's lock: 2.7.0 (transitive via insta) and 3.2.0 (direct, satisfying xtask/Cargo.toml similar = \"3.1\"), so no similar-side lag exists"
+      ],
+      "release_sync_effect": "none",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "cd60f9289d7244f418f2e96ef8c2e6fc8795d15a",
+      "subject": "sync(goals): remove RTK proof-command dependency (#10054)",
+      "disposition": "superseded_by_newer_architecture",
+      "source_commit": null,
+      "owner": "xtask goal-manifest retirement: b389aca6e refactor(goals): retire tracked work selector authority (#5205) (#5332)",
+      "rationale": null,
+      "changed_paths": [
+        ".perl-lsp/goals/compiler-program.toml",
+        ".perl-lsp/goals/lsp-freshness.toml",
+        ".perl-lsp/goals/programs/real_perl_editor_trust.toml",
+        "xtask/src/tasks/active_goal_manifest.rs"
+      ],
+      "evidence": [
+        "swarm retired the tracked-goals authority (b389aca6e, reachable from source) and has no .perl-lsp/goals directory at source 7eea107b6",
+        "xtask/src/tasks/active_goal_manifest.rs still exists in swarm but contains no rtk references (git grep at source returns nothing)"
+      ],
+      "release_sync_effect": "none",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "cdd67d0b5be83ee9ad278be03f7563862127bba3",
+      "subject": "chore(deps)(deps): bump the serde group across 1 directory with 2 updates (#10039)",
+      "disposition": "deliberately_abandoned",
+      "source_commit": null,
+      "owner": null,
+      "rationale": "Cargo.lock-only dependabot serde-group bump (serde/serde_core/serde_derive 1.0.229, serde_json 1.0.151); swarm's lock at source pins identical versions, so the release-side bump is redundant state",
+      "changed_paths": [
+        "Cargo.lock"
+      ],
+      "evidence": [
+        "git show cdd67d0b: serde family -> 1.0.229, serde_json -> 1.0.151",
+        "swarm Cargo.lock at source 7eea107b6: serde 1.0.229, serde_core 1.0.229, serde_derive 1.0.229, serde_json 1.0.151"
+      ],
+      "release_sync_effect": "none",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "e98e9c714b8cca76146fe3c80624c543400ba5a2",
+      "subject": "chore(deps)(deps-dev): bump the typescript group across 1 directory with 2 updates (#10056)",
+      "disposition": "deliberately_abandoned",
+      "source_commit": null,
+      "owner": null,
+      "rationale": "dev-tool manifest bump (oxfmt 0.58.0 -> 0.62.0, oxlint 1.73.0 -> 1.77.0); swarm's package.json at source already pins newer oxfmt 0.64.0 and oxlint 1.79.0",
+      "changed_paths": [
+        "vscode-extension/package-lock.json",
+        "vscode-extension/package.json"
+      ],
+      "evidence": [
+        "git show e98e9c714: oxfmt -> 0.62.0, oxlint -> 1.77.0",
+        "git grep at source 7eea107b6: vscode-extension/package.json:1452-1453 pin oxfmt 0.64.0 and oxlint 1.79.0"
+      ],
+      "release_sync_effect": "none",
+      "blocking_decisions": []
+    },
+    {
+      "commit": "f4b2033515bdb736eaa7686d6804d793d9dae4dc",
+      "subject": "chore(deps)(deps): bump taiki-e/install-action from 2.83.1 to 2.85.10 (#10063)",
+      "disposition": "release_lineage_only",
+      "source_commit": null,
+      "owner": "EffortlessMetrics/perl-lsp CI governance (.github/workflows action pins)",
+      "rationale": null,
+      "changed_paths": [
+        ".github/workflows/ci-nightly.yml",
+        ".github/workflows/ci-security.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/flake-detection.yml",
+        ".github/workflows/post-merge-corpus-ratchet.yml",
+        ".github/workflows/ux-regression-gate.yml"
+      ],
+      "evidence": [
+        "git show f4b203351: dependabot install-action bump across six workflow files only"
+      ],
+      "release_sync_effect": "exclude",
+      "blocking_decisions": []
+    }
+  ]
+}

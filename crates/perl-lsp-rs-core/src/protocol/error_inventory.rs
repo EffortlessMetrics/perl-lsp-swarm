@@ -124,19 +124,36 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             sample_category: Some(ErrorCategory::Protocol),
             sample_disposition: Some(disposition_for(ErrorCategory::Protocol)),
         },
+        // Full parse enums stay unclassified: UnrecognizedFormat / unterminated
+        // variants are origin-ambiguous until the #8746 debugger-output wrapper.
+        // #8739 classifies only the fixed-origin projections beside them.
         ErrorInventoryEntry {
             type_name: "StackParseError",
+            crate_name: "perl-dap",
+            has_error_class: false, // Origin-ambiguous; #8746
+            sample_category: None,
+            sample_disposition: None,
+        },
+        ErrorInventoryEntry {
+            type_name: "VariableParseError",
+            crate_name: "perl-dap",
+            has_error_class: false, // Origin-ambiguous; #8746
+            sample_category: None,
+            sample_disposition: None,
+        },
+        ErrorInventoryEntry {
+            type_name: "FixedOriginStackParseError",
             crate_name: "perl-dap",
             has_error_class: true,
             sample_category: Some(ErrorCategory::Bug),
             sample_disposition: Some(disposition_for(ErrorCategory::Bug)),
         },
         ErrorInventoryEntry {
-            type_name: "VariableParseError",
+            type_name: "FixedOriginVariableParseError",
             crate_name: "perl-dap",
             has_error_class: true,
-            sample_category: Some(ErrorCategory::Bug),
-            sample_disposition: Some(disposition_for(ErrorCategory::Bug)),
+            sample_category: Some(ErrorCategory::ResourceLimit),
+            sample_disposition: Some(disposition_for(ErrorCategory::ResourceLimit)),
         },
         ErrorInventoryEntry {
             type_name: "VariableReferenceError",
@@ -144,13 +161,6 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             has_error_class: true,
             sample_category: Some(ErrorCategory::Bug),
             sample_disposition: Some(disposition_for(ErrorCategory::Bug)),
-        },
-        ErrorInventoryEntry {
-            type_name: "DapSocketBindError",
-            crate_name: "perl-dap",
-            has_error_class: true,
-            sample_category: Some(ErrorCategory::Infra),
-            sample_disposition: Some(disposition_for(ErrorCategory::Infra)),
         },
     ]
 }
@@ -185,13 +195,44 @@ mod tests {
     }
 
     #[test]
-    fn only_jsonrpc_error_is_unclassified() {
+    fn unclassified_types_are_jsonrpc_and_origin_ambiguous_parse_errors() {
         let unclassified = unclassified_types();
         assert_eq!(
             unclassified,
-            vec!["JsonRpcError"],
-            "only JsonRpcError should be unclassified (needs type refinement)"
+            vec!["JsonRpcError", "StackParseError", "VariableParseError"],
+            "JsonRpcError needs type refinement (#4978); stack/variable parse enums wait on #8746"
         );
+    }
+
+    #[test]
+    fn origin_ambiguous_parse_enums_stay_unclassified_beside_classified_projections() {
+        let inv = error_type_inventory();
+        let by_name = |name: &str| {
+            inv.iter()
+                .find(|entry| entry.type_name == name)
+                .unwrap_or_else(|| panic!("{name} must remain inventoried"))
+        };
+
+        let stack = by_name("StackParseError");
+        assert!(!stack.has_error_class, "full StackParseError stays unclassified until #8746");
+        assert!(stack.sample_category.is_none());
+        assert!(stack.sample_disposition.is_none());
+
+        let variable = by_name("VariableParseError");
+        assert!(
+            !variable.has_error_class,
+            "full VariableParseError stays unclassified until #8746"
+        );
+        assert!(variable.sample_category.is_none());
+        assert!(variable.sample_disposition.is_none());
+
+        let stack_projection = by_name("FixedOriginStackParseError");
+        assert!(stack_projection.has_error_class);
+        assert_eq!(stack_projection.sample_category, Some(ErrorCategory::Bug));
+
+        let variable_projection = by_name("FixedOriginVariableParseError");
+        assert!(variable_projection.has_error_class);
+        assert_eq!(variable_projection.sample_category, Some(ErrorCategory::ResourceLimit));
     }
 
     #[test]

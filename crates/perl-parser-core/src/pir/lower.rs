@@ -1735,7 +1735,7 @@ mod tests {
     use super::*;
     use crate::Parser;
     use crate::hir::{DerefAggregateKind, DerefOperandKind, lower_ast};
-    use perl_tdd_support::must_some;
+    use perl_tdd_support::{must, must_some};
 
     fn lower(source: &str) -> PirGraph {
         let mut parser = Parser::new(source);
@@ -1812,7 +1812,7 @@ mod tests {
                     assert_eq!(*aggregate_kind, expected_kind);
                     assert_eq!(*operand_kind, DerefOperandKind::Variable);
                 }
-                _ => assert!(false, "expected Deref operation for `{source}`"),
+                _ => must(Err::<(), _>(format!("expected Deref operation for `{source}`"))),
             }
 
             assert!(deref.source_anchor.is_anchored());
@@ -1999,7 +1999,7 @@ mod tests {
     #[test]
     fn ordinary_runtime_reference_does_not_create_boundary() {
         let graph = lower("no strict 'refs'; my $v = ${$name};");
-        assert!(graph.receipt.dynamic_boundary_counts.get("SymbolicReference").is_none());
+        assert!(!graph.receipt.dynamic_boundary_counts.contains_key("SymbolicReference"));
     }
 
     #[test]

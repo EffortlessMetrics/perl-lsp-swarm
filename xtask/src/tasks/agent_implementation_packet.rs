@@ -2164,4 +2164,14 @@ mod tests {
         }
         Ok(())
     }
+
+    // Simplify-review DEAD_SCAFFOLDING repair: the full run path (closed
+    // schema, valid fixtures, fail-closed controls, canonical semantics,
+    // golden vectors) was reachable only via manual CLI. Check mode has no
+    // side effects — `update_golden` is the only writer (mirrors
+    // `train_edge_contract`'s real-tree run).
+    #[test]
+    fn run_passes_on_current_tree() -> TestResult {
+        run(false)
+    }
 }

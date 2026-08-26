@@ -39,12 +39,14 @@ pub mod ci_pr_summary;
 pub mod ci_route;
 pub mod ci_scope;
 pub mod clean;
+pub mod clippy_cost_measure;
 pub mod command_evidence;
 #[path = "commit_checks_facade.rs"]
 pub mod commit_checks;
 pub mod compare;
 #[cfg(feature = "parser-tasks")]
 pub mod compare_parsers;
+pub mod compiler_lexical_cutline;
 pub mod compiler_oracle;
 pub mod compiler_profile;
 #[cfg(feature = "legacy")]
@@ -131,6 +133,7 @@ pub mod pr_close_proof;
 pub mod pr_ledger;
 pub mod pre_push_plan;
 pub mod prep_crates_io_launch;
+pub mod product_health_rail_contract;
 pub mod product_identity;
 pub mod product_identity_workspace;
 pub mod protocol_type_substrate_matrix;

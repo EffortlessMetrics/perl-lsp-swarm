@@ -154,16 +154,15 @@ fn test_length_parens_not_lvalue() {
     // Either an error node or the assignment is NOT "Assignment { lhs: length() }"
     if let NodeKind::Program { statements } = &ast.kind {
         for stmt in statements {
-            if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-                if let NodeKind::Assignment { lhs, .. } = &expression.kind {
-                    if let NodeKind::FunctionCall { name, .. } = &lhs.kind {
-                        assert_ne!(
-                            name.as_str(),
-                            "length",
-                            "length() must NOT be treated as an lvalue; sexp:\n{sexp}"
-                        );
-                    }
-                }
+            if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+                && let NodeKind::Assignment { lhs, .. } = &expression.kind
+                && let NodeKind::FunctionCall { name, .. } = &lhs.kind
+            {
+                assert_ne!(
+                    name.as_str(),
+                    "length",
+                    "length() must NOT be treated as an lvalue; sexp:\n{sexp}"
+                );
             }
         }
     }
@@ -179,15 +178,14 @@ fn test_user_defined_func_parens_not_affected() {
     let sexp = ast.to_sexp();
     if let NodeKind::Program { statements } = &ast.kind {
         for stmt in statements {
-            if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-                if let NodeKind::Assignment { lhs, .. } = &expression.kind {
-                    if let NodeKind::FunctionCall { name, .. } = &lhs.kind {
-                        assert!(
-                            !matches!(name.as_str(), "pos" | "substr" | "vec"),
-                            "unexpected lvalue builtin treatment for user func; sexp:\n{sexp}"
-                        );
-                    }
-                }
+            if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+                && let NodeKind::Assignment { lhs, .. } = &expression.kind
+                && let NodeKind::FunctionCall { name, .. } = &lhs.kind
+            {
+                assert!(
+                    !matches!(name.as_str(), "pos" | "substr" | "vec"),
+                    "unexpected lvalue builtin treatment for user func; sexp:\n{sexp}"
+                );
             }
         }
     }

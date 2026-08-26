@@ -1,5 +1,7 @@
 //! Capability sets exchanged in the `peer/hello` handshake.
 
+#[cfg(test)]
+use perl_tdd_support::must;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::capabilities::{ControlMode, DebugBackendCapabilities};
@@ -115,8 +117,7 @@ mod tests {
     #[test]
     fn minimal_peer_report_deserializes_with_defaults() {
         // A peer that only reports stops sends an almost-empty capability map.
-        let caps: PeerReportedCapabilities =
-            serde_json::from_str("{}").expect("deserialize empty caps");
+        let caps: PeerReportedCapabilities = must(serde_json::from_str("{}"));
         assert!(!caps.can_continue);
         assert!(!caps.can_evaluate);
         assert_eq!(caps.control_mode, ControlMode::Mirror);

@@ -67,21 +67,21 @@ fn parser_glob_qualified_assignment() {
         assert_eq!(statements.len(), 1, "Expected 1 statement");
         let stmt = &statements[0];
 
-        if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-            if let NodeKind::Assignment { lhs, rhs, .. } = &expression.kind {
-                // Check LHS is qualified Typeglob
-                let is_lhs_typeglob = matches!(lhs.kind, NodeKind::Typeglob { .. });
-                assert!(is_lhs_typeglob, "Expected Typeglob on LHS, got {:?}", lhs.kind);
-                if let NodeKind::Typeglob { name } = &lhs.kind {
-                    assert!(name.contains("::"), "Expected qualified name on LHS");
-                }
+        if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+            && let NodeKind::Assignment { lhs, rhs, .. } = &expression.kind
+        {
+            // Check LHS is qualified Typeglob
+            let is_lhs_typeglob = matches!(lhs.kind, NodeKind::Typeglob { .. });
+            assert!(is_lhs_typeglob, "Expected Typeglob on LHS, got {:?}", lhs.kind);
+            if let NodeKind::Typeglob { name } = &lhs.kind {
+                assert!(name.contains("::"), "Expected qualified name on LHS");
+            }
 
-                // Check RHS is qualified Typeglob
-                let is_rhs_typeglob = matches!(rhs.kind, NodeKind::Typeglob { .. });
-                assert!(is_rhs_typeglob, "Expected Typeglob on RHS, got {:?}", rhs.kind);
-                if let NodeKind::Typeglob { name } = &rhs.kind {
-                    assert!(name.contains("::"), "Expected qualified name on RHS");
-                }
+            // Check RHS is qualified Typeglob
+            let is_rhs_typeglob = matches!(rhs.kind, NodeKind::Typeglob { .. });
+            assert!(is_rhs_typeglob, "Expected Typeglob on RHS, got {:?}", rhs.kind);
+            if let NodeKind::Typeglob { name } = &rhs.kind {
+                assert!(name.contains("::"), "Expected qualified name on RHS");
             }
         }
     }
@@ -97,23 +97,23 @@ fn parser_glob_reference_assignment() {
         assert_eq!(statements.len(), 1, "Expected 1 statement");
         let stmt = &statements[0];
 
-        if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-            if let NodeKind::Assignment { lhs, rhs, .. } = &expression.kind {
-                // Check LHS is Typeglob
-                let is_lhs_typeglob = matches!(lhs.kind, NodeKind::Typeglob { .. });
-                assert!(is_lhs_typeglob, "Expected Typeglob on LHS, got {:?}", lhs.kind);
-                if let NodeKind::Typeglob { name } = &lhs.kind {
-                    assert_eq!(name, "PI", "Expected typeglob name 'PI'");
-                }
+        if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+            && let NodeKind::Assignment { lhs, rhs, .. } = &expression.kind
+        {
+            // Check LHS is Typeglob
+            let is_lhs_typeglob = matches!(lhs.kind, NodeKind::Typeglob { .. });
+            assert!(is_lhs_typeglob, "Expected Typeglob on LHS, got {:?}", lhs.kind);
+            if let NodeKind::Typeglob { name } = &lhs.kind {
+                assert_eq!(name, "PI", "Expected typeglob name 'PI'");
+            }
 
-                // Check RHS is Unary (reference operator)
-                let is_rhs_unary = matches!(rhs.kind, NodeKind::Unary { .. });
-                assert!(is_rhs_unary, "Expected Unary reference on RHS, got {:?}", rhs.kind);
-                if let NodeKind::Unary { op, operand } = &rhs.kind {
-                    assert!(op.contains("\\"), "Expected backslash reference operator");
-                    // operand should be a number
-                    assert!(matches!(operand.kind, NodeKind::Number { .. }));
-                }
+            // Check RHS is Unary (reference operator)
+            let is_rhs_unary = matches!(rhs.kind, NodeKind::Unary { .. });
+            assert!(is_rhs_unary, "Expected Unary reference on RHS, got {:?}", rhs.kind);
+            if let NodeKind::Unary { op, operand } = &rhs.kind {
+                assert!(op.contains("\\"), "Expected backslash reference operator");
+                // operand should be a number
+                assert!(matches!(operand.kind, NodeKind::Number { .. }));
             }
         }
     }
@@ -129,18 +129,18 @@ fn parser_glob_sub_reference_assignment() {
         assert_eq!(statements.len(), 1, "Expected 1 statement");
         let stmt = &statements[0];
 
-        if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-            if let NodeKind::Assignment { lhs, rhs, .. } = &expression.kind {
-                // Check LHS is Typeglob
-                if let NodeKind::Typeglob { name } = &lhs.kind {
-                    assert_eq!(name, "func", "Expected typeglob name 'func'");
-                } else {
-                    must(Err::<(), _>(format!("Expected Typeglob on LHS, got {:?}", lhs.kind)));
-                }
-
-                // Check RHS is reference to code
-                assert!(matches!(rhs.kind, NodeKind::Unary { .. }));
+        if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+            && let NodeKind::Assignment { lhs, rhs, .. } = &expression.kind
+        {
+            // Check LHS is Typeglob
+            if let NodeKind::Typeglob { name } = &lhs.kind {
+                assert_eq!(name, "func", "Expected typeglob name 'func'");
+            } else {
+                must(Err::<(), _>(format!("Expected Typeglob on LHS, got {:?}", lhs.kind)));
             }
+
+            // Check RHS is reference to code
+            assert!(matches!(rhs.kind, NodeKind::Unary { .. }));
         }
     }
 }
@@ -156,19 +156,19 @@ fn parser_glob_dynamic_assignment() {
         assert_eq!(statements.len(), 1, "Expected 1 statement");
         let stmt = &statements[0];
 
-        if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-            if let NodeKind::Assignment { lhs, rhs, .. } = &expression.kind {
-                // Dynamic typeglob syntax is parsed as Typeglob with literal name
-                // This is acceptable as true dynamic evaluation requires runtime context
-                let is_lhs_typeglob = matches!(lhs.kind, NodeKind::Typeglob { .. });
-                assert!(is_lhs_typeglob, "Expected Typeglob on LHS, got {:?}", lhs.kind);
-                if let NodeKind::Typeglob { name } = &lhs.kind {
-                    assert!(name.contains("{"), "Expected braces in typeglob name");
-                }
-
-                // Check RHS is reference
-                assert!(matches!(rhs.kind, NodeKind::Unary { .. }));
+        if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+            && let NodeKind::Assignment { lhs, rhs, .. } = &expression.kind
+        {
+            // Dynamic typeglob syntax is parsed as Typeglob with literal name
+            // This is acceptable as true dynamic evaluation requires runtime context
+            let is_lhs_typeglob = matches!(lhs.kind, NodeKind::Typeglob { .. });
+            assert!(is_lhs_typeglob, "Expected Typeglob on LHS, got {:?}", lhs.kind);
+            if let NodeKind::Typeglob { name } = &lhs.kind {
+                assert!(name.contains("{"), "Expected braces in typeglob name");
             }
+
+            // Check RHS is reference
+            assert!(matches!(rhs.kind, NodeKind::Unary { .. }));
         }
     }
 }

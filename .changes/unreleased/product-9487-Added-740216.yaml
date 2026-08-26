@@ -1,0 +1,9 @@
+project: product
+component: Editor integrations
+kind: Added
+body: "Added the official-registry perl-dap journey receipt authority for the Zed debug-adapter route: a fail-closed validator that binds the checked #9516 managed-download contract and committed aggregate asset receipt by recomputed digest (never re-deriving public asset selection), evaluates the DU01 merged-and-released registry acceptance predicate over the acceptance manifest, enforces the clean official-registry profile and managed-public-artifact route against PATH/prior-cache/override/perllsp substitution, requires the complete bounded real-Zed journey cells with the wrong-root same-basename discriminator and orphan/restart proofs, and rejects exact-source or asset receipts relabeled public; a committed blocked_external receipt records the exact absent entry gates."
+time: 2026-08-24T12:00:00Z
+custom:
+  PR: "TBD"
+  Slug: zed-perl-dap-public-registry-receipts
+  Breaking: "no"

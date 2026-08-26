@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout)] // // Intentional stdout diagnostics: recovery progress is printed for humans.
 //! Panic Mode Recovery Tests for Issue #426
 //!
 //! Tests for panic mode error recovery that allows the parser to continue
@@ -201,12 +202,11 @@ fn parser_ac7_block_recovery_error_inside_block() -> ParseResult<()> {
     let mut parser = Parser::new(code);
     let ast = parser.parse()?;
 
-    if let NodeKind::Program { statements } = &ast.kind {
-        if let NodeKind::If { then_branch, .. } = &statements[0].kind {
-            if let NodeKind::Block { statements } = &then_branch.kind {
-                assert!(statements.len() >= 2, "Should parse statements after error in block");
-            }
-        }
+    if let NodeKind::Program { statements } = &ast.kind
+        && let NodeKind::If { then_branch, .. } = &statements[0].kind
+        && let NodeKind::Block { statements } = &then_branch.kind
+    {
+        assert!(statements.len() >= 2, "Should parse statements after error in block");
     }
     Ok(())
 }
@@ -430,21 +430,19 @@ fn parser_recovery_preserves_good_code() -> ParseResult<()> {
 
     if let NodeKind::Program { statements } = &ast.kind {
         // First statement should be correctly parsed
-        if let NodeKind::VariableDeclaration { initializer: Some(init), .. } = &statements[0].kind {
-            if let NodeKind::Number { value } = &init.kind {
-                assert_eq!(value, "42", "First statement should be preserved correctly");
-            }
+        if let NodeKind::VariableDeclaration { initializer: Some(init), .. } = &statements[0].kind
+            && let NodeKind::Number { value } = &init.kind
+        {
+            assert_eq!(value, "42", "First statement should be preserved correctly");
         }
 
         // Third statement should also be correct
-        if statements.len() >= 3 {
-            if let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
+        if statements.len() >= 3
+            && let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
                 &statements[2].kind
-            {
-                if let NodeKind::Number { value } = &init.kind {
-                    assert_eq!(value, "99", "Code after error should be preserved");
-                }
-            }
+            && let NodeKind::Number { value } = &init.kind
+        {
+            assert_eq!(value, "99", "Code after error should be preserved");
         }
     }
     Ok(())

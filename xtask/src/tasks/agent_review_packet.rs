@@ -3398,14 +3398,14 @@ mod tests {
                 .and_then(Value::as_array_mut)
                 .unwrap_or(&mut Vec::new())
             {
-                if role.get("role").and_then(Value::as_str) == Some("specialist") {
-                    if let Some(role) = role.as_object_mut() {
-                        role.insert("state".to_string(), Value::String("terminal".to_string()));
-                        role.insert(
-                            "reference".to_string(),
-                            Value::String("specialist review@c44e0d1b7".to_string()),
-                        );
-                    }
+                if role.get("role").and_then(Value::as_str) == Some("specialist")
+                    && let Some(role) = role.as_object_mut()
+                {
+                    role.insert("state".to_string(), Value::String("terminal".to_string()));
+                    role.insert(
+                        "reference".to_string(),
+                        Value::String("specialist review@c44e0d1b7".to_string()),
+                    );
                 }
             }
             for finding in review_state
@@ -3413,13 +3413,13 @@ mod tests {
                 .and_then(Value::as_array_mut)
                 .unwrap_or(&mut Vec::new())
             {
-                if finding.get("material").and_then(Value::as_bool) == Some(true) {
-                    if let Some(finding) = finding.as_object_mut() {
-                        finding.insert(
-                            "state".to_string(),
-                            Value::String("resolved_on_current_head".to_string()),
-                        );
-                    }
+                if finding.get("material").and_then(Value::as_bool) == Some(true)
+                    && let Some(finding) = finding.as_object_mut()
+                {
+                    finding.insert(
+                        "state".to_string(),
+                        Value::String("resolved_on_current_head".to_string()),
+                    );
                 }
             }
         }
@@ -3448,5 +3448,15 @@ mod tests {
             "a compact prompt without control evidence must fail completeness"
         );
         Ok(())
+    }
+
+    // Simplify-review DEAD_SCAFFOLDING repair: the full run path (schema-enum
+    // pins, valid fixtures, fail-closed controls, canonical semantics,
+    // golden vectors) was reachable only via manual CLI. Check mode has no
+    // side effects — `update_golden` is the only writer (mirrors
+    // `train_edge_contract`'s real-tree run).
+    #[test]
+    fn run_passes_on_current_tree() -> TestResult {
+        run(false)
     }
 }

@@ -1402,7 +1402,7 @@ evidence = [
 limitations = [
   "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
 ]
-description = "Thread listing (threads request); Perl is single-threaded so returns one synthetic thread"
+description = "Thread listing (threads request): at most one synthetic execution context for the active session (main thread, attached process, or TCP attach; empty before any session); Coro discovery, Coro stack/variables/evaluate, selected-context control, and Perl interpreter-thread discovery are not proven"
 
 [[feature]]
 id = "dap.pause"

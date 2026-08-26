@@ -398,38 +398,29 @@ pub fn heavy_lanes_from_risk_tags(
 ) -> Vec<HeavyLaneEntry> {
     let mut heavy: Vec<HeavyLaneEntry> = Vec::new();
 
+    let mut add_lane = |lane: &str, reason: String| {
+        if !heavy.iter().any(|entry| entry.lane == lane) {
+            heavy.push(HeavyLaneEntry { lane: lane.to_string(), reason });
+        }
+    };
+
     if risk_tags.contains(&RISK_TAG_PARSER_RECOVERY.to_string()) {
-        heavy.push(HeavyLaneEntry {
-            lane: "bounded_parser_fuzz".to_string(),
-            reason: format!("risk_tag: {RISK_TAG_PARSER_RECOVERY}"),
-        });
+        add_lane("bounded_parser_fuzz", format!("risk_tag: {RISK_TAG_PARSER_RECOVERY}"));
     }
     if risk_tags.contains(&RISK_TAG_CONCURRENCY.to_string()) {
-        heavy.push(HeavyLaneEntry {
-            lane: "thread_sanitizer".to_string(),
-            reason: format!("risk_tag: {RISK_TAG_CONCURRENCY}"),
-        });
+        add_lane("thread_sanitizer", format!("risk_tag: {RISK_TAG_CONCURRENCY}"));
     }
     if risk_tags.contains(&RISK_TAG_PERF_HOT_PATH.to_string()) {
-        heavy.push(HeavyLaneEntry {
-            lane: "perf_regression".to_string(),
-            reason: format!("risk_tag: {RISK_TAG_PERF_HOT_PATH}"),
-        });
+        add_lane("perf_regression", format!("risk_tag: {RISK_TAG_PERF_HOT_PATH}"));
     }
     if risk_tags.contains(&RISK_TAG_SECURITY_SURFACE.to_string()) {
-        heavy.push(HeavyLaneEntry {
-            lane: "security_audit".to_string(),
-            reason: format!("risk_tag: {RISK_TAG_SECURITY_SURFACE}"),
-        });
+        add_lane("security_audit", format!("risk_tag: {RISK_TAG_SECURITY_SURFACE}"));
     }
 
     // mutation_diff: default lane for any code diff (direct crate changes)
     if !direct_crates.is_empty() {
         let scope: Vec<String> = direct_crates.iter().map(|c| c.name.clone()).collect();
-        heavy.push(HeavyLaneEntry {
-            lane: "mutation_diff".to_string(),
-            reason: format!("code_diff_default (crates: {})", scope.join(", ")),
-        });
+        add_lane("mutation_diff", format!("code_diff_default (crates: {})", scope.join(", ")));
     }
 
     heavy
@@ -1117,6 +1108,22 @@ mod tests {
         assert!(!tags.contains(&RISK_TAG_DEP_CHANGE.to_string()));
     }
 
+    #[test]
+    fn test_risk_tags_cover_each_path_family() {
+        let cases = [
+            ("crates/app/src/async_worker.rs", RISK_TAG_CONCURRENCY),
+            ("crates/app/src/position.rs", RISK_TAG_OFFSET_MATH),
+            ("crates/app/src/uri.rs", RISK_TAG_PATH_NORMALIZATION),
+            ("benches/parser.rs", RISK_TAG_PERF_HOT_PATH),
+            ("crates/app/src/eval.rs", RISK_TAG_SECURITY_SURFACE),
+        ];
+
+        for (path, expected) in cases {
+            let tags = detect_risk_tags(&[path.to_string()], &[]);
+            assert!(tags.contains(&expected.to_string()), "{path} should select {expected}");
+        }
+    }
+
     // --- crates_from_files tests ---
 
     #[test]
@@ -1466,5 +1473,28 @@ mod tests {
             !heavy.iter().any(|l| l.lane == "mutation_diff"),
             "no direct crates = no mutation_diff"
         );
+    }
+
+    #[test]
+    fn test_heavy_lanes_are_deduplicated_and_risk_driven() {
+        let tags = vec![
+            RISK_TAG_PARSER_RECOVERY.to_string(),
+            RISK_TAG_CONCURRENCY.to_string(),
+            RISK_TAG_PERF_HOT_PATH.to_string(),
+            RISK_TAG_SECURITY_SURFACE.to_string(),
+        ];
+        let heavy = heavy_lanes_from_risk_tags(
+            &tags,
+            &[DirectCrate { name: "perl-parser".to_string(), reason: "direct".to_string() }],
+        );
+
+        let lanes: BTreeSet<_> = heavy.iter().map(|entry| entry.lane.as_str()).collect();
+        assert_eq!(lanes.len(), heavy.len(), "promoted lanes must be unique");
+        assert!(lanes.contains("bounded_parser_fuzz"));
+        assert!(lanes.contains("thread_sanitizer"));
+        assert!(lanes.contains("security_audit"));
+        assert!(lanes.contains("perf_regression"));
+        assert!(lanes.contains("mutation_diff"));
+        assert!(heavy.iter().all(|entry| !entry.reason.is_empty()));
     }
 }

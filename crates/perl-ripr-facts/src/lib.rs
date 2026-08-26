@@ -2442,13 +2442,13 @@ mod tests {
         for lim in p["limitations"].as_array().expect("limitations[]") {
             if let Some(refs) = lim["evidence_refs"].as_array() {
                 for r in refs {
-                    if let Some(fid) = r.as_str() {
-                        if fid.starts_with("file:") {
-                            assert!(
-                                file_ids.contains(fid),
-                                "limitation evidence_ref {fid} must resolve to a files[] fact"
-                            );
-                        }
+                    if let Some(fid) = r.as_str()
+                        && fid.starts_with("file:")
+                    {
+                        assert!(
+                            file_ids.contains(fid),
+                            "limitation evidence_ref {fid} must resolve to a files[] fact"
+                        );
                     }
                 }
             }

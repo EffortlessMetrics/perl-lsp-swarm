@@ -376,6 +376,12 @@ mutation-regression:
 fuzz-bounded:
     @./scripts/fuzz-bounded --duration 60
 
+# Parser panic-free invariant: corpus regression plus a focused bounded fuzz run.
+# Parse errors are acceptable; a panic is a hard failure of the invariant.
+parser-panic-free-invariant:
+    @cargo test -p perl-parser --test parser_panic_free_invariant --locked
+    @./scripts/fuzz-bounded --duration 30 -- parser_integration
+
 # `bench` is the canonical benchmark target; keep this as a compatibility alias.
 benchmarks: bench
 

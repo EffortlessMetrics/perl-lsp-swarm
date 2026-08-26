@@ -3,7 +3,7 @@
 //! constructors inside argument positions.
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr)]
 mod tests {
     use crate::parser::Parser;
     use perl_tdd_support::must;
