@@ -94,6 +94,30 @@ fn pl003_missing_semicolon_fix_preserves_trailing_newline() {
 }
 
 #[test]
+fn pl003_semicolon_fix_lands_before_a_trailing_comment() {
+    // A semicolon appended after a trailing line comment is swallowed by it
+    // (`my $value = 1 # why;` never terminates the statement); the fix must
+    // land before the comment (#12803).
+    let source = "my $value = 1 # why\n";
+    let actions = actions_for(source, "missing semicolon at end of input");
+
+    let fallback = pl003_fallback_actions(&actions);
+    assert_eq!(fallback.len(), 1);
+    assert_eq!(apply_first(source, fallback[0]), "my $value = 1; # why\n");
+}
+
+#[test]
+fn pl003_semicolon_fix_does_not_misread_last_index_sigil_as_comment() {
+    // `$#array` is the last-index sigil, not a comment opener.
+    let source = "my $last = $#array";
+    let actions = actions_for(source, "missing semicolon at end of input");
+
+    let fallback = pl003_fallback_actions(&actions);
+    assert_eq!(fallback.len(), 1);
+    assert_eq!(apply_first(source, fallback[0]), "my $last = $#array;");
+}
+
+#[test]
 fn pl003_does_not_add_a_brace_for_an_unclosed_parenthesis() {
     let source = "if ($ok";
     let actions = actions_for(source, "Unexpected end of input");
