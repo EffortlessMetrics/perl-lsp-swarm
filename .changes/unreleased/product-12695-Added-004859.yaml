@@ -1,0 +1,5 @@
+component: "Developer experience"
+kind: Added
+body: "Added cached just recipes (pr-fast-cached, test-cached, check-cached, clippy-cached) making the shared devplane build cache the documented multi-worktree default (#12596)."
+time: 
+00:48:59
