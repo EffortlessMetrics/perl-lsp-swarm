@@ -145,6 +145,7 @@ pub mod quality_baseline;
 pub mod quality_gate;
 pub mod queue_health;
 pub mod queue_snapshot;
+pub mod reachability_fixture_manifest;
 pub mod receipts;
 pub mod release;
 pub mod release_artifact_check;
