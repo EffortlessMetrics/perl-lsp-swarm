@@ -20,10 +20,11 @@ only change with explicit, reviewed intent.
 
 ## Public API
 
-- **`Token`** -- `text` is public; `kind()` is a read accessor; byte geometry is private. Construct with [`Token::new_checked`], [`Token::eof_at`], or [`Token::unknown_at`], and read offsets via `start()` / `end()`. Change kind with [`Token::with_kind`].
+- **`Token`** -- `text` is public; `kind()` is a read accessor; byte geometry is private. Construct with [`Token::new_checked`], [`Token::eof_at`], or [`Token::unknown_at`], and read offsets via `start()` / `end()`. Change kind with [`Token::with_kind`]. `text.len()` must equal `end - start`; empty `Eof` / `Unknown` tokens must have empty text.
 - **`TokenRef<'src>`** -- borrowed token view with the same geometry seal; construct with [`TokenRef::new_checked`].
 - **`TokenSpan`** -- ordered byte span with private fields; construct with [`TokenSpan::try_new`].
-- **`TokenKind`** -- closed/exhaustive enum classifying every Perl token: keywords, operators, delimiters, literals, sigils, and special tokens
+- **`TokenKind`** -- closed/exhaustive enum classifying every Perl token: keywords, operators, delimiters, literals, sigils, and special tokens (#2898)
+- **`Token` / `TokenRef` / `TokenSpan` / `TokenSpanError` / `TokenCategory` / `TokenKindMetadata`** -- `#[non_exhaustive]` (#2898). This crate has no `TokenOrigin` or `TokenStatus` types.
 - **Spelling tables** -- `KEYWORD_SPELLINGS`, `OPERATOR_SPELLINGS`, `DELIMITER_SPELLINGS`, and `SIGIL_SPELLINGS` define fixed source spellings and power `TokenKind::canonical_spelling()`
 
 ## Usage
