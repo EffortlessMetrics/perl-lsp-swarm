@@ -12,8 +12,8 @@
 
 use perl_parser_core::{ParseError, ParseOutput, Parser, ParserConfigIdentity, ParserOperationId};
 use perl_tdd_support::must;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 fn parse_recovery(source: &str) -> ParseOutput {
     let mut parser = Parser::new(source);
