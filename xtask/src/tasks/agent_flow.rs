@@ -4,7 +4,7 @@
 //! GitHub, lifecycle labels, agent identity, or live issue/PR state.
 
 use color_eyre::eyre::{Result, bail};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,6 +13,10 @@ use crate::utils::project_root;
 
 const PROVIDER_SKILL_ROOTS: &[(&str, &str)] =
     &[("codex", ".agents/skills"), ("claude", ".claude/skills")];
+
+/// Allowlist for intentionally (or temporarily, with an owner) single-provider
+/// skills, enforced by the cross-provider parity check (#12802).
+const SKILL_PARITY_ALLOWLIST: &str = "policy/skill-provider-parity.toml";
 
 const FORBIDDEN_SHARED_REVIEW_AUTHORITY: &str = "PR_REVIEW_STANDARD.md";
 const METASYNTACTIC_PLACEHOLDERS: &[&str] = &["skill", "skill_name", "skill-name"];
@@ -476,6 +480,19 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
         ));
     }
 
+    // #12802: SKILL_CONTRACT.md requires substantive skills to be
+    // operationally complete in both provider implementations. Enforce the
+    // name-set parity, with an explicit policy allowlist as the only
+    // sanctioned single-provider state.
+    if selected_skill.is_none() {
+        let name_sets = provider_skills
+            .iter()
+            .map(|(provider, (names, _))| (provider.clone(), names.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let allowlist = load_skill_parity_allowlist(root, &mut errors);
+        errors.extend(skill_parity_violations(&name_sets, &allowlist));
+    }
+
     let scenario_errors = check_scenarios(&provider_skills);
     errors.extend(scenario_errors.iter().cloned());
     let scenarios = ScenarioReport {
@@ -493,6 +510,98 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
         errors,
         advisories,
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct SkillParityAllow {
+    skill: String,
+    root: String,
+    #[allow(dead_code)]
+    reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SkillParityAllowlist {
+    #[serde(default)]
+    allow: Vec<SkillParityAllow>,
+}
+
+/// Load the single-provider skill allowlist. A missing file means an empty
+/// allowlist; a malformed file is a hard error (fail closed — an unreadable
+/// authority must not silently widen parity).
+fn load_skill_parity_allowlist(root: &Path, errors: &mut Vec<String>) -> Vec<SkillParityAllow> {
+    let path = root.join(SKILL_PARITY_ALLOWLIST);
+    match fs::read_to_string(&path) {
+        Ok(text) => match toml::from_str::<SkillParityAllowlist>(&text) {
+            Ok(parsed) => parsed.allow,
+            Err(error) => {
+                errors.push(format!("{}: malformed parity allowlist: {error}", path.display()));
+                Vec::new()
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            errors.push(format!("{}: cannot read parity allowlist: {error}", path.display()));
+            Vec::new()
+        }
+    }
+}
+
+/// Compare provider skill-name sets: every skill must exist in every
+/// provider root unless its single-provider state is explicitly allowlisted.
+/// Allowlist entries are themselves ratcheted: an entry whose skill now
+/// exists everywhere (debt fixed) or nowhere (skill gone) is stale and
+/// fails, so the allowlist cannot silently fossilize.
+fn skill_parity_violations(
+    provider_names: &BTreeMap<String, BTreeSet<String>>,
+    allowlist: &[SkillParityAllow],
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let all_skills = provider_names.values().flatten().cloned().collect::<BTreeSet<_>>();
+
+    for skill in &all_skills {
+        let present_in = provider_names
+            .iter()
+            .filter(|(_, names)| names.contains(skill))
+            .map(|(provider, _)| provider.clone())
+            .collect::<Vec<_>>();
+        if present_in.len() == provider_names.len() {
+            continue;
+        }
+        let present_root = PROVIDER_SKILL_ROOTS
+            .iter()
+            .find(|(provider, _)| present_in.iter().any(|p| p == provider))
+            .map(|(_, root)| (*root).to_string())
+            .unwrap_or_default();
+        let sanctioned =
+            allowlist.iter().any(|entry| entry.skill == *skill && entry.root == present_root);
+        if !sanctioned {
+            violations.push(format!(
+                "skill '{skill}' exists only in {present_root}; SKILL_CONTRACT.md requires both \
+                 provider implementations — add the twin or an explicit {SKILL_PARITY_ALLOWLIST} entry (#12802)"
+            ));
+        }
+    }
+
+    for entry in allowlist {
+        let presence =
+            provider_names.values().map(|names| names.contains(&entry.skill)).collect::<Vec<_>>();
+        if presence.iter().all(|present| *present) {
+            violations.push(format!(
+                "{SKILL_PARITY_ALLOWLIST}: entry '{}' is stale — the skill now exists in every \
+                 provider root; remove the entry",
+                entry.skill
+            ));
+        } else if presence.iter().all(|present| !present) {
+            violations.push(format!(
+                "{SKILL_PARITY_ALLOWLIST}: entry '{}' names a skill present in no provider root; \
+                 remove the entry",
+                entry.skill
+            ));
+        }
+    }
+
+    violations
 }
 
 fn check_provider_operational_contract(
@@ -1001,10 +1110,10 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        RouteObservation, RouteSyntax, SCENARIO_FIXTURES, check_scenarios, edge_targets,
-        frontmatter_metadata_chars, frontmatter_value, missing_markers,
+        RouteObservation, RouteSyntax, SCENARIO_FIXTURES, SkillParityAllow, check_scenarios,
+        edge_targets, frontmatter_metadata_chars, frontmatter_value, missing_markers,
         missing_route_target_message, resolve_route_syntax, route_line_observations,
-        route_observations, route_targets, route_tokens,
+        route_observations, route_targets, route_tokens, skill_parity_violations,
     };
 
     #[test]
@@ -1442,6 +1551,67 @@ mod tests {
         assert!(message.contains("SKILL.md:12:8"));
         assert!(message.contains("missing provider-local skill 'clear'"));
         assert!(message.contains("ArrowTarget"));
+    }
+
+    fn parity_names(pairs: &[(&str, &[&str])]) -> BTreeMap<String, BTreeSet<String>> {
+        pairs
+            .iter()
+            .map(|(provider, skills)| {
+                ((*provider).to_string(), skills.iter().map(|s| (*s).to_string()).collect())
+            })
+            .collect()
+    }
+
+    fn parity_allow(skill: &str, root: &str) -> SkillParityAllow {
+        SkillParityAllow {
+            skill: skill.to_string(),
+            root: root.to_string(),
+            reason: "test fixture".to_string(),
+        }
+    }
+
+    #[test]
+    fn skill_parity_flags_unlisted_drift() {
+        let names = parity_names(&[("codex", &["a", "b"]), ("claude", &["a", "b", "c"])]);
+        let violations = skill_parity_violations(&names, &[]);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("skill 'c' exists only in .claude/skills"));
+    }
+
+    #[test]
+    fn skill_parity_accepts_allowlisted_drift() {
+        let names = parity_names(&[("codex", &["a", "b"]), ("claude", &["a", "b", "c"])]);
+        let allow = vec![parity_allow("c", ".claude/skills")];
+        assert!(skill_parity_violations(&names, &allow).is_empty());
+    }
+
+    #[test]
+    fn skill_parity_rejects_allowlist_entry_for_the_wrong_root() {
+        let names = parity_names(&[("codex", &["a", "b"]), ("claude", &["a", "b", "c"])]);
+        let allow = vec![parity_allow("c", ".agents/skills")];
+        let violations = skill_parity_violations(&names, &allow);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("skill 'c' exists only in .claude/skills"));
+    }
+
+    #[test]
+    fn skill_parity_ratchets_stale_and_phantom_allowlist_entries() {
+        let everywhere = parity_names(&[("codex", &["a", "c"]), ("claude", &["a", "c"])]);
+        let stale = vec![parity_allow("c", ".claude/skills")];
+        let violations = skill_parity_violations(&everywhere, &stale);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("stale"));
+
+        let phantom = vec![parity_allow("ghost", ".claude/skills")];
+        let violations = skill_parity_violations(&everywhere, &phantom);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("present in no provider root"));
+    }
+
+    #[test]
+    fn skill_parity_passes_full_parity_with_empty_allowlist() {
+        let names = parity_names(&[("codex", &["a", "b"]), ("claude", &["a", "b"])]);
+        assert!(skill_parity_violations(&names, &[]).is_empty());
     }
 
     #[test]
