@@ -12,8 +12,8 @@
 
 use perl_parser_core::{ParseError, ParseOutput, Parser, ParserConfigIdentity, ParserOperationId};
 use perl_tdd_support::must;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 fn parse_recovery(source: &str) -> ParseOutput {
     let mut parser = Parser::new(source);
@@ -32,6 +32,20 @@ fn is_reconstructed_from_diagnostics(output: &ParseOutput) -> bool {
         && output.budget_usage.errors_emitted == output.diagnostics.len()
         && output.budget_usage.tokens_skipped == 0
         && output.budget_usage.recoveries_attempted == 0
+}
+
+/// Recovered syntax must keep the live tracker and must not be relabeled as a
+/// terminal stop. A reconstruction that maps any non-empty diagnostics list
+/// onto `Some(stop_cause)` would pass depth assertions without this control.
+fn assert_recovered_completion(output: &ParseOutput) {
+    assert!(!output.diagnostics.is_empty(), "fixture must produce recovered diagnostics");
+    assert_eq!(
+        output.stop_cause(),
+        None,
+        "recovered syntax must not set a terminal stop cause, got {:?}",
+        output.stop_cause()
+    );
+    assert!(!output.terminated_early(), "recovered syntax must not terminate early");
 }
 
 #[test]
@@ -58,7 +72,7 @@ fn clean_strict_and_recovery_paths_record_live_depth() {
 #[test]
 fn recovery_aware_output_is_not_a_post_hoc_tracker() {
     let output = parse_recovery("my $x = ;");
-    assert!(!output.diagnostics.is_empty(), "syntax error must produce diagnostics");
+    assert_recovered_completion(&output);
     assert!(
         !is_reconstructed_from_diagnostics(&output),
         "budget_usage must be the live tracker, not BudgetTracker::new() + errors_emitted=diagnostics.len(); got {:?}",
@@ -83,7 +97,7 @@ fn nested_success_retains_max_depth_and_unwinds() {
 #[test]
 fn syntax_recovery_unwinds_depth() {
     let output = parse_recovery("sub foo { my $x = ; }");
-    assert!(!output.diagnostics.is_empty());
+    assert_recovered_completion(&output);
     assert_eq!(
         output.budget_usage.current_depth, 0,
         "recovery must unwind live depth, got {}",
@@ -97,6 +111,18 @@ fn catastrophic_recursion_unwinds_and_keeps_max_depth() {
     let source = format!("my $x = {}1;", "not ".repeat(200));
     let output = parse_recovery(&source);
     assert!(output.terminated_early(), "deep not-chain must terminate early");
+    let max_depth = ParserConfigIdentity::production_default().max_recursion_depth();
+    assert!(
+        matches!(
+            output.stop_cause(),
+            Some(perl_parser_core::ParseStopCause::RecursionBudgetExhausted {
+                limit: Some(limit),
+                usage: Some(usage),
+            }) if limit == max_depth && usage == max_depth.saturating_add(1)
+        ),
+        "expression recursion must keep RecursionBudgetExhausted with the production limit, got {:?}",
+        output.stop_cause()
+    );
     assert_eq!(output.budget_usage.current_depth, 0, "exhaustion must unwind current depth");
     assert!(
         output.budget_usage.max_depth_reached > 0,
@@ -134,8 +160,12 @@ fn second_parse_starts_from_fresh_tracker_counters() {
     assert!(first.budget_usage.max_depth_reached >= 6);
 
     let second = parser.parse_with_recovery();
-    // The instance is at EOF after the first operation; the second parse is a
-    // new operation and must not keep the first operation's depth counters.
+    // After the first operation the instance is at EOF. `take_tracker()` already
+    // zeroes the field, so this row rejects leftover counters when neither take
+    // nor `begin()` reset; it does not by itself prove `begin()` reset. That
+    // discriminator is `begin_resets_tracker_and_allocates_a_new_operation_id`.
+    // Rewinding the token stream to re-parse a non-empty source is out of this
+    // claim (incremental behavior is a non-goal).
     assert_eq!(
         second.budget_usage.max_depth_reached, 0,
         "second operation must start from a fresh tracker, got max_depth_reached={}",
@@ -183,7 +213,7 @@ fn parser_context_is_not_the_production_tracker() {
 #[test]
 fn uncharged_dimensions_stay_zero_on_recovered_parse() {
     let output = parse_recovery("my $x = ;");
-    assert!(!output.diagnostics.is_empty());
+    assert_recovered_completion(&output);
     assert_eq!(
         output.budget_usage.errors_emitted, 0,
         "token/node/diagnostic charging is B02 / #8786"
