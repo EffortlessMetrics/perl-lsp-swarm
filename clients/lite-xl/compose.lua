@@ -146,16 +146,31 @@ local function make_tmp_prep(tmp_dir)
   end
 end
 
+local function current_working_dir()
+  if IS_WINDOWS then
+    local lines = capture_lines("cd")
+    return lines[1] or "."
+  end
+  local lines = capture_lines("pwd")
+  return lines[1] or "."
+end
+
 -- List every regular file under dir (recursive), as forward-slash paths
--- relative to dir, sorted.
+-- relative to dir, sorted. dir is normalized against the process working
+-- directory because `dir /s /b` reports absolute paths regardless of the
+-- input form.
 local function list_files_relative(dir)
   local out = {}
+  local abs_input = dir
+  if not dir:match("^%a:[/\\]") and not dir:match("^[/\\]") then
+    local cwd = current_working_dir():gsub("[/\\]+$", "")
+    abs_input = cwd .. "/" .. dir
+  end
   if IS_WINDOWS then
-    local lines = capture_lines('dir /s /b ' .. quote(dir) .. ' 2>nul')
-    local prefix = dir:gsub("[/\\]+$", "")
+    local lines = capture_lines('dir /s /b ' .. quote(abs_input) .. ' 2>nul')
+    local prefix = abs_input:gsub("\\", "/"):gsub("[/\\]+$", "")
     for _, abs in ipairs(lines) do
       local rel = abs:gsub("\\", "/")
-      prefix = prefix:gsub("\\", "/")
       local idx = rel:find(prefix, 1, true)
       if idx == 1 then
         rel = rel:sub(#prefix + 2)
@@ -163,8 +178,8 @@ local function list_files_relative(dir)
       end
     end
   else
-    local lines = capture_lines('find ' .. quote(dir) .. ' -type f')
-    local prefix = dir:gsub("/+$", "")
+    local lines = capture_lines('find ' .. quote(abs_input) .. ' -type f')
+    local prefix = abs_input:gsub("/+$", "")
     for _, abs in ipairs(lines) do
       local idx = abs:find(prefix, 1, true)
       if idx == 1 then
@@ -199,8 +214,11 @@ function M.git_adapter(opts)
   end
 
   -- Batch helpers: one spawn per batch instead of one per item (git
-  -- process startup dominates runtime on this host).
+  -- process startup dominates runtime on this host). Scratch file names
+  -- carry a per-adapter tag so concurrent compositions in one checkout
+  -- never share a temp path.
   local prep_tmp = make_tmp_prep(tmp_dir)
+  local scratch_tag = ("%d-%.0f"):format(os.time(), os.clock() * 1e6)
 
   return {
     -- Existence of many candidate commits in one cat-file --batch-check.
@@ -209,7 +227,7 @@ function M.git_adapter(opts)
     components_exist = function(shas)
       if #shas == 0 then return {} end
       prep_tmp()
-      local in_file = tmp_dir .. "/compose-batch-in.txt"
+      local in_file = tmp_dir .. "/compose-batch-in-" .. scratch_tag .. ".txt"
       local f = io.open(in_file, "wb")
       for _, sha in ipairs(shas) do
         f:write(sha .. "\n")
@@ -292,7 +310,7 @@ function M.git_adapter(opts)
     hash_files = function(paths)
       if #paths == 0 then return {} end
       prep_tmp()
-      local in_file = tmp_dir .. "/compose-hash-paths.txt"
+      local in_file = tmp_dir .. "/compose-hash-paths-" .. scratch_tag .. ".txt"
       local f = io.open(in_file, "wb")
       for _, p in ipairs(paths) do
         -- Forward slashes keep c-style unquoting valid on Windows paths.
@@ -312,7 +330,7 @@ function M.git_adapter(opts)
     end,
     digest_text = function(text)
       prep_tmp()
-      local tmp = tmp_dir .. "/compose-digest.tmp"
+      local tmp = tmp_dir .. "/compose-digest-" .. scratch_tag .. ".tmp"
       write_bytes(tmp, text)
       local lines = capture_lines(git("hash-object " .. quote(tmp)))
       os.remove(tmp)
@@ -693,14 +711,16 @@ local function acquire_and_verify_snapshots(plan, adapter, tmp_dir)
 
   -- Snapshot every member/path to its own temp file (byte-exact git
   -- redirection), then digest them all in one batch against the recorded
-  -- reviewed digests before anything is written into the tree.
+  -- reviewed digests before anything is written into the tree. Temp names
+  -- carry this run's tag so concurrent compositions never collide.
+  local run_tag = ("%d-%.0f"):format(os.time(), os.clock() * 1e6)
   local snaps = {}
   local n = 0
   for _, mid in ipairs(plan.ordered) do
     local c = plan.by_id[mid]
     for _, p in ipairs(c.changed_paths) do
       n = n + 1
-      local tmp = tmp_dir .. "/compose-snap-" .. n .. ".tmp"
+      local tmp = tmp_dir .. "/compose-snap-" .. run_tag .. "-" .. n .. ".tmp"
       adapter.snapshot(c.candidate_sha, p, tmp)
       snaps[#snaps + 1] = {
         tmp = tmp, dest_component = mid, path = p,
@@ -781,12 +801,10 @@ function M.materialize(opts)
   local receipt_dir = receipt_path:match("^(.*)[/\\]") or "."
   ensure_dirs({ out_dir, receipt_dir })
 
-  -- The generated tree is composer-owned output: clear stale top-level
-  -- files so no-unowned-diff reflects THIS composition only.
+  -- The generated tree is composer-owned output: clear stale files at
+  -- every depth so no-unowned-diff reflects THIS composition only.
   for _, rel in ipairs(list_files_relative(out_dir)) do
-    if not rel:find("/", 1, true) then
-      os.remove(out_dir .. "/" .. rel)
-    end
+    os.remove(out_dir .. "/" .. rel)
   end
 
   local snaps = acquire_and_verify_snapshots(plan, adapter, receipt_dir)
@@ -971,13 +989,24 @@ function M.run_proof(opts)
 
   local plan = plan_profile(manifest, opts.profile)
   local only = nil
-  if opts.only then only = path_set(opts.only) end
+  if opts.only then
+    -- Accept either an array of suite names or a name-keyed set.
+    only = (#opts.only > 0) and path_set(opts.only) or opts.only
+  end
 
   local checks = {}
   local failed = 0
 
-  -- Syntax/load gate over every generated module.
+  -- Syntax/load gate over every generated module. A zero-file listing
+  -- means the caller pointed us at the wrong directory: fail instead of
+  -- reporting a vacuously green proof.
   local tree_files = list_files_relative(tree_dir)
+  if #tree_files == 0 then
+    fail("invalid_manifest", {
+      message = "generated tree directory is empty or missing",
+      tree_dir = tree_dir,
+    })
+  end
   for _, rel in ipairs(tree_files) do
     local chunk, load_err = loadfile(tree_dir .. "/" .. rel)
     local winner = winner_of_module(plan, rel) or "(tree)"
@@ -991,23 +1020,22 @@ function M.run_proof(opts)
     end
   end
 
-  -- Focused suites against generated copies.
+  -- Focused suites against generated copies. Availability is decided PER
+  -- ROW: one row whose modules are absent (e.g. a new file an empty
+  -- profile never materializes) suppresses only itself.
   local ran = {}
   local keys = {}
   for k in pairs(manifest.proof_matrix or {}) do keys[#keys + 1] = k end
   table.sort(keys)
   for _, module in ipairs(keys) do
-    local rows = manifest.proof_matrix[module]
-    local available = true
-    for _, row in ipairs(rows) do
-      for _, m in ipairs(row.modules) do
-        local f = io.open(tree_dir .. "/" .. m, "rb")
-        if not f then available = false else f:close() end
-      end
-    end
-    if available then
-      for _, row in ipairs(rows) do
-        if (not only or only[row.suite]) and not ran[row.suite] then
+    for _, row in ipairs(manifest.proof_matrix[module]) do
+      if (not only or only[row.suite]) and not ran[row.suite] then
+        local available = true
+        for _, m in ipairs(row.modules) do
+          local f = io.open(tree_dir .. "/" .. m, "rb")
+          if not f then available = false else f:close() end
+        end
+        if available then
           ran[row.suite] = true
           local args = {}
           for _, m in ipairs(row.modules) do

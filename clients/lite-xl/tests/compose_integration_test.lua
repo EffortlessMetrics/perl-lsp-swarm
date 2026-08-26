@@ -135,9 +135,13 @@ end
 do
   local DOCUMENTED = {
     ["diagnostics.lua"] = "c06bec4955d7fbfd8f3a2753fba26c04247b09e0",
+    ["helpdoc.lua"] = "42d7a07f23fa9f254e28ba2ab2c858aded3122d5",
     ["init.lua"] = "7b38c3a97c68877d2391753adb09e49ec57397d3",
     ["json.lua"] = "eb36b8fa947ff1189b02ce03d257b80a86fdac64",
+    ["listbox.lua"] = "33284b02995781d897add3b44c4d66aac64d299e",
     ["server.lua"] = "33c8ccae7362ddb01aa980bff024a4ef1682c8f9",
+    ["symbolresults.lua"] = "96c39cd5ee1b765c85c6f7dc5eb1cb90386994ad",
+    ["timer.lua"] = "c25fefa44e65d1f3a8c52e555080a61195ececae",
     ["util.lua"] = "588c101aa97ef0d112926aac316e7a95a52a6994",
   }
   local res = materialize("lite_xl_protocol_baseline", "base")
@@ -170,6 +174,69 @@ do
       "I3 generated-copy proof green: " .. c.suite .. " (" .. c.component .. ")")
   end
   ok(report.ok == true, "I3 proof reports overall green")
+
+  -- Keyed-set --only form must select exactly the named suite (the CLI
+  -- passes this shape); an empty effective filter would skip every suite
+  -- and report green from syntax checks alone.
+  local keyed = compose.run_proof({
+    manifest = manifest,
+    adapter = adapter,
+    repo_root = repo_root,
+    tree_dir = CORE_TREE,
+    profile = "lite_xl_exact_source_core",
+    only = { ["json_decode_test.lua"] = true },
+  })
+  local saw_json, saw_other_suite = false, false
+  for _, c in ipairs(keyed.checks) do
+    if c.suite == "json_decode_test.lua" then saw_json = true end
+    if c.suite ~= "(syntax-load)" and c.suite ~= "json_decode_test.lua" then
+      saw_other_suite = true
+    end
+  end
+  ok(saw_json and not saw_other_suite,
+    "I3 keyed --only selects exactly json_decode_test")
+end
+
+-- ---------------------------------------------------------------------------
+-- I3b: proof-row availability is decided per row - a pristine baseline
+-- lacks capability_manifest.lua, so its dependent rows drop while every
+-- other init.lua row still runs.
+-- ---------------------------------------------------------------------------
+
+do
+  local res, tree_dir = materialize("lite_xl_protocol_baseline", "proofbase")
+  ok(read_file(tree_dir .. "/listbox.lua") ~= nil,
+    "I3b baseline installs listbox support module")
+  ok(read_file(tree_dir .. "/timer.lua") ~= nil,
+    "I3b baseline installs timer support module")
+  local report = compose.run_proof({
+    manifest = manifest,
+    adapter = adapter,
+    repo_root = repo_root,
+    tree_dir = tree_dir,
+    profile = "lite_xl_protocol_baseline",
+    -- Bounded to the rows that discriminate per-row availability on this
+    -- spawn-bound host; the full baseline sweep is CI's job.
+    only = {
+      ["init_document_session_test.lua"] = true,
+      ["server_message_scheduling_test.lua"] = true,
+      ["init_command_projection_test.lua"] = true,
+      ["capability_manifest_test.lua"] = true,
+    },
+  })
+  -- Selection law ONLY: pristine copies are expected to go red on
+  -- leaf-behavior suites (their documented red-first baselines), so
+  -- presence/absence is asserted, never greenness.
+  local ran = {}
+  for _, c in ipairs(report.checks) do ran[c.suite] = c.exit_code end
+  ok(ran["init_document_session_test.lua"] ~= nil,
+    "I3b baseline selects init-session row against pristine copies")
+  ok(ran["server_message_scheduling_test.lua"] ~= nil,
+    "I3b baseline selects server-scheduling row against pristine copies")
+  ok(ran["init_command_projection_test.lua"] == nil,
+    "I3b unavailable capability-manifest row drops only itself")
+  ok(ran["capability_manifest_test.lua"] == nil,
+    "I3b manifest suite absent from pristine profile proof")
 end
 
 -- ---------------------------------------------------------------------------

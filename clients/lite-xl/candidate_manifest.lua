@@ -49,9 +49,13 @@ return {
     ref = "d1432ae0736cd9531798b4bc1221835f534cc689",
     files = {
       ["diagnostics.lua"] = "c06bec4955d7fbfd8f3a2753fba26c04247b09e0",
+      ["helpdoc.lua"] = "42d7a07f23fa9f254e28ba2ab2c858aded3122d5",
       ["init.lua"] = "7b38c3a97c68877d2391753adb09e49ec57397d3",
       ["json.lua"] = "eb36b8fa947ff1189b02ce03d257b80a86fdac64",
+      ["listbox.lua"] = "33284b02995781d897add3b44c4d66aac64d299e",
       ["server.lua"] = "33c8ccae7362ddb01aa980bff024a4ef1682c8f9",
+      ["symbolresults.lua"] = "96c39cd5ee1b765c85c6f7dc5eb1cb90386994ad",
+      ["timer.lua"] = "c25fefa44e65d1f3a8c52e555080a61195ececae",
       ["util.lua"] = "588c101aa97ef0d112926aac316e7a95a52a6994",
     },
   },

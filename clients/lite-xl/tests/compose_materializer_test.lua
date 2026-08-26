@@ -580,6 +580,20 @@ do
     "F15 util.lua is pristine")
   ok(res.inventory["json.lua"] == digests["json.lua"],
     "F15 inventory equals the pinned base digests")
+
+  -- F16: a NESTED stale file from an earlier run must be cleared by the
+  -- composer-owned cleanup, not silently kept beside the fresh tree.
+  os.execute('mkdir "' .. tree_dir .. '/subdir" 2>nul')
+  write_file(tree_dir .. "/subdir/stale.lua", "return 'stale'\n")
+  local res2, tree_dir2 = run(m, ad, "empty_p", "f16", base_dir)
+  ok(res2.tree_digest == res.tree_digest,
+    "F16 recomposition digest unaffected by stale input")
+  ok(read_file(tree_dir2 .. "/subdir/stale.lua") == nil,
+    "F16 nested stale file removed by composition")
+  local okv = pcall(compose.verify_tree, {
+    tree_dir = tree_dir2, inventory = res2.inventory, adapter = ad,
+  })
+  ok(okv, "F16 regenerated tree verifies clean")
 end
 
 print(string.format("compose_materializer_test: %d passed, %d failed", passed, failed))
