@@ -33,7 +33,7 @@
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -45,6 +45,7 @@ use crate::vim_host_run::vim_host_runner::{
     VimLspCheckoutIdentity, VimLspEntryFile, VimLspExpectedContent, VimLspSubjectManifest,
     VimLspTreeDigest, VimLspUpstream, bytes_sha256, file_sha256, verify_vim_lsp_checkout,
 };
+use crate::vim_host_run::{REQUIRED_VIM_FEATURES, verify_vim_features};
 
 // ---------------------------------------------------------------------------
 // Governed pins (reviewed constants; bumping any of these changes identity)
@@ -73,10 +74,9 @@ pub const VIM_EXECUTABLE_SHA256: &str =
     "sha256:649b65454ce6cc1e2bc3e814b8e2498d5f89bbad8ab066a85cfbb07f33a0ce13";
 
 /// Transport features vim-lsp requires from its host at runtime — the same
-/// law the #10944 runner enforces before launch. This substrate refuses to
-/// provision an instrument that cannot run the pinned client.
-pub const REQUIRED_VIM_FEATURES: [&str; 3] = ["channel", "job", "timers"];
-
+/// law the #10944 runner enforces before launch (`verify_vim_features`,
+/// imported above). This substrate refuses to provision an instrument that
+/// cannot run the pinned client.
 pub const SCHEMA_VERSION: &str = "vim_vim_lsp_host_toolchain.v1";
 pub const INSTRUMENT_VERSION: u32 = 1;
 pub const HOST_ROLE: &str = "vim_vim_lsp_host";
@@ -87,7 +87,17 @@ const VIM_LSP_UPSTREAM_URL: &str = "https://github.com/prabirshrestha/vim-lsp.gi
 /// Bounded probe limits: an explicit or PATH `vim` that hangs or streams
 /// output indefinitely must never hold provisioning hostage.
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
-const VERSION_PROBE_OUTPUT_CAP_BYTES: usize = 512 * 1024;
+/// Deadline applied to every acquisition subprocess (git init/remote/fetch/
+/// checkout). A wedged transport must time out, not hang the provisioner.
+const GIT_ACQUISITION_TIMEOUT: Duration = Duration::from_mins(5);
+/// curl self-bounds with `--max-time` plus stall detection (`--speed-limit`
+/// bytes over `--speed-time` seconds); the values leave room for slow CI
+/// mirrors while guaranteeing termination.
+const CURL_MAX_TIME_SECS: u64 = 900;
+const CURL_SPEED_LIMIT_BYTES: u64 = 1024;
+const CURL_SPEED_TIME_SECS: u64 = 60;
+/// Output cap shared by every bounded subprocess probe.
+const SUBPROCESS_OUTPUT_CAP_BYTES: usize = 512 * 1024;
 /// Deflate-bomb guard for archive extraction.
 const EXTRACTION_TOTAL_CAP_BYTES: u64 = 1024 * 1024 * 1024;
 const EXTRACTION_MAX_ENTRIES: usize = 20_000;
@@ -270,6 +280,15 @@ impl IsolationPolicy {
 
 /// Every load-bearing input of the toolchain identity. Any change produces a
 /// different cache key and therefore a different exact-identity directory.
+///
+/// Transitive binding note: `VIM_EXECUTABLE_SHA256` is deliberately not a
+/// key input. Under the current acquisition mode the executable's bytes are
+/// fully determined by the pinned archive (`archive_sha256` fixes the bytes,
+/// and `install_vim_executable` rebinds the inner-entry digest on every
+/// fresh build), so adding it would be redundant. Before ANY acquisition-
+/// mode change (a mode whose executable is not derived solely from the
+/// archive), this digest MUST join these inputs in the same commit, or a
+/// stale entry could satisfy a role whose executable law changed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CacheKeyInputs<'a> {
     pub schema_version: &'a str,
@@ -325,29 +344,54 @@ fn reproduce_cache_key(manifest: &ToolchainManifest) -> Result<String> {
 /// Output past the cap aborts the probe instead of buffering indefinitely;
 /// a hanging subject cannot hold provisioning hostage.
 fn bounded_output(command: &mut Command, label: &str) -> Result<String> {
+    let (stdout, _stderr) = bounded_output_with(command, label, VERSION_PROBE_TIMEOUT)?;
+    Ok(stdout)
+}
+
+/// [`bounded_output`] with an explicit deadline; acquisition subprocesses
+/// (git transport) and identity probes share the cap semantics but not the
+/// same time budget. Returns `(stdout, stderr)`; each stream is capped.
+fn bounded_output_with(
+    command: &mut Command,
+    label: &str,
+    timeout: Duration,
+) -> Result<(String, String)> {
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().with_context(|| format!("spawning {label} probe"))?;
-    let mut stdout_pipe = child.stdout.take().context(format!("{label} probe has no stdout"))?;
-    let thread_label = label.to_string();
-    let reader = std::thread::spawn(move || {
-        let label = thread_label;
-        let mut buffered = Vec::new();
-        let mut chunk = [0u8; 8192];
-        loop {
-            match stdout_pipe.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(read) => {
-                    buffered.extend_from_slice(&chunk[..read]);
-                    if buffered.len() > VERSION_PROBE_OUTPUT_CAP_BYTES {
-                        return Err(anyhow::anyhow!("{label} probe exceeded the output cap"));
+    let stdout_pipe = child.stdout.take().context(format!("{label} probe has no stdout"))?;
+    let stderr_pipe = child.stderr.take().context(format!("{label} probe has no stderr"))?;
+
+    fn drain_pipe(
+        mut pipe: impl Read + Send + 'static,
+        label: String,
+        stream: &'static str,
+    ) -> std::thread::JoinHandle<Result<Vec<u8>>> {
+        std::thread::spawn(move || {
+            let mut buffered = Vec::new();
+            let mut chunk = [0u8; 8192];
+            loop {
+                match pipe.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        buffered.extend_from_slice(&chunk[..read]);
+                        if buffered.len() > SUBPROCESS_OUTPUT_CAP_BYTES {
+                            return Err(anyhow::anyhow!(
+                                "{label} probe exceeded the output cap on {stream}"
+                            ));
+                        }
+                    }
+                    Err(error) => {
+                        return Err(anyhow::anyhow!("{label} probe {stream} read failed: {error}"));
                     }
                 }
-                Err(error) => return Err(anyhow::anyhow!("{label} probe read failed: {error}")),
             }
-        }
-        Ok(buffered)
-    });
-    let deadline = Instant::now() + VERSION_PROBE_TIMEOUT;
+            Ok(buffered)
+        })
+    }
+
+    let stdout_reader = drain_pipe(stdout_pipe, label.to_string(), "stdout");
+    let stderr_reader = drain_pipe(stderr_pipe, label.to_string(), "stderr");
+    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
@@ -355,7 +399,8 @@ fn bounded_output(command: &mut Command, label: &str) -> Result<String> {
             Ok(None) => std::thread::sleep(Duration::from_millis(25)),
             Err(error) => {
                 let _ = child.kill();
-                let _ = reader.join();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
                 return Err(
                     anyhow::Error::from(error).context(format!("waiting for {label} probe"))
                 );
@@ -367,16 +412,22 @@ fn bounded_output(command: &mut Command, label: &str) -> Result<String> {
         None => {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = reader.join();
-            anyhow::bail!(
-                "{label} probe exceeded its {}s deadline",
-                VERSION_PROBE_TIMEOUT.as_secs()
-            );
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            anyhow::bail!("{label} probe exceeded its {}s deadline", timeout.as_secs());
         }
     };
-    let stdout = reader.join().map_err(|_| anyhow::anyhow!("{label} probe reader failed"))??;
-    ensure!(status.success(), "{label} probe failed with status {status}");
-    String::from_utf8(stdout).with_context(|| format!("{label} probe produced non-UTF-8 output"))
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("{label} probe stdout reader failed"))??;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("{label} probe stderr reader failed"))??;
+    let stderr_text = String::from_utf8_lossy(&stderr).into_owned();
+    ensure!(status.success(), "{label} probe failed with status {status}: {}", stderr_text.trim());
+    let stdout = String::from_utf8(stdout)
+        .with_context(|| format!("{label} probe produced non-UTF-8 stdout"))?;
+    Ok((stdout, stderr_text))
 }
 
 /// The production version probe: bounded `vim --version`. Version probing
@@ -395,7 +446,12 @@ pub fn probe_vim_version(executable: &Path) -> Result<String> {
 
 /// Extract exactly the pinned runtime subtree of `archive` into `dest`,
 /// refusing path traversal, absolute entries, drive letters, symlinks, and
-/// oversized payloads. Only regular directories and files are admitted.
+/// oversized payloads. Only regular directories and files are admitted:
+/// entries carrying symlink mode bits fail explicitly (the doc claim is
+/// enforced by `is_symlink`, not by incidental file/dir classification).
+/// Payload bytes are streamed to disk under a running cap on ACTUAL
+/// decompressed bytes, so a header that lies about its declared size cannot
+/// smuggle a deflate bomb past [`EXTRACTION_TOTAL_CAP_BYTES`].
 fn extract_runtime_subtree(archive_path: &Path, subtree: &str, dest: &Path) -> Result<usize> {
     let file = fs::File::open(archive_path)
         .with_context(|| format!("opening archive {}", archive_path.display()))?;
@@ -435,22 +491,34 @@ fn extract_runtime_subtree(archive_path: &Path, subtree: &str, dest: &Path) -> R
                 .with_context(|| format!("creating extracted directory {}", target.display()))?;
             continue;
         }
+        // Explicit symlink rejection before any regular-file admission, so
+        // the doc claim is enforced by name rather than incidentally.
+        anyhow::ensure!(
+            !entry.is_symlink(),
+            "archive entry {raw_name} carries symlink metadata; symlinks are refused"
+        );
         anyhow::ensure!(
             entry.is_file(),
             "archive entry {raw_name} is neither a regular file nor a directory"
         );
-        total_bytes += entry.size();
-        anyhow::ensure!(
-            total_bytes <= EXTRACTION_TOTAL_CAP_BYTES,
-            "archive exceeds the total extraction size cap"
-        );
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
-        let mut payload = Vec::new();
-        entry.read_to_end(&mut payload).context("reading archive entry bytes")?;
-        fs::write(&target, &payload)
-            .with_context(|| format!("writing extracted {}", target.display()))?;
+        let mut payload = fs::File::create(&target)
+            .with_context(|| format!("creating extracted {}", target.display()))?;
+        let mut chunk = [0u8; 16 * 1024];
+        loop {
+            let read = entry.read(&mut chunk).context("reading archive entry bytes")?;
+            if read == 0 {
+                break;
+            }
+            total_bytes += read as u64;
+            anyhow::ensure!(
+                total_bytes <= EXTRACTION_TOTAL_CAP_BYTES,
+                "archive exceeds the total extraction size cap while streaming actual bytes"
+            );
+            payload.write_all(&chunk[..read]).context("writing extracted archive bytes")?;
+        }
         extracted += 1;
     }
     anyhow::ensure!(extracted > 0, "archive carried no entries under {subtree}");
@@ -508,6 +576,17 @@ pub struct ProvisionInputs {
     /// Offline vim-lsp acquisition: clone the pinned commit from this local
     /// checkout instead of the governed upstream URL.
     pub vim_lsp_source: Option<PathBuf>,
+    /// Offline Vim acquisition: use this local archive instead of curling
+    /// [`VIM_ARCHIVE_URL`]. Tests inject a tiny checked-in fixture so the
+    /// whole provision path runs with zero network. When set, both expected
+    /// digests below MUST be set too; the trio is validated together.
+    pub vim_archive_source: Option<PathBuf>,
+    /// Expected digest of the injected archive (replaces the pinned
+    /// [`VIM_ARCHIVE_SHA256`] for this run).
+    pub vim_archive_expected_sha256: Option<String>,
+    /// Expected digest of the pinned inner executable inside the injected
+    /// archive (replaces the pinned [`VIM_EXECUTABLE_SHA256`]).
+    pub vim_executable_expected_sha256: Option<String>,
     /// Execution-environment label recorded in identity (`local_runner`,
     /// `ci_runner`, ...).
     pub execution_environment: String,
@@ -533,13 +612,57 @@ fn platform_fields(execution_environment: &str) -> PlatformFields {
     }
 }
 
-fn vim_acquisition_identity() -> VimAcquisitionIdentity {
-    VimAcquisitionIdentity {
-        mode: "pinned_release_archive".to_string(),
-        source_url: VIM_ARCHIVE_URL.to_string(),
-        tag: VIM_RELEASE_TAG.to_string(),
-        archive_sha256: VIM_ARCHIVE_SHA256.to_string(),
-        archive_entry: VIM_ARCHIVE_ENTRY.to_string(),
+/// The effective Vim identity pins for one provisioning run: the pinned
+/// release subject by default, or the injected offline archive when tests
+/// supply one. Whatever is resolved here flows into the cache key, the
+/// manifest, and both digest checks, so an injected run can never collide
+/// with (or silently stand in for) a production-pinned entry.
+struct VimPins {
+    acquisition: VimAcquisitionIdentity,
+    executable_sha256: String,
+}
+
+/// Resolve [`VimPins`] from the inputs. The archive source and both expected
+/// digests are all-or-nothing; a partial injection is a typed input error.
+fn resolve_vim_pins(inputs: &ProvisionInputs) -> ToolchainResult<VimPins> {
+    match (
+        &inputs.vim_archive_source,
+        &inputs.vim_archive_expected_sha256,
+        &inputs.vim_executable_expected_sha256,
+    ) {
+        (None, None, None) => Ok(VimPins {
+            acquisition: VimAcquisitionIdentity {
+                mode: "pinned_release_archive".to_string(),
+                source_url: VIM_ARCHIVE_URL.to_string(),
+                tag: VIM_RELEASE_TAG.to_string(),
+                archive_sha256: VIM_ARCHIVE_SHA256.to_string(),
+                archive_entry: VIM_ARCHIVE_ENTRY.to_string(),
+            },
+            executable_sha256: VIM_EXECUTABLE_SHA256.to_string(),
+        }),
+        (Some(archive), Some(archive_digest), Some(executable_digest)) => {
+            let file_name = archive
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "archive".to_string());
+            // Only the file name enters durable identity: absolute machine
+            // paths are excluded from manifests by law, and the content
+            // digests carry the real binding anyway.
+            Ok(VimPins {
+                acquisition: VimAcquisitionIdentity {
+                    mode: "offline_archive_injection".to_string(),
+                    source_url: format!("local:{file_name}"),
+                    tag: format!("{VIM_RELEASE_TAG}-shape-fixture"),
+                    archive_sha256: archive_digest.clone(),
+                    archive_entry: VIM_ARCHIVE_ENTRY.to_string(),
+                },
+                executable_sha256: executable_digest.clone(),
+            })
+        }
+        _ => Err(acquisition_failure(
+            "incomplete offline archive injection: vim_archive_source and both expected \
+             digests must be provided together",
+        )),
     }
 }
 
@@ -573,19 +696,59 @@ fn assert_no_machine_paths(manifest_bytes: &[u8], roots: &[&Path]) -> Result<()>
     Ok(())
 }
 
+/// Verify-time path law (cheaper structural option over persisting scan
+/// roots, which would leak machine paths into the manifest it protects):
+/// every durable field that names a location must be a relative forward-
+/// slash reference, and the acquisition source must be an explicit non-file
+/// URL scheme. Combined with [`assert_no_machine_paths`] at write time this
+/// makes verify-time scanning exactly as strong as write-time scanning,
+/// because no durable string can structurally carry an absolute path.
+fn assert_durable_strings_relative(manifest: &ToolchainManifest) -> Result<()> {
+    let rel = |field: &str, value: &str| -> Result<()> {
+        anyhow::ensure!(
+            !value.is_empty()
+                && !value.starts_with('/')
+                && !value.contains('\\')
+                && !value.contains(':')
+                && !value.contains("..")
+                && !Path::new(value).is_absolute(),
+            "durable identity field {field} is not a relative reference: {value}"
+        );
+        Ok(())
+    };
+    rel("vim_lsp.subject_authority_path", &manifest.vim_lsp.subject_authority_path)?;
+    rel("vim.acquisition.archive_entry", &manifest.vim.acquisition.archive_entry)?;
+    for entry in &manifest.vim_lsp.entry_files {
+        rel("vim_lsp.entry_files[].path", &entry.path)?;
+    }
+    let url = &manifest.vim.acquisition.source_url;
+    anyhow::ensure!(
+        url.starts_with("https://") || url.starts_with("local:"),
+        "durable identity field vim.acquisition.source_url must be an https or local: \
+         reference, not a filesystem path: {url}"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Acquisition stages
 // ---------------------------------------------------------------------------
 
-/// Acquire the pinned Vim archive into `downloads` (skipped when a
-/// digest-correct copy is already present), returning the archive path.
-fn acquire_vim_archive(downloads_dir: &Path) -> ToolchainResult<PathBuf> {
-    let archive_path = downloads_dir.join(format!("gvim_{}.zip", VIM_RELEASE_TAG));
+/// Acquire the Vim archive into `downloads` (skipped when a digest-correct
+/// copy is already present), returning the archive path. `expected_sha256`
+/// is the effective pin for this run (pinned release or injected fixture
+/// expectation).
+fn acquire_vim_archive(downloads_dir: &Path, expected_sha256: &str) -> ToolchainResult<PathBuf> {
+    let archive_path = downloads_dir.join(format!("gvim_{VIM_RELEASE_TAG}.zip"));
     if archive_path.exists() {
         return match file_sha256(&archive_path) {
-            Ok(actual) if actual == VIM_ARCHIVE_SHA256 => Ok(archive_path),
+            Ok(actual) if actual == expected_sha256 => Ok(archive_path),
+            // This function does not rebuild anything: it fails typed and
+            // the caller deletes the whole cache entry and rebuilds from the
+            // pinned sources.
             Ok(_) => Err(mismatch(format!(
-                "cached download {} drifted from the pinned archive digest; rebuilding",
+                "cached download {} drifted from the expected archive digest {expected_sha256}; \
+                 the whole cache entry will be rebuilt",
                 archive_path.display()
             ))),
             Err(error) => Err(acquisition_failure(format!(
@@ -596,9 +759,31 @@ fn acquire_vim_archive(downloads_dir: &Path) -> ToolchainResult<PathBuf> {
     }
     fs::create_dir_all(downloads_dir)
         .map_err(|error| acquisition_failure(format!("creating downloads dir: {error}")))?;
-    let partial = downloads_dir.join("download.partial");
+    // Concurrent provisions must not share one fixed partial path; the
+    // unique suffix makes each writer own its file and the rename below
+    // stays atomic per producer.
+    let partial = downloads_dir.join(format!(
+        "download.{}.{:x}.partial",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_nanos())
+            .unwrap_or_default()
+    ));
     let fetched = Command::new("curl")
-        .args(["--fail", "--location", "--silent", "--show-error", "--output"])
+        .args([
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            &CURL_MAX_TIME_SECS.to_string(),
+            "--speed-limit",
+            &CURL_SPEED_LIMIT_BYTES.to_string(),
+            "--speed-time",
+            &CURL_SPEED_TIME_SECS.to_string(),
+            "--output",
+        ])
         .arg(&partial)
         .arg(VIM_ARCHIVE_URL)
         .stdin(Stdio::null())
@@ -609,17 +794,18 @@ fn acquire_vim_archive(downloads_dir: &Path) -> ToolchainResult<PathBuf> {
     if !fetched.status.success() {
         let _ = fs::remove_file(&partial);
         return Err(acquisition_failure(format!(
-            "curl could not fetch the pinned Vim archive: {}",
+            "curl could not fetch the pinned Vim archive (status {}): {}",
+            fetched.status,
             String::from_utf8_lossy(&fetched.stderr).trim()
         )));
     }
     let actual = file_sha256(&partial).map_err(|error| {
         acquisition_failure(format!("hashing the downloaded archive: {error:#}"))
     })?;
-    if actual != VIM_ARCHIVE_SHA256 {
+    if actual != expected_sha256 {
         let _ = fs::remove_file(&partial);
         return Err(mismatch(format!(
-            "downloaded Vim archive digest {actual} does not match the pinned {VIM_ARCHIVE_SHA256}"
+            "downloaded Vim archive digest {actual} does not match the expected {expected_sha256}"
         )));
     }
     fs::rename(&partial, &archive_path).map_err(|error| {
@@ -629,10 +815,15 @@ fn acquire_vim_archive(downloads_dir: &Path) -> ToolchainResult<PathBuf> {
 }
 
 /// Verify the pinned console executable inside the extracted portable
-/// runtime, binding its digest to the pin. The executable stays inside the
-/// runtime directory: the Windows VIMDLL build loads `vim92.dll` from its
-/// own directory, so isolating the bare binary would break launch.
-fn install_vim_executable(archive: &Path, cache_vim_dir: &Path) -> ToolchainResult<PathBuf> {
+/// runtime, binding its digest to the run's expected pin. The executable
+/// stays inside the runtime directory: the Windows VIMDLL build loads
+/// `vim92.dll` from its own directory, so isolating the bare binary would
+/// break launch.
+fn install_vim_executable(
+    archive: &Path,
+    cache_vim_dir: &Path,
+    expected_executable_sha256: &str,
+) -> ToolchainResult<PathBuf> {
     let runtime_dir = cache_vim_dir.join("vim92");
     extract_runtime_subtree(archive, VIM_ARCHIVE_RUNTIME_SUBTREE, &runtime_dir)
         .map_err(|error| unresolved(format!("extracting the pinned runtime subtree: {error:#}")))?;
@@ -644,10 +835,10 @@ fn install_vim_executable(archive: &Path, cache_vim_dir: &Path) -> ToolchainResu
     }
     let actual = file_sha256(&installed)
         .map_err(|error| unresolved(format!("hashing the pinned executable: {error:#}")))?;
-    if actual != VIM_EXECUTABLE_SHA256 {
+    if actual != expected_executable_sha256 {
         return Err(mismatch(format!(
-            "extracted Vim executable digest {actual} does not match the pinned \
-             {VIM_EXECUTABLE_SHA256}"
+            "extracted Vim executable digest {actual} does not match the expected \
+             {expected_executable_sha256}"
         )));
     }
     Ok(installed)
@@ -704,15 +895,16 @@ fn install_vim_lsp_checkout(
         ),
     ];
     for (label, args) in steps {
-        let outcome = Command::new("git")
-            .args(&args)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|error| acquisition_failure(format!("running git {label}: {error}")))?;
-        if !outcome.status.success() {
+        let mut command = Command::new("git");
+        command.args(&args);
+        // Bounded like every other acquisition subprocess: a wedged git
+        // transport or an endlessly chatty step cannot hold provisioning
+        // hostage.
+        if let Err(error) =
+            bounded_output_with(&mut command, &format!("git {label}"), GIT_ACQUISITION_TIMEOUT)
+        {
             return Err(acquisition_failure(format!(
-                "git {label} failed for the pinned vim-lsp subject: {}",
-                String::from_utf8_lossy(&outcome.stderr).trim()
+                "git {label} failed for the pinned vim-lsp subject: {error:#}"
             )));
         }
     }
@@ -780,6 +972,10 @@ fn verify_manifest_core(
         )));
     }
     assert_no_machine_paths(manifest_bytes, &[]).map_err(|error| mismatch(format!("{error:#}")))?;
+    // Structural path law: durable location fields are relative references,
+    // so verify-time scanning is as strong as write-time scanning without
+    // persisting machine roots anywhere.
+    assert_durable_strings_relative(manifest).map_err(|error| mismatch(format!("{error:#}")))?;
 
     let vim_executable = layout_root.join("vim").join("vim92").join("vim.exe");
     let actual_exe = file_sha256(&vim_executable)
@@ -862,13 +1058,13 @@ pub fn provision(
 ) -> ToolchainResult<ProvisionOutcome> {
     let (authority, authority_sha256) = inputs.authority.load().map_err(classify_authority)?;
     let platform = platform_fields(&inputs.execution_environment);
-    let vim_identity = vim_acquisition_identity();
+    let pins = resolve_vim_pins(inputs)?;
     let key_inputs = CacheKeyInputs {
         schema_version: SCHEMA_VERSION,
         instrument_version: INSTRUMENT_VERSION,
         host_role: HOST_ROLE,
         platform: &platform,
-        vim_acquisition: &vim_identity,
+        vim_acquisition: &pins.acquisition,
         vim_required_features: required_feature_list(),
         vim_lsp_subject_authority_path: SUBJECT_AUTHORITY_REPO_PATH,
         vim_lsp_subject_authority_sha256: &authority_sha256,
@@ -878,7 +1074,7 @@ pub fn provision(
     };
     let key = cache_key(&key_inputs).map_err(classify_authority)?;
     let dir_name = cache_dir_name(&key).map_err(classify_authority)?.to_string();
-    let entry_root = inputs.output_root.join(dir_name);
+    let entry_root = inputs.output_root.join(&dir_name);
     let manifest_path = entry_root.join(MANIFEST_FILE_NAME);
 
     if manifest_path.exists() {
@@ -900,49 +1096,69 @@ pub fn provision(
         }
     }
 
-    rebuild_entry(inputs, &authority, authority_sha256, platform, key, &entry_root, probe)
+    rebuild_entry(
+        inputs,
+        &authority,
+        authority_sha256,
+        platform,
+        key,
+        &dir_name,
+        &entry_root,
+        pins,
+        probe,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rebuild_entry(
     inputs: &ProvisionInputs,
     authority: &VimLspSubjectManifest,
     authority_sha256: String,
     platform: PlatformFields,
     key: String,
+    dir_name: &str,
     entry_root: &Path,
+    pins: VimPins,
     probe: &dyn Fn(&Path) -> Result<String>,
 ) -> ToolchainResult<ProvisionOutcome> {
-    if entry_root.exists() {
-        fs::remove_dir_all(entry_root)
-            .map_err(|error| acquisition_failure(format!("clearing the cache entry: {error}")))?;
-    }
-    let downloads_dir = entry_root.join("downloads");
-    let cache_vim_dir = entry_root.join("vim");
-    let checkout_dir = entry_root.join("vim-lsp");
-    fs::create_dir_all(&cache_vim_dir).map_err(|error| {
-        acquisition_failure(format!(
-            "creating the cache entry {}: {error}",
-            cache_vim_dir.display()
-        ))
-    })?;
-
+    // Concurrent provisions must not race on the fixed per-key path: the
+    // whole entry is built in a process-private staging directory and only
+    // swapped into place once it is complete and verified. Only this
+    // process's own stale staging leftovers are swept; a concurrent
+    // writer's staging directory is never touched.
+    let staging_root =
+        inputs.output_root.join(format!("{dir_name}.staging.{}", std::process::id()));
+    let _ = fs::remove_dir_all(&staging_root);
     match build_fresh_entry(
         inputs,
         authority,
         &authority_sha256,
         &platform,
         &key,
-        entry_root,
-        &downloads_dir,
-        &cache_vim_dir,
-        &checkout_dir,
+        &pins,
+        &staging_root,
         probe,
     ) {
-        Ok(outcome) => Ok(outcome),
+        Ok(outcome) => {
+            if entry_root.exists() {
+                fs::remove_dir_all(entry_root).map_err(|error| {
+                    acquisition_failure(format!("clearing the superseded cache entry: {error}"))
+                })?;
+            }
+            fs::rename(&staging_root, entry_root).map_err(|error| {
+                acquisition_failure(format!("publishing the rebuilt cache entry: {error}"))
+            })?;
+            Ok(ProvisionOutcome {
+                manifest_path: entry_root.join(MANIFEST_FILE_NAME),
+                vim_executable_role: entry_root.join("vim").join("vim92").join("vim.exe"),
+                vim_lsp_runtimepath_role: entry_root.join("vim-lsp"),
+                ..outcome
+            })
+        }
         Err(failure) => {
             // A failed acquisition never leaves a half-built entry behind
             // that a later run could mistake for a provisioned subject.
-            let _ = fs::remove_dir_all(entry_root);
+            let _ = fs::remove_dir_all(&staging_root);
             Err(failure)
         }
     }
@@ -955,25 +1171,48 @@ fn build_fresh_entry(
     authority_sha256: &str,
     platform: &PlatformFields,
     key: &str,
-    entry_root: &Path,
-    downloads_dir: &Path,
-    cache_vim_dir: &Path,
-    checkout_dir: &Path,
+    pins: &VimPins,
+    layout_root: &Path,
     probe: &dyn Fn(&Path) -> Result<String>,
 ) -> ToolchainResult<ProvisionOutcome> {
-    let archive = acquire_vim_archive(downloads_dir)?;
-    let vim_executable = install_vim_executable(&archive, cache_vim_dir)?;
+    let downloads_dir = layout_root.join("downloads");
+    let cache_vim_dir = layout_root.join("vim");
+    let checkout_dir = layout_root.join("vim-lsp");
+    fs::create_dir_all(&cache_vim_dir).map_err(|error| {
+        acquisition_failure(format!(
+            "creating the cache entry {}: {error}",
+            cache_vim_dir.display()
+        ))
+    })?;
+    // Offline injection replaces the network download entirely: the local
+    // archive is digest-bound against the run's expected value before any
+    // use, so an injected fixture obeys exactly the same identity law as a
+    // downloaded pinned release.
+    let archive = match &inputs.vim_archive_source {
+        Some(source) => {
+            let actual = file_sha256(source).map_err(|error| {
+                acquisition_failure(format!(
+                    "hashing the injected Vim archive {}: {error:#}",
+                    source.display()
+                ))
+            })?;
+            if actual != pins.acquisition.archive_sha256 {
+                return Err(mismatch(format!(
+                    "injected Vim archive digest {actual} does not match the expected {}",
+                    pins.acquisition.archive_sha256
+                )));
+            }
+            source.clone()
+        }
+        None => acquire_vim_archive(&downloads_dir, &pins.acquisition.archive_sha256)?,
+    };
+    let vim_executable = install_vim_executable(&archive, &cache_vim_dir, &pins.executable_sha256)?;
     let version_text = probe(&vim_executable)
         .map_err(|error| mismatch(format!("provisioned Vim identity probe failed: {error:#}")))?;
-    for feature in REQUIRED_VIM_FEATURES {
-        if !version_text.contains(&format!("+{feature}")) {
-            return Err(mismatch(format!(
-                "provisioned Vim lacks the required transport feature +{feature}; this build \
-                 cannot run the pinned vim-lsp client"
-            )));
-        }
-    }
-    install_vim_lsp_checkout(checkout_dir, authority, inputs.vim_lsp_source.as_deref())?;
+    // Same feature law the #10944 runner enforces before launch.
+    verify_vim_features(&version_text)
+        .map_err(|error| mismatch(format!("provisioned Vim failed the feature law: {error:#}")))?;
+    install_vim_lsp_checkout(&checkout_dir, authority, inputs.vim_lsp_source.as_deref())?;
 
     let executable_digest = file_sha256(&vim_executable)
         .map_err(|error| unresolved(format!("hashing the pinned executable: {error:#}")))?;
@@ -985,7 +1224,7 @@ fn build_fresh_entry(
         platform: platform.clone(),
         cache_key: key.to_string(),
         vim: VimToolchainIdentity {
-            acquisition: vim_acquisition_identity(),
+            acquisition: pins.acquisition.clone(),
             executable_sha256: executable_digest,
             version_summary,
             version_text_sha256: bytes_sha256(version_text.as_bytes())
@@ -1022,9 +1261,9 @@ fn build_fresh_entry(
     // Post-provision identity verification is mandatory, never skipped
     // (false-subject control 8): the freshly built layout must pass the same
     // offline verifier any later consumer runs.
-    verify_manifest_core(&manifest, &manifest_bytes, entry_root, probe)?;
-    let published = entry_root.join(MANIFEST_FILE_NAME);
-    let staging = entry_root.join(format!("{MANIFEST_FILE_NAME}.tmp"));
+    verify_manifest_core(&manifest, &manifest_bytes, layout_root, probe)?;
+    let published = layout_root.join(MANIFEST_FILE_NAME);
+    let staging = layout_root.join(format!("{MANIFEST_FILE_NAME}.tmp"));
     fs::write(&staging, &manifest_bytes)
         .map_err(|error| unresolved(format!("writing the manifest: {error}")))?;
     fs::rename(&staging, &published)
@@ -1134,6 +1373,43 @@ mod tests {
         move |_executable| Ok(version_text.to_string())
     }
 
+    /// The checked-in minimal Vim runtime fixture: a tiny valid zip carrying
+    /// exactly the required entry names (`vim/vim92/vim.exe` plus a runtime
+    /// support file) and nothing else. It exists so the whole provision path
+    /// — acquisition, digest binding, extraction, executable verification,
+    /// caching, revalidation — runs with zero network in every default test.
+    const FIXTURE_ZIP_REPO_PATH: &str =
+        "tests/fixtures/vim_host_toolchain/pinned_runtime_fixture.zip";
+
+    fn install_fixture_archive(scratch: &Path) -> Result<ArchiveFixture> {
+        let archive_path = scratch.join("pinned_runtime_fixture.zip");
+        fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(FIXTURE_ZIP_REPO_PATH),
+            &archive_path,
+        )
+        .with_context(|| format!("copying the checked-in fixture {}", FIXTURE_ZIP_REPO_PATH))?;
+        // Digests are computed at test time from the copy and injected as
+        // the run's expected values, so the fixture bytes stay authoritative
+        // without any hardcoded digest drifting out of sync.
+        let archive_sha256 = file_sha256(&archive_path)?;
+        let mut zip_file = fs::File::open(&archive_path)?;
+        let mut archive =
+            zip::ZipArchive::new(&mut zip_file).with_context(|| "reading the fixture archive")?;
+        let mut entry = archive
+            .by_name(VIM_ARCHIVE_ENTRY)
+            .with_context(|| format!("fixture lacks pinned entry {VIM_ARCHIVE_ENTRY}"))?;
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).context("reading fixture executable bytes")?;
+        let executable_sha256 = bytes_sha256(&bytes)?;
+        Ok(ArchiveFixture { archive_path, archive_sha256, executable_sha256 })
+    }
+
+    struct ArchiveFixture {
+        archive_path: PathBuf,
+        archive_sha256: String,
+        executable_sha256: String,
+    }
+
     fn inline_authority(fixture: &SubjectFixture) -> SubjectAuthoritySource {
         SubjectAuthoritySource::Inline {
             display_path: SUBJECT_AUTHORITY_REPO_PATH.to_string(),
@@ -1141,9 +1417,15 @@ mod tests {
         }
     }
 
+    /// Fully offline provision inputs: inline authority, local vim-lsp
+    /// checkout source, and the injected archive fixture with its test-time
+    /// digests. No default test may construct provision inputs without the
+    /// archive injection (the only exceptions fail before acquisition or
+    /// are the env-gated `live_network` test).
     fn provision_inputs(
         output_root: &Path,
         fixture: &SubjectFixture,
+        archive: &ArchiveFixture,
         probe_text: &'static str,
     ) -> (ProvisionInputs, impl Fn(&Path) -> Result<String>) {
         (
@@ -1152,6 +1434,9 @@ mod tests {
                 repo_root: output_root.to_path_buf(),
                 authority: inline_authority(fixture),
                 vim_lsp_source: Some(fixture.source_dir.clone()),
+                vim_archive_source: Some(archive.archive_path.clone()),
+                vim_archive_expected_sha256: Some(archive.archive_sha256.clone()),
+                vim_executable_expected_sha256: Some(archive.executable_sha256.clone()),
                 execution_environment: "local_runner".to_string(),
             },
             static_probe(probe_text),
@@ -1162,16 +1447,55 @@ mod tests {
         assert_eq!(error.class, class, "unexpected failure: {error}");
     }
 
+    /// The production (pinned-release) identity pins, resolved through the
+    /// same path provisioning uses when nothing is injected.
+    fn production_pins() -> Result<VimPins> {
+        resolve_vim_pins(&no_injection_inputs()).map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    /// The offline-injection identity for a stand-in archive, without
+    /// needing a real fixture on disk.
+    fn fixture_archive_pins() -> Result<VimAcquisitionIdentity> {
+        Ok(VimAcquisitionIdentity {
+            mode: "offline_archive_injection".to_string(),
+            source_url: "local:fixture.zip".to_string(),
+            tag: format!("{VIM_RELEASE_TAG}-shape-fixture"),
+            archive_sha256: "sha256:fixture-archive-digest".to_string(),
+            archive_entry: VIM_ARCHIVE_ENTRY.to_string(),
+        })
+    }
+
+    fn no_injection_inputs() -> ProvisionInputs {
+        ProvisionInputs {
+            output_root: PathBuf::from("unused"),
+            repo_root: PathBuf::from("unused"),
+            authority: SubjectAuthoritySource::Inline {
+                display_path: SUBJECT_AUTHORITY_REPO_PATH.to_string(),
+                bytes: Vec::new(),
+            },
+            vim_lsp_source: None,
+            vim_archive_source: None,
+            vim_archive_expected_sha256: None,
+            vim_executable_expected_sha256: None,
+            execution_environment: "local_runner".to_string(),
+        }
+    }
+
     #[test]
     fn roundtrip_provision_and_offline_verify_hermetic() -> Result<()> {
         let scratch = tempfile::tempdir()?;
         let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
         let output = scratch.path().join("out");
-        let (inputs, probe) = provision_inputs(&output, &fixture, FULL_FEATURE_TEXT);
+        let (inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
 
         let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
         assert!(!first.cache_hit);
         assert_eq!(first.manifest.host_role, HOST_ROLE);
+        assert_eq!(
+            first.manifest.vim.acquisition.mode, "offline_archive_injection",
+            "the hermetic roundtrip must run on the injected archive, never the network"
+        );
         assert_eq!(
             first.manifest.vim.executable_sha256,
             file_sha256(first.vim_executable_role.as_path())?
@@ -1190,11 +1514,15 @@ mod tests {
     fn manifest_bytes_are_identical_across_independent_roots() -> Result<()> {
         let scratch = tempfile::tempdir()?;
         let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
         let left_inputs = ProvisionInputs {
             output_root: scratch.path().join("left"),
             repo_root: scratch.path().to_path_buf(),
             authority: inline_authority(&fixture),
             vim_lsp_source: Some(fixture.source_dir.clone()),
+            vim_archive_source: Some(archive.archive_path.clone()),
+            vim_archive_expected_sha256: Some(archive.archive_sha256.clone()),
+            vim_executable_expected_sha256: Some(archive.executable_sha256.clone()),
             execution_environment: "ci_runner".to_string(),
         };
         let right_inputs = ProvisionInputs {
@@ -1202,6 +1530,9 @@ mod tests {
             repo_root: scratch.path().to_path_buf(),
             authority: inline_authority(&fixture),
             vim_lsp_source: Some(fixture.source_dir.clone()),
+            vim_archive_source: Some(archive.archive_path.clone()),
+            vim_archive_expected_sha256: Some(archive.archive_sha256.clone()),
+            vim_executable_expected_sha256: Some(archive.executable_sha256.clone()),
             execution_environment: "ci_runner".to_string(),
         };
         let probe = static_probe(FULL_FEATURE_TEXT);
@@ -1221,7 +1552,7 @@ mod tests {
             arch: "x86_64".into(),
             execution_environment: "local_runner".into(),
         };
-        let acquisition = vim_acquisition_identity();
+        let acquisition = production_pins()?.acquisition;
         let isolation = IsolationPolicy::governed();
         let key_of = |platform: &PlatformFields,
                       acquisition: &VimAcquisitionIdentity,
@@ -1345,6 +1676,22 @@ mod tests {
                 &mutated_isolation
             )?
         );
+        // The offline-injection identity is a different subject from the
+        // pinned release: an injected test entry can never collide with (or
+        // silently stand in for) a production cache entry.
+        let injected = fixture_archive_pins()?;
+        assert_ne!(
+            baseline,
+            key_of(
+                &base,
+                &injected,
+                &required_feature_list(),
+                "authority-digest",
+                "0123456789abcdef0123456789abcdef01234567",
+                LOAD_MODE_CALLER_PINNED_CHECKOUT,
+                &isolation
+            )?
+        );
         Ok(())
     }
 
@@ -1352,8 +1699,9 @@ mod tests {
     fn warm_cache_second_run_hits_and_keeps_manifest_stable() -> Result<()> {
         let scratch = tempfile::tempdir()?;
         let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
         let output = scratch.path().join("out");
-        let (inputs, probe) = provision_inputs(&output, &fixture, FULL_FEATURE_TEXT);
+        let (inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
         let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
         let before = fs::read(&first.manifest_path)?;
         let second = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -1367,8 +1715,9 @@ mod tests {
     fn corrupt_cached_byte_fails_verification_then_rebuild_heals() -> Result<()> {
         let scratch = tempfile::tempdir()?;
         let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
         let output = scratch.path().join("out");
-        let (inputs, probe) = provision_inputs(&output, &fixture, FULL_FEATURE_TEXT);
+        let (inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
         let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
 
         // Mutation: flip one cached executable byte.
@@ -1382,8 +1731,9 @@ mod tests {
         assert_class(&drifted, InstrumentFailureClass::IdentityMismatch);
 
         // Provision over the drifted cache must rebuild, never satisfy
-        // silently — and healing needs no network because the verified
-        // archive copy is still digest-correct.
+        // silently — and healing needs no network because the archive
+        // source itself is injected offline (a real rebuild deletes the
+        // whole entry, downloads/ included).
         let healed = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
         assert!(!healed.cache_hit);
         verify_layout(&healed.manifest_path, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -1391,11 +1741,39 @@ mod tests {
     }
 
     #[test]
+    fn sequential_provisions_sharing_root_stay_deterministic() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
+        let output = scratch.path().join("out");
+        let (inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
+
+        let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        let first_bytes = fs::read(&first.manifest_path)?;
+        let first_key = first.manifest.cache_key.clone();
+
+        // Sharing the root is a pure revalidation.
+        let second = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(second.cache_hit);
+
+        // After the whole entry is wiped, the rebuild lands on the exact
+        // same key and byte-identical durable identity: no timestamps, no
+        // machine paths, no staging residue in what gets published.
+        fs::remove_dir_all(&output)?;
+        let third = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(!third.cache_hit);
+        assert_eq!(third.manifest.cache_key, first_key);
+        assert_eq!(fs::read(&third.manifest_path)?, first_bytes);
+        Ok(())
+    }
+
+    #[test]
     fn same_version_text_with_different_bytes_is_rejected() -> Result<()> {
         let scratch = tempfile::tempdir()?;
         let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
         let output = scratch.path().join("out");
-        let (inputs, probe) = provision_inputs(&output, &fixture, FULL_FEATURE_TEXT);
+        let (inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
         let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
 
         // Substitute different executable bytes while the version probe text
@@ -1414,8 +1792,9 @@ mod tests {
     fn unknown_manifest_field_fails_closed() -> Result<()> {
         let scratch = tempfile::tempdir()?;
         let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
         let output = scratch.path().join("out");
-        let (inputs, probe) = provision_inputs(&output, &fixture, FULL_FEATURE_TEXT);
+        let (inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
         let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
         let mut text = fs::read_to_string(&first.manifest_path)?;
         text = text.replace('{', "{\n  \"future_field\": 1,");
@@ -1430,8 +1809,9 @@ mod tests {
     fn role_relabel_is_rejected_before_anything_else_matters() -> Result<()> {
         let scratch = tempfile::tempdir()?;
         let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
         let output = scratch.path().join("out");
-        let (inputs, probe) = provision_inputs(&output, &fixture, FULL_FEATURE_TEXT);
+        let (inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
         let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
         let relabeled = format!("\"host_role\": \"{}\"", "neovim_nvim_lsp_host");
         let relabeled = fs::read_to_string(&first.manifest_path)?
@@ -1449,8 +1829,9 @@ mod tests {
         const NO_JOB_TEXT: &str = "VIM - Vi IMproved 9.2 (fixture build)\n+channel -job +timers\n";
         let scratch = tempfile::tempdir()?;
         let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
         let output = scratch.path().join("out");
-        let (inputs, probe) = provision_inputs(&output, &fixture, NO_JOB_TEXT);
+        let (inputs, probe) = provision_inputs(&output, &fixture, &archive, NO_JOB_TEXT);
         let failure = provision(&inputs, &probe)
             .err()
             .ok_or_else(|| anyhow::anyhow!("provisioning must fail without +job"))?;
@@ -1462,6 +1843,8 @@ mod tests {
     #[test]
     fn garbage_authority_is_authority_unreadable() -> Result<()> {
         let scratch = tempfile::tempdir()?;
+        // Fails at authority load, before any acquisition stage: no archive
+        // injection needed and no network is reachable from this path.
         let inputs = ProvisionInputs {
             output_root: scratch.path().join("out"),
             repo_root: scratch.path().to_path_buf(),
@@ -1470,6 +1853,9 @@ mod tests {
                 bytes: b"{ not the governed schema".to_vec(),
             },
             vim_lsp_source: None,
+            vim_archive_source: None,
+            vim_archive_expected_sha256: None,
+            vim_executable_expected_sha256: None,
             execution_environment: "local_runner".to_string(),
         };
         let failure = provision(&inputs, &static_probe(FULL_FEATURE_TEXT))
@@ -1483,11 +1869,15 @@ mod tests {
     fn unavailable_local_source_is_acquisition_unavailable() -> Result<()> {
         let scratch = tempfile::tempdir()?;
         let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
         let inputs = ProvisionInputs {
             output_root: scratch.path().join("out"),
             repo_root: scratch.path().to_path_buf(),
             authority: inline_authority(&fixture),
             vim_lsp_source: Some(scratch.path().join("missing-source")),
+            vim_archive_source: Some(archive.archive_path.clone()),
+            vim_archive_expected_sha256: Some(archive.archive_sha256.clone()),
+            vim_executable_expected_sha256: Some(archive.executable_sha256.clone()),
             execution_environment: "local_runner".to_string(),
         };
         let failure = provision(&inputs, &static_probe(FULL_FEATURE_TEXT))
@@ -1529,6 +1919,67 @@ mod tests {
             .err()
             .ok_or_else(|| anyhow::anyhow!("machine-path leak must be refused"))?;
         assert!(error.to_string().contains("machine path"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn archive_symlink_entry_is_refused() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let archive_path = scratch.path().join("symlink.zip");
+        let file = fs::File::create(&archive_path)?;
+        let mut writer = zip::ZipWriter::new(file);
+        // An entry that carries unix symlink mode bits inside the pinned
+        // subtree: extraction must reject it explicitly, matching the doc
+        // claim, instead of relying on incidental file/dir classification.
+        writer
+            .add_symlink(
+                "vim/vim92/link.vim",
+                "../evil.vim",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        writer.finish().map_err(|error| anyhow::anyhow!("{error}"))?;
+        let dest = scratch.path().join("extracted");
+        let error = extract_runtime_subtree(&archive_path, VIM_ARCHIVE_RUNTIME_SUBTREE, &dest)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("symlink entry must be refused"))?;
+        assert!(error.to_string().contains("symlink"), "{error}");
+        Ok(())
+    }
+
+    /// The single opt-in live-network test: it downloads the real pinned
+    /// Vim release archive and fetches the real pinned vim-lsp commit.
+    /// CI default stays offline — the test exits early unless
+    /// `XTASK_VIM_TOOLCHAIN_LIVE_NETWORK=1`.
+    #[test]
+    fn live_network_provisions_the_real_pinned_subjects() -> Result<()> {
+        if std::env::var_os("XTASK_VIM_TOOLCHAIN_LIVE_NETWORK").is_none() {
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr().lock(),
+                b"skipping live_network test: set XTASK_VIM_TOOLCHAIN_LIVE_NETWORK=1 to \
+                  exercise the real pinned acquisition\n",
+            );
+            return Ok(());
+        }
+        let scratch = tempfile::tempdir()?;
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let inputs = ProvisionInputs {
+            output_root: scratch.path().join("out"),
+            repo_root: repo_root.clone(),
+            authority: SubjectAuthoritySource::RepoRoot(repo_root),
+            vim_lsp_source: None,
+            vim_archive_source: None,
+            vim_archive_expected_sha256: None,
+            vim_executable_expected_sha256: None,
+            execution_environment: "local_runner".to_string(),
+        };
+        let outcome =
+            provision(&inputs, &probe_vim_version).map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(!outcome.cache_hit);
+        assert_eq!(outcome.manifest.vim.acquisition.source_url, VIM_ARCHIVE_URL);
+        assert_eq!(outcome.manifest.vim.acquisition.archive_sha256, VIM_ARCHIVE_SHA256);
+        verify_layout(&outcome.manifest_path, &probe_vim_version)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
         Ok(())
     }
 }

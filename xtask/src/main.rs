@@ -4667,6 +4667,9 @@ fn run_cli(cli: Cli) -> Result<()> {
                         repo_root,
                     ),
                     vim_lsp_source,
+                    vim_archive_source: None,
+                    vim_archive_expected_sha256: None,
+                    vim_executable_expected_sha256: None,
                     execution_environment: environment,
                 };
                 let outcome = xtask::vim_host_toolchain::provision(
