@@ -28,6 +28,8 @@ mod compile;
 mod validate;
 
 pub use canonical::{CanonicalPayload, FINGERPRINT_DOMAIN, SemanticProjection};
+
+use canonical::deserialize_option_reject_null;
 pub use validate::KNOWN_PROFILES;
 
 use serde::{Deserialize, Serialize};
@@ -103,7 +105,11 @@ impl CiRoutePlanV1 {
 pub struct RouteSubjectRef {
     pub kind: String,
     pub head_sha: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub base_sha: Option<String>,
     /// Digest of the complete subject payload supplied by its owner.
     pub subject_digest: String,
@@ -118,10 +124,18 @@ pub struct RouteSelectionEvidence {
     pub base: String,
     pub scope_ok: bool,
     pub fallback_used: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub fallback_reason: Option<String>,
     pub package_args: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub scope: Option<RouteScopeEvidence>,
     /// #9149 selector-payload identity. Required whenever any row claims
     /// selector-proved non-applicability.
@@ -293,7 +307,11 @@ pub enum PlannedOutcome {
     Quarantined {
         reason: String,
         owner: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_option_reject_null"
+        )]
         owner_issue: Option<String>,
         /// Review horizon (`YYYY-MM-DD`) from #10176 quarantine evidence.
         review_after: String,
@@ -355,7 +373,11 @@ pub struct RouteProfileExpansionInput {
     pub policy_digest: String,
     pub denominator: Vec<String>,
     pub resolution: ExpansionStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub detail: Option<String>,
 }
 
@@ -388,10 +410,18 @@ pub struct RouteDispositionInput {
     pub native_tier: String,
     /// Present exactly when the lifecycle claim is `Quarantined` with
     /// complete current evidence.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub quarantine: Option<RouteQuarantineEvidence>,
     /// Closed error detail when the resolution is not `Current`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub detail: Option<String>,
 }
 
@@ -399,7 +429,11 @@ pub struct RouteDispositionInput {
 #[serde(deny_unknown_fields)]
 pub struct RouteQuarantineEvidence {
     pub owner: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub owner_issue: Option<String>,
     pub reason_token: String,
     /// Review horizon (`YYYY-MM-DD`).
@@ -414,10 +448,18 @@ pub struct RouteQuarantineEvidence {
 pub struct GateSelectorInput {
     pub gate_id: String,
     pub placement: SelectorPlacement,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub role: Option<SelectorRole>,
     pub reason: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub proof: Option<SelectorProof>,
 }
 

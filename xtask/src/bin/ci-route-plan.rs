@@ -21,19 +21,25 @@
 //!    (`.ci-route-plan.<pid>.<nanos>.<seq>.tmp`, created with
 //!    create-new semantics so two writers can never share it);
 //! 3. complete write + flush + `sync_all` durability step;
-//! 4. atomic publication by rename, which replaces an existing
+//! 4. read-back verification of the durable temp, so only fully verified
+//!    bytes are ever promoted;
+//! 5. atomic publication by rename, which replaces an existing
 //!    destination on both POSIX and Windows (std uses `rename(2)` /
 //!    `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` — an explicit
 //!    cross-platform overwrite contract, not a Unix-only accident);
-//! 5. read-back verification: success is returned only after the final
-//!    path contains exactly the canonical bytes.
+//! 6. POSIX directory sync of the rename, so the published name survives
+//!    a host crash (an explicit typed no-op boundary on Windows);
+//! 7. final read-back verification: success is returned only after the
+//!    destination contains exactly the canonical bytes.
 //!
 //! Any failure (serialization, directory creation, temp creation, write,
-//! sync, rename, read-back) is a typed non-success; the failed publication
-//! leaves no final artifact that could be mistaken for the requested plan
-//! and removes its temporary file. Multi-writer/shared-store semantics are
-//! explicitly not implied; downstream consumers needing them require a
-//! separate contract.
+//! sync, rename, directory sync, read-back) is a typed non-success. A
+//! failed publication removes its temporary and any stale destination
+//! artifact so no file remains that a later artifact upload could mistake
+//! for the requested plan; unremovable residue is named in the typed
+//! refusal. Multi-writer/shared-store semantics are explicitly not
+//! implied; downstream consumers needing them require a separate
+//! contract.
 
 // CLI instrument: the typed refusal/success lines are this tool's interface.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
@@ -171,13 +177,48 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &str) -> Result<T, CliError> 
 /// pipeline order. No variant is convertible into success.
 #[derive(Debug)]
 enum PublicationError {
-    CreateDirectory { dir: String, source: io::Error },
-    TempCreate { dir: String, source: io::Error },
-    Write { temp: PathBuf, source: io::Error },
-    Sync { temp: PathBuf, source: io::Error },
-    Rename { from: PathBuf, to: PathBuf, source: io::Error },
-    ReadBack { path: PathBuf, source: io::Error },
-    ReadBackMismatch { path: PathBuf, expected_len: usize, found_len: usize },
+    CreateDirectory {
+        dir: String,
+        source: io::Error,
+    },
+    TempCreate {
+        dir: String,
+        source: io::Error,
+    },
+    Write {
+        temp: PathBuf,
+        source: io::Error,
+    },
+    Sync {
+        temp: PathBuf,
+        source: io::Error,
+    },
+    Rename {
+        from: PathBuf,
+        to: PathBuf,
+        source: io::Error,
+    },
+    /// POSIX-only: the post-rename directory sync refused.
+    #[cfg(unix)]
+    DirSync {
+        dir: String,
+        source: io::Error,
+    },
+    ReadBack {
+        path: PathBuf,
+        source: io::Error,
+    },
+    ReadBackMismatch {
+        path: PathBuf,
+        expected_len: usize,
+        found_len: usize,
+    },
+    /// A failed publication could not remove a stale destination artifact;
+    /// the original refusal is carried inside.
+    StaleDestinationRemained {
+        path: PathBuf,
+        refusal: Box<PublicationError>,
+    },
 }
 
 impl std::fmt::Display for PublicationError {
@@ -198,6 +239,10 @@ impl std::fmt::Display for PublicationError {
             PublicationError::Rename { from, to, source } => {
                 write!(formatter, "atomic rename {} -> {}: {source}", from.display(), to.display())
             }
+            #[cfg(unix)]
+            PublicationError::DirSync { dir, source } => {
+                write!(formatter, "sync directory {dir:?}: {source}")
+            }
             PublicationError::ReadBack { path, source } => {
                 write!(formatter, "read back {}: {source}", path.display())
             }
@@ -206,6 +251,14 @@ impl std::fmt::Display for PublicationError {
                     formatter,
                     "read-back mismatch at {}: expected {expected_len} canonical bytes, found \
                      {found_len}",
+                    path.display()
+                )
+            }
+            PublicationError::StaleDestinationRemained { path, refusal } => {
+                write!(
+                    formatter,
+                    "failed publication could not remove the stale destination artifact at {}: \
+                     it must not be consumed; original refusal: {refusal}",
                     path.display()
                 )
             }
@@ -226,18 +279,56 @@ fn publish_atomically(path: &Path, bytes: &[u8]) -> Result<(), PublicationError>
     let (temp, file) = create_unique_temp(parent).map_err(|source| {
         PublicationError::TempCreate { dir: parent.display().to_string(), source }
     })?;
-    let outcome = write_and_publish(&temp, path, bytes, file);
-    if outcome.is_err() {
-        // Failed publication leaves no temporary residue: the temp is
-        // unmistakably absent rather than mistakable for authority.
-        drop(fs::remove_file(&temp));
+    if let Err(refusal) = write_and_verify_temp(&temp, bytes, file) {
+        // Pre-promotion failure: nothing of this writer reached the
+        // destination, so a stale prior artifact there is removed too.
+        return Err(cleanup_failed_publication(path, &temp, refusal));
     }
-    outcome
+    match promote(&temp, path, bytes) {
+        Ok(()) => Ok(()),
+        // The rename never promoted this writer's bytes; the destination
+        // (if any) is a stale prior artifact and is cleaned up.
+        Err(refusal @ PublicationError::Rename { .. }) => {
+            Err(cleanup_failed_publication(path, &temp, refusal))
+        }
+        // Post-promotion failure (directory sync, final read-back): the
+        // destination now holds either this writer's promoted bytes or a
+        // concurrent writer's completed artifact. Removing another
+        // publication would break the two-writer contract, so the
+        // destination is left and the refusal says the artifact could not
+        // be verified by this invocation.
+        Err(refusal) => Err(refusal),
+    }
 }
 
-fn write_and_publish(
-    temp: &Path,
+/// Best-effort cleanup after a pre-promotion failure so no file remains
+/// that a later consumer could mistake for the requested plan: this
+/// writer's temporary is removed, and a pre-existing destination artifact
+/// (a stale plan for a previous subject at this path) is removed too — a
+/// refusal must not leave an uploadable stale verdict behind. Residue that
+/// cannot be removed is reported inside the typed refusal.
+fn cleanup_failed_publication(
     final_path: &Path,
+    temp: &Path,
+    refusal: PublicationError,
+) -> PublicationError {
+    drop(fs::remove_file(temp));
+    if final_path.is_file() {
+        drop(fs::remove_file(final_path));
+        if final_path.is_file() {
+            return PublicationError::StaleDestinationRemained {
+                path: final_path.to_path_buf(),
+                refusal: Box::new(refusal),
+            };
+        }
+    }
+    refusal
+}
+
+/// Write, flush, sync, and verify the durable temporary: only fully
+/// verified bytes are ever promoted.
+fn write_and_verify_temp(
+    temp: &Path,
     bytes: &[u8],
     mut file: File,
 ) -> Result<(), PublicationError> {
@@ -249,12 +340,46 @@ fn write_and_publish(
     // Close the handle before the rename so the atomic publication cannot
     // race an open writer on any platform.
     drop(file);
+    verify_published(temp, bytes)
+}
+
+/// Atomically promote the verified temporary to the final path, sync the
+/// rename, and read the destination back: success is returned only after
+/// the destination contains exactly the canonical bytes.
+fn promote(temp: &Path, final_path: &Path, bytes: &[u8]) -> Result<(), PublicationError> {
     fs::rename(temp, final_path).map_err(|source| PublicationError::Rename {
         from: temp.to_path_buf(),
         to: final_path.to_path_buf(),
         source,
     })?;
+    // POSIX durability: the rename's directory entry must itself be synced
+    // before publication is reported, or a host crash can revert the name.
+    // Windows is an explicit typed boundary: std cannot open directory
+    // handles there and NTFS metadata journaling applies.
+    sync_parent_directory(final_path)?;
     verify_published(final_path, bytes)
+}
+
+/// Sync the containing directory so the published rename survives a host
+/// crash. Explicit platform boundary: a real (not accidental) no-op on
+/// Windows.
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> Result<(), PublicationError> {
+    let parent =
+        path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let dir = File::open(parent).map_err(|source| PublicationError::DirSync {
+        dir: parent.display().to_string(),
+        source,
+    })?;
+    dir.sync_all()
+        .map_err(|source| PublicationError::DirSync { dir: parent.display().to_string(), source })
+}
+
+#[cfg(windows)]
+fn sync_parent_directory(_path: &Path) -> Result<(), PublicationError> {
+    // Documented boundary: directory-handle fsync is unavailable through
+    // std on Windows; the file-level sync plus atomic rename remain.
+    Ok(())
 }
 
 /// Unique temporary file in `dir`, created with create-new semantics:
@@ -451,8 +576,26 @@ mod publication_spec {
             right_barrier.wait();
             publish_atomically(&right_path, &right_payload)
         });
-        left_thread.join().expect("left writer").expect("left publication");
-        right_thread.join().expect("right writer").expect("right publication");
+        let left_result = left_thread.join().expect("left writer");
+        let right_result = right_thread.join().expect("right writer");
+        // The last writer to rename always reads back its own bytes, so at
+        // least one publication succeeds. A writer that loses the read-back
+        // race is a typed refusal — but it must never remove the winner's
+        // completed artifact.
+        let successes =
+            [&left_result, &right_result].iter().filter(|result| result.is_ok()).count();
+        assert!(
+            successes >= 1,
+            "at least one writer must publish: {left_result:?} {right_result:?}"
+        );
+        for result in [&left_result, &right_result] {
+            if let Err(error) = result {
+                assert!(
+                    matches!(error, PublicationError::ReadBackMismatch { .. }),
+                    "a lost race is a typed read-back refusal, got {error:?}"
+                );
+            }
+        }
         let final_bytes = fs::read(&target).expect("final artifact exists");
         assert!(
             final_bytes == left || final_bytes == right,
@@ -506,6 +649,50 @@ mod publication_spec {
             verify_published(&target, b"differs").expect_err("mismatched read-back must refuse");
         assert!(error.to_string().contains("read-back mismatch"), "{error}");
         drop(fs::remove_dir_all(&dir));
+    }
+
+    #[test]
+    fn failed_publication_removes_a_stale_destination_artifact() {
+        // A refusal must not leave an uploadable stale verdict: the cleanup
+        // removes both the writer's temporary and any pre-existing
+        // destination artifact from a previous subject.
+        let dir = temp_dir("stale-destination");
+        let target = dir.join("plan.json");
+        fs::write(&target, b"stale plan for another subject").expect("stale artifact");
+        let temp = dir.join(".ci-route-plan.0.0.0.tmp");
+        fs::write(&temp, b"partial").expect("temp artifact");
+        let refusal = PublicationError::ReadBackMismatch {
+            path: target.clone(),
+            expected_len: 2,
+            found_len: 7,
+        };
+        let returned = cleanup_failed_publication(&target, &temp, refusal);
+        assert!(
+            matches!(returned, PublicationError::ReadBackMismatch { .. }),
+            "the original refusal is preserved"
+        );
+        assert!(!temp.exists(), "temporary removed");
+        assert!(!target.exists(), "stale destination artifact removed");
+        drop(fs::remove_dir_all(&dir));
+    }
+
+    #[test]
+    fn explicit_null_optionals_are_refused_at_parse() {
+        // The canonical contract spells absent optionals as omitted keys;
+        // an explicit null is a second byte encoding of the same semantics
+        // and must fail closed at the input adapter, not validate.
+        let plan = CiRoutePlanV1::compile(input("merge_gate")).expect("compile");
+        let mut payload = serde_json::to_value(&plan).expect("serialize");
+        payload["subject"]["base_sha"] = serde_json::Value::Null;
+        let error = serde_json::from_value::<CiRoutePlanV1>(payload)
+            .expect_err("explicit null optional must refuse");
+        assert!(error.to_string().contains("null"), "{error}");
+
+        let mut compile_input = serde_json::to_value(&input("merge_gate")).expect("serialize");
+        compile_input["expansion"]["detail"] = serde_json::Value::Null;
+        let error = serde_json::from_value::<CompileRoutePlanInput>(compile_input)
+            .expect_err("explicit null input optional must refuse");
+        assert!(error.to_string().contains("null"), "{error}");
     }
 
     #[test]

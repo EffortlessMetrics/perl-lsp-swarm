@@ -53,7 +53,7 @@
 //! but does not participate in the fingerprint preimage; the
 //! `semantic_fingerprint` field itself is never part of its own preimage.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -63,6 +63,30 @@ use super::{CiRoutePlanV1, RoutePlanRow, RouteSelectionEvidence, RouteSubjectRef
 /// are part of the versioned contract and of every golden vector:
 /// `SHA-256("ci_route_plan.v1\0" || canonical_semantic_bytes)`.
 pub const FINGERPRINT_DOMAIN: &[u8] = b"ci_route_plan.v1\0";
+
+/// Deserialize an optional domain field while refusing explicit `null`.
+///
+/// The canonical contract spells absent optionals as omitted keys, never
+/// `null` (and the checked-in JSON Schema types every optional as its
+/// value type, rejecting `null`). Accepting a null spelling here would
+/// let a second, non-canonical byte encoding validate under the same
+/// semantic fingerprint, so the input adapter fails closed instead.
+pub fn deserialize_option_reject_null<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::Null => Err(D::Error::custom(
+            "explicit null is not a canonical optional spelling; omit the field instead",
+        )),
+        present => {
+            T::deserialize(present).map(Some).map_err(|error| D::Error::custom(error.to_string()))
+        }
+    }
+}
 
 /// The fingerprint-bearing projection of one compiled route plan.
 ///
@@ -296,11 +320,18 @@ fn write_canonical_string(text: &str, out: &mut Vec<u8>) {
     out.push(b'"');
 }
 
-/// Established repository hex encoding (per-byte `format!("{byte:02x}")`);
-/// `Sha256::digest` does not implement `LowerHex` under the current
-/// sha2/generic-array pair.
+/// Lowercase hex encoding with one allocation (per-byte `format!` is the
+/// repository fallback for the missing `LowerHex` impl under the current
+/// sha2/generic-array pair; the golden digests pin this table's exact
+/// output).
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 #[cfg(test)]
