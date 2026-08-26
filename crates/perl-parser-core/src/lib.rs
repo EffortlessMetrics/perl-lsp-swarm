@@ -101,6 +101,8 @@ pub use engine::ast;
 /// Experimental second-generation AST (work in progress).
 pub use engine::ast_v2;
 /// Parser context with error recovery support.
+///
+/// Not the production parse-operation authority. See the module docs.
 pub use engine::parser_context;
 /// Pragma tracking for `use` and related directives.
 pub use engine::pragma_tracker;
@@ -145,6 +147,10 @@ pub use syntax::text_line;
 
 /// Recursive-descent parser -- the main entry point for parsing Perl source.
 pub use engine::parser::Parser;
+/// Immutable production parser configuration identity (#8757).
+pub use engine::parser::ParserConfigIdentity;
+/// Identity of one production parse operation (#8757).
+pub use engine::parser::ParserOperationId;
 
 /// Lower-tier checkpointed token replay for incremental parser clients.
 pub mod incremental;

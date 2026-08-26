@@ -396,8 +396,10 @@ impl<'a> Parser<'a> {
     fn parse_indirect_call(&mut self) -> ParseResult<Node> {
         // Use recursion guard to prevent stack overflow on deep nesting
         // Indirect calls can be nested: new Class(new Class(new Class()))
-        self.check_recursion()?;
+        self.with_depth(|s| s.parse_indirect_call_contents())
+    }
 
+    fn parse_indirect_call_contents(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
         let method_token = self.consume_token()?; // consume method name
         let method = method_token.text.to_string();
@@ -483,8 +485,6 @@ impl<'a> Parser<'a> {
         }
 
         let end = self.previous_position();
-
-        self.exit_recursion();
 
         // Return as an indirect call node (using MethodCall with a flag or separate node)
         Ok(Node::new(
