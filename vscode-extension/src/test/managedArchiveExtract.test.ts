@@ -288,6 +288,53 @@ describe('extractManagedArchive', () => {
     assertOutsideUnchanged();
   });
 
+  test('rejects a zip past the entry-count ceiling before extracting members', async () => {
+    const archivePath = path.join(tmpDir, 'many.zip');
+    fs.writeFileSync(
+      archivePath,
+      storedZip([
+        ['perllsp.exe', 'srv'],
+        ['a.txt', '1'],
+        ['b.txt', '2'],
+        ['c.txt', '3'],
+        ['d.txt', '4'],
+      ]),
+    );
+    await expect(
+      extractManagedArchive({
+        archivePath,
+        extractDir,
+        format: 'zip',
+        windows: true,
+        limits: { ...TEST_LIMITS, maxUncompressedBytes: 1024, maxEntries: 4 },
+      }),
+    ).rejects.toThrow('exceeds 4 entries');
+    assertOutsideUnchanged();
+  });
+
+  test('rejects zip64 entry-count sentinels before AdmZip materializes the table', async () => {
+    const archivePath = path.join(tmpDir, 'zip64.zip');
+    const bytes = Buffer.from(
+      storedZip([
+        ['perllsp.exe', 'srv'],
+        ['README.md', 'docs'],
+      ]),
+    );
+    bytes.writeUInt16LE(0xffff, bytes.length - 14);
+    bytes.writeUInt16LE(0xffff, bytes.length - 12);
+    fs.writeFileSync(archivePath, bytes);
+    await expect(
+      extractManagedArchive({
+        archivePath,
+        extractDir,
+        format: 'zip',
+        windows: true,
+        limits: { ...TEST_LIMITS, maxUncompressedBytes: 1024, maxEntries: 8 },
+      }),
+    ).rejects.toThrow('exceeds 8 entries');
+    assertOutsideUnchanged();
+  });
+
   test('rejects parent-path and absolute-path tar members before writing outside the root', async () => {
     const parentArchive = path.join(tmpDir, 'parent.tar.gz');
     writeTarGz(parentArchive, [

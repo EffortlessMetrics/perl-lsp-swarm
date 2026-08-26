@@ -220,14 +220,76 @@ function classifyZipEntry(entry: {
   return 'special';
 }
 
+const ZIP_EOCD_SIGNATURE = 0x06054b50;
+const ZIP_EOCD_MIN_BYTES = 22;
+const ZIP_EOCD_MAX_COMMENT = 65535;
+
+function zipCentralDirectoryBudget(limits: ManagedArchiveSafetyLimits): number {
+  return (limits.maxEntries + 1) * (46 + limits.maxPathBytes + 32);
+}
+
+/**
+ * Reject oversized zip membership from the End of Central Directory before
+ * AdmZip materializes every ZipEntry. ZIP64 (0xFFFF/0xFFFFFFFF sentinels) is
+ * fail-closed: current managed Windows artifacts are not ZIP64, and those
+ * sentinels are how a multi-million-entry zip bomb is declared.
+ */
+function preflightZipMembership(archivePath: string, limits: ManagedArchiveSafetyLimits): void {
+  const stat = fs.statSync(archivePath);
+  if (stat.size < ZIP_EOCD_MIN_BYTES) {
+    throw new Error('malformed zip archive: truncated end of central directory');
+  }
+  const scan = Math.min(stat.size, ZIP_EOCD_MIN_BYTES + ZIP_EOCD_MAX_COMMENT);
+  const buf = Buffer.alloc(scan);
+  const fd = fs.openSync(archivePath, 'r');
+  try {
+    fs.readSync(fd, buf, 0, scan, stat.size - scan);
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  let eocd = -1;
+  for (let i = buf.length - ZIP_EOCD_MIN_BYTES; i >= 0; i -= 1) {
+    if (buf.readUInt32LE(i) !== ZIP_EOCD_SIGNATURE) {
+      continue;
+    }
+    const commentLength = buf.readUInt16LE(i + 20);
+    if (i + ZIP_EOCD_MIN_BYTES + commentLength === buf.length) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) {
+    throw new Error('malformed zip archive: missing end of central directory');
+  }
+
+  const entriesOnDisk = buf.readUInt16LE(eocd + 8);
+  const totalEntries = buf.readUInt16LE(eocd + 10);
+  const cdSize = buf.readUInt32LE(eocd + 12);
+  if (
+    entriesOnDisk === 0xffff ||
+    totalEntries === 0xffff ||
+    cdSize === 0xffffffff ||
+    entriesOnDisk > limits.maxEntries ||
+    totalEntries > limits.maxEntries ||
+    cdSize > zipCentralDirectoryBudget(limits)
+  ) {
+    throw new Error(`archive exceeds ${limits.maxEntries} entries`);
+  }
+}
+
 function inspectZip(
   archivePath: string,
   windows: boolean,
   limits: ManagedArchiveSafetyLimits,
 ): InspectedArchive {
+  preflightZipMembership(archivePath, limits);
   const zip = new AdmZip(archivePath);
   const members: InspectedMember[] = [];
   for (const entry of zip.getEntries()) {
+    if (members.length >= limits.maxEntries) {
+      throw new Error(`archive exceeds ${limits.maxEntries} entries`);
+    }
     members.push(
       inspectMember(entry.entryName, entry.header.size, classifyZipEntry(entry), windows, limits),
     );
@@ -244,6 +306,9 @@ async function inspectTar(
 ): Promise<InspectedArchive> {
   const members: InspectedMember[] = [];
   await walkTar(archivePath, limits, token, (entry) => {
+    if (members.length >= limits.maxEntries) {
+      throw new Error(`archive exceeds ${limits.maxEntries} entries`);
+    }
     const kind = classifyTarEntry(entry);
     members.push(inspectMember(entry.path, entry.size, kind, windows, limits));
     entry.resume();
