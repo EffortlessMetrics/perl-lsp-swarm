@@ -237,6 +237,93 @@ class HostedFormatterProducerTests(unittest.TestCase):
         ):
             self.validate(workflows=broken_workflows)
 
+    def _extra_workflow(self, steps: str) -> dict[str, str]:
+        texts = dict(self.retired_workflows)
+        texts[".github/workflows/extra-fmt.yml"] = (
+            "name: Extra\n"
+            "on: [pull_request]\n"
+            "jobs:\n"
+            "  extra-fmt:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            f"{steps}"
+        )
+        return texts
+
+    def test_undeclared_rust_checks_default_fmt_fails_closed(self) -> None:
+        broken = self._extra_workflow(
+            "      - uses: ./.github/actions/rust-checks\n"
+        )
+        with self.assertRaisesRegex(
+            AssertionError,
+            r"undeclared hosted formatter producer: .github/workflows/extra-fmt.yml:extra-fmt",
+        ):
+            self.validate(workflows=broken)
+
+    def test_undeclared_rust_checks_in_ci_yml_fails_closed(self) -> None:
+        broken_ci = self.retired_ci + (
+            "\n  extra-rust-checks:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - uses: ./.github/actions/rust-checks\n"
+        )
+        with self.assertRaisesRegex(
+            AssertionError,
+            r"undeclared hosted formatter producer: .github/workflows/ci.yml:extra-rust-checks",
+        ):
+            self.validate(ci=broken_ci)
+
+    def test_undeclared_rust_checks_explicit_fmt_fails_closed(self) -> None:
+        broken = self._extra_workflow(
+            "      - uses: ./.github/actions/rust-checks\n"
+            "        with:\n"
+            "          check-fmt: true\n"
+            "          test: false\n"
+        )
+        with self.assertRaisesRegex(
+            AssertionError,
+            r"undeclared hosted formatter producer: .github/workflows/extra-fmt.yml:extra-fmt",
+        ):
+            self.validate(workflows=broken)
+
+    def test_rust_checks_with_check_fmt_false_is_not_a_producer(self) -> None:
+        allowed = self._extra_workflow(
+            "      - uses: ./.github/actions/rust-checks\n"
+            "        with:\n"
+            "          check-fmt: false\n"
+            "          test: false\n"
+        )
+        self.validate(workflows=allowed)
+
+    def test_undeclared_direct_rustfmt_check_fails_closed(self) -> None:
+        broken = self._extra_workflow(
+            "      - run: rustfmt --check\n"
+        )
+        with self.assertRaisesRegex(
+            AssertionError,
+            r"undeclared hosted formatter producer: .github/workflows/extra-fmt.yml:extra-fmt",
+        ):
+            self.validate(workflows=broken)
+
+    def test_undeclared_continued_rustfmt_check_fails_closed(self) -> None:
+        broken = self._extra_workflow(
+            "      - run: |\n"
+            "          rustfmt \\\n"
+            "            --edition 2024 \\\n"
+            "            --check\n"
+        )
+        with self.assertRaisesRegex(
+            AssertionError,
+            r"undeclared hosted formatter producer: .github/workflows/extra-fmt.yml:extra-fmt",
+        ):
+            self.validate(workflows=broken)
+
+    def test_file_scoped_rustfmt_ratchet_is_not_workspace_producer(self) -> None:
+        allowed = self._extra_workflow(
+            "      - run: rustfmt --edition 2024 --check xtask/tests/zed_host_receipt.rs\n"
+        )
+        self.validate(workflows=allowed)
+
     def test_parity_window_comment_cannot_keep_retired_meta_fmt(self) -> None:
         broken = self.retired_ci.replace(
             "Standalone, candidate-bound formatter result.",

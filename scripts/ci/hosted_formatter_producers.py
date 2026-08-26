@@ -16,6 +16,17 @@ from typing import Any
 CARGO_FMT_RE = re.compile(r"cargo\s+fmt\b")
 XTASK_FMT_RE = re.compile(r"(?:cargo\s+xtask|just)\s+fmt\b")
 RUSTFMT_CHECK_RE = re.compile(r"scripts/ci/rustfmt_check\.py")
+RUST_CHECKS_USES_RE = re.compile(
+    r"uses:\s*['\"]?\./\.github/actions/rust-checks['\"]?(?:\s|$)"
+)
+COMMAND_RUSTFMT_RE = re.compile(
+    r"(?:^|[;&|]{1,2}\s*|run:\s*['\"]?)rustfmt(?:\s|$)"
+)
+CHECK_FMT_LINE_RE = re.compile(r"^check-fmt:\s*(.+)\s*$")
+FILE_SCOPED_RUSTFMT_RE = re.compile(r"\.rs\b|\$\{")
+STEP_ITEM_RE = re.compile(r"^\s+- ")
+TRUTHY_CHECK_FMT = frozenset({"true", "yes", "1"})
+FALSY_CHECK_FMT = frozenset({"false", "no", "0"})
 DEDICATED_JOB_ID = "rust-formatting"
 DEDICATED_CONTEXT_NAME = "Rust formatting"
 META_SHARD_NAME = "meta"
@@ -143,6 +154,93 @@ def dedicated_job_active(workflow_text: str) -> str:
     return "\n".join(active_code_lines(body))
 
 
+def _logical_active_lines(text: str) -> list[str]:
+    """Join YAML/shell continuations so `rustfmt \\ --check` is one command."""
+    logical: list[str] = []
+    buf = ""
+    for raw in active_code_lines(text):
+        stripped = raw.rstrip()
+        piece = stripped.lstrip() if buf else stripped
+        buf = f"{buf} {piece}".strip() if buf else piece
+        if buf.endswith("\\"):
+            buf = buf[:-1].rstrip()
+            continue
+        logical.append(buf)
+        buf = ""
+    if buf:
+        logical.append(buf)
+    return logical
+
+
+def rust_checks_runs_fmt(job_body: str) -> bool:
+    """True when a job uses rust-checks without opting out of default check-fmt.
+
+    `.github/actions/rust-checks` defaults `check-fmt` to true and then runs
+    `cargo xtask fmt --check`. A `uses:` line is therefore a hosted formatter
+    producer unless that step sets `check-fmt` to a false value.
+    """
+    lines = active_code_lines(job_body)
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not RUST_CHECKS_USES_RE.search(line.strip()):
+            index += 1
+            continue
+        uses_indent = len(line) - len(line.lstrip(" "))
+        enabled: bool | None = None
+        index += 1
+        while index < len(lines):
+            nxt = lines[index]
+            nxt_indent = len(nxt) - len(nxt.lstrip(" "))
+            if STEP_ITEM_RE.match(nxt) and nxt_indent <= uses_indent:
+                break
+            match = CHECK_FMT_LINE_RE.match(nxt.strip())
+            if match:
+                value = match.group(1).strip().strip("'\"")
+                lowered = value.lower()
+                if lowered in FALSY_CHECK_FMT:
+                    enabled = False
+                elif lowered in TRUTHY_CHECK_FMT:
+                    enabled = True
+                else:
+                    # Expressions and unknown values fail closed: they can
+                    # still run default-true fmt at runtime.
+                    enabled = True
+            index += 1
+        if enabled is not False:
+            return True
+    return False
+
+
+def workspace_rustfmt_check(job_body: str) -> bool:
+    """True when the job invokes rustfmt --check without a file-scoped operand.
+
+    File-scoped ratchets such as `rustfmt --check foo.rs` or
+    `rustfmt --check "${tests[@]}"` are not the workspace formatter fact.
+    """
+    for line in _logical_active_lines(job_body):
+        stripped = line.strip()
+        if not COMMAND_RUSTFMT_RE.search(stripped):
+            continue
+        if "--check" not in stripped:
+            continue
+        if FILE_SCOPED_RUSTFMT_RE.search(stripped):
+            continue
+        return True
+    return False
+
+
+def job_hosts_formatter_producer(job_body: str) -> bool:
+    active = "\n".join(active_code_lines(job_body))
+    return bool(
+        CARGO_FMT_RE.search(active)
+        or RUSTFMT_CHECK_RE.search(active)
+        or XTASK_FMT_RE.search(active)
+        or rust_checks_runs_fmt(job_body)
+        or workspace_rustfmt_check(job_body)
+    )
+
+
 def undeclared_hosted_formatter_sites(workflows: dict[str, str]) -> list[str]:
     """Return undeclared workspace-formatter executions across hosted workflows.
 
@@ -154,12 +252,12 @@ def undeclared_hosted_formatter_sites(workflows: dict[str, str]) -> list[str]:
     undeclared: list[str] = []
     for path, text in sorted(workflows.items()):
         for job_id, body in job_bodies(text).items():
+            if not job_hosts_formatter_producer(body):
+                continue
             active = "\n".join(active_code_lines(body))
             has_cargo_fmt = bool(CARGO_FMT_RE.search(active))
             has_receipt_producer = bool(RUSTFMT_CHECK_RE.search(active))
             has_xtask_fmt = bool(XTASK_FMT_RE.search(active))
-            if not (has_cargo_fmt or has_receipt_producer or has_xtask_fmt):
-                continue
             declared = False
             if (
                 path == RUST_SMALL_WORKFLOW
