@@ -400,3 +400,21 @@ fn rejects_case_listing_unrelated_existing_mutation() -> TestResult {
     case["mutations"] = serde_json::json!(["LX-MUT-01", "LX-MUT-02", "LX-MUT-07", "LX-MUT-15"]);
     expect_violation(&manifest, "fails_rows does not name this row")
 }
+
+#[test]
+fn fails_closed_when_the_schema_itself_is_invalid() -> TestResult {
+    // An invalid schema must fail the validation command closed, never be
+    // silently skipped back to handwritten-only checks.
+    let root = repo_root();
+    let temp = tempfile::tempdir()?;
+    let temp_root = temp.path();
+    let schema_dest = temp_root.join(cutline::SCHEMA_PATH);
+    let manifest_dest = temp_root.join(cutline::MANIFEST_PATH);
+    std::fs::create_dir_all(schema_dest.parent().ok_or("schema parent")?)?;
+    std::fs::create_dir_all(manifest_dest.parent().ok_or("manifest parent")?)?;
+    std::fs::write(&schema_dest, "{\"type\": \"not-a-real-json-schema-type\"}")?;
+    std::fs::copy(root.join(cutline::MANIFEST_PATH), &manifest_dest)?;
+    let error = validation_error(cutline::validate_manifest_file(temp_root));
+    assert!(error.contains("invalid schema"), "expected an invalid-schema failure, got:\n{error}");
+    Ok(())
+}
