@@ -4,9 +4,11 @@
 //! 1. Crate/file/item `allow`/`expect` attributes naming `clippy::collapsible_if`,
 //!    including those nested in `cfg_attr`. Clippy `--all-targets` is silent if
 //!    the blanket returns; this scan is the discriminator that still fails.
-//! 2. `cargo clippy -p perl-parser --all-targets` with `--force-warn`, which
-//!    pierces allows and fails if any live site remains. An unsuccessful Clippy
-//!    run with no matching hits is an instrument failure, not a clean occupancy.
+//! 2. `cargo clippy -p perl-parser --all-targets` with `--cap-lints=allow` and
+//!    `--force-warn`, which pierces allows and fails if any live site remains
+//!    without treating unrelated workspace denials as occupancy. An unsuccessful
+//!    Clippy run with no matching hits is an instrument failure, not a clean
+//!    occupancy.
 //!
 //! Scanner literals and comments containing the lint name do not count as occupancy.
 
@@ -323,14 +325,12 @@ fn clippy_collapsible_if_hits() -> Result<Vec<String>, String> {
             "--no-deps",
             "--message-format=json",
             "--",
+            // Occupancy must not fail on unrelated workspace denials in other
+            // targets (`expect_used`, `print_stdout`, `missing_docs`).
+            // `--force-warn` still emits collapsible_if through this cap.
+            "--cap-lints=allow",
             "--force-warn",
             LINT,
-            "-A",
-            "missing_docs",
-            "-A",
-            "clippy::print_stdout",
-            "-A",
-            "clippy::print_stderr",
         ])
         .output()
         .map_err(|error| format!("failed to spawn cargo clippy: {error}"))?;
