@@ -49,7 +49,8 @@ required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"
 enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires the routed Rust aggregate and its recorded-main-red refusal before merge."
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires the routed Rust aggregate and its recorded-main-red refusal before merge, bound to the GitHub Actions integration."
 
 [[checks]]
 name = "ripr+ New Gap Gate"
@@ -62,7 +63,8 @@ required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"
 enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires deterministic RIPR receipts; named new gaps in changed production files block, while sensor availability remains advisory."
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires deterministic RIPR receipts from the GitHub Actions integration; named new gaps in changed production files block, while sensor availability remains advisory."
 
 [[checks]]
 name = "Compile All Targets (bit-rot guard)"

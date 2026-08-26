@@ -26,14 +26,15 @@ Absence is meaningful. It means the checked-in policy does not require or prove 
 Classic protection currently declares no explicit GitHub Actions app bindings:
 the proof-floor contexts `Perl LSP Rust Small Result` and `ripr+ New Gap Gate`
 moved to ruleset enforcement (#12678), so their `classic_app_id` entries were
-removed together with the classic required checks.
+removed together with the classic required checks. The two migrated rows keep
+their GitHub Actions origin binding as `ruleset_integration_id = 15368`,
+matching the live ruleset entries' `integration_id`, so no foreign check-
+writing integration can satisfy them.
 
-The current ruleset-required contexts remain intentionally unbound in static
-policy because the live ruleset does not declare an integration id:
+The remaining ruleset-required contexts stay intentionally unbound in static
+policy because the live ruleset does not declare an integration id for them:
 
 ```text
-Perl LSP Rust Small Result
-ripr+ New Gap Gate
 Compile All Targets (bit-rot guard)
 Conflict marker check
 validate-title
