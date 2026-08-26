@@ -253,7 +253,7 @@ fn assert_no_editor_listeners(obs: &SocketObservation, mode: &str) -> Result<()>
     let listeners = require_observation(obs)?;
     let editor = listeners.iter().filter(|row| row.role == ListenerRole::EditorDap).count();
     if editor > 0 {
-        return Err(anyhow!("{mode} owned editor_dap listener(s): {listeners:?}"));
+        return Err(anyhow!("{mode} owned editor_dap listener(s) (role confusion): {listeners:?}"));
     }
     if mode != "external_peer_listen" && !listeners.is_empty() {
         return Err(anyhow!("{mode} must own zero TCP listeners; got {listeners:?}"));
@@ -367,11 +367,12 @@ impl StdioAdapter {
         let mut child = command.spawn().context("failed to spawn exact perl-dap")?;
         let stdin = child.stdin.take().context("child stdin was not piped")?;
         let stdout = child.stdout.take().context("child stdout was not piped")?;
+        let stderr = drain_pipe(child.stderr.take());
         Ok(Self {
             child,
             stdin: Some(stdin),
             rx: spawn_frame_reader(stdout),
-            stderr: Some(drain_pipe(child.stderr.take())),
+            stderr: Some(stderr),
             pending: VecDeque::new(),
         })
     }
@@ -686,13 +687,13 @@ fn send_wrong_token_hello(addr: SocketAddr, token: &str) -> Result<()> {
     let hello = PeerMessage::Request(PeerRequest {
         seq: 1,
         command: command::HELLO.to_string(),
-        arguments: serde_json::to_value(HelloArgs {
+        arguments: Some(serde_json::to_value(HelloArgs {
             peer: "Attacker".to_string(),
             peer_version: Some("0.1".to_string()),
             protocol_version: PROTOCOL_VERSION.to_string(),
             token: Some(token.to_owned()),
             capabilities: PeerReportedCapabilities::default(),
-        })?,
+        })?),
     });
     stream.write_all(&encode_message(&hello)?)?;
     stream.flush()?;
@@ -759,13 +760,13 @@ fn mode_verdict(obs: &SocketObservation, cleanup: &str, extras: &[Verdict]) -> V
         "leaked" => Verdict::Failed,
         _ => Verdict::NotProven,
     });
-    if verdicts.iter().any(|row| *row == Verdict::Failed) {
+    if verdicts.contains(&Verdict::Failed) {
         return Verdict::Failed;
     }
-    if verdicts.iter().any(|row| *row == Verdict::InstrumentFailure) {
+    if verdicts.contains(&Verdict::InstrumentFailure) {
         return Verdict::InstrumentFailure;
     }
-    if verdicts.iter().any(|row| *row == Verdict::NotProven) {
+    if verdicts.contains(&Verdict::NotProven) {
         return Verdict::NotProven;
     }
     Verdict::Pass
@@ -806,30 +807,34 @@ fn stale_binary_identity_fails() -> Result<()> {
 }
 
 #[test]
-fn role_confusion_rejects_editor_label_on_peer_listen() {
+fn role_confusion_rejects_editor_label_on_peer_listen() -> Result<()> {
     let obs = SocketObservation::Observed {
         listeners: vec![ClassifiedListener { port: 5000, role: ListenerRole::EditorDap }],
     };
     match assert_no_editor_listeners(&obs, "external_peer_listen") {
         Err(err) => {
             if !err.to_string().contains("role confusion") {
-                panic!("editor label on peer listener missed role-confusion discriminant: {err}");
+                return Err(anyhow!(
+                    "editor label on peer listener missed role-confusion discriminant: {err}"
+                ));
             }
         }
-        Ok(()) => panic!("editor label on peer listener is role confusion"),
+        Ok(()) => return Err(anyhow!("editor label on peer listener is role confusion")),
     }
+    Ok(())
 }
 
 #[test]
-fn secret_canary_is_rejected_from_evidence() {
+fn secret_canary_is_rejected_from_evidence() -> Result<()> {
     match assert_no_canary("receipt", TOKEN_CANARY) {
         Err(err) => {
             if !err.to_string().contains("canary") {
-                panic!("canary error missed the discriminant: {err}");
+                return Err(anyhow!("canary error missed the discriminant: {err}"));
             }
         }
-        Ok(()) => panic!("canary must fail"),
+        Ok(()) => return Err(anyhow!("canary must fail")),
     }
+    Ok(())
 }
 
 #[test]
