@@ -131,13 +131,6 @@ def valid_inventory() -> dict:
                 "transport_id": "external-peer-editor-tcp",
                 "disposition": "retire",
             },
-            {
-                "id": "native-editor-socket",
-                "path": "crates/perl-dap/src/debug_adapter/transport.rs",
-                "role": "editor",
-                "transport_id": "native-editor-tcp",
-                "disposition": "retire",
-            },
         ],
         "cli_flags": [
             {
@@ -234,11 +227,18 @@ def write_valid_tree(root: Path, inventory: dict | None = None) -> dict:
     write(
         root / "crates/perl-dap/src/main.rs",
         "transport: perl_lsp_rs_core::runtime::launcher::TransportArgs\n"
-        "fn bind_editor_listener() { std::net::TcpListener::bind((\"127.0.0.1\", 1)).ok(); }\n",
+        "fn bind_editor_listener() { std::net::TcpListener::bind((\"127.0.0.1\", 1)).ok(); }\n"
+        "fn run_external_peer_bridge() { bind_editor_listener(); }\n"
+        "fn run_external_peer_listen() { bind_editor_listener(); }\n"
+        "fn main() { let _ = native_editor_socket_retired(); }\n",
     )
     write(
         root / "crates/perl-dap/src/debug_adapter/transport.rs",
-        "fn bind_socket_listener(port: u16) { TcpListener::bind((\"127.0.0.1\", port)).ok(); }\n",
+        "fn run_with_io() {}\n",
+    )
+    write(
+        root / "crates/perl-dap/src/server/lifecycle.rs",
+        "impl DapServer { pub fn run(&mut self) {}\n}\n",
     )
     write(
         root / "crates/perl-dap/src/backend/peer_launch.rs",
@@ -509,6 +509,101 @@ class EditorTransportInventoryTests(unittest.TestCase):
                 "#[cfg(test)]\nuse perl_tdd_support::must;\nfn listen() { TcpListener::bind(resolved.as_slice()).ok(); }\n",
             )
             self.assertEqual(run_check(root), [])
+
+    def test_returned_native_editor_listener_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inventory = valid_inventory()
+            inventory["bind_sites"].append(
+                {
+                    "id": "native-editor-socket",
+                    "path": "crates/perl-dap/src/debug_adapter/transport.rs",
+                    "role": "editor",
+                    "transport_id": "native-editor-tcp",
+                    "disposition": "retire",
+                }
+            )
+            inventory["digest"] = SCHEMA.inventory_digest(inventory)
+            write_valid_tree(root, inventory)
+            write(
+                root / "crates/perl-dap/src/debug_adapter/transport.rs",
+                "fn bind_socket_listener(port: u16) { TcpListener::bind((\"127.0.0.1\", port)).ok(); }\n",
+            )
+            errors = run_check(root)
+            self.assertTrue(
+                any("native editor TCP bind site" in item and "returned" in item for item in errors)
+            )
+            self.assertTrue(
+                any("TcpListener::bind" in item and "transport.rs" in item for item in errors)
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_valid_tree(root)
+            write(
+                root / "crates/perl-dap/src/server/lifecycle.rs",
+                "impl DapServer { pub fn run_socket(&mut self, port: u16) {}\n}\n",
+            )
+            errors = run_check(root)
+            self.assertTrue(any("run_socket" in item and "lifecycle.rs" in item for item in errors))
+
+    def test_native_admission_calling_bind_editor_listener_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_valid_tree(root)
+            write(
+                root / "crates/perl-dap/src/main.rs",
+                "transport: perl_lsp_rs_core::runtime::launcher::TransportArgs\n"
+                "fn bind_editor_listener() { std::net::TcpListener::bind((\"127.0.0.1\", 1)).ok(); }\n"
+                "fn run_external_peer_bridge() { bind_editor_listener(); }\n"
+                "fn run_external_peer_listen() { bind_editor_listener(); }\n"
+                "fn main() {\n"
+                "    if resolve_socket_port(&args.transport).is_some() {\n"
+                "        let _ = bind_editor_listener();\n"
+                "    }\n"
+                "    let _ = native_editor_socket_retired();\n"
+                "}\n",
+            )
+            errors = run_check(root)
+            self.assertTrue(
+                any("fn main regained a native editor bind_editor_listener" in item for item in errors),
+                errors,
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_valid_tree(root)
+            write(
+                root / "crates/perl-dap/src/main.rs",
+                "transport: perl_lsp_rs_core::runtime::launcher::TransportArgs\n"
+                "fn bind_editor_listener() { std::net::TcpListener::bind((\"127.0.0.1\", 1)).ok(); }\n"
+                "fn run_external_peer_bridge() { bind_editor_listener(); }\n"
+                "fn run_external_peer_listen() { bind_editor_listener(); }\n"
+                "fn run_native_socket() { bind_editor_listener(); }\n"
+                "fn main() { let _ = native_editor_socket_retired(); let _ = run_native_socket(); }\n",
+            )
+            errors = run_check(root)
+            self.assertTrue(
+                any("fn run_native_socket calls bind_editor_listener" in item for item in errors),
+                errors,
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_valid_tree(root)
+            write(
+                root / "crates/perl-dap/src/main.rs",
+                "transport: perl_lsp_rs_core::runtime::launcher::TransportArgs\n"
+                "fn bind_editor_listener() { std::net::TcpListener::bind((\"127.0.0.1\", 1)).ok(); }\n"
+                "fn run_external_peer_bridge() { bind_editor_listener(); }\n"
+                "fn run_external_peer_listen() { bind_editor_listener(); }\n"
+                "fn main() { server.run(); }\n",
+            )
+            errors = run_check(root)
+            self.assertTrue(
+                any("native_editor_socket_retired" in item and "fn main" in item for item in errors),
+                errors,
+            )
 
     def test_debugger_peer_listener_mislabeled_as_editor_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
