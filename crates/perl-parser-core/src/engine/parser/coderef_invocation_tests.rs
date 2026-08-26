@@ -210,7 +210,7 @@ mod tests {
         let expr = unwrap_expr_stmt(parse_first_stmt(code));
         let sexp = expr.to_sexp();
         assert!(
-            sexp.contains("call") || sexp.contains("Call"),
+            sexp.contains("amper_sub") || sexp.contains("amper_call") || sexp.contains("call"),
             "Expected some call form for &$coderef(), got: {}",
             sexp,
         );
