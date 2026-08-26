@@ -178,9 +178,9 @@ def classify_listener_roles(
     if mode == "external_peer_listen":
         if not roles:
             errors.append("peer-listen must positively classify the debugger-peer listener")
-        elif any(role != "debugger_peer" for role in roles):
+        elif len(roles) != 1 or roles[0] != "debugger_peer":
             errors.append(
-                f"peer-listen listeners must all be debugger_peer, got {roles}"
+                f"peer-listen must own exactly one debugger_peer listener, got {roles}"
             )
 
     return ("failed" if errors else "pass", errors)

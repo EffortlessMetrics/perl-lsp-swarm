@@ -328,7 +328,17 @@ class RoleConfusion(unittest.TestCase):
         self.assertEqual(verdict, "failed")
         self.assertTrue(any("positively classify" in item for item in errors), errors)
 
-    def test_peer_listen_debugger_peer_passes(self) -> None:
+    def test_peer_listen_two_listeners_is_not_a_single_peer(self) -> None:
+        observation = {
+            "instrument": "linux_procfs",
+            "inventory": [
+                {"port": 5000, "role": "debugger_peer"},
+                {"port": 5001, "role": "debugger_peer"},
+            ],
+        }
+        verdict, errors = MODULE.classify_listener_roles("external_peer_listen", observation)
+        self.assertEqual(verdict, "failed")
+        self.assertTrue(any("exactly one debugger_peer" in item for item in errors), errors)
         verdict, errors = MODULE.classify_listener_roles(
             "external_peer_listen", observed("debugger_peer")
         )

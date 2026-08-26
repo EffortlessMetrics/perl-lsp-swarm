@@ -258,15 +258,12 @@ fn assert_no_editor_listeners(obs: &SocketObservation, mode: &str) -> Result<()>
     if mode != "external_peer_listen" && !listeners.is_empty() {
         return Err(anyhow!("{mode} must own zero TCP listeners; got {listeners:?}"));
     }
-    if mode == "external_peer_listen" {
-        if listeners.is_empty() {
-            return Err(anyhow!("peer-listen must positively classify the debugger-peer listener"));
-        }
-        if listeners.iter().any(|row| row.role != ListenerRole::DebuggerPeer) {
-            return Err(anyhow!(
-                "peer-listen role confusion: listeners must all be debugger_peer, got {listeners:?}"
-            ));
-        }
+    if mode == "external_peer_listen"
+        && (listeners.len() != 1 || listeners[0].role != ListenerRole::DebuggerPeer)
+    {
+        return Err(anyhow!(
+            "peer-listen must own exactly one debugger_peer listener, got {listeners:?}"
+        ));
     }
     Ok(())
 }
@@ -820,6 +817,29 @@ fn role_confusion_rejects_editor_label_on_peer_listen() -> Result<()> {
             }
         }
         Ok(()) => return Err(anyhow!("editor label on peer listener is role confusion")),
+    }
+    Ok(())
+}
+
+#[test]
+fn extra_ephemeral_listener_in_peer_listen_is_not_classified_as_a_single_peer() -> Result<()> {
+    let obs = SocketObservation::Observed {
+        listeners: vec![
+            ClassifiedListener { port: 5000, role: ListenerRole::DebuggerPeer },
+            ClassifiedListener { port: 5001, role: ListenerRole::DebuggerPeer },
+        ],
+    };
+    match assert_no_editor_listeners(&obs, "external_peer_listen") {
+        Err(err) => {
+            if !err.to_string().contains("exactly one debugger_peer") {
+                return Err(anyhow!("two-listener case missed the discriminant: {err}"));
+            }
+        }
+        Ok(()) => {
+            return Err(anyhow!(
+                "a second ephemeral listener must not pass as a single debugger-peer"
+            ));
+        }
     }
     Ok(())
 }
