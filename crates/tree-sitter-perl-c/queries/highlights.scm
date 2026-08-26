@@ -160,4 +160,3 @@
   (block
     "{" @punctuation.special
     "}" @punctuation.special))
-
