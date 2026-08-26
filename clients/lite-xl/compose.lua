@@ -204,6 +204,8 @@ function M.git_adapter(opts)
 
   return {
     -- Existence of many candidate commits in one cat-file --batch-check.
+    -- Input lines are raw object names (batch-check does not parse
+    -- quoting); SHAs are hex-validated at manifest load.
     components_exist = function(shas)
       if #shas == 0 then return {} end
       prep_tmp()
@@ -284,14 +286,18 @@ function M.git_adapter(opts)
       end
       return lines[1]
     end,
-    -- Digest many files preserving input order (hash-object --stdin-paths).
+    -- Digest many files preserving input order (hash-object
+    -- --stdin-paths; quoted lines are the portable form for paths that
+    -- may contain spaces).
     hash_files = function(paths)
       if #paths == 0 then return {} end
       prep_tmp()
       local in_file = tmp_dir .. "/compose-hash-paths.txt"
       local f = io.open(in_file, "wb")
       for _, p in ipairs(paths) do
-        f:write(p .. "\n")
+        -- Forward slashes keep c-style unquoting valid on Windows paths.
+        local posix = (p:gsub("\\", "/"))
+        f:write('"' .. posix .. '"\n')
       end
       f:close()
       local lines = capture_lines(git("hash-object --stdin-paths < "
@@ -334,6 +340,41 @@ local function index_components(manifest)
     by_id[c.id] = c
   end
   return by_id
+end
+
+-- Manifest strings reach command lines through the source adapter; these
+-- closed character classes keep that surface inert even against tampered
+-- manifest data (defense in depth: the manifest is reviewed repository
+-- content, and nothing else about a component is ever interpolated).
+local function validate_component_strings(manifest)
+  for _, c in ipairs(manifest.components or {}) do
+    if type(c.id) ~= "string" or not c.id:match("^[%w_%.%-%+]+$") then
+      fail("invalid_manifest", { message = "bad component id",
+        component = tostring(c.id) })
+    end
+    if type(c.candidate_sha) ~= "string"
+      or not c.candidate_sha:match("^[0-9a-f]+$") then
+      fail("invalid_manifest", { message = "bad candidate sha",
+        component = c.id })
+    end
+    for _, p in ipairs(c.changed_paths or {}) do
+      if type(p) ~= "string" or not p:match("^[%w%.%-_%+]+$") then
+        fail("invalid_manifest", { message = "bad changed path",
+          component = c.id, path = tostring(p) })
+      end
+      local digest = c.content and c.content[p]
+      if type(digest) ~= "string" or not digest:match("^[0-9a-f]+$") then
+        fail("invalid_manifest", { message = "bad recorded digest",
+          component = c.id, path = p })
+      end
+    end
+  end
+  for name in pairs((manifest.upstream_base or {}).files or {}) do
+    if type(name) ~= "string" or not name:match("^[%w_%.%-%+]+$") then
+      fail("invalid_manifest", { message = "bad base module name",
+        module = tostring(name) })
+    end
+  end
 end
 
 local function find_profile(manifest, profile_id)
@@ -723,6 +764,7 @@ function M.materialize(opts)
   if type(manifest) ~= "table" or manifest.schema ~= "candidate-manifest.v1" then
     fail("invalid_manifest", { message = "schema must be candidate-manifest.v1" })
   end
+  validate_component_strings(manifest)
   local adapter = opts.adapter
     or fail("invalid_manifest", { message = "adapter required" })
   local base_dir = opts.base_dir
