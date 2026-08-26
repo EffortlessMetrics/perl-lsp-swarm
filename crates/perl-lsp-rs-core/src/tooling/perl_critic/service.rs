@@ -94,8 +94,10 @@ pub struct NativeCriticSubject<'a> {
     /// emitters over this exact source generation. Empty when the caller has
     /// none (for example an action-only fresh analysis).
     overlap_observations: Vec<BuiltInCriticObservation>,
-    /// Gate consulted before evaluation; a closed gate yields a cancelled run
-    /// that performed no rule work.
+    /// Gate consulted before evaluation and re-checked at the post-evaluation
+    /// settlement barrier; a closed gate yields a cancelled run. Before the
+    /// work, no rule runs; after it, the performed work stays in the receipt
+    /// as unpublishable values.
     cancellation: RunGate<'a>,
     /// Gate consulted after evaluation and before the run may publish; a
     /// closed gate yields a stale run no consumer may treat as current.
@@ -182,7 +184,8 @@ impl NativeCriticRunCompleteness {
     /// Precedence: a closed currentness gate makes any finished work stale,
     /// regardless of how it went; otherwise accounted producer rejections
     /// downgrade completeness; otherwise the run is complete. Cancellation
-    /// and not-ready states short-circuit earlier and never reach here.
+    /// (consulted at both the pre-evaluation and settlement barriers) and
+    /// not-ready states short-circuit earlier and never reach here.
     #[must_use]
     pub fn settle(current: bool, unresolved_producer_identities: usize) -> Self {
         if !current {
@@ -422,6 +425,26 @@ impl NativeCriticService {
         );
         let findings = normalize_with_native_policy(candidates, &policy);
         work.findings_after_policy = findings.len();
+
+        // Mid-flight cancellation re-check (#9062): a caller whose
+        // cancellation predicate closes while rules run receives a cancelled
+        // run, never a publishable Complete/Partial one. Explicit precedence
+        // at this barrier: caller abandonment outranks staleness, so a
+        // subject that was both cancelled and moved reports Cancelled. The
+        // performed work stays in the receipt and the evaluated rows stay as
+        // values, exactly like stale runs.
+        if !subject.cancellation.holds() {
+            return NativeCriticRun {
+                completeness: NativeCriticRunCompleteness::Cancelled,
+                state_fingerprint,
+                owning_root,
+                source_identity: subject.source_identity,
+                source_digest: subject.source_digest,
+                findings,
+                producer_findings: raw_findings,
+                work,
+            };
+        }
 
         let completeness = NativeCriticRunCompleteness::settle(
             subject.currentness.holds(),
@@ -714,6 +737,81 @@ mod tests {
         assert!(!run.is_publishable());
         assert_eq!(run.work().rules_evaluated, 0);
         assert!(run.producer_findings().is_empty());
+    }
+
+    #[test]
+    fn cancellation_during_evaluation_yields_cancelled_after_real_work() {
+        // Mid-flight falsifier (review #12067): the gate answers true at the
+        // pre-evaluation consult and false at the post-evaluation settlement
+        // barrier, so rules genuinely ran yet the run must settle Cancelled
+        // instead of publishing Complete/Partial.
+        use std::cell::Cell;
+
+        let source = STRICT_SOURCE;
+        let ast = parse(source);
+
+        let consults = Cell::new(0);
+        let closes_mid_flight = || {
+            consults.set(consults.get() + 1);
+            consults.get() < 2
+        };
+
+        let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
+            "file:///cancelled-mid-flight.pm",
+            critic_source_identity_for_uri("file:///cancelled-mid-flight.pm", 2),
+            &ast,
+            source,
+            native_state(Some("root-a")),
+            Vec::new(),
+            RunGate::new(&closes_mid_flight),
+            RunGate::open(),
+        ));
+
+        assert_eq!(run.completeness(), &NativeCriticRunCompleteness::Cancelled);
+        assert!(
+            !run.is_publishable(),
+            "a run cancelled during evaluation can never populate current storage"
+        );
+        assert!(
+            run.work().rules_evaluated > 0,
+            "the pre-work consult passed, so rule evaluation really ran"
+        );
+        assert!(
+            !run.findings().is_empty(),
+            "cancelled-after-work runs keep their evaluated rows as values"
+        );
+    }
+
+    #[test]
+    fn cancellation_outranks_staleness_at_the_settlement_barrier() {
+        // Explicit precedence pin (review #12067): when both gates close
+        // during the run, the disposition names the caller's abandonment,
+        // not mere staleness.
+        use std::cell::Cell;
+
+        let source = STRICT_SOURCE;
+        let ast = parse(source);
+
+        let consults = Cell::new(0);
+        let closes_mid_flight = || {
+            consults.set(consults.get() + 1);
+            consults.get() < 2
+        };
+        let moved = RunGate::new(&|| false);
+
+        let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
+            "file:///cancelled-and-moved.pm",
+            critic_source_identity_for_uri("file:///cancelled-and-moved.pm", 2),
+            &ast,
+            source,
+            native_state(Some("root-a")),
+            Vec::new(),
+            RunGate::new(&closes_mid_flight),
+            moved,
+        ));
+
+        assert_eq!(run.completeness(), &NativeCriticRunCompleteness::Cancelled);
+        assert!(!run.is_publishable());
     }
 
     #[test]

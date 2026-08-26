@@ -77,10 +77,14 @@ fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 /// `#[cfg(test)]` attribute followed by a brace-delimited item (`mod`,
 /// `fn`, `impl`, …) is stripped through its balanced closing brace; one
 /// attached to a semicolon-terminated item (`use`, extern crate) strips
-/// through that statement's `;`. Braces inside string/char literals are not
-/// tracked, so pathological literals can skew an item span; the failure
-/// direction is over-scanning (fail-closed), never silently shrinking the
-/// audited surface below the ungated file.
+/// through that statement's `;`.
+///
+/// Brace balance is delimiter-aware (review #12067): line comments, nestable
+/// block comments, regular/raw/byte strings, and char literals contribute no
+/// depth, so a literal `{` inside a gated item cannot leak one level of depth
+/// into the walk and swallow following production items out of the audited
+/// surface. Apostrophes are treated as lifetime markers unless they close a
+/// well-formed char-literal shape (`'x'`, `'\n'`, `'\''`, `'{'`, multibyte).
 fn production_portion(source: &str) -> String {
     const ATTR: &str = "#[cfg(test)]";
     let mut kept = String::with_capacity(source.len());
@@ -106,22 +110,7 @@ fn production_portion(source: &str) -> String {
             rest = &after[cursor + 1..];
             continue;
         }
-        let mut depth = 0usize;
-        let mut end = None;
-        for (offset, byte) in bytes[cursor..].iter().enumerate() {
-            match byte {
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = Some(cursor + offset + 1);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        match end {
+        match closing_brace(bytes, cursor) {
             Some(end) => rest = &after[end..],
             None => {
                 // Unterminated item: conservatively drop nothing further.
@@ -132,6 +121,157 @@ fn production_portion(source: &str) -> String {
     }
     kept.push_str(rest);
     kept
+}
+
+/// Byte offset just past the `}` balancing the opening `{` at `open`.
+///
+/// Delimiter-aware: `//` line comments, nestable `/* */` block comments, and
+/// the bodies of string/char literals are consumed without contributing
+/// depth. Returns `None` when the braces never rebalance.
+fn closing_brace(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+                i += 1;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                let mut nesting = 1usize;
+                i += 2;
+                while i < bytes.len() && nesting > 0 {
+                    match (bytes[i], bytes.get(i + 1)) {
+                        (b'*', Some(b'/')) => {
+                            nesting -= 1;
+                            i += 2;
+                        }
+                        (b'/', Some(b'*')) => {
+                            nesting += 1;
+                            i += 2;
+                        }
+                        _ => i += 1,
+                    }
+                }
+            }
+            b'"' => i = skip_regular_string(bytes, i),
+            b'\'' => i = skip_quote_or_lifetime(bytes, i),
+            b'r' => {
+                if let Some((hashes, quote)) = raw_string_hashes(bytes, i) {
+                    i = skip_raw_string(bytes, quote, hashes);
+                } else {
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Number of `#` in a raw-string introducer starting at `start` (`r"`, `r#"`,
+/// `r##"`), with the byte offset of its opening `"`. `None` when `start` does
+/// not begin a raw string (plain identifier such as `return` or `r#type`).
+fn raw_string_hashes(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
+    let mut hashes = 0usize;
+    let mut j = start + 1;
+    while j < bytes.len() && bytes[j] == b'#' {
+        hashes += 1;
+        j += 1;
+    }
+    if j < bytes.len() && bytes[j] == b'"' { Some((hashes, j)) } else { None }
+}
+
+/// Byte offset past the closing quote of the regular string whose `"` sits at
+/// `open`; backslash escapes (including `\"`) do not terminate it.
+fn skip_regular_string(bytes: &[u8], open: usize) -> usize {
+    let mut j = open + 1;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'\\' => j += 2,
+            b'"' => return j + 1,
+            _ => j += 1,
+        }
+    }
+    j
+}
+
+/// Byte offset past a raw string's terminator (`"` followed by as many `#` as
+/// its introducer carried); raw strings have no escapes.
+fn skip_raw_string(bytes: &[u8], open: usize, hashes: usize) -> usize {
+    let mut j = open + 1;
+    while j < bytes.len() {
+        if bytes[j] == b'"' {
+            let mut k = j + 1;
+            let mut seen = 0usize;
+            while k < bytes.len() && bytes[k] == b'#' && seen < hashes {
+                seen += 1;
+                k += 1;
+            }
+            if seen == hashes {
+                return k;
+            }
+        }
+        j += 1;
+    }
+    j
+}
+
+/// Byte offset past the apostrophe at `start`, whichever construct it opens:
+/// an escaped char literal (`'\n'`, `'\''`, `'\u{7}'`), a simple or multibyte
+/// char literal (`'x'`, `'{'`, `'é'`), or a lifetime/loop label whose
+/// following identifier characters are consumed verbatim.
+fn skip_quote_or_lifetime(bytes: &[u8], start: usize) -> usize {
+    let len = bytes.len();
+    let Some(&first) = bytes.get(start + 1) else {
+        return len;
+    };
+    if first == b'\\' {
+        // Escape form: consume through the next unescaped closing quote.
+        let mut j = start + 2;
+        while j < len {
+            match bytes[j] {
+                b'\\' => j += 2,
+                b'\'' => return j + 1,
+                _ => j += 1,
+            }
+        }
+        return j.min(len);
+    }
+    if !first.is_ascii_alphanumeric() && first != b'_' && first != b'\'' && first != b'\n' {
+        // Simple single-unit literal. Multibyte content is measured by its
+        // UTF-8 lead byte so `'é'` closes at the right quote.
+        let width = if first >= 0xF0 {
+            4
+        } else if first >= 0xE0 {
+            3
+        } else if first >= 0xC0 {
+            2
+        } else {
+            1
+        };
+        if bytes.get(start + 1 + width) == Some(&b'\'') {
+            return start + 2 + width;
+        }
+    }
+    // No well-formed literal shape: lifetime or label — consume its name.
+    let mut j = start + 1;
+    while j < len && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+        j += 1;
+    }
+    j.max(start + 1)
 }
 
 #[test]
@@ -176,6 +316,64 @@ fn gated_use_statements_strip_without_swallowing_following_items() {
     assert!(
         production.contains(".check_unfiltered("),
         "production items after a gated statement stay scanned"
+    );
+}
+
+#[test]
+fn brace_inside_string_literal_cannot_swallow_later_production_items() {
+    // Exact falsifier from review #12067: the gated test item holds a literal
+    // `{` in a string. The delimiter-aware walk must not leak that brace into
+    // the depth count; a byte-blind counter would end one level too deep,
+    // swallow every following production item into the stripped span, and
+    // hide a forbidden composition call placed after this module.
+    let source = concat!(
+        "#[cfg(test)]\nmod tests {\n",
+        "    const OPENER: &str = \"{\";\n",
+        "    fn hidden() { normalize_with_native_policy(unreachable()); }\n",
+        "}\n",
+        "// production composition deliberately placed after the test module\n",
+        "fn pipeline_after_tests() { NativeCriticPolicy::new(a, b, c, d); }\n",
+    );
+
+    let production = production_portion(source);
+
+    assert!(
+        !production.contains("normalize_with_native_policy("),
+        "the genuinely gated item stays excluded"
+    );
+    assert!(
+        production.contains("NativeCriticPolicy::new("),
+        "an unmatched brace inside a string literal must not swallow later \
+         production items out of the audited surface"
+    );
+}
+
+#[test]
+fn raw_strings_comments_and_char_literals_do_not_skew_the_strip_span() {
+    // Adjacent delimiter families the scanner must distinguish inside one
+    // gated module: a nested block comment, a raw string containing braces
+    // and quotes, brace char literals, and a lifetime apostrophe.
+    let source = concat!(
+        "#[cfg(test)]\nmod tests {\n",
+        "    /* /* { */ still comment } */\n",
+        r##"    const RAW: &str = r#"{ not a real brace }"#;"##,
+        "\n    const OPEN: char = '{';\n",
+        "    const CLOSE: char = '}';\n",
+        "    fn hidden<'a>(x: &'a str) { normalize_with_native_policy(unreachable()); }\n",
+        "}\n",
+        "// production composition deliberately placed after the test module\n",
+        "fn pipeline_after_tests() { built_in_observation_candidates(x, y); }\n",
+    );
+
+    let production = production_portion(source);
+
+    assert!(
+        !production.contains("normalize_with_native_policy("),
+        "the genuinely gated item stays excluded despite exotic delimiters"
+    );
+    assert!(
+        production.contains("built_in_observation_candidates("),
+        "the production composition after the gated module stays scanned"
     );
 }
 
