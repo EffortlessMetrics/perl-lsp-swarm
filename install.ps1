@@ -210,6 +210,287 @@ function Get-WindowsBuildNumber {
     }
 }
 
+$script:ArchiveSafetyPolicyId = "standalone-archive-safety.v1"
+$script:ArchiveSafetyMaxCompressedBytes = 268435456
+$script:ArchiveSafetyMaxUncompressedBytes = 536870912
+$script:ArchiveSafetyMaxEntryBytes = 268435456
+$script:ArchiveSafetyMaxEntries = 32
+$script:ArchiveSafetyMaxPathBytes = 255
+$script:ArchiveSafetyMaxPathDepth = 3
+$script:ArchiveSafetyRequiredWindows = @(
+    "perllsp.exe",
+    "perl-dap.exe",
+    "README.md",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "SHA256SUMS.txt"
+)
+$script:ArchiveSafetyAllowedExecutables = @("perllsp.exe", "perl-dap.exe")
+
+function Get-StandaloneArchiveSafetyPolicyId {
+    return $script:ArchiveSafetyPolicyId
+}
+
+function Get-ArchiveSafetyLimit {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet("compressed", "uncompressed", "entry", "entries")][string]$Name
+    )
+
+    $override = $null
+    switch ($Name) {
+        "compressed" {
+            $override = $env:PERL_LSP_ARCHIVE_SAFETY_MAX_COMPRESSED_BYTES
+            if ($override) { return [int64]$override }
+            return [int64]$script:ArchiveSafetyMaxCompressedBytes
+        }
+        "uncompressed" {
+            $override = $env:PERL_LSP_ARCHIVE_SAFETY_MAX_UNCOMPRESSED_BYTES
+            if ($override) { return [int64]$override }
+            return [int64]$script:ArchiveSafetyMaxUncompressedBytes
+        }
+        "entry" {
+            $override = $env:PERL_LSP_ARCHIVE_SAFETY_MAX_ENTRY_BYTES
+            if ($override) { return [int64]$override }
+            return [int64]$script:ArchiveSafetyMaxEntryBytes
+        }
+        "entries" {
+            $override = $env:PERL_LSP_ARCHIVE_SAFETY_MAX_ENTRIES
+            if ($override) { return [int]$override }
+            return [int]$script:ArchiveSafetyMaxEntries
+        }
+    }
+}
+
+function ConvertTo-SafeArchiveMemberPath {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    if ($Name -match "[\r\n\t]") {
+        throw "unsafe archive member path: $Name"
+    }
+    if ($Name.Contains("\") -or $Name.Contains(":") -or $Name.StartsWith("/") -or $Name.StartsWith("//")) {
+        throw "unsafe archive member path: $Name"
+    }
+    if ($Name -match '^[A-Za-z]:') {
+        throw "unsafe archive member path: $Name"
+    }
+    if ($Name.Length -gt $script:ArchiveSafetyMaxPathBytes) {
+        throw "unsafe archive member path: $Name"
+    }
+
+    $inspect = $Name.TrimEnd("/")
+    if ([string]::IsNullOrEmpty($inspect)) {
+        throw "unsafe archive member path: $Name"
+    }
+
+    $parts = $inspect.Split("/")
+    if ($parts.Count -gt $script:ArchiveSafetyMaxPathDepth) {
+        throw "unsafe archive member path: $Name"
+    }
+    foreach ($part in $parts) {
+        if ($part -in @("", ".", "..")) {
+            throw "unsafe archive member path: $Name"
+        }
+        if ($part -notmatch '^[A-Za-z0-9._-]+$') {
+            throw "unsafe archive member path: $Name"
+        }
+        $folded = $part.ToLowerInvariant()
+        if ($folded -match '^(con|prn|aux|nul|com[1-9]|lpt[1-9])$') {
+            throw "unsafe archive member path: $Name"
+        }
+    }
+    return $inspect
+}
+
+function Test-ZipEntryIsSymlink {
+    param($Entry)
+    $mode = ($Entry.ExternalAttributes -shr 16) -band 0xFFFF
+    return (($mode -band 0xF000) -eq 0xA000)
+}
+
+function Test-ZipEntryIsExecutable {
+    param(
+        [Parameter(Mandatory = $true)][string]$Basename,
+        $Entry
+    )
+    if ($Basename.ToLowerInvariant() -match '\.(exe|bat|cmd)$') {
+        return $true
+    }
+    $mode = ($Entry.ExternalAttributes -shr 16) -band 0xFFFF
+    # Unix exec bits (owner/group/other), decimal 73 == 0o111.
+    return (($mode -band 73) -ne 0)
+}
+
+function Get-StagedMemberSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Invoke-StandaloneArchiveStaging {
+    param(
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)][string]$StagingParent,
+        [Parameter(Mandatory = $true)][string]$PackageName
+    )
+
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+    if (-not (Test-Path -LiteralPath $ArchivePath)) {
+        throw "verified archive is missing"
+    }
+
+    $maxCompressed = Get-ArchiveSafetyLimit -Name compressed
+    $maxUncompressed = Get-ArchiveSafetyLimit -Name uncompressed
+    $maxEntry = Get-ArchiveSafetyLimit -Name entry
+    $maxEntries = Get-ArchiveSafetyLimit -Name entries
+    $compressed = (Get-Item -LiteralPath $ArchivePath).Length
+    if ($compressed -gt $maxCompressed) {
+        throw "archive compressed size $compressed exceeds policy ceiling $maxCompressed"
+    }
+
+    $stagingRoot = Join-Path $StagingParent ("perl-lsp-stage-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
+
+    try {
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+        try {
+            if ($archive.Entries.Count -gt $maxEntries) {
+                throw "archive entry count $($archive.Entries.Count) exceeds policy ceiling $maxEntries"
+            }
+
+            $seenExact = New-Object 'System.Collections.Generic.HashSet[string]'
+            $seenFolded = New-Object 'System.Collections.Generic.HashSet[string]'
+            $accepted = New-Object System.Collections.Generic.List[object]
+            $basenames = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+
+            foreach ($entry in $archive.Entries) {
+                $raw = $entry.FullName
+                if ($raw.EndsWith("/")) {
+                    $normalized = ConvertTo-SafeArchiveMemberPath -Name $raw
+                    if ($normalized -ne $PackageName) {
+                        throw "unexpected directory member: $normalized"
+                    }
+                    continue
+                }
+
+                $normalized = ConvertTo-SafeArchiveMemberPath -Name $raw
+                if (-not $seenExact.Add($normalized)) {
+                    throw "duplicate archive member: $normalized"
+                }
+                $folded = $normalized.ToLowerInvariant()
+                if (-not $seenFolded.Add($folded)) {
+                    throw "case-fold collision: $normalized"
+                }
+                if (Test-ZipEntryIsSymlink -Entry $entry) {
+                    throw "archive links are not accepted: $normalized"
+                }
+
+                $basename = [IO.Path]::GetFileName($normalized)
+                if (Test-ZipEntryIsExecutable -Basename $basename -Entry $entry) {
+                    if ($script:ArchiveSafetyAllowedExecutables -notcontains $basename) {
+                        throw "unexpected executable member: $normalized"
+                    }
+                }
+
+                $nested = $normalized.Contains("/")
+                if ($nested) {
+                    $expected = "$PackageName/$basename"
+                    if ($normalized -ne $expected) {
+                        throw "member is outside the package directory: $normalized"
+                    }
+                }
+                if ($script:ArchiveSafetyRequiredWindows -notcontains $basename) {
+                    throw "unexpected archive member: $normalized"
+                }
+                if ($entry.Length -gt $maxEntry) {
+                    throw "archive entry size $($entry.Length) exceeds policy ceiling $maxEntry"
+                }
+                if (-not $basenames.Add($basename)) {
+                    throw "duplicate archive member: $basename"
+                }
+                $accepted.Add([pscustomobject]@{ Entry = $entry; Normalized = $normalized; Basename = $basename })
+            }
+
+            foreach ($required in $script:ArchiveSafetyRequiredWindows) {
+                if (-not $basenames.Contains($required)) {
+                    throw "missing required member: $required"
+                }
+            }
+
+            $nestedCount = @($accepted | Where-Object { $_.Normalized.Contains("/") }).Count
+            if ($nestedCount -ne 0 -and $nestedCount -ne $accepted.Count) {
+                throw "mixed flat and nested archive layout is not accepted"
+            }
+
+            $extractRoot = $stagingRoot
+            if ($nestedCount -eq $accepted.Count) {
+                $extractRoot = Join-Path $stagingRoot $PackageName
+                New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
+            }
+
+            $actualTotal = [int64]0
+            foreach ($item in $accepted) {
+                $dest = Join-Path $extractRoot $item.Basename
+                $source = $item.Entry.Open()
+                try {
+                    $target = [IO.File]::Open($dest, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                    try {
+                        $source.CopyTo($target)
+                    } finally {
+                        $target.Dispose()
+                    }
+                } finally {
+                    $source.Dispose()
+                }
+                $sz = (Get-Item -LiteralPath $dest).Length
+                if ($sz -gt $maxEntry) {
+                    throw "archive entry size $sz exceeds policy ceiling $maxEntry"
+                }
+                $actualTotal += $sz
+                if ($actualTotal -gt $maxUncompressed) {
+                    throw "archive uncompressed size $actualTotal exceeds policy ceiling $maxUncompressed"
+                }
+            }
+
+            $extractDir = $extractRoot
+            if ($nestedCount -eq 0) {
+                $extractDir = $extractRoot
+            }
+
+            $server = Join-Path $extractDir "perllsp.exe"
+            $dap = Join-Path $extractDir "perl-dap.exe"
+            if (-not (Test-Path -LiteralPath $server) -or -not (Test-Path -LiteralPath $dap)) {
+                throw "expected binaries were not staged from the release archive"
+            }
+
+            $archiveHash = Get-StagedMemberSha256 -Path $ArchivePath
+            $memberParts = foreach ($required in $script:ArchiveSafetyRequiredWindows) {
+                $hash = Get-StagedMemberSha256 -Path (Join-Path $extractDir $required)
+                "$required`:$hash"
+            }
+            $layout = if ($nestedCount -eq $accepted.Count) { "windows_nested_v1" } else { "windows_flat_v1" }
+            $receipt = "archive_safety_receipt policy=$($script:ArchiveSafetyPolicyId) layout=$layout archive_sha256=$archiveHash members=$($memberParts -join ',')"
+            if ($receipt -match [regex]::Escape($stagingRoot) -or $receipt -match [regex]::Escape($ArchivePath)) {
+                throw "archive safety receipt contained a private path"
+            }
+            Write-Info $receipt
+            Write-Info "staged accepted topology members"
+            return $extractDir
+        } finally {
+            $archive.Dispose()
+        }
+    } catch {
+        if (Test-Path -LiteralPath $stagingRoot) {
+            Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+}
+
+if ($env:PERL_LSP_INSTALLER_LIBRARY_ONLY -eq '1') {
+    return
+}
+
 if (-not ($IsArm64Host -or $HostArch -eq "AMD64")) {
     Write-Error "Unsupported architecture: $HostArch. Windows releases ship x86_64 and ARM64 builds only. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
 }
@@ -352,17 +633,11 @@ try {
     }
     Write-Success "Checksum verified"
 
-    # Extract archive
-    Write-Info "Extracting archive"
-    $ExtractDir = Join-Path $TempDir "extract"
-    Expand-Archive -Path $ZipPath -DestinationPath $ExtractDir -Force
-    
-    # Find the binary
-    $ExtractedDir = Join-Path $ExtractDir "$Name-$VersionNum-$Target"
-    if (-not (Test-Path $ExtractedDir)) {
-        # Try without nested directory
-        $ExtractedDir = $ExtractDir
-    }
+    # Inspect the verified zip and extract only accepted topology members
+    # into a private staging root. Expand-Archive is not the safety boundary.
+    Write-Info "Inspecting release archive"
+    $PackageName = "$Name-$VersionNum-$Target"
+    $ExtractedDir = Invoke-StandaloneArchiveStaging -ArchivePath $ZipPath -StagingParent $TempDir -PackageName $PackageName
     
     $BinaryPath = Join-Path $ExtractedDir "$Name.exe"
     if (-not (Test-Path $BinaryPath)) {
