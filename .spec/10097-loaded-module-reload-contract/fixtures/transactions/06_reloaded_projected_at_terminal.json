@@ -1,0 +1,9 @@
+{
+  "name": "reloaded_projected_at_terminal",
+  "fixture_class": "terminal projection of a committed reload; clean success is projected only from commit onward",
+  "phase": "terminal_projection",
+  "outcome": { "kind": "reloaded" },
+  "expected_generation_effect": "advance",
+  "expected_phase_valid": true,
+  "expected_clean_projection": true
+}

@@ -47,8 +47,9 @@
 //! The baseline catalog compiled into [`baseline`] is the complete #11371
 //! baseline registry consumed by the #10962 fan-in. Additive family catalogs
 //! (#11381 freshness in [`freshness`], #11384 format-on-save in
-//! [`save_format`]; later #11386 server-generation recovery, #11387
-//! host-reopen, #11388 expanded activation)
+//! [`save_format`], #11388 expanded activation in [`activation`], #11386
+//! server-generation recovery in [`recovery`], #11387 host-reopen/repeated
+//! session in [`lifecycle`])
 //! register through this same API as sibling modules: they declare their own
 //! scenario ledger, fixture substrate, result vocabulary, and stage bound, and
 //! they can neither steal a baseline scenario nor shift a baseline cell's
@@ -60,8 +61,11 @@
 //! [`validate_compiled_registry`] runs every registered family's laws so no
 //! consumer can validate the compiled registry without them.
 
+pub mod activation;
 pub mod baseline;
 pub mod freshness;
+pub mod lifecycle;
+pub mod recovery;
 pub mod save_format;
 pub mod scenario_ledger;
 
@@ -266,6 +270,9 @@ pub fn scenario_ledgers() -> Vec<ScenarioLedger> {
         scenario_ledger::vim_bdd_ledger_11371(),
         freshness::freshness_action_ledger(),
         save_format::save_action_ledger(),
+        activation::activation_action_ledger(),
+        recovery::recovery_action_ledger(),
+        lifecycle::lifecycle_action_ledger(),
     ]
 }
 
@@ -273,7 +280,14 @@ pub fn scenario_ledgers() -> Vec<ScenarioLedger> {
 /// additive family is one module plus one line here, never a hand-edited
 /// merged row list.
 pub fn registry() -> Vec<CellCatalog> {
-    vec![baseline::baseline_catalog(), freshness::freshness_catalog(), save_format::save_catalog()]
+    vec![
+        baseline::baseline_catalog(),
+        freshness::freshness_catalog(),
+        save_format::save_catalog(),
+        activation::activation_catalog(),
+        recovery::recovery_catalog(),
+        lifecycle::lifecycle_catalog(),
+    ]
 }
 
 /// Validate the compiled registry of current main: the shared cross-catalog
@@ -282,6 +296,9 @@ pub fn validate_compiled_registry() -> Result<RegistrySummary> {
     let summary = validate_registry(&registry(), &scenario_ledgers())?;
     freshness::validate_family_laws()?;
     save_format::validate_family_laws()?;
+    activation::validate_family_laws()?;
+    recovery::validate_family_laws()?;
+    lifecycle::validate_family_laws()?;
     Ok(summary)
 }
 

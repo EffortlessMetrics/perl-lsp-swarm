@@ -15,13 +15,22 @@ mod envelope;
 pub mod framework;
 /// Concrete registry-backed framework adapters built on the SDK.
 pub mod framework_adapters;
+/// Canonical framework handler relation shared by the route and hook fact
+/// families (#8924).
+pub mod handler;
+/// Canonical framework hook fact family (#8924).
+pub mod hook;
 /// Transport-neutral reachability operation, work-budget, and
 /// terminal-outcome contract (#11553).
 pub mod reachability_operation;
 /// Canonical framework route fact family (#8918).
 pub mod route;
+/// Transport-neutral stable semantic identity and ownership contract (#12121).
+pub mod semantic_identity;
 
 pub use envelope::*;
+pub use handler::*;
+pub use hook::*;
 pub use route::*;
 
 macro_rules! id_newtype {

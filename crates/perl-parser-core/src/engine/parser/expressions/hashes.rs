@@ -76,7 +76,12 @@ impl<'a> Parser<'a> {
             Ok(expr) => expr,
             Err(e) => {
                 // Propagate recursion/nesting limits immediately - don't try alternative parse
-                if matches!(e, ParseError::RecursionLimit | ParseError::NestingTooDeep { .. }) {
+                if matches!(
+                    e,
+                    ParseError::RecursionLimit
+                        | ParseError::RecursionDepthExhausted { .. }
+                        | ParseError::NestingTooDeep { .. }
+                ) {
                     return Err(e);
                 }
                 // Fix #1352: If peek is at a statement boundary (;, sub, my, EOF, etc.)

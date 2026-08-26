@@ -24,6 +24,12 @@ pub use crate::path::is_lookup_safe_module_name;
 pub use crate::path::module_name_to_path;
 pub use crate::path::module_path_to_name;
 
+// provenance module
+pub use crate::provenance::ModuleProvenance;
+pub use crate::provenance::ModuleProvenanceClass;
+pub use crate::provenance::detect_module_provenance;
+pub use crate::provenance::module_provenance_root;
+
 // token_core module
 pub use crate::token_core::ModuleTokenSpan;
 pub use crate::token_core::has_standalone_module_token_boundaries;
