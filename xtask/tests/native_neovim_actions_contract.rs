@@ -410,11 +410,11 @@ fn old_generation_result_cannot_satisfy_a_post_edit_action() -> Result<()> {
 fn foreign_client_and_renamed_server_observations_fail_closed() -> Result<()> {
     let mut observation = valid_for("neovim.native.client_attachment.identify_client_and_process")?;
     observation.subject.client_id = "coc.nvim".to_string();
-    assert_rejects(&observation, "pinned neovim/vim.lsp/perllsp subject")?;
+    assert_rejects(&observation, "pinned neovim host build and canonical config subject")?;
 
     let mut observation = valid_for("neovim.native.client_attachment.identify_client_and_process")?;
     observation.subject.server_executable = "neovim_named_server".to_string();
-    assert_rejects(&observation, "pinned neovim/vim.lsp/perllsp subject")?;
+    assert_rejects(&observation, "pinned neovim host build and canonical config subject")?;
 
     let mut observation = valid_for("neovim.native.client_attachment.exclude_foreign_clients")?;
     observation.observed.cardinalities.insert("foreign_clients_attached".to_string(), 1);
@@ -520,7 +520,7 @@ fn unbounded_and_private_data_fails_closed() -> Result<()> {
 
     let mut unstable_key = observation.clone();
     unstable_key.observed.cardinalities.insert("Save Requests".to_string(), 1);
-    assert_rejects(&unstable_key, "stable")?;
+    assert_rejects(&unstable_key, "not bounded")?;
 
     let mut log_dump = observation.clone();
     log_dump.evidence.push(EvidenceRef {
@@ -543,7 +543,153 @@ fn unknown_observation_fields_are_rejected_by_the_schema() -> Result<()> {
     let tampered = serde_json::to_string(&value)?;
     let parsed: std::result::Result<TypedObservation, _> = serde_json::from_str(&tampered);
     ensure!(parsed.is_err(), "durable observations admitted an unknown (private-data) field");
+
+    // Nested payloads are closed too: an unknown field below the top level
+    // (subject, observed effect) must fail deserialization, not ride along.
+    let mut nested = serde_json::from_str::<serde_json::Value>(&json)?;
+    nested["subject"]["private_log"] = serde_json::json!("[lsp] hover my $secret = 1;");
+    let nested = serde_json::to_string(&nested)?;
+    let parsed: std::result::Result<TypedObservation, _> = serde_json::from_str(&nested);
+    ensure!(parsed.is_err(), "the subject binding admitted an unknown (private-data) field");
+
+    let mut nested = serde_json::from_str::<serde_json::Value>(&json)?;
+    nested["observed"]["raw_source"] = serde_json::json!("my $x = 1;");
+    let nested = serde_json::to_string(&nested)?;
+    let parsed: std::result::Result<TypedObservation, _> = serde_json::from_str(&nested);
+    ensure!(parsed.is_err(), "the observed effect admitted an unknown (private-data) field");
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Review-repair falsifiers (PR #12638 review: subject pin completeness,
+// companion identity, closed channels, timeout budget, generation floors,
+// bounded collections)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unpinned_host_build_and_config_subjects_fail_closed() -> Result<()> {
+    // host_version_scope / config_id are load-bearing subject dimensions,
+    // not free tokens: an invented build or foreign config cannot observe.
+    let mut observation = valid_for("neovim.native.client_attachment.identify_client_and_process")?;
+    observation.subject.host_version_scope = "invented_build".to_string();
+    assert_rejects(&observation, "pinned neovim host build and canonical config subject")?;
+
+    let mut observation = valid_for("neovim.native.client_attachment.identify_client_and_process")?;
+    observation.subject.config_id = "foreign_config".to_string();
+    assert_rejects(&observation, "pinned neovim host build and canonical config subject")?;
+
+    // Boundary note (review disposition): root_id and the document path stay
+    // per-fixture bounded bindings by design — the fixture/expectation
+    // authority (#10903) is not landed and the root_add_remove action
+    // exercises a changing root; they are tightened to exact fixture rows by
+    // that authority, not pinned here. Their boundedness is still enforced:
+    let mut observation = valid_for("neovim.native.client_attachment.identify_client_and_process")?;
+    observation.subject.root_id = "root with spaces and capitals".to_string();
+    assert_rejects(&observation, "bounded stable token")
+}
+
+#[test]
+fn companion_control_must_be_the_action_declared_control() -> Result<()> {
+    // A control token owned by another action (or invented) cannot satisfy
+    // the route even on the companion-class action.
+    let mut observation =
+        valid_for("neovim.native.text_sync_lifecycle.companion_multichange_control")?;
+    observation.route =
+        ObservedRoute::CompanionControl { control: "vim.lsp.buf.hover".to_string() };
+    assert_rejects(&observation, "does not declare companion control")?;
+
+    let mut observation =
+        valid_for("neovim.native.text_sync_lifecycle.companion_multichange_control")?;
+    observation.route =
+        ObservedRoute::CompanionControl { control: "locally_invented_control".to_string() };
+    assert_rejects(&observation, "does not declare companion control")
+}
+
+#[test]
+fn host_handoff_and_stimulus_channels_are_closed_vocabularies() -> Result<()> {
+    let mut observation =
+        valid_for("neovim.native.text_sync_lifecycle.post_run_observation_handoff")?;
+    observation.route = ObservedRoute::HostHandoff { handoff: "spawn_with_deadline".to_string() };
+    assert_rejects(&observation, "closed handoff vocabulary")
+}
+
+#[test]
+fn timeout_beyond_the_declared_budget_fails_closed() -> Result<()> {
+    let spec = action("neovim.native.read_methods.request_hover")?;
+    let mut world = fake::FakeWorld::settling();
+    world.timed_out_predicates = vec![PredicateKind::HoverResultExact];
+    world.result = Some(ObservationResult::NotProven);
+    let observation = fake::observation_for(spec, 1, &world).map_err(|e| anyhow::anyhow!("{e}"))?;
+    // Bounded timeout inside the budget validates.
+    contract::validate_observation(&observation)
+        .map_err(|error| anyhow::anyhow!("bounded timeout must validate: {error}"))?;
+
+    let mut beyond = observation;
+    if let Some(evidence) = beyond.predicate_evidence.first_mut() {
+        *evidence = PredicateEvidence::TimedOut {
+            kind: PredicateKind::HoverResultExact,
+            polls: 999,
+            waited_ms: 60_000,
+        };
+    }
+    assert_rejects(&beyond, "beyond the")
+}
+
+#[test]
+fn stale_predicate_settlement_cannot_prove_a_current_result() -> Result<()> {
+    // A predicate settled one document generation before the observation
+    // snapshot cannot prove the current-generation result.
+    let mut observation = valid_for("neovim.native.read_methods.wait_target_diagnostic_state")?;
+    if let Some(evidence) = observation.predicate_evidence.first_mut() {
+        if let PredicateEvidence::Satisfied { settled_generations, .. } = evidence {
+            settled_generations.document_generation -= 1;
+        }
+    }
+    assert_rejects(&observation, "stale state cannot prove a current result")?;
+
+    // Settlement at the observation's own generation (the honest default)
+    // still validates — the floor is equality, not recency.
+    let observation = valid_for("neovim.native.read_methods.wait_target_diagnostic_state")?;
+    contract::validate_observation(&observation)
+        .map_err(|error| anyhow::anyhow!("current settlement must validate: {error}"))?;
+    Ok(())
+}
+
+#[test]
+fn unbounded_tokens_and_collections_fail_closed() -> Result<()> {
+    let observation = valid_for("neovim.native.read_methods.request_hover")?;
+
+    // A megabyte-scale "token" is not bounded evidence.
+    let mut long_token = observation.clone();
+    long_token.scenario_id = Some(format!("neovim.bdd.{}", "a".repeat(400)));
+    assert_rejects(&long_token, "bounded stable token")?;
+
+    // Collection caps: more effect classes than any action may report.
+    let mut classes = observation.clone();
+    classes.observed.effect_classes = vec![
+        EffectClass::BufferState,
+        EffectClass::FileState,
+        EffectClass::Filetype,
+        EffectClass::ClientIdentity,
+        EffectClass::DiagnosticState,
+        EffectClass::CompletionItems,
+        EffectClass::HoverContent,
+        EffectClass::NavigationTarget,
+        EffectClass::CursorState,
+    ];
+    assert_rejects(&classes, "the cap is")?;
+
+    // Duplicate evidence references cannot pad durable evidence.
+    let mut duplicates = observation.clone();
+    let first = duplicates.evidence[0].clone();
+    duplicates.evidence.push(first);
+    assert_rejects(&duplicates, "duplicate evidence reference")?;
+
+    // Duplicate effect classes are rejected even below the cap.
+    let mut duplicate_class = observation.clone();
+    let class = duplicate_class.observed.effect_classes[0];
+    duplicate_class.observed.effect_classes.push(class);
+    assert_rejects(&duplicate_class, "duplicate effect class")
 }
 
 #[test]

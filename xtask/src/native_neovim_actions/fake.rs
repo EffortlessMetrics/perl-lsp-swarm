@@ -19,8 +19,9 @@ use super::observation::{
 };
 use super::predicate::{GenerationSnapshot, PredicateEvidence, PredicateKind};
 use super::{
-    ActionClass, ActionSpec, CONTRACT_SCHEMA_VERSION, PINNED_CLIENT_ID, PINNED_HOST_PRODUCT,
-    PINNED_SERVER_EXECUTABLE, SurfaceClassification,
+    ActionClass, ActionSpec, CONTRACT_SCHEMA_VERSION, PINNED_CLIENT_ID, PINNED_CONFIG_ID,
+    PINNED_HOST_PRODUCT, PINNED_HOST_VERSION_SCOPE, PINNED_SERVER_EXECUTABLE,
+    SurfaceClassification,
 };
 
 /// Bounded fake digest spelling (64 hex characters after `sha256:`).
@@ -158,10 +159,10 @@ fn action_route_hint(action: &ActionSpec) -> Option<ObservedRoute> {
 pub fn fake_subject() -> SubjectBinding {
     SubjectBinding {
         host_product: PINNED_HOST_PRODUCT.to_string(),
-        host_version_scope: "neovim_host_build_11406".to_string(),
+        host_version_scope: PINNED_HOST_VERSION_SCOPE.to_string(),
         client_id: PINNED_CLIENT_ID.to_string(),
         server_executable: PINNED_SERVER_EXECUTABLE.to_string(),
-        config_id: "canonical_config_10502".to_string(),
+        config_id: PINNED_CONFIG_ID.to_string(),
         root_id: "fixture_root".to_string(),
         document: DocumentBinding { fixture_path: "workspace/lib/main.pm".to_string(), buffer: 1 },
     }

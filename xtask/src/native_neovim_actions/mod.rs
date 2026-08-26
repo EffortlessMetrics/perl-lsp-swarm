@@ -1003,11 +1003,50 @@ pub fn action_by_id(action_id: &str) -> Option<&'static ActionSpec> {
 }
 
 /// The pinned subject identity tokens of this contract. The exact Neovim
-/// build bytes are #11406's authority (cited by identity token, never
-/// re-pinned); the canonical config bytes are #10502/#7768's.
+/// build bytes are #11406's authority and the canonical config bytes are
+/// #10502/#7768's: both are cited by registered identity tokens here and
+/// fail closed on any other token, while the exact bytes stay with their
+/// owning authorities. `root_id` and the document binding are per-fixture
+/// run bindings (fixture/expectation authority #10903; the workspace-root
+/// model is deliberately per-run because the `root_add_remove` action
+/// exercises changing it), validated as bounded tokens/paths and tightened
+/// to exact fixture rows when #10903 lands.
 pub const PINNED_HOST_PRODUCT: &str = "neovim";
 pub const PINNED_CLIENT_ID: &str = "vim.lsp";
 pub const PINNED_SERVER_EXECUTABLE: &str = "perllsp";
+/// Identity token citing the pinned Neovim host build (authority #11406).
+pub const PINNED_HOST_VERSION_SCOPE: &str = "neovim_host_build_11406";
+/// Identity token citing the exact canonical config subject (#10502/#7768).
+pub const PINNED_CONFIG_ID: &str = "canonical_config_10502";
+
+/// The closed host-handoff channel vocabulary: handoffs are bounded
+/// references to the #10894 authority, never free-form process policy.
+pub const HOST_HANDOFF_TOKENS: &[&str] = &["host_process_handoff", "post_run_observation_handoff"];
+
+/// The closed test-stimulus channel vocabulary.
+pub const TEST_STIMULUS_TOKENS: &[&str] = &["deliberate_stimulus"];
+
+/// The currentness dimensions each predicate kind must settle at the
+/// observation's own generation: an older-generation settlement can never
+/// prove a current result (#11409 falsifier 8).
+pub fn predicate_floor_dimensions(
+    kind: PredicateKind,
+) -> &'static [predicate::GenerationDimension] {
+    use predicate::GenerationDimension as Dimension;
+    match kind {
+        PredicateKind::ClientInitializedExactProcess | PredicateKind::ClientTerminalState => {
+            &[Dimension::Host, Dimension::Process]
+        }
+        PredicateKind::DiagnosticStateCurrent
+        | PredicateKind::CompletionResultExact
+        | PredicateKind::HoverResultExact
+        | PredicateKind::NavigationResultExact
+        | PredicateKind::AppliedBufferDigest
+        | PredicateKind::DocumentGenerationAccepted
+        | PredicateKind::ParserEffectTicket => &[Dimension::Document],
+        PredicateKind::AppliedFileDigest => &[Dimension::Document, Dimension::Source],
+    }
+}
 
 /// Grammar for public Neovim API spellings: dotted lowercase Lua paths under
 /// the built-in `vim.lsp`/`vim.diagnostic`/`vim.fn`/`vim.bo` roots. Nothing
@@ -1080,17 +1119,25 @@ pub fn validate_observation(
 
     observation::validate_bounded(observation)?;
 
-    // Subject pin: only the exact Neovim + built-in vim.lsp + perllsp subject
-    // may observe; a Coc/other client or a renamed-server workaround is
-    // rejected.
+    // Subject pin: only the exact Neovim + built-in vim.lsp + perllsp
+    // subject, on the registered host-build identity (#11406) and canonical
+    // config identity (#10502/#7768), may observe. A Coc/other client, a
+    // renamed-server workaround, an invented host build, or a foreign config
+    // is rejected. Root/document stay bounded per-fixture bindings (#10903).
     let subject = &observation.subject;
     if subject.host_product != PINNED_HOST_PRODUCT
         || subject.client_id != PINNED_CLIENT_ID
         || subject.server_executable != PINNED_SERVER_EXECUTABLE
+        || subject.host_version_scope != PINNED_HOST_VERSION_SCOPE
+        || subject.config_id != PINNED_CONFIG_ID
     {
         return Err(format!(
-            "observation subject {}/{}/{} is not the pinned neovim/vim.lsp/perllsp subject",
-            subject.host_product, subject.client_id, subject.server_executable
+            "observation subject {}/{}/{}/{}/{} is not the pinned neovim host build and canonical config subject",
+            subject.host_product,
+            subject.client_id,
+            subject.server_executable,
+            subject.host_version_scope,
+            subject.config_id
         ));
     }
 
@@ -1183,6 +1230,14 @@ pub fn validate_observation(
                     action.action_id
                 ));
             }
+            // Exact membership, same as public APIs: a control token owned by
+            // another action or invented inline can never satisfy the route.
+            if !action.api_uses.contains(&control.as_str()) {
+                return Err(format!(
+                    "action {} does not declare companion control {control}",
+                    action.action_id
+                ));
+            }
         }
         ObservedRoute::InstrumentHook { hook, owner } => {
             let SurfaceClassification::InstrumentOnlyHook { owner: pinned_owner } = action.surface
@@ -1211,12 +1266,22 @@ pub fn validate_observation(
                     action.action_id
                 ));
             }
+            if !TEST_STIMULUS_TOKENS.contains(&stimulus.as_str()) {
+                return Err(format!(
+                    "test stimulus {stimulus} is outside the closed stimulus vocabulary"
+                ));
+            }
         }
         ObservedRoute::HostHandoff { handoff } => {
             if action.class != ActionClass::HostHandoff {
                 return Err(format!(
                     "host handoff {handoff} offered as the route of {}; process spawn/deadline/cleanup is owned by #10894, not a host action",
                     action.action_id
+                ));
+            }
+            if !HOST_HANDOFF_TOKENS.contains(&handoff.as_str()) {
+                return Err(format!(
+                    "host handoff {handoff} is outside the closed handoff vocabulary; a handoff is a bounded reference to #10894, never free-form process policy"
                 ));
             }
         }
@@ -1279,11 +1344,29 @@ pub fn validate_observation(
                         ));
                     }
                 }
+                // Generation floor: on the dimensions the predicate kind is
+                // about, the settlement must be at the observation's own
+                // generation — an older-generation settlement can never
+                // prove a current result (#11409 falsifier 8).
+                for dimension in predicate_floor_dimensions(kind) {
+                    let settled = settled_generations.dimension(*dimension);
+                    let observed = observation.generations.dimension(*dimension);
+                    if settled < observed {
+                        return Err(format!(
+                            "predicate {kind:?} settled at an older {dimension:?} generation ({settled}) than the observation snapshot ({observed}); stale state cannot prove a current result"
+                        ));
+                    }
+                }
             }
             PredicateEvidence::TimedOut { polls, waited_ms, .. } => {
                 if *polls == 0 || *waited_ms == 0 {
                     return Err(format!(
                         "predicate {kind:?} timeout must record its bounded polls and wait"
+                    ));
+                }
+                if *waited_ms > budget {
+                    return Err(format!(
+                        "predicate {kind:?} timed out after {waited_ms}ms, beyond the {budget}ms budget; a run that violated the declared deadline is not bounded evidence"
                     ));
                 }
                 if observation.result != ObservationResult::NotProven {

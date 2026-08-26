@@ -110,7 +110,7 @@ pub enum EffectStage {
 /// What kind of state/effect the observation speaks about. The closed
 /// vocabulary keeps effect claims checkable against each action's declared
 /// emissions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectClass {
     HostSessionState,
@@ -155,6 +155,7 @@ pub enum ExpectationSource {
 /// owned by the #10903 fixture/expectation manifest, never a value read back
 /// from the observation it is compared against.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExpectationBinding {
     pub source: ExpectationSource,
     /// Stable token naming the expectation row (authority #10903).
@@ -166,7 +167,7 @@ pub struct ExpectationBinding {
 /// Bounded artifact evidence reference kinds (the generic receipt artifact
 /// vocabulary; references are digests or fixture-relative paths, never raw
 /// logs).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceKind {
     ClientLog,
@@ -179,6 +180,7 @@ pub enum EvidenceKind {
 
 /// One bounded evidence reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvidenceRef {
     pub kind: EvidenceKind,
     /// `sha256:` digest or fixture-relative path of the retained artifact.
@@ -189,6 +191,7 @@ pub struct EvidenceRef {
 /// authority and resolved to bounded zero-based positions before use; an
 /// unresolved anchor never reaches an observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AnchorPosition {
     pub line: u32,
     pub character: u32,
@@ -196,6 +199,7 @@ pub struct AnchorPosition {
 
 /// The exact host/client/server/config/root/document subject binding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SubjectBinding {
     /// Pinned host product (`neovim`).
     pub host_product: String,
@@ -216,6 +220,7 @@ pub struct SubjectBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DocumentBinding {
     /// Fixture-root-relative path (bounded by the fixture-path law).
     pub fixture_path: String,
@@ -227,6 +232,7 @@ pub struct DocumentBinding {
 /// channel only carries what was actually requested/returned/applied/seen,
 /// at the generation it was computed against.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservedEffect {
     pub stage: EffectStage,
     /// Effect classes this observation reports; must be within the action's
@@ -316,14 +322,34 @@ pub fn is_bounded_reference(value: &str) -> bool {
     is_bounded_digest(value) || is_fixture_relative_path(value)
 }
 
+/// Shared byte cap for every free-token field. A stable reason token alone
+/// has no length bound, so durable evidence could otherwise carry
+/// megabyte-scale "tokens"; one cap keeps the model honestly bounded.
+pub const MAX_TOKEN_BYTES: usize = 200;
+
+/// Per-collection caps: a host-produced record can neither pad collections
+/// arbitrarily nor duplicate entries to inflate durable evidence.
+pub const MAX_PREDICATE_EVIDENCE: usize = 16;
+pub const MAX_EFFECT_CLASSES: usize = 8;
+pub const MAX_EVIDENCE_REFS: usize = 16;
+pub const MAX_ANCHOR_POSITIONS: usize = 16;
+pub const MAX_IDENTITY_DIGESTS: usize = 16;
+pub const MAX_CARDINALITIES: usize = 16;
+
+/// True when the value is a stable reason token inside the shared byte cap.
+pub fn is_bounded_token(value: &str) -> bool {
+    is_reason_token(value) && value.len() <= MAX_TOKEN_BYTES
+}
+
 /// Structural boundedness validation shared by every field of the model.
 /// Grammar-checked spellings (APIs, native surfaces) are completed by
 /// [`super::is_neovim_api_spelling`]/[`super::is_native_editor_surface`] at
-/// the contract layer; here every free-token field must already be a stable
-/// reason token.
+/// the contract layer; here every free-token field must already be a bounded
+/// stable token and every collection must stay inside its cap without
+/// duplicates.
 pub fn validate_bounded(observation: &TypedObservation) -> Result<(), String> {
-    if !is_reason_token(&observation.action_id) {
-        return Err(format!("action id is not a stable token: {}", observation.action_id));
+    if !is_bounded_token(&observation.action_id) {
+        return Err(format!("action id is not a bounded stable token: {}", observation.action_id));
     }
     for (label, token) in [
         ("scenario", observation.scenario_id.as_deref()),
@@ -331,9 +357,9 @@ pub fn validate_bounded(observation: &TypedObservation) -> Result<(), String> {
         ("cell", observation.cell_id.as_deref()),
     ] {
         if let Some(token) = token
-            && !is_reason_token(token)
+            && !is_bounded_token(token)
         {
-            return Err(format!("{label} reference is not a stable token: {token}"));
+            return Err(format!("{label} reference is not a bounded stable token: {token}"));
         }
     }
     let subject = &observation.subject;
@@ -345,8 +371,8 @@ pub fn validate_bounded(observation: &TypedObservation) -> Result<(), String> {
         ("config id", subject.config_id.as_str()),
         ("root id", subject.root_id.as_str()),
     ] {
-        if !is_reason_token(token) {
-            return Err(format!("subject {label} is not a stable token: {token}"));
+        if !is_bounded_token(token) {
+            return Err(format!("subject {label} is not a bounded stable token: {token}"));
         }
     }
     if !is_fixture_relative_path(&subject.document.fixture_path) {
@@ -366,9 +392,9 @@ pub fn validate_bounded(observation: &TypedObservation) -> Result<(), String> {
                 return Err(format!("route api spelling is outside the grammar: {api}"));
             }
             if let ObservedRoute::VersionScopedApi { scope, .. } = &observation.route
-                && !is_reason_token(scope)
+                && !is_bounded_token(scope)
             {
-                return Err(format!("version scope is not a stable token: {scope}"));
+                return Err(format!("version scope is not a bounded stable token: {scope}"));
             }
         }
         ObservedRoute::NativeEditorSurface { surface } => {
@@ -377,33 +403,39 @@ pub fn validate_bounded(observation: &TypedObservation) -> Result<(), String> {
             }
         }
         ObservedRoute::CompanionControl { control } => {
-            if !is_reason_token(control) {
-                return Err(format!("companion control token is not stable: {control}"));
+            if !is_bounded_token(control) {
+                return Err(format!("companion control token is not bounded: {control}"));
             }
         }
         ObservedRoute::InstrumentHook { hook, owner } => {
             if !super::is_neovim_api_spelling(hook) {
                 return Err(format!("instrument hook spelling is outside the grammar: {hook}"));
             }
-            if !is_reason_token(owner) {
-                return Err(format!("instrument hook owner is not stable: {owner}"));
+            if !is_bounded_token(owner) {
+                return Err(format!("instrument hook owner is not bounded: {owner}"));
             }
         }
         ObservedRoute::TestStimulus { stimulus } => {
-            if !is_reason_token(stimulus) {
-                return Err(format!("test stimulus token is not stable: {stimulus}"));
+            if !is_bounded_token(stimulus) {
+                return Err(format!("test stimulus token is not bounded: {stimulus}"));
             }
         }
         ObservedRoute::HostHandoff { handoff } => {
-            if !is_reason_token(handoff) {
-                return Err(format!("host handoff token is not stable: {handoff}"));
+            if !is_bounded_token(handoff) {
+                return Err(format!("host handoff token is not bounded: {handoff}"));
             }
         }
     }
+    if observation.predicate_evidence.len() > MAX_PREDICATE_EVIDENCE {
+        return Err(format!(
+            "observation carries {} predicate-evidence records; the cap is {MAX_PREDICATE_EVIDENCE}",
+            observation.predicate_evidence.len()
+        ));
+    }
     if let Some(expectation) = &observation.expectation {
-        if !is_reason_token(&expectation.expectation_id) {
+        if !is_bounded_token(&expectation.expectation_id) {
             return Err(format!(
-                "expectation id is not a stable token: {}",
+                "expectation id is not a bounded stable token: {}",
                 expectation.expectation_id
             ));
         }
@@ -420,27 +452,64 @@ pub fn validate_bounded(observation: &TypedObservation) -> Result<(), String> {
     {
         return Err("observed effect digest is not bounded".to_string());
     }
-    for anchor in effect.anchor_positions.keys() {
-        if !is_reason_token(anchor) {
-            return Err(format!("anchor token is not stable: {anchor}"));
+    if effect.effect_classes.len() > MAX_EFFECT_CLASSES {
+        return Err(format!(
+            "effect carries {} effect classes; the cap is {MAX_EFFECT_CLASSES}",
+            effect.effect_classes.len()
+        ));
+    }
+    let mut seen_classes = std::collections::BTreeSet::new();
+    for class in &effect.effect_classes {
+        if !seen_classes.insert(class) {
+            return Err(format!("duplicate effect class {class:?}"));
         }
     }
+    if effect.anchor_positions.len() > MAX_ANCHOR_POSITIONS {
+        return Err(format!(
+            "effect binds {} anchor positions; the cap is {MAX_ANCHOR_POSITIONS}",
+            effect.anchor_positions.len()
+        ));
+    }
+    for anchor in effect.anchor_positions.keys() {
+        if !is_bounded_token(anchor) {
+            return Err(format!("anchor token is not bounded: {anchor}"));
+        }
+    }
+    if effect.identity_digests.len() > MAX_IDENTITY_DIGESTS {
+        return Err(format!(
+            "effect binds {} identity digests; the cap is {MAX_IDENTITY_DIGESTS}",
+            effect.identity_digests.len()
+        ));
+    }
     for (key, value) in &effect.identity_digests {
-        if !is_reason_token(key) {
-            return Err(format!("identity digest key is not stable: {key}"));
+        if !is_bounded_token(key) {
+            return Err(format!("identity digest key is not bounded: {key}"));
         }
         if !is_bounded_digest(value) {
             return Err(format!("identity digest {key} is not a bounded digest"));
         }
     }
+    if effect.cardinalities.len() > MAX_CARDINALITIES {
+        return Err(format!(
+            "effect binds {} cardinalities; the cap is {MAX_CARDINALITIES}",
+            effect.cardinalities.len()
+        ));
+    }
     for (key, value) in &effect.cardinalities {
-        if !is_reason_token(key) {
-            return Err(format!("cardinality key is not stable: {key}"));
+        if !is_bounded_token(key) {
+            return Err(format!("cardinality key is not bounded: {key}"));
         }
         if *value > u32::MAX as u64 {
             return Err(format!("cardinality {key} is unbounded: {value}"));
         }
     }
+    if observation.evidence.len() > MAX_EVIDENCE_REFS {
+        return Err(format!(
+            "observation carries {} evidence references; the cap is {MAX_EVIDENCE_REFS}",
+            observation.evidence.len()
+        ));
+    }
+    let mut seen_evidence = std::collections::BTreeSet::new();
     for reference in &observation.evidence {
         if !is_bounded_reference(&reference.reference) {
             return Err(format!(
@@ -448,11 +517,17 @@ pub fn validate_bounded(observation: &TypedObservation) -> Result<(), String> {
                 reference.reference
             ));
         }
+        if !seen_evidence.insert((reference.kind, reference.reference.as_str())) {
+            return Err(format!(
+                "duplicate evidence reference for kind {:?}: {}",
+                reference.kind, reference.reference
+            ));
+        }
     }
     if let Some(limitation) = &observation.limitation_class
-        && !is_reason_token(limitation)
+        && !is_bounded_token(limitation)
     {
-        return Err(format!("limitation class is not a stable token: {limitation}"));
+        return Err(format!("limitation class is not a bounded stable token: {limitation}"));
     }
     Ok(())
 }
