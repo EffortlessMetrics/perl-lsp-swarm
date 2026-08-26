@@ -151,6 +151,12 @@ pub enum SubjectFanInFailure {
     /// host token or version header): the row is stale relative to the
     /// certified denominator.
     StaleSubjectRow { subject_id: String, reason: String },
+    /// A manifest binds one row per subject id, but the fan-in was handed
+    /// more than one (a duplicate under a bound id can hide a stale copy
+    /// behind the first match; the schema-level duplicate rejection is not
+    /// assumed here because the fan-in certifies independently of
+    /// `SubjectManifest::validate`).
+    DuplicateSubjectRow { subject_id: String },
     /// The runner registry and the denominator have drifted: a slot the
     /// registry cannot dispatch through the subject manifest, or a
     /// manifest-bound registry row outside the denominator.
@@ -173,6 +179,11 @@ impl fmt::Display for SubjectFanInFailure {
                 formatter,
                 "subject {subject_id} binds a different generation than its denominator slot: \
                  {reason}"
+            ),
+            Self::DuplicateSubjectRow { subject_id } => write!(
+                formatter,
+                "subject {subject_id} binds more than one manifest row; the denominator certifies \
+                 exactly one row per bound slot"
             ),
             Self::RegistryDrift { reason } => {
                 write!(
@@ -242,9 +253,18 @@ pub fn validate_subject_lane_denominator(
         }
     }
 
-    // Exactness: every manifest row is a bound slot. A row outside the
-    // denominator is an unbound generation, not extra evidence.
+    // Exactness: every manifest row is a bound slot, and every bound slot
+    // exactly once. A row outside the denominator is an unbound generation,
+    // and a duplicate row under any id — bound or not — hides a possible
+    // stale copy behind the first match, so it is refused independently of
+    // the schema-level duplicate rejection the fan-in does not assume.
+    let mut seen_rows = BTreeSet::new();
     for row in &manifest.subjects {
+        if !seen_rows.insert(row.subject_id.as_str()) {
+            return Err(SubjectFanInFailure::DuplicateSubjectRow {
+                subject_id: row.subject_id.clone(),
+            });
+        }
         if !SUBJECT_DENOMINATOR.iter().any(|slot| slot.subject_id == row.subject_id) {
             return Err(SubjectFanInFailure::UnboundGeneration {
                 subject_id: row.subject_id.clone(),

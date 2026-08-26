@@ -8,7 +8,9 @@
 //! 2. opposite — a partial denominator is never rendered complete, slot by
 //!    slot (`partial_denominators_are_refused_slot_by_slot`);
 //! 3. wrong subject — a manifest row citing an unbound generation is
-//!    refused (`unbound_generation_rows_are_refused`);
+//!    refused (`unbound_generation_rows_are_refused`), and a duplicate row
+//!    under any id cannot ride along behind the first match
+//!    (`duplicate_rows_under_a_bound_id_are_refused`, a PR review repair);
 //! 4. stale — a bound id whose row binds a different generation is refused
 //!    (`stale_generation_under_a_bound_id_is_refused`);
 //! 5. fault — substituted material is a typed rejection through the joint
@@ -450,6 +452,58 @@ fn unbound_generation_rows_are_refused() {
         }
         other => panic!("expected UnboundGeneration, got {other:?}"),
     }
+}
+
+/// Duplicate control (PR review finding): a seventh row reusing a bound
+/// subject id — even one whose copy is stale, hiding behind the first
+/// match — must never certify. The fan-in law rejects duplicates
+/// independently of the schema-level duplicate rejection, because it
+/// certifies manifests it did not load through `SubjectManifest::load`.
+#[test]
+fn duplicate_rows_under_a_bound_id_are_refused() {
+    // A stale duplicate of the bundled 30.1 row appended after the six
+    // fixture rows: the completeness loop would match the first (bound)
+    // copy, and without duplicate rejection the stale copy would ride
+    // along unnoticed.
+    let mut duplicated = fixture_manifest();
+    let stale_copy = bundled_row(
+        BUNDLED_30_ID,
+        "emacs-31.1",
+        "31.1",
+        "1.18.0",
+        sha256_of(b"a silently re-pinned bundled copy"),
+    );
+    duplicated.subjects.push(stale_copy);
+    let failure = validate_subject_lane_denominator(&duplicated)
+        .expect_err("a duplicate row under a bound id must fail the fan-in");
+    match &failure {
+        SubjectFanInFailure::DuplicateSubjectRow { subject_id } => {
+            assert_eq!(subject_id, BUNDLED_30_ID);
+        }
+        other => panic!("expected DuplicateSubjectRow, got {other:?}"),
+    }
+
+    // A duplicate under an unbound id is equally refused: the first
+    // surplus occurrence already fails as an unbound generation, so
+    // repetition cannot bypass the refusal.
+    let mut duplicated_unbound = fixture_manifest();
+    let mut extra = released_eglot_row(
+        sha256_of(b"prospective eglot 1.25 bytes"),
+        sha256_of(b"prospective eglot 1.25 archive"),
+    );
+    extra.subject_id = "released_eglot_gnu_elpa_1_25".to_string();
+    duplicated_unbound.subjects.push(extra.clone());
+    duplicated_unbound.subjects.push(extra);
+    let failure = validate_subject_lane_denominator(&duplicated_unbound)
+        .expect_err("a duplicated unbound row must fail the fan-in");
+    assert!(
+        matches!(
+            &failure,
+            SubjectFanInFailure::UnboundGeneration { subject_id, .. }
+                if subject_id == "released_eglot_gnu_elpa_1_25"
+        ),
+        "expected UnboundGeneration on the first surplus occurrence, got {failure:?}"
+    );
 }
 
 /// Stale control: a bound subject id whose row binds a different generation
