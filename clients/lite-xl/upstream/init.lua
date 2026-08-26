@@ -1022,6 +1022,12 @@ local function begin_completion_resolve(item, rstate)
   rstate.resolve_subject = subject
   local queued = data.server:push_request('completionItem/resolve', {
     params = data.completion_item,
+    -- Local patch (#10657): explicit short window. The single-send default
+    -- policy is deliberately patient, but a pending resolve defers applying
+    -- the selected completion, so it keeps the legacy ~2s responsiveness:
+    -- expiry reaches the typed fallback quickly instead of stalling the
+    -- selection for the whole default window.
+    timeout = 2,
     callback = function(server, response)
       on_completion_resolve_response(item, rstate, response)
     end,

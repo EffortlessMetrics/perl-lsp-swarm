@@ -473,7 +473,12 @@ function Server:initialize(workspace, editor_name, editor_version)
   end
 
   self:push_request('initialize', {
-    timeout = 10,
+    -- Local patch (#10657): initialize pacing is policy-owned. The legacy
+    -- hardcoded timeout = 10 was retry spacing under the resend model; with
+    -- single-send semantics an explicit short value would terminally expire
+    -- the ONLY initialize emission of cold/large-workspace servers, so the
+    -- longer INITIALIZE_REQUEST_TIMEOUT policy applies instead (still one
+    -- emission under id 1).
     params = {
       processId = system["get_process_id"] and system.get_process_id() or nil,
       clientInfo = {
@@ -713,80 +718,121 @@ function Server:process_notifications()
   end
 end
 
----Sends one of the queued client requests.
+---Default timeout policy for one sent request's response window (#10657).
+---A request is emitted at most once per server generation; expiry is a
+---terminal disposition, never a re-emission. Initialize keeps the longer
+---policy the protocol reality needs (cold servers, large workspaces) while
+---still never transmitting the same initialize frame twice under id 1.
+Server.DEFAULT_REQUEST_TIMEOUT = 30
+Server.INITIALIZE_REQUEST_TIMEOUT = 120
+
+---One injectable clock input for request send/deadline decisions (#10657,
+---clock-authority comment). The default stays wall-compatible with the
+---#11103 fake-time harness; Lite XL integrations and tests can supply a
+---monotonic source so wall-clock jumps cannot resend, prematurely expire,
+---or indefinitely retain an operation.
+function Server:now()
+  return os.time()
+end
+
+---Sends due queued client requests exactly once each (#10657). The first
+---successful write of an operation is its only emission; when its response
+---window expires the correlation is removed exactly once through one typed
+---"timeout" disposition (timeout_callback receives the request and the
+---disposition), and a later server response for that id is stale - it finds
+---no correlation and cannot run the original callback. Transport write
+---failures are not semantic events: the unsent operation keeps its identity
+---for a later tick while recovery/teardown remains owned by send_data and
+---the process lifecycle.
 function Server:process_requests()
   if not self.proc then return end
 
-  local remove_request = nil
+  local expired_index = nil
+  local expired_request = nil
+
   for index, request in ipairs(self.request_list) do
-    if request.timestamp < os.time() then
+    -- Queued operations enter with timestamp 0 (immediately due); sent
+    -- operations come due at their response deadline; a transport failure
+    -- re-paces the same unsent operation one tick later (#10657 keeps the
+    -- upstream transport-retry pacing).
+    if request.timestamp <= self:now() then
       -- only process when initialized or the initialize request
       -- which should be the first one.
-      if not self.initialized and request.id ~= 1 then
+      if not self.initialized and request.method ~= "initialize" then
         return nil
       end
 
-      local message = {
-        jsonrpc = '2.0',
-        id = request.id,
-        method = request.method,
-        params = request.params or {}
-      }
+      if request.times_sent == 0 then
+        local message = {
+          jsonrpc = '2.0',
+          id = request.id,
+          method = request.method,
+          params = request.params or {}
+        }
 
-      local data = json.encode(message)
+        local data = json.encode(message)
 
-      local written, errmsg = self:write_request(data)
+        local written, errmsg = self:write_request(data)
 
-      if self.verbose then
-        if written then
-          self:log(
-            "Sent request '%s':\n%s",
-            request.method,
-            util.jsonprettify(data)
-          )
-        else
-          self:log(
-            "Failed sending request '%s' with error: %s\n%s",
-            request.method,
-            errmsg or "unknown",
-            util.jsonprettify(data)
-          )
+        if self.verbose then
+          if written then
+            self:log(
+              "Sent request '%s':\n%s",
+              request.method,
+              util.jsonprettify(data)
+            )
+          else
+            self:log(
+              "Failed sending request '%s' with error: %s\n%s",
+              request.method,
+              errmsg or "unknown",
+              util.jsonprettify(data)
+            )
+          end
         end
-      end
 
-      if written then
-        local time = request.timeout or 1
-        request.timestamp = os.time() + time
+        if written then
+          local time = request.timeout
+            or (
+              request.method == "initialize"
+              and Server.INITIALIZE_REQUEST_TIMEOUT
+            )
+            or Server.DEFAULT_REQUEST_TIMEOUT
+          request.timestamp = self:now() + time
 
-        self.write_fails = 0
+          self.write_fails = 0
 
-        -- if request has been sent more than 2 times remove them
-        request.times_sent = request.times_sent + 1
-        if
-          request.times_sent > 1
-          and
-          request.id ~= 1 -- Initialize request may take some time
-        then
-          remove_request = index
-          break
-        else
+          -- Single-send (#10657): mark emitted; this operation will never
+          -- be re-encoded or rewritten onto the wire again.
+          request.times_sent = 1
+
           return request
+        else
+          request.timestamp = self:now() + 1
+          self:shutdown_if_needed()
+          return nil
         end
       else
-        request.timestamp = os.time() + 1
-        self:shutdown_if_needed()
-        return nil
+        -- Deadline reached without a terminal response (#10657): remove
+        -- the correlation exactly once and hand back one typed timeout
+        -- disposition. No manufactured result, no server teardown, no
+        -- second frame with this id.
+        expired_index = index
+        expired_request = request
+        break
       end
     end
   end
 
-  if remove_request then
-    local request = table.remove(self.request_list, remove_request)
-    if self.verbose then
-      self:log("Request '%s' expired without response", remove_request)
-    end
-    if request.timeout_callback then
-      request.timeout_callback(request)
+  if expired_index then
+    table.remove(self.request_list, expired_index)
+    self:log(
+      "Request '%s' timed out after one send (id %s)",
+      tostring(expired_request.method),
+      tostring(expired_request.id)
+    )
+    if expired_request.timeout_callback then
+      expired_request.timeout_callback(expired_request, "timeout")
     end
   end
 

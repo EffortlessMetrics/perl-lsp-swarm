@@ -26,6 +26,27 @@
 --   already-sent request ids are never retransmitted inside their timeout
 --   window (#10657 owns correlation).
 --
+-- Single-send extension (#10657): every queued operation is emitted at most
+-- once per server generation; expiry is one terminal typed "timeout"
+-- disposition that removes the correlation exactly once; late responses are
+-- stale (no callback, nothing to pop); deliberate retries become new ids;
+-- transport write failure keeps the operation unsent with identity intact;
+-- initialize exceeds a longer policy terminally without ever re-emitting
+-- id 1; an injectable monotonic clock (`server.now`) makes backward jumps
+-- inert and forward boundary crossings exactly-once; replacement instances
+-- restart the id space so old-generation responses correlate nowhere.
+-- Red-first: run this suite against CURRENT MAIN before the #10657 patch -
+-- the pristine resend loop produces duplicate id frames on expiry, exempts
+-- requests by id VALUE (any first operation, not just initialize, resends
+-- forever), runs late-response callbacks after expiry, cannot expire at an
+-- exact monotonic boundary, and paces transport retries strictly later, so
+-- the held-hover/#178, late-response, retry-identity, initialize,
+-- exact-boundary, and clock-jump cases MUST fail there (the partial-write
+-- recovery pin passes both sides). Mutation falsifier of the PATCHED module
+-- (verified): restore resend-on-expiry in process_requests (re-encode and
+-- rewrite the frame, remove after the second send) and the duplicate-frame
+-- cases fail again.
+--
 -- Red-first baseline: run this suite against CURRENT MAIN before the #10833
 -- patch. There the hit-rate admission dropper silently discards saturated
 -- didChange/watched-files/hover/response pushes and push_* returns nil, so
@@ -461,6 +482,209 @@ do
   local di = s:push_request("initialize", { params = {} })
   ok(di == "queued" and #s.request_list == 1,
     "pin: the initialize request still queues before initialization")
+end
+
+-- ---------------------------------------------------------------------------
+-- Single-send request identity and terminal timeouts (#10657)
+-- ---------------------------------------------------------------------------
+
+---Counts wire frames carrying one JSON-RPC id.
+local function frames_with_id(server, id)
+  local hits = 0
+  for _, frame_data in ipairs(server.wire) do
+    local ok_decode, decoded = pcall(json.decode, frame_data)
+    if ok_decode and decoded and decoded.id == id then
+      hits = hits + 1
+    end
+  end
+  return hits
+end
+
+do
+  -- slow_response_beyond_timeout: exactly one frame with id=N, the timeout
+  -- callback fires once with the typed disposition, and no second id=N
+  -- frame ever appears (upstream #178 shape: a held hover cannot produce
+  -- two identical requests).
+  local s = fresh_server()
+  local timeouts = {}
+  s:push_request("textDocument/hover", {
+    params = { textDocument = { uri = "u" }, position = { line = 0, character = 0 } },
+    timeout = 2,
+    timeout_callback = function(request, disposition)
+      timeouts[#timeouts + 1] = { id = request.id, disposition = disposition }
+    end,
+  })
+  s:process_requests()
+  fake_epoch = fake_epoch + 3
+  s:process_requests()
+  s:process_requests()
+  s:process_requests()
+  ok(frames_with_id(s, 1) == 1,
+    "a held hover emits exactly one frame with its id (#10657/#178)")
+  ok(#s.request_list == 0,
+    "an expired operation leaves no correlation behind")
+  ok(#timeouts == 1 and timeouts[1].id == 1 and timeouts[1].disposition == "timeout",
+    "expiry is one typed timeout disposition delivered exactly once")
+end
+
+do
+  -- late_response_after_timeout_is_stale: a response arriving after the
+  -- terminal timeout finds no correlation and cannot run callbacks or
+  -- mutate state.
+  local s = fresh_server()
+  local callback_runs, timeout_runs = 0, 0
+  s:push_request("textDocument/documentSymbol", {
+    params = { query = "q" },
+    timeout = 1,
+    callback = function() callback_runs = callback_runs + 1 end,
+    timeout_callback = function() timeout_runs = timeout_runs + 1 end,
+  })
+  s:process_requests()
+  fake_epoch = fake_epoch + 2
+  s:process_requests()
+  ok(timeout_runs == 1, "the timeout fired before the late response")
+  s:send_response_signal({ id = 1, result = { symbols = {} } })
+  ok(callback_runs == 0,
+    "a late response after timeout never runs the original callback")
+  ok(s:pop_request(1) == nil,
+    "a late response finds no correlation entry to pop")
+end
+
+do
+  -- explicit_caller_retry_gets_new_id: a caller that deliberately retries
+  -- after a timeout becomes a new operation with a new id (contract pin).
+  local s = fresh_server()
+  s:push_request("textDocument/hover", {
+    params = { position = { line = 0, character = 0 } }, timeout = 1,
+  })
+  s:process_requests()
+  fake_epoch = fake_epoch + 2
+  s:process_requests()
+  local retried = s:push_request("textDocument/hover", {
+    params = { position = { line = 0, character = 1 } },
+  })
+  ok(retried == "queued" and #s.request_list == 1
+    and s.request_list[1].id == 2,
+    "a deliberate retry queues as a new operation with a new id")
+  s:process_requests()
+  ok(frames_with_id(s, 2) == 1,
+    "the retry sends once under its own new id")
+end
+
+do
+  -- partial_write_is_not_semantic_send: a transport write failure keeps the
+  -- operation unsent with its identity intact; recovery on a later tick
+  -- produces exactly one complete frame (pin: transport handling stays
+  -- byte-complete through send_data without semantic replay).
+  local s = fresh_server()
+  local fail_first = { n = 0 }
+  local real_writer = s.write_request
+  s.write_request = function(self, data)
+    fail_first.n = fail_first.n + 1
+    if fail_first.n == 1 then return false end
+    return real_writer(self, data)
+  end
+  s:push_request("textDocument/hover", {
+    params = { position = { line = 0, character = 0 } },
+  })
+  s:process_requests()
+  ok(#s.wire == 0 and #s.request_list == 1
+    and s.request_list[1].times_sent == 0,
+    "a failed transport write emits nothing and keeps the operation unsent")
+  ok(s.shutdown_calls >= 1,
+    "transport failure classification stays owned by the lifecycle path")
+  fake_epoch = fake_epoch + 2
+  s.process_requests(s)
+  ok(frames_with_id(s, 1) == 1 and s.request_list[1].times_sent == 1,
+    "recovered transport delivers the same operation exactly once")
+end
+
+do
+  -- initialize_never_duplicated: a slow initialize exceeds even its longer
+  -- policy terminally; id=1 is never transmitted twice (pristine resends
+  -- it forever).
+  local s = fresh_server({ initialized = false })
+  local dispositions = {}
+  s:push_request("initialize", {
+    params = {},
+    timeout_callback = function(_, disposition)
+      dispositions[#dispositions + 1] = disposition
+    end,
+  })
+  s:process_requests()
+  fake_epoch = fake_epoch + 200
+  s.initialized = false
+  s.process_requests(s)
+  s.process_requests(s)
+  s.process_requests(s)
+  ok(frames_with_id(s, 1) == 1,
+    "initialize exceeds even its long policy with exactly one emission")
+  ok(#s.request_list == 0 and dispositions[1] == "timeout",
+    "initialize expiry is terminal with the same typed disposition")
+end
+
+do
+  -- exact_boundary_terminal: at timestamp <= now the sent request expires
+  -- exactly once - not early, not by resend (monotonic boundary semantics).
+  local s = fresh_server()
+  local timeout_count = 0
+  s:push_request("textDocument/hover", {
+    params = {}, timeout = 5,
+    timeout_callback = function() timeout_count = timeout_count + 1 end,
+  })
+  s:process_requests()
+  fake_epoch = fake_epoch + 4
+  s:process_requests()
+  ok(timeout_count == 0 and #s.request_list == 1,
+    "inside the window the correlation stays alive untouched")
+  fake_epoch = fake_epoch + 1
+  s:process_requests()
+  ok(timeout_count == 1 and #s.request_list == 0
+    and frames_with_id(s, 1) == 1,
+    "at the exact boundary the operation expires terminally once")
+end
+
+do
+  -- wall_clock_jump_resistance: an injectable monotonic clock keeps a sent
+  -- request inert across a backward jump and terminal exactly once after a
+  -- forward jump past the deadline.
+  local s = fresh_server()
+  local mono = 5000
+  s.now = function() return mono end
+  local timeout_count = 0
+  s:push_request("textDocument/hover", {
+    params = {}, timeout = 10,
+    timeout_callback = function() timeout_count = timeout_count + 1 end,
+  })
+  s:process_requests()
+  mono = mono - 4000
+  for _ = 1, 5 do s:process_requests() end
+  ok(frames_with_id(s, 1) == 1 and timeout_count == 0
+    and #s.request_list == 1,
+    "a backward clock jump neither resends nor prematurely expires")
+  mono = 5011
+  s:process_requests()
+  ok(frames_with_id(s, 1) == 1 and timeout_count == 1
+    and #s.request_list == 0,
+    "advancing to the deadline yields exactly one terminal timeout")
+end
+
+do
+  -- generation_scoped_identity: a replacement server instance starts its
+  -- own id space and old-generation responses cannot correlate into it.
+  local s = fresh_server()
+  s:push_request("textDocument/hover", { params = {} })
+  s:process_requests()
+  local replacement = fresh_server()
+  ok(replacement.current_request == 0,
+    "a new generation restarts the request-id space")
+  local ran = false
+  function replacement:send_response_signal(response)
+    if self:pop_request(response.id) then ran = true end
+  end
+  replacement:send_response_signal({ id = 1, result = {} })
+  ok(not ran,
+    "an old-generation response id correlates into no replacement state")
 end
 
 print(string.format("%d passed, %d failed", passed, failed))
