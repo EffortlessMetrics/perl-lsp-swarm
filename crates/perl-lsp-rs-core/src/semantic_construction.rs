@@ -373,6 +373,40 @@ pub enum SemanticConstructionCallError {
         /// Profile fingerprint carried by the presented inputs.
         inputs_profile: ContentDigest,
     },
+    /// The presented inputs bind to a different accepted parser ticket
+    /// than this cell: construction under a cell may only build the exact
+    /// ticket the cell owns, so a coherent-but-foreign subject/parse pair
+    /// cannot be laundered through another ticket's cell.
+    #[error("inputs bind ticket {inputs_ticket} but this cell owns ticket {cell_ticket}")]
+    InputsTicketMismatch {
+        /// Ticket identity of this cell's key.
+        cell_ticket: AcceptedParserTicketId,
+        /// Ticket identity derived from the presented inputs.
+        inputs_ticket: AcceptedParserTicketId,
+    },
+    /// The presented profile triple is internally incoherent (its stored
+    /// fingerprint does not match its schema/implementation/profile
+    /// triple). Only identities built through checked constructors may
+    /// reach a construction.
+    #[error(
+        "inputs profile triple is incoherent: stored fingerprint {found} does not match          its triple (expected {expected})"
+    )]
+    IncoherentProfileTriple {
+        /// Fingerprint recomputed over the presented triple.
+        expected: ContentDigest,
+        /// Fingerprint stored in the presented identity.
+        found: ContentDigest,
+    },
+    /// The presented lease is not the capability this registry issued for
+    /// this cell's ticket: a foreign registry's lease (or a stale lease
+    /// from before a release/reaccept cycle) cannot construct through
+    /// another registry's cell even when the deterministic ticket id
+    /// matches.
+    #[error("lease capability was not issued by this registry for ticket {ticket_id}")]
+    ForeignLeaseCapability {
+        /// The ticket the capability was presented against.
+        ticket_id: AcceptedParserTicketId,
+    },
 }
 
 /// Typed refusal at ticket acceptance or cell lookup.
@@ -403,6 +437,15 @@ pub enum SemanticTicketError {
     #[error("accepted parser ticket {ticket_id} is not live")]
     TicketNotLive {
         /// The retired ticket.
+        ticket_id: AcceptedParserTicketId,
+    },
+    /// The presented lease capability was not issued by this registry
+    /// (another registry's lease for the same deterministic ticket id, or
+    /// a stale lease from before a release/reaccept cycle): it cannot
+    /// obtain cells for this registry's ticket lifecycle.
+    #[error("lease capability was not issued by this registry for ticket {ticket_id}")]
+    ForeignLeaseCapability {
+        /// The ticket the capability was presented against.
         ticket_id: AcceptedParserTicketId,
     },
     /// The presented semantic profile triple is internally incoherent: its
@@ -469,6 +512,31 @@ impl SemanticConstructionTerminal {
     #[must_use]
     pub const fn terminal_state(&self) -> SemanticSnapshotTerminalState {
         self.snapshot.terminal_state()
+    }
+
+    /// Whether this terminal carries attachable facts (a complete or
+    /// partial-recovered result that has not been demoted for
+    /// supersession).
+    #[must_use]
+    pub(crate) fn is_attachable(&self) -> bool {
+        matches!(
+            self.snapshot.terminal_state(),
+            SemanticSnapshotTerminalState::CompleteFreshFull
+                | SemanticSnapshotTerminalState::PartialRecovered
+        )
+    }
+
+    /// The construction inputs recoverable from the terminal's snapshot
+    /// identities (used to rebuild an absent terminal on supersession
+    /// demotion).
+    #[must_use]
+    pub(crate) fn as_construction_inputs(&self) -> FreshFullConstructionInputs {
+        FreshFullConstructionInputs {
+            profile: self.snapshot.profile().clone(),
+            subject: self.snapshot.subject().clone(),
+            parse_snapshot: self.snapshot.parse_snapshot_identity().clone(),
+            budget: SemanticConstructionBudget::unbounded(),
+        }
     }
 
     /// Whether this terminal is an attachable honest fresh-full completion.
@@ -624,6 +692,11 @@ struct CellInner {
 #[derive(Debug)]
 pub struct SemanticConstructionCell {
     key: CellKey,
+    /// The registry-issued liveness capability for this cell's exact
+    /// ticket (pointer-identity authenticated: a foreign registry's or a
+    /// stale reaccepted lease has a different `Arc` even when the
+    /// deterministic ticket id matches).
+    live: Arc<AtomicBool>,
     inner: Mutex<CellInner>,
     published: Condvar,
 }
@@ -693,6 +766,44 @@ impl SemanticConstructionCell {
                 inputs_profile: inputs.profile.fingerprint.clone(),
             });
         }
+        // Capability authentication: only the exact registry-issued
+        // liveness `Arc` may construct under this cell. A foreign
+        // registry's lease (same deterministic ticket id, different
+        // capability) or a stale pre-reaccept lease is refused.
+        if !Arc::ptr_eq(&lease.live, &self.live) {
+            return Err(SemanticConstructionCallError::ForeignLeaseCapability {
+                ticket_id: self.key.ticket_id.clone(),
+            });
+        }
+        // The inputs must bind the exact ticket this cell owns: a
+        // coherent subject/parse pair for another ticket cannot be built
+        // through this cell.
+        let inputs_ticket = AcceptedParserTicketId::from_bound_parts(
+            &inputs.subject.document_instance,
+            inputs.parse_snapshot.accepted_generation,
+            &inputs.parse_snapshot.source_digest,
+        );
+        if inputs_ticket != self.key.ticket_id {
+            return Err(SemanticConstructionCallError::InputsTicketMismatch {
+                cell_ticket: self.key.ticket_id.clone(),
+                inputs_ticket,
+            });
+        }
+        // The profile triple must be internally coherent before it can
+        // reach envelope assembly (an incoherent triple with a copied
+        // fingerprint would otherwise be rejected only inside envelope
+        // validation, after the cell committed to building).
+        let expected_fingerprint = SemanticProfileIdentity::fingerprint_over(
+            &inputs.profile.schema,
+            &inputs.profile.implementation,
+            &inputs.profile.profile,
+        );
+        if inputs.profile.fingerprint != expected_fingerprint {
+            return Err(SemanticConstructionCallError::IncoherentProfileTriple {
+                expected: expected_fingerprint,
+                found: inputs.profile.fingerprint.clone(),
+            });
+        }
 
         let build_inputs = 'schedule: {
             let mut guard = lock_alive(&self.inner);
@@ -730,12 +841,12 @@ impl SemanticConstructionCell {
                     guard.truth.waiters_high_water =
                         guard.truth.waiters_high_water.max(guard.waiters);
                     loop {
+                        // `Condvar::wait` re-acquires the mutex and can
+                        // observe a poisoned lock if another thread panicked
+                        // while holding it; the guarded state itself is
+                        // intact, so recover the guard like `lock_alive`.
                         let mut woken =
-                            self.published.wait(guard).unwrap_or_else(|PoisonError { .. }| {
-                                // The waking side panicked while holding the
-                                // lock; the state itself is intact.
-                                unreachable!("Condvar::wait cannot poison")
-                            });
+                            self.published.wait(guard).unwrap_or_else(PoisonError::into_inner);
                         woken.waiters -= 1;
                         if let CellPhase::Terminal(terminal) = &woken.phase {
                             let terminal = Arc::clone(terminal);
@@ -758,12 +869,37 @@ impl SemanticConstructionCell {
                 Err(_panic) => FreshFullProducerOutcome::ProductFailure,
             };
 
-        let terminal = Arc::new(Self::resolve_outcome(&build_inputs, &outcome, lease));
+        let resolved = Self::resolve_outcome(&build_inputs, &outcome, lease);
+        Ok(self.publish_with_liveness_check(lease, resolved))
+    }
+
+    /// Publish the resolved terminal, deciding attachability **under the
+    /// cell lock**: if the ticket was retired after the outcome resolved
+    /// but before publication, the attachable result is demoted to a
+    /// `stale_or_superseded` terminal with no facts. A retirement that
+    /// lands after this in-lock check publishes an attachable result that
+    /// predates the retirement; downstream acceptance (#8575) re-validates
+    /// lease liveness before attaching, so a retired ticket can never
+    /// consume it.
+    fn publish_with_liveness_check(
+        &self,
+        lease: &AcceptedTicketLease,
+        resolved: SemanticConstructionTerminal,
+    ) -> Arc<SemanticConstructionTerminal> {
         let mut guard = lock_alive(&self.inner);
+        let terminal = if resolved.is_attachable() && !lease.is_live() {
+            absent_terminal(
+                &resolved.as_construction_inputs(),
+                SemanticSnapshotTerminalState::StaleOrSuperseded,
+            )
+        } else {
+            resolved
+        };
+        let terminal = Arc::new(terminal);
         Self::publish_locked(&mut guard, &terminal);
         drop(guard);
         self.published.notify_all();
-        Ok(terminal)
+        terminal
     }
 
     /// Record the one terminal result under the lock.
@@ -891,12 +1027,19 @@ impl SemanticConstructionCell {
         // The cell derives the receipt: honest fresh-full work, construction
         // cell instrument bound to the exact ticket, deterministic sequence
         // bound to the accepted generation.
+        // The receipt instrument is keyed by the exact accepted ticket
+        // (document instance + accepted generation + parser-input digest),
+        // not the document instance alone: two tickets that share an
+        // instance and generation but differ in source digest are distinct
+        // work and must never share a receipt identity.
+        let ticket_id = AcceptedParserTicketId::from_bound_parts(
+            &inputs.subject.document_instance,
+            inputs.parse_snapshot.accepted_generation,
+            &inputs.parse_snapshot.source_digest,
+        );
         let work_receipt = SemanticWorkReceipt::new(
             SemanticWorkKind::FreshFull,
-            InstrumentIdentity::new(
-                SemanticInstrumentKind::ConstructionCell,
-                inputs.subject.document_instance.as_wire(),
-            ),
+            InstrumentIdentity::new(SemanticInstrumentKind::ConstructionCell, ticket_id.as_wire()),
             inputs.parse_snapshot.accepted_generation,
         );
 
@@ -958,12 +1101,14 @@ fn absent_snapshot(
     inputs: &FreshFullConstructionInputs,
     state: SemanticSnapshotTerminalState,
 ) -> FileSemanticSnapshotV1 {
+    let ticket_id = AcceptedParserTicketId::from_bound_parts(
+        &inputs.subject.document_instance,
+        inputs.parse_snapshot.accepted_generation,
+        &inputs.parse_snapshot.source_digest,
+    );
     let receipt = SemanticWorkReceipt::new(
         SemanticWorkKind::FreshFull,
-        InstrumentIdentity::new(
-            SemanticInstrumentKind::ConstructionCell,
-            inputs.subject.document_instance.as_wire(),
-        ),
+        InstrumentIdentity::new(SemanticInstrumentKind::ConstructionCell, ticket_id.as_wire()),
         inputs.parse_snapshot.accepted_generation,
     );
     let parts = FileSemanticSnapshotParts {
@@ -1092,9 +1237,24 @@ impl SemanticConstructionCellRegistry {
             });
         }
         let mut guard = lock_alive(&self.inner);
-        let live = guard.leases.get(lease.ticket_id()).ok_or_else(|| {
-            SemanticTicketError::TicketNotAccepted { ticket_id: lease.ticket_id().clone() }
-        })?;
+        let live = guard
+            .leases
+            .get(lease.ticket_id())
+            .ok_or_else(|| SemanticTicketError::TicketNotAccepted {
+                ticket_id: lease.ticket_id().clone(),
+            })?
+            .clone();
+        // Capability authentication: the presented lease must carry this
+        // registry's exact liveness `Arc`. A foreign registry's lease for
+        // the same deterministic ticket id — or a stale lease from before
+        // a release/reaccept cycle, which minted a fresh `Arc` — is
+        // refused here rather than silently mutating this registry's
+        // lifecycle.
+        if !Arc::ptr_eq(&live, &lease.live) {
+            return Err(SemanticTicketError::ForeignLeaseCapability {
+                ticket_id: lease.ticket_id().clone(),
+            });
+        }
         if !live.load(Ordering::Acquire) {
             return Err(SemanticTicketError::TicketNotLive {
                 ticket_id: lease.ticket_id().clone(),
@@ -1114,6 +1274,7 @@ impl SemanticConstructionCellRegistry {
                 );
                 Arc::new(SemanticConstructionCell {
                     key,
+                    live: Arc::clone(&live),
                     inner: Mutex::new(CellInner {
                         phase: CellPhase::Ready,
                         captured: None,
@@ -1133,6 +1294,19 @@ impl SemanticConstructionCellRegistry {
     /// Arcs observe a retired ticket. A second release is a typed no-op.
     pub fn release(&self, lease: &AcceptedTicketLease) -> TicketReleaseDisposition {
         let mut guard = lock_alive(&self.inner);
+        // Only this registry's own capability may release its lifecycle: a
+        // foreign registry's lease (same deterministic ticket id) or a
+        // stale pre-reaccept lease leaves the registry untouched. The
+        // intact lease keeps the refusal observable — a follow-up
+        // `cell_for`/`construct` with the same foreign lease fails closed
+        // at the capability check above.
+        let foreign = match guard.leases.get(lease.ticket_id()) {
+            Some(live) => !Arc::ptr_eq(live, &lease.live),
+            None => false,
+        };
+        if foreign {
+            return TicketReleaseDisposition::AlreadyReleased;
+        }
         let Some(live) = guard.leases.remove(lease.ticket_id()) else {
             return TicketReleaseDisposition::AlreadyReleased;
         };
@@ -2195,6 +2369,196 @@ mod tests {
         let re_lease = registry.accept_ticket(subject("open-1", "7"), parse_snapshot(7));
         assert!(re_lease.is_ok());
         assert_eq!(registry.lease_count(), 1);
+    }
+
+    #[test]
+    fn inputs_bound_to_another_ticket_refuse_only_the_caller() {
+        let (registry, lease, inputs) = accepted_registry_inputs();
+        let cell = registry.cell_for(&lease, &inputs.profile).unwrap();
+        // Coherent inputs for a DIFFERENT ticket (generation 8): the cell
+        // must not build another ticket's subject through ticket 7's cell.
+        let foreign = inputs_for(subject("open-1", "8"), parse_snapshot(8));
+        let err = cell.construct_fresh_full(&lease, foreign, &HonestProducer::new());
+        assert!(matches!(err, Err(SemanticConstructionCallError::InputsTicketMismatch { .. })));
+        // The refusal consumed nothing.
+        let terminal = cell.construct_fresh_full(&lease, inputs, &HonestProducer::new()).unwrap();
+        assert!(terminal.is_complete_fresh_full());
+    }
+
+    #[test]
+    fn incoherent_profile_triple_refuses_at_construction() {
+        let (registry, lease, inputs) = accepted_registry_inputs();
+        let cell = registry.cell_for(&lease, &inputs.profile).unwrap();
+        // Copy the coherent fingerprint field onto a mutated triple: the
+        // fingerprint key matches, but the triple itself is incoherent.
+        let mut forged = inputs.clone();
+        forged.profile.schema = crate::semantic_snapshot::SemanticProfileIdentity::new(
+            "other-semantic",
+            1,
+            "perl-semantic-analyzer/0.19",
+            "default",
+        )
+        .schema
+        .clone();
+        forged.profile.fingerprint = inputs.profile.fingerprint.clone();
+        let err = cell.construct_fresh_full(&lease, forged, &HonestProducer::new());
+        assert!(matches!(err, Err(SemanticConstructionCallError::IncoherentProfileTriple { .. })));
+    }
+
+    #[test]
+    fn work_receipts_bind_the_exact_ticket() {
+        let registry = SemanticConstructionCellRegistry::new();
+        // Same document instance and generation, DIFFERENT parser-input
+        // digest: distinct tickets, and their receipts must differ.
+        let subject_a = subject_for_source("open-1", "7", SOURCE);
+        let subject_b = subject_for_source("open-1", "7", OTHER_SOURCE);
+        let parse_a = parse_snapshot_for(7, SOURCE, SemanticParseDisposition::Clean);
+        let parse_b = parse_snapshot_for(7, OTHER_SOURCE, SemanticParseDisposition::Clean);
+        let lease_a = registry.accept_ticket(subject_a.clone(), parse_a.clone()).unwrap();
+        let lease_b = registry.accept_ticket(subject_b.clone(), parse_b.clone()).unwrap();
+        assert_ne!(lease_a.ticket_id(), lease_b.ticket_id());
+
+        let inputs_a = inputs_for(subject_a, parse_a);
+        let inputs_b = inputs_for(subject_b, parse_b);
+        let terminal_a = registry
+            .cell_for(&lease_a, &inputs_a.profile)
+            .unwrap()
+            .construct_fresh_full(&lease_a, inputs_a, &HonestProducer::new())
+            .unwrap();
+        let terminal_b = registry
+            .cell_for(&lease_b, &inputs_b.profile)
+            .unwrap()
+            .construct_fresh_full(&lease_b, inputs_b, &HonestProducer::new())
+            .unwrap();
+        assert_ne!(
+            terminal_a.snapshot().work_receipt().receipt_id,
+            terminal_b.snapshot().work_receipt().receipt_id,
+            "two distinct tickets sharing an instance and generation must not share a receipt"
+        );
+    }
+
+    #[test]
+    fn retirement_before_publication_demotes_to_stale() {
+        let (registry, lease, inputs) = accepted_registry_inputs();
+        let cell = registry.cell_for(&lease, &inputs.profile).unwrap();
+        // Resolve a complete outcome first (the producer succeeded), then
+        // retire the ticket, then publish: the attachable result must be
+        // demoted to stale_or_superseded with no facts.
+        let resolved = SemanticConstructionCell::resolve_outcome(
+            &inputs,
+            &FreshFullProducerOutcome::Complete(fresh_bundle(
+                &inputs,
+                SemanticContributionSetCompleteness::Complete,
+            )),
+            &lease,
+        );
+        assert!(resolved.is_attachable());
+        lease.retire();
+        let terminal = cell.publish_with_liveness_check(&lease, resolved);
+        assert_eq!(terminal.terminal_state(), SemanticSnapshotTerminalState::StaleOrSuperseded);
+        assert!(
+            terminal.snapshot().contribution_set().is_none(),
+            "a retirement before publication must not attach facts"
+        );
+        assert_eq!(cell.truth().builds_started, 0);
+    }
+
+    #[test]
+    fn cross_registry_leases_are_refused_everywhere() {
+        let (registry_a, lease_a, inputs) = accepted_registry_inputs();
+        // Registry B independently accepts the same subject/parse pair:
+        // same deterministic ticket id, different live capability.
+        let registry_b = SemanticConstructionCellRegistry::new();
+        let lease_b = registry_b.accept_ticket(subject("open-1", "7"), parse_snapshot(7)).unwrap();
+        assert_eq!(lease_a.ticket_id(), lease_b.ticket_id());
+
+        // B's lease cannot obtain A's cells.
+        assert!(matches!(
+            registry_a.cell_for(&lease_b, &inputs.profile),
+            Err(SemanticTicketError::ForeignLeaseCapability { .. })
+        ));
+        // A's cells constructed with B's lease are refused (the cell is
+        // created with A's capability first).
+        let cell = registry_a.cell_for(&lease_a, &inputs.profile).unwrap();
+        assert!(matches!(
+            cell.construct_fresh_full(&lease_b, inputs.clone(), &HonestProducer::new()),
+            Err(SemanticConstructionCallError::ForeignLeaseCapability { .. })
+        ));
+        // B's lease cannot release A's lifecycle: nothing is removed.
+        assert_eq!(registry_a.release(&lease_b), TicketReleaseDisposition::AlreadyReleased);
+        assert_eq!(registry_a.lease_count(), 1, "A's own lease must remain");
+        // A's own lease still works end to end.
+        let terminal = cell.construct_fresh_full(&lease_a, inputs, &HonestProducer::new()).unwrap();
+        assert!(terminal.is_complete_fresh_full());
+    }
+
+    #[test]
+    fn stale_lease_after_reaccept_cannot_reach_the_new_lifecycle() {
+        let (registry, lease, inputs) = accepted_registry_inputs();
+        let cell = registry.cell_for(&lease, &inputs.profile).unwrap();
+        registry.release(&lease);
+        // Reacceptance mints a fresh capability for the same ticket id.
+        let fresh_lease =
+            registry.accept_ticket(subject("open-1", "7"), parse_snapshot(7)).unwrap();
+        assert_eq!(fresh_lease.ticket_id(), lease.ticket_id());
+        // The OLD lease is a stale capability: it cannot reach cells.
+        assert!(matches!(
+            registry.cell_for(&lease, &inputs.profile),
+            Err(SemanticTicketError::ForeignLeaseCapability { .. })
+        ));
+        // The old cell (pre-release Arc) also refuses the stale lease:
+        // same Arc, but retired — construction fails closed as a typed
+        // not-live refusal terminal with no facts and no build.
+        let stale_terminal =
+            cell.construct_fresh_full(&lease, inputs, &HonestProducer::new()).unwrap();
+        assert_eq!(stale_terminal.terminal_state(), SemanticSnapshotTerminalState::NotProven);
+        assert_eq!(
+            stale_terminal.refusal(),
+            Some(&SemanticConstructionRefusal::TicketNotLive {
+                ticket_id: lease.ticket_id().clone(),
+            })
+        );
+        assert!(stale_terminal.snapshot().contribution_set().is_none());
+        assert_eq!(cell.truth().builds_started, 0, "no build may start on a retired ticket");
+    }
+
+    #[test]
+    fn poisoned_cell_lock_recovers_for_builders_and_waiters() {
+        let (registry, lease, inputs) = accepted_registry_inputs();
+        let lease = std::sync::Arc::new(lease);
+        let cell = registry.cell_for(&lease, &inputs.profile).unwrap();
+        // Deliberately poison the cell mutex; the state itself is intact.
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let poison_cell = Arc::clone(&cell);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = poison_cell.inner.lock();
+            panic!("poison the cell lock");
+        }));
+        std::panic::set_hook(previous_hook);
+
+        // A builder and a waiter both recover the poisoned lock and share
+        // one terminal: no panic, no corruption.
+        let builder_cell = Arc::clone(&cell);
+        let builder_lease = Arc::clone(&lease);
+        let builder_inputs = inputs.clone();
+        let builder = std::thread::spawn(move || {
+            builder_cell.construct_fresh_full(
+                &builder_lease,
+                builder_inputs,
+                &HonestProducer::new(),
+            )
+        });
+        let waiter_cell = Arc::clone(&cell);
+        let waiter_lease = Arc::clone(&lease);
+        let waiter_inputs = inputs_for(subject("open-1", "7"), parse_snapshot(7));
+        let waiter = std::thread::spawn(move || {
+            waiter_cell.construct_fresh_full(&waiter_lease, waiter_inputs, &HonestProducer::new())
+        });
+        let builder_terminal = builder.join().unwrap().unwrap();
+        let waiter_terminal = waiter.join().unwrap().unwrap();
+        assert!(builder_terminal.is_complete_fresh_full());
+        assert!(Arc::ptr_eq(&builder_terminal, &waiter_terminal));
     }
 
     #[test]
