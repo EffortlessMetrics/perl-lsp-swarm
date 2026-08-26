@@ -17,9 +17,6 @@ use perl_ast::kind_schema::{
     render_checked_status_report,
 };
 use perl_ast::{FieldId, NodeKind};
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 fn row_index(kind_name: &str) -> Result<usize, Box<dyn std::error::Error>> {
     NODE_KIND_STRUCTURAL_REGISTRY
@@ -63,19 +60,12 @@ fn identical_structural_inputs_produce_identical_fingerprints() {
 #[test]
 fn identity_is_independent_of_host_path_timestamp_and_map_insertion() {
     let subject = canonical_structural_subject(NODE_KIND_STRUCTURAL_REGISTRY);
-    let host = PathBuf::from("/tmp/cursor/host-root");
-    let unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let mut notes = HashMap::new();
-    notes.insert("policy", "ignore-this");
-    notes.insert("path", host.to_str().unwrap_or(""));
-    notes.insert("generated_at", "not-in-subject");
-    let _ = notes;
     assert!(
-        !subject.contains(host.to_string_lossy().as_ref()),
+        !subject.contains("/tmp/cursor/host-root"),
         "canonical subject must not include host paths: {subject}"
     );
     assert!(
-        !subject.contains(&unix.to_string()),
+        !subject.contains("2026-08-26T21:25:00Z"),
         "canonical subject must not include wall-clock timestamps"
     );
     assert!(
@@ -199,11 +189,10 @@ fn stale_checked_report_with_previous_count_fails() {
         &format!("variant_count={}", inventory.variant_count.saturating_sub(1)),
     );
     assert_ne!(stale_count, current);
-    let error = check_status_freshness(&stale_count, &inventory)
-        .expect_err("previous count must not satisfy current freshness");
+    let stale = check_status_freshness(&stale_count, &inventory);
     assert!(
-        matches!(error, StatusFreshnessError::StaleCheckedOutput { .. }),
-        "stale count must fail closed, got {error:?}"
+        matches!(stale, Err(StatusFreshnessError::StaleCheckedOutput { .. })),
+        "stale count must fail closed, got {stale:?}"
     );
 }
 
@@ -231,34 +220,44 @@ fn compiled_count_and_status_count_cannot_disagree() {
 #[test]
 fn historical_report_cannot_satisfy_current_freshness() {
     let inventory = current_nodekind_inventory();
-    let historical = format!(
-        "| **Node-kind coverage** | 65/69 (94.2%) | historical hand-entered denominator |\n"
+    let historical =
+        "| **Node-kind coverage** | 65/69 (94.2%) | historical hand-entered denominator |\n";
+    let result = check_status_freshness(historical, &inventory);
+    assert!(
+        matches!(result, Err(StatusFreshnessError::HistoricalUnversioned)),
+        "historical unversioned status must not satisfy current freshness, got {result:?}"
     );
-    let error = check_status_freshness(&historical, &inventory)
-        .expect_err("historical unversioned status must not satisfy current freshness");
-    assert!(matches!(error, StatusFreshnessError::HistoricalUnversioned), "got {error:?}");
 }
 
 #[test]
 fn unknown_schema_versions_and_digest_algorithms_fail_closed() {
-    match parse_schema_identity(
+    let unknown_version = parse_schema_identity(
         "ast-schema.v2-sha256-v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    ) {
-        Err(SchemaIdentityError::UnknownVersion { version: 2 }) => {}
-        other => panic!("expected unknown version, got {other:?}"),
-    }
-    match parse_schema_identity(
+    );
+    assert!(
+        matches!(unknown_version, Err(SchemaIdentityError::UnknownVersion { version: 2 })),
+        "expected unknown version, got {unknown_version:?}"
+    );
+    let unknown_algorithm = parse_schema_identity(
         "ast-schema.v1-md5:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    ) {
-        Err(SchemaIdentityError::UnknownAlgorithm { algorithm }) if algorithm == "md5" => {}
-        other => panic!("expected unknown algorithm, got {other:?}"),
-    }
-    match parse_schema_identity(&current_ast_structural_schema_identity().wire().to_uppercase()) {
-        Err(
-            SchemaIdentityError::MalformedDigest { .. } | SchemaIdentityError::MalformedWire { .. },
-        ) => {}
-        other => panic!("uppercase wire must fail closed, got {other:?}"),
-    }
+    );
+    assert!(
+        matches!(
+            unknown_algorithm,
+            Err(SchemaIdentityError::UnknownAlgorithm { ref algorithm }) if algorithm == "md5"
+        ),
+        "expected unknown algorithm, got {unknown_algorithm:?}"
+    );
+    let uppercase =
+        parse_schema_identity(&current_ast_structural_schema_identity().wire().to_uppercase());
+    assert!(
+        matches!(
+            uppercase,
+            Err(SchemaIdentityError::MalformedDigest { .. }
+                | SchemaIdentityError::MalformedWire { .. })
+        ),
+        "uppercase wire must fail closed, got {uppercase:?}"
+    );
 }
 
 #[test]

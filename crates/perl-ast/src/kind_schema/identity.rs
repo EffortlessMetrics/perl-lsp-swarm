@@ -524,13 +524,13 @@ pub fn check_status_freshness(
     }
 
     let structural = structural_prefix(report);
-    let expected = structural_prefix(&render_checked_status_report(current, ""));
+    let expected_report = render_checked_status_report(current, "");
+    let expected = structural_prefix(&expected_report);
     if structural != expected {
         if let Some(identity_line) = report.lines().find_map(|line| line.strip_prefix("identity="))
+            && let Err(source) = parse_schema_identity(identity_line)
         {
-            if let Err(source) = parse_schema_identity(identity_line) {
-                return Err(StatusFreshnessError::Identity { source });
-            }
+            return Err(StatusFreshnessError::Identity { source });
         }
         return Err(StatusFreshnessError::StaleCheckedOutput {
             detail: "identity, counts, or variant summaries drifted from the compiled registry"
@@ -638,15 +638,15 @@ fn diff_row(
         }
     }
     for (field, from) in &before_set {
-        if let Some(to) = after_set.get(field) {
-            if from != to {
-                changes.push(SchemaChange::CardinalityChanged {
-                    kind_name: kind_name.clone(),
-                    field: (*field).to_string(),
-                    from: (*from).to_string(),
-                    to: (*to).to_string(),
-                });
-            }
+        if let Some(to) = after_set.get(field)
+            && from != to
+        {
+            changes.push(SchemaChange::CardinalityChanged {
+                kind_name: kind_name.clone(),
+                field: (*field).to_string(),
+                from: (*from).to_string(),
+                to: (*to).to_string(),
+            });
         }
     }
 }
