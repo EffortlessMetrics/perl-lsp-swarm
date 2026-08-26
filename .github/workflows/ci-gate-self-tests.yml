@@ -403,7 +403,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410b181273ba90b1  # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -418,8 +418,10 @@ jobs:
 
       - name: Summary
         if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: |
-          if [ "${{ job.status }}" = "success" ]; then
+          if [ "$JOB_STATUS" = "success" ]; then
             echo "## Cargo toolchain guard self-test passed" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The entrypoint toolchain guard (issue #12593) refuses a stale non-rustup cargo (the WSL /usr/bin/cargo 1.75 shape) with exit 78 and a remediation message before any build work, passes a satisfying cargo through to delegation, keeps the real-toolchain happy path green, and the coverage check proves every cargo-invoking scripts/*.sh plus cargo-safe and .github/run_all_tests.sh either runs the guard or carries an explicit exemption." >> "$GITHUB_STEP_SUMMARY"
