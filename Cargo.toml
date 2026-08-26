@@ -365,6 +365,8 @@ proptest = "1.11.0"
 criterion = "0.8.1"
 # Dev-only: compile-time trait-bound contracts (e.g. assert_not_impl_any!).
 static_assertions = "1.1"
+# Snapshot testing authority shared by all workspace consumers.
+insta = "1.47.2"
 
 # Profile for development - slightly optimized for better performance
 [profile.dev]
