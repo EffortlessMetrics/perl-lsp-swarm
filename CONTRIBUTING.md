@@ -38,6 +38,51 @@ just pr-fast
 The repository pins Rust channel `1.95.0` in `rust-toolchain.toml` and currently
 requires MSRV 1.95.
 
+### Shared build cache for multi-worktree development (#12596)
+
+Each worktree that builds with plain `cargo` owns a private multi-GB
+`target/`; on a box running several worktrees these multiply and thrash the
+disk. The documented default for local multi-worktree development is the
+shared devplane cache through the cached recipes:
+
+```bash
+just pr-fast-cached   # recommended default for every PR iteration
+just test-cached      # workspace tests
+just check-cached     # compile-only check
+just clippy-cached    # lint
+```
+
+These route through `scripts/cargo-safe`, which sets
+`CARGO_TARGET_DIR`/`CARGO_HOME` under
+`${XDG_CACHE_HOME:-$HOME/.cache}/devplane/<repo>`, wraps `rustc` in
+`sccache`, and exports `SCCACHE_BASEDIRS=<worktree parent>` so sibling
+worktrees share compiler output. The manual equivalent for tools that bypass
+`just` (IDE rust-analyzer tasks):
+
+```bash
+export CARGO_TARGET_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/devplane/perl-lsp-swarm/target"
+```
+
+Tradeoffs to know before adopting:
+
+- **Version/toolchain churn**: a workspace version bump or toolchain move
+  invalidates shared artifacts for every worktree at once. If builds turn
+  inexplicably slow or dirty after such a move, reclaim with
+  `CARGO_TARGET_DIR=<devplane>/target cargo clean`, and inspect state with
+  `just storage-doctor`.
+- **Lock serialization**: concurrent builds sharing one target dir queue on
+  cargo's file locks. The cached recipes carry cargo-safe's bounded flock and
+  disk gate; hand-rolled `CARGO_TARGET_DIR` exports have no lock discipline,
+  so parallel lanes should use the recipes rather than raw exports.
+- **sccache vs shared target**: sccache keeps per-invocation target dirs but
+  shares compiler output keyed by `SCCACHE_BASEDIRS`; a shared target dir
+  shares everything but serializes builds. cargo-safe composes both.
+
+Adoption evidence ties into #9178's cache-strategy receipts: capture
+`just storage-doctor` output (devplane + sccache stats) and cold-build timing
+(`scripts/build-timing-receipt.sh`) on per-worktree baselines versus the
+cached recipes for this box class.
+
 ## Choose one coherent claim
 
 A useful pull request has:

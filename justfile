@@ -36,6 +36,34 @@ agent-nextest:
 agent-pr-fast:
     {{cargo_safe}} xtask gates --tier pr-fast --receipt
 
+# ============================================================================
+# Multi-worktree shared build cache (#12596)
+# ============================================================================
+#
+# Each worktree building with plain `cargo` owns a private multi-GB `target/`
+# tree; on a box running several worktrees they multiply and thrash the disk.
+# These cached recipes route through scripts/cargo-safe, which redirects
+# CARGO_TARGET_DIR/CARGO_HOME into the per-user devplane, wraps rustc in
+# sccache, and sets SCCACHE_BASEDIRS to the worktree parent so sibling
+# worktrees share compiler output. They are the documented default for local
+# multi-worktree development — see CONTRIBUTING.md "Shared build cache".
+
+# PR-fast gate through the shared devplane cache (multi-worktree default).
+pr-fast-cached: _check-tools-basic
+    {{cargo_safe}} xtask gates --tier pr-fast --receipt
+
+# Workspace tests through the shared devplane cache.
+test-cached:
+    {{cargo_safe}} test --workspace --locked
+
+# Compile-check the workspace through the shared devplane cache.
+check-cached:
+    {{cargo_safe}} check --workspace --locked
+
+# Lint the workspace through the shared devplane cache.
+clippy-cached:
+    {{cargo_safe}} clippy --workspace --all-targets --profile agent --locked -- -D warnings -A missing_docs
+
 # M4b (#3763): assert review/audit agents are mechanically read-only
 # (no Edit/Write/NotebookEdit/Agent in their tools: allowlist).
 check-agent-capabilities:
