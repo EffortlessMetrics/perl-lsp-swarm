@@ -527,6 +527,20 @@ impl VariableParser {
         result
     }
 
+    /// Parses originated multi-line variable dump output.
+    ///
+    /// Unrecognized lines are skipped, matching [`Self::parse_variables`].
+    pub fn parse_variables_originated(
+        &self,
+        input: OriginatedParseInput<'_>,
+    ) -> Vec<(String, PerlValue)> {
+        input
+            .text()
+            .lines()
+            .filter_map(|line| self.parse_assignment_originated(input.with_text(line)).ok())
+            .collect()
+    }
+
     /// Parses multiple variable lines (e.g., from 'V' command output).
     ///
     /// # Arguments

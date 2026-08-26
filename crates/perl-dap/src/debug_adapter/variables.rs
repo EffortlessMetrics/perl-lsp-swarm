@@ -5,7 +5,7 @@ use super::{
     SetVariableArguments, SetVariableResponseBody, Value, VariableCacheKind, VariablesArguments,
     is_valid_set_variable_name, json, lock_or_recover, parse_dap_arguments, slice_variables,
 };
-use crate::parse_origin::DebuggerOutputOrigin;
+use crate::parse_origin::{DebuggerOutputOrigin, ParseIdentity};
 use crate::value_format::ValueFormatPolicy;
 #[cfg(test)]
 use perl_tdd_support::must_some;
@@ -354,6 +354,7 @@ impl DebugAdapter {
                         0,
                         1024,
                         DebuggerOutputOrigin::DebuggerControlPayload,
+                        ParseIdentity::new().with_operation_id_from_i64(request_seq),
                     );
                     if framed_vars.is_empty() {
                         // A failed or empty framed locals response is unavailable;
@@ -718,6 +719,7 @@ impl DebugAdapter {
                     name,
                     true,
                     DebuggerOutputOrigin::DebuggerControlPayload,
+                    ParseIdentity::new().with_operation_id_from_i64(request_seq),
                 )
             });
 
@@ -1263,6 +1265,7 @@ mod hazard_invariant_tests {
             0,
             1024,
             DebuggerOutputOrigin::FixtureOrInstrumentInput,
+            ParseIdentity::new(),
         );
         let root = must_some(roots.iter().find(|variable| variable.row.name == "@big"));
         assert_eq!(root.row.indexed_variables, Some(500));
@@ -1382,6 +1385,7 @@ mod value_format_family_tests {
             0,
             16,
             DebuggerOutputOrigin::FixtureOrInstrumentInput,
+            ParseIdentity::new(),
         );
         let mut session = lock_or_recover(&adapter.session, "value_format_family_tests.seed");
         if let Some(ref mut sess) = *session {
@@ -1512,6 +1516,7 @@ mod value_format_family_tests {
             0,
             16,
             DebuggerOutputOrigin::FixtureOrInstrumentInput,
+            ParseIdentity::new(),
         );
         let child_ref = roots[0].row.variables_reference;
         {

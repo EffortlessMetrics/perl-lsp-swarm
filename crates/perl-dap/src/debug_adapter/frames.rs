@@ -122,9 +122,16 @@ impl DebugAdapter {
 
         let parsed_frames = if let Some(lines) = framed_output_lines.as_ref() {
             let output = lines.join("\n");
+            let mut identity = ParseIdentity::new().with_operation_id_from_i64(request_seq);
+            if let Some(generation) = lock_or_recover(&self.session, "debug_adapter.session")
+                .as_ref()
+                .map(|session| session.stopped_generation)
+            {
+                identity = identity.with_suspension_generation(generation);
+            }
             let input = OriginatedParseInput::new(
                 DebuggerOutputOrigin::DebuggerControlPayload,
-                ParseIdentity::new(),
+                identity,
                 &output,
             );
             let (parsed_frames, frame_arguments) = Self::parse_stack_frames_from_text(input);

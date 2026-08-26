@@ -23,6 +23,7 @@ pub(super) fn parse_assignments(
     lines: &[String],
     scope_type: i32,
     origin: DebuggerOutputOrigin,
+    identity: ParseIdentity,
 ) -> Vec<(String, PerlValue)> {
     let parser = VariableParser::new();
     let mut seen = HashSet::new();
@@ -34,7 +35,7 @@ pub(super) fn parse_assignments(
         if text.is_empty() {
             continue;
         }
-        let input = OriginatedParseInput::new(origin, ParseIdentity::new(), text);
+        let input = OriginatedParseInput::new(origin, identity, text);
         if let Ok((name, value)) = parser.parse_assignment_originated(input) {
             if !DebugAdapter::scope_allows_variable_name(scope_type, &name) {
                 continue;

@@ -109,6 +109,15 @@ impl ParseIdentity {
     pub const fn suspension_generation(self) -> Option<u64> {
         self.suspension_generation
     }
+
+    /// Attaches a DAP/request identity when it is a non-negative integer.
+    #[must_use]
+    pub fn with_operation_id_from_i64(self, operation_id: i64) -> Self {
+        match u64::try_from(operation_id) {
+            Ok(id) => self.with_operation_id(id),
+            Err(_) => self,
+        }
+    }
 }
 
 /// Parser input with caller-supplied origin and optional identity.

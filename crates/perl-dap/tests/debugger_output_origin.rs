@@ -247,6 +247,29 @@ fn originated_stack_trace_skips_unrecognized_lines_without_changing_success_set(
 }
 
 #[test]
+fn negative_request_seq_does_not_invent_an_operation_id() {
+    let identity = ParseIdentity::new().with_operation_id_from_i64(-1);
+    assert_eq!(identity.operation_id(), None);
+    let identity = ParseIdentity::new().with_operation_id_from_i64(9);
+    assert_eq!(identity.operation_id(), Some(9));
+}
+
+#[test]
+fn originated_variable_dump_skips_unrecognized_lines_without_changing_success_set() {
+    let output = format!("{ORDINARY_PROSE}\n$x = 42\n{BAIT}");
+    let parser = VariableParser::new();
+    let expected = parser.parse_variables(&output);
+    let input = OriginatedParseInput::new(
+        DebuggerOutputOrigin::DebuggerControlPayload,
+        ParseIdentity::new(),
+        &output,
+    );
+    let parsed = parser.parse_variables_originated(input);
+    assert_eq!(parsed.len(), expected.len());
+    assert_eq!(parsed.first().map(|(name, _)| name.as_str()), Some("$x"));
+}
+
+#[test]
 fn origin_tokens_are_stable_and_exhaustive() {
     assert_eq!(DebuggerOutputOrigin::DebuggerControlPayload.as_str(), "debugger_control_payload");
     assert_eq!(DebuggerOutputOrigin::PeerProtocolPayload.as_str(), "peer_protocol_payload");
