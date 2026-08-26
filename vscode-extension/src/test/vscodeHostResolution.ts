@@ -101,11 +101,7 @@ export async function downloadVsCodeHostOrWriteFailureReceipt(
     return { executablePath, requestedVersion };
   } catch (error: unknown) {
     try {
-      const receiptPath = writeHostResolutionFailureReceipt(
-        receiptsRoot,
-        requestedVersion,
-        error,
-      );
+      const receiptPath = writeHostResolutionFailureReceipt(receiptsRoot, requestedVersion, error);
       process.stderr.write(
         `VS Code host resolution blocked (${classifyHostResolutionError(error)}) for requested ${requestedVersion}; receipt ${receiptPath}\n`,
       );

@@ -92,8 +92,7 @@ async function main(): Promise<void> {
     );
     const extensionTestsEnv = {
       ...process.env,
-      PERL_LSP_EXTENSION_TEST_SKIP_STARTUP:
-        process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP ?? '1',
+      PERL_LSP_EXTENSION_TEST_SKIP_STARTUP: process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP ?? '1',
       PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot,
       PERL_LSP_SMOKE_SOURCE_LABEL: process.env.PERL_LSP_SMOKE_SOURCE_LABEL || 'integration',
       PERL_LSP_TOOLCHAIN_NODE_VERSION: toolchainNodeVersion,

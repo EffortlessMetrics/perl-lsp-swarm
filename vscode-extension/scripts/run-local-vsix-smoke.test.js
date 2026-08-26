@@ -530,6 +530,7 @@ void test('an unavailable host-resolution receipt is not a product smoke failure
   assert.equal(result.status, 'not_proven');
   assert.equal(result.reason, 'vscode_host_resolution_unavailable');
   assert.equal(result.reason.includes('published_extension_smoke_failed'), false);
+  assert.ok(result.host_resolution);
   assert.equal(result.host_resolution.requested_version, '1.125.0');
   assert.equal(result.host_resolution.requested_version, hostFailure.requested_version);
   assert.notEqual(result.host_resolution.requested_version, 'stable');
@@ -553,6 +554,7 @@ void test('network, cache, and runner host failures keep the host-resolution bou
     });
     assert.equal(result.status, 'failed');
     assert.equal(result.reason, `vscode_host_resolution_${disposition}`);
+    assert.ok(result.host_resolution);
     assert.equal(result.host_resolution.requested_version, 'stable');
   }
 });
@@ -589,6 +591,8 @@ void test('1.125.0 and stable host-resolution receipts keep independent requeste
     });
   const minimum = readDisposition('1.125.0');
   const stable = readDisposition('stable');
+  assert.ok(minimum.host_resolution);
+  assert.ok(stable.host_resolution);
   assert.equal(minimum.host_resolution.requested_version, '1.125.0');
   assert.equal(stable.host_resolution.requested_version, 'stable');
   assert.notEqual(

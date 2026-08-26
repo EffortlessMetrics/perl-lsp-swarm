@@ -611,14 +611,17 @@ function hostResolutionFailurePath(root = receiptsRoot()) {
 /**
  * @param {string} [root]
  * @param {{
- *   exists?: (file: string) => boolean,
- *   readFile?: (file: string) => string,
+ *   exists?: ((file: string) => boolean) | undefined,
+ *   readFile?: ((file: string) => string) | undefined,
  * }} [io]
- * @returns {Record<string, unknown> | null}
+ * @returns {{ kind: 'absent' } | { kind: 'invalid' } | { kind: 'present', receipt: Record<string, unknown> }}
  */
 function readHostResolutionFailureReceipt(
   root = receiptsRoot(),
-  { exists = (file) => fs.existsSync(file), readFile = (file) => fs.readFileSync(file, 'utf8') } = {},
+  {
+    exists = (file) => fs.existsSync(file),
+    readFile = (file) => fs.readFileSync(file, 'utf8'),
+  } = {},
 ) {
   const receiptFile = hostResolutionFailurePath(root);
   if (!exists(receiptFile)) {
@@ -627,7 +630,7 @@ function readHostResolutionFailureReceipt(
   try {
     const receipt = JSON.parse(readFile(receiptFile));
     if (receipt && typeof receipt === 'object') {
-      return { kind: 'present', receipt };
+      return { kind: 'present', receipt: /** @type {Record<string, unknown>} */ (receipt) };
     }
   } catch {
     // Invalid JSON is still a host-resolution boundary: do not relabel as product smoke.
@@ -642,10 +645,10 @@ function readHostResolutionFailureReceipt(
  *
  * @param {{
  *   status?: number | null,
- *   spawnError?: Error,
+ *   spawnError?: Error | undefined,
  *   receiptsRoot?: string,
- *   exists?: (file: string) => boolean,
- *   readFile?: (file: string) => string,
+ *   exists?: ((file: string) => boolean) | undefined,
+ *   readFile?: ((file: string) => string) | undefined,
  * }} input
  * @returns {{
  *   status: string,

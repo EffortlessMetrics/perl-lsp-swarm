@@ -117,17 +117,32 @@ describe('VS Code host resolution receipts', () => {
       executablePath: '/fake/code-1.125.0',
       requestedVersion: '1.125.0',
     });
-    await expect(downloadVsCodeHostOrWriteFailureReceipt(root, 'stable', resolver)).resolves.toEqual(
-      {
-        executablePath: '/fake/code-stable',
-        requestedVersion: 'stable',
-      },
-    );
+    await expect(
+      downloadVsCodeHostOrWriteFailureReceipt(root, 'stable', resolver),
+    ).resolves.toEqual({
+      executablePath: '/fake/code-stable',
+      requestedVersion: 'stable',
+    });
 
     expect(fs.existsSync(path.join(root, HOST_RESOLUTION_FAILURE_RECEIPT_NAME))).toBe(false);
     expect(resolver.mock.calls.map(([argument]) => argument.version)).toEqual([
       '1.125.0',
       'stable',
     ]);
+  });
+
+  test('published and integration runners resolve hosts through the shared wrapper', () => {
+    const srcRoot = path.resolve(__dirname, '..', '..', 'src', 'test');
+    const sources = [
+      fs.readFileSync(path.join(srcRoot, 'published/runPublishedSmoke.ts'), 'utf8'),
+      fs.readFileSync(path.join(srcRoot, 'integration/runTest.ts'), 'utf8'),
+    ];
+    for (const source of sources) {
+      expect(source).toContain('downloadVsCodeHostOrWriteFailureReceipt');
+      expect(source).toMatch(
+        /downloadVsCodeHostOrWriteFailureReceipt\([\s\S]*downloadAndUnzipVSCode/,
+      );
+      expect(source).not.toMatch(/await downloadAndUnzipVSCode\(\{[^}]*version:/);
+    }
   });
 });
