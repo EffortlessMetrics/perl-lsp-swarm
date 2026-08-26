@@ -138,15 +138,13 @@ impl Dancer2FileActivations {
     }
 }
 
-/// Byte offset of the first exact `use Dancer2` activation site, if any.
+/// Whether the AST contains any exact `use Dancer2` activation site.
 ///
-/// Used as the module-resolution anchor so `@INC` lexical state (for example
-/// `no lib` before the import) is honored at the activation site instead of
-/// over the whole file.
+/// Cheap in-memory gate: documents without an activation site skip the
+/// filesystem module resolution entirely on the provider paths.
 #[must_use]
-pub fn first_activation_site_offset(ast: &Node) -> Option<usize> {
-    let sites = extract_dancer2_activation_sites(ast, FileId(0));
-    sites.first().map(|site| usize::try_from(site.span_start_byte).unwrap_or(0))
+pub fn has_activation_site(ast: &Node) -> bool {
+    !extract_dancer2_activation_sites(ast, FileId(0)).is_empty()
 }
 
 /// Bounded human reason for the current activation state of a package.

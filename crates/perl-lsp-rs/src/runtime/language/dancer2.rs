@@ -10,7 +10,8 @@
 use perl_lsp_rs_core::providers::dancer2::RuntimeDancer2Module;
 use perl_lsp_rs_core::providers::dancer2::current_package_at;
 use perl_lsp_rs_core::providers::dancer2::{
-    canonical_file_facts, file_activations, read_declared_module_version,
+    CanonicalDancer2FileFacts, Dancer2FileActivations, canonical_file_facts, file_activations,
+    read_declared_module_version,
 };
 use perl_semantic_facts::FileId;
 use perl_semantic_facts::SourceGeneration;
@@ -88,20 +89,27 @@ impl LspServer {
         content_hash: u64,
         ast: &perl_parser::ast::Node,
     ) -> Dancer2RequestContext {
+        // Cheap in-memory gate first: a document with no `use Dancer2`
+        // activation site pays no filesystem module resolution at all —
+        // the resolution walk is I/O and must not run on every request
+        // for Dancer2-free files.
+        if !perl_lsp_rs_core::providers::dancer2::has_activation_site(ast) {
+            return Dancer2RequestContext {
+                activations: Dancer2FileActivations::default(),
+                facts: CanonicalDancer2FileFacts::default(),
+            };
+        }
         let generation = SourceGeneration::known(format!("lsp-doc:{content_hash:016x}"));
         let file_id = FileId(content_hash & 0xFFFF_FFFF);
-        // Resolve at the first activation site's offset so position-aware
-        // `@INC` state (`use lib` / `no lib` relative to the import) is
-        // honored for the activation evidence.
-        let activation_offset =
-            perl_lsp_rs_core::providers::dancer2::first_activation_site_offset(ast);
+        // Whole-file `@INC` state: position-aware activation-site anchoring
+        // was tried and reverted — the per-folder relative-root semantics
+        // it requires (resolving `use lib 'lib'` against the owning
+        // workspace folder rather than the server root) are not provided by
+        // the shared resolution layer today and broke multi-root
+        // workspaces. Recorded as the boundary; revisit with folder-scoped
+        // @INC resolution.
         let module = self
-            .resolve_module_to_path_with_doc_at_offset(
-                "Dancer2",
-                Some(text),
-                Some(uri),
-                activation_offset,
-            )
+            .resolve_module_to_path_with_doc_at_offset("Dancer2", Some(text), Some(uri), None)
             .as_deref()
             .and_then(observe_dancer2_module);
         let activations = file_activations(ast, file_id, module.as_ref(), &generation);
