@@ -152,15 +152,16 @@ edge sense; their absence cannot block or extend the core, and none creates
 
 | Profile | Membership rule | Ceiling |
 | --- | --- | --- |
-| `lite_xl_protocol_baseline` | exactly `protocol.*` rows (13): registration/activation-set compatibility, initialize/configuration fidelity, clean protocol baseline | synthetic/exact-process evidence only; no actual Lite XL support claim |
+| `lite_xl_protocol_baseline` | the `protocol.*` family (13 rows) as this ledger's behavioral propositions; composition membership stays owned by the merged #11170 manifest (pristine-anchor anchor claim there, empty member set until a registration-class leaf lands) | synthetic/exact-process evidence only; no actual Lite XL support claim. Registration- and activation-set compatibility floors are carried by `activate.*` rows at their own ceiling and become prerequisites of stronger profiles, never of this baseline |
 | `lite_xl_exact_source_core` | exactly the bounded real-editor rows: activate.01–09, read.01–11, edit.01–12, lifecycle.01–03/08–10, wire.01–08 | the bounded useful journey; nothing else blocks or widens it |
 | `lite_xl_workspace_fresh` | core plus lifecycle.04–07/11 (root isolation, watchers, closed-file freshness, cleanup) | selected single-root freshness; never multi-root by naming |
-| `lite_xl_first_class_public` | independent added stages over released/public subjects: opt.06–08 rail plus support.05 law | public standing requires its own direct replay/artifact evidence |
+| `lite_xl_first_class_public` | independent added stages with their own direct released/public evidence, owned by #9010/#9012/#10739; `opt.06–08` are `consumes_if_available` rail inputs to these stages and never enter any requirement set (#10858 `optional_edge_in_required_set`) | public standing requires its own direct replay/artifact evidence; internal merges cannot satisfy external stages |
 | `lite_xl_quality_breadth` | opt.01–05 additive inputs plus any future quality families | additive only; optional rows never block or widen the core |
 
 Laws: a stronger profile never erases a narrower valid one; membership is
 explicit per row and inherited only by listed row IDs, never by naming;
-optional/quality rows are `consumes_if_available`; missing chain links are
+optional/quality rows are `consumes_if_available` inputs whose targets never
+enter any profile requirement set; missing chain links are
 `not_proven`; every evidence kind (`client_simulation_proven`,
 `composed_exact_source`, `exact_source_actual_host`, `managed_exact_source`,
 `public_artifact_actual_host`) satisfies only its own ceiling; no scenario
@@ -199,7 +200,7 @@ supports any tier until its executable chain passes at that stage.
 | --- | --- | --- |
 | Checked spec directory shape | [`SPEC_TEMPLATE.md`](../../docs/reference/SPEC_TEMPLATE.md), #3983 | canonical three-file packet; ledger evolution recorded in `context.md` |
 | Product/host controllers | #8950 / #9008 / #10651; denominator migration #11176 | initial profile IDs consumed verbatim; later typed-train migration preserves meaning |
-| Fixture manifest boundary | #11181 schema `lite_xl_fixture_expectations.v1` | every behavioral row names a stable owning ID the manifest binds; zero fixture bytes here |
+| Fixture manifest boundary | #11181 schema `lite_xl_fixture_expectations.v1`; #11170 composition anchors (`candidate_manifest.lua` profile IDs consumed by reference) | Chain P/H behavioral rows name a stable owning ID the manifest binds; the protocol-baseline composition anchor stays with the landed manifest; zero fixture bytes here |
 | Deterministic simulation boundary | #11103 harness/journey suites under `clients/lite-xl/tests/` | protocol rows bind Chain P first link; host rows bind where applicable |
 | Exact-process/profile boundary | #8960 | protocol_baseline ceiling consumes it; no new pin |
 | Real-host lanes | #10673 adapter; #10676/#10679/#10681/#10684/#10691/#10693 sessions | each host row names its owning lane |
@@ -276,7 +277,7 @@ deterministically in that leaf's own negative controls.
 
 | Consumer / surface | Impact | Required update |
 | --- | --- | --- |
-| #11181 fixture/expectation cells | Binds these IDs as owning-scenario keys (currently blocked on them) | Consume IDs; do not redefine propositions |
+| #11181 fixture/expectation cells | Binds the Chain P/H scenario IDs as owning-scenario keys (currently blocked on them); Chain L `support.*`/optional rows bind through their own named consumers instead and are never a fixture obligation | Consume IDs; do not redefine propositions |
 | #11103 suites / #8960 cells | May cite scenario IDs in suite headers/cell provenance | Reference only; schemas unchanged |
 | Host lanes #10676../#10673 adapter | Observe against named scenarios | Bind IDs into observations |
 | #11170/#11172 producers / #7122/#9016 projections | Cite stable IDs downstream | Reference only |

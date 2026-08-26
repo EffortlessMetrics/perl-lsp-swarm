@@ -353,8 +353,9 @@ fixture), #10653 (project-config security), #10845/#11136/#11143/#11147
 Owned downstream, named here as boundaries only:
 
 ```text
-#11181  fixture/expectation manifest cells binding every scenario ID (currently
-        blocked exactly on these IDs)
+#11181  fixture/expectation manifest cells binding every Chain P/H scenario
+        ID (currently blocked exactly on these IDs); Chain L support/opt rows
+        bind through #7122/#9016 and distribution-rail consumers instead
 #11103  deterministic client simulation bindings
 #8960   exact-process/protocol evidence cells
 #10673  real-host adapter over shared fail-closed supervision
