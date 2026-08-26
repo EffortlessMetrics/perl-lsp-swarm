@@ -133,6 +133,20 @@ its last reporter — or an explicit waiver is recorded on the PR or issue namin
 unmet requirement (#12289's probe merged 42 minutes before the required check failed;
 #12565 confirmed the mechanism).
 
+When the protected-merge conjunction holds, the lane owns the transition: merge, or
+arm auto-merge (`gh pr merge <n> --auto --squash`) and record the GitHub-owned wait. A
+green ready PR with `autoMergeRequest` null and no named owner is a process gap, not a
+platform stall — #12184 sat green for 16h and #12098 for 7h because nobody owned the
+transition (#12565 census).
+
+Both the armed and the probe path require checks that can actually report on the head.
+For automation-authored PRs whose `pull_request` runs sit in `action_required` (the
+app-authored trust class), green `workflow_dispatch` runs on the same head do not
+count: the PR rollup ignores them, so required contexts read "expected" forever and
+neither auto-merge nor an honest probe can fire (#12399). A trusted actor must approve
+the awaiting runs or push the refresh; never read dispatch-run greens as mergeable
+evidence.
+
 ## Reconciliation
 
 After merge or evidence-backed deliberate closure:
