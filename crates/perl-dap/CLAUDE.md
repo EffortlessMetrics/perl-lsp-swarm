@@ -50,7 +50,7 @@ Canonical policy: `docs/reference/NATIVE_STACK_POLICY.md`.
 
 | Module | Key types | Purpose |
 |---|---|---|
-| `main.rs` | `Args` | shipped CLI, native stdio (product) plus explicit external-peer options; editor `--socket` is scheduled retirement |
+| `main.rs` | `Args` | shipped CLI, native stdio (product) plus explicit external-peer options; native editor `--socket` is retired |
 | `server/` | `DapServer`, `DapConfig`, `DapMode` | native server lifecycle |
 | `debug_adapter/` | `DebugAdapter`, `DapMessage` | native request routing, process lifecycle, stepping, frames, variables, evaluate |
 | `protocol.rs` | DAP request/response/event types | DAP wire contracts |

@@ -144,7 +144,9 @@ impl Parser {
     /// [`parse`][Parser::parse].
     pub fn parse_detailed(&mut self, source: &str) -> ParseOutcome {
         let mut core = CoreParser::new(source);
-        let ParseOutput { ast, diagnostics, terminated_early, .. } = core.parse_with_recovery();
+        let output = core.parse_with_recovery();
+        let terminated_early = output.terminated_early();
+        let ParseOutput { ast, diagnostics, .. } = output;
         let failure = terminated_early
             .then(|| diagnostics.iter().find_map(ParseFailure::from_diagnostic))
             .flatten();

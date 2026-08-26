@@ -376,23 +376,32 @@ void test('the orchestrator reads the child receipt where the child writes it', 
   // The extension-host child nests by source label and platform
   // (firstHourReceipt.test.ts receiptsDir). A flat lookup here silently turns
   // every hosted run not_proven — the 0490e2962 smoke failure.
+  //
+  // receiptsRoot() anchors the configured root to the host (path.resolve)
+  // before nesting and before injecting it into the child environment, so a
+  // POSIX-style rooted fixture and a relative fixture must anchor the same
+  // way on the expectation side. Joining the raw configured string instead
+  // diverges on Windows, where it stays drive-relative while the child env
+  // receives the drive-absolute form.
   const { childReceiptPath } = require('./run-local-vsix-smoke');
   const priorRoot = process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
   const priorLabel = process.env.PERL_LSP_SMOKE_SOURCE_LABEL;
-  process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = '/fixture/receipts-root';
   process.env.PERL_LSP_SMOKE_SOURCE_LABEL = 'unique-test-label';
   try {
     const platformLeg =
       { win32: 'windows', darwin: 'macos', linux: 'linux' }[process.platform] ?? process.platform;
-    assert.equal(
-      childReceiptPath(),
-      path.join(
-        '/fixture/receipts-root',
-        'unique-test-label',
-        platformLeg,
-        'first_hour_vscode_receipt.json',
-      ),
-    );
+    for (const configuredRoot of ['/fixture/receipts-root', 'fixture/receipts-root']) {
+      process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = configuredRoot;
+      assert.equal(
+        childReceiptPath(),
+        path.join(
+          path.resolve(configuredRoot),
+          'unique-test-label',
+          platformLeg,
+          'first_hour_vscode_receipt.json',
+        ),
+      );
+    }
   } finally {
     if (priorRoot === undefined) delete process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
     else process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = priorRoot;

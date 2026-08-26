@@ -78,6 +78,13 @@ fn public_section_loader_preserves_crlf_source_but_normalizes_case_body()
 fn public_plain_loader_rejects_windows_reparse_point() -> Result<(), Box<dyn std::error::Error>> {
     use perl_tdd_support::try_create_file_symlink;
 
+    // Typed skip when the Windows session lacks the symlink privilege
+    // (os error 1314): without the privilege the reparse-point fixture cannot
+    // exist. With the privilege present the rejection semantics run in full.
+    if perl_tdd_support::symlink_test_decision().skip_visibly() {
+        return Ok(());
+    }
+
     let directory = tempfile::tempdir()?;
     let target = directory.path().join("source.pl");
     let link = directory.path().join("source-link.pl");

@@ -13,6 +13,7 @@ from dap_editor_transport_schema import (
 )
 
 BIND_RE = re.compile(r"TcpListener::bind")
+RUN_SOCKET_RE = re.compile(r"(?:pub(?:\([^)]+\))?\s+)?fn run_socket\b")
 CFG_TEST_MOD_RE = re.compile(r"#\[cfg\(test\)\]\s*mod\s+\w+\s*\{")
 SOCKET_FLAG_RE = re.compile(r"pub socket:\s*bool")
 PORT_FLAG_RE = re.compile(r"pub port:\s*Option<u16>")
@@ -33,6 +34,18 @@ DEBUG_ADAPTER_SERVER_RE = re.compile(r"DebugAdapterServer")
 PRODUCTION_SRC_ROOT = Path("crates/perl-dap/src")
 TRANSPORT_ARGS_PATH = Path("crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs")
 PERL_DAP_MAIN = Path("crates/perl-dap/src/main.rs")
+NATIVE_EDITOR_TRANSPORT = Path("crates/perl-dap/src/debug_adapter/transport.rs")
+NATIVE_EDITOR_LIFECYCLE = Path("crates/perl-dap/src/server/lifecycle.rs")
+FN_START_RE = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s*\(")
+BIND_HELPER_CALL_RE = re.compile(r"\bbind_editor_listener\s*\(")
+# #10566 still owns these wrappers. Native admission in fn main must not call
+# bind_editor_listener, and no new helper may grow a native editor listener.
+EXTERNAL_PEER_EDITOR_BIND_FNS = frozenset(
+    {
+        "run_external_peer_bridge",
+        "run_external_peer_listen",
+    }
+)
 
 
 def production_source(text: str) -> str:
@@ -60,6 +73,47 @@ def production_source(text: str) -> str:
         cursor = index
     out.append(text[cursor:])
     return "".join(out)
+
+
+def _brace_block(text: str, brace: int) -> str:
+    depth = 0
+    index = brace
+    while index < len(text):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace + 1 : index]
+        index += 1
+    return text[brace + 1 :]
+
+
+def rust_function_bodies(text: str) -> dict[str, str]:
+    """Map `fn name` → body text. Last definition of a name wins."""
+    bodies: dict[str, str] = {}
+    for match in FN_START_RE.finditer(text):
+        name = match.group(1)
+        index = match.end() - 1
+        depth = 0
+        brace: int | None = None
+        while index < len(text):
+            char = text[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+            elif char == "{" and depth == 0:
+                brace = index
+                break
+            elif char == ";" and depth == 0:
+                break
+            index += 1
+        if brace is None:
+            continue
+        bodies[name] = _brace_block(text, brace)
+    return bodies
 
 
 def _read_text(root: Path, relative: str) -> str:
@@ -114,6 +168,66 @@ def scan_bind_sites(root: Path, inventory: Mapping[str, Any]) -> list[str]:
                 f"but bind_sites claims {claimed_count}"
             )
 
+    return errors
+
+
+def scan_retired_native_editor_listener(root: Path, inventory: Mapping[str, Any]) -> list[str]:
+    """Reject a returned native editor TCP listener after #10565."""
+    errors: list[str] = []
+    for site in inventory.get("bind_sites", []):
+        if not isinstance(site, dict):
+            continue
+        ident = site.get("id")
+        if site.get("transport_id") == "native-editor-tcp" or ident == "native-editor-socket":
+            errors.append(
+                f"native editor TCP bind site {ident!r} returned after #10565 retirement"
+            )
+
+    for relative in (NATIVE_EDITOR_TRANSPORT, NATIVE_EDITOR_LIFECYCLE):
+        try:
+            text = production_source(_read_text(root, str(relative)))
+        except TransportInventoryError as exc:
+            errors.append(str(exc))
+            continue
+        if relative == NATIVE_EDITOR_TRANSPORT and BIND_RE.search(text):
+            errors.append(
+                f"{relative.as_posix()} production source regained a native editor TcpListener::bind"
+            )
+        if RUN_SOCKET_RE.search(text):
+            errors.append(
+                f"{relative.as_posix()} production source regained native editor run_socket admission"
+            )
+
+    try:
+        main_text = production_source(_read_text(root, str(PERL_DAP_MAIN)))
+    except TransportInventoryError as exc:
+        errors.append(str(exc))
+        return errors
+
+    bodies = rust_function_bodies(main_text)
+    main_body = bodies.get("main")
+    if main_body is None:
+        errors.append(
+            f"{PERL_DAP_MAIN.as_posix()} production source lost fn main; native socket admission cannot be ratcheted"
+        )
+    else:
+        if "native_editor_socket_retired" not in main_body:
+            errors.append(
+                f"{PERL_DAP_MAIN.as_posix()} fn main no longer fails native --socket via native_editor_socket_retired"
+            )
+        if BIND_HELPER_CALL_RE.search(main_body):
+            errors.append(
+                f"{PERL_DAP_MAIN.as_posix()} fn main regained a native editor bind_editor_listener call after #10565"
+            )
+
+    for name, body in bodies.items():
+        if name == "bind_editor_listener":
+            continue
+        if BIND_HELPER_CALL_RE.search(body) and name not in EXTERNAL_PEER_EDITOR_BIND_FNS:
+            errors.append(
+                f"{PERL_DAP_MAIN.as_posix()} fn {name} calls bind_editor_listener; "
+                "only #10566 external-peer wrappers may bind an editor listener"
+            )
     return errors
 
 

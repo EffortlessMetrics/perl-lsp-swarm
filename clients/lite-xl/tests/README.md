@@ -22,6 +22,9 @@ lua clients/lite-xl/tests/init_request_currentness_test.lua # init.lua request a
 lua clients/lite-xl/tests/init_configuration_items_test.lua # init.lua configuration items
 lua clients/lite-xl/tests/init_show_document_outcome_test.lua # init.lua showDocument outcomes
 lua clients/lite-xl/tests/init_completion_resolve_test.lua # init.lua completion resolve pre-apply
+lua clients/lite-xl/tests/capability_manifest_test.lua    # capability manifest schema/projection
+lua clients/lite-xl/tests/server_initialize_capabilities_test.lua # server.lua initialize truthfulness
+lua clients/lite-xl/tests/init_command_projection_test.lua # init.lua command affordance gates
 lua clients/lite-xl/tests/diagnostics_currentness_test.lua  # diagnostics.lua publications
 ```
 
