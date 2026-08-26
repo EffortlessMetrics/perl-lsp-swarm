@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12017 |
-| Rust-family files | 3662 |
-| Non-Rust files | 8355 |
-| Allowlisted | 6092 |
+| Total tracked files | 12023 |
+| Rust-family files | 3664 |
+| Non-Rust files | 8359 |
+| Allowlisted | 6096 |
 | Unclassified | 2263 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 434 |
-| documentation | 2734 |
+| documentation | 2737 |
 | generated | 2 |
 | production | 328 |
 | test | 1986 |
-| tooling | 608 |
+| tooling | 609 |
 | unclassified | 2263 |
 
 ## Unclassified files
@@ -5922,6 +5922,9 @@
 | `docs/swarm/source-syncs/2026-07-15-recover-perl-lsp-10000.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/swarm/source-syncs/2026-07-15-workspace-capabilities-bd3eb11b2.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/swarm/source-syncs/2026-07-23-recover-perl-lsp-646c34b-audit.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/swarm/source-syncs/2026-08-26-post-4977-preliminary-receipt.json` | documentation | `non-rust-docs-tree` | docs |
+| `docs/swarm/source-syncs/2026-08-26-post-4977-preliminary-reconciliation.json` | documentation | `non-rust-docs-tree` | docs |
+| `docs/swarm/source-syncs/2026-08-26-post-4977-preliminary-reconciliation.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/swarm/sync-protocol.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/tutorials/AI_BUILD_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/tutorials/COMPREHENSIVE_TESTING_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6558,6 +6561,7 @@
 | `scripts/test/vim-clients/vim-lsp-adapter.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-diagnostics-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-host-freshness-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_iterative_parser.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
