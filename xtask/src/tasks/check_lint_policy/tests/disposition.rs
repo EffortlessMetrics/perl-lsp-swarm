@@ -90,7 +90,13 @@ fn active_lints_cannot_leave_cargo_unratcheted() -> Result<()> {
     let Err(error) = result else {
         bail!("active lint without a Cargo.toml activation should fail");
     };
-    assert!(error.to_string().contains("clippy::collapsible_if lint is missing from Cargo.toml"));
+    // The validator emits `"{status} lint {name} is missing from Cargo.toml"`;
+    // the original assertion (#12737) transposed the word order and could
+    // never match.  Keep the discrimination: an active ledger row without a
+    // Cargo.toml activation still fails with this exact typed reason.
+    assert!(
+        error.to_string().contains("active lint clippy::collapsible_if is missing from Cargo.toml")
+    );
     Ok(())
 }
 
