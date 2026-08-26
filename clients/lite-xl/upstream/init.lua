@@ -1242,13 +1242,42 @@ end
 
 -- Used on lsp.get_workspace_settings()
 local cached_workspace_settings = {}
+local cached_workspace_settings_stamp = {}
+local cached_workspace_stamp_paths = {}
 local cached_workspace_settings_timestamp = 0
+
+---Local patch (#10653): one bounded stat identity for a candidate
+---configuration file. Used both to fingerprint a freshly loaded settings
+---result and to detect that an accepted configuration changed while a
+---cached entry is still inside its freshness window.
+---@param file_path string
+---@return string
+local function config_file_stamp(file_path)
+  local info = system
+    and system.get_file_info
+    and system.get_file_info(file_path)
+  if info then
+    return tostring(info.mtime or info.size or "present")
+  end
+  return "absent"
+end
+
+---Recompute the stamp of a recorded candidate list and compare identities.
+---@param stamp_paths string[]
+---@return string
+local function recorded_stamp(stamp_paths)
+  local parts = {}
+  for index, file_path in ipairs(stamp_paths) do
+    parts[index] = file_path .. "=" .. config_file_stamp(file_path)
+  end
+  return table.concat(parts, ";")
+end
 
 ---Get table of configuration settings in the following way:
 ---1. Scan the USERDIR for .lite_lsp.lua or .lite_lsp.json (in that order)
 ---2. Merge server.settings
----4. Scan workspace if set also for .lite_lsp.lua/json and merge them or
----3. Scan server.path also for .lite_lsp.lua/json and merge them
+---3. Scan server.path also for configuration and merge it
+---4. Scan workspace if set also for configuration and merge it
 ---Note: settings are cached for 5 seconds for faster retrieval
 ---      on repetitive calls to this function.
 ---
@@ -1265,6 +1294,19 @@ local cached_workspace_settings_timestamp = 0
 ---a list), scalars and explicit null replace exactly. The 5-second cache
 ---stores exactly this merged result, so cached and uncached consumers see
 ---identical effective settings.
+---
+---Local patch (#10653): workspace/project configuration is data, not
+---executable code. Only the USERDIR keeps its historical executable
+---.lite_lsp.lua authority as a user-owned configuration root. Every
+---project-derived position (server.path or a server-supplied workspace
+---scope) accepts data-only .lite_lsp.json configuration; a repository-local
+---.lite_lsp.lua is never probed for execution there - it is ignored with a
+---quiet log line, and a malformed project JSON payload is reported as a
+---bounded configuration error answering an empty value instead of executing
+---fallback code. Cache entries carry a filesystem stamp of their accepted
+---candidates (each position directory plus its discovered file), so a
+---changed or replaced accepted configuration invalidates the cached result
+---even inside the freshness window.
 ---@param server lsp.server
 ---@param workspace? string
 ---@return table
@@ -1283,29 +1325,83 @@ function lsp.get_workspace_settings(server, workspace)
     cached_index = cached_index .. tostring(workspace)
   end
 
+  local stamp_paths = cached_workspace_stamp_paths[cached_index]
   if
     cached_workspace_settings_timestamp > os.time()
     and
     cached_workspace_settings[cached_index]
+    and
+    stamp_paths
+    and
+    recorded_stamp(stamp_paths) == cached_workspace_settings_stamp[cached_index]
   then
     return cached_workspace_settings[cached_index]
   else
     local position = 1
+    stamp_paths = {}
     for _, path in pairs(paths) do
       if path then
         local settings_new = nil
         path = path:gsub("\\+$", ""):gsub("/+$", "")
-        if util.file_exists(path .. "/.lite_lsp.lua") then
-          local settings_lua = dofile(path .. "/.lite_lsp.lua")
-          if type(settings_lua) == "table" then
-            settings_new = settings_lua
+        stamp_paths[#stamp_paths + 1] = path
+
+        if position == 1 then
+          -- User-owned executable configuration root (#10653): the USERDIR
+          -- keeps its historical .lite_lsp.lua authority over .lite_lsp.json.
+          local user_lua = path .. "/.lite_lsp.lua"
+          if util.file_exists(user_lua) then
+            stamp_paths[#stamp_paths + 1] = user_lua
+            local settings_lua = dofile(user_lua)
+            if type(settings_lua) == "table" then
+              settings_new = settings_lua
+            end
+          else
+            local user_json = path .. "/.lite_lsp.json"
+            if util.file_exists(user_json) then
+              stamp_paths[#stamp_paths + 1] = user_json
+              local file = io.open(user_json, "r")
+              if file then
+                local settings_json = file:read("*a")
+                settings_new = json.decode(settings_json)
+                file:close()
+              end
+            end
           end
-        elseif util.file_exists(path .. "/.lite_lsp.json") then
-          local file = io.open(path .. "/.lite_lsp.json", "r")
-          if file then
-            local settings_json = file:read("*a")
-            settings_new = json.decode(settings_json)
-            file:close()
+        else
+          -- Project-derived positions are data-only (#10653): a
+          -- repository-controlled .lite_lsp.lua is never executed here,
+          -- regardless of startup, configuration requests, root changes,
+          -- restarts, or cache refreshes.
+          local project_lua = path .. "/.lite_lsp.lua"
+          if util.file_exists(project_lua) then
+            core.log_quiet(
+              "[LSP]: ignoring untrusted project configuration '%s'",
+              project_lua
+            )
+          end
+
+          local project_json = path .. "/.lite_lsp.json"
+          if util.file_exists(project_json) then
+            stamp_paths[#stamp_paths + 1] = project_json
+            local file = io.open(project_json, "r")
+            if file then
+              local settings_json = file:read("*a")
+              file:close()
+              local ok_decode, decoded = pcall(json.decode, settings_json)
+              if ok_decode and type(decoded) == "table" then
+                settings_new = decoded
+              else
+                -- Fail safely (#10653): malformed project data becomes one
+                -- bounded configuration error and an empty value, never an
+                -- executable fallback.
+                core.error(
+                  "[LSP]: ignoring malformed project configuration '%s' (%s)",
+                  project_json,
+                  ok_decode and "configuration is not an object"
+                    or tostring(decoded)
+                )
+              end
+            end
           end
         end
 
@@ -1327,8 +1423,12 @@ function lsp.get_workspace_settings(server, workspace)
       position = position + 1
     end
 
-    -- store settings on cache for 5 seconds for fast repeated calls
+    -- store settings on cache for 5 seconds for fast repeated calls;
+    -- the accepted candidates' stamp lets a changed configuration
+    -- invalidate the entry inside that window (#10653)
     cached_workspace_settings[cached_index] = settings
+    cached_workspace_stamp_paths[cached_index] = stamp_paths
+    cached_workspace_settings_stamp[cached_index] = recorded_stamp(stamp_paths)
     cached_workspace_settings_timestamp = os.time() + 5
   end
 
