@@ -22,6 +22,17 @@ META_SHARD_NAME = "meta"
 FMT_GATE = "fmt"
 STAGED_GATE = "rustfmt_staged"
 PR_FAST_TIER = "pr_fast"
+PR_SMOKE_JOB = "pr-smoke"
+RUST_SMALL_WORKFLOW = ".github/workflows/em-ci-routed-rust.yml"
+CI_WORKFLOW = ".github/workflows/ci.yml"
+RUST_SMALL_LANE_JOBS = frozenset(
+    {
+        "rust-small-cx53",
+        "rust-small-cx43",
+        "rust-small-github",
+        "rust-small-fallback",
+    }
+)
 PARITY_REASON_NEEDLES = (
     "advisory receipt-producing dedicated formatter",
     "perl lsp rust small result",
@@ -132,20 +143,42 @@ def dedicated_job_active(workflow_text: str) -> str:
     return "\n".join(active_code_lines(body))
 
 
-def undeclared_ci_yml_formatter_commands(workflow_text: str) -> list[str]:
-    """Return undeclared cargo-fmt / rustfmt_check sites in ci.yml jobs.
+def undeclared_hosted_formatter_sites(workflows: dict[str, str]) -> list[str]:
+    """Return undeclared workspace-formatter executions across hosted workflows.
 
-    Declared in this workflow: dedicated `rust-formatting` (receipt producer)
-    and advisory `pr-smoke` (`xtask gates --tier pr-fast`, #9166 overlap).
-    Meta-shard `fmt` is not a declared producer after #9959.
+    Declared producers of the workspace rustfmt fact:
+    - required Rust Small lanes (`cargo fmt --all -- --check`, #9127)
+    - dedicated `rust-formatting` (`rustfmt_check.py` receipts)
+    - advisory PR Smoke `pr-fast` overlap (#9166)
     """
     undeclared: list[str] = []
-    for job_id, body in job_bodies(workflow_text).items():
-        if job_id in {DEDICATED_JOB_ID, "pr-smoke"}:
-            continue
-        active = "\n".join(active_code_lines(body))
-        if CARGO_FMT_RE.search(active) or RUSTFMT_CHECK_RE.search(active) or XTASK_FMT_RE.search(active):
-            undeclared.append(job_id)
+    for path, text in sorted(workflows.items()):
+        for job_id, body in job_bodies(text).items():
+            active = "\n".join(active_code_lines(body))
+            has_cargo_fmt = bool(CARGO_FMT_RE.search(active))
+            has_receipt_producer = bool(RUSTFMT_CHECK_RE.search(active))
+            has_xtask_fmt = bool(XTASK_FMT_RE.search(active))
+            if not (has_cargo_fmt or has_receipt_producer or has_xtask_fmt):
+                continue
+            declared = False
+            if (
+                path == RUST_SMALL_WORKFLOW
+                and job_id in RUST_SMALL_LANE_JOBS
+                and has_cargo_fmt
+                and not has_receipt_producer
+                and not has_xtask_fmt
+            ):
+                declared = True
+            if (
+                path == CI_WORKFLOW
+                and job_id == DEDICATED_JOB_ID
+                and has_receipt_producer
+            ):
+                declared = True
+            if path == CI_WORKFLOW and job_id == PR_SMOKE_JOB:
+                declared = True
+            if not declared:
+                undeclared.append(f"{path}:{job_id}")
     return undeclared
 
 
@@ -155,6 +188,7 @@ def validate_hosted_formatter_inventory(
     execution_policy: dict[str, Any],
     gate_policy: str,
     required_checks: dict[str, Any],
+    workflows: dict[str, str] | None = None,
 ) -> None:
     lanes = merge_gate_shard_lanes(ci_workflow)
     if META_SHARD_NAME not in lanes:
@@ -200,11 +234,14 @@ def validate_hosted_formatter_inventory(
     if "scripts/ci/verify_rustfmt_receipt.py" not in dedicated_active:
         raise AssertionError("dedicated rust-formatting producer must keep receipt verification")
 
-    undeclared = undeclared_ci_yml_formatter_commands(ci_workflow)
+    undeclared = undeclared_hosted_formatter_sites(
+        workflows
+        if workflows is not None
+        else {CI_WORKFLOW: ci_workflow}
+    )
     if undeclared:
         raise AssertionError(
-            "undeclared hosted formatter producer in ci.yml jobs: "
-            + ", ".join(undeclared)
+            "undeclared hosted formatter producer: " + ", ".join(undeclared)
         )
 
     if "Keep the existing advisory `fmt` meta-shard during the parity window" in ci_workflow:

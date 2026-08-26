@@ -18,10 +18,11 @@ producers = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = producers
 SPEC.loader.exec_module(producers)
 
-CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 EXECUTION_POLICY = ROOT / ".ci" / "gate-shard-execution.json"
 GATE_POLICY = ROOT / ".ci" / "gate-policy.yaml"
 REQUIRED_CHECKS = ROOT / ".ci" / "policies" / "required-checks.toml"
+CI_WORKFLOW_KEY = ".github/workflows/ci.yml"
+RUST_SMALL_KEY = ".github/workflows/em-ci-routed-rust.yml"
 
 
 DECLARED_REASON = (
@@ -33,12 +34,21 @@ DECLARED_REASON = (
 )
 
 
-def load_tree() -> tuple[str, dict[object, object], str, dict[object, object]]:
+def load_workflows() -> dict[str, str]:
+    texts: dict[str, str] = {}
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        texts[path.relative_to(ROOT).as_posix()] = path.read_text(encoding="utf-8")
+    return texts
+
+
+def load_tree() -> tuple[str, dict[object, object], str, dict[object, object], dict[str, str]]:
+    workflows = load_workflows()
     return (
-        CI_WORKFLOW.read_text(encoding="utf-8"),
+        workflows[CI_WORKFLOW_KEY],
         json.loads(EXECUTION_POLICY.read_text(encoding="utf-8")),
         GATE_POLICY.read_text(encoding="utf-8"),
         tomllib.loads(REQUIRED_CHECKS.read_text(encoding="utf-8")),
+        workflows,
     )
 
 
@@ -87,13 +97,15 @@ def retire_meta_fmt(
 
 class HostedFormatterProducerTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.ci, self.execution, self.gate_policy, self.required = load_tree()
+        self.ci, self.execution, self.gate_policy, self.required, self.workflows = load_tree()
         (
             self.retired_ci,
             self.retired_execution,
             self.retired_gate_policy,
             self.retired_required,
         ) = retire_meta_fmt(self.ci, self.execution, self.gate_policy, self.required)
+        self.retired_workflows = dict(self.workflows)
+        self.retired_workflows[CI_WORKFLOW_KEY] = self.retired_ci
 
     def validate(
         self,
@@ -102,12 +114,17 @@ class HostedFormatterProducerTests(unittest.TestCase):
         execution: dict[object, object] | None = None,
         gate_policy: str | None = None,
         required: dict[object, object] | None = None,
+        workflows: dict[str, str] | None = None,
     ) -> None:
+        ci_text = self.retired_ci if ci is None else ci
+        texts = dict(self.retired_workflows if workflows is None else workflows)
+        texts[CI_WORKFLOW_KEY] = ci_text
         producers.validate_hosted_formatter_inventory(
-            ci_workflow=self.retired_ci if ci is None else ci,
+            ci_workflow=ci_text,
             execution_policy=self.retired_execution if execution is None else execution,
             gate_policy=self.retired_gate_policy if gate_policy is None else gate_policy,
             required_checks=self.retired_required if required is None else required,
+            workflows=texts,
         )
 
     def test_current_tree_has_one_declared_hosted_formatter_inventory(self) -> None:
@@ -116,6 +133,7 @@ class HostedFormatterProducerTests(unittest.TestCase):
             execution_policy=self.execution,
             gate_policy=self.gate_policy,
             required_checks=self.required,
+            workflows=self.workflows,
         )
 
     def test_reintroducing_meta_fmt_fails_closed(self) -> None:
@@ -186,6 +204,38 @@ class HostedFormatterProducerTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(AssertionError, "undeclared hosted formatter producer"):
             self.validate(ci=broken)
+
+    def test_undeclared_cargo_fmt_in_another_workflow_fails_closed(self) -> None:
+        broken_workflows = dict(self.retired_workflows)
+        extra = (
+            "name: Extra\n"
+            "on: [pull_request]\n"
+            "jobs:\n"
+            "  extra-fmt:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: cargo fmt --all -- --check\n"
+        )
+        broken_workflows[".github/workflows/extra-fmt.yml"] = extra
+        with self.assertRaisesRegex(
+            AssertionError,
+            r"undeclared hosted formatter producer: .github/workflows/extra-fmt.yml:extra-fmt",
+        ):
+            self.validate(workflows=broken_workflows)
+
+    def test_undeclared_cargo_fmt_in_rust_small_result_fails_closed(self) -> None:
+        rust_small = self.retired_workflows[RUST_SMALL_KEY]
+        broken_workflows = dict(self.retired_workflows)
+        broken_workflows[RUST_SMALL_KEY] = rust_small.replace(
+            "python3 -m unittest \\",
+            "cargo fmt --all -- --check\n          python3 -m unittest \\",
+            1,
+        )
+        with self.assertRaisesRegex(
+            AssertionError,
+            r"undeclared hosted formatter producer: .github/workflows/em-ci-routed-rust.yml:rust-small-result",
+        ):
+            self.validate(workflows=broken_workflows)
 
     def test_parity_window_comment_cannot_keep_retired_meta_fmt(self) -> None:
         broken = self.retired_ci.replace(
