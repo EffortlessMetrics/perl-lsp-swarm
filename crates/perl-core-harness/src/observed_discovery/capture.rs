@@ -21,6 +21,10 @@ use crate::artifacts::{
     sanitize_perl_env, write_json,
 };
 use crate::build::{effective_selection, effective_selection_authority, find_target, sha256_bytes};
+use crate::harness_subject::build::{
+    SubjectComposition, compose_harness_subject, verify_subject_binding,
+};
+use crate::harness_subject::model::SubjectEvidence;
 use crate::io::read_matrix;
 use crate::model::{TargetAuthorityKind, TargetMatrixEntry, TargetSelector, UpstreamTargetMatrix};
 use crate::observed_discovery::build::{build_observed_discovery_receipt, sha256_json};
@@ -333,13 +337,43 @@ pub fn observe_discovery(config: &ObserveDiscoveryConfig) -> Result<UpstreamDisc
         perl_ref: config.perl_ref.clone(),
         prepared_tree_identity: config.prepared_tree_identity.clone(),
         host_perl_identity: config.host_perl_identity.clone(),
-        matrix_fingerprint,
+        matrix_fingerprint: matrix_fingerprint.clone(),
         target_id: config.target_id.clone(),
-        target_contract_digest,
+        target_contract_digest: target_contract_digest.clone(),
         variant_target_id: None,
         instrumentation_id: None,
     };
     let process_nonce = mint_process_nonce()?;
+    // #12158 producer-side exact-subject binding: the exact subject is
+    // composed from the measured plan and the pinned authorities before the
+    // process is spent, and the produced receipt must re-bind the identical
+    // subject afterward. A receipt that composes a different subject (stale
+    // artifact bytes, drifted references, substituted capture identity) can
+    // never leave the producer.
+    let expected_subject = compose_harness_subject(SubjectComposition {
+        repository_commit: config.repository_commit.clone(),
+        perl_ref: config.perl_ref.clone(),
+        prepared_tree_identity: config.prepared_tree_identity.clone(),
+        host_perl_identity: config.host_perl_identity.clone(),
+        matrix_fingerprint: matrix_fingerprint.clone(),
+        target_id: config.target_id.clone(),
+        target_contract_digest: target_contract_digest.clone(),
+        variant_target_id: None,
+        instrumentation_id: None,
+        runner: plan.runner,
+        runner_artifact: plan.runner_artifact.clone(),
+        argv: plan.argv.clone(),
+        working_directory: plan.working_directory.clone(),
+        environment: plan.environment.clone(),
+        process_nonce: process_nonce.clone(),
+    })
+    .map_err(|refusal| {
+        color_eyre::eyre::eyre!(
+            "observed discovery for target {} could not compose its exact harness subject: \
+             {refusal}",
+            config.target_id
+        )
+    })?;
     let (completion, stdout_bytes, stdout_truncated, stderr_bytes, stderr_truncated) =
         execute_plan(&plan, &host_perl, &config.limits);
     let input = ObservedDiscoveryInput {
@@ -357,12 +391,22 @@ pub fn observe_discovery(config: &ObserveDiscoveryConfig) -> Result<UpstreamDisc
         stderr_bytes,
         stderr_truncated,
     };
-    build_observed_discovery_receipt(&matrix, &input).map_err(|error| {
+    let receipt = build_observed_discovery_receipt(&matrix, &input).map_err(|error| {
         color_eyre::eyre::eyre!(
             "observed discovery for target {} could not construct a strict receipt: {error}",
             config.target_id
         )
-    })
+    })?;
+    verify_subject_binding(&expected_subject, SubjectEvidence::Discovery(&receipt)).map_err(
+        |refusal| {
+            color_eyre::eyre::eyre!(
+                "observed discovery for target {} produced a receipt that does not re-bind the \
+                 exact subject composed before spawn: {refusal}",
+                config.target_id
+            )
+        },
+    )?;
+    Ok(receipt)
 }
 
 /// Run one observed discovery, write the receipt, and validate the written

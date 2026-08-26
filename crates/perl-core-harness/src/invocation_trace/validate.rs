@@ -61,6 +61,34 @@ pub fn validate_invocation_trace_receipt(
             payload.runner_artifact.canonical_path, payload.runner
         ));
     }
+    // #12158 exact-subject binding: the trace and its parent must name the
+    // same runner artifact bytes, and instrumented evidence must carry its
+    // instrumentation identity agreeing with the parent. Deserialized receipts
+    // re-meet the same laws strict construction enforces.
+    if payload.runner_artifact.content_sha256
+        != parent.payload.invocation.runner_artifact.content_sha256
+    {
+        return Err(format!(
+            "trace runner artifact digest {} does not match the parent discovery artifact \
+             digest {}",
+            payload.runner_artifact.content_sha256,
+            parent.payload.invocation.runner_artifact.content_sha256
+        ));
+    }
+    if payload.subject.instrumentation_id.is_none() {
+        return Err(
+            "instrumented trace evidence carries no instrumentation id; it cannot present an \
+             ordinary subject"
+                .to_string(),
+        );
+    }
+    if payload.subject.instrumentation_id != parent.payload.subject.instrumentation_id {
+        return Err(format!(
+            "trace instrumentation subject {:?} does not match the parent discovery \
+             instrumentation subject {:?}",
+            payload.subject.instrumentation_id, parent.payload.subject.instrumentation_id
+        ));
+    }
     crate::invocation_trace::build::enforce_uncontaminated_result_streams(parent)?;
 
     let trace_bytes = payload.trace.bytes()?;

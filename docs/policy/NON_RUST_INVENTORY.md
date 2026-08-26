@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12018 |
-| Rust-family files | 3658 |
-| Non-Rust files | 8360 |
-| Allowlisted | 6114 |
+| Total tracked files | 12041 |
+| Rust-family files | 3673 |
+| Non-Rust files | 8368 |
+| Allowlisted | 6122 |
 | Unclassified | 2246 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 439 |
-| documentation | 2737 |
+| config | 441 |
+| documentation | 2740 |
 | generated | 2 |
 | production | 328 |
 | test | 1999 |
-| tooling | 609 |
+| tooling | 612 |
 | unclassified | 2246 |
 
 ## Unclassified files
@@ -2319,6 +2319,7 @@
 | `.changes/unreleased/product-10100-Added-025500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10532-Added-121200.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10533-Fixed-121500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-10566-Security-093000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11613-Fixed-181500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11739-Fixed-001500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11740-Fixed-200900.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2341,6 +2342,7 @@
 | `.changes/unreleased/product-12573-Changed-194700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12639-Fixed-235500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12641-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2485,6 +2487,7 @@
 | `.changes/unreleased/product-8063-Changed-214000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-8250-Added-223800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-8311-Changed-164000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-8352-Security-114500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9103-Added-211500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9450-Added-125043.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9487-Added-740216.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -6197,6 +6200,7 @@
 | `policy/review-surfaces.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ripr-suppressions.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/semantic-token-classes.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/standalone-archive-safety.v1.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/trust-lanes.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ub-review.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/workflow-contracts.toml` | config | `non-rust-policy-ledgers` | release/ci |
@@ -6217,6 +6221,7 @@
 | `schemas/perl_compiler_concept_proof.v1.schema.json` | config | `non-rust-compiler-concept-proof-schema` | compiler |
 | `schemas/perl_compiler_concepts.v1.schema.json` | config | `non-rust-compiler-concepts-schema` | compiler |
 | `schemas/perl_compiler_proof_policy.v1.schema.json` | config | `non-rust-compiler-proof-policy-schema` | compiler |
+| `schemas/perl_core_harness_compiler_harness_subject.v1.schema.json` | config | `non-rust-core-harness-compiler-harness-subject-schema` | compiler |
 | `schemas/perl_core_harness_runner_parity.v1.schema.json` | config | `non-rust-core-harness-runner-parity-schema` | compiler |
 | `schemas/perl_core_harness_runner_plan.v1.schema.json` | config | `non-rust-core-harness-runner-plan-schema` | compiler |
 | `schemas/perl_core_harness_runner_plan.v2.schema.json` | config | `non-rust-core-harness-runner-plan-v2-schema` | compiler |
@@ -6572,6 +6577,7 @@
 | `scripts/tests/fixtures/pr_overlap/complementary.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/pr_overlap/shared_base_isolated.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/pr_overlap/true_duplicate.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/lib/standalone_archive_fixtures.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-agent-flow-control-plane-trigger.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-build-timing-receipt-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-cargo-safe-toolchain-guard.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6603,8 +6609,10 @@
 | `scripts/tests/test-install-bootstrap-identity.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-githooks-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-path-contract.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-install-ps1-archive-safety.ps1` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-ps1-checksum-required.ps1` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-target-selection.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-installer-archive-safety.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-installer-checksum-required.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-installer-termux-detection.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-installer-zero-args.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |

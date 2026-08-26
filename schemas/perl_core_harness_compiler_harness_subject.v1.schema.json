@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/schemas/perl_core_harness_compiler_harness_subject.v1.schema.json",
+  "title": "Perl core harness exact composed subject v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "repository_commit", "perl_ref", "prepared_tree_identity", "host_perl_identity", "matrix_fingerprint", "target_id", "target_contract_digest", "variant_target_id", "instrumentation_id", "runner", "runner_artifact", "argv", "working_directory", "environment", "process_nonce", "claim_boundary", "fingerprint"],
+  "properties": {
+    "schema_version": {"const": "perl_core_harness.compiler_harness_subject.v1"},
+    "repository_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "perl_ref": {"type": "string", "minLength": 1, "maxLength": 128},
+    "prepared_tree_identity": {"type": "string", "minLength": 1, "maxLength": 128},
+    "host_perl_identity": {"type": "string", "minLength": 1, "maxLength": 128},
+    "matrix_fingerprint": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+    "target_id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+    "target_contract_digest": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+    "variant_target_id": {"type": ["string", "null"], "pattern": "^[a-z0-9_]+$"},
+    "instrumentation_id": {"type": ["string", "null"], "minLength": 1},
+    "runner": {"enum": ["test", "harness"]},
+    "runner_artifact": {"$ref": "#/$defs/artifact"},
+    "argv": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "working_directory": {"type": "string", "minLength": 1},
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variables", "sha256"],
+      "properties": {
+        "variables": {"type": "object", "additionalProperties": {"type": "string"}},
+        "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}
+      }
+    },
+    "process_nonce": {"type": "string", "minLength": 1, "maxLength": 128},
+    "claim_boundary": {"type": "string", "minLength": 1},
+    "fingerprint": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonical_path", "content_sha256"],
+      "properties": {
+        "canonical_path": {"type": "string", "minLength": 1},
+        "content_sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}
+      }
+    }
+  }
+}

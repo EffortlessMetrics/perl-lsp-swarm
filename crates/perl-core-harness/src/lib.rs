@@ -151,6 +151,35 @@ pub mod invocation_trace {
     pub use validate::{validate_invocation_trace_receipt, validate_trace_receipt_subject_binding};
 }
 
+/// The exact composed harness subject (`compiler_harness_subject.v1`, #12158):
+/// one immutable repository/perl/preparation/runner/target/environment/
+/// invocation/process identity with a derived deterministic fingerprint, the
+/// checked composition constructor, and the fail-closed binding law that
+/// answers which exact subject produced one observed-evidence artifact.
+/// Representation and binding only: no execution, selection, report, bundle,
+/// or current-authority behavior.
+pub mod harness_subject {
+    /// Checked composition, binding, verification, and legacy classification.
+    #[path = "build.rs"]
+    pub mod build;
+    /// Subject, component, and typed-refusal types.
+    #[path = "model.rs"]
+    pub mod model;
+
+    #[cfg(test)]
+    #[path = "tests.rs"]
+    mod tests;
+
+    pub use build::{
+        SubjectComposition, bind_discovery_subject, bind_invocation_trace_subject,
+        compose_harness_subject, legacy_subject_refusal, verify_subject_binding,
+    };
+    pub use model::{
+        CompilerHarnessSubjectV1, HARNESS_SUBJECT_CLAIM_BOUNDARY, HARNESS_SUBJECT_SCHEMA_VERSION,
+        SubjectBindingRefusal, SubjectComponent, SubjectEvidence,
+    };
+}
+
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness_types::{

@@ -78,6 +78,36 @@ pub fn build_invocation_trace_receipt(
             input.runner_artifact.canonical_path, input.runner
         ));
     }
+    // #12158 exact-subject binding: discovery and invocation must name the
+    // same runner artifact bytes, not only the same route and path. A stale or
+    // substituted binary behind the same path refuses here.
+    if input.runner_artifact.content_sha256
+        != parent.payload.invocation.runner_artifact.content_sha256
+    {
+        return Err(format!(
+            "trace runner artifact digest {} does not match the parent discovery artifact \
+             digest {}; discovery and invocation must name the same runner bytes",
+            input.runner_artifact.content_sha256,
+            parent.payload.invocation.runner_artifact.content_sha256
+        ));
+    }
+    // #12158 exact-subject binding: instrumented evidence must carry its
+    // instrumentation identity and the parent must name the same instrument.
+    // An instrumented run cannot masquerade as an ordinary one.
+    if input.subject.instrumentation_id.is_none() {
+        return Err(
+            "instrumented trace evidence carries no instrumentation id; it cannot present an \
+             ordinary subject"
+                .to_string(),
+        );
+    }
+    if input.subject.instrumentation_id != parent.payload.subject.instrumentation_id {
+        return Err(format!(
+            "trace instrumentation subject {:?} does not match the parent discovery \
+             instrumentation subject {:?}",
+            input.subject.instrumentation_id, parent.payload.subject.instrumentation_id
+        ));
+    }
     enforce_uncontaminated_result_streams(parent)?;
 
     if input.trace_bytes.len() > MAX_TRACE_STREAM_BYTES {

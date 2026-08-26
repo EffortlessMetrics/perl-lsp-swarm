@@ -15,7 +15,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-const DISCOVERY_RAW_SCHEMA_VERSION: &str = "perl_core_harness.discovery_raw.v2";
+pub(crate) const DISCOVERY_RAW_SCHEMA_VERSION: &str = "perl_core_harness.discovery_raw.v2";
 const DISCOVERY_DERIVED_SCHEMA_VERSION: &str = "perl_core_harness.discovery_derived.v1";
 const DISCOVERY_DECODER_VERSION: &str = "utf8_strict.v1";
 const DISCOVERY_NORMALIZER_VERSION: &str = "discovery_test_paths.v1";
