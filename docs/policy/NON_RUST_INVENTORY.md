@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12088 |
-| Rust-family files | 3694 |
-| Non-Rust files | 8394 |
-| Allowlisted | 6148 |
+| Total tracked files | 12095 |
+| Rust-family files | 3696 |
+| Non-Rust files | 8399 |
+| Allowlisted | 6153 |
 | Unclassified | 2246 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 441 |
-| documentation | 2743 |
+| documentation | 2746 |
 | generated | 2 |
 | production | 328 |
-| test | 2020 |
-| tooling | 614 |
+| test | 2021 |
+| tooling | 615 |
 | unclassified | 2246 |
 
 ## Unclassified files
@@ -2284,6 +2284,7 @@
 | `.agents/skills/address-review-comments/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/build-candidate/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/build-from-proof/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.agents/skills/ci-failure-triage/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/compile-spec/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/deliver-goal/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/deliver-pr/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -2753,6 +2754,7 @@
 | `.claude/skills/address-review-comments/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/build-candidate/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/build-from-proof/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.claude/skills/ci-failure-triage/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/compile-spec/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/deliver-goal/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/deliver-pr/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3858,6 +3860,7 @@
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__printf_mismatch_too_few_args.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__printf_mismatch_too_many_args.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__script_happy_path.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
+| `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__security_sql_injection.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__security_string_eval.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__suspicious_regex_and_tainted_system_call.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__syntax_error_with_follow_on_statement.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
@@ -4879,6 +4882,7 @@
 | `docs/how-to/LARGE_WORKSPACE_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/LSP_ERROR_HANDLING_MONITORING_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/LSP_FEATURE_DEVELOPMENT_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/NATIVE_TOOLING_MIGRATION.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/PERFORMANCE_PRESERVATION_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/PERFORMANCE_TUNING.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6593,6 +6597,7 @@
 | `scripts/test/vim-host-diagnostics-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-freshness-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-host-recovery-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_iterative_parser.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
