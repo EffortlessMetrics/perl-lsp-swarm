@@ -22,11 +22,15 @@
 //! - `my` / `state` / signature parameters / loop lexicals: visible only when
 //!   the declaration precedes the cursor AND the declaring scope is the cursor
 //!   scope or an ancestor of it.
-//! - `our`: package-global alias — visible across the package regardless of
-//!   declaration extent (existing bounded behavior preserved).
-//! - `local`: dynamic alias of a package variable — name resolution follows
-//!   the underlying global, so package-global visibility applies (no dynamic
-//! -extent facts are represented).
+//! - `our`: package-global alias whose strict-mode validity spans the
+//!   declaring scope's lexical extent — the declaration must precede the
+//!   cursor and the declaring scope must be the cursor scope or an ancestor.
+//!   Package identity is not represented in the compatibility SymbolTable, so
+//!   cross-package admission is a documented bound, not authority.
+//! - `local`: dynamic alias of a package variable, modeled by the same static
+//!   declaration-order and extent facts (conservative; dynamic-extent facts
+//!   beyond the declaring block are not represented, so admission cannot
+//!   follow a runtime call path).
 //!
 //! Shadowing is resolved as exact identity selection among admitted bindings
 //! sharing one resolved slot (name + kind + qualified target): innermost
@@ -127,19 +131,28 @@ pub(crate) fn admit(
     cursor_position: usize,
     symbol: &Symbol,
 ) -> Admission {
-    match declaration_role(symbol.declaration.as_deref()) {
+    let role = declaration_role(symbol.declaration.as_deref());
+    // Declaration order applies to every class: a declaration textually after
+    // the cursor cannot admit a binding of any kind — an `our` alias in a
+    // later statement is not valid yet, and a `local` that has not run has
+    // not localized anything.
+    if symbol.location.start > cursor_position {
+        return Admission::NotVisible(VisibilityReason::DeclaredAfterCursor);
+    }
+    // Extent applies to every class with the facts this module has: the
+    // declaring scope must be the cursor scope or an ancestor of it. For
+    // `our` this is the alias's strict-mode lexical extent; for `local` it is
+    // the conservative static model of the dynamic extent (a sibling block or
+    // an already-ended block cannot reactivate either). Package identity is
+    // not represented in the compatibility SymbolTable, so cross-package
+    // admission remains a documented bound, not silent authority.
+    if !scope_chain_contains(symbol_table, cursor_scope_id, symbol.scope_id) {
+        return Admission::NotVisible(VisibilityReason::ScopeNotVisibleFromCursor);
+    }
+    match role {
         DeclarationRole::OurAlias => Admission::Visible(VisibilityReason::PackageGlobalAlias),
         DeclarationRole::LocalAlias => Admission::Visible(VisibilityReason::DynamicLocalAlias),
-        DeclarationRole::Lexical => {
-            if symbol.location.start > cursor_position {
-                return Admission::NotVisible(VisibilityReason::DeclaredAfterCursor);
-            }
-            if scope_chain_contains(symbol_table, cursor_scope_id, symbol.scope_id) {
-                Admission::Visible(VisibilityReason::LexicalActiveAtCursor)
-            } else {
-                Admission::NotVisible(VisibilityReason::ScopeNotVisibleFromCursor)
-            }
-        }
+        DeclarationRole::Lexical => Admission::Visible(VisibilityReason::LexicalActiveAtCursor),
     }
 }
 
@@ -152,6 +165,13 @@ fn scope_chain_contains(
     cursor_scope: ScopeId,
     target: ScopeId,
 ) -> bool {
+    // An equality between two unresolvable ids is not containment: the cursor
+    // scope must exist in the generation-current table before any comparison,
+    // or `cursor == target == 9` would admit a binding whose scope the table
+    // never recorded.
+    if !symbol_table.scopes.contains_key(&cursor_scope) {
+        return false;
+    }
     let mut current = cursor_scope;
     let mut hops = 0u32;
 
@@ -334,19 +354,55 @@ mod tests {
     }
 
     #[test]
-    fn our_alias_stays_bounded_visible_anywhere() {
+    fn our_alias_visible_within_declaring_extent_only() {
         let table = table();
-        let s = symbol("pkg", SymbolKind::scalar(), "our", 3, 56);
-        assert!(admit(&table, 2, 30, &s).is_visible());
-        // Even after its declaring scope ended.
-        assert!(admit(&table, 0, 99, &s).is_visible());
+        let declared_inner = symbol("pkg", SymbolKind::scalar(), "our", 3, 56);
+        // Visible inside its declaring block after the declaration...
+        assert_eq!(
+            admit(&table, 3, 70, &declared_inner),
+            Admission::Visible(VisibilityReason::PackageGlobalAlias)
+        );
+        // ...but not from a sibling block (a different strict-mode extent)...
+        assert_eq!(
+            admit(&table, 2, 70, &declared_inner),
+            Admission::NotVisible(VisibilityReason::ScopeNotVisibleFromCursor)
+        );
+        // ...and not after the declaring block ended, even at global scope.
+        assert_eq!(
+            admit(&table, 0, 99, &declared_inner),
+            Admission::NotVisible(VisibilityReason::ScopeNotVisibleFromCursor)
+        );
     }
 
     #[test]
-    fn local_alias_keeps_package_global_visibility() {
+    fn our_alias_declared_after_cursor_is_rejected() {
         let table = table();
-        let s = symbol("dyn", SymbolKind::scalar(), "local", 3, 56);
-        assert!(admit(&table, 2, 30, &s).is_visible());
+        let future = symbol("pkg", SymbolKind::scalar(), "our", 2, 40);
+        assert_eq!(
+            admit(&table, 2, 35, &future),
+            Admission::NotVisible(VisibilityReason::DeclaredAfterCursor)
+        );
+    }
+
+    #[test]
+    fn local_alias_follows_static_extent_conservatively() {
+        let table = table();
+        let declared_inner = symbol("dyn", SymbolKind::scalar(), "local", 3, 56);
+        assert_eq!(
+            admit(&table, 3, 70, &declared_inner),
+            Admission::Visible(VisibilityReason::DynamicLocalAlias)
+        );
+        // Dynamic-extent facts are not represented, so a sibling block cannot
+        // reactivate the bare name and the conservative model stays closed.
+        assert_eq!(
+            admit(&table, 2, 70, &declared_inner),
+            Admission::NotVisible(VisibilityReason::ScopeNotVisibleFromCursor)
+        );
+        let future = symbol("dyn", SymbolKind::scalar(), "local", 2, 40);
+        assert_eq!(
+            admit(&table, 2, 35, &future),
+            Admission::NotVisible(VisibilityReason::DeclaredAfterCursor)
+        );
     }
 
     #[test]
@@ -378,6 +434,18 @@ mod tests {
         let s = symbol("ghost", SymbolKind::scalar(), "my", 9, 1);
         table.scopes.remove(&9);
         assert!(!admit(&table, 2, 30, &s).is_visible());
+    }
+
+    #[test]
+    fn equal_but_absent_scope_ids_are_not_containment() {
+        // cursor_scope == symbol.scope_id == 9 with scope 9 absent from the
+        // table must not read as containment-by-equality.
+        let table = table();
+        let s = symbol("ghost", SymbolKind::scalar(), "my", 9, 1);
+        assert_eq!(
+            admit(&table, 9, 30, &s),
+            Admission::NotVisible(VisibilityReason::ScopeNotVisibleFromCursor)
+        );
     }
 
     #[test]
