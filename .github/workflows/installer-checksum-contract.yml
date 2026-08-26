@@ -8,6 +8,7 @@ on:
       - 'install.ps1'
       - 'scripts/tests/test-installer-checksum-required.sh'
       - 'scripts/tests/test-installer-archive-safety.sh'
+      - 'scripts/tests/test-installer-product-unit-promotion.sh'
       - 'scripts/tests/lib/standalone_archive_fixtures.py'
       - 'policy/standalone-archive-safety.v1.toml'
       - 'docs/how-to/INSTALLATION.md'
@@ -19,6 +20,7 @@ on:
       - 'install.ps1'
       - 'scripts/tests/test-installer-checksum-required.sh'
       - 'scripts/tests/test-installer-archive-safety.sh'
+      - 'scripts/tests/test-installer-product-unit-promotion.sh'
       - 'scripts/tests/lib/standalone_archive_fixtures.py'
       - 'policy/standalone-archive-safety.v1.toml'
       - 'docs/how-to/INSTALLATION.md'
@@ -30,7 +32,7 @@ permissions:
 
 jobs:
   validate:
-    name: Installer checksum and archive safety
+    name: Installer checksum, archive safety, and product-unit promotion
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     steps:
@@ -48,10 +50,13 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Parse shell sources
-        run: bash -n scripts/install.sh scripts/tests/test-installer-checksum-required.sh scripts/tests/test-installer-archive-safety.sh
+        run: bash -n scripts/install.sh scripts/tests/test-installer-checksum-required.sh scripts/tests/test-installer-archive-safety.sh scripts/tests/test-installer-product-unit-promotion.sh
 
       - name: Run checksum negative controls
         run: bash scripts/tests/test-installer-checksum-required.sh
 
       - name: Run archive-safety controls
         run: bash scripts/tests/test-installer-archive-safety.sh
+
+      - name: Run product-unit promotion controls
+        run: bash scripts/tests/test-installer-product-unit-promotion.sh

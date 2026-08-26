@@ -855,17 +855,246 @@ build_from_source() {
     EXTRACT_DIR="${TMPDIR}/install-root/bin"
 }
 
+# ── Product-unit promotion ─────────────────────────────────────────────────────
+# Readers of PATH-visible names and of .perl-lsp/current observe one complete
+# unit. Current is a symlink replaced by rename(2); PATH names are stable
+# relative links into current, so they cannot be updated member-by-member.
+
+product_store_dir() {
+    printf '%s\n' "${INSTALL_DIR}/.perl-lsp"
+}
+
+maybe_inject_install_fault() {
+    local _barrier="$1"
+    if [ "${PERL_LSP_INSTALL_FAULT:-}" = "$_barrier" ]; then
+        err "injected product-unit fault: $_barrier"
+    fi
+}
+
+hash_product_member() {
+    local _tool
+    _tool="$(select_sha256_tool)" || err "SHA-256 tool is required to bind product-unit identity"
+    calculate_sha256 "$_tool" "$1"
+}
+
+product_unit_candidate_id() {
+    local _disposition="$1" _server_hash="$2" _dap_hash="$3" _tmp _tool _id
+    _tmp="$(mktemp)"
+    {
+        printf '%s\0' "perl-lsp-swarm:standalone-product-unit.v1"
+        printf '%s\0' "$_disposition"
+        printf '%s\0' "$_server_hash"
+        printf '%s\0' "$_dap_hash"
+    } > "$_tmp"
+    _tool="$(select_sha256_tool)" || err "SHA-256 tool is required to bind product-unit identity"
+    _id="$(calculate_sha256 "$_tool" "$_tmp")" || return
+    rm -f "$_tmp"
+    printf '%s\n' "$_id"
+}
+
+write_product_unit_manifest() {
+    local _dir="$1" _disposition="$2" _id="$3" _server_hash="$4" _dap_hash="$5"
+    cat > "${_dir}/product_unit.v1" <<EOF
+schema=standalone_product_unit.v1
+disposition=${_disposition}
+candidate_id=${_id}
+server_sha256=${_server_hash}
+dap_sha256=${_dap_hash}
+EOF
+}
+
+classify_staged_product_unit() {
+    local _src="$1" _mode="$2"
+    local _server="${_src}/${BIN_NAME}"
+    local _dap="${_src}/${DAP_BIN_NAME}"
+    if [ ! -f "$_server" ] || [ -L "$_server" ]; then
+        err "staged product unit is missing a regular perllsp member"
+    fi
+    if [ "$_mode" = "source" ]; then
+        printf '%s\n' "advanced_source_server_only"
+        return 0
+    fi
+    if [ ! -f "$_dap" ] || [ -L "$_dap" ]; then
+        err "archive product unit requires a complete perllsp/perl-dap pair"
+    fi
+    printf '%s\n' "archive_pair_required"
+}
+
+atomic_symlink_replace() {
+    local _link="$1" _target="$2"
+    local _tmp="${_link}.tmp.$$"
+    rm -f "$_tmp"
+    ln -s "$_target" "$_tmp"
+    # GNU mv follows a symlink-to-directory destination unless -T is given, which
+    # would move the new pointer into the old candidate instead of replacing it.
+    if mv -T "$_tmp" "$_link" 2>/dev/null; then
+        return 0
+    fi
+    ln -sfn "$_target" "$_link"
+    rm -f "$_tmp"
+}
+
+publish_immutable_candidate() {
+    local _src="$1" _disposition="$2" _allow_fault="${3:-1}"
+    local _store _server_src _server_hash _dap_src _dap_hash="-" _id _dest _attempt _existing_dap
+    _store="$(product_store_dir)"
+    _server_src="${_src}/${BIN_NAME}"
+    _server_hash="$(hash_product_member "$_server_src")" || return
+    _dap_src="${_src}/${DAP_BIN_NAME}"
+    if [ "$_disposition" = "archive_pair_required" ]; then
+        _dap_hash="$(hash_product_member "$_dap_src")" || return
+    fi
+    _id="$(product_unit_candidate_id "$_disposition" "$_server_hash" "$_dap_hash")" || return
+    _dest="${_store}/candidates/${_id}"
+    mkdir -p "${_store}/candidates" "${_store}/attempts"
+    if [ -d "$_dest" ]; then
+        if [ "$(hash_product_member "${_dest}/${BIN_NAME}")" != "$_server_hash" ]; then
+            err "immutable candidate already exists with different perllsp bytes"
+        fi
+        if [ "$_disposition" = "archive_pair_required" ]; then
+            _existing_dap="$(hash_product_member "${_dest}/${DAP_BIN_NAME}")" || return
+            if [ "$_existing_dap" != "$_dap_hash" ]; then
+                err "immutable candidate already exists with different perl-dap bytes"
+            fi
+        fi
+        printf '%s\n' "$_id"
+        return 0
+    fi
+    if [ "$_allow_fault" = "1" ]; then
+        maybe_inject_install_fault "before_publish"
+    fi
+    _attempt="$(mktemp -d "${_store}/attempts/att.XXXXXX")"
+    cp "$_server_src" "${_attempt}/${BIN_NAME}"
+    chmod 755 "${_attempt}/${BIN_NAME}"
+    if [ "$_disposition" = "archive_pair_required" ]; then
+        cp "$_dap_src" "${_attempt}/${DAP_BIN_NAME}"
+        chmod 755 "${_attempt}/${DAP_BIN_NAME}"
+    fi
+    write_product_unit_manifest "$_attempt" "$_disposition" "$_id" "$_server_hash" "$_dap_hash"
+    mv "$_attempt" "$_dest"
+    printf '%s\n' "$_id"
+}
+
+commit_current_selection() {
+    local _id="$1" _allow_fault="${2:-1}"
+    local _store _current _old
+    _store="$(product_store_dir)"
+    _current="${_store}/current"
+    if [ "$_allow_fault" = "1" ]; then
+        maybe_inject_install_fault "before_commit"
+    fi
+    if [ -L "$_current" ]; then
+        _old="$(readlink "$_current")"
+        atomic_symlink_replace "${_store}/previous" "$_old"
+    fi
+    atomic_symlink_replace "$_current" "candidates/${_id}"
+}
+
+ensure_path_visible_selectors() {
+    local _allow_fault="${1:-1}"
+    local _rel=".perl-lsp/current"
+    local _store _current_dap
+    _store="$(product_store_dir)"
+    if [ "$_allow_fault" = "1" ]; then
+        maybe_inject_install_fault "before_selectors"
+    fi
+    rm -f "${INSTALL_DIR}/${BIN_NAME}"
+    ln -s "${_rel}/${BIN_NAME}" "${INSTALL_DIR}/${BIN_NAME}"
+    _current_dap="${_store}/current/${DAP_BIN_NAME}"
+    if [ -f "$_current_dap" ]; then
+        rm -f "${INSTALL_DIR}/${DAP_BIN_NAME}"
+        ln -s "${_rel}/${DAP_BIN_NAME}" "${INSTALL_DIR}/${DAP_BIN_NAME}"
+    elif [ -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; then
+        rm -f "${INSTALL_DIR}/${DAP_BIN_NAME}"
+    fi
+}
+
+path_visible_member_hash() {
+    local _path="$1"
+    if [ ! -e "$_path" ]; then
+        printf '%s\n' "-"
+        return 0
+    fi
+    hash_product_member "$_path"
+}
+
+observe_current_product_unit() {
+    local _store _current _id _manifest _disposition="unknown" _server="-" _dap="-"
+    _store="$(product_store_dir)"
+    _current="${_store}/current"
+    if [ ! -L "$_current" ]; then
+        printf 'state=none\n'
+        return 0
+    fi
+    _id="$(readlink "$_current")"
+    _id="${_id##*/}"
+    _manifest="${_current}/product_unit.v1"
+    if [ -f "$_manifest" ]; then
+        _disposition="$(awk -F= '/^disposition=/ {print $2; exit}' "$_manifest")"
+    fi
+    if [ -f "${_current}/${BIN_NAME}" ]; then
+        _server="$(hash_product_member "${_current}/${BIN_NAME}")"
+    fi
+    if [ -f "${_current}/${DAP_BIN_NAME}" ]; then
+        _dap="$(hash_product_member "${_current}/${DAP_BIN_NAME}")"
+    fi
+    printf 'state=selected disposition=%s candidate_id=%s server_sha256=%s dap_sha256=%s\n' \
+        "$_disposition" "$_id" "$_server" "$_dap"
+}
+
+observe_path_visible_product_unit() {
+    local _server _dap _server_link _dap_link _server_dir="" _dap_dir=""
+    _server="$(path_visible_member_hash "${INSTALL_DIR}/${BIN_NAME}")"
+    _dap="$(path_visible_member_hash "${INSTALL_DIR}/${DAP_BIN_NAME}")"
+    if [ -L "${INSTALL_DIR}/${BIN_NAME}" ]; then
+        _server_link="$(readlink "${INSTALL_DIR}/${BIN_NAME}")"
+        _server_dir="$(dirname "$_server_link")"
+    fi
+    if [ -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; then
+        _dap_link="$(readlink "${INSTALL_DIR}/${DAP_BIN_NAME}")"
+        _dap_dir="$(dirname "$_dap_link")"
+    fi
+    if [ -n "$_dap_dir" ] && [ "$_server_dir" != "$_dap_dir" ]; then
+        printf 'state=mixed server_sha256=%s dap_sha256=%s\n' "$_server" "$_dap"
+        return 0
+    fi
+    printf 'state=path_visible server_sha256=%s dap_sha256=%s\n' "$_server" "$_dap"
+}
+
+legacy_regular_product_dir() {
+    local _tmp
+    if [ -L "${INSTALL_DIR}/${BIN_NAME}" ] || [ ! -f "${INSTALL_DIR}/${BIN_NAME}" ]; then
+        return 1
+    fi
+    _tmp="$(mktemp -d)"
+    cp "${INSTALL_DIR}/${BIN_NAME}" "${_tmp}/${BIN_NAME}"
+    if [ -f "${INSTALL_DIR}/${DAP_BIN_NAME}" ] && [ ! -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; then
+        cp "${INSTALL_DIR}/${DAP_BIN_NAME}" "${_tmp}/${DAP_BIN_NAME}"
+        printf '%s %s\n' "$_tmp" "archive_pair_required"
+    else
+        printf '%s %s\n' "$_tmp" "historical_server_only"
+    fi
+}
+
+promote_legacy_layout_if_needed() {
+    local _legacy _disposition _id _tmp
+    _legacy="$(legacy_regular_product_dir)" || return 0
+    _tmp="${_legacy%% *}"
+    _disposition="${_legacy#* }"
+    _id="$(publish_immutable_candidate "$_tmp" "$_disposition" 0)" || return
+    rm -rf "$_tmp"
+    commit_current_selection "$_id" 0 || return
+    ensure_path_visible_selectors 0 || return
+}
+
 # ── Install ────────────────────────────────────────────────────────────────────
 
 install_binaries() {
-    local _src_bin="${EXTRACT_DIR}/${BIN_NAME}"
-    if [ ! -f "$_src_bin" ]; then
-        err "binary not found in archive: $_src_bin"
-    fi
+    local _mode="${1:-${INSTALL_MODE:-release}}"
+    local _disposition _id _store _previous="none" _receipt _server_hash _dap_hash="-"
 
     mkdir -p "$INSTALL_DIR"
 
-    # Verify we can write to the install directory.
     if [ ! -w "$INSTALL_DIR" ]; then
         err "install directory is not writable: $INSTALL_DIR
 Try one of:
@@ -873,17 +1102,33 @@ Try one of:
   INSTALL_DIR=\$HOME/.local/bin bash scripts/install.sh"
     fi
 
-    info "installing $BIN_NAME to $INSTALL_DIR"
-    cp "$_src_bin" "$INSTALL_DIR/$BIN_NAME"
-    chmod 755 "$INSTALL_DIR/$BIN_NAME"
-    info "installed: $INSTALL_DIR/$BIN_NAME"
+    _disposition="$(classify_staged_product_unit "$EXTRACT_DIR" "$_mode")" || return
+    _store="$(product_store_dir)"
+    mkdir -p "$_store"
 
-    # Install perl-dap companion binary if present (ships since v0.9.1).
-    local _src_dap="${EXTRACT_DIR}/${DAP_BIN_NAME}"
-    if [ -f "$_src_dap" ]; then
-        info "installing $DAP_BIN_NAME to $INSTALL_DIR"
-        cp "$_src_dap" "$INSTALL_DIR/$DAP_BIN_NAME"
-        chmod 755 "$INSTALL_DIR/$DAP_BIN_NAME"
+    promote_legacy_layout_if_needed || return
+
+    _id="$(publish_immutable_candidate "$EXTRACT_DIR" "$_disposition")" || return
+    commit_current_selection "$_id" || return
+    ensure_path_visible_selectors || return
+
+    if [ -L "${_store}/previous" ]; then
+        _previous="$(readlink "${_store}/previous")"
+        _previous="${_previous##*/}"
+    fi
+    _server_hash="$(hash_product_member "${_store}/current/${BIN_NAME}")" || return
+    if [ -f "${_store}/current/${DAP_BIN_NAME}" ]; then
+        _dap_hash="$(hash_product_member "${_store}/current/${DAP_BIN_NAME}")" || return
+    fi
+    _receipt="product_unit_receipt disposition=${_disposition} candidate_id=${_id} previous=${_previous} server_sha256=${_server_hash} dap_sha256=${_dap_hash} state=selected"
+    case "$_receipt" in
+        *"${INSTALL_DIR}"*|*"${EXTRACT_DIR}"*)
+            err "product-unit receipt contained a private path"
+            ;;
+    esac
+    info "$_receipt"
+    info "installed: $INSTALL_DIR/$BIN_NAME"
+    if [ "$_dap_hash" != "-" ]; then
         info "installed: $INSTALL_DIR/$DAP_BIN_NAME"
     fi
 }
