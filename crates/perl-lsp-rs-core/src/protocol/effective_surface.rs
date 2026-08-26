@@ -192,9 +192,7 @@ impl KnownException {
             Self::OpenCodePushDiagnosticsRetention => {
                 "clientInfo.name =~ /opencode/i && textDocument.diagnostic advertised"
             }
-            Self::JetBrainsWatcherForceDisable => {
-                "clientInfo.name =~ /(jetbrains|intellij|idea)/i"
-            }
+            Self::JetBrainsWatcherForceDisable => "clientInfo.name =~ /(jetbrains|intellij|idea)/i",
         }
     }
 
@@ -664,11 +662,7 @@ impl SurfaceInputs {
                 problems.push(format!("duplicate command descriptor: {command}"));
             }
         }
-        if problems.is_empty() {
-            Ok(())
-        } else {
-            Err(SurfaceBuildError { problems })
-        }
+        if problems.is_empty() { Ok(()) } else { Err(SurfaceBuildError { problems }) }
     }
 
     /// Deterministic digest binding model output to exact inputs
@@ -789,9 +783,8 @@ impl EffectiveLspSurface {
         let opencode_retained = inputs
             .compatibility_exceptions
             .contains(&KnownException::OpenCodePushDiagnosticsRetention);
-        let jetbrains_watcher_off = inputs
-            .compatibility_exceptions
-            .contains(&KnownException::JetBrainsWatcherForceDisable);
+        let jetbrains_watcher_off =
+            inputs.compatibility_exceptions.contains(&KnownException::JetBrainsWatcherForceDisable);
         let mut applied: Vec<KnownException> = inputs
             .compatibility_exceptions
             .iter()
@@ -907,10 +900,7 @@ impl EffectiveLspSurface {
         } else {
             FamilyOutcome::UnadvertisedUnsupported
         };
-        families.insert(
-            CapabilityFamily::ExperimentalInlineCompletionStream,
-            stream_outcome,
-        );
+        families.insert(CapabilityFamily::ExperimentalInlineCompletionStream, stream_outcome);
 
         // Position encoding: negotiated preference stored, advertisement
         // pinned to UTF-16 until the #9282 coordinate cutover.
@@ -961,8 +951,7 @@ impl EffectiveLspSurface {
         if let Some(plan) = inline_planned {
             registrations.push(plan);
         }
-        let registration_plan =
-            RegistrationPlan { registrations, unregistrations: Vec::new() };
+        let registration_plan = RegistrationPlan { registrations, unregistrations: Vec::new() };
 
         // ---- refresh plan -------------------------------------------------
         let refresh_plan = build_refresh_plan(&flags, &client.refresh_supports);
@@ -984,11 +973,8 @@ impl EffectiveLspSurface {
             ids.into_iter().collect()
         };
         #[allow(unused_mut)]
-        let mut command_ids = if flags.execute_command {
-            inputs.command_ids.clone()
-        } else {
-            Vec::new()
-        };
+        let mut command_ids =
+            if flags.execute_command { inputs.command_ids.clone() } else { Vec::new() };
         #[cfg(target_arch = "wasm32")]
         {
             command_ids.clear();
@@ -1240,9 +1226,9 @@ impl CapabilityFamily {
             Self::PositionEncoding => &["positionEncoding"],
             Self::TextDocumentSync => &["textDocumentSync"],
             Self::Workspace => &["workspace"],
-            Self::ExperimentalInlineCompletionStream => &[
-                "experimental.perlInlineCompletionStream",
-            ],
+            Self::ExperimentalInlineCompletionStream => {
+                &["experimental.perlInlineCompletionStream"]
+            }
         }
     }
 
@@ -1341,36 +1327,16 @@ fn build_refresh_plan(
     refreshes: &RefreshSupportFacts,
 ) -> BTreeMap<RefreshFamily, RefreshDecision> {
     let rows = [
-        (
-            RefreshFamily::CodeLens,
-            refreshes.code_lens.is_supported(),
-            flags.code_lens,
-        ),
+        (RefreshFamily::CodeLens, refreshes.code_lens.is_supported(), flags.code_lens),
         (
             RefreshFamily::SemanticTokens,
             refreshes.semantic_tokens.is_supported(),
             flags.semantic_tokens,
         ),
-        (
-            RefreshFamily::InlayHint,
-            refreshes.inlay_hint.is_supported(),
-            flags.inlay_hints,
-        ),
-        (
-            RefreshFamily::InlineValue,
-            refreshes.inline_value.is_supported(),
-            flags.inline_values,
-        ),
-        (
-            RefreshFamily::Diagnostic,
-            refreshes.diagnostic.is_supported(),
-            flags.pull_diagnostics,
-        ),
-        (
-            RefreshFamily::FoldingRange,
-            refreshes.folding_range.is_supported(),
-            flags.folding_range,
-        ),
+        (RefreshFamily::InlayHint, refreshes.inlay_hint.is_supported(), flags.inlay_hints),
+        (RefreshFamily::InlineValue, refreshes.inline_value.is_supported(), flags.inline_values),
+        (RefreshFamily::Diagnostic, refreshes.diagnostic.is_supported(), flags.pull_diagnostics),
+        (RefreshFamily::FoldingRange, refreshes.folding_range.is_supported(), flags.folding_range),
         // textDocumentContent refresh has no client refreshSupport gate; the
         // owning surface (perldoc schemes) is always active when advertised.
         (RefreshFamily::TextDocumentContent, true, true),
@@ -1480,10 +1446,7 @@ fn project_server_capabilities(
         caps.insert("foldingRangeProvider".into(), simple_true.clone());
     }
     if projects_static(families, CapabilityFamily::InlayHint) {
-        caps.insert(
-            "inlayHintProvider".into(),
-            serde_json::json!({ "resolveProvider": true }),
-        );
+        caps.insert("inlayHintProvider".into(), serde_json::json!({ "resolveProvider": true }));
     }
     if projects_static(families, CapabilityFamily::PullDiagnostic) {
         caps.insert(
@@ -1543,10 +1506,7 @@ fn project_server_capabilities(
         );
     }
     if projects_static(families, CapabilityFamily::Rename) {
-        caps.insert(
-            "renameProvider".into(),
-            serde_json::json!({ "prepareProvider": true }),
-        );
+        caps.insert("renameProvider".into(), serde_json::json!({ "prepareProvider": true }));
     }
     if projects_static(families, CapabilityFamily::OnTypeFormatting) {
         caps.insert(
@@ -1583,19 +1543,13 @@ fn project_server_capabilities(
         );
     }
     if projects_static(families, CapabilityFamily::DocumentLink) {
-        caps.insert(
-            "documentLinkProvider".into(),
-            serde_json::json!({ "resolveProvider": true }),
-        );
+        caps.insert("documentLinkProvider".into(), serde_json::json!({ "resolveProvider": true }));
     }
     if projects_static(families, CapabilityFamily::SelectionRange) {
         caps.insert("selectionRangeProvider".into(), simple_true.clone());
     }
     if projects_static(families, CapabilityFamily::CodeLens) {
-        caps.insert(
-            "codeLensProvider".into(),
-            serde_json::json!({ "resolveProvider": true }),
-        );
+        caps.insert("codeLensProvider".into(), serde_json::json!({ "resolveProvider": true }));
     }
     if projects_static(families, CapabilityFamily::InlineValue) {
         caps.insert("inlineValueProvider".into(), simple_true.clone());
@@ -1636,10 +1590,8 @@ fn project_server_capabilities(
     // Workspace surface (folders, textDocumentContent, file operations).
     let workspace_folders_supported = client.workspace_folders.is_supported();
     let perl_globs = ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
-    let filters: Vec<serde_json::Value> = perl_globs
-        .iter()
-        .map(|glob| serde_json::json!({ "pattern": { "glob": glob } }))
-        .collect();
+    let filters: Vec<serde_json::Value> =
+        perl_globs.iter().map(|glob| serde_json::json!({ "pattern": { "glob": glob } })).collect();
     let mut file_operations = serde_json::Map::new();
     for (fact, name) in [
         (client.file_operations.will_create, "willCreate"),
@@ -1661,10 +1613,7 @@ fn project_server_capabilities(
             "changeNotifications": true,
         }),
     );
-    workspace.insert(
-        "textDocumentContent".into(),
-        serde_json::json!({ "schemes": ["perldoc"] }),
-    );
+    workspace.insert("textDocumentContent".into(), serde_json::json!({ "schemes": ["perldoc"] }));
     if !file_operations.is_empty() {
         workspace.insert("fileOperations".into(), serde_json::Value::Object(file_operations));
     }
@@ -1675,11 +1624,7 @@ fn project_server_capabilities(
         insert_experimental(&mut caps, "typeHierarchyProvider", serde_json::Value::Bool(true));
     }
     if projects_static(families, CapabilityFamily::ExperimentalInlineCompletionStream) {
-        insert_experimental(
-            &mut caps,
-            "perlInlineCompletionStream",
-            serde_json::Value::Bool(true),
-        );
+        insert_experimental(&mut caps, "perlInlineCompletionStream", serde_json::Value::Bool(true));
     }
 
     serde_json::Value::Object(caps)

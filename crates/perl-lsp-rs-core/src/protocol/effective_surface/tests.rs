@@ -293,11 +293,13 @@ fn watcher_registration_requires_claimed_support_active_symbol_and_no_jetbrains_
 
     let admitted = build_ok(&base());
     match admitted.registration_plan.registrations.as_slice() {
-        [PlannedDynamic {
-            registration_id: "perl-didChangeWatchedFiles",
-            method: "workspace/didChangeWatchedFiles",
-            options_shape: RegistrationOptionsShape::Watchers { relative_pattern: true },
-        }] => {}
+        [
+            PlannedDynamic {
+                registration_id: "perl-didChangeWatchedFiles",
+                method: "workspace/didChangeWatchedFiles",
+                options_shape: RegistrationOptionsShape::Watchers { relative_pattern: true },
+            },
+        ] => {}
         other => panic!("expected watcher registration with relative patterns, got {other:?}"),
     }
     assert_eq!(
@@ -331,9 +333,11 @@ fn watcher_registration_requires_claimed_support_active_symbol_and_no_jetbrains_
             exception: KnownException::JetBrainsWatcherForceDisable,
         }),
     );
-    assert!(forced_off
-        .compatibility_exceptions_applied
-        .contains(&KnownException::JetBrainsWatcherForceDisable));
+    assert!(
+        forced_off
+            .compatibility_exceptions_applied
+            .contains(&KnownException::JetBrainsWatcherForceDisable)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -368,15 +372,10 @@ fn every_wire_pointer_is_owned_by_a_selected_family_or_contract() {
                     || pointer.starts_with("textDocumentSync")
                     || pointer.starts_with("workspace")
                     || pointer.starts_with("experimental")
-                    || surface
-                        .families
-                        .iter()
-                        .any(|(family, outcome)| {
-                            family.wire_prefixes()
-                                .iter()
-                                .any(|prefix| pointer.starts_with(prefix))
-                                && outcome.is_effectively_advertised()
-                        });
+                    || surface.families.iter().any(|(family, outcome)| {
+                        family.wire_prefixes().iter().any(|prefix| pointer.starts_with(prefix))
+                            && outcome.is_effectively_advertised()
+                    });
                 assert!(
                     owned,
                     "{profile_name}: pointer {pointer} emitted without an owning selected family"
@@ -570,8 +569,10 @@ fn opencode_compatibility_downgrades_transport_but_not_advertisement() {
         "OpenCode retains push publishing through the typed exception"
     );
     // The diagnosticProvider advertisement itself is unchanged either way.
-    assert_eq!(pull.server_capabilities.get("diagnosticProvider"),
-        pushed.server_capabilities.get("diagnosticProvider"));
+    assert_eq!(
+        pull.server_capabilities.get("diagnosticProvider"),
+        pushed.server_capabilities.get("diagnosticProvider")
+    );
 
     // No client signal at all: push without any exception.
     let silent = build_ok(&bare_inputs(FeatureProfile::Production));
@@ -743,7 +744,9 @@ fn every_9665_targeted_inventory_row_maps_into_the_model() {
                 // families; profile:/tool:/config: inputs are expressed by
                 // profile selection, the reviewed RuntimeAvailability seam
                 // (no tool probe exists), and registration-plan tuning.
-                let expressible = row.protocol_field.starts_with("initializationOptions.disabledFeatures:")
+                let expressible = row
+                    .protocol_field
+                    .starts_with("initializationOptions.disabledFeatures:")
                     || CapabilityFamily::feature_id_for_suppression(row.protocol_field).is_some()
                     || row.protocol_field.starts_with("profile:")
                     || row.protocol_field.starts_with("tool:")
@@ -845,4 +848,3 @@ fn code_action_documentation_insertion_follows_client_fact() {
     let refused = build_ok(&malformed);
     assert!(refused.server_capabilities.pointer("/codeActionProvider/documentation").is_none());
 }
-

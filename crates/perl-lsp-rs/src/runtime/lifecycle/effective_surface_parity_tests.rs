@@ -26,9 +26,9 @@ use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
 
 use perl_lsp_rs_core::protocol::effective_surface::{
-    apply_disabled_feature_id_model, CapabilityFamily, ClientFact, EffectiveLspSurface,
-    FamilyOutcome, FileOperationFacts, KnownException, PositionEncoding, RefreshSupportFacts,
-    RuntimeAvailability, SurfaceInputs,
+    CapabilityFamily, ClientFact, EffectiveLspSurface, FamilyOutcome, FileOperationFacts,
+    KnownException, PositionEncoding, RefreshSupportFacts, RuntimeAvailability, SurfaceInputs,
+    apply_disabled_feature_id_model,
 };
 
 /// Map a JSON boolean capability pointer to its normalized fact class,
@@ -44,11 +44,7 @@ fn fact_at(params: &Value, pointer: &str) -> ClientFact {
 
 /// Presence-only selectors admit any present payload.
 fn presence_at(params: &Value, pointer: &str) -> ClientFact {
-    if params.pointer(pointer).is_some() {
-        ClientFact::Supported
-    } else {
-        ClientFact::Absent
-    }
+    if params.pointer(pointer).is_some() { ClientFact::Supported } else { ClientFact::Absent }
 }
 
 /// Replicate the server-selected negotiated position encoding rule.
@@ -70,8 +66,11 @@ fn inputs_from_params(params: &Value) -> SurfaceInputs {
             inputs.disabled_feature_ids.insert(id.to_string());
         }
     }
-    let client_name =
-        params.pointer("/clientInfo/name").and_then(Value::as_str).unwrap_or("").to_ascii_lowercase();
+    let client_name = params
+        .pointer("/clientInfo/name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
     if client_name.contains("opencode")
         && params.pointer("/capabilities/textDocument/diagnostic").is_some()
     {
@@ -88,8 +87,7 @@ fn inputs_from_params(params: &Value) -> SurfaceInputs {
     };
 
     let client = &mut inputs.client;
-    client.inline_completion =
-        presence_at(params, "/capabilities/textDocument/inlineCompletion");
+    client.inline_completion = presence_at(params, "/capabilities/textDocument/inlineCompletion");
     client.inline_completion_dynamic_registration =
         fact_at(params, "/capabilities/textDocument/inlineCompletion/dynamicRegistration");
     client.dynamic_file_watcher_registration =
@@ -105,9 +103,11 @@ fn inputs_from_params(params: &Value) -> SurfaceInputs {
         operations.will_create =
             fact_at(params, "/capabilities/workspace/fileOperations/willCreate");
         operations.did_create = fact_at(params, "/capabilities/workspace/fileOperations/didCreate");
-        operations.will_rename = fact_at(params, "/capabilities/workspace/fileOperations/willRename");
+        operations.will_rename =
+            fact_at(params, "/capabilities/workspace/fileOperations/willRename");
         operations.did_rename = fact_at(params, "/capabilities/workspace/fileOperations/didRename");
-        operations.will_delete = fact_at(params, "/capabilities/workspace/fileOperations/willDelete");
+        operations.will_delete =
+            fact_at(params, "/capabilities/workspace/fileOperations/willDelete");
         operations.did_delete = fact_at(params, "/capabilities/workspace/fileOperations/didDelete");
         operations
     };
@@ -164,10 +164,10 @@ fn assert_initialize_matches_model(params: Value) -> EffectiveLspSurface {
     // #9662): without a client declaration the wire omits the provider while
     // the runtime ID list keeps it. S03 owns removing this twin delta; any
     // other divergence fails here.
-    let runtime_ids: BTreeSet<&str> = server.advertised_feature_ids.lock().clone().into_iter().collect();
+    let runtime_ids: BTreeSet<&str> =
+        server.advertised_feature_ids.lock().clone().into_iter().collect();
     let model_ids: BTreeSet<&str> = surface.advertised_feature_ids.iter().copied().collect();
-    let disagreements: Vec<&str> =
-        runtime_ids.symmetric_difference(&model_ids).copied().collect();
+    let disagreements: Vec<&str> = runtime_ids.symmetric_difference(&model_ids).copied().collect();
     assert!(
         disagreements.iter().all(|id| *id == "lsp.inline_completion"),
         "only the inline-completion tri-state twin may disagree with the \
@@ -189,11 +189,8 @@ fn suppression_has_effect(base: &BuildFlags, id: &str) -> bool {
 
 #[test]
 fn suppression_table_matches_the_canonical_model_table() {
-    let mut ids: Vec<String> = BuildFlags::all()
-        .to_feature_ids()
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let mut ids: Vec<String> =
+        BuildFlags::all().to_feature_ids().into_iter().map(str::to_string).collect();
     ids.push("lsp.ranges_formatting".to_string());
     assert!(ids.len() >= 20, "expected the full feature-ID denominator");
     for id in &ids {
@@ -267,12 +264,8 @@ fn lsp4ij_like_dynamic_inline_completion_surface_matches() {
         }
     }));
 
-    let methods: Vec<&str> = surface
-        .registration_plan
-        .registrations
-        .iter()
-        .map(|plan| plan.method)
-        .collect();
+    let methods: Vec<&str> =
+        surface.registration_plan.registrations.iter().map(|plan| plan.method).collect();
     assert!(methods.contains(&"textDocument/inlineCompletion"));
     assert!(methods.contains(&"workspace/didChangeWatchedFiles"));
     assert!(
@@ -297,8 +290,9 @@ fn opencode_push_retention_surface_matches() {
     assert_eq!(
         surface.diagnostic_transport,
         perl_lsp_rs_core::protocol::effective_surface::DiagnosticTransport::PushOnly(
-            perl_lsp_rs_core::protocol::effective_surface::PushTransportReason::
-                ClientCompatibility(KnownException::OpenCodePushDiagnosticsRetention),
+            perl_lsp_rs_core::protocol::effective_surface::PushTransportReason::ClientCompatibility(
+                KnownException::OpenCodePushDiagnosticsRetention
+            ),
         ),
         "OpenCode keeps push publishing through the typed exception"
     );
