@@ -8,7 +8,7 @@
   "blockers": [
     "pending_port: test(lsp) dependency roots reach providers (#3553) has no coverage in crates/perl-lsp-rs/tests at source 7eea107b6; drive a bounded swarm port PR before final freeze (#7983)",
     "publication_sync_contract_ownership: rows 07cf813f6/c4e03ab73 add scripts/publication_sync_check.py + schemas/publication_sync.v2.schema.json + tests absent from swarm; decide whether swarm adopts that harness or its validate_public_release_claims.py / verify-publication-facts.sh stack owns the invariant",
-    "dependency_currency_lag: swarm Cargo.lock at source holds regex-automata 0.4.16 (< release 0.4.18) and similar 2.7.0 (release moved to 3.1.2); surface as swarm-side upgrade follow-ups, not as ports of lockfile-only commits"
+    "dependency_currency_lag: swarm Cargo.lock at source holds regex-automata 0.4.16 (< release 0.4.18); surface as a swarm-side upgrade follow-up, not as a port of a lockfile-only commit"
   ],
   "entries": [
     {
@@ -198,7 +198,7 @@
       ],
       "evidence": [
         "release fix renames the requested asset to perllsp and guards bare BASH_SOURCE expansion under curl|bash",
-        "swarm install.ps1 at source 7eea107b6 probes actual release assets for both naming schemes and falls back from missing native ARM64 under emulation (lines 142-298), subsuming the asset-name fix",
+        "swarm install.ps1 at source 7eea107b6 probes actual release assets for both naming schemes and falls back to the x64 build under emulation when a native ARM64 asset is absent (lines 142-298), subsuming the asset-name fix",
         "swarm scripts/install.sh replaces the curl-pipe bootstrap with a wrapper model, eliminating the unbound-variable failure mode the release fix patched"
       ],
       "release_sync_effect": "none",
@@ -361,13 +361,14 @@
       "disposition": "deliberately_abandoned",
       "source_commit": null,
       "owner": null,
-      "rationale": "Cargo.lock-only dependabot group bump; every bumped version except regex-automata and similar is already present in swarm's lock at source (anyhow 1.0.104, clap 4.6.6, clap_builder 4.6.6, clap_derive 4.6.4, glob 0.3.4, regex 1.13.1, stacker 0.1.25, thiserror 2.0.20, toml 1.1.4+spec, which 8.0.5). Importing the release lockfile patch is rejected; the two residual lags are surfaced in top-level blockers as swarm-side upgrade follow-ups",
+      "rationale": "Cargo.lock-only dependabot group bump; every bumped package is already present at the bumped-or-newer version in swarm's lock at source except regex-automata (swarm 0.4.16 vs release 0.4.18), which is surfaced as a blocker-level follow-up. similar resolves twice in swarm (2.7.0 transitive via insta, 3.2.0 direct for xtask's \"3.1\" requirement), so the direct side already exceeds the release bump. Importing the release lockfile patch is rejected",
       "changed_paths": [
         "Cargo.lock"
       ],
       "evidence": [
         "git show ca493c617 -- Cargo.lock lists the bumped pairs",
-        "swarm Cargo.lock at source 7eea107b6: anyhow 1.0.104, clap 4.6.6, clap_builder 4.6.6, clap_derive 4.6.4, glob 0.3.4, regex 1.13.1, regex-automata 0.4.16 (lag), similar 2.7.0 (lag), stacker 0.1.25, thiserror 2.0.20, toml 1.1.4+spec, which 8.0.5"
+        "swarm Cargo.lock at source 7eea107b6: anyhow 1.0.104, clap 4.6.6, clap_builder 4.6.6, clap_derive 4.6.4, glob 0.3.4, regex 1.13.1, regex-automata 0.4.16 (lag), stacker 0.1.25, thiserror 2.0.20, toml 1.1.4+spec, which 8.0.5",
+        "similar appears twice in swarm's lock: 2.7.0 (transitive via insta) and 3.2.0 (direct, satisfying xtask/Cargo.toml similar = \"3.1\"), so no similar-side lag exists"
       ],
       "release_sync_effect": "none",
       "blocking_decisions": []

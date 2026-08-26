@@ -68,8 +68,10 @@ preliminary packet that still owns open decisions; nothing here is greenwashed.
 ## Findings
 
 - **True divergence (dependency currency):** swarm lock lags the release line on
-  `regex-automata` (0.4.16 vs 0.4.18) and `similar` (2.7.0 vs 3.1.2). Recorded as
-  swarm-side upgrade follow-ups; not hidden behind lineage or abandonment.
+  `regex-automata` (0.4.16 vs 0.4.18). Recorded as a swarm-side upgrade
+  follow-up; not hidden behind lineage or abandonment. (`similar` initially
+  looked lagged too, but swarm resolves it twice: 2.7.0 transitive via `insta`
+  and 3.2.0 direct against xtask's `"3.1"` requirement, so no lag exists there.)
 - **DAP:** the only DAP-code row deprecates a legacy bridge/server stack that has
   never existed in swarm's perl-dap (`debug_adapter/`, `backend/` architecture).
   No competing dispatcher implementation appears in this population; convergence
