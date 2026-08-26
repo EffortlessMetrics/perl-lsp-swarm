@@ -62,8 +62,9 @@ pub fn render(manifest: &Manifest) -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "Total: {total_rows} rows across {} families; {total_not_proven} rows carry missing instruments (explicitly NOT_PROVEN, never clean coverage).",
+        "Total: {total_rows} rows across {} families (declared_row_count {}); {total_not_proven} rows carry missing instruments (explicitly NOT_PROVEN, never clean coverage).",
         super::model::FAMILIES.len(),
+        manifest.declared_row_count,
     );
 
     let _ = writeln!(out);

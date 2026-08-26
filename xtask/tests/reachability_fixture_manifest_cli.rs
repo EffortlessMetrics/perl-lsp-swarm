@@ -8,6 +8,17 @@ use assert_cmd::cargo::cargo_bin_cmd;
 
 #[test]
 fn check_passes_over_the_canonical_manifest() -> Result<()> {
+    // The summary population is asserted against the manifest's own validated
+    // `declared_row_count`, never a hand-copied literal.
+    let manifest_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../fixtures/analysis_reachability_denominator/manifest.json");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path)?)?;
+    let declared = manifest
+        .get("declared_row_count")
+        .and_then(serde_json::Value::as_u64)
+        .expect("manifest declares declared_row_count");
+
     let output = cargo_bin_cmd!("xtask").args(["check-reachability-fixture-manifest"]).output()?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     assert!(
@@ -15,7 +26,14 @@ fn check_passes_over_the_canonical_manifest() -> Result<()> {
         "reachability fixture manifest check must pass:\n{stdout}\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(stdout.contains("79 rows"), "summary reports its population: {stdout}");
+    assert!(
+        stdout.contains(&format!("declared_row_count {declared}")),
+        "summary cross-checks the declared population: {stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("{declared} rows")),
+        "summary reports its population: {stdout}"
+    );
     assert!(
         stdout.contains("10 of 10 families covered"),
         "every declared family stays instantiated or visibly deferred: {stdout}"

@@ -11,6 +11,7 @@
   "contracts": { "operation_stage_and_work": 11553, "product_profile_budget": 11590, "closed_world_policy": 8101, "diagnostic_result_identity": 10941, "diagnostic_item_composition": 8142, "push_transport": 10953, "pull_currentness": 10957, "compatibility_projection": 9777 },
   "proof_owners": { "A_local_flow": 11004, "W_workspace_facts": 11006, "G_graph_structure": 11006, "R_operation_terminal": 11006, "B_profile_budget": 11006, "P_closed_world_policy": 11006, "D_diagnostic_identity": 11012, "T_transport_currentness": 11012, "C_compatibility_recurrence": 11018, "X_proof_closeout": 11018 },
   "denominator": [],
+  "declared_row_count": 2,
   "rows": [
     {
       "row_id": "sf-duplicate",

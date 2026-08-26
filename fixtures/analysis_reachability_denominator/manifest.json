@@ -52,12 +52,21 @@
   "denominator": [
     {
       "family": "A_local_flow",
-      "required_coverage": [],
+      "required_coverage": [
+        "terminal:complete_nonempty",
+        "terminal:dynamic_or_unsupported",
+        "terminal:semantic_partial_typed_ceiling",
+        "stage:exact_process_proof"
+      ],
       "deferred_coverage": []
     },
     {
       "family": "W_workspace_facts",
-      "required_coverage": [],
+      "required_coverage": [
+        "terminal:complete_nonempty",
+        "terminal:dynamic_or_unsupported",
+        "terminal:complete_legitimate_empty"
+      ],
       "deferred_coverage": [
         {
           "coverage": "overlay and re-add/move transition executions over live roots",
@@ -68,12 +77,36 @@
     },
     {
       "family": "G_graph_structure",
-      "required_coverage": [],
+      "required_coverage": [
+        "terminal:complete_nonempty",
+        "terminal:dynamic_or_unsupported",
+        "terminal:stale"
+      ],
       "deferred_coverage": []
     },
     {
       "family": "R_operation_terminal",
-      "required_coverage": [],
+      "required_coverage": [
+        "terminal:complete_nonempty",
+        "terminal:cancelled_at_checkpoint",
+        "terminal:deadline_exceeded",
+        "terminal:resource_limit_at_boundary",
+        "terminal:checked_near_overflow",
+        "terminal:repeated_operation_reset",
+        "terminal:bounded_view_complete",
+        "terminal:superseded_before_publication",
+        "terminal:incomplete_semantic_never_bounded_complete",
+        "terminal:cancelled_before_start",
+        "stage:graph_admission",
+        "stage:scc_discovery_condensation",
+        "stage:production_closure",
+        "stage:test_closure",
+        "stage:classification_query_source_partition",
+        "stage:bounded_explanation",
+        "stage:result_reuse_final_publication",
+        "stage:semantic_proof",
+        "stage:exact_process_proof"
+      ],
       "deferred_coverage": [
         {
           "coverage": "limit-1 / limit / limit+1 numeric boundary instantiations per operation",
@@ -84,17 +117,32 @@
     },
     {
       "family": "B_profile_budget",
-      "required_coverage": [],
+      "required_coverage": [
+        "terminal:complete_nonempty",
+        "terminal:resource_limit_at_boundary",
+        "terminal:not_ready",
+        "stage:result_reuse_final_publication"
+      ],
       "deferred_coverage": []
     },
     {
       "family": "P_closed_world_policy",
-      "required_coverage": [],
+      "required_coverage": [
+        "terminal:complete_nonempty",
+        "terminal:complete_legitimate_empty",
+        "terminal:dynamic_or_unsupported",
+        "stage:policy_projection"
+      ],
       "deferred_coverage": []
     },
     {
       "family": "D_diagnostic_identity",
-      "required_coverage": [],
+      "required_coverage": [
+        "terminal:complete_nonempty",
+        "terminal:not_ready",
+        "terminal:dynamic_or_unsupported",
+        "stage:diagnostic_composition"
+      ],
       "deferred_coverage": [
         {
           "coverage": "provider-set/schema/catalog change rows against the live #8142 catalog",
@@ -105,20 +153,39 @@
     },
     {
       "family": "T_transport_currentness",
-      "required_coverage": [],
+      "required_coverage": [
+        "terminal:complete_nonempty",
+        "terminal:cancelled_at_checkpoint",
+        "terminal:stale",
+        "terminal:superseded_before_publication",
+        "terminal:dynamic_or_unsupported",
+        "stage:transport_projection_chunking"
+      ],
       "deferred_coverage": []
     },
     {
       "family": "C_compatibility_recurrence",
-      "required_coverage": [],
+      "required_coverage": [
+        "terminal:complete_nonempty",
+        "terminal:semantic_partial_typed_ceiling",
+        "terminal:product_failure",
+        "terminal:complete_legitimate_empty"
+      ],
       "deferred_coverage": []
     },
     {
       "family": "X_proof_closeout",
-      "required_coverage": [],
+      "required_coverage": [
+        "terminal:complete_nonempty",
+        "terminal:instrument_failure",
+        "stage:semantic_proof",
+        "stage:exact_process_proof",
+        "stage:result_reuse_final_publication"
+      ],
       "deferred_coverage": []
     }
   ],
+  "declared_row_count": 81,
   "rows": [
     {
       "row_id": "a01-exit-die-return-unreachable",
@@ -421,6 +488,10 @@
       },
       "terminal": "complete_nonempty",
       "result_identity": { "identity": "result://w01-cancellation-nonedge", "completeness": "semantic_complete" },
+      "authority_reference": {
+        "path": "test_corpus/gold/inc_no_lib_cancellation/expected_module.json",
+        "note": "Pinned independent authority restated by this row's no-lib cancellation proposition; drift checking against these bytes lands with consumer #11006."
+      },
       "limitation": { "support_class": "supported" },
       "oracle": { "oracle_type": "independent_expected_authority", "independence_class": "independent", "proof_ceiling": "internal_semantic" }
     },
@@ -1196,6 +1267,13 @@
       "prerequisites": ["policy-engine", "scc-discovery"],
       "controls": { "near_neighbour": "p02-private-closed-world-isolated-eligible" },
       "expectations": {
+        "operation": {
+          "proposition": "policy projection composes closed-world eligibility from admitted graph and component liveness evidence deterministically, never per-node without the component",
+          "stage": "policy_projection",
+          "work_dimensions": [],
+          "checkpoints": [],
+          "terminal_outcome": "complete_nonempty"
+        },
         "policy": { "proposition": "the whole dead chain/SCC is eligible together with component-level evidence, never per-node without the component", "mode": "private_closed_world", "eligibility": "eligible_with_component_evidence", "reason": "SCC members share eligibility through component evidence" }
       },
       "terminal": "complete_nonempty",
@@ -1300,6 +1378,13 @@
       "prerequisites": ["diagnostic-engine", "closure-engine"],
       "controls": { "opposite": "d03-workspace-deferred-neutral-item" },
       "expectations": {
+        "operation": {
+          "proposition": "diagnostic composition attaches entity/component/root/generation/operation proof data to the canonical PL406 item in one deterministic local pass",
+          "stage": "diagnostic_composition",
+          "work_dimensions": [],
+          "checkpoints": [],
+          "terminal_outcome": "complete_nonempty"
+        },
         "diagnostic": { "proposition": "the canonical PL406 local-only item composes with entity/component/root/generation/operation proof data attached", "item_identity": "pl406", "composition": "complete_local_only" },
         "currentness": { "proposition": "same source bytes under a different document instance keep item identity rules but regenerate instance-scoped fields", "transition": "close_reopen_new_document_instance", "generation": "instance-2" }
       },
@@ -1448,6 +1533,13 @@
       "prerequisites": ["pull-chunking"],
       "controls": { "near_neighbour": "t02-pull-full-complete-parity" },
       "expectations": {
+        "operation": {
+          "proposition": "transport projection chunks the complete workspace result under item/byte bounds with resumable chunk identity",
+          "stage": "transport_projection_chunking",
+          "work_dimensions": ["transport-bytes", "chunks-emitted"],
+          "checkpoints": ["per-chunk"],
+          "terminal_outcome": "complete_nonempty"
+        },
         "transport": { "proposition": "the complete semantic result chunks deterministically under item/byte bounds with resumable chunk identity", "route": "workspace_diagnostic_partial_chunks", "client_visible_expectation": "ordered chunks with resume token covering exactly the complete item set" }
       },
       "terminal": "complete_nonempty",
@@ -1942,6 +2034,60 @@
       "oracle": { "oracle_type": "declaration_only", "independence_class": "none", "proof_ceiling": "static_declaration" },
       "owner_issue": 11018,
       "instrument": { "status": "missing", "disposition": "not_proven" }
+    },
+    {
+      "row_id": "r10-cancelled-before-start-typed-receipt",
+      "fixture": {
+        "id": "graph-shapes",
+        "path": "crates/perl-corpus/fixtures/reachability_denominator/graph_shapes.pl",
+        "digest_sha256_lf": "1551e9a03a1c3eecc8a079941e4b248c365e6a871a673c79cc0028d0dc484f30",
+        "role": "shared_canonical"
+      },
+      "subjects": ["operation://cancelled-before-start-attempt"],
+      "source_roles": ["operation-inputs"],
+      "train": { "node": "N.denominator", "component": "operation", "family": "R_operation_terminal", "claim_profile": "reachability-v1" },
+      "prerequisites": ["operation-tracker"],
+      "controls": { "opposite": "r01-graph-admission-work-dimensions" },
+      "expectations": {
+        "operation": {
+          "proposition": "cancellation observed before the first unit of admission work yields a typed cancelled_before_start receipt accounting every declared work dimension at explicit zero, never silence or inferred-zero coverage",
+          "stage": "graph_admission",
+          "work_dimensions": ["nodes-admitted", "families-ledger"],
+          "checkpoints": ["before-first-unit-of-work"],
+          "terminal_outcome": "cancelled_before_start"
+        }
+      },
+      "terminal": "cancelled_before_start",
+      "limitation": { "support_class": "supported" },
+      "oracle": { "oracle_type": "independent_expected_authority", "independence_class": "independent", "proof_ceiling": "internal_semantic" },
+      "instrument": { "status": "present", "disposition": "operation-receipt-required" }
+    },
+    {
+      "row_id": "r11-checked-near-overflow-guard",
+      "fixture": {
+        "id": "graph-shapes",
+        "path": "crates/perl-corpus/fixtures/reachability_denominator/graph_shapes.pl",
+        "digest_sha256_lf": "1551e9a03a1c3eecc8a079941e4b248c365e6a871a673c79cc0028d0dc484f30",
+        "role": "shared_canonical"
+      },
+      "subjects": ["operation://near-overflow-arithmetic-guard"],
+      "source_roles": ["operation-inputs"],
+      "train": { "node": "N.denominator", "component": "operation", "family": "R_operation_terminal", "claim_profile": "reachability-v1" },
+      "prerequisites": ["closure-engine", "operation-tracker"],
+      "controls": { "opposite": "r04-test-closure-resource-limit-boundary" },
+      "expectations": {
+        "operation": {
+          "proposition": "work counters approaching representation bounds trip checked near-overflow guards that publish a typed checked_near_overflow receipt instead of wrapping or silently saturating to success",
+          "stage": "test_closure",
+          "work_dimensions": ["queue-max-depth"],
+          "checkpoints": ["counter-arithmetic-guard"],
+          "terminal_outcome": "checked_near_overflow"
+        }
+      },
+      "terminal": "checked_near_overflow",
+      "limitation": { "support_class": "supported" },
+      "oracle": { "oracle_type": "independent_expected_authority", "independence_class": "independent", "proof_ceiling": "internal_semantic" },
+      "instrument": { "status": "present", "disposition": "operation-receipt-required" }
     }
   ]
 }

@@ -84,6 +84,10 @@ pub struct Manifest {
     pub proof_owners: BTreeMap<String, u64>,
     /// Declared denominator per family with required coverage and deferrals.
     pub denominator: Vec<FamilyDenominator>,
+    /// Row population the document declares. The validator cross-checks this
+    /// against the actual `rows` length so silent deletions become violations
+    /// instead of a shrinking-but-green denominator.
+    pub declared_row_count: u64,
     /// Denominator rows, unique by `row_id` (order in the document is not
     /// meaningful; validation and views sort canonically).
     pub rows: Vec<Row>,
@@ -162,6 +166,11 @@ pub struct Row {
     /// exact results; must be absent on non-success terminals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_identity: Option<ResultIdentity>,
+    /// Independent pinned authority (e.g. a gold `expected_module.json`) this
+    /// row's proposition restates; drift checking against these bytes is owned
+    /// by the named consumer proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_reference: Option<AuthorityReference>,
     /// Support limitation class and exit owner.
     pub limitation: Limitation,
     /// Oracle type, independence class and proof ceiling.
@@ -427,6 +436,42 @@ pub enum OperationStage {
 }
 
 impl OperationStage {
+    /// Every material #11553 stage in vocabulary order; drives the
+    /// stage-completeness coverage pass.
+    pub const ALL: &[OperationStage] = &[
+        Self::GraphAdmission,
+        Self::SccDiscoveryCondensation,
+        Self::ProductionClosure,
+        Self::TestClosure,
+        Self::ClassificationQuerySourcePartition,
+        Self::BoundedExplanation,
+        Self::PolicyProjection,
+        Self::DiagnosticComposition,
+        Self::TransportProjectionChunking,
+        Self::ResultReuseFinalPublication,
+        Self::SemanticProof,
+        Self::ExactProcessProof,
+    ];
+
+    /// Wire (snake_case) spelling used in documents and `stage:` coverage
+    /// tokens.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::GraphAdmission => "graph_admission",
+            Self::SccDiscoveryCondensation => "scc_discovery_condensation",
+            Self::ProductionClosure => "production_closure",
+            Self::TestClosure => "test_closure",
+            Self::ClassificationQuerySourcePartition => "classification_query_source_partition",
+            Self::BoundedExplanation => "bounded_explanation",
+            Self::PolicyProjection => "policy_projection",
+            Self::DiagnosticComposition => "diagnostic_composition",
+            Self::TransportProjectionChunking => "transport_projection_chunking",
+            Self::ResultReuseFinalPublication => "result_reuse_final_publication",
+            Self::SemanticProof => "semantic_proof",
+            Self::ExactProcessProof => "exact_process_proof",
+        }
+    }
+
     /// Stages whose operations must account for deterministic work dimensions.
     pub fn requires_work_dimensions(self) -> bool {
         matches!(
@@ -647,6 +692,54 @@ pub enum TerminalOutcome {
 }
 
 impl TerminalOutcome {
+    /// Every terminal outcome in vocabulary order; drives the
+    /// terminal-completeness coverage pass.
+    pub const ALL: &[TerminalOutcome] = &[
+        Self::CompleteNonempty,
+        Self::CompleteLegitimateEmpty,
+        Self::SemanticPartialTypedCeiling,
+        Self::NotReady,
+        Self::Stale,
+        Self::DynamicOrUnsupported,
+        Self::CancelledBeforeStart,
+        Self::CancelledAtCheckpoint,
+        Self::DeadlineExceeded,
+        Self::ResourceLimitAtBoundary,
+        Self::CheckedNearOverflow,
+        Self::SupersededBeforePublication,
+        Self::RepeatedOperationReset,
+        Self::BoundedViewComplete,
+        Self::IncompleteSemanticNeverBoundedComplete,
+        Self::InstrumentFailure,
+        Self::ProductFailure,
+    ];
+
+    /// Wire (snake_case) spelling used in documents and `terminal:` coverage
+    /// tokens.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::CompleteNonempty => "complete_nonempty",
+            Self::CompleteLegitimateEmpty => "complete_legitimate_empty",
+            Self::SemanticPartialTypedCeiling => "semantic_partial_typed_ceiling",
+            Self::NotReady => "not_ready",
+            Self::Stale => "stale",
+            Self::DynamicOrUnsupported => "dynamic_or_unsupported",
+            Self::CancelledBeforeStart => "cancelled_before_start",
+            Self::CancelledAtCheckpoint => "cancelled_at_checkpoint",
+            Self::DeadlineExceeded => "deadline_exceeded",
+            Self::ResourceLimitAtBoundary => "resource_limit_at_boundary",
+            Self::CheckedNearOverflow => "checked_near_overflow",
+            Self::SupersededBeforePublication => "superseded_before_publication",
+            Self::RepeatedOperationReset => "repeated_operation_reset",
+            Self::BoundedViewComplete => "bounded_view_complete",
+            Self::IncompleteSemanticNeverBoundedComplete => {
+                "incomplete_semantic_never_bounded_complete"
+            }
+            Self::InstrumentFailure => "instrument_failure",
+            Self::ProductFailure => "product_failure",
+        }
+    }
+
     /// Terminals naming an exact result with named identity authority.
     pub fn is_exact_result(self) -> bool {
         matches!(
@@ -690,6 +783,20 @@ pub struct ResultIdentity {
 pub enum CompletenessClaim {
     SemanticComplete,
     BoundedViewComplete,
+}
+
+/// A pinned independent authority backing one row's proposition. The manifest
+/// names the authority bytes; their drift checking stays owned by the
+/// consumer proof named in `note`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorityReference {
+    /// Repo-relative slash path of the pinned authority file inside one
+    /// declared allowed root.
+    pub path: String,
+    /// Who re-checks these bytes and when (consumer issue).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Support-limitation class and exit owner for unsupported/partial/open-world

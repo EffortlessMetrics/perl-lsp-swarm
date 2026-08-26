@@ -120,6 +120,7 @@ fn positive_row(id: &str, opposite: Option<&str>) -> Row {
             identity: "result://demo".to_string(),
             completeness: CompletenessClaim::SemanticComplete,
         }),
+        authority_reference: None,
         limitation: supported_limitation(),
         oracle: oracle(OracleType::IndependentExpectedAuthority),
         race_barrier: None,
@@ -140,24 +141,71 @@ fn control_row(id: &str) -> Row {
     row
 }
 
-/// Builds a manifest whose denominator declares a deferral for every family
-/// the given rows do not instantiate.
+/// Builds a manifest whose denominator declares, for every family, the exact
+/// stage/terminal slots its rows instantiate (or named deferrals covering
+/// every vocabulary slot the document leaves uninstantiated), mirroring how
+/// the canonical manifest keeps coverage mechanically cross-checked.
 fn minimal_manifest(rows: Vec<Row>) -> Manifest {
-    let covered: std::collections::BTreeSet<String> =
-        rows.iter().map(|row| row.train.family.clone()).collect();
-    let denominator = model::FAMILIES
-        .iter()
-        .filter(|family| !covered.contains(**family))
-        .map(|family| model::FamilyDenominator {
+    let mut covered_stages: Vec<&'static str> = Vec::new();
+    let mut covered_terminals: Vec<&'static str> = Vec::new();
+    for row in &rows {
+        let terminal_token = row.terminal.wire_name();
+        if !covered_terminals.contains(&terminal_token) {
+            covered_terminals.push(terminal_token);
+        }
+        if let Some(operation) = &row.expectations.operation
+            && !covered_stages.contains(&operation.stage.wire_name())
+        {
+            covered_stages.push(operation.stage.wire_name());
+        }
+    }
+
+    let unit_deferral = |coverage: String| model::DeferredCoverage {
+        coverage,
+        owner_issue: 11004,
+        reason: "unit-test deferral placeholder".to_string(),
+    };
+
+    let mut denominator = Vec::new();
+    for family in model::FAMILIES {
+        let family_rows: Vec<&Row> =
+            rows.iter().filter(|row| row.train.family == **family).collect();
+        let mut required_coverage = Vec::new();
+        for row in &family_rows {
+            let terminal_token = format!("terminal:{}", row.terminal.wire_name());
+            if !required_coverage.contains(&terminal_token) {
+                required_coverage.push(terminal_token);
+            }
+            if let Some(operation) = &row.expectations.operation {
+                let stage_token = format!("stage:{}", operation.stage.wire_name());
+                if !required_coverage.contains(&stage_token) {
+                    required_coverage.push(stage_token);
+                }
+            }
+        }
+        let deferred_coverage = if family_rows.is_empty() {
+            model::OperationStage::ALL
+                .iter()
+                .filter(|stage| !covered_stages.contains(&stage.wire_name()))
+                .map(|stage| unit_deferral(format!("stage:{}", stage.wire_name())))
+                .chain(
+                    model::TerminalOutcome::ALL
+                        .iter()
+                        .filter(|terminal| !covered_terminals.contains(&terminal.wire_name()))
+                        .map(|terminal| {
+                            unit_deferral(format!("terminal:{}", terminal.wire_name()))
+                        }),
+                )
+                .collect()
+        } else {
+            Vec::new()
+        };
+        denominator.push(model::FamilyDenominator {
             family: (*family).to_string(),
-            required_coverage: vec![],
-            deferred_coverage: vec![model::DeferredCoverage {
-                coverage: "unit-test-deferral".to_string(),
-                owner_issue: 11004,
-                reason: "unit-test deferral placeholder".to_string(),
-            }],
-        })
-        .collect();
+            required_coverage,
+            deferred_coverage,
+        });
+    }
     Manifest {
         schema: SCHEMA_ID.to_string(),
         schema_version: SCHEMA_VERSION,
@@ -173,6 +221,7 @@ generated views derive from this manifest."
         authorities: vec!["#8062".to_string(), "#8149".to_string()],
         contracts: Default::default(),
         proof_owners: model::FAMILIES.iter().map(|family| ((*family).to_string(), 11004)).collect(),
+        declared_row_count: rows.len() as u64,
         denominator,
         rows,
     }
@@ -434,6 +483,79 @@ fn rejects_terminal_instrument_failure_without_not_proven_disposition() -> TestR
             .iter()
             .any(|v| v.contains("requires present instrumentation or an explicit not_proven")),
         "missing instrument violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_family_with_zero_rows_and_empty_deferral() -> TestResult {
+    // One W-family row; every other family — including A_local_flow — ends up
+    // with neither rows nor deferrals once placeholders are stripped.
+    let mut row = control_row("w-only");
+    row.train = train("W_workspace_facts");
+    let mut manifest = minimal_manifest(vec![row]);
+    for entry in &mut manifest.denominator {
+        entry.deferred_coverage.clear();
+        entry.required_coverage.clear();
+    }
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v
+                .contains("family \"A_local_flow\" claims denominator coverage without any row")),
+        "missing empty-family violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_required_coverage_declared_without_rows() -> TestResult {
+    let mut row = control_row("w-only");
+    row.train = train("W_workspace_facts");
+    let mut manifest = minimal_manifest(vec![row]);
+    for entry in &mut manifest.denominator {
+        if entry.family == "A_local_flow" {
+            // Strip the placeholder deferrals so the required slot resolves
+            // neither to a row nor to a named deferral.
+            entry.deferred_coverage.clear();
+            entry.required_coverage = vec!["terminal:checked_near_overflow".to_string()];
+        }
+    }
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| {
+            v.contains("declares required_coverage")
+                && v.contains("terminal:checked_near_overflow")
+                && v.contains("without any denominator row")
+        }),
+        "missing required-coverage violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_vocabulary_slot_without_row_or_named_deferral() -> TestResult {
+    // Remove the named deferrals for two uninstantiated slots; the
+    // completeness pass must fail closed on each of them.
+    let mut manifest = minimal_manifest(vec![
+        positive_row("a1-positive", Some("a2-opposite")),
+        control_row("a2-opposite"),
+    ]);
+    for entry in &mut manifest.denominator {
+        entry.deferred_coverage.retain(|slot| {
+            slot.coverage != "terminal:cancelled_before_start"
+                && slot.coverage != "terminal:checked_near_overflow"
+        });
+    }
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("CancelledBeforeStart (cancelled_before_start) has no denominator row and no named deferral")),
+        "missing stage/terminal completeness violation: {violations:?}"
+    );
+    assert!(
+        violations.iter().any(|v| v.contains("CheckedNearOverflow (checked_near_overflow) has no denominator row and no named deferral")),
+        "missing terminal completeness violation: {violations:?}"
     );
     Ok(())
 }

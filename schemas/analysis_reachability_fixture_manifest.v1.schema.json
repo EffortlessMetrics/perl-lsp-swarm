@@ -18,6 +18,7 @@
     "contracts",
     "proof_owners",
     "denominator",
+    "declared_row_count",
     "rows"
   ],
   "properties": {
@@ -122,6 +123,7 @@
         }
       }
     },
+    "declared_row_count": { "type": "integer", "minimum": 1 },
     "rows": {
       "type": "array",
       "items": { "$ref": "#/$defs/row" }
@@ -212,6 +214,7 @@
             "completeness": { "enum": ["semantic_complete", "bounded_view_complete"] }
           }
         },
+        "authority_reference": { "$ref": "#/$defs/authorityReference" },
         "limitation": {
           "type": "object",
           "additionalProperties": false,
@@ -286,6 +289,15 @@
         "role": {
           "enum": ["positive", "control_opposite", "control_near_neighbour", "falsifier", "shared_canonical"]
         }
+      }
+    },
+    "authorityReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^(crates|test_corpus)/[A-Za-z0-9._/-]+$" },
+        "note": { "type": "string", "minLength": 1 }
       }
     },
     "expectations": {

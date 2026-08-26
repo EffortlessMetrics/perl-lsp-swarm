@@ -46,6 +46,7 @@ fn is_valid_row_id(id: &str) -> bool {
 #[derive(Debug, Default)]
 struct CoverageStats {
     rows: usize,
+    declared_row_count: u64,
     families_covered: usize,
     not_proven_instruments: usize,
     deferred_slots: usize,
@@ -60,8 +61,9 @@ pub fn run(update_view: bool) -> Result<()> {
     }
     let stats = validate(&root)?;
     println!(
-        "reachability fixture manifest check passed: {} rows, {} of {} families covered, {} deferred slots visible, {} NOT_PROVEN instruments",
+        "reachability fixture manifest check passed: {} rows (declared_row_count {}), {} of {} families covered, {} deferred slots visible, {} NOT_PROVEN instruments",
         stats.rows,
+        stats.declared_row_count,
         stats.families_covered,
         model::FAMILIES.len(),
         stats.deferred_slots,
@@ -110,6 +112,7 @@ fn validate(root: &Path) -> Result<CoverageStats> {
 
     let stats = CoverageStats {
         rows: manifest.rows.len(),
+        declared_row_count: manifest.declared_row_count,
         families_covered: model::FAMILIES
             .iter()
             .filter(|family| manifest.rows.iter().any(|row| row.train.family == **family))
@@ -210,6 +213,19 @@ fn validate_shape(manifest: &model::Manifest, violations: &mut Vec<String>) {
             model::DIGEST_ALGORITHM
         ));
     }
+    let actual_row_count = manifest.rows.len();
+    if manifest.declared_row_count as usize != actual_row_count {
+        // Name every row id actually present so a reviewer can diff the
+        // declared population against the surviving one.
+        let present_ids: BTreeSet<&str> =
+            manifest.rows.iter().map(|row| row.row_id.as_str()).collect();
+        violations.push(format!(
+            "{DOC}: declared_row_count {} does not match the {} declared rows; row ids present: {}",
+            manifest.declared_row_count,
+            actual_row_count,
+            present_ids.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
     for phrase in REQUIRED_CLAIM_PHRASES {
         if !manifest.claim_boundary.to_ascii_lowercase().contains(phrase) {
             violations.push(format!("{DOC}: claim_boundary must include phrase {phrase:?}"));
@@ -291,6 +307,45 @@ fn validate_rows(root: &Path, manifest: &model::Manifest, violations: &mut Vec<S
         validate_expectations(&doc, row, violations);
         validate_terminal_and_limitation(&doc, row, violations);
         validate_owner(&doc, row, manifest, violations);
+        validate_authority_reference(root, &doc, row, &manifest.allowed_fixture_roots, violations);
+    }
+}
+
+/// A pinned authority reference must live inside the declared fixture roots
+/// and point at existing bytes; byte-drift checking itself stays owned by the
+/// consumer proof named in its note.
+fn validate_authority_reference(
+    root: &Path,
+    doc: &str,
+    row: &model::Row,
+    allowed_roots: &[String],
+    violations: &mut Vec<String>,
+) {
+    let Some(reference) = &row.authority_reference else {
+        return;
+    };
+    let path = &reference.path;
+    if path.starts_with('/')
+        || path.contains('\\')
+        || path.contains(':')
+        || Path::new(path).is_absolute()
+    {
+        violations.push(format!(
+            "{doc}: authority reference path must be repo-relative slash form: {path}"
+        ));
+        return;
+    }
+    let within_declared_root = allowed_roots.iter().any(|allowed| {
+        path == allowed.as_str()
+            || (path.starts_with(allowed.as_str())
+                && path.strip_prefix(allowed.as_str()).is_some_and(|rest| rest.starts_with('/')))
+    });
+    if !within_declared_root {
+        violations.push(format!("{doc}: authority reference escapes owned fixture roots: {path}"));
+        return;
+    }
+    if !root.join(path).is_file() {
+        violations.push(format!("{doc}: authority reference points to missing file {path}"));
     }
 }
 
@@ -554,41 +609,163 @@ fn validate_owner(
     }
 }
 
+/// One machine-checkable coverage slot: an operation-stage or terminal-outcome
+/// vocabulary member addressed by its wire name.
+#[derive(Debug, Clone, Copy)]
+enum CoverageSlot {
+    Stage(model::OperationStage),
+    Terminal(model::TerminalOutcome),
+}
+
+/// Parses the `stage:<wire>` / `terminal:<wire>` token grammar used by
+/// `required_coverage` entries and recognized deferrals. Free-text classes
+/// stay allowed on deferrals but cannot satisfy a vocabulary slot.
+fn parse_coverage_slot(entry: &str) -> Option<CoverageSlot> {
+    let (kind, name) = entry.split_once(':')?;
+    match kind {
+        "stage" => model::OperationStage::ALL
+            .iter()
+            .copied()
+            .find(|stage| stage.wire_name() == name)
+            .map(CoverageSlot::Stage),
+        "terminal" => model::TerminalOutcome::ALL
+            .iter()
+            .copied()
+            .find(|terminal| terminal.wire_name() == name)
+            .map(CoverageSlot::Terminal),
+        _ => None,
+    }
+}
+
+fn family_declares_deferral(manifest: &model::Manifest, family: &str, expected: &str) -> bool {
+    manifest.denominator.iter().any(|entry| {
+        entry.family == family
+            && entry.deferred_coverage.iter().any(|slot| slot.coverage == expected)
+    })
+}
+
 fn validate_coverage(manifest: &model::Manifest, violations: &mut Vec<String>) {
+    const DOC: &str = MANIFEST_RELATIVE_PATH;
     // Rule 4: claimed families/profiles/stages keep instantiated denominator
     // rows unless the slot is explicitly deferred to a named owner.
     for family in model::FAMILIES {
         let declared = manifest.denominator.iter().find(|entry| entry.family == *family);
         let has_rows = manifest.rows.iter().any(|row| row.train.family == *family);
-        let has_deferral = declared.is_some_and(|entry| !entry.deferred_coverage.is_empty())
-            || declared.is_some_and(|entry| !entry.required_coverage.is_empty());
+        let has_deferral = declared.is_some_and(|entry| {
+            !entry.deferred_coverage.is_empty() || !entry.required_coverage.is_empty()
+        });
         if !has_rows && !has_deferral {
             violations.push(format!(
-                "{}: family {family:?} claims denominator coverage without any row",
-                MANIFEST_RELATIVE_PATH
+                "{DOC}: family {family:?} claims denominator coverage without any row"
             ));
         }
     }
     for entry in &manifest.denominator {
         if !model::FAMILIES.contains(&entry.family.as_str()) {
-            violations.push(format!(
-                "{}: denominator declares unknown family {:?}",
-                MANIFEST_RELATIVE_PATH, entry.family
-            ));
+            violations
+                .push(format!("{DOC}: denominator declares unknown family {:?}", entry.family));
+        }
+        // Every required slot must resolve to real row content in this family
+        // or to an explicitly named deferral in the same family.
+        for requirement in &entry.required_coverage {
+            match parse_coverage_slot(requirement) {
+                Some(CoverageSlot::Stage(stage)) => {
+                    let satisfied = manifest.rows.iter().any(|row| {
+                        row.train.family == entry.family
+                            && row
+                                .expectations
+                                .operation
+                                .as_ref()
+                                .is_some_and(|operation| operation.stage == stage)
+                    });
+                    if !satisfied && !family_declares_deferral(manifest, &entry.family, requirement)
+                    {
+                        violations.push(format!(
+                            "{DOC}: family {:?} declares required_coverage {:?} without any denominator row instantiating operation stage {:?}",
+                            entry.family, requirement, stage
+                        ));
+                    }
+                }
+                Some(CoverageSlot::Terminal(terminal)) => {
+                    let satisfied = manifest
+                        .rows
+                        .iter()
+                        .any(|row| row.train.family == entry.family && row.terminal == terminal);
+                    if !satisfied && !family_declares_deferral(manifest, &entry.family, requirement)
+                    {
+                        violations.push(format!(
+                            "{DOC}: family {:?} declares required_coverage {:?} without any denominator row declaring terminal outcome {:?}",
+                            entry.family, requirement, terminal
+                        ));
+                    }
+                }
+                None => {
+                    violations.push(format!(
+                        "{DOC}: family {:?} declares unparseable required_coverage entry {:?}; use \"stage:<name>\" or \"terminal:<name>\" with a vocabulary wire name",
+                        entry.family, requirement
+                    ));
+                }
+            }
         }
         for slot in &entry.deferred_coverage {
             if slot.reason.trim().is_empty() {
                 violations.push(format!(
-                    "{}: deferred slot {:?} in {:?} requires a reason",
-                    MANIFEST_RELATIVE_PATH, slot.coverage, entry.family
+                    "{DOC}: deferred slot {:?} in {:?} requires a reason",
+                    slot.coverage, entry.family
                 ));
             }
             if slot.owner_issue == 0 {
                 violations.push(format!(
-                    "{}: deferred slot {:?} in {:?} requires an owner issue",
-                    MANIFEST_RELATIVE_PATH, slot.coverage, entry.family
+                    "{DOC}: deferred slot {:?} in {:?} requires an owner issue",
+                    slot.coverage, entry.family
                 ));
             }
+            // A mistyped vocabulary token would silently void the
+            // completeness pass below; recognize-but-misname fails closed.
+            if (slot.coverage.starts_with("stage:") || slot.coverage.starts_with("terminal:"))
+                && parse_coverage_slot(&slot.coverage).is_none()
+            {
+                violations.push(format!(
+                    "{DOC}: deferred slot {:?} in {:?} names an unknown vocabulary slot; use a wire name after \"stage:\"/\"terminal:\"",
+                    slot.coverage, entry.family
+                ));
+            }
+        }
+    }
+    // Completeness: every operation-stage and terminal-outcome vocabulary slot
+    // must have at least one instantiated row or a named deferral somewhere.
+    for stage in model::OperationStage::ALL {
+        let has_row = manifest.rows.iter().any(|row| {
+            row.expectations.operation.as_ref().is_some_and(|operation| operation.stage == *stage)
+        });
+        let has_deferral = manifest.denominator.iter().any(|entry| {
+            entry
+                .deferred_coverage
+                .iter()
+                .any(|slot| slot.coverage == format!("stage:{}", stage.wire_name()))
+        });
+        if !has_row && !has_deferral {
+            violations.push(format!(
+                "{DOC}: operation stage {:?} ({}) has no denominator row and no named deferral",
+                stage,
+                stage.wire_name()
+            ));
+        }
+    }
+    for terminal in model::TerminalOutcome::ALL {
+        let has_row = manifest.rows.iter().any(|row| row.terminal == *terminal);
+        let has_deferral = manifest.denominator.iter().any(|entry| {
+            entry
+                .deferred_coverage
+                .iter()
+                .any(|slot| slot.coverage == format!("terminal:{}", terminal.wire_name()))
+        });
+        if !has_row && !has_deferral {
+            violations.push(format!(
+                "{DOC}: terminal outcome {:?} ({}) has no denominator row and no named deferral",
+                terminal,
+                terminal.wire_name()
+            ));
         }
     }
 }
