@@ -465,18 +465,22 @@ mod relative_identity_tests {
         PathBuf::from(if cfg!(windows) { windows } else { unix })
     }
 
-    fn outside_root_payload(root: &Path, path: &Path) -> PathOutsideRoot {
-        let error = relative_identity(root, path).expect_err("path must fail closed");
-        error.downcast::<PathOutsideRoot>().unwrap_or_else(|error| {
-            panic!("outside-root failure must carry PathOutsideRoot, got {error}")
+    fn require_error(result: Result<PathBuf>, message: &'static str) -> Result<anyhow::Error> {
+        result.err().ok_or_else(|| anyhow::anyhow!("{message}"))
+    }
+
+    fn outside_root_payload(root: &Path, path: &Path) -> Result<PathOutsideRoot> {
+        let error = require_error(relative_identity(root, path), "path must fail closed")?;
+        error.downcast::<PathOutsideRoot>().map_err(|error| {
+            anyhow::anyhow!("outside-root failure must carry PathOutsideRoot, got {error}")
         })
     }
 
     #[test]
-    fn outside_absolute_path_error_names_path_and_root() {
+    fn outside_absolute_path_error_names_path_and_root() -> Result<()> {
         let root = platform_absolute("/bound/root", r"C:\bound\root");
         let path = platform_absolute("/other/escaped.meta.toml", r"C:\other\escaped.meta.toml");
-        let payload = outside_root_payload(&root, &path);
+        let payload = outside_root_payload(&root, &path)?;
         assert_eq!(payload.path, path);
         assert_eq!(payload.root, root);
 
@@ -489,10 +493,11 @@ mod relative_identity_tests {
             message.contains(&root.display().to_string()),
             "error must name the bound root: {message}"
         );
+        Ok(())
     }
 
     #[test]
-    fn string_prefix_sibling_is_outside_the_bound_root() {
+    fn string_prefix_sibling_is_outside_the_bound_root() -> Result<()> {
         let root = platform_absolute("/bound/root", r"C:\bound\root");
         let path = platform_absolute(
             "/bound/root-extra/escaped.meta.toml",
@@ -502,46 +507,49 @@ mod relative_identity_tests {
             path.to_string_lossy().starts_with(root.to_string_lossy().as_ref()),
             "fixture must be a string-prefix sibling, not a path-prefix child"
         );
-        let payload = outside_root_payload(&root, &path);
+        let payload = outside_root_payload(&root, &path)?;
         assert_eq!(payload.path, path);
         assert_eq!(payload.root, root);
+        Ok(())
     }
 
     #[test]
-    fn in_root_absolute_and_relative_paths_still_resolve() {
+    fn in_root_absolute_and_relative_paths_still_resolve() -> Result<()> {
         let root = platform_absolute("/bound/root", r"C:\bound\root");
         let absolute = platform_absolute(
             "/bound/root/nested/case.meta.toml",
             r"C:\bound\root\nested\case.meta.toml",
         );
+        assert_eq!(relative_identity(&root, &absolute)?, Path::new("nested/case.meta.toml"));
         assert_eq!(
-            relative_identity(&root, &absolute).expect("in-root absolute path"),
+            relative_identity(&root, Path::new("nested/case.meta.toml"))?,
             Path::new("nested/case.meta.toml")
         );
-        assert_eq!(
-            relative_identity(&root, Path::new("nested/case.meta.toml"))
-                .expect("in-root relative path"),
-            Path::new("nested/case.meta.toml")
-        );
+        Ok(())
     }
 
     #[test]
-    fn traversal_and_root_identity_are_not_outside_root_payloads() {
+    fn traversal_and_root_identity_are_not_outside_root_payloads() -> Result<()> {
         let root = platform_absolute("/bound/root", r"C:\bound\root");
-        let traversal = relative_identity(&root, Path::new("../escaped.meta.toml"))
-            .expect_err("relative traversal must fail");
+        let traversal = require_error(
+            relative_identity(&root, Path::new("../escaped.meta.toml")),
+            "relative traversal must fail",
+        )?;
         assert!(
             traversal.downcast_ref::<PathOutsideRoot>().is_none(),
             "relative traversal is normalize_relative, not strip_prefix: {traversal}"
         );
         assert!(traversal.to_string().contains("parent component"));
 
-        let empty =
-            relative_identity(&root, &root).expect_err("root itself is not a relative identity");
+        let empty = require_error(
+            relative_identity(&root, &root),
+            "root itself is not a relative identity",
+        )?;
         assert!(
             empty.downcast_ref::<PathOutsideRoot>().is_none(),
             "strip_prefix of the root itself is empty identity, not PathOutsideRoot: {empty}"
         );
         assert!(empty.to_string().contains("nonempty relative"));
+        Ok(())
     }
 }
