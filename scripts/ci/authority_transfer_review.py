@@ -219,6 +219,10 @@ def validate_denominator_tree(root: Path) -> list[str]:
     except ValueError as error:
         return [str(error)]
     if not doc:
+        # An emptied manifest parses to {} and would otherwise report zero
+        # issues, publishing a green context for a candidate that removed
+        # the entire denominator. Fail closed instead (#11793).
+        issues.append(f"{DEFAULT_MANIFEST.as_posix()}: denominator_incomplete (empty manifest)")
         return issues
     vrs.validate_header(doc, issues)
     vrs.validate_profiles(doc.get("profile"), issues)
@@ -535,6 +539,14 @@ def validate_packet(
             status_value = result_row.get("status")
             if status_value not in ("established", "not_established"):
                 return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, f"negative_control_status_invalid ({name})")
+            if status_value == "not_established":
+                # Packet contract: every negative-control criterion must be
+                # established with evidence; not_established is a finding,
+                # never a pass.
+                return fail(
+                    FAIL_ARTIFACT_REVIEW_INCOMPLETE,
+                    f"negative_control_criterion_unestablished ({name})",
+                )
             evidence_value = result_row.get("evidence")
             if status_value == "established" and not (
                 isinstance(evidence_value, str) and evidence_value.strip()

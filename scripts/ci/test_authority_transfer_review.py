@@ -256,6 +256,24 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         receipt = self.evaluate(GOVERNED_CHANGED, [packet])
         self.assertEqual(atr.FAIL_ARTIFACT_REVIEW_INCOMPLETE, receipt["result"])
 
+    def test_not_established_negative_control_is_a_finding_never_a_pass(self) -> None:
+        # Packet contract: every criterion must be established; a fully
+        # not_established control must not validate into PASS_CURRENT_REVIEW.
+        body = packet_body("semantic_close_authority", HEAD)
+        for name in atr.NEGATIVE_CONTROL_CRITERIA:
+            body["negative_controls"][0]["checks"][name] = {"status": "not_established"}
+        packet = self.write_packet("unestablished.json", body)
+        receipt = self.evaluate(GOVERNED_CHANGED, [packet])
+        self.assertEqual(atr.FAIL_ARTIFACT_REVIEW_INCOMPLETE, receipt["result"])
+        self.assertNotEqual(atr.PASS_CURRENT_REVIEW, receipt["result"])
+
+    def test_single_not_established_negative_control_criterion_fails(self) -> None:
+        body = packet_body("semantic_close_authority", HEAD)
+        body["negative_controls"][0]["checks"]["exists"] = {"status": "not_established"}
+        packet = self.write_packet("one-unestablished.json", body)
+        receipt = self.evaluate(GOVERNED_CHANGED, [packet])
+        self.assertEqual(atr.FAIL_ARTIFACT_REVIEW_INCOMPLETE, receipt["result"])
+
     def test_malformed_packet_is_not_a_pass(self) -> None:
         malformed = self.packets_dir / "malformed.json"
         malformed.write_text("{not json", encoding="utf-8")
@@ -335,6 +353,22 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         self.addCleanup(restore)
         good = self.write_packet("good.json", packet_body("semantic_close_authority", HEAD))
         manifest_path.write_text("schema_version = 99\n", encoding="utf-8", newline="\n")
+        receipt = self.evaluate(GOVERNED_CHANGED, [good])
+        self.assertEqual(atr.FAIL_DENOMINATOR_INCOMPLETE, receipt["result"])
+        self.assertFalse(receipt["denominator"]["base_tree_strict_pass"])
+
+    def test_emptied_manifest_denominator_never_passes(self) -> None:
+        # An empty file parses to {} with zero rows; the evaluator must
+        # report a denominator-incomplete issue instead of a clean pass.
+        manifest_path = self.base / atr.DEFAULT_MANIFEST
+        saved = manifest_path.read_text(encoding="utf-8")
+
+        def restore() -> None:
+            manifest_path.write_text(saved, encoding="utf-8", newline="\n")
+
+        self.addCleanup(restore)
+        good = self.write_packet("good.json", packet_body("semantic_close_authority", HEAD))
+        manifest_path.write_text("", encoding="utf-8", newline="\n")
         receipt = self.evaluate(GOVERNED_CHANGED, [good])
         self.assertEqual(atr.FAIL_DENOMINATOR_INCOMPLETE, receipt["result"])
         self.assertFalse(receipt["denominator"]["base_tree_strict_pass"])

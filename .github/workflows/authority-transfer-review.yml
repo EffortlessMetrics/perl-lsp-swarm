@@ -95,7 +95,9 @@ jobs:
             echo "::error::Invalid PR number identity"
             exit 1
           fi
-          git fetch --no-tags --depth=1 origin "refs/pull/${PR_NUMBER}/head"
+          # Full history of the head ref (not --depth=1): the changed-file
+          # step needs real ancestry to compute the merge base.
+          git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
           fetched="$(git rev-parse 'FETCH_HEAD^{commit}')"
           if [ "$fetched" != "$HEAD_SHA" ]; then
             printf '::error::Fetched PR head %s does not match event head %s\n' \
@@ -112,6 +114,14 @@ jobs:
           set -euo pipefail
           mkdir -p "$CANDIDATE_TREE"
           git archive "$HEAD_SHA" | tar -x -C "$CANDIDATE_TREE"
+          # `git archive | tar` preserves symlink entries, and the trusted
+          # validator's read calls would follow them into the predictable
+          # base checkout. Reject any linked input so the verdict can only
+          # reflect the candidate's own tree.
+          if find "$CANDIDATE_TREE" -type l -print -quit | grep -q .; then
+            echo "::error::Candidate tree contains symlink entries; refusing to follow linked content as bounded data"
+            exit 3
+          fi
 
       - name: Instrument self-test (broken evidence never masquerades as pass)
         run: |
@@ -127,7 +137,12 @@ jobs:
           CHANGED_LIST: ${{ runner.temp }}/authority-review-changed-files.txt
         run: |
           set -euo pipefail
-          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > "$CHANGED_LIST"
+          # Diff from the merge base, not the two-commit form: the event
+          # base SHA tracks the moving main tip, so a plain `git diff base
+          # head` attributes unrelated main movement to the PR and churns
+          # governed-row verdicts.
+          MERGE_BASE="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+          git diff --name-only "$MERGE_BASE" "$HEAD_SHA" > "$CHANGED_LIST"
 
       - name: Publish advisory Authority Transfer Review context
         if: github.event_name == 'pull_request_target'
