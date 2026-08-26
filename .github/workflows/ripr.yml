@@ -1172,6 +1172,18 @@ jobs:
           report_lane_failure() {
             if [ "$lane_class" = "infra-no-proof" ]; then
               echo "::error::ripr lane \`${lane_name}\` was killed by the runner (infra-no-proof: shutdown signal / SIGTERM / API cancellation), NOT by a ripr source gap. No proof exists for ${GITHUB_SHA}. Safe same-head recovery: \`gh run rerun ${GITHUB_RUN_ID} --failed\` — the evaluated tree is unchanged by an infra kill, so a rerun re-runs this exact head (#6807, #12563)."
+              # #6807 slice 2: hand the verdict to the bounded auto-retry
+              # (ripr-infra-retry.yml) as data so there is exactly one
+              # eviction classifier. The consumer greps fields; it must
+              # never source this file.
+              {
+                echo "classification=infra-no-proof"
+                echo "lane_name=${lane_name}"
+                echo "lane_job_id=${lane_job_id:-unknown}"
+                echo "head_sha=${GITHUB_SHA}"
+                echo "router_target=${ROUTER_TARGET:-unknown}"
+                echo "run_id=${GITHUB_RUN_ID}"
+              } > ripr-gate-classification.env
               {
                 echo "- classification: \`infra-no-proof (runner eviction)\`"
                 echo "- lane: \`${lane_name}\` (job \`${lane_job_id:-unknown}\`)"
@@ -1219,3 +1231,16 @@ jobs:
           esac
 
           echo "ripr+ New Gap Gate: success (runner: ${ROUTER_TARGET:-unknown}, reason: ${ROUTER_REASON:-unknown})"
+
+      # #6807 slice 2: on an infra-no-proof failure the evaluate step leaves
+      # ripr-gate-classification.env for the bounded auto-retry workflow
+      # (ripr-infra-retry.yml). Genuine ripr failures produce no file, which
+      # is why a missing file is not an error here.
+      - name: Upload gate classification
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: ripr-gate-classification
+          path: ripr-gate-classification.env
+          retention-days: 1
+          if-no-files-found: ignore

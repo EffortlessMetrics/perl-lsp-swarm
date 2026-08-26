@@ -233,6 +233,68 @@ fn ripr_docs_use_direct_local_proof_commands() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+#[test]
+fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let gate = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+    let retry = fs::read_to_string(root.join(".github/workflows/ripr-infra-retry.yml"))?;
+
+    // #6807 slice 2: the gate remains the single eviction classifier and
+    // hands its verdict to the retry workflow strictly as data.
+    let evaluate_step =
+        workflow_step(&gate, "Evaluate routed result").ok_or("missing evaluate step")?;
+    assert!(
+        evaluate_step.contains("classification=infra-no-proof")
+            && evaluate_step.contains("> ripr-gate-classification.env")
+            && evaluate_step.contains("head_sha=${GITHUB_SHA}"),
+        "the ripr gate must emit its infra-no-proof verdict as a data file for the retry workflow"
+    );
+    let upload_step = workflow_step(&gate, "Upload gate classification")
+        .ok_or("missing classification upload")?;
+    assert!(
+        upload_step.contains("if: failure()")
+            && upload_step.contains("name: ripr-gate-classification")
+            && upload_step.contains("if-no-files-found: ignore"),
+        "genuine ripr failures produce no classification file, so the upload must tolerate its absence"
+    );
+
+    // The retry workflow fires on completed failing ripr runs only.
+    assert!(
+        retry.contains("workflow_run:")
+            && retry.contains("workflows: [ripr]")
+            && retry.contains("types: [completed]")
+            && retry.contains("github.event.workflow_run.conclusion == 'failure'"),
+        "ripr-infra-retry must trigger on completed failing ripr runs"
+    );
+    // Bound: exactly one automatic retry; attempt 2+ takes the manual path.
+    assert!(
+        retry.contains("[ \"${RUN_ATTEMPT}\" != \"1\" ]"),
+        "ripr-infra-retry must bound the automatic retry to run attempt 1"
+    );
+    // The verdict is consumed strictly as data: exact-line grep, no source,
+    // and the rerun target is the event-provided run id.
+    assert!(
+        retry.contains("grep -qx 'classification=infra-no-proof'"),
+        "ripr-infra-retry must match the classification line exactly"
+    );
+    assert!(
+        !retry.contains("actions/checkout"),
+        "ripr-infra-retry runs with actions:write on the default branch and must never check out candidate code"
+    );
+    assert!(
+        retry.contains("RUN_ID: ${{ github.event.workflow_run.id }}")
+            && retry.contains("actions/runs/${RUN_ID}/rerun-failed-jobs"),
+        "ripr-infra-retry must rerun failed jobs of the event run id, not an artifact-provided id"
+    );
+    // The gate-recorded head must match the event head before any retry.
+    assert!(
+        retry.contains("[ \"${gate_head}\" != \"${HEAD_SHA}\" ]"),
+        "ripr-infra-retry must verify the classification head matches the event head"
+    );
+
+    Ok(())
+}
+
 fn fenced_block_after<'a>(content: &'a str, heading: &str) -> Option<&'a str> {
     let start = content.find(heading)?;
     let rest = &content[start..];
