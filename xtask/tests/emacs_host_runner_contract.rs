@@ -181,6 +181,8 @@ fn fixture_subject_manifest() -> Result<xtask::emacs_subject_manifest::SubjectMa
             client_source_sha256: digest,
             materialization: MaterializationMethod::InstallationRootResolution,
             client_library_forms: vec!["eglot.el".to_string()],
+            external_package: None,
+            source_tree: None,
             digest_audit: DigestAudit {
                 gnu_tarball_url: "https://ftp.gnu.org/gnu/emacs/fixture.tar.xz".to_string(),
                 gnu_tarball_sha256: format!("sha256:{}", "0".repeat(64)),
@@ -370,7 +372,13 @@ fn bundled_configuration_carries_only_client_behavior_settings() -> Result<()> {
 fn subject_registry_pins_each_exact_client_subject_immutable() -> Result<()> {
     assert_eq!(
         host_run_task::EmacsClientSubject::known_ids(),
-        &["bundled_eglot_emacs_29_4", "bundled_eglot_emacs_30_1", "released_eglot_gnu_elpa_1_23"],
+        &[
+            "bundled_eglot_emacs_29_4",
+            "bundled_eglot_emacs_30_1",
+            "released_eglot_gnu_elpa_1_23",
+            "released_eglot_gnu_elpa_1_24",
+            "source_eglot_emacs_c1ad9d27",
+        ],
         "each subject is an immutable registry row; new releases are new rows, never silent \
          replacements"
     );

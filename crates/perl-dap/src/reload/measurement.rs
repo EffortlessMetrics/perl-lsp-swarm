@@ -415,9 +415,7 @@ pub(crate) fn measure_with_scratch_root(
 
     // Controlled availability probe: ambient Perl state is denied; a
     // missing interpreter is the only legitimate skip.
-    let Some(oracle) = PerlOracleEnv::for_dap_test_fixture() else {
-        return None;
-    };
+    let oracle = PerlOracleEnv::for_dap_test_fixture()?;
 
     // Scoped scratch directory (unique per invocation so concurrent
     // measurements cannot delete one another's scratch). Creation

@@ -368,6 +368,29 @@ function configureActivationFailureSmoke(userDataDir: string): void {
   fs.writeFileSync(path.join(settingsDir, 'settings.json'), JSON.stringify(settings, null, 2));
 }
 
+/**
+ * Fixed installed-profile settings for the packaged crash-recovery journey
+ * (#7848): both legs share one isolated profile and must resolve the server
+ * from the packaged bundle with downloads disabled, so every generation the
+ * journey kills and every replacement it observes IS the bundled candidate —
+ * never an ambient or downloaded binary.
+ */
+function configureCrashRecoverySmoke(userDataDir: string): void {
+  if (process.env.PERL_LSP_CRASH_RECOVERY_SMOKE !== '1') {
+    return;
+  }
+  const settingsDir = path.join(userDataDir, 'User');
+  fs.mkdirSync(settingsDir, { recursive: true });
+  const settings: Record<string, unknown> = {
+    'perl-lsp.autoDownload': false,
+    'perl-lsp.serverPath': '',
+    'perl-lsp.includePaths': [],
+    'perl-lsp.critic.enabled': false,
+    'update.showReleaseNotes': false,
+  };
+  fs.writeFileSync(path.join(settingsDir, 'settings.json'), JSON.stringify(settings, null, 2));
+}
+
 async function main(): Promise<void> {
   const source = publishedSource();
   const version = envValue('PERL_LSP_PUBLISHED_EXTENSION_VERSION');
@@ -452,6 +475,7 @@ async function main(): Promise<void> {
     const installTarget = await resolveInstallTarget(source, downloadDir);
     configureCurrentSourceSmoke(userDataDir, extensionsDir, workspaceTrustMode);
     configureActivationFailureSmoke(userDataDir);
+    configureCrashRecoverySmoke(userDataDir);
     await installExtension(vscodeExecutablePath, installTarget, userDataDir, extensionsDir);
     const vsixSha256 = selectedVsixSha256(installTarget);
     const extensionTestsEnv: NodeJS.ProcessEnv = {

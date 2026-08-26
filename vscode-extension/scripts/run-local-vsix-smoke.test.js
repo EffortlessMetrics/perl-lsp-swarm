@@ -7,13 +7,17 @@ const {
   activationFailureLegEnv,
   bundleTargetForPlatform,
   composeActivationRecoveryReceipt,
+  composeCrashRecoveryReceipt,
   computeOverallStatus,
+  crashRecoveryLegEnv,
   finalizeSmokeRun,
   interpretTransitionResult,
   shouldRunBehavioralSmoke,
+  shouldRunCrashRecoveryJourney,
   stageServerForPackage,
   validateActivationRecoveryChildReceipts,
   validateChildSmokeReceipt,
+  validateCrashRecoveryChildReceipts,
   writeJsonAtomic,
 } = require('./run-local-vsix-smoke');
 
@@ -837,4 +841,442 @@ void test('a nonzero leg exit code cannot stand behind a passing joined verdict'
   });
   assert.equal(observedProductFailure.verdict, 'failed');
   assert.equal(observedProductFailure.failure.cleanup, 'failed');
+});
+
+function crashChild(leg, overrides = {}) {
+  return {
+    schema_version: 'vscode_crash_recovery_leg.v1',
+    leg,
+    verdict: 'pass',
+    candidate: {
+      vsix_sha256: 'v'.repeat(64),
+      bundled_server: { sha256: 's'.repeat(64) },
+      extension_version: '0.17.0',
+    },
+    fault: {
+      method: 'harness-external process termination (unexpected; not the user restart command)',
+    },
+    observations: {},
+    ...overrides,
+  };
+}
+
+function passingTransientChild(overrides = {}) {
+  return crashChild('transient', {
+    observations: {
+      failed_generation: 1,
+      replacement_generation: 2,
+      replay: {
+        'crash_transient_a.pl': 'ready_in_replacement_generation',
+        'crash_transient_b.pl': 'ready_in_replacement_generation',
+      },
+      provider_after_recovery: {
+        provider: { status: 'ok' },
+        readiness_generation_at_request: 2,
+      },
+      recovery_samples: { max_simultaneous_server_processes: 1 },
+      quiet_window: { failed_pid_resurrected: false },
+      watchdog: { status: 'pass' },
+    },
+    ...overrides,
+  });
+}
+
+function passingBreakerChild(overrides = {}) {
+  return crashChild('breaker', {
+    fault: {
+      method: 'harness-external repeated process termination per the accepted crash budget',
+    },
+    observations: {
+      automatic_budget: 3,
+      exhausted: true,
+      episodes: [
+        { episode_index: 1, replacement_pid: 201 },
+        { episode_index: 2, replacement_pid: 202, max_simultaneous_server_processes: 1 },
+        { episode_index: 3, replacement_pid: 203, max_simultaneous_server_processes: 1 },
+        {
+          episode_index: 4,
+          background_server_processes: [],
+          generation_sequence_during_exhaustion: [4],
+        },
+      ],
+      explicit_retry: {
+        binary_resolution_source_after: 'bundled',
+        readiness: 'ready_in_retry_generation',
+        provider: { status: 'ok' },
+      },
+      action_required_dialog: { observable: false },
+    },
+    ...overrides,
+  });
+}
+
+function crashComposeBase(overrides = {}) {
+  return {
+    vsixSha256: 'v'.repeat(64),
+    extensionVersion: '0.17.0',
+    bundledServerSha256: 's'.repeat(64),
+    serverSourceRevision: 'r'.repeat(40),
+    repositorySha: 'c'.repeat(40),
+    vscodeVersion: 'stable',
+    transient: passingTransientChild(),
+    breaker: passingBreakerChild(),
+    violations: [],
+    legExitCodes: { transient: 0, breaker: 0 },
+    postHostExitProcesses: [],
+    ...overrides,
+  };
+}
+
+void test('a fully passing crash-recovery journey composes a pass verdict with bound rows', () => {
+  const joined = composeCrashRecoveryReceipt(crashComposeBase());
+  assert.equal(joined.schema_version, 'vscode_crash_recovery.v1');
+  assert.equal(joined.receipt_kind, 'vscode_crash_recovery');
+  assert.equal(joined.verdict, 'pass');
+  assert.equal(joined.transient_crash.failed_generation, 1);
+  assert.equal(joined.transient_crash.replacement_generation, 2);
+  assert.equal(joined.transient_crash.replay, 'pass');
+  assert.equal(joined.transient_crash.provider_after_recovery, 'pass');
+  assert.equal(joined.circuit_breaker.attempts, 3);
+  assert.equal(joined.circuit_breaker.exhausted, true);
+  assert.equal(joined.circuit_breaker.background_restart_after_exhaustion, false);
+  assert.equal(joined.circuit_breaker.explicit_retry, 'pass');
+  assert.equal(joined.watchdog, 'pass');
+  assert.equal(joined.cleanup, 'pass');
+  assert.equal(joined.negative_controls.user_restart_not_used_for_failure_injection, true);
+  assert.equal(joined.negative_controls.replacement_servers_never_overlapped, true);
+  assert.equal(joined.negative_controls.budget_exhaustion_spawned_no_background_server, true);
+  assert.equal(joined.negative_controls.explicit_retry_did_not_substitute_binary_source, true);
+  assert.equal(joined.negative_controls.failed_process_not_resurrected, true);
+});
+
+void test('an honestly not_proven watchdog row degrades only the overall verdict', () => {
+  const transient = passingTransientChild({
+    observations: {
+      ...passingTransientChild().observations,
+      watchdog: {
+        status: 'not_proven',
+        reason:
+          'host platform cannot safely suspend the installed server process; deterministic watchdog mechanism proof is owned by #7846',
+      },
+    },
+  });
+  const joined = composeCrashRecoveryReceipt(crashComposeBase({ transient }));
+  assert.equal(joined.watchdog, 'not_proven');
+  assert.equal(joined.transient_crash.replay, 'pass');
+  assert.equal(joined.transient_crash.provider_after_recovery, 'pass');
+  assert.equal(joined.circuit_breaker.explicit_retry, 'pass');
+  assert.equal(joined.cleanup, 'pass');
+  assert.equal(joined.verdict, 'not_proven');
+});
+
+void test('a breaker that never exhausts fails the circuit-breaker rows', () => {
+  const breaker = passingBreakerChild({
+    observations: {
+      ...passingBreakerChild().observations,
+      exhausted: false,
+      episodes: [
+        { episode_index: 1, replacement_pid: 201 },
+        { episode_index: 2, replacement_pid: 202 },
+      ],
+    },
+  });
+  const joined = composeCrashRecoveryReceipt(crashComposeBase({ breaker }));
+  assert.equal(joined.verdict, 'failed');
+  assert.equal(joined.circuit_breaker.attempts, 2);
+});
+
+void test('a background respawn after exhaustion fails the journey', () => {
+  const breaker = passingBreakerChild({
+    observations: {
+      ...passingBreakerChild().observations,
+      episodes: [
+        { episode_index: 1, replacement_pid: 201 },
+        { episode_index: 2, replacement_pid: 202 },
+        { episode_index: 3, replacement_pid: 203 },
+        { episode_index: 4, background_server_processes: [404] },
+      ],
+    },
+  });
+  const joined = composeCrashRecoveryReceipt(crashComposeBase({ breaker }));
+  assert.equal(joined.verdict, 'failed');
+  assert.equal(joined.circuit_breaker.background_restart_after_exhaustion, true);
+});
+
+void test('an explicit retry through a substituted binary source fails', () => {
+  const breaker = passingBreakerChild({
+    observations: {
+      ...passingBreakerChild().observations,
+      explicit_retry: {
+        binary_resolution_source_after: 'path',
+        readiness: 'ready_in_retry_generation',
+        provider: { status: 'ok' },
+      },
+    },
+  });
+  const joined = composeCrashRecoveryReceipt(crashComposeBase({ breaker }));
+  assert.equal(joined.circuit_breaker.explicit_retry, 'failed');
+  assert.equal(joined.verdict, 'failed');
+  assert.equal(joined.negative_controls.explicit_retry_did_not_substitute_binary_source, false);
+});
+
+void test('a replay row with an omitted document fails while provider evidence stands', () => {
+  const transient = passingTransientChild({
+    observations: {
+      ...passingTransientChild().observations,
+      replay: {
+        'crash_transient_a.pl': 'ready_in_replacement_generation',
+        'crash_transient_b.pl': 'Active document was not ready after 60000ms.',
+      },
+    },
+  });
+  const joined = composeCrashRecoveryReceipt(crashComposeBase({ transient }));
+  assert.equal(joined.transient_crash.replay, 'failed');
+  assert.equal(joined.transient_crash.provider_after_recovery, 'pass');
+  assert.equal(joined.verdict, 'failed');
+});
+
+void test('unbound crash children leave rows not_proven, never failed', () => {
+  const joined = composeCrashRecoveryReceipt(
+    crashComposeBase({
+      transient: null,
+      breaker: null,
+      violations: ['the transient leg did not write its journey receipt'],
+      legExitCodes: { transient: 0, breaker: null },
+    }),
+  );
+  assert.equal(joined.transient_crash.replay, 'not_proven');
+  assert.equal(joined.circuit_breaker.attempts, null);
+  assert.equal(joined.circuit_breaker.exhausted, null);
+  assert.equal(joined.watchdog, 'not_proven');
+  assert.equal(joined.cleanup, 'not_proven');
+  assert.equal(joined.verdict, 'not_proven');
+  assert.deepEqual(joined.instrument_violations, [
+    'the transient leg did not write its journey receipt',
+  ]);
+});
+
+void test('a leg exit failure degrades passing rows to not_proven', () => {
+  const joined = composeCrashRecoveryReceipt(
+    crashComposeBase({ legExitCodes: { transient: 1, breaker: 0 } }),
+  );
+  assert.equal(joined.transient_crash.replay, 'not_proven');
+  assert.equal(joined.transient_crash.provider_after_recovery, 'not_proven');
+  assert.equal(joined.watchdog, 'pass');
+  assert.equal(joined.verdict, 'not_proven');
+});
+
+void test('a surviving bundled server after the crash journey hosts fails cleanup', () => {
+  const joined = composeCrashRecoveryReceipt(
+    crashComposeBase({ postHostExitProcesses: ['/extensions/bin/linux-x64/perllsp'] }),
+  );
+  assert.equal(joined.cleanup, 'failed');
+  assert.equal(joined.verdict, 'failed');
+});
+
+void test('an observed child failure fails the crash-recovery receipt', () => {
+  const transient = passingTransientChild({ verdict: 'failed' });
+  const joined = composeCrashRecoveryReceipt(crashComposeBase({ transient }));
+  assert.equal(joined.verdict, 'failed');
+});
+
+void test('crash recovery child receipts must bind this run exactly', () => {
+  const files = new Map([
+    ['/receipts/transient.json', JSON.stringify(passingTransientChild())],
+    ['/receipts/breaker.json', JSON.stringify(passingBreakerChild())],
+  ]);
+  const read = (file) => files.get(file) ?? '';
+  const exists = (file) => files.has(file);
+  const bound = validateCrashRecoveryChildReceipts({
+    transientReceiptFile: '/receipts/transient.json',
+    breakerReceiptFile: '/receipts/breaker.json',
+    expectedVsixSha256: 'v'.repeat(64),
+    expectedBundledServerSha256: 's'.repeat(64),
+    expectedExtensionVersion: '0.17.0',
+    exists,
+    readFile: read,
+  });
+  assert.equal(bound.ok, true);
+
+  const wrongVsix = validateCrashRecoveryChildReceipts({
+    transientReceiptFile: '/receipts/transient.json',
+    breakerReceiptFile: '/receipts/breaker.json',
+    expectedVsixSha256: 'w'.repeat(64),
+    expectedBundledServerSha256: 's'.repeat(64),
+    expectedExtensionVersion: '0.17.0',
+    exists,
+    readFile: read,
+  });
+  assert.equal(wrongVsix.ok, false);
+  assert.match(wrongVsix.violations.join('; '), /VSIX digest .* is not this run's package/);
+
+  const missing = validateCrashRecoveryChildReceipts({
+    transientReceiptFile: '/receipts/missing.json',
+    breakerReceiptFile: '/receipts/breaker.json',
+    expectedVsixSha256: 'v'.repeat(64),
+    expectedBundledServerSha256: 's'.repeat(64),
+    expectedExtensionVersion: '0.17.0',
+    exists,
+    readFile: read,
+  });
+  assert.equal(missing.ok, false);
+  assert.match(missing.violations.join('; '), /transient leg did not write its journey receipt/);
+});
+
+void test('a crash leg receipt that used the user restart command does not bind', () => {
+  const transient = passingTransientChild({
+    fault: { method: 'command:perl-lsp.restart executed by the harness' },
+  });
+  const files = new Map([
+    ['/receipts/transient.json', JSON.stringify(transient)],
+    ['/receipts/breaker.json', JSON.stringify(passingBreakerChild())],
+  ]);
+  const result = validateCrashRecoveryChildReceipts({
+    transientReceiptFile: '/receipts/transient.json',
+    breakerReceiptFile: '/receipts/breaker.json',
+    expectedVsixSha256: 'v'.repeat(64),
+    expectedBundledServerSha256: 's'.repeat(64),
+    expectedExtensionVersion: '0.17.0',
+    exists: (file) => files.has(file),
+    readFile: (file) => files.get(file) ?? '',
+  });
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join('; '),
+    /harness-external process termination as the failure injection/,
+  );
+});
+
+void test('crash recovery journey requires a behavior-safe package', () => {
+  assert.equal(
+    shouldRunCrashRecoveryJourney({
+      package_creation: { status: 'pass' },
+      package_inventory: { status: 'pass', classification: 'pass', behavior_safe: true },
+    }),
+    true,
+  );
+  assert.equal(
+    shouldRunCrashRecoveryJourney({
+      package_creation: { status: 'pass' },
+      package_inventory: { status: 'failed', classification: 'structural', behavior_safe: false },
+    }),
+    false,
+  );
+  assert.equal(
+    shouldRunCrashRecoveryJourney({
+      package_creation: { status: 'failed' },
+      package_inventory: {
+        status: 'not_proven',
+        classification: 'not_proven',
+        behavior_safe: false,
+      },
+    }),
+    false,
+  );
+});
+
+void test('overall status treats the crash journey like the activation journey', () => {
+  const stages = passingReceipt().stages;
+  assert.equal(
+    computeOverallStatus({ ...stages, crash_recovery_journey: { status: 'pass' } }),
+    'pass',
+  );
+  assert.equal(
+    computeOverallStatus({ ...stages, crash_recovery_journey: { status: 'not_run' } }),
+    'pass',
+  );
+  assert.equal(
+    computeOverallStatus({ ...stages, crash_recovery_journey: { status: 'not_proven' } }),
+    'not_proven',
+  );
+  assert.equal(
+    computeOverallStatus({ ...stages, crash_recovery_journey: { status: 'failed' } }),
+    'failed',
+  );
+});
+
+void test('crash-recovery leg env arms one leg and strips foreign selectors', () => {
+  const context = {
+    vsixPath: '/tmp/perl-lsp-rs-0.17.0.vsix',
+    vsixSha256: 'a'.repeat(64),
+    revision: 'r'.repeat(40),
+    serverSourceRevision: 'r'.repeat(40),
+    workspacePath: '/tmp/workspace',
+    userDataDir: '/tmp/profile/user-data',
+    extensionsDir: '/tmp/profile/extensions',
+  };
+  const transientEnv = crashRecoveryLegEnv(
+    {
+      PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
+      PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1',
+      PERL_LSP_FIRST_HOUR_SERVER_PATH: '/ambient/server',
+      PERL_LSP_CURRENT_SOURCE_SHA: 'c'.repeat(40),
+      PERL_LSP_ACTIVATION_FAILURE_SMOKE: '1',
+      PERL_LSP_ACTIVATION_FAILURE_LEG: 'failure',
+      PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE: 'stale-from-outer-env',
+    },
+    'transient',
+    context,
+  );
+  assert.equal(transientEnv.PERL_LSP_CRASH_RECOVERY_SMOKE, '1');
+  assert.equal(transientEnv.PERL_LSP_CRASH_RECOVERY_LEG, 'transient');
+  assert.equal(transientEnv.PERL_LSP_PUBLISHED_EXTENSION_SOURCE, 'vsix');
+  assert.equal(transientEnv.PERL_LSP_PUBLISHED_VSIX_PATH, context.vsixPath);
+  assert.equal(transientEnv.PERL_LSP_VSIX_SHA256, context.vsixSha256);
+  assert.equal(transientEnv.PERL_LSP_SERVER_SOURCE_SHA, context.serverSourceRevision);
+  // Foreign selectors must not leak: the crash journey selects its own suite
+  // and resolves the bundled candidate itself.
+  assert.equal('PERL_LSP_CURRENT_SOURCE_SMOKE' in transientEnv, false);
+  assert.equal('PERL_LSP_PACKAGED_BUNDLE_SMOKE' in transientEnv, false);
+  assert.equal('PERL_LSP_FIRST_HOUR_SERVER_PATH' in transientEnv, false);
+  assert.equal('PERL_LSP_CURRENT_SOURCE_SHA' in transientEnv, false);
+  assert.equal('PERL_LSP_ACTIVATION_FAILURE_SMOKE' in transientEnv, false);
+  assert.equal('PERL_LSP_ACTIVATION_FAILURE_LEG' in transientEnv, false);
+  assert.equal('PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE' in transientEnv, false);
+
+  const breakerEnv = crashRecoveryLegEnv({}, 'breaker', context);
+  assert.equal(breakerEnv.PERL_LSP_CRASH_RECOVERY_LEG, 'breaker');
+  assert.equal(breakerEnv.PERL_LSP_CRASH_RECOVERY_SMOKE, '1');
+});
+
+void test('parsed-but-unbound crash children cannot fail the joined receipt', () => {
+  // A receipt that failed digest binding is not this candidate's evidence:
+  // even observations that look like product failures must leave the rows
+  // not_proven instead of turning an unbound observation into a failed row.
+  const transient = passingTransientChild({
+    observations: {
+      ...passingTransientChild().observations,
+      replay: { 'crash_transient_a.pl': 'Active document was not ready after 60000ms.' },
+      watchdog: { status: 'failed' },
+    },
+    verdict: 'failed',
+  });
+  const breaker = passingBreakerChild({
+    observations: {
+      ...passingBreakerChild().observations,
+      exhausted: false,
+      explicit_retry: {
+        binary_resolution_source_after: 'path',
+        readiness: 'timeout',
+        provider: { status: 'error' },
+      },
+    },
+    verdict: 'failed',
+  });
+  const joined = composeCrashRecoveryReceipt(
+    crashComposeBase({
+      transient,
+      breaker,
+      violations: ["the transient leg receipt VSIX digest is not this run's package"],
+    }),
+  );
+  assert.equal(joined.transient_crash.replay, 'not_proven');
+  assert.equal(joined.transient_crash.provider_after_recovery, 'not_proven');
+  assert.equal(joined.circuit_breaker.exhausted, null);
+  assert.equal(joined.circuit_breaker.explicit_retry, 'not_proven');
+  assert.equal(joined.watchdog, 'not_proven');
+  assert.equal(joined.cleanup, 'not_proven');
+  assert.equal(joined.verdict, 'not_proven');
+  assert.equal(joined.negative_controls.user_restart_not_used_for_failure_injection, null);
+  assert.equal(joined.negative_controls.budget_exhaustion_spawned_no_background_server, null);
 });
