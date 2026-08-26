@@ -125,9 +125,7 @@ export type KnownReloadReconciliationDisposition =
   | 'pending'
   | 'unavailable';
 
-export type ReloadReconciliationDisposition =
-  | KnownReloadReconciliationDisposition
-  | (string & {});
+export type ReloadReconciliationDisposition = KnownReloadReconciliationDisposition | (string & {});
 
 export interface ReloadReconciliationDispositions {
   loaded_source_refresh: ReloadReconciliationDisposition;
