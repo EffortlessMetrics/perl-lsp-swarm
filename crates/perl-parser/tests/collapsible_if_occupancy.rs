@@ -157,6 +157,14 @@ fn lint_list_contains_collapsible_if(inner: &str) -> bool {
     })
 }
 
+fn occupy_attr_inner(kind: &str, inner: &str) -> bool {
+    if kind == "cfg_attr" {
+        scan_suppression_inner(inner)
+    } else {
+        lint_list_contains_collapsible_if(inner)
+    }
+}
+
 fn scan_suppression_inner(source: &str) -> bool {
     let mut i = 0;
     while i < source.len() {
@@ -164,20 +172,14 @@ fn scan_suppression_inner(source: &str) -> bool {
             i = end;
             continue;
         }
-        if let Some((kind, open)) = suppression_call_at(source, i) {
-            if let Some(close) = find_matching_paren(source, open) {
-                let inner = &source[open + 1..close];
-                let occupied = if kind == "cfg_attr" {
-                    scan_suppression_inner(inner)
-                } else {
-                    lint_list_contains_collapsible_if(inner)
-                };
-                if occupied {
-                    return true;
-                }
-                i = close + 1;
-                continue;
+        if let Some((kind, open)) = suppression_call_at(source, i)
+            && let Some(close) = find_matching_paren(source, open)
+        {
+            if occupy_attr_inner(kind, &source[open + 1..close]) {
+                return true;
             }
+            i = close + 1;
+            continue;
         }
         let Some(ch) = source[i..].chars().next() else {
             break;
@@ -204,20 +206,14 @@ fn allow_attrs_name_collapsible_if(source: &str) -> bool {
         };
         if let Some(prefix_len) = prefix_len {
             let after = skip_ws(source, i + prefix_len);
-            if let Some((kind, open)) = suppression_call_at(source, after) {
-                if let Some(close) = find_matching_paren(source, open) {
-                    let inner = &source[open + 1..close];
-                    let occupied = if kind == "cfg_attr" {
-                        scan_suppression_inner(inner)
-                    } else {
-                        lint_list_contains_collapsible_if(inner)
-                    };
-                    if occupied {
-                        return true;
-                    }
-                    i = close + 1;
-                    continue;
+            if let Some((kind, open)) = suppression_call_at(source, after)
+                && let Some(close) = find_matching_paren(source, open)
+            {
+                if occupy_attr_inner(kind, &source[open + 1..close]) {
+                    return true;
                 }
+                i = close + 1;
+                continue;
             }
         }
         let Some(ch) = source[i..].chars().next() else {
