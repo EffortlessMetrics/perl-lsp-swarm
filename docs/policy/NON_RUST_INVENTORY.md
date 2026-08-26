@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12012 |
-| Rust-family files | 3656 |
-| Non-Rust files | 8356 |
-| Allowlisted | 6093 |
-| Unclassified | 2263 |
+| Total tracked files | 12018 |
+| Rust-family files | 3658 |
+| Non-Rust files | 8360 |
+| Allowlisted | 6114 |
+| Unclassified | 2246 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 435 |
-| documentation | 2734 |
+| config | 439 |
+| documentation | 2737 |
 | generated | 2 |
 | production | 328 |
-| test | 1986 |
-| tooling | 608 |
-| unclassified | 2263 |
+| test | 1999 |
+| tooling | 609 |
+| unclassified | 2246 |
 
 ## Unclassified files
 
@@ -63,22 +63,10 @@
 | `aqua.yaml` | `yaml` |
 | `book/book.toml` | `toml` |
 | `contracts/actual_host_receipt.v1.schema.json` | `json` |
-| `crates/perl-corpus/concepts/incremental.toml` | `toml` |
-| `crates/perl-corpus/concepts/lexer.toml` | `toml` |
-| `crates/perl-corpus/concepts/parser.toml` | `toml` |
-| `crates/perl-corpus/concepts/positions.toml` | `toml` |
-| `crates/perl-corpus/concepts/recovery.toml` | `toml` |
-| `crates/perl-corpus/concepts/tree_sitter.toml` | `toml` |
 | `crates/perl-corpus/fixtures/differential_oracle/manifest.json` | `json` |
 | `crates/perl-corpus/fixtures/parser_accuracy/manifest.json` | `json` |
 | `crates/perl-corpus/fuzz/crash-b6dd6f9afe3c18f3efa0b5bb8454be7744f2a458` | `` |
 | `crates/perl-corpus/fuzz/heredoc_boundary_fix_validation.txt` | `txt` |
-| `crates/perl-corpus/tests/perl-corpus/ambiguity/regex_vs_division.meta.toml` | `toml` |
-| `crates/perl-corpus/tests/perl-corpus/heredoc/data_section_boundary.meta.toml` | `toml` |
-| `crates/perl-corpus/tests/perl-corpus/position/crlf_utf16_span.meta.toml` | `toml` |
-| `crates/perl-corpus/tests/perl-corpus/quote_like/custom_delimiter.meta.toml` | `toml` |
-| `crates/perl-corpus/tests/perl-corpus/recovery/missing_closing_brace.meta.toml` | `toml` |
-| `crates/perl-dap/features_sot.toml` | `toml` |
 | `crates/perl-dap/tests/fixtures/corpus/corpus_manifest.json` | `json` |
 | `crates/perl-dap/tests/fixtures/golden_transcripts/breakpoint_sequence.json` | `json` |
 | `crates/perl-dap/tests/fixtures/golden_transcripts/comprehensive_session_sequence.json` | `json` |
@@ -104,8 +92,6 @@
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/regex_literal_preserve.expected-diagnostics.txt` | `txt` |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/substitution_literal_preserve.expected-diagnostics.txt` | `txt` |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/transliteration_literal_preserve.expected-diagnostics.txt` | `txt` |
-| `crates/perl-lsp-rs-core/features_sot.toml` | `toml` |
-| `crates/perl-lsp-rs/features_sot.toml` | `toml` |
 | `crates/perl-lsp-rs/src/features/inlay_hints_provider_tests.txt` | `txt` |
 | `crates/perl-lsp-rs/tests/fixtures/cancellation/edge_cases/malformed_requests.json` | `json` |
 | `crates/perl-lsp-rs/tests/fixtures/cancellation/edge_cases/race_conditions.json` | `json` |
@@ -130,13 +116,10 @@
 | `crates/perl-parser/examples/simple_lsp_test.sh` | `sh` |
 | `crates/perl-parser/examples/test_lsp.py` | `py` |
 | `crates/perl-parser/examples/test_lsp_minimal.py` | `py` |
-| `crates/perl-parser/features_sot.toml` | `toml` |
 | `crates/perl-parser/src/refactor/import_optimizer.rst` | `rst` |
 | `crates/perl-parser/templates/module.pl.template` | `template` |
 | `crates/perl-parser/templates/script.pl.template` | `template` |
 | `crates/perl-parser/templates/test.pl.template` | `template` |
-| `crates/perl-parser/tests/data/features_disabled_test.toml` | `toml` |
-| `crates/perl-parser/tests/data/features_minimal.toml` | `toml` |
 | `crates/perl-parser/tests/fixtures/.perltidyrc` | `` |
 | `crates/perl-parser/tests/run_all_e2e_tests.rs.disabled` | `disabled` |
 | `crates/perl-parser/tests/test_with_override.sh` | `sh` |
@@ -3646,6 +3629,12 @@
 | `crates/perl-corpus/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-corpus/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-corpus/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-corpus/concepts/incremental.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
+| `crates/perl-corpus/concepts/lexer.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
+| `crates/perl-corpus/concepts/parser.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
+| `crates/perl-corpus/concepts/positions.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
+| `crates/perl-corpus/concepts/recovery.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
+| `crates/perl-corpus/concepts/tree_sitter.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
 | `crates/perl-corpus/fixtures/parser_accuracy/autoload_boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-corpus/fixtures/parser_accuracy/bad_heredoc_terminator.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-corpus/fixtures/parser_accuracy/control_do_until.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -3705,16 +3694,22 @@
 | `crates/perl-corpus/fuzz/transliteration_parser_issue.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-corpus/tests/fixtures/loading/plain_delimiters.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-corpus/tests/fixtures/loading/sectioned.txt` | test | `non-rust-corpus-loading-fixtures` | parser/lsp-fixtures |
+| `crates/perl-corpus/tests/perl-corpus/ambiguity/regex_vs_division.meta.toml` | test | `non-rust-corpus-meta-toml` | parser/corpus |
 | `crates/perl-corpus/tests/perl-corpus/ambiguity/regex_vs_division.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-corpus/tests/perl-corpus/heredoc/data_section_boundary.meta.toml` | test | `non-rust-corpus-meta-toml` | parser/corpus |
 | `crates/perl-corpus/tests/perl-corpus/heredoc/data_section_boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-corpus/tests/perl-corpus/position/crlf_utf16_span.meta.toml` | test | `non-rust-corpus-meta-toml` | parser/corpus |
 | `crates/perl-corpus/tests/perl-corpus/position/crlf_utf16_span.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-corpus/tests/perl-corpus/quote_like/custom_delimiter.meta.toml` | test | `non-rust-corpus-meta-toml` | parser/corpus |
 | `crates/perl-corpus/tests/perl-corpus/quote_like/custom_delimiter.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-corpus/tests/perl-corpus/recovery/missing_closing_brace.meta.toml` | test | `non-rust-corpus-meta-toml` | parser/corpus |
 | `crates/perl-corpus/tests/perl-corpus/recovery/missing_closing_brace.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-dap/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-dap/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-dap/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-dap/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-dap/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-dap/features_sot.toml` | config | `non-rust-crate-features-sot` | lsp/features |
 | `crates/perl-dap/tests/fixtures/FIXTURE_INDEX.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-dap/tests/fixtures/args.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-dap/tests/fixtures/breakpoints_begin_end.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -3843,6 +3838,7 @@
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/transliteration_literal_preserve.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-lsp-rs-core/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-lsp-rs-core/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-lsp-rs-core/features_sot.toml` | config | `non-rust-crate-features-sot` | lsp/features |
 | `crates/perl-lsp-rs-core/protocol_schema_source.json` | config | `non-rust-lsp-protocol-schema-source` | lsp |
 | `crates/perl-lsp-rs-core/tests/runtime_cancellation_property.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__duplicate_declaration_and_shadowing.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
@@ -3864,6 +3860,7 @@
 | `crates/perl-lsp-rs/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-lsp-rs/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-lsp-rs/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-lsp-rs/features_sot.toml` | config | `non-rust-crate-features-sot` | lsp/features |
 | `crates/perl-lsp-rs/src/runtime/language/snapshots/perl_lsp__runtime__language__references_tier_scorecard_tests__routing_matrix__references_representative_replay_receipt.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs/tests/fixtures/Module.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `crates/perl-lsp-rs/tests/fixtures/cancellation/edge_cases/recovery_scenarios.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -3961,6 +3958,7 @@
 | `crates/perl-parser/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/examples/lsp_demo.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser/features_sot.toml` | config | `non-rust-crate-features-sot` | lsp/features |
 | `crates/perl-parser/incremental_authority.json` | tooling | `non-rust-incremental-authority-contract` | parser/incremental |
 | `crates/perl-parser/src/README_checkpoint.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/src/README_error_recovery.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3988,6 +3986,8 @@
 | `crates/perl-parser/tests/README_e2e_tests.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/tests/UNHAPPY_PATH_COVERAGE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/tests/ast_invariant_property_mutation_hardening.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
+| `crates/perl-parser/tests/data/features_disabled_test.toml` | test | `non-rust-parser-test-data-toml` | parser/lsp-fixtures |
+| `crates/perl-parser/tests/data/features_minimal.toml` | test | `non-rust-parser-test-data-toml` | parser/lsp-fixtures |
 | `crates/perl-parser/tests/documentation_validation_mutation_hardening.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-parser/tests/fixtures/completion_test.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-parser/tests/fixtures/diagnostics_test.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -5922,6 +5922,9 @@
 | `docs/swarm/source-syncs/2026-07-15-recover-perl-lsp-10000.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/swarm/source-syncs/2026-07-15-workspace-capabilities-bd3eb11b2.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/swarm/source-syncs/2026-07-23-recover-perl-lsp-646c34b-audit.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/swarm/source-syncs/2026-08-26-post-4977-preliminary-receipt.json` | documentation | `non-rust-docs-tree` | docs |
+| `docs/swarm/source-syncs/2026-08-26-post-4977-preliminary-reconciliation.json` | documentation | `non-rust-docs-tree` | docs |
+| `docs/swarm/source-syncs/2026-08-26-post-4977-preliminary-reconciliation.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/swarm/sync-protocol.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/tutorials/AI_BUILD_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/tutorials/COMPREHENSIVE_TESTING_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6559,6 +6562,7 @@
 | `scripts/test/vim-clients/vim-lsp-adapter.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-diagnostics-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-host-freshness-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_iterative_parser.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
