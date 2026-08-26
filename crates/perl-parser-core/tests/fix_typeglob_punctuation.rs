@@ -31,10 +31,7 @@ fn assert_typeglob_rhs(source: &str, expected: &str) {
     let mut names = Vec::new();
     collect_typeglob_names(&ast, &mut names);
 
-    assert!(
-        !contains_error_node(&ast),
-        "typeglob should not produce Error nodes in {source:?}"
-    );
+    assert!(!contains_error_node(&ast), "typeglob should not produce Error nodes in {source:?}");
     assert!(
         names.iter().any(|name| name == expected),
         "missing RHS typeglob {expected:?} in {source:?}: {names:?}"
