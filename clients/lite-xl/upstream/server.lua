@@ -473,7 +473,12 @@ function Server:initialize(workspace, editor_name, editor_version)
   end
 
   self:push_request('initialize', {
-    timeout = 10,
+    -- Local patch (#10657): initialize pacing is policy-owned. The legacy
+    -- hardcoded timeout = 10 was retry spacing under the resend model; with
+    -- single-send semantics an explicit short value would terminally expire
+    -- the ONLY initialize emission of cold/large-workspace servers, so the
+    -- longer INITIALIZE_REQUEST_TIMEOUT policy applies instead (still one
+    -- emission under id 1).
     params = {
       processId = system["get_process_id"] and system.get_process_id() or nil,
       clientInfo = {
