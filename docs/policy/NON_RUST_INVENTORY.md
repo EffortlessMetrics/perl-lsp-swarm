@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12088 |
+| Total tracked files | 12090 |
 | Rust-family files | 3694 |
-| Non-Rust files | 8394 |
-| Allowlisted | 6148 |
+| Non-Rust files | 8396 |
+| Allowlisted | 6150 |
 | Unclassified | 2246 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 441 |
-| documentation | 2743 |
+| documentation | 2745 |
 | generated | 2 |
 | production | 328 |
 | test | 2020 |
@@ -4680,6 +4680,7 @@
 | `docs/devex/ripr-dogfood/devex-golden-outputs-20260507.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/devex/ripr-dogfood/devex-receipt-contract-20260507.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/devex/ripr-dogfood/devex-test-gap-20260507.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/distribution/INSTALL_CLAIM_SURFACES.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/examples/github-actions/setup-perl-lsp-consumer.yml` | documentation | `non-rust-docs-tree` | docs |
 | `docs/examples/helix/languages.toml` | documentation | `non-rust-docs-tree` | docs |
 | `docs/examples/intellij/README.md` | documentation | `non-rust-docs-tree` | docs |
@@ -4879,6 +4880,7 @@
 | `docs/how-to/LARGE_WORKSPACE_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/LSP_ERROR_HANDLING_MONITORING_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/LSP_FEATURE_DEVELOPMENT_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/NATIVE_TOOLING_MIGRATION.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/PERFORMANCE_PRESERVATION_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/PERFORMANCE_TUNING.md` | documentation | `non-rust-docs-tree` | docs |
