@@ -41,6 +41,8 @@
 
 use std::process::Command;
 
+use perl_lsp_rs_core::config::perl_oracle_env::PerlOracleEnv;
+
 use super::mechanism::ReloadMechanism;
 
 // ---------------------------------------------------------------------------
@@ -325,7 +327,8 @@ sub write_module {
     my ($value, $with_old_only) = @_;
     open my $fh, '>', $pm or die "write: $!";
     print {$fh} "package DemoMeasured;\n";
-    print {$fh} "sub build { my \$tag = value(); return { tag => \$tag } }\n";
+    print {$fh} "sub new { my \$class = shift; my \$tag = value(); return bless { tag => \$tag }, \$class }\n";
+    print {$fh} "sub get_tag { my \$self = shift; return \$self->{tag} }\n";
     print {$fh} "sub value { return '$value' }\n";
     print {$fh} "sub old_only { return 'legacy' }\n" if $with_old_only;
     print {$fh} "1;\n";
@@ -336,8 +339,12 @@ printf "PERL %s\n", $];
 
 write_module('A', 1);
 require DemoMeasured;
-my $captured_before = DemoMeasured::value();
-my $instance = DemoMeasured::build();
+# Capture the code itself, not a computed value: the coderef pins the CV
+# that was current at capture time.
+my $captured_value_cv = \&DemoMeasured::value;
+my $captured_before = $captured_value_cv->();
+# A real blessed instance whose data was computed by the old generation.
+my $instance = DemoMeasured->new;
 
 write_module('B', 0);
 delete $INC{'DemoMeasured.pm'};
@@ -352,24 +359,52 @@ if ($mode eq 'inc_deletion_and_require') {
 }
 
 print "FACT new_sub_takes_effect_for_new_calls\n" if DemoMeasured::value() eq 'B';
-print "FACT captured_return_value_keeps_old_code\n" if $captured_before eq 'A';
-print "FACT instance_data_persists\n" if $instance->{tag} eq 'A';
+print "FACT captured_return_value_keeps_old_code\n"
+    if $captured_before eq 'A' && $captured_value_cv->() eq 'A';
+print "FACT instance_data_persists\n" if $instance->get_tag eq 'A';
 print "FACT removed_sub_remains_callable\n" if defined &DemoMeasured::old_only;
 "#;
+
+/// Hard ceiling on one measurement subprocess's wall time.
+const MEASUREMENT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
+/// Hard ceiling on captured stdout/stderr per stream (a flooding
+/// interpreter must not grow the harness without bound).
+const MEASUREMENT_OUTPUT_CAP: usize = 256 * 1024;
 
 /// Execute the controlled measurement for one directly measurable
 /// mechanism on the real `perl` found on `PATH`.
 ///
-/// Returns `None` when no `perl` is available (the harness then skips —
-/// an environment without Perl cannot measure Perl, and pretending
-/// otherwise would fabricate evidence).
+/// Returns `None` only when no supported mechanism or `perl` is available
+/// (the harness then skips). Every instrument failure — an unwritable
+/// scratch root, a spawn failure, a deadline expiry, an interpreter
+/// failure, malformed marker output — is `Some(Err(..))`, never a silent
+/// skip: a present interpreter with a broken instrument is an error, not
+/// an absent one.
+///
+/// The interpreter runs through the repository's controlled Perl oracle
+/// environment (`PerlOracleEnv::for_dap_test_fixture`): ambient
+/// `PERL5LIB`/`PERL5OPT`/local::lib state is denied for both the probe
+/// and the measurement, so developer and CI environments cannot change
+/// what is measured. Both subprocesses are bounded
+/// ([`MEASUREMENT_DEADLINE`], [`MEASUREMENT_OUTPUT_CAP`], kill on expiry).
 ///
 /// # Errors
 ///
-/// Fails when the program cannot run, exits nonzero, or emits a marker
-/// outside the closed vocabulary.
+/// Fails when the instrument cannot run to completion, the interpreter
+/// fails, or the emitted markers do not reconcile with the exact
+/// mechanism-specific fact set.
 pub fn measure_mechanism_on_real_perl(
     mechanism: ReloadMechanism,
+) -> Option<Result<MechanismMeasurement, String>> {
+    measure_with_scratch_root(mechanism, None)
+}
+
+/// [`measure_mechanism_on_real_perl`] with an injected scratch root
+/// (test seam: an invalid root must surface as an instrument error, not
+/// as "perl unavailable").
+pub(crate) fn measure_with_scratch_root(
+    mechanism: ReloadMechanism,
+    scratch_root: Option<std::path::PathBuf>,
 ) -> Option<Result<MechanismMeasurement, String>> {
     let mode = match mechanism {
         ReloadMechanism::IncDeletionAndRequire => "inc_deletion_and_require",
@@ -378,16 +413,17 @@ pub fn measure_mechanism_on_real_perl(
         _ => return None,
     };
 
-    // Probe once: no Perl on PATH means no measurement, never a guess.
-    if Command::new("perl").arg("-e").arg("1").output().is_err() {
+    // Controlled availability probe: ambient Perl state is denied; a
+    // missing interpreter is the only legitimate skip.
+    let Some(oracle) = PerlOracleEnv::for_dap_test_fixture() else {
         return None;
-    }
+    };
 
-    // Scoped scratch directory under the system temp root (the harness
-    // owns its lifecycle; no dev-only dependencies are used here). The
-    // name is unique per invocation so concurrent measurements cannot
-    // delete one another's scratch.
-    let scratch = std::env::temp_dir().join(format!(
+    // Scoped scratch directory (unique per invocation so concurrent
+    // measurements cannot delete one another's scratch). Creation
+    // failures are instrument errors, never "unavailable".
+    let root = scratch_root.unwrap_or_else(std::env::temp_dir);
+    let scratch = root.join(format!(
         "perl-reload-measure-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -396,21 +432,15 @@ pub fn measure_mechanism_on_real_perl(
             .unwrap_or(0),
         mode.replace(['/', '\\'], "_"),
     ));
-    std::fs::create_dir_all(&scratch).map_err(|error| format!("create scratch: {error}")).ok()?;
     let result = (|| {
+        std::fs::create_dir_all(&scratch).map_err(|error| format!("create scratch: {error}"))?;
         let program_path = scratch.join("measurement.pl");
         std::fs::write(&program_path, MEASUREMENT_PROGRAM)
             .map_err(|error| format!("write program: {error}"))?;
 
-        let output = Command::new("perl")
-            .arg("-I")
-            .arg(&scratch)
-            .arg(&program_path)
-            .arg(mode)
-            .arg(&scratch)
-            .env("PERL5OPT", "")
-            .output()
-            .map_err(|error| format!("run perl: {error}"))?;
+        let mut command = oracle.into_command();
+        command.arg("-I").arg(&scratch).arg(&program_path).arg(mode).arg(&scratch);
+        let output = run_bounded(&mut command)?;
         if !output.status.success() {
             return Err(format!(
                 "perl exited {:?}: {}",
@@ -428,10 +458,78 @@ pub fn measure_mechanism_on_real_perl(
     Some(result)
 }
 
+/// Run one command with a wall-clock deadline and per-stream output caps;
+/// the process is killed when the deadline expires.
+///
+/// # Errors
+///
+/// Fails on spawn failure or deadline expiry.
+fn run_bounded(command: &mut Command) -> Result<std::process::Output, String> {
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null());
+    let mut child = command.spawn().map_err(|error| format!("spawn perl: {error}"))?;
+    // Bounded readers: stop at the cap so a flooding process cannot grow
+    // the harness without bound.
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let read_capped = move |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            let Some(mut pipe) = pipe else { return buffer };
+            let mut chunk = [0u8; 8192];
+            loop {
+                if buffer.len() >= MEASUREMENT_OUTPUT_CAP {
+                    break;
+                }
+                match pipe.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => {
+                        let room = MEASUREMENT_OUTPUT_CAP - buffer.len();
+                        buffer.extend_from_slice(&chunk[..read.min(room)]);
+                        if read > room {
+                            break;
+                        }
+                    }
+                }
+            }
+            buffer
+        })
+    };
+    let stdout_reader =
+        read_capped(stdout_pipe.map(|pipe| Box::new(pipe) as Box<dyn std::io::Read + Send>));
+    let stderr_reader =
+        read_capped(stderr_pipe.map(|pipe| Box::new(pipe) as Box<dyn std::io::Read + Send>));
+
+    let deadline = std::time::Instant::now() + MEASUREMENT_DEADLINE;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    break Err(
+                        "measurement perl exceeded the 20s deadline and was killed".to_string()
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(error) => break Err(format!("wait perl: {error}")),
+        }
+    };
+    let status = status?;
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    Ok(std::process::Output { status, stdout, stderr })
+}
+
 /// Parse the harness stdout into a typed measurement.
 ///
-/// Errors when a marker is outside the closed vocabulary or the observed
-/// fact count is not the complete set the program must emit.
+/// Errors when a marker is outside the closed vocabulary, a fact is
+/// emitted twice, or the observed set does not reconcile with the exact
+/// mechanism-specific fact denominator (the semantic verifier runs before
+/// the measurement is returned).
 fn parse_measurement_output(
     mechanism: ReloadMechanism,
     stdout: &str,
@@ -443,7 +541,12 @@ fn parse_measurement_output(
             perl_identity = Some(identity.to_string());
         } else if let Some(code) = line.strip_prefix("FACT ") {
             match MeasuredStateFact::parse(code) {
-                Some(fact) => facts.push(fact),
+                Some(fact) => {
+                    if facts.contains(&fact) {
+                        return Err(format!("harness emitted duplicate fact {code:?}"));
+                    }
+                    facts.push(fact);
+                }
                 None => return Err(format!("harness emitted unknown fact code {code:?}")),
             }
         } else if !line.trim().is_empty() {
@@ -452,14 +555,7 @@ fn parse_measurement_output(
     }
 
     let identity = perl_identity.ok_or_else(|| "no PERL identity marker".to_string())?;
-    if facts.len() != MeasuredStateFact::ALL.len() - 1 {
-        return Err(format!(
-            "expected {} facts, observed {}: {facts:?}",
-            MeasuredStateFact::ALL.len() - 1,
-            facts.len()
-        ));
-    }
-    Ok(MechanismMeasurement::measured(
+    let measurement = MechanismMeasurement::measured(
         mechanism,
         identity,
         facts,
@@ -468,7 +564,11 @@ fn parse_measurement_output(
             UnmeasuredBoundary::MroCacheInvalidation,
             UnmeasuredBoundary::SourceFilterReentry,
         ],
-    ))
+    );
+    verify_measurement(&measurement).map_err(|error| {
+        format!("live markers do not reconcile with the frozen record: {}", error.code())
+    })?;
+    Ok(measurement)
 }
 
 #[cfg(test)]
@@ -642,6 +742,63 @@ mod tests {
     }
 
     #[test]
+    fn marker_output_reconciles_the_exact_fact_set_not_the_row_count() {
+        use ReloadMechanism as M;
+        // Duplicate marker: the same known fact twice cannot pass for the
+        // full set.
+        let stdout = "PERL 5.038000\n\
+            FACT new_sub_takes_effect_for_new_calls\n\
+            FACT new_sub_takes_effect_for_new_calls\n";
+        assert!(
+            parse_measurement_output(M::IncDeletionAndRequire, stdout)
+                .is_err_and(|error| error.contains("duplicate fact"))
+        );
+
+        // Missing one required marker of the exact denominator: the row
+        // count alone can no longer carry a measurement through.
+        let stdout = "PERL 5.038000\n\
+            FACT new_sub_takes_effect_for_new_calls\n\
+            FACT captured_return_value_keeps_old_code\n\
+            FACT instance_data_persists\n\
+            FACT removed_sub_remains_callable\n";
+        assert!(
+            parse_measurement_output(M::IncDeletionAndRequire, stdout)
+                .is_err_and(|error| error.contains("reconcile with the frozen record"))
+        );
+
+        // The exact mechanism-specific set verifies.
+        let stdout = "PERL 5.038000\n\
+            FACT new_sub_takes_effect_for_new_calls\n\
+            FACT captured_return_value_keeps_old_code\n\
+            FACT instance_data_persists\n\
+            FACT removed_sub_remains_callable\n\
+            FACT inc_entry_refreshed_by_require\n";
+        let measurement =
+            parse_measurement_output(M::IncDeletionAndRequire, stdout).expect("exact set verifies");
+        assert_eq!(measurement.facts.len(), 5);
+    }
+
+    #[test]
+    fn unwritable_scratch_root_is_an_instrument_error_not_a_skip() {
+        // A regular file as the scratch root: create_dir_all must fail.
+        let bogus_root = std::env::temp_dir()
+            .join(format!("perl-reload-measure-bogus-root-{}", std::process::id(),));
+        std::fs::write(&bogus_root, b"not a directory").expect("write bogus root");
+        let result = measure_with_scratch_root(
+            ReloadMechanism::IncDeletionAndRequire,
+            Some(bogus_root.clone()),
+        );
+        std::fs::remove_file(&bogus_root).ok();
+        let Some(result) = result else {
+            panic!("perl is available; the harness must not report the mechanism unmeasured");
+        };
+        assert!(
+            result.as_ref().is_err_and(|error| error.contains("create scratch")),
+            "scratch failure must surface as an instrument error, got {result:?}"
+        );
+    }
+
+    #[test]
     fn live_perl_measurement_matches_the_frozen_record() {
         if !perl_available() {
             return;
@@ -650,7 +807,7 @@ mod tests {
             (ReloadMechanism::IncDeletionAndRequire, MeasuredStateFact::IncEntryRefreshedByRequire),
             (ReloadMechanism::DoOrRequireHelper, MeasuredStateFact::IncEntryUnchangedByDo),
         ] {
-            let Some(result) = measure_mechanism_on_real_perl(mechanism) else {
+            let Some(result) = measure_with_scratch_root(mechanism, None) else {
                 panic!("perl is available but the harness declined to run for {mechanism:?}");
             };
             let measurement = result.unwrap_or_else(|error| {
@@ -673,7 +830,7 @@ mod tests {
         if !perl_available() {
             return;
         }
-        let Some(result) = measure_mechanism_on_real_perl(ReloadMechanism::IncDeletionAndRequire)
+        let Some(result) = measure_with_scratch_root(ReloadMechanism::IncDeletionAndRequire, None)
         else {
             panic!("perl is available but the harness declined to run");
         };
