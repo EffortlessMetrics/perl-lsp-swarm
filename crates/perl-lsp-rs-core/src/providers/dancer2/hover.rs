@@ -68,6 +68,34 @@ pub fn hover_projection_at(
     keyword_hover(&activation.facts, ast, offset, &version, package)
 }
 
+/// `(package, name)` pairs of subroutine declarations in the AST.
+///
+/// A local `sub <name>` in the cursor's package owns the name: hover then
+/// belongs to the ordinary Perl path, not to the DSL keyword.
+fn declared_sub_names(
+    node: &perl_parser_core::Node,
+) -> std::collections::HashSet<(String, String)> {
+    let mut names = std::collections::HashSet::new();
+    fn walk(
+        node: &perl_parser_core::Node,
+        package: &mut String,
+        names: &mut std::collections::HashSet<(String, String)>,
+    ) {
+        if let perl_parser_core::NodeKind::Package { name, .. } = &node.kind {
+            *package = name.clone();
+        }
+        if let perl_parser_core::NodeKind::Subroutine { name: Some(name), .. } = &node.kind {
+            names.insert((package.clone(), name.clone()));
+        }
+        for child in node.children() {
+            walk(child, package, names);
+        }
+    }
+    let mut package = "main".to_string();
+    walk(node, &mut package, &mut names);
+    names
+}
+
 fn exact_version(
     facts: &perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts,
 ) -> Option<String> {
@@ -223,6 +251,12 @@ fn keyword_hover(
     let mut found = None;
     find_keyword_usage(ast, offset, &vocabulary, &mut found);
     let keyword_name = found?;
+    let declared = declared_sub_names(ast);
+    if declared.contains(&(package.to_string(), keyword_name.clone())) {
+        // A local `sub <name>` declaration owns the name: the ordinary
+        // Perl hover path covers it.
+        return None;
+    }
     let content = format!(
         "**Dancer2 DSL keyword `{keyword_name}`** (`Dancer2` {version})\n- availability: \
          {}\n- keyword contract: `{DANCER2_DSL_CONTRACT_VERSION}`\n- provenance: \

@@ -92,6 +92,8 @@ pub struct Dancer2WorkspaceEntity {
     pub end: u32,
     /// Whether the underlying fact was exact.
     pub exact: bool,
+    /// `true` for route entities, `false` for hook entities (label provenance).
+    pub is_route: bool,
 }
 
 /// Build workspace-level entity projections for the generated-symbol index.
@@ -112,6 +114,7 @@ pub fn dancer2_workspace_entities(
             start: route.envelope.anchor.start_byte,
             end: route.envelope.anchor.end_byte,
             exact: route.status() == perl_semantic_facts::SemanticFactStatus::Exact,
+            is_route: true,
         });
     }
     for hook in &facts.hooks {
@@ -123,6 +126,7 @@ pub fn dancer2_workspace_entities(
                 start: hook.envelope.anchor.start_byte,
                 end: hook.envelope.anchor.end_byte,
                 exact: hook.status() == perl_semantic_facts::SemanticFactStatus::Exact,
+                is_route: false,
             });
         }
     }
@@ -198,11 +202,21 @@ mod tests {
     }
 
     #[test]
-    fn route_name_selection_dynamic_is_not_a_literal_value() {
-        // Guard: route_name_literal_value returns None for dynamic names —
-        // the RouteNameSelection import stays exercised by the public API.
-        let facts = file_facts("use Dancer2;\nget '/x' => sub { 1 };");
+    fn dynamic_route_name_falls_back_to_pattern_identity() {
+        // A computed name operand is a boundary: the symbol identity uses
+        // the pattern, never a guessed name.
+        let facts = file_facts(
+            "use Dancer2;
+my $n = 'computed';
+get $n, '/y' => sub { 1 };",
+        );
         let symbols = dancer2_document_symbols(&facts);
-        assert!(!symbols[0].name.contains("—"), "unnamed route has no name part");
+        assert_eq!(symbols.len(), 1);
+        assert!(
+            symbols[0].name.starts_with("GET, HEAD /y"),
+            "dynamic name falls back to the pattern identity: {}",
+            symbols[0].name
+        );
+        assert!(!symbols[0].name.contains("—"), "no name part is synthesized");
     }
 }

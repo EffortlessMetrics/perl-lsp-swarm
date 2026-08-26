@@ -102,6 +102,21 @@ pub fn bounded_diagnostics(
             let mut usages = Vec::new();
             collect_keyword_usages(ast, &handler_only, &mut usages);
             let declared = declared_sub_names(ast);
+            let hook_handler_spans: Vec<(u32, u32)> = facts
+                .hooks
+                .iter()
+                .filter_map(|hook| match &hook.hook.handler {
+                    perl_semantic_facts::handler::FrameworkHandler::InlineSub { anchor }
+                    | perl_semantic_facts::handler::FrameworkHandler::StaticCoderef {
+                        anchor,
+                        ..
+                    } => Some((anchor.start_byte, anchor.end_byte)),
+                    perl_semantic_facts::handler::FrameworkHandler::Bounded { anchor, .. } => {
+                        anchor.map(|span| (span.start_byte, span.end_byte))
+                    }
+                    _ => None,
+                })
+                .collect();
             for (name, start, end) in usages {
                 if declared.contains(&name) {
                     // A local `sub <name>` declaration owns the name: using
@@ -110,6 +125,16 @@ pub fn bounded_diagnostics(
                 }
                 let offset = usize::try_from(start).unwrap_or(0);
                 if facts.inside_handler_context(offset) {
+                    continue;
+                }
+                // Hook bodies are an unmodeled request context (#8924 owns
+                // hook facts; no handler-context fact exists for them), so a
+                // handler-only keyword inside a hook handler stays unreported
+                // rather than misleadingly flagged.
+                if hook_handler_spans.iter().any(|(hook_start, hook_end)| {
+                    usize::try_from(*hook_start).ok() <= Some(offset)
+                        && offset < usize::try_from(*hook_end).unwrap_or(0)
+                }) {
                     continue;
                 }
                 if current_package_at(ast, offset) != package {

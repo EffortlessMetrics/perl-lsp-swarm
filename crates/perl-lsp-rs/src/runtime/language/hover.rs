@@ -255,7 +255,7 @@ impl LspServer {
                                     content,
                                     ..
                                 } => content.clone(),
-                                _ => String::new(),
+                                _ => "Dancer2 framework projection".to_string(),
                             };
                             let value = serde_json::json!({
                                 "contents": {

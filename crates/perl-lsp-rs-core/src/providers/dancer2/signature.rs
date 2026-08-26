@@ -1,8 +1,10 @@
 //! Dancer2 route-DSL signature help cell (#8928).
 //!
-//! Provides version-authoritative signature forms for the supported static
-//! route DSL from the reviewed #8918 form table. The DSL supports several
-//! forms; they are reported as distinct forms, never flattened into one.
+//! Signature forms for the supported static route DSL from the reviewed
+//! #8918 form table of the observed Dancer2 1.x activation profile. The DSL
+//! supports several forms; they are reported as distinct forms, never
+//! flattened into one. Version authority comes from the activating import's
+//! observed version evidence (#8914), not from this table alone.
 
 use perl_semantic_facts::framework_adapters::dancer2_routes::{
     DANCER2_ANY_DEFAULT_METHODS, dancer2_keyword_methods,

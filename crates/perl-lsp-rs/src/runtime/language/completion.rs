@@ -100,20 +100,31 @@ fn dancer2_line_starts_in_string(before_cursor: &str) -> bool {
     quote.is_some()
 }
 
-/// Subroutine names declared in the file (any package).
+/// `(package, name)` pairs of subroutine declarations in the file.
+///
+/// Shadowing is package-scoped: a `sub get` in one package does not own the
+/// name for a Dancer2-activated sibling package.
 pub(crate) fn dancer2_declared_sub_names(
     node: &perl_parser::ast::Node,
-) -> std::collections::HashSet<String> {
+) -> std::collections::HashSet<(String, String)> {
     let mut names = std::collections::HashSet::new();
-    fn walk(node: &perl_parser::ast::Node, names: &mut std::collections::HashSet<String>) {
+    fn walk(
+        node: &perl_parser::ast::Node,
+        package: &mut String,
+        names: &mut std::collections::HashSet<(String, String)>,
+    ) {
+        if let perl_parser::ast::NodeKind::Package { name, .. } = &node.kind {
+            *package = name.clone();
+        }
         if let perl_parser::ast::NodeKind::Subroutine { name: Some(name), .. } = &node.kind {
-            names.insert(name.clone());
+            names.insert((package.clone(), name.clone()));
         }
         for child in node.children() {
-            walk(child, names);
+            walk(child, package, names);
         }
     }
-    walk(node, &mut names);
+    let mut package = "main".to_string();
+    walk(node, &mut package, &mut names);
     names
 }
 
@@ -946,7 +957,7 @@ impl LspServer {
         if Self::is_module_import_completion_context(text, offset) {
             return;
         }
-        if dancer2_line_starts_in_string(&text[..offset]) {
+        if text[..offset].lines().next_back().is_some_and(dancer2_line_starts_in_string) {
             return;
         }
         let Some((context, package)) =
@@ -960,7 +971,7 @@ impl LspServer {
             &context.facts,
             &package,
             offset,
-            &|name| declared.contains(name),
+            &|name| declared.contains(&(package.clone(), name.to_string())),
         );
         for candidate in candidates {
             if !candidate.label.starts_with(prefix.as_str()) {

@@ -54,10 +54,7 @@ fn legacy_http_method(keyword: &str) -> String {
 /// Mirrors the two statement shapes `try_extract_web_route_declaration`
 /// matched: the FunctionCall form `VERB PATTERN => sub { }` and the
 /// two-statement `VERB; { PATTERN => sub { } }` form.
-fn frozen_legacy_route_symbols(
-    source: &str,
-    ast: &perl_parser_core::Node,
-) -> Vec<(String, String)> {
+fn frozen_legacy_route_symbols(ast: &perl_parser_core::Node) -> Vec<(String, String)> {
     use perl_parser_core::NodeKind;
 
     // The packages an exact `use Dancer2` activated (framework flags
@@ -154,7 +151,6 @@ fn frozen_legacy_route_symbols(
             }
         }
     }
-    let _ = source;
     let mut package = "main".to_string();
     walk_statements(ast, &mut package, &activated_packages, &mut symbols);
     symbols
@@ -191,12 +187,19 @@ fn canonical_admission(ast: &perl_parser_core::Node) -> HashSet<(String, String,
             exact_packages.insert(package, site.evidence.excluded_keywords.clone());
         }
     }
+    let route_keywords: std::collections::HashSet<&str> =
+        perl_semantic_facts::framework_adapters::dancer2_routes::DANCER2_ROUTE_KEYWORDS
+            .iter()
+            .copied()
+            .collect();
     let mut admitted = HashSet::new();
     for declaration in &contexts.routes {
         let Some(package) = &declaration.package else { continue };
         let Some(exclusions) = exact_packages.get(package) else { continue };
         let keyword = declaration.route.keyword.as_str();
-        if exclusions.iter().any(|excluded| excluded == keyword) {
+        if !route_keywords.contains(keyword)
+            || exclusions.iter().any(|excluded| excluded == keyword)
+        {
             continue;
         }
         if let Some(pattern) = &declaration.route.pattern.value {
@@ -226,7 +229,7 @@ fn parity_admitted_forms_cover_frozen_legacy_oracle() {
     ];
     for source in fixtures {
         let ast = parse(source);
-        let legacy = frozen_legacy_route_symbols(source, &ast);
+        let legacy = frozen_legacy_route_symbols(&ast);
         assert_eq!(legacy.len(), 1, "oracle shape for: {source}");
         let (path, http_method) = &legacy[0];
         let admitted = canonical_admission(&ast);
@@ -336,7 +339,7 @@ fn skeleton_corpus_parity_and_retirement() {
         .unwrap_or_else(|| PathBuf::from("test_corpus/real_projects/dancer2_skeleton"));
     let basic = std::fs::read_to_string(root.join("t/basic.t")).unwrap_or_default();
     let ast = parse(&basic);
-    let legacy = frozen_legacy_route_symbols(&basic, &ast);
+    let legacy = frozen_legacy_route_symbols(&ast);
     assert_eq!(legacy.len(), 1, "skeleton carries one route declaration");
     assert_eq!(legacy[0].0, "/", "the skeleton route is `/`");
 

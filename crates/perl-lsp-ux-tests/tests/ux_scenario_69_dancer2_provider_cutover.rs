@@ -213,9 +213,12 @@ fn scenario_69_dancer2_provider_cutover_receipt() {
                 .filter(|item| {
                     item.get("label").and_then(Value::as_str) == Some("get")
                         && item
-                            .get("detail")
+                            .pointer("/documentation/value")
+                            .or_else(|| item.get("documentation"))
                             .and_then(Value::as_str)
-                            .is_some_and(|detail| detail.contains("Dancer2 DSL keyword"))
+                            .is_some_and(|documentation| {
+                                documentation.contains("Dancer2 DSL keyword")
+                            })
                 })
                 .count();
             recorder.check(
@@ -224,9 +227,16 @@ fn scenario_69_dancer2_provider_cutover_receipt() {
             )?;
             recorder.check(
                 "the exclusion keeps other admitted Dancer2 keywords importable",
-                excluded_items
-                    .iter()
-                    .any(|item| item.get("label").and_then(Value::as_str) == Some("post")),
+                excluded_items.iter().any(|item| {
+                    item.get("label").and_then(Value::as_str) == Some("post")
+                        && item
+                            .pointer("/documentation/value")
+                            .or_else(|| item.get("documentation"))
+                            .and_then(Value::as_str)
+                            .is_some_and(|documentation| {
+                                documentation.contains("Dancer2 DSL keyword")
+                            })
+                }),
             )?;
 
             // --- Completion: no framework result without activation. ---
@@ -362,7 +372,6 @@ fn scenario_69_dancer2_provider_cutover_receipt() {
             )?;
 
             // --- Edit freshness: rename the route, re-query, no stale answer. ---
-            let updated = APP_MAIN.replace("'Hello World'", "'Edited'");
             let renamed = APP_MAIN.replace("get '/' =>", "get '/renamed' =>");
             harness.change_file_full("bin/app.pl", &renamed)?;
             // Bounded poll until the re-parsed snapshot serves the fresh
@@ -389,7 +398,6 @@ fn scenario_69_dancer2_provider_cutover_receipt() {
                 names_after.iter().any(|name| name.contains("/renamed"))
                     && !names_after.iter().any(|name| name.contains("GET, HEAD / [Dancer2 route]")),
             )?;
-            let _ = updated;
 
             // --- Excluded-keyword bounded diagnostic over the real push path. ---
             let diagnostics = harness.wait_for_latest_diagnostics(

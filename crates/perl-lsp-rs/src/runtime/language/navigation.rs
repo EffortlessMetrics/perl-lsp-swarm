@@ -1355,9 +1355,15 @@ impl LspServer {
                     let documents = self.documents_guard();
                     self.get_document(&documents, uri)
                         .map(|doc| {
+                            // Clamp against the CURRENT text: a didChange
+                            // racing the released lock must never push a
+                            // stale snapshot's byte offsets out of range.
+                            let text_len = doc.text.len();
+                            let clamp =
+                                |value: u32| usize::try_from(value).unwrap_or(0).min(text_len);
                             (
-                                self.offset_to_pos16(doc, usize::try_from(start).unwrap_or(0)),
-                                self.offset_to_pos16(doc, usize::try_from(end).unwrap_or(0)),
+                                self.offset_to_pos16(doc, clamp(start)),
+                                self.offset_to_pos16(doc, clamp(end)),
                             )
                         })
                         .unwrap_or(((0, 0), (0, 0)))

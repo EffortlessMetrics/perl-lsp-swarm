@@ -96,13 +96,27 @@ mod dancer_navigation_tests {
             "no activation evidence: no framework route navigation while `use Dancer2` is present (#8928)"
         );
 
-        let changed = "get '/status' => sub { 'ok' };\n";
+        // Discriminating control: neither state may produce a framework
+        // navigation target for the route pattern (the positive canonical
+        // path is scenario 69), while ordinary Perl navigation keeps working
+        // after the removal so the absence is the framework contract, not a
+        // dead server.
+        let changed = "get '/status' => sub { 'ok' };
+sub route_helper { 1 }
+route_helper();
+";
         server.change_document(uri, changed, 2);
         let (line, character) = semantic::find_pos(changed, "/status", 0);
         let after = server.get_definition(uri, line, character);
         assert!(
             semantic::first_location(&after).is_none(),
-            "removing `use Dancer2` must drop the stale route navigation"
+            "removing `use Dancer2` must not leave any route navigation"
+        );
+        let (helper_line, helper_char) = semantic::find_pos(changed, "route_helper();", 2);
+        let helper_after = server.get_definition(uri, helper_line, helper_char);
+        assert!(
+            semantic::first_location(&helper_after).is_some(),
+            "ordinary Perl navigation keeps working after the activation removal"
         );
         server.shutdown();
         Ok(())

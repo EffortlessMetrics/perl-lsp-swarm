@@ -138,6 +138,17 @@ impl Dancer2FileActivations {
     }
 }
 
+/// Byte offset of the first exact `use Dancer2` activation site, if any.
+///
+/// Used as the module-resolution anchor so `@INC` lexical state (for example
+/// `no lib` before the import) is honored at the activation site instead of
+/// over the whole file.
+#[must_use]
+pub fn first_activation_site_offset(ast: &Node) -> Option<usize> {
+    let sites = extract_dancer2_activation_sites(ast, FileId(0));
+    sites.first().map(|site| usize::try_from(site.span_start_byte).unwrap_or(0))
+}
+
 /// Bounded human reason for the current activation state of a package.
 #[must_use]
 pub fn activation_state_reason(facts: &Dancer2ActivationFacts, has_module: bool) -> String {
@@ -365,6 +376,35 @@ mod tests {
         let args: Vec<String> = ["dsl", "'My::DSL'"].iter().map(ToString::to_string).collect();
         let evidence = parse_dancer2_import_args(&args);
         assert!(matches!(evidence.dsl, Some(DslSelection::CustomLiteral(_))));
+    }
+
+    #[test]
+    fn custom_dsl_with_versioned_module_is_not_exact() {
+        // A custom DSL owns its keyword vocabulary: even with a resolved
+        // versioned Dancer2 module the activation stays a dynamic boundary.
+        let source = "use Dancer2 dsl => 'My::DSL';
+";
+        let mut parser = Parser::new(source);
+        let ast = match parser.parse() {
+            Ok(ast) => ast,
+            Err(error) => panic!("fixture must parse: {error}"),
+        };
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
+        let activations =
+            file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("gen-test"));
+        assert!(
+            !activations.has_exact(),
+            "custom DSL with version evidence must not become an exact activation"
+        );
+        let facts = &activations.for_package("main").expect("main activation").facts;
+        assert!(facts.keywords.is_empty(), "default keyword facts are not inherited");
+        assert!(
+            matches!(
+                facts.state,
+                perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationState::DynamicBoundary { .. }
+            ),
+            "custom DSL is a dynamic boundary"
+        );
     }
 
     #[test]

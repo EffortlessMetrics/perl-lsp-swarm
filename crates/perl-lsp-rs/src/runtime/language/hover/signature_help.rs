@@ -103,8 +103,10 @@ impl LspServer {
                             keyword.keyword == function_name
                                 && keyword.state == Dancer2KeywordState::Imported
                         });
+                        let package_scoped_declared =
+                            declared.contains(&(package.clone(), function_name.clone()));
                         if keyword_imported
-                            && !declared.contains(function_name.as_str())
+                            && !package_scoped_declared
                             && let Some(forms) = route_keyword_signature_forms(&function_name)
                         {
                             return Ok(Some(json!({

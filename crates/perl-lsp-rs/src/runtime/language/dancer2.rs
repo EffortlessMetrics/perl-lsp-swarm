@@ -90,8 +90,18 @@ impl LspServer {
     ) -> Dancer2RequestContext {
         let generation = SourceGeneration::known(format!("lsp-doc:{content_hash:016x}"));
         let file_id = FileId(content_hash & 0xFFFF_FFFF);
+        // Resolve at the first activation site's offset so position-aware
+        // `@INC` state (`use lib` / `no lib` relative to the import) is
+        // honored for the activation evidence.
+        let activation_offset =
+            perl_lsp_rs_core::providers::dancer2::first_activation_site_offset(ast);
         let module = self
-            .resolve_module_to_path_with_doc_at_offset("Dancer2", Some(text), Some(uri), None)
+            .resolve_module_to_path_with_doc_at_offset(
+                "Dancer2",
+                Some(text),
+                Some(uri),
+                activation_offset,
+            )
             .as_deref()
             .and_then(observe_dancer2_module);
         let activations = file_activations(ast, file_id, module.as_ref(), &generation);

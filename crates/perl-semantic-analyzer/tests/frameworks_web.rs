@@ -85,8 +85,8 @@ fn dancer2_multiple_admitted_routes_all_retired() {
     let code = r#"
 use Dancer2;
 
-get '/foo' => sub { 'foo' };
-post '/bar' => sub { 'bar' };
+get '/foo' => sub { my $foo_local = 'foo'; };
+post '/bar' => sub { my $bar_local = 'bar'; };
 get '/baz' => sub { 'baz' };
 "#;
     let table = extract_symbols(code);
@@ -94,6 +94,11 @@ get '/baz' => sub { 'baz' };
         table.symbols.keys().all(|name| !name.starts_with('/')),
         "every admitted route retires the legacy synthesis"
     );
+    // Positive control: the table is not empty and handler-local lexical
+    // symbols stay indexed, so the negative assertion above cannot pass
+    // vacuously (an extractor that dropped everything would fail here).
+    assert!(table.symbols.contains_key("foo_local"), "handler-local symbols stay indexed");
+    assert!(table.symbols.contains_key("bar_local"), "handler-local symbols stay indexed");
 }
 
 #[test]

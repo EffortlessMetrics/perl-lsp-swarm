@@ -18,6 +18,7 @@ use perl_semantic_facts::framework_adapters::dancer2_hooks::{
 use perl_semantic_facts::framework_adapters::dancer2_routes::{
     Dancer2RouteFacts, dancer2_route_family_facts,
 };
+use perl_semantic_facts::handler::FrameworkHandler as RouteHandler;
 use perl_semantic_facts::hook::HookFact;
 use perl_semantic_facts::route::{RouteFact, RouteHandlerContextFact};
 
@@ -54,23 +55,43 @@ impl CanonicalDancer2FileFacts {
             && self.hooks.is_empty()
     }
 
-    /// The route fact whose declaration span contains `offset`, if any.
+    /// The route fact whose declaration span contains `offset`, excluding
+    /// the handler operand span: positions inside the inline handler body
+    /// belong to the generic paths, not to the route operands.
     #[must_use]
     pub fn route_at(&self, offset: usize) -> Option<&RouteFact> {
         self.routes.iter().find(|fact| {
-            let anchor = &fact.envelope.anchor;
-            usize::try_from(anchor.start_byte).ok() <= Some(offset)
-                && offset < usize::try_from(anchor.end_byte).unwrap_or(0)
+            if !span_contains(&fact.envelope.anchor, offset) {
+                return false;
+            }
+            let handler_span = match &fact.route.handler {
+                RouteHandler::InlineSub { anchor } | RouteHandler::StaticCoderef { anchor, .. } => {
+                    Some(*anchor)
+                }
+                RouteHandler::Bounded { anchor, .. } => *anchor,
+                _ => None,
+            };
+            !handler_span.is_some_and(|anchor| span_contains(&anchor, offset))
         })
     }
 
-    /// The hook fact whose declaration span contains `offset`, if any.
+    /// The hook fact whose declaration span contains `offset`, excluding
+    /// the handler operand span (same containment rule as [`Self::route_at`]).
     #[must_use]
     pub fn hook_at(&self, offset: usize) -> Option<&HookFact> {
         self.hooks.iter().find(|fact| {
-            let anchor = &fact.envelope.anchor;
-            usize::try_from(anchor.start_byte).ok() <= Some(offset)
-                && offset < usize::try_from(anchor.end_byte).unwrap_or(0)
+            if !span_contains(&fact.envelope.anchor, offset) {
+                return false;
+            }
+            let handler_span = match &fact.hook.handler {
+                perl_semantic_facts::handler::FrameworkHandler::InlineSub { anchor }
+                | perl_semantic_facts::handler::FrameworkHandler::StaticCoderef {
+                    anchor, ..
+                } => Some(*anchor),
+                perl_semantic_facts::handler::FrameworkHandler::Bounded { anchor, .. } => *anchor,
+                _ => None,
+            };
+            !handler_span.is_some_and(|anchor| span_contains(&anchor, offset))
         })
     }
 
@@ -83,6 +104,12 @@ impl CanonicalDancer2FileFacts {
                 && offset < usize::try_from(anchor.end_byte).unwrap_or(0)
         })
     }
+}
+
+/// Whether a source anchor's byte span contains `offset`.
+fn span_contains(anchor: &perl_semantic_facts::SourceAnchor, offset: usize) -> bool {
+    usize::try_from(anchor.start_byte).ok() <= Some(offset)
+        && offset < usize::try_from(anchor.end_byte).unwrap_or(0)
 }
 
 /// Mint the canonical Dancer2 fact family for one document.

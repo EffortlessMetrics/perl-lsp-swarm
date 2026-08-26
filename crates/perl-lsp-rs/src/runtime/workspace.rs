@@ -429,7 +429,25 @@ impl LspServer {
                 tracing::debug!(
                     "Workspace symbol: skipping stale workspace index tier, using open-doc fallback"
                 );
-                return self.search_open_documents_for_symbols(query, cap);
+                // The canonical Dancer2 entries are computed from open
+                // documents' current snapshots, so they stay available on
+                // the stale-index fallback path (#8928).
+                let dancer2_entries = self.dancer2_workspace_symbols_typed(query, cap);
+                let fallback = self.search_open_documents_for_symbols(query, cap)?;
+                let merged = match fallback {
+                    Some(Value::Array(mut items)) => {
+                        for entry in dancer2_entries {
+                            if let Ok(value) = serde_json::to_value(&entry)
+                                && items.len() < cap
+                            {
+                                items.push(value);
+                            }
+                        }
+                        Some(Value::Array(items))
+                    }
+                    other => other,
+                };
+                return Ok(merged);
             }
 
             // Canonical Dancer2 entries (#8928) are computed BEFORE the
@@ -994,7 +1012,7 @@ impl LspServer {
         cap: usize,
     ) -> Vec<perl_workspace::workspace_index::WorkspaceSymbol> {
         use perl_lsp_rs_core::providers::dancer2::{
-            DANCER2_ROUTE_LABEL, dancer2_workspace_entities,
+            DANCER2_HOOK_LABEL, DANCER2_ROUTE_LABEL, dancer2_workspace_entities,
         };
         use perl_parser_core::position::{Position, Range as ByteRange};
         use perl_symbol::SymbolKind;
@@ -1045,8 +1063,9 @@ impl LspServer {
                     .rsplit_once("::")
                     .map(|(container, _)| container.to_string())
                     .unwrap_or_else(|| "main".to_string());
+                let label = if entity.is_route { DANCER2_ROUTE_LABEL } else { DANCER2_HOOK_LABEL };
                 entries.push(perl_workspace::workspace_index::WorkspaceSymbol {
-                    name: format!("{} {DANCER2_ROUTE_LABEL}", entity.bare_name),
+                    name: format!("{} {label}", entity.bare_name),
                     kind: SymbolKind::Subroutine,
                     uri: doc_uri.clone(),
                     range: ByteRange::new(
@@ -1055,7 +1074,7 @@ impl LspServer {
                     ),
                     qualified_name: Some(entity.canonical_name.clone()),
                     documentation: Some(
-                        "Canonical Dancer2 framework projection anchored to the source                          declaration; virtual entry, no generated body"
+                        "Canonical Dancer2 framework projection anchored to the source declaration; virtual entry, no generated body"
                             .to_string(),
                     ),
                     container_name: Some(package),
