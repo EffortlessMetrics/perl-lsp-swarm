@@ -18,6 +18,8 @@
 //! | `PL606` | Warning | `readpipe()` executes shell commands (equivalent to qx//) |
 //! | `PL607` | Warning | Interpolated/concatenated SQL text in `->prepare()` / `->do()` (#5035) |
 
+use std::collections::HashMap;
+
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::ast::{Node, NodeKind};
 
@@ -922,14 +924,14 @@ enum SqlTextEvidence {
 /// - A computed statement argument is a typed dynamic boundary and never
 ///   warns.
 fn check_sql_injection(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
-    let mut assignments = Vec::new();
-    collect_receiver_assignments(node, &mut assignments);
-    walk_sql_injection_sinks(node, &assignments, diagnostics);
+    let mut index = ReceiverAssignmentIndex::new();
+    collect_receiver_assignments(node, &mut index);
+    let index = index.finish();
+    walk_sql_injection_sinks(node, &index, diagnostics);
 }
 
 /// One same-file scalar assignment observed for a receiver name (#5035).
 struct ReceiverAssignment {
-    name: String,
     /// Byte offset of the assignment site, for source-order qualification.
     offset: usize,
     /// Whether the assigned value is a `DBI->connect(...)` call.
@@ -949,7 +951,7 @@ struct ReceiverAssignment {
 /// unproven and stays silent. Handles reached through aliases, parameters, or
 /// DBD-specific class names stay unproven likewise; the binding-precise
 /// statement-handle identity model is owned by #7471.
-fn collect_receiver_assignments(node: &Node, assignments: &mut Vec<ReceiverAssignment>) {
+fn collect_receiver_assignments(node: &Node, index: &mut ReceiverAssignmentIndex) {
     let connect_assigned = |value: &Node| match &value.kind {
         NodeKind::MethodCall { object, method, .. } => {
             matches!(&object.kind, NodeKind::Identifier { name } if name == "DBI")
@@ -963,45 +965,65 @@ fn collect_receiver_assignments(node: &Node, assignments: &mut Vec<ReceiverAssig
         // evidence about the receiver's origin either way.
         NodeKind::VariableDeclaration { variable, initializer: Some(init), .. } => {
             if let Some(name) = scalar_variable_name(variable) {
-                assignments.push(ReceiverAssignment {
-                    name,
-                    offset: node.location.start,
-                    is_connect: connect_assigned(init),
-                });
+                index.record(name, node.location.start, connect_assigned(init));
             }
         }
         NodeKind::Assignment { lhs, rhs, .. } => {
             if let Some(name) = scalar_variable_name(lhs) {
-                assignments.push(ReceiverAssignment {
-                    name,
-                    offset: node.location.start,
-                    is_connect: connect_assigned(rhs),
-                });
+                index.record(name, node.location.start, connect_assigned(rhs));
             }
         }
         _ => {}
     }
 
-    node.for_each_child(|child| collect_receiver_assignments(child, assignments));
+    node.for_each_child(|child| collect_receiver_assignments(child, index));
 }
 
-/// Whether `name` is a proven DBI handle at a sink starting at `sink_offset`
-/// (#5035): at least one same-file assignment before the sink must exist, and
-/// every such assignment must come from `DBI->connect(...)`. Assignments after
-/// the sink cannot describe the receiver at call time under name-based
-/// analysis; mixed pre-sink evidence is an ambiguity boundary.
-fn receiver_is_proven_dbh(
-    name: &str,
-    sink_offset: usize,
-    assignments: &[ReceiverAssignment],
-) -> bool {
-    let mut prior = assignments
-        .iter()
-        .filter(|assignment| assignment.name == name && assignment.offset < sink_offset);
+/// Pre-indexed receiver-assignment evidence, keyed by receiver name (#5035).
+///
+/// One pass over the document builds this index; every SQL sink then resolves
+/// its receiver in O(1) by name plus a source-ordered prefix scan of only that
+/// receiver's assignments. A document with A assignments and S sinks costs
+/// O(A + S log A) per diagnostic pass instead of O(A x S), so a crafted
+/// document cannot multiply sinks against assignments to exhaust CPU through
+/// an open-document diagnostic request (#5035 review).
+struct ReceiverAssignmentIndex {
+    by_name: HashMap<String, Vec<ReceiverAssignment>>,
+}
 
-    match prior.next() {
-        None => false,
-        Some(first) => first.is_connect && prior.all(|assignment| assignment.is_connect),
+impl ReceiverAssignmentIndex {
+    fn new() -> Self {
+        Self { by_name: HashMap::new() }
+    }
+
+    fn record(&mut self, name: String, offset: usize, is_connect: bool) {
+        self.by_name.entry(name).or_default().push(ReceiverAssignment { offset, is_connect });
+    }
+
+    /// Freeze the index after collection, putting every receiver's
+    /// assignments in source order. Pre-order AST traversal is source-ordered
+    /// in practice; sorting each bucket by offset makes that a guarantee
+    /// instead of an assumption, so the prefix-qualification semantics below
+    /// stay identical to the file-wide scan it replaces.
+    fn finish(mut self) -> Self {
+        for bucket in self.by_name.values_mut() {
+            bucket.sort_by_key(|assignment| assignment.offset);
+        }
+        self
+    }
+
+    /// Whether `name` is a proven DBI handle at a sink starting at
+    /// `sink_offset` (#5035): at least one same-file assignment before the
+    /// sink must exist, and every such assignment must come from
+    /// `DBI->connect(...)`. Assignments after the sink cannot describe the
+    /// receiver at call time under name-based analysis; mixed pre-sink
+    /// evidence is an ambiguity boundary.
+    fn is_proven_dbh(&self, name: &str, sink_offset: usize) -> bool {
+        let Some(bucket) = self.by_name.get(name) else {
+            return false;
+        };
+        let prior = bucket.partition_point(|assignment| assignment.offset < sink_offset);
+        prior > 0 && bucket[..prior].iter().all(|assignment| assignment.is_connect)
     }
 }
 
@@ -1016,13 +1038,13 @@ fn scalar_variable_name(node: &Node) -> Option<String> {
 
 fn walk_sql_injection_sinks(
     node: &Node,
-    assignments: &[ReceiverAssignment],
+    index: &ReceiverAssignmentIndex,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     if let NodeKind::MethodCall { object, method, args } = &node.kind {
-        check_sql_injection_method_call(object, method, args, node, assignments, diagnostics);
+        check_sql_injection_method_call(object, method, args, node, index, diagnostics);
     }
-    node.for_each_child(|child| walk_sql_injection_sinks(child, assignments, diagnostics));
+    node.for_each_child(|child| walk_sql_injection_sinks(child, index, diagnostics));
 }
 
 /// Check one method call against the DBI SQL-injection sink set.
@@ -1031,7 +1053,7 @@ fn check_sql_injection_method_call(
     method: &str,
     args: &[Node],
     node: &Node,
-    assignments: &[ReceiverAssignment],
+    index: &ReceiverAssignmentIndex,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     if !DBI_STATEMENT_METHODS.contains(&method) {
@@ -1043,7 +1065,7 @@ fn check_sql_injection_method_call(
     // Anything else (unassigned `$dbh`, shadowed or rebound names, another
     // class's `prepare`, a later connect) stays silent.
     let receiver_is_dbh = scalar_variable_name(object)
-        .is_some_and(|name| receiver_is_proven_dbh(&name, node.location.start, assignments));
+        .is_some_and(|name| index.is_proven_dbh(&name, node.location.start));
     if !receiver_is_dbh {
         return;
     }
@@ -1169,25 +1191,44 @@ fn classify_concatenation(node: &Node) -> SqlTextEvidence {
 }
 
 /// Whether an interpolating string's text interpolates a variable: a `$` or
-/// `@` sigil followed by an identifier character or `{`, and not escaped.
+/// `@` sigil followed by an identifier character, `{`, or — under the scalar
+/// sigil only — one of the punctuation match-variable sigils, and not
+/// escaped.
 ///
 /// Escaping follows Perl backslash parity: only an odd-length run of
 /// preceding backslashes escapes the sigil. An even-length run escapes the
 /// backslash itself, so the sigil still interpolates (`"\\$id"` interpolates
 /// `$id` after emitting a literal backslash) (#5035 review).
+///
+/// The punctuation successors `$&` (match text), `` $` `` (pre-match), `$'`
+/// (post-match), and `$+` (highest capture group) name the special match
+/// variables: like any scalar they interpolate in double-quoted strings and
+/// interpolating heredocs, so a match over attacker-controlled input feeds
+/// that text into the SQL exactly like `$id` and must not classify the
+/// statement as static (#5035 review).
 fn string_contains_interpolation(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.iter().enumerate().any(|(index, byte)| {
-        if *byte != b'$' && *byte != b'@' {
-            return false;
-        }
+        let sigil = match *byte {
+            b'$' | b'@' => *byte,
+            _ => return false,
+        };
         if escaped_by_backslash_run(bytes, index) {
             return false;
         }
-        bytes
-            .get(index + 1)
-            .is_some_and(|next| next.is_ascii_alphanumeric() || *next == b'_' || *next == b'{')
+        bytes.get(index + 1).is_some_and(|next| is_interpolation_successor(sigil, *next))
     })
+}
+
+/// Whether the byte after a `$`/`@` sigil starts an interpolation: an
+/// identifier character, a block `${...}`/`@{...}` opener, or — for the
+/// scalar sigil only — one of the punctuation match variables
+/// (`$&`, `` $` ``, `$'`, `$+`) (#5035 review).
+fn is_interpolation_successor(sigil: u8, next: u8) -> bool {
+    next.is_ascii_alphanumeric()
+        || next == b'_'
+        || next == b'{'
+        || (sigil == b'$' && matches!(next, b'&' | b'`' | b'\'' | b'+'))
 }
 
 /// Whether the byte at `index` is escaped by an odd-length run of contiguous
@@ -1869,5 +1910,178 @@ mod tests {
         );
         let diags = sql_diags(&source);
         assert!(pl607(&diags).is_none(), "a literal heredoc is static SQL: {diags:?}");
+    }
+
+    // --- #5035 review repairs: punctuation match variables (P1) ---
+
+    #[test]
+    fn ampersand_match_variable_sql_is_flagged_with_exact_range() {
+        // `$&` (the match text) interpolates like any scalar: after a match
+        // over attacker-controlled input it injects that text into the SQL,
+        // so the sink must classify as interpolated, not static.
+        let source = format!(
+            "{}\nmy $raw = <STDIN>;\n$raw =~ /(\\w+)/;\nmy $sth = $dbh->prepare(\"SELECT * FROM t WHERE name = $&\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        let diagnostic = pl607(&diags).unwrap_or_else(|| {
+            panic!("`$&` match text in SQL must be flagged as PL607: {diags:?}")
+        });
+        let (start, end) = diagnostic.range;
+        assert_eq!(
+            &source[start..end],
+            r#"$dbh->prepare("SELECT * FROM t WHERE name = $&")"#,
+            "PL607 byte range must cover the exact prepare call"
+        );
+    }
+
+    #[test]
+    fn pre_match_variable_sql_is_flagged_with_exact_range() {
+        // `` $` `` (the pre-match text) interpolates like any scalar after a
+        // match over attacker-controlled input.
+        let source = format!(
+            "{}\nmy $raw = <STDIN>;\n$raw =~ /(\\w+)/;\nmy $sth = $dbh->prepare(\"SELECT * FROM t WHERE name = $`\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        let diagnostic = pl607(&diags).unwrap_or_else(|| {
+            panic!("`` $` `` pre-match text in SQL must be flagged as PL607: {diags:?}")
+        });
+        let (start, end) = diagnostic.range;
+        assert_eq!(
+            &source[start..end],
+            r#"$dbh->prepare("SELECT * FROM t WHERE name = $`")"#,
+            "PL607 byte range must cover the exact prepare call"
+        );
+    }
+
+    #[test]
+    fn post_match_variable_sql_is_flagged_with_exact_range() {
+        // `$'` (the post-match text) interpolates like any scalar after a
+        // match over attacker-controlled input.
+        let source = format!(
+            "{}\nmy $raw = <STDIN>;\n$raw =~ /(\\w+)/;\nmy $sth = $dbh->prepare(\"SELECT * FROM t WHERE name = $'\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        let diagnostic = pl607(&diags).unwrap_or_else(|| {
+            panic!("`$'` post-match text in SQL must be flagged as PL607: {diags:?}")
+        });
+        let (start, end) = diagnostic.range;
+        assert_eq!(
+            &source[start..end],
+            r#"$dbh->prepare("SELECT * FROM t WHERE name = $'")"#,
+            "PL607 byte range must cover the exact prepare call"
+        );
+    }
+
+    #[test]
+    fn highest_capture_group_variable_sql_is_flagged_with_exact_range() {
+        // `$+` (the highest-numbered capture group of the last successful
+        // match) is a punctuation match variable exactly like `$&`: captured
+        // attacker text reaches the SQL through it.
+        let source = format!(
+            "{}\nmy $raw = <STDIN>;\n$raw =~ /(\\w+)/;\nmy $sth = $dbh->prepare(\"SELECT * FROM t WHERE name = $+\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        let diagnostic = pl607(&diags).unwrap_or_else(|| {
+            panic!("`$+` capture text in SQL must be flagged as PL607: {diags:?}")
+        });
+        let (start, end) = diagnostic.range;
+        assert_eq!(
+            &source[start..end],
+            r#"$dbh->prepare("SELECT * FROM t WHERE name = $+")"#,
+            "PL607 byte range must cover the exact prepare call"
+        );
+    }
+
+    #[test]
+    fn escaped_punctuation_match_variable_stays_silent() {
+        // The parity rule composes with the new successors: an odd backslash
+        // run escapes the sigil, so `\$&` is literal `$&` text and the SQL
+        // stays static.
+        let source = format!(
+            "{}\nmy $sth = $dbh->prepare(\"SELECT * FROM t WHERE x = '\\$&' AND y = ?\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_none(),
+            "an escaped punctuation match variable is not an interpolation: {diags:?}"
+        );
+    }
+
+    // --- #5035 review repairs: single-pass receiver evidence index (P2) ---
+
+    #[test]
+    fn receiver_evidence_index_keeps_classification_identical_across_sink_counts() {
+        // Sinks resolve receivers through the name-keyed index instead of
+        // rescanning the whole assignment list per sink (the quadratic
+        // O(assignments x sinks) pass). This pins the classification matrix
+        // at several document sizes: each proven receiver fires exactly once,
+        // rebound and unproven receivers stay silent, a shared name with many
+        // connect assignments keeps every sink proven, and a mid-document
+        // rebinding silences exactly the post-rebinding sinks.
+        let pl607_count = |diags: &[Diagnostic]| {
+            diags.iter().filter(|d| d.code.as_deref() == Some("PL607")).count()
+        };
+
+        for sinks in [1usize, 10, 100, 500] {
+            // (a) one connect and one interpolated sink per distinct receiver.
+            let mut proven = String::new();
+            let mut rebound_silent = String::new();
+            for i in 0..sinks {
+                proven.push_str(&format!(
+                    "my $dbh{i} = DBI->connect('dbi:SQLite:dbname=x');\nmy $id{i} = <STDIN>;\n$dbh{i}->do(\"DELETE FROM t{i} WHERE id = $id{i}\");\n"
+                ));
+                rebound_silent.push_str(&format!(
+                    "my $eng{i} = Engine->new;\nmy $id{i} = <STDIN>;\n$eng{i}->do(\"DELETE FROM t{i} WHERE id = $id{i}\");\n"
+                ));
+            }
+            assert_eq!(
+                pl607_count(&sql_diags(&proven)),
+                sinks,
+                "every proven receiver fires once at {sinks} sinks"
+            );
+            assert_eq!(
+                pl607_count(&sql_diags(&rebound_silent)),
+                0,
+                "non-connect receivers stay silent at {sinks} sinks"
+            );
+
+            // (b) the crafted quadratic shape: one shared name with many
+            // assignments, all connects, feeding many sinks.
+            let mut shared = String::new();
+            for _ in 0..sinks {
+                shared.push_str("$dbh = DBI->connect('dbi:SQLite:dbname=x');\n");
+            }
+            shared.push_str("my $id = <STDIN>;\n");
+            for _ in 0..sinks {
+                shared.push_str("$dbh->do(\"DELETE FROM t WHERE id = $id\");\n");
+            }
+            assert_eq!(
+                pl607_count(&sql_diags(&shared)),
+                sinks,
+                "all-connect shared name keeps every sink proven at {sinks} assignments/sinks"
+            );
+
+            // (c) mid-document rebinding of the shared name: only the sinks
+            // before the non-connect rebinding carry proven evidence.
+            let mut rebound = String::new();
+            rebound.push_str("my $dbh = DBI->connect('dbi:SQLite:dbname=x');\nmy $id = <STDIN>;\n");
+            for _ in 0..sinks {
+                rebound.push_str("$dbh->do(\"DELETE FROM a WHERE id = $id\");\n");
+            }
+            rebound.push_str("$dbh = Engine->new;\n");
+            for _ in 0..sinks {
+                rebound.push_str("$dbh->do(\"DELETE FROM b WHERE id = $id\");\n");
+            }
+            assert_eq!(
+                pl607_count(&sql_diags(&rebound)),
+                sinks,
+                "only pre-rebinding sinks fire at {sinks} sinks"
+            );
+        }
     }
 }
