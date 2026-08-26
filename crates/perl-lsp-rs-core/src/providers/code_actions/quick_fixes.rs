@@ -1430,10 +1430,14 @@ pub fn fix_parse_error(
                     .map(|p| range_start + p)
                     .unwrap_or(source.len());
 
-                // Insert before trailing whitespace
+                // Insert before trailing whitespace. When the diagnostic
+                // range itself sits at EOF (PL003's shape), range_start is at
+                // or past the content end, so the trim must be bounded by the
+                // start of source rather than by range_start — otherwise the
+                // semicolon lands after the trailing newline (#12798).
+                let trim_floor = if range_start >= source.len() { 0 } else { range_start };
                 let mut end_pos = line_end;
-                while end_pos > range_start && source.as_bytes()[end_pos - 1].is_ascii_whitespace()
-                {
+                while end_pos > trim_floor && source.as_bytes()[end_pos - 1].is_ascii_whitespace() {
                     end_pos -= 1;
                 }
 
