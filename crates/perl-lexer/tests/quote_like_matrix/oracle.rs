@@ -87,15 +87,16 @@ pub fn compile_source(source: &str) -> OracleResult {
 
     match output {
         Ok(output) => {
-            let identity = OracleIdentity { executable, version, invocation: ORACLE_INVOCATION };
-            if output.status.success() {
-                OracleResult::Proven { identity, outcome: OracleOutcome::Accept }
-            } else if output.status.code() == Some(124) {
-                OracleResult::NotProven {
-                    reason: format!("oracle timed out after {ORACLE_TIMEOUT:?}"),
-                }
-            } else {
-                OracleResult::Proven { identity, outcome: OracleOutcome::Reject }
+            match interpret_oracle_status(output.status.success(), output.status.code()) {
+                InterpretedStatus::Accept => OracleResult::Proven {
+                    identity: OracleIdentity { executable, version, invocation: ORACLE_INVOCATION },
+                    outcome: OracleOutcome::Accept,
+                },
+                InterpretedStatus::Reject => OracleResult::Proven {
+                    identity: OracleIdentity { executable, version, invocation: ORACLE_INVOCATION },
+                    outcome: OracleOutcome::Reject,
+                },
+                InterpretedStatus::NotProven(reason) => OracleResult::NotProven { reason },
             }
         }
         Err(error) => OracleResult::NotProven { reason: format!("spawning oracle: {error}") },
@@ -106,25 +107,67 @@ pub fn check_expectation(source: &str, expected: OracleExpectation) -> Result<()
     match expected {
         OracleExpectation::Skip => Ok(()),
         OracleExpectation::CompileAccept | OracleExpectation::CompileReject => {
-            match compile_source(source) {
-                OracleResult::NotProven { .. } => Ok(()),
-                OracleResult::Proven { outcome, identity } => {
-                    let want_accept = matches!(expected, OracleExpectation::CompileAccept);
-                    let got_accept = matches!(outcome, OracleOutcome::Accept);
-                    if want_accept == got_accept {
-                        Ok(())
-                    } else {
-                        Err(format!(
-                            "oracle {} via {} ({}) disagreed: expected {expected:?}, got {outcome:?}",
-                            identity.executable.display(),
-                            identity.invocation,
-                            identity.version
-                        ))
-                    }
-                }
+            assert_oracle_result(compile_source(source), expected)
+        }
+    }
+}
+
+/// GNU coreutils `timeout` statuses that are instrument failures, not `perl -c` rejection.
+///
+/// `timeout --signal=KILL` documents 137 (128+SIGKILL), not 124. 124 is the default TERM
+/// watchdog. 125–127 are timeout-itself / invoke / not-found failures.
+fn interpret_oracle_status(success: bool, code: Option<i32>) -> InterpretedStatus {
+    if success {
+        return InterpretedStatus::Accept;
+    }
+    match code {
+        Some(124) => InterpretedStatus::NotProven(format!(
+            "oracle timed out after {ORACLE_TIMEOUT:?} (timeout status 124)"
+        )),
+        Some(125) => InterpretedStatus::NotProven("timeout itself failed (status 125)".to_string()),
+        Some(126) => InterpretedStatus::NotProven(
+            "oracle command found but could not be invoked (status 126)".to_string(),
+        ),
+        Some(127) => InterpretedStatus::NotProven(
+            "oracle command could not be found (status 127)".to_string(),
+        ),
+        Some(137) => InterpretedStatus::NotProven(format!(
+            "oracle timed out after {ORACLE_TIMEOUT:?} (timeout --signal=KILL status 137)"
+        )),
+        Some(_) => InterpretedStatus::Reject,
+        None => InterpretedStatus::NotProven(
+            "oracle process terminated by signal (no exit status)".to_string(),
+        ),
+    }
+}
+
+fn assert_oracle_result(result: OracleResult, expected: OracleExpectation) -> Result<(), String> {
+    match result {
+        OracleResult::NotProven { reason } => {
+            Err(format!("oracle NOT_PROVEN (not agreement): {reason}"))
+        }
+        OracleResult::Proven { outcome, identity } => {
+            let want_accept = matches!(expected, OracleExpectation::CompileAccept);
+            let got_accept = matches!(outcome, OracleOutcome::Accept);
+            if want_accept == got_accept {
+                Ok(())
+            } else {
+                Err(format!(
+                    "oracle {} via {} ({}) disagreed: expected {expected:?}, got {outcome:?}",
+                    identity.executable.display(),
+                    identity.invocation,
+                    identity.version
+                ))
             }
         }
     }
+}
+
+#[derive(Debug)]
+enum InterpretedStatus {
+    Accept,
+    Reject,
+    NotProven(String),
 }
 
 fn resolve_perl() -> Result<PathBuf, String> {
@@ -183,7 +226,13 @@ fn tempfile_dir() -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{OracleOutcome, dotted_perl_version};
+    use super::{
+        InterpretedStatus, OracleExpectation, OracleIdentity, OracleOutcome, OracleResult,
+        assert_oracle_result, dotted_perl_version, interpret_oracle_status,
+    };
+    use std::path::PathBuf;
+
+    type R = Result<(), String>;
 
     #[test]
     fn dotted_version_maps_perl_revision() {
@@ -193,5 +242,113 @@ mod tests {
     #[test]
     fn oracle_outcomes_are_distinct() {
         assert_ne!(OracleOutcome::Accept, OracleOutcome::Reject);
+    }
+
+    #[test]
+    fn gnu_timeout_kill_status_is_not_proven_not_reject() -> R {
+        match interpret_oracle_status(false, Some(137)) {
+            InterpretedStatus::NotProven(reason) => {
+                assert!(reason.contains("137"), "{reason}");
+                assert!(reason.contains("KILL") || reason.contains("timed out"), "{reason}");
+                Ok(())
+            }
+            other => Err(format!("expected NOT_PROVEN for timeout --signal=KILL, got {other:?}")),
+        }
+    }
+
+    #[test]
+    fn gnu_timeout_term_status_is_not_proven() -> R {
+        match interpret_oracle_status(false, Some(124)) {
+            InterpretedStatus::NotProven(reason) => {
+                assert!(reason.contains("124"), "{reason}");
+                Ok(())
+            }
+            other => Err(format!("expected NOT_PROVEN for timeout status 124, got {other:?}")),
+        }
+    }
+
+    #[test]
+    fn perl_nonzero_compile_status_is_reject() -> R {
+        match interpret_oracle_status(false, Some(255)) {
+            InterpretedStatus::Reject => {}
+            other => return Err(format!("expected Reject for perl -c status 255, got {other:?}")),
+        }
+        match interpret_oracle_status(true, Some(0)) {
+            InterpretedStatus::Accept => Ok(()),
+            other => Err(format!("expected Accept for status 0, got {other:?}")),
+        }
+    }
+
+    #[test]
+    fn timeout_instrument_failures_are_not_proven() -> R {
+        for code in [125, 126, 127] {
+            match interpret_oracle_status(false, Some(code)) {
+                InterpretedStatus::NotProven(reason) => {
+                    assert!(reason.contains(&code.to_string()), "{reason}");
+                }
+                other => {
+                    return Err(format!(
+                        "expected NOT_PROVEN for timeout status {code}, got {other:?}"
+                    ));
+                }
+            }
+        }
+        match interpret_oracle_status(false, None) {
+            InterpretedStatus::NotProven(_) => Ok(()),
+            other => Err(format!("expected NOT_PROVEN for missing exit status, got {other:?}")),
+        }
+    }
+
+    #[test]
+    fn check_expectation_propagates_not_proven_as_failure() -> R {
+        let result =
+            OracleResult::NotProven { reason: "perl is not available on PATH".to_string() };
+        let error = match assert_oracle_result(result, OracleExpectation::CompileAccept) {
+            Err(error) => error,
+            Ok(()) => return Err("NOT_PROVEN must not become agreement".to_string()),
+        };
+        assert!(error.contains("NOT_PROVEN"), "{error}");
+        assert!(error.contains("not agreement"), "{error}");
+        assert!(error.contains("perl is not available on PATH"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn check_expectation_propagates_timeout_not_proven_for_compile_reject_rows() -> R {
+        let result = OracleResult::NotProven {
+            reason: "oracle timed out after 2s (timeout --signal=KILL status 137)".to_string(),
+        };
+        let error = match assert_oracle_result(result, OracleExpectation::CompileReject) {
+            Err(error) => error,
+            Ok(()) => return Err("timed-out CompileReject must not look proven".to_string()),
+        };
+        assert!(error.contains("NOT_PROVEN"), "{error}");
+        assert!(error.contains("137"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn proven_accept_and_reject_still_discriminate() -> R {
+        let identity = OracleIdentity {
+            executable: PathBuf::from("/usr/bin/perl"),
+            version: "5.38.2".to_string(),
+            invocation: "timeout --signal=KILL 2 env -i PATH=$PATH LC_ALL=C perl -c <tempfile>",
+        };
+        match assert_oracle_result(
+            OracleResult::Proven { identity: identity.clone(), outcome: OracleOutcome::Accept },
+            OracleExpectation::CompileAccept,
+        ) {
+            Ok(()) => {}
+            Err(error) => return Err(format!("CompileAccept vs Accept must succeed: {error}")),
+        }
+        let reject_error = match assert_oracle_result(
+            OracleResult::Proven { identity, outcome: OracleOutcome::Accept },
+            OracleExpectation::CompileReject,
+        ) {
+            Err(error) => error,
+            Ok(()) => return Err("Accept must not satisfy CompileReject".to_string()),
+        };
+        assert!(reject_error.contains("disagreed"), "{reject_error}");
+        Ok(())
     }
 }
