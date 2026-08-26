@@ -8370,11 +8370,11 @@
 | `xtask/lsp_test/advanced_features.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `xtask/lsp_test/test_features.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `xtask/lsp_test/test_suite.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
-| `xtask/tests/fixtures/ci-route-plan/digests.json` | test | `non-rust-ci-route-plan-golden-vectors` | ci/route-plan |
+| `xtask/tests/fixtures/ci-route-plan/digests.json` | test | `non-rust-ci-route-plan-golden-digests` | ci/route-plan |
 | `xtask/tests/fixtures/ci-route-plan/generate_golden.py` | test | `non-rust-ci-route-plan-golden-generator` | ci/route-plan |
-| `xtask/tests/fixtures/ci-route-plan/payload-baseline.json` | test | `non-rust-ci-route-plan-golden-vectors` | ci/route-plan |
+| `xtask/tests/fixtures/ci-route-plan/payload-baseline.json` | test | `non-rust-ci-route-plan-golden-payload` | ci/route-plan |
 | `xtask/tests/fixtures/ci-route-plan/semantic-baseline.json` | test | `non-rust-ci-route-plan-golden-vectors` | ci/route-plan |
-| `xtask/tests/fixtures/ci-route-plan/semantic-escaping.json` | test | `non-rust-ci-route-plan-golden-vectors` | ci/route-plan |
+| `xtask/tests/fixtures/ci-route-plan/semantic-escaping.json` | test | `non-rust-ci-route-plan-golden-escaping` | ci/route-plan |
 | `xtask/tests/fixtures/compiler_lexical_cutline/invalid-continuation-token.json` | test | `non-rust-compiler-lexical-cutline-fixtures` | compiler |
 | `xtask/tests/fixtures/compiler_lexical_cutline/invalid-schema-version.json` | test | `non-rust-compiler-lexical-cutline-fixtures` | compiler |
 | `xtask/tests/fixtures/dependency-hygiene/machete-findings.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |

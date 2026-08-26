@@ -853,11 +853,13 @@ fn validate_against_schema(
         }
     }
     if let Some(pattern) = schema.get("pattern") {
-        let regex = regex::Regex::new(pattern.as_str().expect("pattern string"))
-            .map_err(|error| format!("{pointer}: invalid pattern {pattern:?}: {error}"))?;
-        let text = value.as_str().expect("pattern applies to strings");
-        if !regex.is_match(text) {
-            return Err(format!("{pointer}: {text:?} does not match {pattern:?}"));
+        // JSON Schema semantics: `pattern` ignores non-string instances.
+        if let Some(text) = value.as_str() {
+            let regex = regex::Regex::new(pattern.as_str().expect("pattern string"))
+                .map_err(|error| format!("{pointer}: invalid pattern {pattern:?}: {error}"))?;
+            if !regex.is_match(text) {
+                return Err(format!("{pointer}: {text:?} does not match {pattern:?}"));
+            }
         }
     }
     if let Some(minimum) = schema.get("minimum") {
@@ -871,7 +873,8 @@ fn validate_against_schema(
             if let Some(min_length) =
                 schema.get("minLength").map(|value| value.as_u64().expect("minLength"))
             {
-                if (text.len() as u64) < min_length {
+                // JSON Schema counts Unicode code points, not bytes.
+                if (text.chars().count() as u64) < min_length {
                     return Err(format!("{pointer}: string shorter than {min_length}"));
                 }
             }
@@ -913,23 +916,21 @@ fn validate_against_schema(
                     }
                 }
             }
-            if let Some(properties) = schema.get("properties") {
-                let properties = properties.as_object().expect("properties object");
-                for (key, subschema) in properties {
-                    if let Some(member) = map.get(key) {
-                        validate_against_schema(
-                            member,
-                            subschema,
-                            root,
-                            &format!("{pointer}/{key}"),
-                        )?;
-                    }
+            // `additionalProperties: false` binds even when the node
+            // declares no `properties` (an empty property map).
+            let empty_properties = serde_json::Map::new();
+            let properties = schema
+                .get("properties")
+                .map_or(&empty_properties, |value| value.as_object().expect("properties object"));
+            for (key, subschema) in properties {
+                if let Some(member) = map.get(key) {
+                    validate_against_schema(member, subschema, root, &format!("{pointer}/{key}"))?;
                 }
-                if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
-                    for key in map.keys() {
-                        if !properties.contains_key(key) {
-                            return Err(format!("{pointer}: unknown field {key:?}"));
-                        }
+            }
+            if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
+                for key in map.keys() {
+                    if !properties.contains_key(key) {
+                        return Err(format!("{pointer}: unknown field {key:?}"));
                     }
                 }
             }

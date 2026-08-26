@@ -313,11 +313,12 @@ mod route_plan_seam_tests {
     use std::collections::HashMap;
     use xtask::ci_route_plan::{Applicability, CiRoutePlanV1, PlannedOutcome, RouteSubjectRef};
 
-    const TODAY: NaiveDate = NaiveDate::from_ymd_opt(2026, 8, 24).unwrap();
-    const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    pub(super) const TODAY: NaiveDate = NaiveDate::from_ymd_opt(2026, 8, 24).unwrap();
+    pub(super) const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    pub(super) const DIGEST: &str =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-    fn gate(name: &str, tier: &str, required: bool, quarantine: bool) -> GateDefinition {
+    pub(super) fn gate(name: &str, tier: &str, required: bool, quarantine: bool) -> GateDefinition {
         GateDefinition {
             name: name.to_string(),
             tier: tier.to_string(),
@@ -335,7 +336,7 @@ mod route_plan_seam_tests {
         }
     }
 
-    fn policy(gates: Vec<GateDefinition>) -> GatePolicy {
+    pub(super) fn policy(gates: Vec<GateDefinition>) -> GatePolicy {
         let tier = |name: &str| {
             (
                 name.to_string(),
@@ -772,65 +773,13 @@ mod route_plan_seam_tests {
 /// `route_plan_seam_tests` above).
 #[cfg(test)]
 mod route_plan_canonical_seam_tests {
+    use super::route_plan_seam_tests::{DIGEST, SHA, TODAY, gate, policy};
     use super::*;
     use crate::tasks::gates::disposition::resolve_from;
     use crate::tasks::gates::route_profile::{RequestedProfile, expand};
-    use crate::tasks::gates::{GlobalSettings, TierDefinition};
-    use chrono::NaiveDate;
-    use std::collections::HashMap;
     use xtask::ci_route_plan::{
         CiRoutePlanV1, CompileRoutePlanInput, RouteSelectionEvidence, RouteSubjectRef,
     };
-
-    const TODAY: NaiveDate = NaiveDate::from_ymd_opt(2026, 8, 24).expect("fixed date");
-    const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-
-    fn gate(name: &str, tier: &str, required: bool, quarantine: bool) -> GateDefinition {
-        GateDefinition {
-            name: name.to_string(),
-            tier: tier.to_string(),
-            description: name.to_string(),
-            required,
-            command: format!("run {name}"),
-            timeout_seconds: 60,
-            retry_count: 0,
-            budgets: None,
-            quarantine,
-            tags: Vec::new(),
-            artifacts: Vec::new(),
-            matrix: None,
-            planning: None,
-        }
-    }
-
-    fn policy(gates: Vec<GateDefinition>) -> GatePolicy {
-        let tier = |name: &str| {
-            (
-                name.to_string(),
-                TierDefinition {
-                    description: name.to_string(),
-                    target_duration_seconds: 120,
-                    enforcement: "pr".to_string(),
-                    trigger: Vec::new(),
-                },
-            )
-        };
-        GatePolicy {
-            schema_version: 1,
-            global: GlobalSettings {
-                default_timeout_seconds: 60,
-                artifact_retention_days: 0,
-                default_retry_count: 0,
-                environment: HashMap::new(),
-                toolchain: None,
-            },
-            tiers: HashMap::from([tier("pr_fast"), tier("merge_gate")]),
-            gates,
-            flake_policy: None,
-            audit: None,
-        }
-    }
 
     /// One proof-backed run and one positive scoped noop, projected from
     /// the real #10178 expander and #10176 resolver through the adapters.

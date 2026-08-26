@@ -34,12 +34,16 @@
 //!
 //! Any failure (serialization, directory creation, temp creation, write,
 //! sync, rename, directory sync, read-back) is a typed non-success. A
-//! failed publication removes its temporary and any stale destination
-//! artifact so no file remains that a later artifact upload could mistake
-//! for the requested plan; unremovable residue is named in the typed
-//! refusal. Multi-writer/shared-store semantics are explicitly not
-//! implied; downstream consumers needing them require a separate
-//! contract.
+//! pre-promotion failure removes this writer's temporary and any stale
+//! destination artifact, so no file remains that a later artifact upload
+//! could mistake for the requested plan; unremovable residue is named in
+//! the typed refusal. A post-promotion failure (directory sync or final
+//! read-back) leaves the destination untouched — after promotion it may
+//! hold a concurrent writer's completed artifact, which this writer must
+//! never delete — and the refusal states that this invocation could not
+//! verify the artifact. Multi-writer/shared-store semantics are
+//! explicitly not implied; downstream consumers needing them require a
+//! separate contract.
 
 // CLI instrument: the typed refusal/success lines are this tool's interface.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
@@ -65,8 +69,8 @@ fn main() -> ExitCode {
         Some("validate") => validate_command(&mut args),
         Some("explain") => explain_command(&mut args),
         _ => Err(CliError::Usage(
-            "usage: ci-route-plan compile <input.json> <output.json> | validate <plan.json> | \
-             explain <plan.json> [gate_id]"
+            "ci-route-plan compile <input.json> <output.json> | validate <plan.json> | explain \
+             <plan.json> [gate_id]"
                 .to_string(),
         )),
     };

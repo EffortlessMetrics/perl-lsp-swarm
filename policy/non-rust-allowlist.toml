@@ -3711,13 +3711,58 @@ review_after = "2027-02-20"
 
 [[allow]]
 id = "non-rust-ci-route-plan-golden-vectors"
-glob = "xtask/tests/fixtures/ci-route-plan/*.json"
+path = "xtask/tests/fixtures/ci-route-plan/semantic-baseline.json"
 kind = "test_fixture"
 language = "json"
 surface = "fixtures"
 classification = "test"
 owner = "ci/route-plan"
-reason = "Frozen golden vectors for the ci_route_plan.v1 canonical encoding (#10179): canonical semantic bytes, the complete payload artifact, and independently computed SHA-256 digests. Authored by generate_golden.py from the specified contract, never by the Rust encoder; the canonical test suite must reproduce them exactly."
+reason = "Frozen golden vector for the ci_route_plan.v1 canonical encoding (#10179): canonical semantic bytes of the baseline plan, authored by generate_golden.py from the specified contract, never by the Rust encoder."
+covered_by = [
+  "cargo test -p xtask --locked --test ci_route_plan_canonical",
+]
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
+id = "non-rust-ci-route-plan-golden-escaping"
+path = "xtask/tests/fixtures/ci-route-plan/semantic-escaping.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "ci/route-plan"
+reason = "Frozen golden vector for the ci_route_plan.v1 canonical string-escaping rules (quote, backslash, controls, raw UTF-8), authored by generate_golden.py, never by the Rust encoder."
+covered_by = [
+  "cargo test -p xtask --locked --test ci_route_plan_canonical",
+]
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
+id = "non-rust-ci-route-plan-golden-payload"
+path = "xtask/tests/fixtures/ci-route-plan/payload-baseline.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "ci/route-plan"
+reason = "Frozen complete published-artifact bytes for ci_route_plan.v1 (#10179) including summary and fingerprint, authored by generate_golden.py, never by the Rust encoder."
+covered_by = [
+  "cargo test -p xtask --locked --test ci_route_plan_canonical",
+]
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
+id = "non-rust-ci-route-plan-golden-digests"
+path = "xtask/tests/fixtures/ci-route-plan/digests.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "ci/route-plan"
+reason = "Independently computed SHA-256 golden digests (Python hashlib) for the ci_route_plan.v1 semantic vectors (#10179); the Rust encoder must reproduce them, never the reverse."
 covered_by = [
   "cargo test -p xtask --locked --test ci_route_plan_canonical",
 ]
