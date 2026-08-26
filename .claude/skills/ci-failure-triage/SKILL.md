@@ -1,6 +1,7 @@
 ---
 name: ci-failure-triage
 description: Diagnose failing CI workflows, builds, lint jobs, typechecks, tests, flaky jobs, pipeline regressions, or failed GitHub Actions using logs, reproduction, and minimal fixes.
+user-invocable: false
 ---
 
 # CI failure triage
