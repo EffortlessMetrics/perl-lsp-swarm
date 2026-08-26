@@ -411,6 +411,11 @@ await_holding_lock = "deny"
 await_holding_refcell_ref = "deny"
 # mutex_atomic: prefer proper Mutex over atomic-loaded Mutex guards (#2899).
 mutex_atomic = "warn"
+# collapsible_if: activated by #6305 after the 293-site burn-down (#6375-#6380)
+# and a warn-forced zero-finding all-targets remeasurement plus 38 fresh fixes.
+# Seven crates retain historical blanket allows over 257 force-warn-measured
+# sites; those residuals are owned by #12730-#12736.
+collapsible_if = "deny"
 # collapsible_match: ~20 lib sites across perl-lsp-rs-core; tracked in #8561; defer to post-0.14.0 cleanup.
 collapsible_match = { level = "allow", priority = 1 }
 decimal_bitwise_operands = "warn"
