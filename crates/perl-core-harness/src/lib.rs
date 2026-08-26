@@ -1099,8 +1099,19 @@ fn repository_relative_path(root: &Path, path: &Path) -> Result<String> {
         &fs::canonicalize(root)
             .with_context(|| format!("canonicalizing repository root {}", root.display()))?,
     );
-    let candidate =
-        if path.is_absolute() { normalize_windows_extended_path(path) } else { root.join(path) };
+    // #12653: absolute candidates may spell a contained path through a Windows
+    // alias of the root (8.3 short names like RUNNER~1, junctions, verbatim
+    // \\?\ forms). Canonicalize them through the same resolution as the root so
+    // containment compares identical spellings; unresolvable candidates keep
+    // their normalized input spelling and are rejected as before.
+    let candidate = if path.is_absolute() {
+        match fs::canonicalize(path) {
+            Ok(canonical) => normalize_windows_extended_path(&canonical),
+            Err(_) => normalize_windows_extended_path(path),
+        }
+    } else {
+        root.join(path)
+    };
     let relative = candidate.strip_prefix(&root).map_err(|_| {
         color_eyre::eyre::eyre!("path {} is outside repository {}", path.display(), root.display())
     })?;
@@ -5599,6 +5610,72 @@ mod tests {
             validate_public_path(value, "parity probe")?;
         }
         Ok(())
+    }
+
+    /// #12653 regression: an absolute candidate spelled through a Windows
+    /// directory-junction alias of the root must resolve to the same
+    /// repository-relative path instead of being rejected as outside-repository.
+    #[cfg(windows)]
+    #[test]
+    fn repository_relative_path_accepts_junction_alias_candidates() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let target = temp.path().join("junction-target");
+        fs::create_dir_all(&target)?;
+        fs::write(target.join("receipt.json"), b"{}\n")?;
+        let alias = temp.path().join("junction-alias");
+        let output =
+            Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&alias).arg(&target).output()?;
+        if !output.status.success() {
+            bail!("mklink /J failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+        }
+        let relative = repository_relative_path(&target, &alias.join("receipt.json"))?;
+        assert_eq!(relative, "receipt.json");
+        Ok(())
+    }
+
+    /// #12653 regression: a candidate spelled through a genuine 8.3 short-name
+    /// alias of the canonical root (the RUNNER~1 CI failure) must compare as
+    /// contained. Skips on volumes where no distinct short form exists.
+    #[cfg(windows)]
+    #[test]
+    fn repository_relative_path_accepts_short_name_alias_candidates() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("long-repository-root-directory");
+        fs::create_dir_all(root.join(".ci"))?;
+        fs::write(root.join(".ci/receipt.json"), b"{}\n")?;
+        let canonical_root =
+            normalize_windows_extended_path(&fs::canonicalize(&root).map_err(|error| {
+                color_eyre::eyre::eyre!("canonicalizing regression root: {error}")
+            })?);
+        let Some(short_root) = windows_short_path(&canonical_root) else {
+            return Ok(());
+        };
+        if short_root == canonical_root {
+            return Ok(());
+        }
+        let candidate = short_root.join(".ci").join("receipt.json");
+        let relative = repository_relative_path(&root, &candidate)?;
+        assert_eq!(relative, ".ci/receipt.json");
+        Ok(())
+    }
+
+    /// Resolves the on-disk 8.3 short spelling of `path`, or `None` when the
+    /// volume does not maintain short names for it.
+    #[cfg(windows)]
+    fn windows_short_path(path: &Path) -> Option<PathBuf> {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use winapi::um::fileapi::GetShortPathNameW;
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let required = unsafe { GetShortPathNameW(wide.as_ptr(), std::ptr::null_mut(), 0) };
+        if required == 0 {
+            return None;
+        }
+        let mut buffer = vec![0u16; required as usize];
+        let written = unsafe { GetShortPathNameW(wide.as_ptr(), buffer.as_mut_ptr(), required) };
+        if written == 0 {
+            return None;
+        }
+        Some(PathBuf::from(std::ffi::OsString::from_wide(&buffer[..written as usize])))
     }
 
     /// #6882 acceptance: a public failure message must not republish the
