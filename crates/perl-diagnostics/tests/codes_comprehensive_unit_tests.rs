@@ -38,6 +38,7 @@ const ALL_CODES: &[DiagnosticCode] = &[
     DiagnosticCode::ImplicitReturn,
     DiagnosticCode::PrintfFormatMismatch,
     DiagnosticCode::SecuritySignalHandler,
+    DiagnosticCode::SecuritySqlInjection,
 ];
 
 // ===========================================================================
@@ -1198,10 +1199,27 @@ fn from_message_real_perl_defined_deprecated() {
 
 // --- DiagnosticCode: documentation_url coverage ---
 
+/// Reviewed external-reference exceptions to the docs.perl-lsp.org error-page
+/// convention (#5035). PL607's codeDescription href is pinned to the OWASP SQL
+/// injection reference by the storyboarded `security.sql_injection` wire format
+/// (crates/perl-lsp-rs/tests/lsp_critical_user_stories.rs, "TEST 4: Security
+/// Vulnerability Detection"). Any addition to this table must cite the
+/// authority that pins the external reference.
+const EXTERNAL_REFERENCE_URLS: &[(DiagnosticCode, &str)] = &[(
+    DiagnosticCode::SecuritySqlInjection,
+    "https://owasp.org/www-community/attacks/SQL_Injection",
+)];
+
 #[test]
 fn documentation_url_format_consistency() {
     for code in ALL_CODES {
         if let Some(url) = code.documentation_url() {
+            let reviewed_external = EXTERNAL_REFERENCE_URLS
+                .iter()
+                .any(|(exception, exception_url)| exception == code && *exception_url == url);
+            if reviewed_external {
+                continue;
+            }
             assert!(
                 url.starts_with("https://docs.perl-lsp.org/errors/"),
                 "unexpected url prefix for {}: {}",
@@ -1325,8 +1343,8 @@ fn unused_variable_tag_is_exactly_unnecessary() {
 // --- Cross-cutting: ALL_CODES count ---
 
 #[test]
-fn all_codes_count_is_21() {
-    assert_eq!(ALL_CODES.len(), 21, "expected 21 diagnostic codes total");
+fn all_codes_count_is_22() {
+    assert_eq!(ALL_CODES.len(), 22, "expected 22 diagnostic codes total");
 }
 
 // --- DiagnosticCode: parse_code boundary values ---

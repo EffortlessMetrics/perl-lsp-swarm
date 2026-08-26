@@ -16,6 +16,7 @@
 //! | `PL604` | Warning | `exec()` call replaces the current process |
 //! | `PL605` | Warning | Pipe-open executes shell commands |
 //! | `PL606` | Warning | `readpipe()` executes shell commands (equivalent to qx//) |
+//! | `PL607` | Warning | Interpolated/concatenated SQL text in `->prepare()` / `->do()` (#5035) |
 
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::ast::{Node, NodeKind};
@@ -33,8 +34,11 @@ use perl_diagnostics::codes::DiagnosticSeverity;
 /// - String `eval` (security risk vs. block `eval`)
 /// - Backtick/qx command execution (ensure input is sanitized)
 /// - Global signal-handler assignment to `$SIG{__DIE__}` / `$SIG{__WARN__}`
+/// - Interpolated or concatenated SQL text passed to DBI statement-taking
+///   methods (`prepare`/`prepare_cached`/`do`) (#5035)
 pub fn check_security(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
     walk_security_node(node, diagnostics, false);
+    check_sql_injection(node, diagnostics);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -874,6 +878,262 @@ fn push_command_execution_diagnostic(
     });
 }
 
+/// DBI statement-taking methods whose first argument is SQL text (#5035).
+///
+/// `execute(@bind_values)` is deliberately absent: its arguments are bind
+/// values for an already-prepared statement, not SQL text, so it is never a
+/// SQL-text sink (issue #5035 research, DBI 1.651 semantics).
+const DBI_STATEMENT_METHODS: [&str; 3] = ["prepare", "prepare_cached", "do"];
+
+/// Classification of the SQL statement argument at a DBI sink (#5035).
+///
+/// The producer only warns on proven dynamic assembly into the SQL text.
+/// A computed statement (variable, call result) is a typed dynamic boundary:
+/// the walker cannot distinguish safe from unsafe assembly, so it never
+/// guesses and stays silent — mirroring the diagnostics family's
+/// dynamic-boundary suppression precedent
+/// (`providers/diagnostics/diagnostics_shadow.rs`: a reference inside a
+/// dynamic boundary scope is suppressed, never guessed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SqlTextEvidence {
+    /// A `$`/`@` sigil variable is interpolated directly into the SQL literal.
+    Interpolated,
+    /// A variable is concatenated into the SQL literal.
+    Concatenated,
+    /// Literal-only SQL (with or without `?` placeholders): proven safe shape.
+    Static,
+    /// The SQL text is computed and indistinguishable at AST level.
+    DynamicBoundary,
+}
+
+/// Detect SQL assembled from variables and passed to a DBI statement-taking
+/// method (#5035).
+///
+/// Honesty boundaries, each pinned by tests below:
+/// - Only reviewed DBI statement-taking sinks (`prepare`, `prepare_cached`,
+///   `do`) whose receiver carries same-file `DBI->connect(...)` evidence warn
+///   (the receiver-classification precedent lives in
+///   `collect_dbh_receiver_names`). A method spelled `prepare` on an unproven
+///   receiver is a receiver-ambiguity boundary and stays silent — a security
+///   warning never guesses DB-ness.
+/// - Placeholders (`?`) with bind values are the negative control.
+/// - A computed statement argument is a typed dynamic boundary and never
+///   warns.
+fn check_sql_injection(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
+    let mut dbh_receivers = Vec::new();
+    collect_dbh_receiver_names(node, &mut dbh_receivers);
+    walk_sql_injection_sinks(node, &dbh_receivers, diagnostics);
+}
+
+/// Collect same-file lexical variables assigned from `DBI->connect(...)`.
+///
+/// This is the AST-provable form of the repository's DBI receiver-classification
+/// precedent (`providers/completion/completion/methods.rs`,
+/// `infer_receiver_type`: "check if variable was assigned from DBI->connect"):
+/// the canonical `my $dbh = DBI->connect(...)` (or plain assignment) idiom.
+/// Completion hints may fall back to name heuristics (`$dbh`), but a security
+/// warning may not guess, so only structural assignment evidence qualifies.
+/// Handles reached through aliases, parameters, or DBD-specific class names
+/// stay unproven and therefore silent; the broader statement-handle identity
+/// model is owned by #7471.
+fn collect_dbh_receiver_names(node: &Node, names: &mut Vec<String>) {
+    let connect_assigned = |value: &Node| match &value.kind {
+        NodeKind::MethodCall { object, method, .. } => {
+            matches!(&object.kind, NodeKind::Identifier { name } if name == "DBI")
+                && method == "connect"
+        }
+        _ => false,
+    };
+
+    match &node.kind {
+        NodeKind::VariableDeclaration { variable, initializer: Some(init), .. } => {
+            if connect_assigned(init)
+                && let Some(name) = scalar_variable_name(variable)
+            {
+                names.push(name);
+            }
+        }
+        NodeKind::Assignment { lhs, rhs, .. } => {
+            if connect_assigned(rhs)
+                && let Some(name) = scalar_variable_name(lhs)
+            {
+                names.push(name);
+            }
+        }
+        _ => {}
+    }
+
+    node.for_each_child(|child| collect_dbh_receiver_names(child, names));
+}
+
+/// The bare name of a scalar variable node (`$dbh` -> `dbh`), if this node is
+/// one.
+fn scalar_variable_name(node: &Node) -> Option<String> {
+    match &node.kind {
+        NodeKind::Variable { sigil, name } if sigil == "$" => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn walk_sql_injection_sinks(
+    node: &Node,
+    dbh_receivers: &[String],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if let NodeKind::MethodCall { object, method, args } = &node.kind {
+        check_sql_injection_method_call(object, method, args, node, dbh_receivers, diagnostics);
+    }
+    node.for_each_child(|child| walk_sql_injection_sinks(child, dbh_receivers, diagnostics));
+}
+
+/// Check one method call against the DBI SQL-injection sink set.
+fn check_sql_injection_method_call(
+    object: &Node,
+    method: &str,
+    args: &[Node],
+    node: &Node,
+    dbh_receivers: &[String],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !DBI_STATEMENT_METHODS.contains(&method) {
+        return;
+    }
+
+    // Receiver ambiguity boundary: only a receiver with same-file
+    // `DBI->connect` evidence is a proven DBI handle. Anything else
+    // (unassigned `$dbh`, another class's `prepare`) stays silent.
+    let receiver_is_dbh =
+        scalar_variable_name(object).is_some_and(|name| dbh_receivers.contains(&name));
+    if !receiver_is_dbh {
+        return;
+    }
+
+    let Some(statement_arg) = sql_statement_argument(args) else {
+        return;
+    };
+
+    match classify_sql_text(statement_arg) {
+        SqlTextEvidence::Interpolated | SqlTextEvidence::Concatenated => {}
+        SqlTextEvidence::Static | SqlTextEvidence::DynamicBoundary => return,
+    }
+
+    let range = (node.location.start, node.location.end);
+    let message = format!(
+        "Interpolated SQL passed to ->{method}() is a SQL injection risk. Use placeholders (?) and bind values."
+    );
+    let explanation = "Values interpolated or concatenated into the SQL text can change the statement's meaning when input is crafted. Placeholders with bind values keep the SQL text static.".to_string();
+    diagnostics.push(Diagnostic {
+        range,
+        severity: DiagnosticSeverity::Warning,
+        code: Some(DiagnosticCode::SecuritySqlInjection.as_str().to_string()),
+        message: message.clone(),
+        related_information: vec![RelatedInformation {
+            location: range,
+            message: explanation.clone(),
+        }],
+        tags: Vec::new(),
+        fixable: false,
+        critic_observation: None,
+        suggestion: Some(
+            "Use placeholders: $dbh->prepare('... WHERE id = ?')->execute($user_id)".to_string(),
+        ),
+    });
+}
+
+/// The SQL statement argument of a DBI sink call.
+///
+/// Mirrors `check_two_arg_open`/`check_pipe_open`: the parser may represent
+/// parenthesized call args as a flat `args` list or as a single wrapped
+/// `ArrayLiteral`, so both shapes resolve to the effective argument list.
+fn sql_statement_argument(args: &[Node]) -> Option<&Node> {
+    let effective_args: &[Node] = if args.len() == 1 {
+        if let NodeKind::ArrayLiteral { elements } = &args[0].kind {
+            elements.as_slice()
+        } else {
+            args
+        }
+    } else {
+        args
+    };
+    effective_args.first()
+}
+
+/// Classify the SQL text expression of a DBI sink call.
+fn classify_sql_text(node: &Node) -> SqlTextEvidence {
+    match &node.kind {
+        NodeKind::String { value, interpolated } => {
+            if *interpolated && string_contains_interpolation(value) {
+                SqlTextEvidence::Interpolated
+            } else {
+                // Single-quoted literal, or a double-quoted literal with no
+                // sigil in the text: static SQL, placeholders included.
+                SqlTextEvidence::Static
+            }
+        }
+        NodeKind::Binary { op, .. } if op == "." => classify_concatenation(node),
+        // A bare variable, call result, or any other expression: the SQL text
+        // is computed and indistinguishable at AST level.
+        _ => SqlTextEvidence::DynamicBoundary,
+    }
+}
+
+/// Classify a `.` concatenation chain by combining operand evidence: any
+/// unsafe operand makes the chain unsafe; otherwise any computed operand
+/// makes the whole statement a dynamic boundary; literal-only chains are
+/// static.
+fn classify_concatenation(node: &Node) -> SqlTextEvidence {
+    let NodeKind::Binary { left, right, .. } = &node.kind else {
+        return SqlTextEvidence::DynamicBoundary;
+    };
+
+    let mut combined = SqlTextEvidence::Static;
+    for operand in [left, right] {
+        let evidence = match &operand.kind {
+            // Nested `.` chain: fold recursively.
+            NodeKind::Binary { op, .. } if op == "." => classify_concatenation(operand),
+            // A variable operand is a proven dynamic value in the SQL text.
+            NodeKind::Variable { .. } => SqlTextEvidence::Concatenated,
+            // String operands reuse the interpolation classifier.
+            NodeKind::String { .. } => classify_sql_text(operand),
+            // Any other operand (call, method, conditional) computes text we
+            // cannot distinguish.
+            _ => SqlTextEvidence::DynamicBoundary,
+        };
+        combined = match (combined, evidence) {
+            // A proven variable in the SQL text dominates: the injection
+            // vector is source-proven even when another operand is computed.
+            (SqlTextEvidence::Interpolated, _) | (_, SqlTextEvidence::Interpolated) => {
+                SqlTextEvidence::Interpolated
+            }
+            (SqlTextEvidence::Concatenated, _) | (_, SqlTextEvidence::Concatenated) => {
+                SqlTextEvidence::Concatenated
+            }
+            (SqlTextEvidence::DynamicBoundary, _) | (_, SqlTextEvidence::DynamicBoundary) => {
+                SqlTextEvidence::DynamicBoundary
+            }
+            (combined, _) => combined,
+        };
+    }
+    combined
+}
+
+/// Whether a double-quoted string's text interpolates a variable: a `$` or
+/// `@` sigil (not escaped) followed by an identifier character or `{`.
+fn string_contains_interpolation(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.iter().enumerate().any(|(index, byte)| {
+        if *byte != b'$' && *byte != b'@' {
+            return false;
+        }
+        if index > 0 && bytes[index - 1] == b'\\' {
+            return false;
+        }
+        bytes
+            .get(index + 1)
+            .is_some_and(|next| next.is_ascii_alphanumeric() || *next == b'_' || *next == b'{')
+    })
+}
+
 fn shadows_signal_table(node: &Node) -> bool {
     match &node.kind {
         NodeKind::Variable { sigil, name } => sigil == "%" && name == "SIG",
@@ -1230,6 +1490,224 @@ mod tests {
         assert!(
             diags.iter().all(|d| d.critic_observation.is_none()),
             "only the reviewed overlap cohort declares observations: {diags:?}"
+        );
+    }
+
+    // --- SQL injection (PL607) tests (#5035) ---
+
+    fn sql_diags(source: &str) -> Vec<Diagnostic> {
+        security_diags(source)
+    }
+
+    fn dbh_connect() -> &'static str {
+        r#"my $dbh = DBI->connect("dbi:Pg:dbname=x", "u", "p");"#
+    }
+
+    fn pl607<'a>(diags: &'a [Diagnostic]) -> Option<&'a Diagnostic> {
+        diags.iter().find(|d| d.code.as_deref() == Some("PL607"))
+    }
+
+    #[test]
+    fn interpolated_prepare_is_flagged_with_exact_range() {
+        let source = format!(
+            "{}\nmy $user_id = 42;\nmy $sth = $dbh->prepare(\"SELECT * FROM users WHERE id = $user_id\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        let diagnostic = pl607(&diags)
+            .unwrap_or_else(|| panic!("interpolated prepare must be flagged as PL607: {diags:?}"));
+        let (start, end) = diagnostic.range;
+        assert_eq!(
+            &source[start..end],
+            r#"$dbh->prepare("SELECT * FROM users WHERE id = $user_id")"#,
+            "PL607 byte range must cover the exact prepare call"
+        );
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Warning);
+        assert!(diagnostic.critic_observation.is_none());
+        assert!(diagnostic.suggestion.is_some());
+    }
+
+    #[test]
+    fn placeholder_prepare_is_silent() {
+        let source = format!(
+            "{}\nmy $sth = $dbh->prepare('SELECT * FROM users WHERE id = ?');\n$sth->execute(42);\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_none(),
+            "placeholders with bind values are the safe control: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn concatenated_variable_sql_is_flagged() {
+        let source = format!(
+            "{}\nmy $user_input = <STDIN>;\nmy $sth = $dbh->prepare('SELECT * FROM users WHERE id = ' . $user_input);\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_some(),
+            "concatenated variable SQL must be flagged as PL607: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn concatenated_literal_only_sql_is_silent() {
+        let source = format!(
+            "{}\nmy $sth = $dbh->prepare('SELECT ' . '*' . ' FROM users');\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_none(),
+            "literal-only concatenation carries no variable: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn interpolated_do_is_flagged_and_placeholder_do_is_silent() {
+        let flagged = format!(
+            "{}\nmy $name = <STDIN>;\n$dbh->do(\"DELETE FROM users WHERE name = $name\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&flagged);
+        assert!(pl607(&diags).is_some(), "interpolated do() must be flagged as PL607: {diags:?}");
+
+        let safe = format!(
+            "{}\n$dbh->do('DELETE FROM users WHERE name = ?', undef, 'bob');\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&safe);
+        assert!(
+            pl607(&diags).is_none(),
+            "placeholder do() with bind values must stay silent: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn prepare_cached_is_a_statement_sink() {
+        let source = format!(
+            "{}\nmy $id = <STDIN>;\nmy $sth = $dbh->prepare_cached(\"SELECT * FROM t WHERE id = $id\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_some(),
+            "prepare_cached takes SQL text exactly like prepare: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn execute_bind_values_are_never_a_sql_text_sink() {
+        // #5035 research: execute(@bind_values) receives bind values for an
+        // already-prepared statement, not SQL text — even an interpolated
+        // argument is a computed bind value, not statement assembly.
+        let source = format!(
+            "{}\nmy $sth = $dbh->prepare('SELECT * FROM users WHERE id = ?');\nmy $id = <STDIN>;\n$sth->execute(\"$id\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_none(),
+            "execute() arguments are bind values, never SQL text: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn non_dbi_receiver_prepare_stays_silent() {
+        // Receiver ambiguity boundary (#5035 research: "receiver ambiguity
+        // cannot produce a DBI warning"): a `prepare` method on an object
+        // without same-file DBI->connect evidence is not a proven DBI sink.
+        let source = concat!(
+            "package Engine;\n",
+            "sub new { return bless {}, shift }\n",
+            "sub prepare { return 1 }\n",
+            "package main;\n",
+            "my $engine = Engine->new;\n",
+            "my $name = <STDIN>;\n",
+            "my $q = $engine->prepare(\"SELECT $name\");\n",
+        );
+        let diags = sql_diags(source);
+        assert!(
+            pl607(&diags).is_none(),
+            "non-DBI receiver prepare must not produce a DBI warning: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn unassigned_receiver_prepare_stays_silent() {
+        // Same ambiguity boundary: `$dbh` with no visible connect evidence is
+        // unproven, so even a spelled-identically variable stays silent.
+        let source = "my $sth = $dbh->prepare(\"SELECT * FROM users WHERE id = $user_id\");\n";
+        let diags = sql_diags(source);
+        assert!(
+            pl607(&diags).is_none(),
+            "unproven receiver must not produce a DBI warning: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn computed_sql_variable_is_a_dynamic_boundary_and_stays_silent() {
+        let source = format!(
+            "{}\nmy $sql = build_query();\nmy $sth = $dbh->prepare($sql);\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_none(),
+            "a computed SQL string is a typed dynamic boundary, never a guess: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn mixed_placeholder_and_interpolation_still_fires() {
+        // Placeholders elsewhere in the statement do not sanitize a variable
+        // interpolated into another part of the SQL text.
+        let source = format!(
+            "{}\nmy $col = <STDIN>;\nmy $sth = $dbh->prepare(\"SELECT * FROM t WHERE a = ? AND b = $col\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_some(),
+            "a placeholder does not sanitize an interpolated variable in the same statement: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn escaped_sigil_in_sql_string_stays_silent() {
+        let source =
+            format!("{}\nmy $sth = $dbh->prepare(\"SELECT '5\\$' WHERE x = ?\");\n", dbh_connect());
+        let diags = sql_diags(&source);
+        assert!(pl607(&diags).is_none(), "an escaped sigil is not an interpolation: {diags:?}");
+    }
+
+    #[test]
+    fn assignment_form_receiver_evidence_is_accepted() {
+        let source = concat!(
+            "my $dbh;\n",
+            "$dbh = DBI->connect('dbi:SQLite:dbname=x');\n",
+            "my $id = <STDIN>;\n",
+            "$dbh->do(\"DELETE FROM t WHERE id = $id\");\n",
+        );
+        let diags = sql_diags(source);
+        assert!(
+            pl607(&diags).is_some(),
+            "plain assignment from DBI->connect is valid receiver evidence: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn sql_diagnostic_wire_identity_follows_the_storyboarded_contract() {
+        // The storyboarded wire format (lsp_critical_user_stories.rs, TEST 4)
+        // pins the security.sql_injection codeDescription to the OWASP SQL
+        // injection reference; the registered PL607 code carries that href
+        // through documentation_url on both push and pull wire paths.
+        assert_eq!(
+            DiagnosticCode::SecuritySqlInjection.documentation_url(),
+            Some("https://owasp.org/www-community/attacks/SQL_Injection")
         );
     }
 }
