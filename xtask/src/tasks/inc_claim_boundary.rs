@@ -46,6 +46,9 @@ const MODULE_RESOLUTION_REQUIRED: &[&str] = &[
     "#1744",
     "not_proven",
     "2026-05-11",
+    "| Contextual resolver authority | not_proven |",
+    "| Exact-process | not_proven |",
+    "| Provider/product support | not_proven |",
 ];
 
 const SUPPORT_TIERS_FORBIDDEN: &[&str] =
@@ -102,7 +105,37 @@ pub(crate) fn inc_claim_guard_violations(file: &str, text: &str) -> Vec<String> 
         }
     }
     violations.extend(all_consumers_without_denominator_violations(guard.file, text));
+    violations.extend(positive_complete_effective_root_line_violations(guard.file, text));
     violations
+}
+
+fn positive_complete_effective_root_line_violations(file: &str, text: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        if line.contains("complete effective-root authority") && !line_negates_complete_claim(line)
+        {
+            violations.push(format!(
+                "INC_POLARITY: {file}:{} contains complete effective-root authority without \
+                 same-line negation (#10599)",
+                idx + 1
+            ));
+        }
+    }
+    violations
+}
+
+fn line_negates_complete_claim(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "not complete",
+        "does **not** claim complete",
+        "does not claim complete",
+        "not a claim",
+        "none of these promote",
+        "not current complete",
+    ]
+    .iter()
+    .any(|marker| lower.contains(&marker.to_ascii_lowercase()))
 }
 
 fn all_consumers_without_denominator_violations(file: &str, text: &str) -> Vec<String> {
@@ -216,6 +249,46 @@ all consumers on this page means those four Scenario 14 consumers
     }
 
     #[test]
+    fn exact_process_row_cannot_flip_to_proven_while_other_not_proven_remains() {
+        let text = repaired_module_resolution_fixture()
+            .replace("| Exact-process | not_proven |", "| Exact-process | proven |");
+        let violations = inc_claim_guard_violations(MODULE_RESOLUTION_STATUS, &text);
+        assert!(
+            violations.iter().any(|v| v.contains("| Exact-process | not_proven |")),
+            "promoting only the Exact-process row must fail even when not_proven remains elsewhere, got: {violations:?}"
+        );
+        assert!(
+            text.contains("not_proven"),
+            "the false-negative fixture must still contain not_proven elsewhere"
+        );
+    }
+
+    #[test]
+    fn complete_effective_root_in_new_words_fails_even_with_disclaimer() {
+        let text = format!(
+            "{}\nThis rail now provides complete effective-root authority for all Scenario 14 consumers.\n",
+            repaired_module_resolution_fixture()
+        );
+        let violations = inc_claim_guard_violations(MODULE_RESOLUTION_STATUS, &text);
+        assert!(
+            violations.iter().any(|v| v.starts_with("INC_POLARITY:")),
+            "a positive completeness headline must fail even when the negation disclaimer remains, got: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn dropping_8493_or_8506_receipts_fails() {
+        for receipt in ["#8493", "#8506"] {
+            let text = repaired_module_resolution_fixture().replace(receipt, "");
+            let violations = inc_claim_guard_violations(MODULE_RESOLUTION_STATUS, &text);
+            assert!(
+                violations.iter().any(|v| v.contains(receipt)),
+                "dropping {receipt} must fail, got: {violations:?}"
+            );
+        }
+    }
+
+    #[test]
     fn dropping_historical_closeout_receipts_fails() {
         let text = repaired_module_resolution_fixture().replace("#8544", "");
         let violations = inc_claim_guard_violations(MODULE_RESOLUTION_STATUS, &text);
@@ -325,6 +398,9 @@ non-executing
 #1744
 not_proven
 2026-05-11
+| Contextual resolver authority | not_proven |
+| Exact-process | not_proven |
+| Provider/product support | not_proven |
 "
         .to_string()
     }
