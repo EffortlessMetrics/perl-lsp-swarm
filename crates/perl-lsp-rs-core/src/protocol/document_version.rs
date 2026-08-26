@@ -599,18 +599,29 @@ mod tests {
     #[test]
     fn client_document_version_as_i32_round_trips() {
         let params = json!({"textDocument": {"version": 999}});
-        match decode_document_version(&params) {
-            Ok(DocumentVersionField::Explicit(v)) => assert_eq!(v.as_i32(), 999_i32),
-            other => unreachable!("expected Ok(Explicit(999)), got {other:?}"),
+        // The decoded outcome is asserted directly: Err, Absent, or any other
+        // variant is exactly the regression this test exists to catch, so it
+        // fails as an ordinary assertion instead of an unreachable branch.
+        let decoded = decode_document_version(&params);
+        assert!(
+            matches!(&decoded, Ok(DocumentVersionField::Explicit(_))),
+            "expected Ok(Explicit(999)), got {decoded:?}"
+        );
+        if let Ok(DocumentVersionField::Explicit(value)) = decoded {
+            assert_eq!(value.as_i32(), 999_i32);
         }
     }
 
     #[test]
     fn client_document_version_as_i32_min() {
         let params = json!({"textDocument": {"version": i32::MIN}});
-        match decode_document_version(&params) {
-            Ok(DocumentVersionField::Explicit(v)) => assert_eq!(v.as_i32(), i32::MIN),
-            other => unreachable!("expected Ok(Explicit(i32::MIN)), got {other:?}"),
+        let decoded = decode_document_version(&params);
+        assert!(
+            matches!(&decoded, Ok(DocumentVersionField::Explicit(_))),
+            "expected Ok(Explicit(i32::MIN)), got {decoded:?}"
+        );
+        if let Ok(DocumentVersionField::Explicit(value)) = decoded {
+            assert_eq!(value.as_i32(), i32::MIN);
         }
     }
 

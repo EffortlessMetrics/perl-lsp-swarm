@@ -472,22 +472,28 @@ mod tests {
     #[test]
     fn text_document_sync_advertises_full_sync_and_open_close() {
         let caps = capabilities_for(BuildFlags::default());
-        match caps.text_document_sync.as_ref() {
-            Some(TextDocumentSyncCapability::Options(opts)) => {
-                assert_eq!(
-                    opts.change,
-                    Some(TextDocumentSyncKind::FULL),
-                    "textDocumentSync.change must be FULL (1) — the server reparses the whole \
-                     document on every didChange; INCREMENTAL would be inaccurate"
-                );
-                assert_eq!(
-                    opts.open_close,
-                    Some(true),
-                    "textDocumentSync.openClose must be true — didOpen/didClose are required \
-                     for workspace tracking"
-                );
-            }
-            other => unreachable!("expected TextDocumentSyncCapability::Options, got {other:?}"),
+        // The advertised shape is asserted directly: a boolean, None, or any
+        // other variant is exactly the capability regression this test exists
+        // to catch, so it fails as an ordinary assertion instead of an
+        // unreachable branch.
+        assert!(
+            matches!(caps.text_document_sync, Some(TextDocumentSyncCapability::Options(_))),
+            "expected TextDocumentSyncCapability::Options, got {:?}",
+            caps.text_document_sync
+        );
+        if let Some(TextDocumentSyncCapability::Options(opts)) = caps.text_document_sync.as_ref() {
+            assert_eq!(
+                opts.change,
+                Some(TextDocumentSyncKind::FULL),
+                "textDocumentSync.change must be FULL (1) — the server reparses the whole \
+                 document on every didChange; INCREMENTAL would be inaccurate"
+            );
+            assert_eq!(
+                opts.open_close,
+                Some(true),
+                "textDocumentSync.openClose must be true — didOpen/didClose are required \
+                 for workspace tracking"
+            );
         }
     }
 
@@ -745,16 +751,15 @@ mod tests {
         let flags = BuildFlags { document_symbol: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        match caps.document_symbol_provider.as_ref() {
-            Some(OneOf::Left(true)) => {}
-            Some(OneOf::Left(false)) => unreachable!(
-                "documentSymbolProvider must be true when document_symbol is enabled, not false"
-            ),
-            other => unreachable!(
-                "documentSymbolProvider must be Some(true) when document_symbol is enabled, \
-                 got {other:?}"
-            ),
-        }
+        // A boolean false, the Options variant, or absence are each reachable
+        // outcomes of a defective candidate, so the whole shape is asserted
+        // directly instead of routing arms through an unreachable branch.
+        assert!(
+            matches!(caps.document_symbol_provider, Some(OneOf::Left(true))),
+            "documentSymbolProvider must be Some(Left(true)) when document_symbol is enabled \
+             (not false, not Options, not absent), got {:?}",
+            caps.document_symbol_provider
+        );
     }
 
     /// Assert `documentSymbolProvider` is absent when the flag is disabled.
@@ -779,24 +784,28 @@ mod tests {
         let flags = BuildFlags { workspace_symbol_resolve: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        match caps.workspace_symbol_provider.as_ref() {
-            Some(OneOf::Right(opts)) => {
-                assert_eq!(
-                    opts.resolve_provider,
-                    Some(true),
-                    "workspaceSymbolProvider.resolveProvider must be true when \
-                     workspace_symbol_resolve is enabled"
-                );
-            }
-            Some(OneOf::Left(_)) => unreachable!(
-                "expected workspaceSymbolProvider to use the Options variant (with \
-                 resolveProvider), not the simple boolean variant, when \
+        let provider = caps.workspace_symbol_provider.as_ref();
+        // Presence, variant shape, and payload are each asserted as ordinary
+        // failures: a boolean variant or absent provider is the regression
+        // this test guards against, not an unreachable branch.
+        assert!(
+            provider.is_some(),
+            "workspaceSymbolProvider must be advertised when workspace_symbol_resolve \
+             is enabled"
+        );
+        assert!(
+            matches!(provider, Some(OneOf::Right(_))),
+            "expected workspaceSymbolProvider to use the Options variant (with \
+             resolveProvider), not the simple boolean variant or another shape, when \
+             workspace_symbol_resolve is enabled, got {provider:?}"
+        );
+        if let Some(OneOf::Right(opts)) = provider {
+            assert_eq!(
+                opts.resolve_provider,
+                Some(true),
+                "workspaceSymbolProvider.resolveProvider must be true when \
                  workspace_symbol_resolve is enabled"
-            ),
-            None => unreachable!(
-                "workspaceSymbolProvider must be advertised when workspace_symbol_resolve \
-                 is enabled"
-            ),
+            );
         }
     }
 
