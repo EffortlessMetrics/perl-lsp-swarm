@@ -1,12 +1,12 @@
 //! Contract tests for the #11374 additive Vim/vim-lsp cell-catalog API.
 //!
 //! Positive proof: the compiled registry (the #11371 baseline catalog plus the
-//! #11381 freshness, #11384 save, and #11388 expanded-activation family
-//! catalogs) validates, the baseline covers exactly the 23 baseline #11371
-//! scenarios, each family covers exactly its landed #11380 action vocabulary,
-//! the activation denominator mirror matches the landed #7762 artifact, all
-//! catalogs bind only fixture authorities that exist on disk, and digests are
-//! deterministic.
+//! #11381 freshness, #11384 save, #11388 expanded-activation, and #11386
+//! server-generation recovery family catalogs) validates, the baseline covers
+//! exactly the 23 baseline #11371 scenarios, each family covers exactly its
+//! landed #11380 action vocabulary, the activation and recovery denominator
+//! mirrors match their landed artifacts, all catalogs bind only fixture
+//! authorities that exist on disk, and digests are deterministic.
 //!
 //! Negative controls: every fail-closed law of the registration model —
 //! duplicate/unknown/conflicting cell IDs, unknown or optional scenarios,
@@ -14,12 +14,16 @@
 //! escapes, version and vocabulary violations, missing profiles and ceilings —
 //! plus the #11381 freshness family laws (landed-action observation classes,
 //! ledger/vocabulary mirroring, required dimensions, fail/not_proven
-//! expressibility, action coverage), the #11384 save-family laws, and the
-//! #11388 activation family laws (finite #7762 denominator membership,
+//! expressibility, action coverage), the #11384 save-family laws, the #11388
+//! activation family laws (finite #7762 denominator membership,
 //! row-aspect completeness, row-dimension identity, semantic honesty on
 //! non-perl rows, aspect vocabularies, override authorization boundaries,
-//! cleanup evidence) are executed as mutations of otherwise valid catalogs
-//! and must be rejected for their own reason.
+//! cleanup evidence), and the #11386 recovery family laws (finite
+//! recovery-root denominator membership, stage completeness, generation and
+//! old-generation bindings, row-identity dimensions, adverse-exit honesty,
+//! manual-disposition expressibility, stage vocabularies, cleanup evidence)
+//! are executed as mutations of otherwise valid catalogs and must be rejected
+//! for their own reason.
 //!
 //! Forward compatibility: later family-shaped cells register through the same
 //! API without changing any earlier catalog identity (additive extension
@@ -33,7 +37,7 @@ use xtask::editor_client_compat::EvidenceStage;
 use xtask::vim_lsp_cell_catalog::{
     self as catalog, CellCatalog, CellRegistration, CoverageRule, InstrumentEvidence,
     RegistrySummary, Scenario, ScenarioClass, ScenarioLedger, activation, baseline, freshness,
-    save_format, scenario_ledger,
+    recovery, save_format, scenario_ledger,
 };
 
 fn repository_root() -> Result<PathBuf> {
@@ -102,6 +106,23 @@ const PUBLISHED_ACTIVATION_ASPECTS: &[&str] =
 const ACTIVATION_ACTION_COUNT: usize = 6;
 const ACTIVATION_ROW_COUNT: usize = 18;
 
+/// The eight recovery cell IDs #11386 publishes — the spec's final convention
+/// registration list verbatim — pinned so a rename, an ad hoc addition, or a
+/// relabeled first-launch/host-reopen row cannot slip in as an edit.
+const PUBLISHED_RECOVERY_CELL_IDS: &[&str] = &[
+    "vim.vim_lsp.recovery.explicit_restart",
+    "vim.vim_lsp.recovery.unexpected_exit",
+    "vim.vim_lsp.recovery.initialized_new_generation",
+    "vim.vim_lsp.recovery.document_replay",
+    "vim.vim_lsp.recovery.current_result",
+    "vim.vim_lsp.recovery.old_generation_rejected",
+    "vim.vim_lsp.recovery.retry_or_manual_disposition",
+    "vim.vim_lsp.recovery.shutdown_cleanup",
+];
+
+const RECOVERY_ACTION_COUNT: usize = 7;
+const RECOVERY_ROW_COUNT: usize = 8;
+
 fn validate_baseline_with(
     mutation: impl FnOnce(&mut CellCatalog) -> Result<()>,
 ) -> Result<RegistrySummary> {
@@ -149,7 +170,8 @@ fn compiled_registry_validates_covers_baseline_and_is_deterministic() -> Result<
     let expected_cells = PUBLISHED_BASELINE_CELL_IDS.len()
         + PUBLISHED_FRESHNESS_CELL_IDS.len()
         + PUBLISHED_SAVE_CELL_IDS.len()
-        + ACTIVATION_ROW_COUNT * PUBLISHED_ACTIVATION_ASPECTS.len();
+        + ACTIVATION_ROW_COUNT * PUBLISHED_ACTIVATION_ASPECTS.len()
+        + PUBLISHED_RECOVERY_CELL_IDS.len();
     ensure!(
         first.cell_count == expected_cells,
         "compiled registry registers {} cells, expected {expected_cells}",
@@ -301,6 +323,43 @@ fn compiled_registry_validates_covers_baseline_and_is_deterministic() -> Result<
                 row.slug
             );
         }
+    }
+
+    let recovery_summary = first
+        .catalogs
+        .iter()
+        .find(|summary| summary.catalog_id == recovery::RECOVERY_CATALOG_ID)
+        .context("compiled registry omitted the recovery family catalog")?;
+    ensure!(
+        recovery_summary.cell_count == PUBLISHED_RECOVERY_CELL_IDS.len(),
+        "recovery catalog carries {} cells, expected the {} #11386 denominator stages",
+        recovery_summary.cell_count,
+        PUBLISHED_RECOVERY_CELL_IDS.len()
+    );
+    ensure!(
+        recovery_summary.scenario_ids.len() == RECOVERY_ACTION_COUNT,
+        "recovery catalog cites {} scenarios, expected the {RECOVERY_ACTION_COUNT} landed #11380 recovery actions",
+        recovery_summary.scenario_ids.len()
+    );
+    let compiled_recovery = recovery::recovery_catalog();
+    let recovery_ids: BTreeSet<&str> =
+        compiled_recovery.cells.iter().map(|cell| cell.cell_id.as_str()).collect();
+    for published in PUBLISHED_RECOVERY_CELL_IDS {
+        ensure!(
+            recovery_ids.contains(published),
+            "published recovery cell id {published} is missing from the compiled catalog"
+        );
+    }
+    ensure!(
+        recovery_ids.len() == PUBLISHED_RECOVERY_CELL_IDS.len(),
+        "recovery catalog registers cells beyond the published #11386 table"
+    );
+    for row in recovery::RECOVERY_DENOMINATOR {
+        ensure!(
+            recovery_ids.contains(&format!("vim.vim_lsp.recovery.{}", row.stage_id).as_str()),
+            "denominator stage {} has no registered cell",
+            row.stage_id
+        );
     }
     Ok(())
 }
@@ -811,19 +870,28 @@ fn save_family_registration_leaves_earlier_catalogs_byte_identical() -> Result<(
         .context("activation summary missing")?
         .digest
         .clone();
+    let recovery_before = before
+        .catalogs
+        .iter()
+        .find(|summary| summary.catalog_id == recovery::RECOVERY_CATALOG_ID)
+        .context("recovery summary missing")?
+        .digest
+        .clone();
 
     // Registering the save family over the pre-save registry (baseline +
-    // freshness + the later #11388 activation family) leaves every prior
-    // catalog digest byte-identical.
+    // freshness + the later #11388 activation and #11386 recovery families)
+    // leaves every prior catalog digest byte-identical.
     let prior_catalogs = vec![
         baseline::baseline_catalog(),
         freshness::freshness_catalog(),
         activation::activation_catalog(),
+        recovery::recovery_catalog(),
     ];
     let prior_ledgers = vec![
         scenario_ledger::vim_bdd_ledger_11371(),
         freshness::freshness_action_ledger(),
         activation::activation_action_ledger(),
+        recovery::recovery_action_ledger(),
     ];
     let prior = catalog::validate_registry(&prior_catalogs, &prior_ledgers)?;
     let prior_baseline = prior
@@ -847,6 +915,13 @@ fn save_family_registration_leaves_earlier_catalogs_byte_identical() -> Result<(
         .context("activation summary missing")?
         .digest
         .clone();
+    let prior_recovery = prior
+        .catalogs
+        .iter()
+        .find(|summary| summary.catalog_id == recovery::RECOVERY_CATALOG_ID)
+        .context("recovery summary missing")?
+        .digest
+        .clone();
     ensure!(prior_baseline == baseline_before, "the save family changed the baseline digest");
     ensure!(
         prior_freshness == freshness_before,
@@ -855,6 +930,10 @@ fn save_family_registration_leaves_earlier_catalogs_byte_identical() -> Result<(
     ensure!(
         prior_activation == activation_before,
         "the save family changed the activation catalog digest"
+    );
+    ensure!(
+        prior_recovery == recovery_before,
+        "the save family changed the recovery catalog digest"
     );
     ensure!(before.cell_count == prior.cell_count + PUBLISHED_SAVE_CELL_IDS.len());
     Ok(())
@@ -1244,17 +1323,19 @@ fn activation_family_registration_leaves_earlier_catalogs_byte_identical() -> Re
         .collect();
 
     // Registering the activation family over the pre-activation registry
-    // (baseline + freshness + save) leaves every prior catalog digest
-    // byte-identical.
+    // (baseline + freshness + save + the later #11386 recovery family)
+    // leaves every prior catalog digest byte-identical.
     let prior_catalogs = vec![
         baseline::baseline_catalog(),
         freshness::freshness_catalog(),
         save_format::save_catalog(),
+        recovery::recovery_catalog(),
     ];
     let prior_ledgers = vec![
         scenario_ledger::vim_bdd_ledger_11371(),
         freshness::freshness_action_ledger(),
         save_format::save_action_ledger(),
+        recovery::recovery_action_ledger(),
     ];
     let prior = catalog::validate_registry(&prior_catalogs, &prior_ledgers)?;
     for summary in &prior.catalogs {
@@ -1925,6 +2006,953 @@ fn activation_cell_digests_discriminate_binding_edits() -> Result<()> {
     ensure!(
         catalog_before != catalog::catalog_digest(&edited)?,
         "an activation binding edit did not change the family catalog digest"
+    );
+    ensure!(
+        registry_before.starts_with("sha256:"),
+        "registry digest is not a sha256 identity: {registry_before}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// #11386 recovery family: landed-authority bindings and family laws
+// ---------------------------------------------------------------------------
+
+#[test]
+fn recovery_ledger_mirrors_the_landed_11380_action_vocabulary() -> Result<()> {
+    let ledger = recovery::recovery_action_ledger();
+    let mirrored: BTreeSet<String> =
+        ledger.scenarios.iter().map(|scenario| scenario.id.clone()).collect();
+    let landed: BTreeSet<String> = xtask::vim_lsp_specialized_driver::ACTIONS
+        .iter()
+        .filter(|action| action.family == xtask::vim_lsp_specialized_driver::ActionFamily::Recovery)
+        .map(|action| action.action_id.to_string())
+        .collect();
+    ensure!(
+        mirrored == landed && mirrored.len() == RECOVERY_ACTION_COUNT,
+        "recovery ledger drifted from the landed #11380 recovery action vocabulary"
+    );
+    for scenario in &ledger.scenarios {
+        ensure!(
+            scenario.class == ScenarioClass::Baseline,
+            "recovery action {} must stay a baseline-class landed row",
+            scenario.id
+        );
+    }
+    Ok(())
+}
+
+/// The compiled denominator mirror must match the landed #11386 recovery-root
+/// artifact row for row (stage, entry, old-generation requirement,
+/// cardinality law, disposition shape), the generation kinds and initialize
+/// sequence must match the artifact's `generations` block, and the
+/// honest-claim rules must stay armed.
+#[test]
+fn recovery_denominator_mirror_matches_the_landed_11386_artifact() -> Result<()> {
+    let root = repository_root()?;
+    let path = root.join(".ci/editor-clients").join("vim-vim-lsp-recovery-root.v1.json");
+    let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    let artifact: serde_json::Value =
+        serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))?;
+    let stages = artifact
+        .get("stages")
+        .and_then(|value| value.as_array())
+        .context("recovery-root artifact carries no stages array")?;
+    ensure!(
+        stages.len() == RECOVERY_ROW_COUNT,
+        "recovery-root artifact carries {} rows, mirror carries {RECOVERY_ROW_COUNT}",
+        stages.len()
+    );
+
+    let mut stage_ids: BTreeSet<&str> = BTreeSet::new();
+    for (index, row) in stages.iter().enumerate() {
+        let mirror = &recovery::RECOVERY_DENOMINATOR[index];
+        let field = |name: &str| row.get(name).and_then(|value| value.as_str()).map(str::to_string);
+        let stage = field("stage").context("artifact row missing stage")?;
+        ensure!(
+            mirror.stage_id == stage,
+            "mirror row {index} stage {} drifted from artifact stage {stage}",
+            mirror.stage_id
+        );
+        let entry = field("entry").context("artifact row missing entry")?;
+        ensure!(
+            mirror.entry == entry,
+            "mirror row {stage} entry {} drifted from artifact entry {entry}",
+            mirror.entry
+        );
+        let old_generation = row
+            .get("old_generation")
+            .and_then(|value| value.as_bool())
+            .context("artifact row missing old_generation")?;
+        ensure!(
+            mirror.old_generation == old_generation,
+            "mirror row {stage} old-generation requirement drifted from artifact flag {old_generation}"
+        );
+        let cardinality = field("cardinality").context("artifact row missing cardinality")?;
+        ensure!(
+            mirror.cardinality == cardinality,
+            "mirror row {stage} cardinality {} drifted from artifact cardinality {cardinality}",
+            mirror.cardinality
+        );
+        let disposition = field("disposition").context("artifact row missing disposition")?;
+        ensure!(
+            mirror.disposition == disposition,
+            "mirror row {stage} disposition {} drifted from artifact disposition {disposition}",
+            mirror.disposition
+        );
+
+        for token in [mirror.stage_id, mirror.entry, mirror.cardinality, mirror.disposition] {
+            ensure!(
+                xtask::client_compat_fixture::is_reason_token(token),
+                "row {stage} authority token {token} is not a stable reason token"
+            );
+        }
+        ensure!(
+            stage_ids.insert(mirror.stage_id),
+            "denominator stage {} is not unique",
+            mirror.stage_id
+        );
+        ensure!(
+            mirror.old_generation,
+            "recovery stage {stage} dropped its old-generation requirement; a clean first launch could pose as recovery"
+        );
+    }
+
+    let generations = artifact
+        .get("generations")
+        .context("recovery-root artifact carries no generations block")?;
+    let kinds: Vec<&str> = generations
+        .get("kinds")
+        .and_then(|value| value.as_array())
+        .context("generations block carries no kinds array")?
+        .iter()
+        .map(|value| value.as_str())
+        .collect::<Option<Vec<_>>>()
+        .context("a generation kind is not a string")?;
+    ensure!(
+        kinds == recovery::GENERATION_KINDS,
+        "generation kinds drifted from the artifact generations block: {kinds:?}"
+    );
+    ensure!(
+        generations
+            .get("old_new_binding_required")
+            .and_then(|value| value.as_bool())
+            .context("generations block missing old_new_binding_required")?,
+        "the artifact dropped the old/new generation binding requirement"
+    );
+    let sequence: Vec<&str> = generations
+        .get("initialize_sequence")
+        .and_then(|value| value.as_array())
+        .context("generations block carries no initialize_sequence")?
+        .iter()
+        .map(|value| value.as_str())
+        .collect::<Option<Vec<_>>>()
+        .context("an initialize-sequence entry is not a string")?;
+    ensure!(
+        sequence == recovery::INITIALIZE_SEQUENCE,
+        "initialize sequence drifted from the artifact generations block: {sequence:?}"
+    );
+
+    let rules = artifact
+        .get("claim_rules")
+        .context("recovery-root artifact carries no claim_rules block")?;
+    for rule in [
+        "new_pid_is_not_recovery",
+        "process_start_is_not_initialize",
+        "clean_first_launch_is_not_recovery",
+        "manual_restart_is_not_automatic_recovery",
+        "server_restart_is_not_host_reopen",
+        "later_correct_answer_requires_current_generation",
+        "old_generation_effects_must_be_rejected",
+        "initialize_replay_current_result_rejection_cleanup_independent",
+    ] {
+        ensure!(
+            rules.get(rule).and_then(|value| value.as_bool()) == Some(true),
+            "claim rule {rule} is missing or disarmed in the artifact"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn recovery_fixture_substrate_is_landed_on_disk() -> Result<()> {
+    let root = repository_root()?;
+    for fixture in recovery::RECOVERY_FIXTURE_SUBSTRATE {
+        let path = root.join(".ci/editor-clients").join(format!("{fixture}.json"));
+        ensure!(
+            path.is_file(),
+            "recovery fixture substrate id {fixture} has no landed authority artifact at {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn recovery_family_registration_leaves_earlier_catalogs_byte_identical() -> Result<()> {
+    let before = catalog::validate_compiled_registry()?;
+    let earlier_digests: BTreeMap<String, String> = before
+        .catalogs
+        .iter()
+        .map(|summary| (summary.catalog_id.clone(), summary.digest.clone()))
+        .collect();
+
+    // Registering the recovery family over the pre-recovery registry (baseline
+    // + freshness + save + activation) leaves every prior catalog digest
+    // byte-identical.
+    let prior_catalogs = vec![
+        baseline::baseline_catalog(),
+        freshness::freshness_catalog(),
+        save_format::save_catalog(),
+        activation::activation_catalog(),
+    ];
+    let prior_ledgers = vec![
+        scenario_ledger::vim_bdd_ledger_11371(),
+        freshness::freshness_action_ledger(),
+        save_format::save_action_ledger(),
+        activation::activation_action_ledger(),
+    ];
+    let prior = catalog::validate_registry(&prior_catalogs, &prior_ledgers)?;
+    for summary in &prior.catalogs {
+        let digest = earlier_digests.get(&summary.catalog_id).with_context(|| {
+            format!("prior catalog {} missing from compiled registry", summary.catalog_id)
+        })?;
+        ensure!(
+            digest == &summary.digest,
+            "the recovery family changed the {} catalog digest",
+            summary.catalog_id
+        );
+    }
+    ensure!(
+        before.cell_count == prior.cell_count + PUBLISHED_RECOVERY_CELL_IDS.len(),
+        "the recovery family changed the cell count of an earlier catalog"
+    );
+    Ok(())
+}
+
+/// Positive binding proof: every published #11386 cell is present with its
+/// exact spec ID, typed by a landed recovery action, keyed to its own
+/// denominator row/entry/cardinality dimensions, bound to all five generation
+/// kinds and the old-generation requirement, and pinned to its row's
+/// authority identity.
+#[test]
+fn recovery_cells_bind_row_identity_generations_and_claim() -> Result<()> {
+    let compiled = recovery::recovery_catalog();
+    ensure!(
+        compiled.cells.len() == RECOVERY_ROW_COUNT,
+        "recovery catalog carries {} cells",
+        compiled.cells.len()
+    );
+    let landed: BTreeSet<&str> = xtask::vim_lsp_specialized_driver::ACTIONS
+        .iter()
+        .filter(|action| action.family == xtask::vim_lsp_specialized_driver::ActionFamily::Recovery)
+        .map(|action| action.action_id)
+        .collect();
+
+    for row in recovery::RECOVERY_DENOMINATOR {
+        let cell_id = format!("vim.vim_lsp.recovery.{}", row.stage_id);
+        let cell = compiled
+            .cells
+            .iter()
+            .find(|cell| cell.cell_id == cell_id)
+            .with_context(|| format!("recovery catalog omitted cell {cell_id}"))?;
+        ensure!(
+            landed.contains(cell.observation_class.as_str()),
+            "cell {cell_id} is typed by non-landed action {}",
+            cell.observation_class
+        );
+        ensure!(
+            cell.subject_dimensions
+                .iter()
+                .any(|token| token == &format!("recovery.row.{}", row.stage_id)),
+            "cell {cell_id} does not bind its own denominator row dimension"
+        );
+        ensure!(
+            cell.subject_dimensions
+                .iter()
+                .any(|token| token == &format!("recovery.entry.{}", row.entry)),
+            "cell {cell_id} does not bind its row's #11386 entry condition",
+        );
+        ensure!(
+            cell.subject_dimensions
+                .iter()
+                .any(|token| token == &format!("recovery.cardinality.{}", row.cardinality)),
+            "cell {cell_id} does not bind its row's #11386 cardinality law",
+        );
+        for kind in recovery::GENERATION_KINDS {
+            ensure!(
+                cell.subject_dimensions.iter().any(|token| token == &format!("generation.{kind}")),
+                "cell {cell_id} does not bind the generation.{kind} dimension"
+            );
+        }
+        ensure!(
+            cell.subject_dimensions.iter().any(|token| token == "recovery.old_generation.required"),
+            "cell {cell_id} does not bind the old-generation requirement"
+        );
+        let identity = recovery::row_binding_identity(row);
+        ensure!(
+            cell.subject_dimensions.iter().any(|token| token == &identity),
+            "cell {cell_id} does not bind its row's authority identity"
+        );
+        if row.cardinality == "new_generation_initialized_once" {
+            ensure!(
+                cell.subject_dimensions.iter().any(|token| token
+                    == "recovery.initialize_sequence.initialize_initialized_buffer_enabled"),
+                "cell {cell_id} does not bind the initialize sequence"
+            );
+        }
+    }
+
+    // The adverse-exit stage stays non-affirming by default; the retry stage
+    // keeps the manual disposition; every other stage admits pass only
+    // through its full row binding.
+    let exit = compiled
+        .cells
+        .iter()
+        .find(|cell| cell.cell_id == "vim.vim_lsp.recovery.unexpected_exit")
+        .context("unexpected_exit cell missing")?;
+    ensure!(
+        !exit.allowed_results.iter().any(|result| result == "pass"),
+        "unexpected_exit affirms recovery by default"
+    );
+    let retry = compiled
+        .cells
+        .iter()
+        .find(|cell| cell.cell_id == "vim.vim_lsp.recovery.retry_or_manual_disposition")
+        .context("retry_or_manual_disposition cell missing")?;
+    ensure!(
+        retry.allowed_results.iter().any(|result| result == "manual_restart_required"),
+        "retry_or_manual_disposition lost the manual-restart disposition"
+    );
+    Ok(())
+}
+
+/// Validate a mutated recovery family catalog against the family laws and
+/// then the shared laws over the compiled sibling catalogs plus the mutated
+/// family; both must pass for the mutation to count as accepted.
+fn validate_recovery_with(
+    mutation: impl FnOnce(&mut CellCatalog) -> Result<()>,
+) -> Result<RegistrySummary> {
+    let mut mutated = recovery::recovery_catalog();
+    mutation(&mut mutated)?;
+    recovery::validate_recovery_catalog(&mutated, &recovery::recovery_action_ledger())?;
+    let mut catalogs = catalog::registry();
+    let slot = catalogs
+        .iter_mut()
+        .find(|candidate| candidate.catalog_id == recovery::RECOVERY_CATALOG_ID)
+        .context("compiled registry omitted the recovery catalog")?;
+    *slot = mutated;
+    catalog::validate_registry(&catalogs, &catalog::scenario_ledgers())
+}
+
+fn recovery_cell_mut<'a>(
+    catalog: &'a mut CellCatalog,
+    cell_id: &str,
+) -> Result<&'a mut CellRegistration> {
+    catalog
+        .cells
+        .iter_mut()
+        .find(|cell| cell.cell_id == cell_id)
+        .with_context(|| format!("recovery catalog omitted cell {cell_id}"))
+}
+
+/// Assert that a mutated recovery registry is rejected — by the family laws
+/// or the shared laws — for a reason containing `needle`.
+fn assert_recovery_rejects(
+    mutation: impl FnOnce(&mut CellCatalog) -> Result<()>,
+    needle: &str,
+) -> Result<()> {
+    let error = match validate_recovery_with(mutation) {
+        Ok(_) => {
+            bail!("mutated recovery registry was accepted; expected rejection containing {needle}")
+        }
+        Err(error) => error.to_string(),
+    };
+    ensure!(
+        error.contains(needle),
+        "wrong rejection reason: {error} (wanted something containing {needle})"
+    );
+    Ok(())
+}
+
+#[test]
+fn recovery_denominator_membership_fails_closed() -> Result<()> {
+    // A relabeled clean first launch cannot register as a recovery stage,
+    // even with a consistent row dimension set.
+    assert_recovery_rejects(
+        |catalog| {
+            let mut clone =
+                recovery_cell_mut(catalog, "vim.vim_lsp.recovery.explicit_restart")?.clone();
+            clone.cell_id = "vim.vim_lsp.recovery.first_launch".to_string();
+            clone.subject_dimensions.retain(|token| {
+                !token.starts_with("recovery.row.")
+                    && !token.starts_with("recovery.entry.")
+                    && !token.starts_with("recovery.cardinality.")
+                    && !token.starts_with("recovery.row_binding.")
+            });
+            clone.subject_dimensions.push("recovery.row.first_launch".to_string());
+            clone.subject_dimensions.push("recovery.entry.clean_launch".to_string());
+            clone.subject_dimensions.push("recovery.cardinality.new_pid_only".to_string());
+            catalog.cells.push(clone);
+            Ok(())
+        },
+        "outside the finite #11386 recovery-root denominator",
+    )?;
+    // A misspelled stage is an unknown stage, not a new stage.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.current_result")?;
+            cell.cell_id = "vim.vim_lsp.recovery.current_results".to_string();
+            Ok(())
+        },
+        "outside the finite #11386 recovery-root denominator",
+    )?;
+    // A host-reopen row cannot register in the recovery family: server
+    // restart is never host reopen (#11387 owns that family).
+    assert_recovery_rejects(
+        |catalog| {
+            let mut clone =
+                recovery_cell_mut(catalog, "vim.vim_lsp.recovery.shutdown_cleanup")?.clone();
+            clone.cell_id = "vim.vim_lsp.recovery.host_reopen".to_string();
+            clone.subject_dimensions.retain(|token| {
+                !token.starts_with("recovery.row.")
+                    && !token.starts_with("recovery.entry.")
+                    && !token.starts_with("recovery.cardinality.")
+                    && !token.starts_with("recovery.row_binding.")
+            });
+            clone.subject_dimensions.push("recovery.row.host_reopen".to_string());
+            clone.subject_dimensions.push("recovery.entry.host_instance_changed".to_string());
+            clone.subject_dimensions.push("recovery.cardinality.repeated_sessions".to_string());
+            catalog.cells.push(clone);
+            Ok(())
+        },
+        "outside the finite #11386 recovery-root denominator",
+    )
+}
+
+#[test]
+fn recovery_stage_completeness_fails_closed() -> Result<()> {
+    // Dropping one cell leaves a denominator stage unregistered.
+    assert_recovery_rejects(
+        |catalog| {
+            catalog.cells.retain(|cell| cell.cell_id != "vim.vim_lsp.recovery.document_replay");
+            Ok(())
+        },
+        "denominator stage cells missing from the #11386 recovery family",
+    )?;
+    // Duplicating one stage registration fails closed.
+    assert_recovery_rejects(
+        |catalog| {
+            let clone =
+                recovery_cell_mut(catalog, "vim.vim_lsp.recovery.old_generation_rejected")?.clone();
+            catalog.cells.push(clone);
+            Ok(())
+        },
+        "duplicate recovery stage registration",
+    )
+}
+
+#[test]
+fn recovery_row_identity_dimensions_fail_closed() -> Result<()> {
+    // A cell must keep exactly one row dimension.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.current_result")?;
+            cell.subject_dimensions.retain(|token| !token.starts_with("recovery.row."));
+            Ok(())
+        },
+        "must bind exactly one recovery.row.* dimension",
+    )?;
+    // A cell cannot inherit another stage's identity.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.document_replay")?;
+            *cell
+                .subject_dimensions
+                .iter_mut()
+                .find(|token| token.as_str() == "recovery.row.document_replay")
+                .context("document_replay cell missing its row dimension")? =
+                "recovery.row.current_result".to_string();
+            Ok(())
+        },
+        "does not match its own stage",
+    )?;
+    // A cell must carry its row's exact entry condition.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.explicit_restart")?;
+            *cell
+                .subject_dimensions
+                .iter_mut()
+                .find(|token| token.as_str() == "recovery.entry.user_public_route")
+                .context("explicit_restart cell missing its entry dimension")? =
+                "recovery.entry.generation_replacement".to_string();
+            Ok(())
+        },
+        "must bind its row's #11386 entry dimension",
+    )?;
+    // A cell must carry its row's exact cardinality law.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.shutdown_cleanup")?;
+            *cell
+                .subject_dimensions
+                .iter_mut()
+                .find(|token| token.as_str() == "recovery.cardinality.cleanup_settled_once")
+                .context("shutdown_cleanup cell missing its cardinality dimension")? =
+                "recovery.cardinality.new_generation_initialized_once".to_string();
+            Ok(())
+        },
+        "must bind its row's #11386 cardinality dimension",
+    )
+}
+
+/// The row-binding authority identity makes every #11386 denominator field
+/// digest-visible: two rows differing in any single authority field carry
+/// different identities, and every compiled cell binds its own row's
+/// identity exactly.
+#[test]
+fn recovery_row_authority_identity_is_digest_visible() -> Result<()> {
+    use xtask::vim_lsp_cell_catalog::recovery::row_binding_identity;
+    let base = xtask::vim_lsp_cell_catalog::recovery::RecoveryDenominatorRow {
+        stage_id: "current_result",
+        entry: "generation_replacement",
+        old_generation: true,
+        cardinality: "current_result_from_current_generation_only",
+        disposition: "current_answer_verified_current_generation",
+    };
+    let baseline = row_binding_identity(&base);
+    // An entry-only change moves the identity.
+    let edited_entry = xtask::vim_lsp_cell_catalog::recovery::RecoveryDenominatorRow {
+        entry: "user_public_route",
+        ..base
+    };
+    ensure!(
+        baseline != row_binding_identity(&edited_entry),
+        "an entry-condition denominator edit left the row authority identity unchanged"
+    );
+    // So do old-generation, cardinality, and disposition edits.
+    for edited in [
+        xtask::vim_lsp_cell_catalog::recovery::RecoveryDenominatorRow {
+            old_generation: false,
+            ..base
+        },
+        xtask::vim_lsp_cell_catalog::recovery::RecoveryDenominatorRow {
+            cardinality: "open_documents_root_config_replayed_exact",
+            ..base
+        },
+        xtask::vim_lsp_cell_catalog::recovery::RecoveryDenominatorRow {
+            disposition: "old_effect_rejected_not_admitted",
+            ..base
+        },
+    ] {
+        ensure!(
+            baseline != row_binding_identity(&edited),
+            "a denominator authority edit left the row authority identity unchanged"
+        );
+    }
+    // Identical fields keep the identity stable.
+    ensure!(
+        baseline == row_binding_identity(&base),
+        "the row authority identity is not deterministic"
+    );
+
+    // Every compiled cell binds exactly its own row's authority identity.
+    let compiled = recovery::recovery_catalog();
+    for cell in &compiled.cells {
+        let stage = cell
+            .cell_id
+            .strip_prefix("vim.vim_lsp.recovery.")
+            .context("recovery cell outside its namespace")?;
+        let row = recovery::RECOVERY_DENOMINATOR
+            .iter()
+            .find(|row| row.stage_id == stage)
+            .with_context(|| format!("recovery stage {stage} missing from the mirror"))?;
+        let identity = row_binding_identity(row);
+        let bound = cell
+            .subject_dimensions
+            .iter()
+            .filter(|token| token.starts_with("recovery.row_binding."))
+            .collect::<Vec<_>>();
+        ensure!(
+            bound.len() == 1 && bound[0].as_str() == identity,
+            "cell {} does not bind its row's authority identity exactly",
+            cell.cell_id
+        );
+    }
+
+    // A stale or hand-copied binding dimension fails the family law.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.shutdown_cleanup")?;
+            let index = cell
+                .subject_dimensions
+                .iter()
+                .position(|token| token.starts_with("recovery.row_binding."))
+                .context("row binding dimension missing")?;
+            cell.subject_dimensions[index] = "recovery.row_binding.sha256-0".to_string();
+            Ok(())
+        },
+        "row's authority identity",
+    )
+}
+
+/// Each stage is classified by its one pinned action: a disposition
+/// observation cannot classify an initialize proposition even though the
+/// disposition action is a landed recovery action.
+#[test]
+fn recovery_stage_classes_are_pinned_to_their_propositions() -> Result<()> {
+    assert_recovery_rejects(
+        |catalog| {
+            let cell =
+                recovery_cell_mut(catalog, "vim.vim_lsp.recovery.initialized_new_generation")?;
+            cell.observation_class =
+                "vim.vim_lsp.specialized.recovery.bounded_retry_disposition".to_string();
+            Ok(())
+        },
+        "must be classified by",
+    )?;
+    // Same law on the exit stage: the restart route cannot classify the
+    // adverse-exit disposition.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.unexpected_exit")?;
+            cell.observation_class =
+                "vim.vim_lsp.specialized.recovery.restart_server_public_route".to_string();
+            Ok(())
+        },
+        "must be classified by",
+    )
+}
+
+/// The #11386 law: a healthy new process — a new PID that initializes
+/// cleanly — still fails recovery when replay/currentness bindings are
+/// omitted, and a first launch without an old generation cannot pose as any
+/// stage.
+#[test]
+fn recovery_healthy_new_process_without_replay_currentness_fails_closed() -> Result<()> {
+    // Dropping the current-result cardinality law turns the cell into a
+    // bare-answer proposition; it must fail.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.current_result")?;
+            cell.subject_dimensions.retain(|token| {
+                token != "recovery.cardinality.current_result_from_current_generation_only"
+            });
+            Ok(())
+        },
+        "must bind its row's #11386 cardinality dimension",
+    )?;
+    // Dropping the old-generation requirement admits a clean first launch;
+    // it must fail.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.current_result")?;
+            cell.subject_dimensions.retain(|token| token != "recovery.old_generation.required");
+            Ok(())
+        },
+        "recovery.old_generation.required",
+    )?;
+    // Dropping the process-generation binding lets another process supply
+    // the observation; it must fail.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.current_result")?;
+            cell.subject_dimensions.retain(|token| token != "generation.process");
+            Ok(())
+        },
+        "must bind the generation dimension generation.process",
+    )?;
+    // Dropping the initialize-sequence binding lets a bare process-start
+    // event satisfy initialize; it must fail.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell =
+                recovery_cell_mut(catalog, "vim.vim_lsp.recovery.initialized_new_generation")?;
+            cell.subject_dimensions.retain(|token| {
+                token != "recovery.initialize_sequence.initialize_initialized_buffer_enabled"
+            });
+            Ok(())
+        },
+        "must bind the initialize-sequence dimension",
+    )
+}
+
+/// The #11386 honesty laws: the adverse exit never admits `pass`, and the
+/// exit/retry stages keep `manual_restart_required` expressible so a manual
+/// restart cannot be relabeled automatic recovery.
+#[test]
+fn recovery_adverse_exit_honesty_and_manual_disposition_fail_closed() -> Result<()> {
+    // Relabeling the unexpected exit as a passing recovery observation fails.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.unexpected_exit")?;
+            cell.allowed_results.push("pass".to_string());
+            Ok(())
+        },
+        "admits the recovery-affirming result pass",
+    )?;
+    // Dropping the manual-restart disposition from the retry stage fails.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell =
+                recovery_cell_mut(catalog, "vim.vim_lsp.recovery.retry_or_manual_disposition")?;
+            cell.allowed_results.retain(|token| token != "manual_restart_required");
+            Ok(())
+        },
+        "must keep the manual_restart_required disposition",
+    )?;
+    // Same law on the adverse-exit stage.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.unexpected_exit")?;
+            cell.allowed_results.retain(|token| token != "manual_restart_required");
+            Ok(())
+        },
+        "must keep the manual_restart_required disposition",
+    )
+}
+
+#[test]
+fn recovery_stage_vocabularies_cannot_stand_in_for_each_other() -> Result<()> {
+    // A stage cannot admit a result outside its pinned vocabulary, even an
+    // in-family token: the manual disposition cannot leak into a stage that
+    // never carries it.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.current_result")?;
+            cell.allowed_results.push("manual_restart_required".to_string());
+            Ok(())
+        },
+        "drifted from the pinned current_result stage vocabulary",
+    )?;
+    // Honest failure must stay expressible.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.document_replay")?;
+            cell.allowed_results.retain(|token| token != "fail");
+            Ok(())
+        },
+        "must admit fail and not_proven",
+    )?;
+    // Keeping the pinned class but dropping it from the cell's own scenario
+    // owners fails the owner-binding law.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.old_generation_rejected")?;
+            cell.scenario_owners.retain(|owner| {
+                owner != "vim.vim_lsp.specialized.recovery.hold_release_old_generation_result"
+            });
+            Ok(())
+        },
+        "must be one of its own scenario owners",
+    )
+}
+
+/// The complete scenario-owner set of each stage is pinned: dropping a
+/// non-classifying entry-path owner (the crash/restart paths that
+/// distinguish a recovery stage from a clean first launch) or widening the
+/// set with another landed recovery action both fail closed, even though the
+/// union-coverage law would stay satisfied through other cells.
+#[test]
+fn recovery_stage_owner_sets_are_pinned_fail_closed() -> Result<()> {
+    // Dropping the termination entry path from the initialize stage: the
+    // classifying action stays an owner, so only the pinned-set law catches
+    // it.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell =
+                recovery_cell_mut(catalog, "vim.vim_lsp.recovery.initialized_new_generation")?;
+            cell.scenario_owners.retain(|owner| {
+                owner != "vim.vim_lsp.specialized.recovery.terminate_server_process"
+            });
+            Ok(())
+        },
+        "scenario owners drifted from the pinned initialized_new_generation stage owner set",
+    )?;
+    // Same law on the stop entry path of the explicit-restart stage.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.explicit_restart")?;
+            cell.scenario_owners.retain(|owner| {
+                owner != "vim.vim_lsp.specialized.recovery.stop_server_public_route"
+            });
+            Ok(())
+        },
+        "scenario owners drifted from the pinned explicit_restart stage owner set",
+    )?;
+    // Widening is also rejected: a landed recovery action that is not part of
+    // the stage's declared owner set cannot be attached to the cell.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.shutdown_cleanup")?;
+            cell.scenario_owners
+                .push("vim.vim_lsp.specialized.recovery.bounded_retry_disposition".to_string());
+            Ok(())
+        },
+        "scenario owners drifted from the pinned shutdown_cleanup stage owner set",
+    )
+}
+
+#[test]
+fn recovery_cannot_be_filled_by_another_family_or_baseline_row() -> Result<()> {
+    // A freshness action cannot classify a recovery cell.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.current_result")?;
+            cell.observation_class =
+                "vim.vim_lsp.specialized.freshness.observe_route_and_generation".to_string();
+            Ok(())
+        },
+        "is not a landed recovery action",
+    )?;
+    // A host-reopen action is landed #11380 vocabulary but does not belong to
+    // the recovery ledger; it cannot own a recovery cell. The pinned
+    // stage-owner-set family law rejects the widened set before the shared
+    // ledger law is reached, so the pinned-set reason is the observed
+    // rejection surface for owner additions in this family.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.shutdown_cleanup")?;
+            cell.scenario_owners
+                .push("vim.vim_lsp.specialized.host_reopen.buffer_close_wipe_reopen".to_string());
+            Ok(())
+        },
+        "scenario owners drifted from the pinned shutdown_cleanup stage owner set",
+    )?;
+    // A baseline scenario stays owned by the baseline catalog.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.explicit_restart")?;
+            cell.scenario_owners.push("vim.bdd.lifecycle.03".to_string());
+            Ok(())
+        },
+        "scenario owners drifted from the pinned explicit_restart stage owner set",
+    )?;
+    // An activation action cannot own a recovery cell either.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.document_replay")?;
+            cell.scenario_owners
+                .push("vim.vim_lsp.specialized.activation.observe_service_attachment".to_string());
+            Ok(())
+        },
+        "scenario owners drifted from the pinned document_replay stage owner set",
+    )
+}
+
+#[test]
+fn recovery_cleanup_evidence_stays_load_bearing() -> Result<()> {
+    // The explicit-restart cell cites the public-route stop; dropping its
+    // cleanup evidence fails.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.explicit_restart")?;
+            cell.instrument_evidence
+                .retain(|token| !matches!(token, InstrumentEvidence::CleanupObservation));
+            Ok(())
+        },
+        "must require cleanup evidence",
+    )?;
+    // Same law on the shutdown-cleanup cell, which cites the host-shutdown
+    // action.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.shutdown_cleanup")?;
+            cell.instrument_evidence
+                .retain(|token| !matches!(token, InstrumentEvidence::CleanupObservation));
+            Ok(())
+        },
+        "must require cleanup evidence",
+    )
+}
+
+#[test]
+fn recovery_family_vocabulary_stage_profile_and_subject_laws_fail_closed() -> Result<()> {
+    // The family vocabulary is pinned.
+    assert_recovery_rejects(
+        |catalog| {
+            catalog.allowed_result_vocabulary.push("automatic_recovery".to_string());
+            Ok(())
+        },
+        "recovery result vocabulary drifted",
+    )?;
+    // Required dimensions stay load-bearing.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.current_result")?;
+            cell.subject_dimensions.retain(|token| token != "client.pinned_commit");
+            Ok(())
+        },
+        "must bind required dimension client.pinned_commit",
+    )?;
+    // Stage escapes stay rejected by the shared bound.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.current_result")?;
+            cell.allowed_stages = vec![EvidenceStage::PublicArtifact];
+            Ok(())
+        },
+        "outside catalog",
+    )?;
+    assert_recovery_rejects(
+        |catalog| {
+            catalog.allowed_stages = vec![EvidenceStage::ReleaseCandidate];
+            Ok(())
+        },
+        "stage bound is exact_source_local only",
+    )?;
+    // Cells feed only the exact-source profile.
+    assert_recovery_rejects(
+        |catalog| {
+            let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.current_result")?;
+            cell.allowed_profiles = vec!["vim_programme_closeout".to_string()];
+            Ok(())
+        },
+        "may feed only vim_first_class_exact_source",
+    )?;
+    // Cross-client receipts cannot register here.
+    for impostor in ["coc", "yegappan/lsp", "neovim", "vimspector"] {
+        assert_recovery_rejects(
+            |catalog| {
+                let cell = recovery_cell_mut(catalog, "vim.vim_lsp.recovery.current_result")?;
+                cell.subject.client_id = impostor.to_string();
+                Ok(())
+            },
+            "not the pinned Vim + vim-lsp + perllsp --stdio subject",
+        )
+        .with_context(|| format!("cross-client subject {impostor} was accepted"))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn recovery_cell_digests_discriminate_binding_edits() -> Result<()> {
+    let compiled = recovery::recovery_catalog();
+    let cell_id = "vim.vim_lsp.recovery.old_generation_rejected";
+    let cell = compiled
+        .cells
+        .iter()
+        .find(|cell| cell.cell_id == cell_id)
+        .with_context(|| format!("{cell_id} missing"))?;
+    let before = catalog::cell_digest(cell)?;
+    let catalog_before = catalog::catalog_digest(&compiled)?;
+    let registry_before = catalog::validate_compiled_registry()?.digest;
+
+    let mut edited = compiled.clone();
+    let cell = edited
+        .cells
+        .iter_mut()
+        .find(|cell| cell.cell_id == cell_id)
+        .with_context(|| format!("{cell_id} missing"))?;
+    cell.subject_dimensions.push("generation.session".to_string());
+    ensure!(
+        before != catalog::cell_digest(cell)?,
+        "a recovery binding edit did not change the cell digest"
+    );
+    ensure!(
+        catalog_before != catalog::catalog_digest(&edited)?,
+        "a recovery binding edit did not change the family catalog digest"
     );
     ensure!(
         registry_before.starts_with("sha256:"),
