@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "programme": "perl_regex_modifier_conformance",
+  "family": "modifiers.charset",
+  "owner_issue": 7036,
+  "rows": [
+    {
+      "id": "modifiers.charset.default-no-flag",
+      "family": "modifiers.charset",
+      "authority": "perlop(1) 'Modifiers': without /a /d /l /u the default is /u since Perl 5.14",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "character_set_mode": "default",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.charset.a-single",
+      "family": "modifiers.charset",
+      "authority": "perlop(1) 'Modifiers': /a restricts \\w \\d \\s and POSIX classes to ASCII",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "a",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "character_set_mode": "ascii",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.charset.aa-double",
+      "family": "modifiers.charset",
+      "authority": "perlop(1) 'Modifiers': /aa additionally disallows \\1 backreferences across ASCII/non-ASCII boundary",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "aa",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "character_set_mode": "ascii_restricted",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.charset.d-native",
+      "family": "modifiers.charset",
+      "authority": "perlop(1) 'Modifiers': /d requests native (pre-5.14) platform character semantics",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "d",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "character_set_mode": "depends",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.charset.l-locale",
+      "family": "modifiers.charset",
+      "authority": "perlop(1) 'Modifiers': /l enables locale-dependent character class semantics",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "l",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "character_set_mode": "locale",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.charset.u-unicode",
+      "family": "modifiers.charset",
+      "authority": "perlop(1) 'Modifiers': /u forces Unicode character semantics",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "u",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "character_set_mode": "unicode",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.charset.conflict-a-and-l",
+      "family": "modifiers.charset",
+      "authority": "perlop(1) 'Modifiers': combining /a with /l is a conflict; only the last effective mode wins and a diagnostic is emitted",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "al",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "diagnostic_codes": ["conflicting_character_set_modifiers"]
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.charset.conflict-d-and-u",
+      "family": "modifiers.charset",
+      "authority": "perlop(1) 'Modifiers': combining /d with /u is a conflict",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "du",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "diagnostic_codes": ["conflicting_character_set_modifiers"]
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.charset.repeated-a-beyond-two",
+      "family": "modifiers.charset",
+      "authority": "perlop(1): repeating /a more than twice (aaa) is disallowed",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "aaa",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "diagnostic_codes": ["repeated_character_set_modifier"]
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.charset.transliteration-rejects-charset",
+      "family": "modifiers.charset",
+      "authority": "perlop(1) 'tr Operator': tr// does not accept /a /d /l /u /aa charset modifiers",
+      "operator": "transliteration",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "a",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "diagnostic_codes": ["modifier_not_allowed_for_operator"]
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    }
+  ]
+}

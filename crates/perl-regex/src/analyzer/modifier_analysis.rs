@@ -128,6 +128,20 @@ pub enum ExtendedMode {
     },
 }
 
+impl ExtendedMode {
+    /// Stable machine token for receipts, protocol adapters, and conformance
+    /// matrix fixtures.  The `enhanced` field of `ExtraExtended` is not
+    /// reflected here; callers that need the full distinction must pattern-match.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Extended => "extended",
+            Self::ExtraExtended { .. } => "extra_extended",
+        }
+    }
+}
+
 /// Effective character-set interpretation for regex escapes and classes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -148,6 +162,23 @@ pub enum CharacterSetMode {
     Conflict,
 }
 
+impl CharacterSetMode {
+    /// Stable machine token for receipts, protocol adapters, and conformance
+    /// matrix fixtures.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Ascii => "ascii",
+            Self::AsciiRestricted => "ascii_restricted",
+            Self::Depends => "depends",
+            Self::Locale => "locale",
+            Self::Unicode => "unicode",
+            Self::Conflict => "conflict",
+        }
+    }
+}
+
 /// Effective capture default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -156,6 +187,18 @@ pub enum CaptureMode {
     CapturingByDefault,
     /// `/n` makes ordinary unnamed groups non-capturing by default.
     NonCapturingByDefault,
+}
+
+impl CaptureMode {
+    /// Stable machine token for receipts, protocol adapters, and conformance
+    /// matrix fixtures.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CapturingByDefault => "capturing_by_default",
+            Self::NonCapturingByDefault => "non_capturing_by_default",
+        }
+    }
 }
 
 /// Transliteration-specific modifier semantics.
