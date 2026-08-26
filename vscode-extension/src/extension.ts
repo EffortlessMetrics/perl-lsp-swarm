@@ -1757,6 +1757,13 @@ function createLanguageClientLifecycle(
       languageClientStartupMetrics.setLifecycleState(snapshot.state);
       syncLifecycleProjection();
       healthWidget?.onStateChange(clientStateForLifecycle(snapshot.state));
+      if (snapshot.state === 'running') {
+        // A language client can emit Running before onStarted finishes. The
+        // lifecycle's running transition is the authoritative post-finalization
+        // signal, so only it may start the stable-run grace window and reset
+        // the automatic-restart budget after a genuinely healthy replacement.
+        crashRecoveryArbiter.markRunning(snapshot.generation, Date.now());
+      }
       // Only `resolving` needs an explicit projection: onStateChange maps it to
       // generic Starting, and every other lifecycle state is already owned by
       // onStateChange (including active indexing tokens and client_stopped detail).
@@ -1768,12 +1775,6 @@ function createLanguageClientLifecycle(
       if (event.newState === LanguageClientState.Starting) {
         languageClientStartupMetrics.markMilestone('process_started');
         languageClientStartupMetrics.finishServerStart('ok');
-      }
-      if (event.newState === LanguageClientState.Running) {
-        // Record when the server last reached Running so the recovery
-        // arbiter (#7845) can decide whether the prior run was stable long
-        // enough to reset the automatic-restart attempt budget.
-        crashRecoveryArbiter.markRunning(currentCrashGeneration(), Date.now());
       }
       handleClientStateChange(event);
     },
