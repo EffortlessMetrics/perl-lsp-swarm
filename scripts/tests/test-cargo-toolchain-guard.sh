@@ -88,6 +88,9 @@ expect_eq "parse beta strips prerelease" "1.85.0" \
   "$(cargo_guard_parse_version 'cargo 1.85.0-beta.1 (hash 2024-12-01)')"
 expect_eq "parse two-component version" "1.95" \
   "$(cargo_guard_parse_version 'cargo 1.95')"
+expect_eq "parse skips rustup sync progress lines" "1.95.0" \
+  "$(cargo_guard_parse_version 'info: syncing channel updates for 1.95.0-x86_64-unknown-linux-gnu
+cargo 1.95.0 (f2d3ce0bd 2026-03-21)')"
 expect_eq "parse garbage yields empty" "" \
   "$(cargo_guard_parse_version 'this is not cargo output')"
 expect_eq "parse empty yields empty" "" \

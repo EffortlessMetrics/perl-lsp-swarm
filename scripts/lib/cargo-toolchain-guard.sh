@@ -68,10 +68,12 @@ cargo_guard_pin_version() {
   fi
 }
 
-# Extract the dotted version (X.Y[.Z]) from one line of `cargo --version`
-# output. Prints nothing when no version token is present. Pre-release and
-# build suffixes (-nightly, +build) are dropped: 1.96.0-nightly compares as
-# 1.96.0. Usage: cargo_guard_parse_version <output-line>
+# Extract the dotted version (X.Y[.Z]) from `cargo --version` output.
+# Scans every line, because a rustup shim first downloading the pinned
+# toolchain prints progress lines (`info: syncing channel updates ...`)
+# before the real `cargo X.Y.Z ...` line. Prints nothing when no version
+# token is present. Pre-release and build suffixes (-nightly, +build) are
+# dropped: 1.96.0-nightly compares as 1.96.0. Usage: cargo_guard_parse_version <output>
 cargo_guard_parse_version() {
   printf '%s\n' "$1" | awk '
     {
@@ -173,7 +175,7 @@ cargo_toolchain_guard() {
     printf '  fix: repair or remove this cargo from PATH; the workspace needs >= %s.\n' "$required" >&2
     exit "$CARGO_GUARD_EXIT_CODE"
   fi
-  actual="$(cargo_guard_parse_version "${probe%%$'\n'*}")"
+  actual="$(cargo_guard_parse_version "$probe")"
   if [ -z "$actual" ]; then
     printf 'cargo-toolchain-guard: REFUSED: could not read a cargo version from `%s --version` at %s (got: "%s").\n' "cargo" "$resolved" "${probe%%$'\n'*}" >&2
     printf '  fix: point PATH at a real rustup-managed cargo >= %s and retry.\n' "$required" >&2
