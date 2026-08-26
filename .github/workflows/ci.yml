@@ -517,7 +517,7 @@ jobs:
 
       # Note: workspace-wide integration-test compilation is covered by the
       # parallel check-all-targets job (just check-all-targets), which runs
-      # cargo check --workspace --all-targets --locked independently of pr-smoke.
+      # test-profile cargo checks for every workspace target independently of pr-smoke.
       # Adding a redundant fallback here would duplicate that work without gain.
 
   # ── Merge Gate shards: bounded validation lanes for every PR/push ────
@@ -1129,7 +1129,7 @@ jobs:
         if: steps.ux_tests.outcome == 'failure'
         run: exit 1
 
-  # ── Compile All Targets: catch integration-test + bench bit-rot ───────
+  # ── Compile All Targets: catch test-configured target bit-rot ─────────
   check-all-targets:
     name: Compile All Targets (bit-rot guard)
     runs-on: ubuntu-24.04
@@ -1175,7 +1175,7 @@ jobs:
           shared-key: ci-all-targets-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
-      - name: Compile all targets (catches integration-test + bench bit-rot)
+      - name: Compile all targets (catches test-configured target bit-rot)
         run: just check-all-targets
 
       # Required merge surface for #7767/#7796: unit_routed_full only executes via

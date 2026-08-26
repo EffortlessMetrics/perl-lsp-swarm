@@ -59,7 +59,7 @@ CI hasn't broken since their last look).
 | `merge-gate-shards` | 20 min | Bounded merge-gate shards via gate policy (see Section 2) |
 | `merge-gate` | 2 min | Aggregates shard results into the required merge-blocking status |
 | `ux-tests` | 15 min | UX regression suite against live binary |
-| `check-all-targets` | 10 min | `cargo check --workspace --all-targets` (bit-rot guard) |
+| `check-all-targets` | 10 min | `cargo check --workspace --all-targets --profile=test` (test-configured target bit-rot guard) |
 | `lsp-memory-smoke` | 15 min | Memory plateau check against the LSP release binary (advisory, not merge-blocking) |
 
 The `windows-scope`, `windows-canary`, `windows-required`, and `windows-full-guardrails` jobs were removed in #1485 (maintainer directive, 2026-06). See §4.5 — Runner Policy.
@@ -189,7 +189,7 @@ these blocks merge (via the `ci/merge-gate` commit status check):
 |------|----------------|---------|
 | `clippy_full` | `cargo clippy --workspace --lib` + `--bins --no-deps` | Full lint including unwrap/expect ban |
 | `unit_full` | `cargo test --workspace --lib --locked` | All workspace library tests |
-| `compile_all_targets` | `just check-all-targets` | Catch integration-test and bench bit-rot |
+| `compile_all_targets` | `just check-all-targets` | Catch test-configured target bit-rot, including example `#[cfg(test)]` modules |
 | `lsp_smoke` | `cargo test -p perl-lsp-rs --test semantic_definition` | Deterministic LSP integration test |
 | `lsp_tier_a` | CLI smoke + capabilities snapshot + protocol tests | LSP capability correctness |
 | `lsp_tier_b` | Definitions, completion, color, code lens, security, behavioral | LSP core behavior |

@@ -744,10 +744,10 @@ gates:
 
   - name: compile_all_targets
     tier: pr_fast
-    description: "Compile all workspace targets (lib/bin/tests/benches) to catch integration and bench bit-rot; also validates all-features paths"
+    description: "Compile all workspace targets (lib/bin/tests/benches/examples) in test profile to catch target bit-rot; also validates all-features paths"
     required: true
     # NOTE (#4642): this is a COMPILE-ONLY gate — it never runs tests. It catches
-    # build/bit-rot in `tests/` and bench targets but not runtime failures.
+    # build/bit-rot in test-configured targets but not runtime failures.
     command: just check-all-targets
     # Two full-workspace cargo check passes (default + all-features) require more time
     # than the original 180s budget on a fresh CI runner. Aligned with unit_scoped budget.

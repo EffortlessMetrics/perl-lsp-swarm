@@ -84,15 +84,15 @@ pr-fast: _check-tools-basic
     fi
     cargo xtask gates "${args[@]}"
 
-# Compile-only gate: catches integration-test/benchmark bit-rot and also
-# validates feature-gated code paths without incurring full test runtime.
+# Compile-only gate: catches integration-test/benchmark/example-test bit-rot and
+# also validates feature-gated code paths without incurring full test runtime.
 # Matches the workspace excludes used by the rest of the CI gates
 # (tree-sitter-perl, fuzz, archive are excluded from Cargo.toml workspace).
 check-all-targets:
     @echo "Compiling all targets (default features) — bit-rot check..."
-    cargo check --workspace --all-targets --locked
+    cargo check --workspace --all-targets --profile=test --locked
     @echo "Compiling all targets (all features) — deep verification check..."
-    cargo check --workspace --all-targets --all-features --locked
+    cargo check --workspace --all-targets --all-features --profile=test --locked
     @echo "All targets compile clean."
 
 # Scan every tracked file for committed git conflict marker lines.
