@@ -6189,6 +6189,7 @@
 | `schemas/perl_core_harness_target_matrix_index.v1.schema.json` | config | `non-rust-core-harness-target-matrix-index-schema` | compiler |
 | `schemas/perl_core_harness_target_matrix_part.v1.schema.json` | config | `non-rust-core-harness-target-matrix-part-schema` | compiler |
 | `schemas/perl_core_harness_target_topology_drift.v1.schema.json` | config | `non-rust-core-harness-target-topology-drift-schema` | compiler |
+| `schemas/perl_core_harness_upstream_effective_invocation_trace.v1.schema.json` | config | `non-rust-core-harness-upstream-effective-invocation-trace-schema` | compiler |
 | `schemas/perl_core_harness_upstream_runner_discovery.v1.schema.json` | config | `non-rust-core-harness-upstream-runner-discovery-schema` | compiler |
 | `schemas/publication_runtime_identity.v1.schema.json` | config | `non-rust-publication-runtime-identity-schema` | release/ci |
 | `schemas/release_topology.v1.schema.json` | config | `non-rust-release-topology-schema` | release/ci |

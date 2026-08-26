@@ -87,6 +87,60 @@ pub mod observed_discovery {
     pub use validate::{validate_observed_discovery_receipt, validate_receipt_subject_binding};
 }
 
+/// Strict effective-invocation trace contract
+/// (`upstream_effective_invocation_trace.v1`, #12284): one bounded JSONL
+/// frame stream with typed per-field observation states, parent
+/// discovery-receipt re-binding, proven work accounting, deterministic
+/// digests, and the pure #8492 canonical-plan projection adapter.
+/// Representation only: no upstream instrumentation, process execution, or
+/// filesystem interaction.
+pub mod invocation_trace {
+    /// Pure checked adapter to canonical plan projections.
+    #[path = "adapter.rs"]
+    pub mod adapter;
+    /// Strict constructors, payload digests, freshness, and parent adapter.
+    #[path = "build.rs"]
+    pub mod build;
+    /// Strict byte-level frame decoder and row-state derivation.
+    #[path = "decode.rs"]
+    pub mod decode;
+    /// Receipt, frame, field-state, row, subject, and work types.
+    #[path = "model.rs"]
+    pub mod model;
+    /// Fail-closed validation reconstructing frames from retained raw bytes.
+    #[path = "validate.rs"]
+    pub mod validate;
+
+    #[cfg(test)]
+    #[path = "test_support.rs"]
+    pub(crate) mod test_support;
+
+    #[cfg(test)]
+    #[path = "tests.rs"]
+    mod tests;
+
+    pub use adapter::{
+        ExpectedFieldComparison, ExpectedFieldResult, ExpectedInvocationBinding,
+        ExpectedInvocationValues, ProjectionOutcome, ProjectionRejection, compare_expected,
+        project_effective_invocation,
+    };
+    pub use build::{
+        build_invocation_trace_receipt, check_invocation_trace_against, trace_payload_digest,
+        trace_receipt_freshness,
+    };
+    pub use decode::derive_row_state;
+    pub use model::{
+        CanonicalInvocationProjection, CapturePoint, EffectiveInvocationField,
+        EffectiveInvocationFields, EffectiveInvocationRow, EffectiveInvocationTraceReceiptV1,
+        FieldKey, FieldStateCounts, InvocationAuthority, InvocationObservationState,
+        ObservedInvocationTraceInput, ProjectionRecord, ProjectionRejectionKind, RowSubjectBinding,
+        ScriptRole, TaintMode, TestInitClass, TraceHeader, TracePayload, TraceRowDisposition,
+        TraceStreamEnvelope, TraceStreamOutcome, TraceSubjectIdentity, TraceTerminal, TraceWork,
+        UPSTREAM_INVOCATION_TRACE_SCHEMA_VERSION, Utf8Switch,
+    };
+    pub use validate::{validate_invocation_trace_receipt, validate_trace_receipt_subject_binding};
+}
+
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness_types::{
