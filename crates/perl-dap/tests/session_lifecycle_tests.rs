@@ -1572,15 +1572,13 @@ fn test_attach_pid_mode_stop_on_entry_true_emits_stopped_event() {
     // Must receive at least one stopped event with reason "entry"
     let mut found_entry_stop = false;
     for _ in 0..3 {
-        if let Some(DapMessage::Event { event, body, .. }) = wait_for_event(&rx, 100) {
-            if event == "stopped" {
-                if let Some(ref b) = body {
-                    if b.get("reason").and_then(|r| r.as_str()) == Some("entry") {
-                        found_entry_stop = true;
-                        break;
-                    }
-                }
-            }
+        if let Some(DapMessage::Event { event, body, .. }) = wait_for_event(&rx, 100)
+            && event == "stopped"
+            && let Some(ref b) = body
+            && b.get("reason").and_then(|r| r.as_str()) == Some("entry")
+        {
+            found_entry_stop = true;
+            break;
         }
     }
     assert!(found_entry_stop, "stopOnEntry=true must emit a stopped event with reason='entry'");
@@ -1611,15 +1609,14 @@ fn test_attach_pid_mode_stop_on_entry_false_no_entry_event() {
     let mut found_entry_stop = false;
     let mut found_attach_stop = false;
     for _ in 0..3 {
-        if let Some(DapMessage::Event { event, body, .. }) = wait_for_event(&rx, 100) {
-            if event == "stopped" {
-                if let Some(ref b) = body {
-                    match b.get("reason").and_then(|r| r.as_str()) {
-                        Some("entry") => found_entry_stop = true,
-                        Some("attach") => found_attach_stop = true,
-                        _ => {}
-                    }
-                }
+        if let Some(DapMessage::Event { event, body, .. }) = wait_for_event(&rx, 100)
+            && event == "stopped"
+            && let Some(ref b) = body
+        {
+            match b.get("reason").and_then(|r| r.as_str()) {
+                Some("entry") => found_entry_stop = true,
+                Some("attach") => found_attach_stop = true,
+                _ => {}
             }
         }
     }
@@ -1650,14 +1647,12 @@ fn test_attach_pid_mode_default_stop_on_entry_is_false() {
 
     let mut found_entry_stop = false;
     for _ in 0..3 {
-        if let Some(DapMessage::Event { event, body, .. }) = wait_for_event(&rx, 100) {
-            if event == "stopped" {
-                if let Some(ref b) = body {
-                    if b.get("reason").and_then(|r| r.as_str()) == Some("entry") {
-                        found_entry_stop = true;
-                    }
-                }
-            }
+        if let Some(DapMessage::Event { event, body, .. }) = wait_for_event(&rx, 100)
+            && event == "stopped"
+            && let Some(ref b) = body
+            && b.get("reason").and_then(|r| r.as_str()) == Some("entry")
+        {
+            found_entry_stop = true;
         }
     }
     assert!(!found_entry_stop, "Default stopOnEntry must not emit entry-stop event");

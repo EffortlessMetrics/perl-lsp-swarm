@@ -133,12 +133,12 @@ mod dap_golden_transcripts {
                         .get("seq")
                         .and_then(Value::as_i64)
                         .ok_or_else(|| anyhow!("{name}[{idx}] response missing seq"))?;
-                    if let Some(previous) = prev_response_seq {
-                        if seq <= previous {
-                            return Err(anyhow!(
-                                "{name}[{idx}] response seq must be monotonic ({seq} <= {previous})"
-                            ));
-                        }
+                    if let Some(previous) = prev_response_seq
+                        && seq <= previous
+                    {
+                        return Err(anyhow!(
+                            "{name}[{idx}] response seq must be monotonic ({seq} <= {previous})"
+                        ));
                     }
                     prev_response_seq = Some(seq);
 

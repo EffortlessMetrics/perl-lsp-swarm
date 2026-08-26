@@ -15,6 +15,7 @@ use perl_dap::platform::{
 };
 #[cfg(not(windows))]
 use perl_dap::platform::{detect_perlbrew_perl, detect_plenv_perl};
+use perl_tdd_support::{must, must_some};
 use serial_test::serial;
 use std::path::PathBuf;
 
@@ -370,7 +371,7 @@ fn detect_perlbrew_perl_env_var_points_to_valid_binary() -> TestResult {
         std::env::remove_var("PERLBREW_PERL");
         std::env::remove_var("PERLBREW_ROOT");
     }
-    let path = result.expect("should detect perl from perlbrew env vars");
+    let path = must_some(result);
     assert!(path.ends_with("perl"), "should point to perl binary, got: {path:?}");
     assert!(path.exists(), "detected perlbrew perl should exist on disk");
     Ok(())
@@ -415,7 +416,7 @@ fn detect_plenv_perl_env_var_points_to_valid_binary() -> TestResult {
         std::env::remove_var("PLENV_VERSION");
         std::env::remove_var("PLENV_ROOT");
     }
-    let path = result.expect("should detect perl from plenv env vars");
+    let path = must_some(result);
     assert!(path.ends_with("perl"), "should point to perl binary, got: {path:?}");
     assert!(path.exists(), "detected plenv perl should exist on disk");
     Ok(())
@@ -460,7 +461,7 @@ fn resolve_perl_path_with_toolchain_prefers_perlbrew_over_path() -> TestResult {
         std::env::remove_var("PERLBREW_PERL");
         std::env::remove_var("PERLBREW_ROOT");
     }
-    let path = result.expect("should succeed with perlbrew perl");
+    let path = must(result);
     assert!(
         path.to_string_lossy().contains("perl-5.38.0"),
         "should use perlbrew perl, got: {path:?}"
@@ -492,7 +493,7 @@ fn resolve_perl_path_with_toolchain_prefers_plenv_over_path() -> TestResult {
         std::env::remove_var("PLENV_VERSION");
         std::env::remove_var("PLENV_ROOT");
     }
-    let path = result.expect("should succeed with plenv perl");
+    let path = must(result);
     assert!(path.to_string_lossy().contains("5.36.0"), "should use plenv perl, got: {path:?}");
     Ok(())
 }

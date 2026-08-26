@@ -13,6 +13,7 @@
 //! - [`ast`] -- The primary AST used by the current recursive-descent parser.
 //! - [`invariant_policy`] -- Exhaustive range, child, payload, and recovery policy.
 //! - [`invariants`] -- Bounded structural validation shared by parser paths.
+//! - [`kind_schema`] -- Structural `NodeKind` registry: production FieldId membership and field-aware traversal.
 //! - [`v2`] -- Experimental second-generation AST re-exported from `perl-ast-v2`
 //!   for incremental parsing.
 //!
@@ -44,11 +45,11 @@
 //! # Traversal
 //!
 //! [`Node`] exposes `to_sexp()` for a tree-sitter-compatible S-expression and
-//! `count_nodes()` for a quick size metric. [`validate_ast`] uses the canonical
-//! exhaustive child iterator to check source and tree invariants without a
-//! recursive call stack. The policy registry is reconciled directly with
-//! [`NodeKind::ALL_KIND_NAMES`], so a new variant cannot inherit an undocumented
-//! permissive policy.
+//! `count_nodes()` for an exact iterative size metric. [`validate_ast`] uses the
+//! canonical exhaustive child iterator to check source and tree invariants
+//! without a recursive call stack. The policy registry is reconciled directly
+//! with [`NodeKind::ALL_KIND_NAMES`], so a new variant cannot inherit an
+//! undocumented permissive policy.
 //!
 //! # Depth safety
 //!
@@ -56,10 +57,16 @@
 //! chain on a 256 KiB worker does not overflow the thread stack.
 //! Construct/destroy equality is proven at 10,000-node cycle depth, not on
 //! the overflow fixture. [`Clone`] is likewise iterative: a 50,000-node chain
-//! on a 256 KiB worker does not overflow the thread stack. Derived [`Debug`]
-//! and [`PartialEq`] stay recursive: they are supported for ordinary
-//! parser-produced nesting and are not stack-safe for adversarial 50,000-node
-//! chains. See [`Node`] for the operation-by-operation contract.
+//! on a 256 KiB worker does not overflow the thread stack. [`PartialEq`] is
+//! iterative exact structural equality: a 50,000-node chain on a 256 KiB
+//! worker does not overflow the thread stack. [`Debug`] is an iterative
+//! bounded human projection: a 50,000-node chain on a 256 KiB worker does
+//! not overflow the thread stack, output stays under the documented byte
+//! bound, and truncation is visible. Rust [`Debug`] is not machine identity.
+//! Exact whole-tree reads (`count_nodes`, `find_deepest_containing_offset`) are
+//! iterative over the #8424 visit table and do not silently truncate; bounded
+//! variants expose [`AstReadResult`]. [`Node::to_sexp`] remains separately
+//! depth-guarded. See [`Node`] for the operation-by-operation contract.
 
 pub mod ast;
 /// Static classification metadata for [`NodeKind`] variants: categories and flags.
@@ -68,6 +75,12 @@ pub mod classification;
 pub mod invariant_policy;
 /// Bounded structural validation for parser-produced ASTs.
 pub mod invariants;
+/// Shadow `NodeKind` structural registry and check-mode parity checker.
+///
+/// Production FieldId membership and field-aware child traversal are derived
+/// from this module. It does not drive S-expression rendering, generated
+/// status, or schema fingerprint.
+pub mod kind_schema;
 
 /// Incremental parsing AST types extracted into a dedicated microcrate.
 pub use perl_ast_v2 as v2;
@@ -75,7 +88,10 @@ pub use perl_ast_v2 as v2;
 /// Discriminant for the three semantically distinct forms of Perl's `goto` statement.
 pub use ast::GotoTargetForm;
 /// Primary AST node -- the building block of every syntax tree.
-pub use ast::{FieldId, Node, NodeKind};
+pub use ast::{
+    AstReadExact, AstReadInstrumentCause, AstReadLimits, AstReadPath, AstReadPathStep,
+    AstReadResult, AstReadTruncation, AstReadWork, DeepestContainingMatch, FieldId, Node, NodeKind,
+};
 /// Exhaustive AST invariant policy types and registry.
 pub use invariant_policy::{
     AST_NODE_POLICIES, AST_NODE_POLICY_SCHEMA_VERSION, AstChildContainmentPolicy,

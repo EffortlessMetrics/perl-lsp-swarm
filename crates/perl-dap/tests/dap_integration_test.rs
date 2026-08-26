@@ -1,3 +1,7 @@
+#![expect(
+    clippy::print_stderr,
+    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
+)]
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::json;
