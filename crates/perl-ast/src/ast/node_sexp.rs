@@ -314,6 +314,7 @@ impl<'tree, 'write, W: fmt::Write> Renderer<'tree, 'write, W> {
                 if let Some(frame) = self.stack.last_mut() {
                     frame.next_child = frame.next_child.saturating_add(1);
                 }
+                self.check_node_limit()?;
                 let depth = self.descend(parent_depth)?;
                 self.admit_node(depth)?;
                 self.stack.push(Frame {
@@ -388,16 +389,25 @@ impl<'tree, 'write, W: fmt::Write> Renderer<'tree, 'write, W> {
         Ok(())
     }
 
-    fn admit_node(&mut self, depth: usize) -> Result<(), RenderStop> {
-        let next_nodes =
-            self.work.nodes_visited.checked_add(1).ok_or(RenderStop::Instrument(
-                NativeDebugSexpInstrumentCause::WorkCounterOverflow,
-            ))?;
+    fn next_node_count(&self) -> Result<usize, RenderStop> {
+        self.work.nodes_visited.checked_add(1).ok_or(RenderStop::Instrument(
+            NativeDebugSexpInstrumentCause::WorkCounterOverflow,
+        ))
+    }
+
+    fn check_node_limit(&self) -> Result<(), RenderStop> {
+        let next_nodes = self.next_node_count()?;
         if let Some(limit) = self.limits.max_nodes
             && next_nodes > limit
         {
             return Err(RenderStop::Truncated(NativeDebugSexpTruncation::NodeLimit { limit }));
         }
+        Ok(())
+    }
+
+    fn admit_node(&mut self, depth: usize) -> Result<(), RenderStop> {
+        self.check_node_limit()?;
+        let next_nodes = self.next_node_count()?;
         self.charge_work(1)?;
         self.work.nodes_visited = next_nodes;
         if depth > self.work.max_depth {

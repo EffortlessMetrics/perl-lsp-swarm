@@ -455,20 +455,26 @@ fn node_depth_byte_and_work_limits_trip_independently() {
             ..NativeDebugSexpLimits::unbounded()
         },
     ) {
-        NativeDebugSexpResult::Truncated { reason, work, .. } => {
+        NativeDebugSexpResult::Truncated {
+            reason: NativeDebugSexpTruncation::NodeLimit { limit: 1 },
+            work,
+            ..
+        } => {
             assert_eq!(work.nodes_visited, 1);
-            assert!(
-                matches!(
-                    reason,
-                    NativeDebugSexpTruncation::NodeLimit { limit: 1 }
-                        | NativeDebugSexpTruncation::DepthLimit { limit: 0 }
-                ),
-                "first selected bound must be node or depth, got {reason:?}"
+            assert_eq!(
+                work.child_edges_visited, 0,
+                "a child that cannot be admitted must not charge an edge"
             );
         }
         other => assert!(
-            matches!(other, NativeDebugSexpResult::Truncated { .. }),
-            "tight node+depth bounds must Truncate, got {other:?}"
+            matches!(
+                other,
+                NativeDebugSexpResult::Truncated {
+                    reason: NativeDebugSexpTruncation::NodeLimit { limit: 1 },
+                    ..
+                }
+            ),
+            "documented node-then-depth order must trip NodeLimit, got {other:?}"
         ),
     }
 
@@ -803,6 +809,38 @@ fn render_streams_without_requiring_an_intermediate_string() {
         other => assert!(
             matches!(other, NativeDebugSexpResult::Complete { .. }),
             "streamed unbounded render must Complete, got {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn node_limit_precedes_depth_and_does_not_charge_a_rejected_edge() {
+    let chain = deep_chain(2);
+    match chain.render_debug_sexp(
+        &mut String::new(),
+        NativeDebugSexpLimits { max_nodes: Some(1), ..NativeDebugSexpLimits::unbounded() },
+    ) {
+        NativeDebugSexpResult::Truncated {
+            reason: NativeDebugSexpTruncation::NodeLimit { limit: 1 },
+            work,
+            ..
+        } => {
+            assert_eq!(work.nodes_visited, 1);
+            assert_eq!(
+                work.child_edges_visited, 0,
+                "node capacity must be checked before descend charges an edge"
+            );
+            assert_eq!(work.max_depth, 0);
+        }
+        other => assert!(
+            matches!(
+                other,
+                NativeDebugSexpResult::Truncated {
+                    reason: NativeDebugSexpTruncation::NodeLimit { limit: 1 },
+                    ..
+                }
+            ),
+            "max_nodes=1 must trip NodeLimit before any child edge, got {other:?}"
         ),
     }
 }
