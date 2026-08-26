@@ -459,19 +459,22 @@ fn assemble_item(
         range: draft.range,
         framework: request.framework.cloned(),
         confidence: confidence_for(request.parse_status),
-        capabilities: capabilities_for(draft.kind),
+        capabilities: capabilities_for(draft.kind, request.file_role),
         limitations: draft.limitations,
     }
 }
 
-fn capabilities_for(kind: TestItemKind) -> TestItemCapabilities {
+fn capabilities_for(kind: TestItemKind, file_role: FileRole) -> TestItemCapabilities {
     match kind {
-        TestItemKind::File => TestItemCapabilities {
-            runnable: true,
-            debuggable: true,
-            focusable: false,
-            selectively_runnable: false,
-        },
+        TestItemKind::File => {
+            let recognized_test_file = file_role == FileRole::Test;
+            TestItemCapabilities {
+                runnable: recognized_test_file,
+                debuggable: recognized_test_file,
+                focusable: false,
+                selectively_runnable: false,
+            }
+        }
         TestItemKind::Subtest | TestItemKind::NamedSubroutine => TestItemCapabilities {
             runnable: false,
             debuggable: false,
@@ -519,7 +522,7 @@ fn collect_subtest_calls(
         out.push(call);
         return;
     }
-    for child in structural_children(node) {
+    for child in node.children() {
         collect_subtest_calls(child, source, index, source_len, names, out);
     }
 }
@@ -621,11 +624,15 @@ fn is_subtest_call_name(name: &str, names: SubtestNameSet) -> bool {
             }
             match prefix {
                 None => true,
-                Some(prefix) if prefix == "Test::More" || prefix.starts_with("Test2") => true,
+                Some(prefix) if is_reviewed_qualified_subtest_prefix(prefix) => true,
                 Some(_) => false,
             }
         }
     }
+}
+
+fn is_reviewed_qualified_subtest_prefix(prefix: &str) -> bool {
+    prefix == "Test::More" || prefix == "Test2" || prefix.starts_with("Test2::")
 }
 
 fn is_conservative_test_sub_name(name: &str) -> bool {
@@ -650,7 +657,7 @@ fn subtest_name_from_arg(arg: &Node) -> TestItemName {
     match &arg.kind {
         NodeKind::String { value, interpolated } => {
             let unquoted = strip_string_quotes(value);
-            if unquoted.is_empty() || (*interpolated && unquoted.contains('$')) {
+            if unquoted.is_empty() || (*interpolated && interpolates_in_double_quotes(unquoted)) {
                 TestItemName::Dynamic
             } else {
                 TestItemName::Named(unquoted.to_string())
@@ -661,6 +668,10 @@ fn subtest_name_from_arg(arg: &Node) -> TestItemName {
         }
         _ => TestItemName::Dynamic,
     }
+}
+
+fn interpolates_in_double_quotes(unquoted: &str) -> bool {
+    unquoted.contains('$') || unquoted.contains('@')
 }
 
 fn strip_string_quotes(value: &str) -> &str {
@@ -691,43 +702,6 @@ fn span_range(
         return None;
     }
     Some(index.source_range(start, end))
-}
-
-fn structural_children(node: &Node) -> Vec<&Node> {
-    match &node.kind {
-        NodeKind::Program { statements } | NodeKind::Block { statements } => {
-            statements.iter().collect()
-        }
-        NodeKind::ExpressionStatement { expression } => vec![expression.as_ref()],
-        NodeKind::FunctionCall { args, .. } => args.iter().collect(),
-        NodeKind::Subroutine { body, .. } => vec![body.as_ref()],
-        NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
-            let mut children: Vec<&Node> = vec![condition.as_ref(), then_branch.as_ref()];
-            for (cond, branch) in elsif_branches {
-                children.push(cond.as_ref());
-                children.push(branch.as_ref());
-            }
-            if let Some(else_branch) = else_branch {
-                children.push(else_branch.as_ref());
-            }
-            children
-        }
-        NodeKind::While { condition, body, .. } => vec![condition.as_ref(), body.as_ref()],
-        NodeKind::For { condition, body, .. } => {
-            let mut children = Vec::new();
-            if let Some(condition) = condition {
-                children.push(condition.as_ref());
-            }
-            children.push(body.as_ref());
-            children
-        }
-        NodeKind::Foreach { list, body, .. } => vec![list.as_ref(), body.as_ref()],
-        NodeKind::StatementModifier { statement, condition, .. } => {
-            vec![statement.as_ref(), condition.as_ref()]
-        }
-        NodeKind::Package { block: Some(block), .. } => vec![block.as_ref()],
-        _ => Vec::new(),
-    }
 }
 
 fn parser_backed_from_call(call: SubtestCall) -> ParserBackedSubtest {

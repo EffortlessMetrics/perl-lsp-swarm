@@ -459,9 +459,11 @@ impl TestItemSnapshot {
     /// Deterministic fingerprint over identity and discovery facts.
     ///
     /// Source digest and generation are included so two generations of the same
-    /// tree remain distinct even when item IDs are stable. The value is not a
-    /// publication grant: [`Self::may_replace`] still requires a strictly newer
-    /// generation of the same logical source.
+    /// tree remain distinct even when item IDs are stable. Framework identity
+    /// and confidence are hashed because snapshot diff treats both as semantic
+    /// discovery facts. The value is not a publication grant:
+    /// [`Self::may_replace`] still requires a strictly newer generation of the
+    /// same logical source.
     #[must_use]
     pub fn fingerprint(&self) -> String {
         let mut hasher = Sha256::new();
@@ -493,6 +495,8 @@ impl TestItemSnapshot {
                 update_hash_field(&mut hasher, b"name_range");
                 update_range(&mut hasher, name_range);
             }
+            hash_framework(&mut hasher, item.framework.as_ref());
+            update_hash_field(&mut hasher, confidence_fingerprint_tag(item.confidence));
             update_hash_field(&mut hasher, &[u8::from(item.capabilities.runnable)]);
             update_hash_field(&mut hasher, &[u8::from(item.capabilities.debuggable)]);
             update_hash_field(&mut hasher, &[u8::from(item.capabilities.focusable)]);
@@ -623,6 +627,41 @@ fn valid_range(range: SourceRange, source_len: u32) -> bool {
 
 fn span_len(range: SourceRange) -> u32 {
     range.end_byte.saturating_sub(range.start_byte)
+}
+
+fn hash_framework(hasher: &mut Sha256, framework: Option<&TestFrameworkIdentity>) {
+    match framework {
+        None => update_hash_field(hasher, b"framework:none"),
+        Some(framework) => {
+            update_hash_field(hasher, b"framework:some");
+            update_hash_field(hasher, framework.family.as_bytes());
+            hash_optional_text(hasher, b"module:none", b"module:some", framework.module.as_deref());
+            hash_optional_text(
+                hasher,
+                b"version:none",
+                b"version:some",
+                framework.version.as_deref(),
+            );
+        }
+    }
+}
+
+fn hash_optional_text(hasher: &mut Sha256, none_tag: &[u8], some_tag: &[u8], value: Option<&str>) {
+    match value {
+        None => update_hash_field(hasher, none_tag),
+        Some(value) => {
+            update_hash_field(hasher, some_tag);
+            update_hash_field(hasher, value.as_bytes());
+        }
+    }
+}
+
+fn confidence_fingerprint_tag(confidence: Confidence) -> &'static [u8] {
+    match confidence {
+        Confidence::High => b"confidence:high",
+        Confidence::Medium => b"confidence:medium",
+        Confidence::Low => b"confidence:low",
+    }
 }
 
 fn update_range(hasher: &mut Sha256, range: SourceRange) {
@@ -1367,6 +1406,23 @@ mod tests {
         assert_eq!(first.fingerprint(), second.fingerprint());
         let newer = snapshot(8)?;
         assert_ne!(first.fingerprint(), newer.fingerprint());
+        Ok(())
+    }
+
+    #[test]
+    fn fingerprint_changes_when_framework_or_confidence_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let first = snapshot(7)?;
+        let mut framework_changed = first.clone();
+        framework_changed.items[0].framework = Some(TestFrameworkIdentity {
+            family: "test_more".to_string(),
+            module: Some("Test::More".to_string()),
+            version: None,
+        });
+        assert_ne!(first.fingerprint(), framework_changed.fingerprint());
+        let mut confidence_changed = first.clone();
+        confidence_changed.items[0].confidence = Confidence::Low;
+        assert_ne!(first.fingerprint(), confidence_changed.fingerprint());
         Ok(())
     }
 

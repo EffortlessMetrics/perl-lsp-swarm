@@ -428,6 +428,96 @@ fn failed_parse_emits_file_item_only() {
 }
 
 #[test]
+fn unrecognized_file_role_is_not_runnable_or_debuggable() {
+    let source = "subtest 'x' => sub { ok(1); };\n";
+    for role in [FileRole::Lib, FileRole::Script, FileRole::Unknown] {
+        let ast = parse(source);
+        let snapshot = discover_test_item_snapshot(&TestItemDiscoveryRequest {
+            source_ref: &source_ref(1),
+            source,
+            generation: 1,
+            ast: &ast,
+            parse_status: ParseStatus::Clean,
+            display_name: "lib/Example.pm",
+            file_role: role,
+            framework: None,
+            named_subroutine_policy: NamedSubroutinePolicy::Off,
+        })
+        .expect("unrecognized-role discovery must still validate");
+        let file = snapshot.items.iter().find(|item| item.kind == TestItemKind::File).expect("file");
+        assert!(
+            !file.capabilities.runnable && !file.capabilities.debuggable,
+            "{role:?} must not advertise Run/Debug"
+        );
+        assert!(file.limitations.iter().any(|limit| limit == "unrecognized_test_file"));
+        assert!(
+            snapshot.items.iter().any(|item| {
+                item.kind == TestItemKind::Subtest
+                    && item.name == TestItemName::Named("x".to_string())
+            }),
+            "{role:?} still discovers structure"
+        );
+    }
+}
+
+#[test]
+fn fingerprint_changes_when_framework_identity_changes() {
+    let source = "subtest 'x' => sub { ok(1); };\n";
+    let more = TestFrameworkIdentity {
+        family: "test_more".to_string(),
+        module: Some("Test::More".to_string()),
+        version: None,
+    };
+    let test2 = TestFrameworkIdentity {
+        family: "test2".to_string(),
+        module: Some("Test2::V0".to_string()),
+        version: None,
+    };
+    let first = discover(source, 1, &source_ref(1), NamedSubroutinePolicy::Off, Some(&more));
+    let second = discover(source, 1, &source_ref(1), NamedSubroutinePolicy::Off, Some(&test2));
+    let again = discover(source, 1, &source_ref(1), NamedSubroutinePolicy::Off, Some(&more));
+    assert_ne!(first.fingerprint(), second.fingerprint());
+    assert_eq!(first.fingerprint(), again.fingerprint());
+}
+
+#[test]
+fn subtest_in_assignment_and_return_is_discovered() {
+    let source = "my $passed = subtest 'assigned' => sub { ok(1); };\nreturn subtest 'returned' => sub { ok(1); };\n";
+    let snapshot = discover(source, 1, &source_ref(1), NamedSubroutinePolicy::Off, None);
+    let names = names(&snapshot);
+    assert!(names.contains(&TestItemName::Named("assigned".to_string())));
+    assert!(names.contains(&TestItemName::Named("returned".to_string())));
+}
+
+#[test]
+fn unrelated_test2_prefix_packages_are_not_subtests() {
+    let source = concat!(
+        "Test2Fake::subtest('fake' => sub { ok(1); });\n",
+        "Test20::subtest('twenty' => sub { ok(1); });\n",
+        "Test2::Tools::Subtest::subtest('real' => sub { ok(1); });\n",
+    );
+    let snapshot = discover(source, 1, &source_ref(1), NamedSubroutinePolicy::Off, None);
+    let names = names(&snapshot);
+    assert!(!names.contains(&TestItemName::Named("fake".to_string())));
+    assert!(!names.contains(&TestItemName::Named("twenty".to_string())));
+    assert!(names.contains(&TestItemName::Named("real".to_string())));
+}
+
+#[test]
+fn array_interpolation_in_double_quoted_name_is_dynamic() {
+    let source =
+        "subtest \"cases @names\" => sub { ok(1); };\nsubtest 'cases @names' => sub { ok(1); };\n";
+    let snapshot = discover(source, 1, &source_ref(1), NamedSubroutinePolicy::Off, None);
+    let subtests: Vec<_> =
+        snapshot.items.iter().filter(|item| item.kind == TestItemKind::Subtest).collect();
+    assert_eq!(subtests.len(), 2);
+    assert_eq!(subtests[0].name, TestItemName::Dynamic);
+    assert!(subtests[0].limitations.iter().any(|limit| limit == "dynamic_name"));
+    assert_eq!(subtests[1].name, TestItemName::Named("cases @names".to_string()));
+    assert!(!subtests[1].limitations.iter().any(|limit| limit == "dynamic_name"));
+}
+
+#[test]
 fn empty_display_name_is_rejected() {
     let source = "ok(1);\n";
     let ast = parse(source);
