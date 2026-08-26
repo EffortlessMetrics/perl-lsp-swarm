@@ -385,12 +385,11 @@ impl<'a> Parser<'a> {
     #[inline]
     fn check_cancelled(&mut self) -> ParseResult<()> {
         self.cancellation_check_counter = self.cancellation_check_counter.wrapping_add(1);
-        if self.cancellation_check_counter & 63 == 0 {
-            if let Some(ref flag) = self.cancellation_flag {
-                if flag.load(Ordering::Relaxed) {
-                    return Err(ParseError::Cancelled);
-                }
-            }
+        if self.cancellation_check_counter & 63 == 0
+            && let Some(ref flag) = self.cancellation_flag
+            && flag.load(Ordering::Relaxed)
+        {
+            return Err(ParseError::Cancelled);
         }
         Ok(())
     }
@@ -452,10 +451,10 @@ impl<'a> Parser<'a> {
         // at-EOF parse as truncated.
         self.ok_path_stop_cause = None;
         // Check cancellation before starting — handles pre-set flags immediately.
-        if let Some(ref flag) = self.cancellation_flag {
-            if flag.load(Ordering::Relaxed) {
-                return Err(ParseError::Cancelled);
-            }
+        if let Some(ref flag) = self.cancellation_flag
+            && flag.load(Ordering::Relaxed)
+        {
+            return Err(ParseError::Cancelled);
         }
         self.parse_program()
     }
