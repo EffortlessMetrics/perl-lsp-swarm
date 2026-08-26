@@ -282,6 +282,80 @@ jobs:
             exit 1
           fi
 
+      # ------------------------------------------------------------------
+      # #11401 host-reopen lifecycle journey: buffer close/reopen, full Vim
+      # exit and replacement launch, workspace not-exposed disposition,
+      # identity-bound cancellation, late-result rejection, finite repeated
+      # sessions, normal terminal cleanup, and forced-failure cleanup over
+      # one shared governed fixture (#11387 cells only).
+      # ------------------------------------------------------------------
+      - name: Run the #11401 host-reopen lifecycle journey (canonical)
+        run: >-
+          cargo run --quiet --locked -p xtask --
+          editor-compat vim run
+          --subject pinned_vim_lsp_upstream
+          --journey host-reopen-lifecycle
+          --fixture-variant canonical
+          --vim "$(command -v vim)"
+          --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"
+          --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"
+          --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-canonical"
+          --timeout-ms 420000
+
+      - name: Bind the eight lifecycle cells (fail closed on any non-pass)
+        run: |
+          set -euo pipefail
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-canonical/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          cleanup="$(jq -r '.process_cleanup' "${receipt}")"
+          echo "host-reopen-lifecycle result: ${result} (cleanup: ${cleanup})"
+          [ "${result}" = "pass" ]
+          [ "${cleanup}" = "pass" ]
+          for cell in \
+            vim.vim_lsp.lifecycle.buffer_reopen \
+            vim.vim_lsp.lifecycle.host_reopen \
+            vim.vim_lsp.lifecycle.workspace_or_session_reopen \
+            vim.vim_lsp.lifecycle.cancellation \
+            vim.vim_lsp.lifecycle.late_result_rejected \
+            vim.vim_lsp.lifecycle.repeated_sessions \
+            vim.vim_lsp.lifecycle.normal_cleanup \
+            vim.vim_lsp.lifecycle.failure_cleanup; do
+            observed="$(jq -r --arg id "${cell}" '.journey[] | select(.id == $id) | .result' "${receipt}")"
+            echo "cell ${cell}: ${observed}"
+            [ "${observed}" = "pass" ]
+          done
+          [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-canonical/hermetic/raw/vim-lsp-client.log" ]
+
+      - name: Lifecycle negative control — server restart must fail typed
+        run: |
+          set -euo pipefail
+          # The required false subject: satisfying host replacement through a
+          # server restart inside one host must fail with the typed reason.
+          cargo run --quiet --locked -p xtask -- \
+            editor-compat vim run \
+            --subject pinned_vim_lsp_upstream \
+            --journey host-reopen-lifecycle \
+            --fixture-variant server_restart_relabel \
+            --vim "$(command -v vim)" \
+            --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject" \
+            --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp" \
+            --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-server-restart-relabel" \
+            --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-server-restart-relabel/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          reason="$(jq -r '.failure_reason' "${receipt}")"
+          echo "server_restart_relabel control result: ${result} (${reason})"
+          [ "${result}" = "fail" ]
+          [ "${reason}" = "host_replacement_absent" ]
+
+      - name: Prove no candidate process survives the lifecycle journeys
+        run: |
+          if pgrep -f '[p]erllsp([[:space:]]|$)' >/dev/null; then
+            echo "a perllsp process survived the lifecycle host runs" >&2
+            pgrep -af '[p]erllsp([[:space:]]|$)' >&2 || true
+            exit 1
+          fi
+
       - name: Upload the run evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -307,4 +381,8 @@ jobs:
             target/vim-host-runs/ci/freshness-live-reload-claimed/hermetic/artifacts/
             target/vim-host-runs/ci/freshness-ambient-path/receipt.json
             target/vim-host-runs/ci/freshness-ambient-path/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-canonical/receipt.json
+            target/vim-host-runs/ci/lifecycle-canonical/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-server-restart-relabel/receipt.json
+            target/vim-host-runs/ci/lifecycle-server-restart-relabel/hermetic/artifacts/
           if-no-files-found: warn

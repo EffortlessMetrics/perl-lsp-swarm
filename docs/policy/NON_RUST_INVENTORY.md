@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12070 |
-| Rust-family files | 3680 |
-| Non-Rust files | 8390 |
-| Allowlisted | 6144 |
+| Total tracked files | 12077 |
+| Rust-family files | 3683 |
+| Non-Rust files | 8394 |
+| Allowlisted | 6148 |
 | Unclassified | 2246 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 440 |
-| documentation | 2742 |
+| documentation | 2743 |
 | generated | 2 |
 | production | 328 |
 | test | 2020 |
-| tooling | 612 |
+| tooling | 615 |
 | unclassified | 2246 |
 
 ## Unclassified files
@@ -2343,6 +2343,7 @@
 | `.changes/unreleased/product-12639-Fixed-235500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12641-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12765-Changed-154500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -6318,6 +6319,7 @@
 | `scripts/ci/dap_editor_transport_inventory.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_editor_transport_scan.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_editor_transport_schema.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/dap_editor_transport_security.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_protocol_authority.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_scorecard_model.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_scorecard_packet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6590,6 +6592,7 @@
 | `scripts/test/vim-host-diagnostics-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-freshness-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-host-lifecycle-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_iterative_parser.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6665,6 +6668,7 @@
 | `scripts/tests/test-windows-fresh-path-oracle.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-worktree-manager.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test_dap_editor_transport_inventory.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test_dap_editor_transport_security.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test_dap_protocol_authority.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test_dap_scorecard_packet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test_dap_scorecard_runtime.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
