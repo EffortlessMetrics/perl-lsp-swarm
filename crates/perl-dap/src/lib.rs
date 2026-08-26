@@ -28,8 +28,8 @@
 //! perl-dap --stdio
 //! ```
 //!
-//! Editor TCP (`--socket` / editor `--port`) is scheduled retirement (#10565)
-//! and is not a supported product run mode.
+//! Native editor TCP (`--socket` / editor `--port`) is retired. The flags remain
+//! only as a deprecated wrapper around `--external-peer` editor I/O (#10566).
 //!
 //! # Programmatic launch
 //!
@@ -184,7 +184,7 @@ pub use configuration::{
     create_launch_json_snippet,
 };
 pub use debug_adapter::{DapMessage, DebugAdapter};
-pub use server::{DapConfig, DapMode, DapServer, DapSocketBindError};
+pub use server::{DapConfig, DapMode, DapServer};
 
 pub use breakpoints::{BreakpointRecord, BreakpointStore, interpolate_logpoint_message};
 pub use protocol::{
