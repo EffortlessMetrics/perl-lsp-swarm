@@ -58,6 +58,11 @@ pub mod observed_discovery {
     /// Strict constructors, payload digests, freshness, and matrix adapter.
     #[path = "build.rs"]
     pub mod build;
+    /// Exact supervised `t/TEST` capture route producing strict receipts
+    /// (#12283): selector argv from target-contract authority, one bounded
+    /// supervised process, byte-exact envelopes, and #12281 receipt assembly.
+    #[path = "capture.rs"]
+    pub mod capture;
     /// Strict byte-level stream decoder and observation-state derivation.
     #[path = "decode.rs"]
     pub mod decode;
@@ -76,7 +81,12 @@ pub mod observed_discovery {
         build_observed_discovery_receipt, check_observed_discovery_against,
         discovery_payload_digest, receipt_freshness,
     };
+    pub use capture::{ObserveDiscoveryConfig, observe_discovery, observe_discovery_command};
     pub use decode::derive_observation_state;
+    // The runner-plan vocabulary is already part of this module's public
+    // payload types; re-export the two enums external consumers need to build
+    // or inspect receipts without reaching into the crate-private module.
+    pub use crate::runner_model::{DiscoveryFrame, RunnerKind};
     pub use model::{
         DiscoveryObservationState, DiscoveryPayload, DiscoverySubjectIdentity, EnvironmentIdentity,
         EvidenceClass, InvocationObservation, LineFraming, MemberDisposition,
@@ -667,7 +677,7 @@ pub fn validate_current_authority(config: CurrentAuthorityConfig) -> Result<Curr
         )?;
         validate_publication_scope(&config.repository_root, &lineage)?;
         if !lineage_paths.insert(relative_path.clone()) {
-            bail!("duplicate landed lineage path {}", path.display());
+            bail!("duplicate landed lineage path");
         }
         lineages.push((relative_path, lineage));
     }
@@ -1106,23 +1116,79 @@ fn validate_digest(value: &str, label: &str) -> Result<()> {
 }
 
 fn repository_relative_path(root: &Path, path: &Path) -> Result<String> {
+    let raw_path = path.to_string_lossy().replace('\\', "/");
+    if raw_path.split('/').any(|component| component == "..") {
+        bail!("repository-relative path contains a traversal component");
+    }
+
     let root = normalize_windows_extended_path(
         &fs::canonicalize(root)
-            .with_context(|| format!("canonicalizing repository root {}", root.display()))?,
+            .map_err(|_| color_eyre::eyre::eyre!("repository root could not be resolved"))?,
     );
+    let candidate_input = if path.is_absolute() { path.to_path_buf() } else { root.join(path) };
+    if path_has_link_component(&candidate_input) {
+        bail!("repository path contains a link or reparse point");
+    }
     let candidate =
-        if path.is_absolute() { normalize_windows_extended_path(path) } else { root.join(path) };
-    let relative = candidate.strip_prefix(&root).map_err(|_| {
-        color_eyre::eyre::eyre!("path {} is outside repository {}", path.display(), root.display())
-    })?;
+        normalize_windows_extended_path(&canonicalize_existing_prefix(&candidate_input)?);
+    let relative = candidate
+        .strip_prefix(&root)
+        .map_err(|_| color_eyre::eyre::eyre!("repository path is outside the repository"))?;
     let relative = relative.to_string_lossy().replace('\\', "/");
     validate_public_path(&relative, "repository-relative path")?;
     Ok(relative)
 }
 
+fn path_has_link_component(path: &Path) -> bool {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        let Ok(metadata) = fs::symlink_metadata(&current) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+
+            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn canonicalize_existing_prefix(path: &Path) -> Result<PathBuf> {
+    let mut existing = path.to_path_buf();
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        let Some(component) = existing.file_name() else {
+            bail!("repository path could not be resolved");
+        };
+        missing.push(component.to_os_string());
+        if !existing.pop() {
+            bail!("repository path could not be resolved");
+        }
+    }
+
+    let mut canonical = fs::canonicalize(&existing)
+        .map_err(|_| color_eyre::eyre::eyre!("repository path could not be resolved"))?;
+    for component in missing.iter().rev() {
+        canonical.push(component);
+    }
+    Ok(canonical)
+}
+
 fn normalize_windows_extended_path(path: &Path) -> PathBuf {
     let value = path.to_string_lossy();
-    PathBuf::from(value.strip_prefix("\\\\?\\").unwrap_or(&value))
+    if let Some(stripped) = value.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{stripped}"));
+    }
+    PathBuf::from(value.strip_prefix(r"\\?\").unwrap_or(&value))
 }
 
 /// Load one or more independently identified compatibility series from typed
@@ -5686,6 +5752,166 @@ mod tests {
             validate_public_path(value, "parity probe")?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn repository_relative_path_canonicalizes_existing_candidates() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("repository");
+        let nested = root.join(".ci").join("perl-core-harness");
+        fs::create_dir_all(&nested)?;
+        let index = nested.join("current-authority.json");
+        fs::write(&index, "{}")?;
+
+        assert_eq!(
+            repository_relative_path(&root, &index)?,
+            ".ci/perl-core-harness/current-authority.json"
+        );
+        assert_eq!(
+            repository_relative_path(
+                &root,
+                Path::new(".ci/perl-core-harness/current-authority.json")
+            )?,
+            ".ci/perl-core-harness/current-authority.json"
+        );
+        assert_eq!(
+            repository_relative_path(&root, Path::new(".ci/perl-core-harness/future.json"))?,
+            ".ci/perl-core-harness/future.json"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repository_relative_path_rejects_traversal_before_canonicalization() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("repository");
+        fs::create_dir_all(&root)?;
+        let inside = root.join("inside.json");
+        fs::write(&inside, "{}")?;
+
+        assert!(
+            repository_relative_path(&root, Path::new("nested/../inside.json")).is_err(),
+            "raw traversal syntax must remain rejected"
+        );
+        assert!(
+            repository_relative_path(&root, &root.join("nested").join("..").join("inside.json"))
+                .is_err(),
+            "absolute paths with raw traversal syntax must remain rejected"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repository_relative_path_rejects_existing_outside_candidates() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("repository");
+        fs::create_dir_all(&root)?;
+        let outside = temp.path().join("outside.json");
+        fs::write(&outside, "{}")?;
+
+        assert!(
+            repository_relative_path(&root, &outside).is_err(),
+            "canonicalized candidates outside the root must remain rejected"
+        );
+        let error = repository_relative_path(&root, &outside).expect_err("outside path must fail");
+        let temp_path = temp.path().to_string_lossy().into_owned();
+        assert!(
+            !error.to_string().contains(&temp_path),
+            "outside path error disclosed a host path: {error}"
+        );
+        let missing_root = temp.path().join("missing-root");
+        let error = repository_relative_path(&missing_root, Path::new("artifact.json"))
+            .expect_err("missing root must fail");
+        assert!(
+            !error.to_string().contains(&temp_path),
+            "missing-root error disclosed a host path: {error}"
+        );
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn repository_relative_path_accepts_windows_alias_candidates() -> TestResult {
+        use std::iter::once;
+        use std::os::windows::ffi::OsStrExt;
+
+        use winapi::um::fileapi::GetShortPathNameW;
+
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("repository");
+        let nested = root.join(".ci").join("perl-core-harness");
+        fs::create_dir_all(&nested)?;
+        let index = nested.join("current-authority.json");
+        fs::write(&index, "{}")?;
+
+        let case_variant = PathBuf::from(root.to_string_lossy().to_ascii_uppercase())
+            .join(".CI")
+            .join("PERL-CORE-HARNESS")
+            .join("CURRENT-AUTHORITY.JSON");
+        assert_eq!(
+            repository_relative_path(&root, &case_variant)?,
+            ".ci/perl-core-harness/current-authority.json"
+        );
+
+        let input: Vec<u16> = root.as_os_str().encode_wide().chain(once(0)).collect();
+        let mut buffer = vec![0u16; 32_768];
+        // SAFETY: `input` and `buffer` are valid, NUL-terminated/writable
+        // UTF-16 buffers with their declared capacity.
+        let length =
+            unsafe { GetShortPathNameW(input.as_ptr(), buffer.as_mut_ptr(), buffer.len() as u32) };
+        if length > 0 && (length as usize) < buffer.len() {
+            let short_root = PathBuf::from(String::from_utf16_lossy(&buffer[..length as usize]));
+            if short_root != root {
+                let short_candidate =
+                    short_root.join(".CI").join("PERL-CORE-HARNESS").join("CURRENT-AUTHORITY.JSON");
+                assert_eq!(
+                    repository_relative_path(&root, &short_candidate)?,
+                    ".ci/perl-core-harness/current-authority.json"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repository_relative_path_rejects_symlink_escape() -> TestResult {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("repository");
+        fs::create_dir_all(&root)?;
+        let outside = temp.path().join("outside.json");
+        fs::write(&outside, "{}")?;
+        let link = root.join("linked.json");
+        symlink(&outside, &link)?;
+
+        assert!(
+            repository_relative_path(&root, &link).is_err(),
+            "canonicalized symlink targets outside the root must remain rejected"
+        );
+
+        let inside = root.join("inside.json");
+        fs::write(&inside, "{}")?;
+        let inside_link = root.join("inside-link.json");
+        symlink(&inside, &inside_link)?;
+        assert!(
+            repository_relative_path(&root, &inside_link).is_err(),
+            "in-root symlinks must be rejected to preserve Git path identity"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_windows_extended_path_handles_drive_and_unc_prefixes() {
+        assert_eq!(
+            normalize_windows_extended_path(Path::new(r"\\?\C:\repo\artifact.json")),
+            PathBuf::from(r"C:\repo\artifact.json")
+        );
+        assert_eq!(
+            normalize_windows_extended_path(Path::new(r"\\?\UNC\server\share\artifact.json")),
+            PathBuf::from(r"\\server\share\artifact.json")
+        );
     }
 
     /// #6882 acceptance: a public failure message must not republish the
