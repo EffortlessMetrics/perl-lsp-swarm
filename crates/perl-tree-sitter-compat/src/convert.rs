@@ -17,7 +17,10 @@ pub enum TreeError {
         /// Byte offset recorded by the native parser, when that failure carries one.
         offset: Option<usize>,
         /// Native parser error variant token (`syntax_error`, `nesting_too_deep`, …).
-        kind: &'static str,
+        ///
+        /// Future `ParseError` variants that this adapter has not named yet are
+        /// projected as `unknown:{native Debug}` so they do not collapse together.
+        kind: String,
     },
 }
 
@@ -40,23 +43,23 @@ fn tree_error_from_parse_error(error: ParseError) -> TreeError {
     TreeError::ParseFailed { offset: error.location(), kind: parse_error_kind(&error) }
 }
 
-fn parse_error_kind(error: &ParseError) -> &'static str {
+fn parse_error_kind(error: &ParseError) -> String {
     match error {
-        ParseError::UnexpectedEof => "unexpected_eof",
-        ParseError::UnexpectedToken { .. } => "unexpected_token",
-        ParseError::SyntaxError { .. } => "syntax_error",
-        ParseError::Advisory { .. } => "advisory",
-        ParseError::LexerError { .. } => "lexer_error",
-        ParseError::RecursionLimit => "recursion_limit",
-        ParseError::RecursionDepthExhausted { .. } => "recursion_depth_exhausted",
-        ParseError::InvalidNumber { .. } => "invalid_number",
-        ParseError::InvalidString => "invalid_string",
-        ParseError::UnclosedDelimiter { .. } => "unclosed_delimiter",
-        ParseError::InvalidRegex { .. } => "invalid_regex",
-        ParseError::NestingTooDeep { .. } => "nesting_too_deep",
-        ParseError::Cancelled => "cancelled",
-        ParseError::Recovered { .. } => "recovered",
-        _ => "unknown",
+        ParseError::UnexpectedEof => "unexpected_eof".to_owned(),
+        ParseError::UnexpectedToken { .. } => "unexpected_token".to_owned(),
+        ParseError::SyntaxError { .. } => "syntax_error".to_owned(),
+        ParseError::Advisory { .. } => "advisory".to_owned(),
+        ParseError::LexerError { .. } => "lexer_error".to_owned(),
+        ParseError::RecursionLimit => "recursion_limit".to_owned(),
+        ParseError::RecursionDepthExhausted { .. } => "recursion_depth_exhausted".to_owned(),
+        ParseError::InvalidNumber { .. } => "invalid_number".to_owned(),
+        ParseError::InvalidString => "invalid_string".to_owned(),
+        ParseError::UnclosedDelimiter { .. } => "unclosed_delimiter".to_owned(),
+        ParseError::InvalidRegex { .. } => "invalid_regex".to_owned(),
+        ParseError::NestingTooDeep { .. } => "nesting_too_deep".to_owned(),
+        ParseError::Cancelled => "cancelled".to_owned(),
+        ParseError::Recovered { .. } => "recovered".to_owned(),
+        other => format!("unknown:{other:?}"),
     }
 }
 
@@ -134,21 +137,33 @@ mod tests {
 
     #[test]
     fn parse_failed_payload_distinguishes_located_native_errors() {
+        // Mapper-level offset proof: `ParseError::syntax` carries a location, but
+        // `Parser::parse()` currently returns `Err` only for budget failures whose
+        // `location()` is `None`. Live `parse_to_tree` discrimination is the
+        // adapter integration test (kind, and offset when the native error has one).
         let early = tree_error_from_parse_error(ParseError::syntax("early failure", 3));
         let late = tree_error_from_parse_error(ParseError::syntax("late failure", 19));
         assert_ne!(early, late, "same kind at different offsets must remain distinct");
-        assert_eq!(early, TreeError::ParseFailed { offset: Some(3), kind: "syntax_error" });
-        assert_eq!(late, TreeError::ParseFailed { offset: Some(19), kind: "syntax_error" });
+        assert_eq!(
+            early,
+            TreeError::ParseFailed { offset: Some(3), kind: "syntax_error".to_owned() }
+        );
+        assert_eq!(
+            late,
+            TreeError::ParseFailed { offset: Some(19), kind: "syntax_error".to_owned() }
+        );
     }
 
     #[test]
     fn tree_error_displays_readably() {
         assert_eq!(
-            TreeError::ParseFailed { offset: None, kind: "nesting_too_deep" }.to_string(),
+            TreeError::ParseFailed { offset: None, kind: "nesting_too_deep".to_owned() }
+                .to_string(),
             "could not parse source as Perl (nesting_too_deep)"
         );
         assert_eq!(
-            TreeError::ParseFailed { offset: Some(12), kind: "syntax_error" }.to_string(),
+            TreeError::ParseFailed { offset: Some(12), kind: "syntax_error".to_owned() }
+                .to_string(),
             "could not parse source as Perl (syntax_error at byte 12)"
         );
     }

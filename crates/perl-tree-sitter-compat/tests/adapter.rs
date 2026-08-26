@@ -64,8 +64,8 @@ fn parse_failures_at_different_offsets_differ_by_native_diagnostic() {
     let (early_offset, early_kind) = parse_failed_parts(early_err);
     let (late_offset, late_kind) = parse_failed_parts(late_err);
     assert_ne!(
-        (early_offset, early_kind),
-        (late_offset, late_kind),
+        (early_offset, early_kind.as_str()),
+        (late_offset, late_kind.as_str()),
         "failures at different source sites must carry distinct native offset/kind"
     );
 
@@ -86,14 +86,14 @@ fn recoverable_syntax_still_produces_a_tree() {
     assert!(parse_to_tree("if (").is_ok(), "recovered syntax must not become ParseFailed");
 }
 
-fn parse_failed_parts(error: TreeError) -> (Option<usize>, &'static str) {
+fn parse_failed_parts(error: TreeError) -> (Option<usize>, String) {
     match error {
         TreeError::ParseFailed { offset, kind } => (offset, kind),
     }
 }
 
-/// Independent of the adapter's mapping helper: names only the variants these
-/// fixtures must produce so a dummy constant kind cannot pass.
+/// Independent of the adapter's mapping helper: names only the live `Err`-path
+/// variants these fixtures must produce so a dummy constant kind cannot pass.
 fn native_error_kind(error: &ParseError) -> &'static str {
     match error {
         ParseError::RecursionDepthExhausted { .. } => "recursion_depth_exhausted",
