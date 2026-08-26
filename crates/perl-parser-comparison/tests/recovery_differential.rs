@@ -64,6 +64,7 @@
 //! post-error code in most cases by explicitly synchronizing at statement
 //! boundaries, and unlike v2 it correctly surfaces the broken regions as
 //! `ERROR` nodes rather than silently misparse them.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::panic;
 

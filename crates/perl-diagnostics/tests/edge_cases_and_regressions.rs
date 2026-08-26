@@ -1,4 +1,5 @@
 //! Edge cases and regression coverage for `perl-diagnostics`.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_diagnostics::catalog;
 use perl_diagnostics::codes::{DiagnosticCategory, DiagnosticCode, DiagnosticTag};

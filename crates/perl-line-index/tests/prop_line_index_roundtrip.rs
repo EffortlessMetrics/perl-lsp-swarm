@@ -12,6 +12,7 @@
 //! - **Single `\n`**: two lines, with correct byte assignments.
 //! - **Trailing `\n`**: creates an empty final line.
 //! - **No trailing `\n`**: final line's last column is `text_len - last_line_start`.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_line_index::LineIndex;
 use proptest::prelude::*;
