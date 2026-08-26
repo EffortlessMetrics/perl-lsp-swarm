@@ -913,30 +913,43 @@ enum SqlTextEvidence {
 /// - Only reviewed DBI statement-taking sinks (`prepare`, `prepare_cached`,
 ///   `do`) whose receiver carries same-file `DBI->connect(...)` evidence warn
 ///   (the receiver-classification precedent lives in
-///   `collect_dbh_receiver_names`). A method spelled `prepare` on an unproven
+///   `collect_receiver_assignments`). A name qualifies only when every
+///   same-file assignment before the sink comes from `DBI->connect`; a method
+///   spelled `prepare` on an unproven, shadowed, rebound, or later-connected
 ///   receiver is a receiver-ambiguity boundary and stays silent — a security
 ///   warning never guesses DB-ness.
 /// - Placeholders (`?`) with bind values are the negative control.
 /// - A computed statement argument is a typed dynamic boundary and never
 ///   warns.
 fn check_sql_injection(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
-    let mut dbh_receivers = Vec::new();
-    collect_dbh_receiver_names(node, &mut dbh_receivers);
-    walk_sql_injection_sinks(node, &dbh_receivers, diagnostics);
+    let mut assignments = Vec::new();
+    collect_receiver_assignments(node, &mut assignments);
+    walk_sql_injection_sinks(node, &assignments, diagnostics);
 }
 
-/// Collect same-file lexical variables assigned from `DBI->connect(...)`.
+/// One same-file scalar assignment observed for a receiver name (#5035).
+struct ReceiverAssignment {
+    name: String,
+    /// Byte offset of the assignment site, for source-order qualification.
+    offset: usize,
+    /// Whether the assigned value is a `DBI->connect(...)` call.
+    is_connect: bool,
+}
+
+/// Collect same-file scalar assignments per receiver name.
 ///
 /// This is the AST-provable form of the repository's DBI receiver-classification
 /// precedent (`providers/completion/completion/methods.rs`,
 /// `infer_receiver_type`: "check if variable was assigned from DBI->connect"):
 /// the canonical `my $dbh = DBI->connect(...)` (or plain assignment) idiom.
 /// Completion hints may fall back to name heuristics (`$dbh`), but a security
-/// warning may not guess, so only structural assignment evidence qualifies.
-/// Handles reached through aliases, parameters, or DBD-specific class names
-/// stay unproven and therefore silent; the broader statement-handle identity
-/// model is owned by #7471.
-fn collect_dbh_receiver_names(node: &Node, names: &mut Vec<String>) {
+/// warning may not guess, so qualification is structural: a name whose
+/// pre-sink assignments are not all `DBI->connect` calls (shadowed inner
+/// `my $dbh = Engine->new`, rebinding, connect introduced after the sink) is
+/// unproven and stays silent. Handles reached through aliases, parameters, or
+/// DBD-specific class names stay unproven likewise; the binding-precise
+/// statement-handle identity model is owned by #7471.
+fn collect_receiver_assignments(node: &Node, assignments: &mut Vec<ReceiverAssignment>) {
     let connect_assigned = |value: &Node| match &value.kind {
         NodeKind::MethodCall { object, method, .. } => {
             matches!(&object.kind, NodeKind::Identifier { name } if name == "DBI")
@@ -946,24 +959,50 @@ fn collect_dbh_receiver_names(node: &Node, names: &mut Vec<String>) {
     };
 
     match &node.kind {
+        // Declarations without an initializer are neutral: they carry no
+        // evidence about the receiver's origin either way.
         NodeKind::VariableDeclaration { variable, initializer: Some(init), .. } => {
-            if connect_assigned(init)
-                && let Some(name) = scalar_variable_name(variable)
-            {
-                names.push(name);
+            if let Some(name) = scalar_variable_name(variable) {
+                assignments.push(ReceiverAssignment {
+                    name,
+                    offset: node.location.start,
+                    is_connect: connect_assigned(init),
+                });
             }
         }
         NodeKind::Assignment { lhs, rhs, .. } => {
-            if connect_assigned(rhs)
-                && let Some(name) = scalar_variable_name(lhs)
-            {
-                names.push(name);
+            if let Some(name) = scalar_variable_name(lhs) {
+                assignments.push(ReceiverAssignment {
+                    name,
+                    offset: node.location.start,
+                    is_connect: connect_assigned(rhs),
+                });
             }
         }
         _ => {}
     }
 
-    node.for_each_child(|child| collect_dbh_receiver_names(child, names));
+    node.for_each_child(|child| collect_receiver_assignments(child, assignments));
+}
+
+/// Whether `name` is a proven DBI handle at a sink starting at `sink_offset`
+/// (#5035): at least one same-file assignment before the sink must exist, and
+/// every such assignment must come from `DBI->connect(...)`. Assignments after
+/// the sink cannot describe the receiver at call time under name-based
+/// analysis; mixed pre-sink evidence is an ambiguity boundary.
+fn receiver_is_proven_dbh(
+    name: &str,
+    sink_offset: usize,
+    assignments: &[ReceiverAssignment],
+) -> bool {
+    let mut prior = assignments
+        .iter()
+        .filter(|assignment| assignment.name == name && assignment.offset < sink_offset);
+
+    match prior.next() {
+        None => false,
+        Some(first) => first.is_connect && prior.all(|assignment| assignment.is_connect),
+    }
 }
 
 /// The bare name of a scalar variable node (`$dbh` -> `dbh`), if this node is
@@ -977,13 +1016,13 @@ fn scalar_variable_name(node: &Node) -> Option<String> {
 
 fn walk_sql_injection_sinks(
     node: &Node,
-    dbh_receivers: &[String],
+    assignments: &[ReceiverAssignment],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     if let NodeKind::MethodCall { object, method, args } = &node.kind {
-        check_sql_injection_method_call(object, method, args, node, dbh_receivers, diagnostics);
+        check_sql_injection_method_call(object, method, args, node, assignments, diagnostics);
     }
-    node.for_each_child(|child| walk_sql_injection_sinks(child, dbh_receivers, diagnostics));
+    node.for_each_child(|child| walk_sql_injection_sinks(child, assignments, diagnostics));
 }
 
 /// Check one method call against the DBI SQL-injection sink set.
@@ -992,18 +1031,19 @@ fn check_sql_injection_method_call(
     method: &str,
     args: &[Node],
     node: &Node,
-    dbh_receivers: &[String],
+    assignments: &[ReceiverAssignment],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     if !DBI_STATEMENT_METHODS.contains(&method) {
         return;
     }
 
-    // Receiver ambiguity boundary: only a receiver with same-file
-    // `DBI->connect` evidence is a proven DBI handle. Anything else
-    // (unassigned `$dbh`, another class's `prepare`) stays silent.
-    let receiver_is_dbh =
-        scalar_variable_name(object).is_some_and(|name| dbh_receivers.contains(&name));
+    // Receiver ambiguity boundary: only a receiver whose same-file pre-sink
+    // assignments all come from `DBI->connect` is a proven DBI handle.
+    // Anything else (unassigned `$dbh`, shadowed or rebound names, another
+    // class's `prepare`, a later connect) stays silent.
+    let receiver_is_dbh = scalar_variable_name(object)
+        .is_some_and(|name| receiver_is_proven_dbh(&name, node.location.start, assignments));
     if !receiver_is_dbh {
         return;
     }
@@ -1070,6 +1110,17 @@ fn classify_sql_text(node: &Node) -> SqlTextEvidence {
                 SqlTextEvidence::Static
             }
         }
+        // Heredocs are string literals: an interpolating heredoc (`<<SQL`,
+        // `<<"SQL"`) whose body contains a sigil is source-proven assembly,
+        // exactly like a double-quoted string; a literal heredoc
+        // (`<<'SQL'`) is static (#5035 review).
+        NodeKind::Heredoc { content, interpolated, .. } => {
+            if *interpolated && string_contains_interpolation(content) {
+                SqlTextEvidence::Interpolated
+            } else {
+                SqlTextEvidence::Static
+            }
+        }
         NodeKind::Binary { op, .. } if op == "." => classify_concatenation(node),
         // A bare variable, call result, or any other expression: the SQL text
         // is computed and indistinguishable at AST level.
@@ -1093,8 +1144,8 @@ fn classify_concatenation(node: &Node) -> SqlTextEvidence {
             NodeKind::Binary { op, .. } if op == "." => classify_concatenation(operand),
             // A variable operand is a proven dynamic value in the SQL text.
             NodeKind::Variable { .. } => SqlTextEvidence::Concatenated,
-            // String operands reuse the interpolation classifier.
-            NodeKind::String { .. } => classify_sql_text(operand),
+            // String and heredoc operands reuse the interpolation classifier.
+            NodeKind::String { .. } | NodeKind::Heredoc { .. } => classify_sql_text(operand),
             // Any other operand (call, method, conditional) computes text we
             // cannot distinguish.
             _ => SqlTextEvidence::DynamicBoundary,
@@ -1117,21 +1168,38 @@ fn classify_concatenation(node: &Node) -> SqlTextEvidence {
     combined
 }
 
-/// Whether a double-quoted string's text interpolates a variable: a `$` or
-/// `@` sigil (not escaped) followed by an identifier character or `{`.
+/// Whether an interpolating string's text interpolates a variable: a `$` or
+/// `@` sigil followed by an identifier character or `{`, and not escaped.
+///
+/// Escaping follows Perl backslash parity: only an odd-length run of
+/// preceding backslashes escapes the sigil. An even-length run escapes the
+/// backslash itself, so the sigil still interpolates (`"\\$id"` interpolates
+/// `$id` after emitting a literal backslash) (#5035 review).
 fn string_contains_interpolation(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.iter().enumerate().any(|(index, byte)| {
         if *byte != b'$' && *byte != b'@' {
             return false;
         }
-        if index > 0 && bytes[index - 1] == b'\\' {
+        if escaped_by_backslash_run(bytes, index) {
             return false;
         }
         bytes
             .get(index + 1)
             .is_some_and(|next| next.is_ascii_alphanumeric() || *next == b'_' || *next == b'{')
     })
+}
+
+/// Whether the byte at `index` is escaped by an odd-length run of contiguous
+/// preceding backslashes.
+fn escaped_by_backslash_run(bytes: &[u8], index: usize) -> bool {
+    let mut run = 0;
+    let mut cursor = index;
+    while cursor > 0 && bytes[cursor - 1] == b'\\' {
+        run += 1;
+        cursor -= 1;
+    }
+    run % 2 == 1
 }
 
 fn shadows_signal_table(node: &Node) -> bool {
@@ -1709,5 +1777,97 @@ mod tests {
             DiagnosticCode::SecuritySqlInjection.documentation_url(),
             Some("https://owasp.org/www-community/attacks/SQL_Injection")
         );
+    }
+
+    // --- #5035 review repairs ---
+
+    #[test]
+    fn even_backslash_run_still_interpolates_and_is_flagged() {
+        // Review finding: Perl escapes the backslash itself for an even-length
+        // run, so `"\\$id"` emits one literal backslash AND interpolates $id.
+        // The producer must flag it, not classify it as static SQL.
+        let statement = r#"my $sth = $dbh->prepare("SELECT * FROM t WHERE x = \\$id");"#;
+        let source = format!("{}\nmy $id = <STDIN>;\n{}\n", dbh_connect(), statement);
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_some(),
+            "an even backslash run does not escape the sigil: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn odd_backslash_run_escapes_the_sigil_and_stays_silent() {
+        // Review finding mirror control: `"\$id"` keeps the sigil literal, so
+        // the SQL text is static.
+        let statement = r#"my $sth = $dbh->prepare("SELECT * FROM t WHERE x = \$id");"#;
+        let source = format!("{}\n{}\n", dbh_connect(), statement);
+        let diags = sql_diags(&source);
+        assert!(pl607(&diags).is_none(), "an odd backslash run escapes the sigil: {diags:?}");
+    }
+
+    #[test]
+    fn shadowed_non_dbi_rebinding_suppresses_the_warning() {
+        // Review finding: an inner `my $dbh = Engine->new` shadows the outer
+        // DBI->connect binding. Name-level pre-sink evidence is mixed, so the
+        // receiver is an ambiguity boundary and stays silent — the warning
+        // never guesses which binding the sink sees.
+        let source = concat!(
+            "my $dbh = DBI->connect('dbi:SQLite:dbname=x');\n",
+            "{\n",
+            "my $dbh = Engine->new;\n",
+            "my $id = <STDIN>;\n",
+            "my $q = $dbh->prepare(\"SELECT * FROM t WHERE id = $id\");\n",
+            "}\n",
+        );
+        let diags = sql_diags(source);
+        assert!(
+            pl607(&diags).is_none(),
+            "a shadowed non-DBI rebinding must not receive PL607: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn connect_introduced_after_the_sink_stays_silent() {
+        // Review finding: a connect assignment after the call cannot describe
+        // the receiver at call time; the sink has no pre-sink connect
+        // evidence and stays silent.
+        let source = concat!(
+            "my $id = <STDIN>;\n",
+            "my $sth = $dbh->prepare(\"SELECT * FROM t WHERE id = $id\");\n",
+            "my $dbh = DBI->connect('dbi:SQLite:dbname=x');\n",
+        );
+        let diags = sql_diags(source);
+        assert!(
+            pl607(&diags).is_none(),
+            "a connect after the sink must not retroactively classify it: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn interpolating_heredoc_sql_is_flagged() {
+        // Review finding: `<<END_SQL` interpolates exactly like a
+        // double-quoted string, so a sigil in the body is source-proven SQL
+        // assembly.
+        let source = format!(
+            "{}\nmy $id = <STDIN>;\nmy $sth = $dbh->prepare(<<END_SQL);\nSELECT * FROM t WHERE id = $id\nEND_SQL\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_some(),
+            "an interpolating heredoc with a sigil must be flagged: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn literal_heredoc_sql_is_silent() {
+        // Mirror control: `<<'END_SQL'` never interpolates, so even `$id`
+        // text in the body is a static SQL literal.
+        let source = format!(
+            "{}\nmy $sth = $dbh->prepare(<<'END_SQL');\nSELECT * FROM t WHERE id = $id\nEND_SQL\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(pl607(&diags).is_none(), "a literal heredoc is static SQL: {diags:?}");
     }
 }
