@@ -42,6 +42,7 @@
 
 use crate::syntax::error::{ParseError, ParseResult};
 use perl_lexer::{LexerMode, PerlLexer, Token as LexerToken, TokenType as LexerTokenType};
+use perl_token::TokenSpanError;
 pub use perl_token::{Token, TokenKind};
 use std::collections::VecDeque;
 
@@ -488,7 +489,9 @@ impl<'a> TokenStream<'a> {
 
 /// Convert lexer geometry into a parser token without panicking.
 ///
-/// Ordered spans keep the mapped kind. Reversed or illegally empty geometry
+/// Ordered spans keep the mapped kind. When lexer `text` is shorter than the
+/// span (a trailing newline on `__DATA__` / `__END__`), keep the mapped kind
+/// and shrink the span to the text. Reversed or illegally empty geometry
 /// becomes a [`TokenKind::Unknown`] token on the ordered span, or EOF at the
 /// lower bound if even that constructor is unavailable.
 fn token_from_lexer_parts(
@@ -500,11 +503,22 @@ fn token_from_lexer_parts(
     let text = text.into();
     match Token::new_checked(kind, std::sync::Arc::clone(&text), start, end) {
         Ok(token) => token,
-        Err(_) => {
-            let ordered_start = start.min(end);
-            let ordered_end = start.max(end);
-            Token::unknown_at(text, ordered_start, ordered_end)
-                .unwrap_or_else(|_| Token::eof_at(ordered_start))
+        Err(TokenSpanError::TextLengthMismatch { text_len, span_len, .. })
+            if start <= end && text_len < span_len =>
+        {
+            let aligned_end = start.saturating_add(text_len);
+            match Token::new_checked(kind, std::sync::Arc::clone(&text), start, aligned_end) {
+                Ok(token) => token,
+                Err(_) => unknown_or_eof(text, start, end),
+            }
         }
+        Err(_) => unknown_or_eof(text, start, end),
     }
+}
+
+fn unknown_or_eof(text: std::sync::Arc<str>, start: usize, end: usize) -> Token {
+    let ordered_start = start.min(end);
+    let ordered_end = start.max(end);
+    Token::unknown_at(text, ordered_start, ordered_end)
+        .unwrap_or_else(|_| Token::eof_at(ordered_start))
 }
