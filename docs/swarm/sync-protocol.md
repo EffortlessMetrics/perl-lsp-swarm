@@ -217,8 +217,10 @@ The ledger is a typed document whose unknown fields fail closed. Its
 `population_digest` must equal the checker's recomputed digest over the sorted
 target-unique non-merge population (SHA-256 over `<commit> <subject>` lines);
 any drift fails the ledger as stale. Each entry declares its changed paths,
-which are verified against `git diff-tree` when present, plus one disposition
-and its supporting fields. The load-bearing rules:
+which are verified against `git diff-tree`; a terminal row with empty or
+absent changed paths fails closed so an undeclared footprint cannot evade the
+comparison or the product/test guard, plus one disposition and its supporting
+fields. The load-bearing rules:
 
 - `port_to_swarm` and `already_equivalent_in_swarm` require `source_commit`
   to resolve to a commit reachable from the declared swarm source;
@@ -242,7 +244,8 @@ The command emits one deterministic verdict in the receipt: `pass` (exit 0),
 population-drifted claims; nonzero). A ledger that declares a `verdict`
 disagreeing with the derived one fails as not proven. `scaffold` writes the
 starting skeleton — one unresolved row per computed commit with real subjects
-and changed paths and no invented terminal disposition:
+and changed paths and no invented terminal disposition; it refuses to
+overwrite an existing ledger file:
 
 ```bash
 cargo xtask sync-divergence scaffold \

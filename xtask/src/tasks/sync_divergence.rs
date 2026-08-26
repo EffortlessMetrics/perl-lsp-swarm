@@ -22,8 +22,9 @@ const CLASSIFICATIONS: [&str; 5] = [
 const PRODUCT_PATH_SEGMENTS: [&str; 9] =
     ["src", "lib", "bin", "t", "test", "tests", "testing", "examples", "xt"];
 
-/// File extensions that mark runtime, product, or test work.
-const PRODUCT_PATH_EXTENSIONS: [&str; 7] = ["rs", "c", "h", "hpp", "cpp", "pm", "pl"];
+/// File extensions that mark runtime, product, or test work; `.t` is the
+/// standard Perl test file extension.
+const PRODUCT_PATH_EXTENSIONS: [&str; 8] = ["rs", "c", "h", "hpp", "cpp", "pm", "pl", "t"];
 
 const LEDGER_SCHEMA_VERSION: u32 = 2;
 const RECEIPT_SCHEMA_VERSION: u32 = 2;
@@ -286,6 +287,13 @@ pub fn check(config: CheckConfig) -> Result<()> {
 /// target-unique non-merge commit, with real subjects and changed paths and
 /// no invented terminal disposition.
 pub fn scaffold(config: ScaffoldConfig) -> Result<()> {
+    if config.ledger.exists() {
+        return Err(eyre!(
+            "scaffold ledger {} already exists; move or delete it first — \
+             scaffolding must never silently overwrite an in-progress reconciliation ledger",
+            config.ledger.display()
+        ));
+    }
     let directory = config.working_directory.as_deref();
     let mut subjects = Subjects::from_inputs(&config.source, &config.boundary, &config.target);
 
@@ -503,6 +511,15 @@ fn validate_entry(
         return;
     };
 
+    // An undeclared footprint evades both the diff-tree comparison and the
+    // product/test guard below, so every terminal row must declare its real
+    // changed paths. The scaffold always populates them.
+    if entry.changed_paths.is_empty() {
+        errors.push(format!(
+            "commit {} classified `{classification}` declares no changed_paths; every terminal row must declare its changed paths so the diff-tree comparison and product/test guard cannot be evaded",
+            entry.commit
+        ));
+    }
     if !has_evidence(entry) {
         errors.push(format!("commit {} has no evidence", entry.commit));
     }
@@ -576,16 +593,7 @@ fn ensure_reachable_from_source(
     directory: Option<&Path>,
 ) -> Result<()> {
     validate_subject_syntax("source_commit", candidate)?;
-    let peeled = format!("{candidate}^{{commit}}");
-    let resolved = match git_output_in(
-        ["rev-parse", "--verify", "--quiet", "--end-of-options", &peeled],
-        directory,
-    ) {
-        Ok(resolved) => resolved.trim().to_string(),
-        Err(_) => {
-            return Err(eyre!("`source_commit` `{candidate}` did not resolve to a commit"));
-        }
-    };
+    let resolved = resolve_peeled_commit("source_commit", candidate, directory)?;
     match git_status_in(["merge-base", "--is-ancestor", &resolved, source], directory)? {
         0 => Ok(()),
         1 => Err(eyre!(
@@ -599,6 +607,13 @@ fn ensure_reachable_from_source(
 /// row cannot borrow another commit's footprint.
 fn verify_changed_paths(entry: &LedgerEntry, directory: Option<&Path>, errors: &mut Vec<String>) {
     if entry.changed_paths.is_empty() {
+        return;
+    }
+    if let Err(error) = validate_subject_syntax("commit", &entry.commit) {
+        errors.push(format!(
+            "ledger changed paths for {} could not be verified: {error:#}",
+            entry.commit
+        ));
         return;
     }
     match commit_changed_paths(&entry.commit, directory) {
@@ -743,9 +758,14 @@ fn record_outcome(outcome: Result<String>, errors: &mut Vec<String>) -> Option<S
     outcome.map_err(|error| errors.push(format!("{error:#}"))).ok()
 }
 
-fn resolve_subject(label: &str, state: &SubjectState, directory: Option<&Path>) -> Result<String> {
-    validate_subject_syntax(label, &state.input)?;
-    let peeled = format!("{}^{{commit}}", state.input);
+/// Resolve one commit-ish to a full object id through the quiet+loud probe:
+/// quiet `rev-parse --verify` resolves the id while suppressing git's
+/// refname-ambiguity warning, so the loud re-probe fails closed when a
+/// branch/tag collision would otherwise resolve by silent internal
+/// precedence. Every commit-ish identity in this task (subjects and ledger
+/// `source_commit`s) must go through this one helper.
+fn resolve_peeled_commit(label: &str, reference: &str, directory: Option<&Path>) -> Result<String> {
+    let peeled = format!("{reference}^{{commit}}");
     match git_output_in(
         ["rev-parse", "--verify", "--quiet", "--end-of-options", &peeled],
         directory,
@@ -753,7 +773,7 @@ fn resolve_subject(label: &str, state: &SubjectState, directory: Option<&Path>) 
         Ok(output) => {
             let resolved = output.trim().to_string();
             if resolved.is_empty() {
-                return Err(unresolved_subject(label, state, directory));
+                return Err(eyre!("{label} ref `{reference}` did not resolve to a commit"));
             }
             // Quiet mode suppresses git's refname-ambiguity warning, so a
             // branch+tag name collision would silently resolve by internal
@@ -762,27 +782,29 @@ fn resolve_subject(label: &str, state: &SubjectState, directory: Option<&Path>) 
                 .unwrap_or_default();
             if loud_stderr.contains("is ambiguous") {
                 return Err(eyre!(
-                    "{label} ref `{}` was ambiguous; pass a full 40-hex object id or an unambiguous ref name",
-                    state.input
+                    "{label} ref `{reference}` was ambiguous; pass a full 40-hex object id or an unambiguous ref name"
                 ));
             }
             Ok(resolved)
         }
-        Err(_) => Err(unresolved_subject(label, state, directory)),
+        Err(_) => {
+            let stderr =
+                git_stderr_in(["rev-parse", "--verify", "--end-of-options", &peeled], directory)
+                    .unwrap_or_default();
+            if stderr.contains("ambiguous") {
+                Err(eyre!(
+                    "{label} ref `{reference}` was ambiguous; pass a full 40-hex object id or an unambiguous ref name"
+                ))
+            } else {
+                Err(eyre!("{label} ref `{reference}` did not resolve to a commit"))
+            }
+        }
     }
 }
 
-fn unresolved_subject(label: &str, state: &SubjectState, directory: Option<&Path>) -> Report {
-    let peeled = format!("{}^{{commit}}", state.input);
-    let stderr = git_stderr_in(["rev-parse", "--verify", "--end-of-options", &peeled], directory)
-        .unwrap_or_default();
-    if stderr.contains("ambiguous") {
-        return eyre!(
-            "{label} ref `{}` was ambiguous; pass a full 40-hex object id or an unambiguous ref name",
-            state.input
-        );
-    }
-    eyre!("{label} ref `{}` did not resolve to a commit", state.input)
+fn resolve_subject(label: &str, state: &SubjectState, directory: Option<&Path>) -> Result<String> {
+    validate_subject_syntax(label, &state.input)?;
+    resolve_peeled_commit(label, &state.input, directory)
 }
 
 fn ensure_boundary_bounds_target(shas: &ResolvedShas, directory: Option<&Path>) -> Result<()> {
@@ -1267,6 +1289,7 @@ mod tests {
             "src/main.c",
             "include/perl.h",
             "t/class.t",
+            "release/smoke.t",
             "tests/smoke.pl",
             "bin/tool",
             "lib/Util.pm",
@@ -1906,7 +1929,7 @@ mod tests {
   "population_digest": "{}",
   "entries": [
     {{"commit": "{}", "subject": "release r0", "disposition": null, "blocking_decisions": ["dap-architecture"], "changed_paths": ["r0.txt"]}},
-    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "evidence": ["ported"]}}
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "changed_paths": ["r2.txt"], "evidence": ["ported"]}}
   ]
 }}"#,
                 fixture.swarm_tip,
@@ -2031,6 +2054,185 @@ mod tests {
         Ok(())
     }
 
+    /// A hand-written terminal row with empty changed_paths cannot borrow the
+    /// early-return in the diff-tree comparison to also skip the product/test
+    /// guard: an undeclared footprint fails closed.
+    #[test]
+    fn terminal_lineage_row_without_changed_paths_fails() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": [], "evidence": ["release-lineage receipt"]}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "changed_paths": ["r2.txt"], "evidence": ["ported"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+                fixture.release_tip,
+                fixture.swarm_tip,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let receipt = receipt_value(path)?;
+        let joined = receipt_error_text(&receipt);
+        assert!(joined.contains("declares no changed_paths"), "{joined}");
+        Ok(())
+    }
+
+    /// A ledger `source_commit` that hits a branch+tag refname collision must
+    /// fail closed on ambiguity exactly like subject resolution, instead of
+    /// quietly resolving by git's internal refname precedence.
+    #[test]
+    fn ambiguous_source_commit_fails_closed_like_subjects() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        commit_file(path, "a.txt", "a\n", "base")?;
+        run_git_fixture(path, &["branch", "dup-port-7969"])?;
+        commit_file(path, "b.txt", "b\n", "second")?;
+        run_git_fixture(path, &["tag", "dup-port-7969"])?;
+
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": ["r0.txt"], "evidence": ["release-lineage receipt"]}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "dup-port-7969", "changed_paths": ["r2.txt"], "evidence": ["ported"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+                fixture.release_tip,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let joined = receipt_error_text(&receipt_value(path)?);
+        assert!(joined.contains("source_commit ref `dup-port-7969` was ambiguous"), "{joined}");
+        Ok(())
+    }
+
+    /// Scaffolding refuses to silently overwrite an existing ledger file; an
+    /// in-progress reconciliation is never clobbered by a fresh skeleton.
+    #[test]
+    fn scaffold_refuses_to_overwrite_an_existing_ledger() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(path.join("scaffold.json"), "{\n  \"keep\": \"me\"\n}\n")?;
+        let config = ScaffoldConfig {
+            source: fixture.swarm_tip.clone(),
+            boundary: fixture.base.clone(),
+            target: fixture.release_tip.clone(),
+            ledger: path.join("scaffold.json"),
+            working_directory: Some(path.to_path_buf()),
+        };
+        let error = match scaffold(config) {
+            Err(error) => error,
+            Ok(()) => return Err(eyre!("scaffold must not overwrite an existing ledger")),
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("already exists"), "{message}");
+        assert!(message.contains("move or delete"), "{message}");
+        assert_eq!(
+            fs::read_to_string(path.join("scaffold.json"))?,
+            "{\n  \"keep\": \"me\"\n}\n",
+            "the existing ledger file must be untouched"
+        );
+        Ok(())
+    }
+
+    /// Duplicate rows fail the end-to-end preflight, giving the duplicate
+    /// population case the same end-to-end coverage as the missing-row and
+    /// extra-row fixtures.
+    #[test]
+    fn duplicate_ledger_rows_fail_end_to_end() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": ["r0.txt"], "evidence": ["release-lineage receipt"]}},
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": ["r0.txt"], "evidence": ["duplicate of the row above"]}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "evidence": ["ported"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+                fixture.floor_tip,
+                fixture.release_tip,
+                fixture.swarm_tip,
+            ),
+        )?;
+        run_check_expect_error(&fixture, path)?;
+        let receipt = receipt_value(path)?;
+        assert_eq!(receipt["verdict"], "not_proven");
+        let joined = receipt_error_text(&receipt);
+        assert!(joined.contains("appears more than once"), "{joined}");
+        Ok(())
+    }
+
+    /// An old v2-shaped ledger whose entries classify through a
+    /// `classification` key is rejected by `deny_unknown_fields` instead of
+    /// parsing into rows that silently lose their dispositions.
+    #[test]
+    fn old_v2_classification_key_fails_closed() -> Result<()> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "classification": "release_lineage_only"}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                fixture.release_tip,
+                fixture_digest(&fixture)?,
+                fixture.floor_tip,
+            ),
+        )?;
+        let error = run_check_expect_error(&fixture, path)?;
+        let message = format!("{error:#}");
+        assert!(message.contains("unknown field `classification`"), "{message}");
+        Ok(())
+    }
+
     /// A stale digest fails closed: the ledger must describe this comparison.
     #[test]
     fn stale_population_digest_fails() -> Result<()> {
@@ -2110,7 +2312,7 @@ mod tests {
   "verdict": "pass",
   "entries": [
     {{"commit": "{}", "subject": "release r0", "disposition": null, "blocking_decisions": ["dap-architecture"]}},
-    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "evidence": ["ported"]}}
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "changed_paths": ["r2.txt"], "evidence": ["ported"]}}
   ]
 }}"#,
                 fixture.swarm_tip,
