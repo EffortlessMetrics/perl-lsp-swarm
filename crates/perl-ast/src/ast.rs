@@ -112,25 +112,27 @@ pub use perl_position_tracking::SourceLocation;
 pub use perl_token::{Token, TokenKind};
 use std::cell::Cell;
 use std::fmt;
+#[cfg(test)]
 use std::ops::ControlFlow;
 use strum::VariantNames as _;
 
-/// Maximum AST traversal depth for recursive *read* operations.
+/// Maximum AST traversal depth for recursive *read* operations that still
+/// use a call-stack guard.
 ///
-/// Guards [`Node::to_sexp`], [`Node::count_nodes`], and
-/// [`Node::find_deepest_containing_offset`] against stack-overflow panics on
-/// pathologically deep ASTs (e.g., thousands of nested blocks or expressions
-/// produced by malformed or adversarial input).
+/// Guards [`Node::to_sexp`] against stack-overflow panics on pathologically
+/// deep ASTs. Configured complete/truncated rendering of that projection is
+/// owned by issue 8832.
 ///
 /// Chosen at 512: typical Perl code nests fewer than 100 levels deep;
 /// 512 provides a comfortable safety margin while staying well within
 /// Rust's default 8 MB stack.
 ///
-/// This constant does **not** bound destruction, clone, equality, or debug
-/// formatting. [`Node`]'s [`Drop`], [`Clone`], [`PartialEq`], and [`Debug`]
-/// implementations are iterative and do not consult this limit. [`Debug`] uses
-/// its own conservative budgets (`NODE_DEBUG_MAX_*`). See [`Node`] for the
-/// full depth-safety disposition.
+/// This constant does **not** bound destruction, clone, equality, debug
+/// formatting, [`Node::count_nodes`], or
+/// [`Node::find_deepest_containing_offset`]. Those exact whole-tree reads are
+/// iterative. Bounded variants expose [`AstReadResult`] instead of consulting
+/// this ceiling. [`Debug`] uses its own conservative budgets
+/// (`NODE_DEBUG_MAX_*`). See [`Node`] for the full depth-safety disposition.
 pub const MAX_AST_DEPTH: usize = 512;
 
 thread_local! {
@@ -198,7 +200,11 @@ macro_rules! define_field_ids {
         impl FieldId {
             $(pub const $constant: Self = Self($name);)+
 
-            /// All field identifiers emitted by [`Node::for_each_child_with_field`].
+/// All field identifiers named by the structural registry.
+            ///
+            /// Order is the public compatibility inventory. Set membership is
+            /// the unique [`crate::kind_schema::NODE_KIND_STRUCTURAL_REGISTRY`]
+            /// fields; unused or missing names fail the parity checker.
             pub const ALL: &'static [Self] = &[$(Self::$constant),+];
 
             /// Return the canonical external name for this field.
@@ -315,9 +321,10 @@ define_field_ids! {
 ///   Callers that need configured complete or truncated state use the
 ///   typed renderer tracked by issue 8832.
 ///
-/// Whole-tree reads such as [`Node::count_nodes`] stay separately depth-guarded
-/// and may truncate; that is not a destruction, clone, equality, or debug
-/// concern.
+/// Exact whole-tree reads such as [`Node::count_nodes`] and
+/// [`Node::find_deepest_containing_offset`] are iterative over the canonical
+/// child visit table and do not silently truncate. Bounded variants return
+/// [`AstReadResult`]. [`Node::to_sexp`] remains separately depth-guarded.
 ///
 /// # Examples
 ///
@@ -1089,638 +1096,6 @@ impl Node {
         }
     }
 
-    /// Call a function on every direct child node of this node.
-    ///
-    /// This enables depth-first traversal for operations like heredoc content attachment.
-    /// The closure receives a mutable reference to each child node.
-    #[inline]
-    pub fn for_each_child_mut<F: FnMut(&mut Node)>(&mut self, mut f: F) {
-        match &mut self.kind {
-            NodeKind::Tie { variable, package, args } => {
-                f(variable);
-                f(package);
-                for arg in args {
-                    f(arg);
-                }
-            }
-            NodeKind::Untie { variable } => f(variable),
-
-            // Root program node
-            NodeKind::Program { statements } => {
-                for stmt in statements {
-                    f(stmt);
-                }
-            }
-
-            // Statement wrappers
-            NodeKind::ExpressionStatement { expression } => f(expression),
-
-            // Variable declarations
-            NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                f(variable);
-                if let Some(init) = initializer {
-                    f(init);
-                }
-            }
-            NodeKind::VariableListDeclaration { variables, initializer, .. } => {
-                for var in variables {
-                    f(var);
-                }
-                if let Some(init) = initializer {
-                    f(init);
-                }
-            }
-            NodeKind::NestedVariableList { items } => {
-                for item in items {
-                    f(item);
-                }
-            }
-            NodeKind::VariableWithAttributes { variable, .. } => f(variable),
-
-            // Binary operations
-            NodeKind::Binary { left, right, .. } => {
-                f(left);
-                f(right);
-            }
-            NodeKind::ArraySlice { target, indices } => {
-                f(target);
-                f(indices);
-            }
-            NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
-                f(target);
-                f(keys);
-            }
-            NodeKind::ChainedComparison { operands, .. } => {
-                for operand in operands {
-                    f(operand);
-                }
-            }
-            NodeKind::Ternary { condition, then_expr, else_expr } => {
-                f(condition);
-                f(then_expr);
-                f(else_expr);
-            }
-            NodeKind::Unary { operand, .. } => f(operand),
-            NodeKind::Assignment { lhs, rhs, .. } => {
-                f(lhs);
-                f(rhs);
-            }
-
-            // Control flow
-            NodeKind::Block { statements } => {
-                for stmt in statements {
-                    f(stmt);
-                }
-            }
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
-                f(condition);
-                f(then_branch);
-                for (elsif_cond, elsif_body) in elsif_branches {
-                    f(elsif_cond);
-                    f(elsif_body);
-                }
-                if let Some(else_body) = else_branch {
-                    f(else_body);
-                }
-            }
-            NodeKind::While { condition, body, continue_block, .. } => {
-                f(condition);
-                f(body);
-                if let Some(cont) = continue_block {
-                    f(cont);
-                }
-            }
-            NodeKind::For { init, condition, update, body, continue_block, .. } => {
-                if let Some(i) = init {
-                    f(i);
-                }
-                if let Some(c) = condition {
-                    f(c);
-                }
-                if let Some(u) = update {
-                    f(u);
-                }
-                f(body);
-                if let Some(cont) = continue_block {
-                    f(cont);
-                }
-            }
-            NodeKind::Foreach { variable, list, body, continue_block } => {
-                f(variable);
-                f(list);
-                f(body);
-                if let Some(cb) = continue_block {
-                    f(cb);
-                }
-            }
-            NodeKind::Given { expr, body } => {
-                f(expr);
-                f(body);
-            }
-            NodeKind::When { condition, body } => {
-                f(condition);
-                f(body);
-            }
-            NodeKind::Default { body } => f(body),
-            NodeKind::StatementModifier { statement, condition, .. } => {
-                f(statement);
-                f(condition);
-            }
-            NodeKind::LabeledStatement { statement, .. } => f(statement),
-
-            // Eval and Do blocks
-            NodeKind::Eval { block } => f(block),
-            NodeKind::Do { block } => f(block),
-            NodeKind::Defer { block } => f(block),
-            NodeKind::Try { body, catch_blocks, finally_block } => {
-                f(body);
-                for (_, catch_body) in catch_blocks {
-                    f(catch_body);
-                }
-                if let Some(finally) = finally_block {
-                    f(finally);
-                }
-            }
-
-            // Function calls
-            NodeKind::FunctionCall { args, .. } | NodeKind::AmperCall { args, .. } => {
-                for arg in args {
-                    f(arg);
-                }
-            }
-            NodeKind::MethodCall { object, args, .. } => {
-                f(object);
-                for arg in args {
-                    f(arg);
-                }
-            }
-            NodeKind::IndirectCall { object, args, .. } => {
-                f(object);
-                for arg in args {
-                    f(arg);
-                }
-            }
-
-            // Functions
-            NodeKind::Subroutine { prototype, signature, body, .. } => {
-                if let Some(proto) = prototype {
-                    f(proto);
-                }
-                if let Some(sig) = signature {
-                    f(sig);
-                }
-                f(body);
-            }
-            NodeKind::Method { signature, body, .. } => {
-                if let Some(sig) = signature {
-                    f(sig);
-                }
-                f(body);
-            }
-            NodeKind::Return { value } => {
-                if let Some(v) = value {
-                    f(v);
-                }
-            }
-            NodeKind::Goto { target, .. } => f(target),
-            NodeKind::Signature { parameters } => {
-                for param in parameters {
-                    f(param);
-                }
-            }
-            NodeKind::MandatoryParameter { variable } => f(variable),
-            NodeKind::OptionalParameter { variable, default_value } => {
-                f(variable);
-                f(default_value);
-            }
-            NodeKind::SlurpyParameter { variable } => f(variable),
-            NodeKind::NamedParameter { variable, default_value, .. } => {
-                f(variable);
-                if let Some(default) = default_value {
-                    f(default);
-                }
-            }
-
-            // Pattern matching
-            NodeKind::Match { expr, .. } => f(expr),
-            NodeKind::Substitution { expr, .. } => f(expr),
-            NodeKind::Transliteration { expr, .. } => f(expr),
-
-            // Containers
-            NodeKind::ArrayLiteral { elements } => {
-                for elem in elements {
-                    f(elem);
-                }
-            }
-            NodeKind::HashLiteral { pairs } => {
-                for (key, value) in pairs {
-                    f(key);
-                    f(value);
-                }
-            }
-
-            // Package system
-            NodeKind::Package { block, .. } => {
-                if let Some(b) = block {
-                    f(b);
-                }
-            }
-            NodeKind::PhaseBlock { block, .. } => f(block),
-            NodeKind::Class { body, .. } => f(body),
-
-            // Error node might have a partial valid tree
-            NodeKind::Error { partial, .. } => {
-                if let Some(node) = partial {
-                    f(node);
-                }
-            }
-
-            // Leaf nodes (no children to traverse)
-            NodeKind::Variable { .. }
-            | NodeKind::Identifier { .. }
-            | NodeKind::Number { .. }
-            | NodeKind::String { .. }
-            | NodeKind::VString { .. }
-            | NodeKind::Heredoc { .. }
-            | NodeKind::Regex { .. }
-            | NodeKind::Readline { .. }
-            | NodeKind::Glob { .. }
-            | NodeKind::Typeglob { .. }
-            | NodeKind::Diamond
-            | NodeKind::Ellipsis
-            | NodeKind::Undef
-            | NodeKind::Use { .. }
-            | NodeKind::No { .. }
-            | NodeKind::Prototype { .. }
-            | NodeKind::DataSection { .. }
-            | NodeKind::Format { .. }
-            | NodeKind::LoopControl { .. }
-            | NodeKind::MissingExpression
-            | NodeKind::MissingStatement
-            | NodeKind::MissingIdentifier
-            | NodeKind::MissingBlock
-            | NodeKind::UnknownRest => {}
-        }
-    }
-
-    /// Visit direct children with short-circuiting and preserve their structural fields.
-    ///
-    /// `None` identifies an intentionally unnamed child. Repeated children in
-    /// list-like fields use the same [`FieldId`] for each element.
-    #[inline]
-    pub fn try_for_each_child_with_field<'a, F, B>(&'a self, f: F) -> ControlFlow<B>
-    where
-        F: FnMut(Option<FieldId>, &'a Node) -> ControlFlow<B>,
-    {
-        self.try_for_each_child_with_field_observed(|_, _| {}, f)
-    }
-
-    /// Visit direct children with short-circuiting while observing each source pull.
-    ///
-    /// The observer runs inside child enumeration, immediately before the child
-    /// is passed to `f`. This makes early-break behavior measurable without
-    /// materializing an intermediate child collection.
-    #[inline]
-    pub fn try_for_each_child_with_field_observed<'a, P, F, B>(
-        &'a self,
-        mut observe_pull: P,
-        mut f: F,
-    ) -> ControlFlow<B>
-    where
-        P: FnMut(Option<FieldId>, &'a Node),
-        F: FnMut(Option<FieldId>, &'a Node) -> ControlFlow<B>,
-    {
-        macro_rules! emit {
-            ($field:expr, $child:expr) => {{
-                observe_pull(Some($field), $child);
-                if let ControlFlow::Break(b) = f(Some($field), $child) {
-                    return ControlFlow::Break(b);
-                }
-            }};
-        }
-
-        match &self.kind {
-            NodeKind::Tie { variable, package, args } => {
-                emit!(FieldId::VARIABLE, variable);
-                emit!(FieldId::PACKAGE, package);
-                for arg in args {
-                    emit!(FieldId::ARGS, arg);
-                }
-            }
-            NodeKind::Untie { variable } => emit!(FieldId::VARIABLE, variable),
-
-            // Root program node
-            NodeKind::Program { statements } => {
-                for stmt in statements {
-                    emit!(FieldId::STATEMENTS, stmt);
-                }
-            }
-
-            // Statement wrappers
-            NodeKind::ExpressionStatement { expression } => emit!(FieldId::EXPRESSION, expression),
-
-            // Variable declarations
-            NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                emit!(FieldId::VARIABLE, variable);
-                if let Some(init) = initializer {
-                    emit!(FieldId::INITIALIZER, init);
-                }
-            }
-            NodeKind::VariableListDeclaration { variables, initializer, .. } => {
-                for var in variables {
-                    emit!(FieldId::VARIABLE, var);
-                }
-                if let Some(init) = initializer {
-                    emit!(FieldId::INITIALIZER, init);
-                }
-            }
-            NodeKind::NestedVariableList { items } => {
-                for item in items {
-                    emit!(FieldId::ITEMS, item);
-                }
-            }
-            NodeKind::VariableWithAttributes { variable, .. } => emit!(FieldId::VARIABLE, variable),
-
-            // Binary operations
-            NodeKind::Binary { left, right, .. } => {
-                emit!(FieldId::LEFT, left);
-                emit!(FieldId::RIGHT, right);
-            }
-            NodeKind::ArraySlice { target, indices } => {
-                emit!(FieldId::TARGET, target);
-                emit!(FieldId::ELEMENTS, indices);
-            }
-            NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => {
-                emit!(FieldId::TARGET, target);
-                emit!(FieldId::KEY, keys);
-            }
-            NodeKind::ChainedComparison { operands, .. } => {
-                for operand in operands {
-                    emit!(FieldId::ELEMENTS, operand);
-                }
-            }
-            NodeKind::Ternary { condition, then_expr, else_expr } => {
-                emit!(FieldId::CONDITION, condition);
-                emit!(FieldId::THEN_EXPR, then_expr);
-                emit!(FieldId::ELSE_EXPR, else_expr);
-            }
-            NodeKind::Unary { operand, .. } => emit!(FieldId::OPERAND, operand),
-            NodeKind::Assignment { lhs, rhs, .. } => {
-                emit!(FieldId::LHS, lhs);
-                emit!(FieldId::RHS, rhs);
-            }
-
-            // Control flow
-            NodeKind::Block { statements } => {
-                for stmt in statements {
-                    emit!(FieldId::STATEMENTS, stmt);
-                }
-            }
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
-                emit!(FieldId::CONDITION, condition);
-                emit!(FieldId::THEN_BRANCH, then_branch);
-                for (elsif_cond, elsif_body) in elsif_branches {
-                    emit!(FieldId::CONDITION, elsif_cond);
-                    emit!(FieldId::BODY, elsif_body);
-                }
-                if let Some(else_body) = else_branch {
-                    emit!(FieldId::ELSE_BRANCH, else_body);
-                }
-            }
-            NodeKind::While { condition, body, continue_block, .. } => {
-                emit!(FieldId::CONDITION, condition);
-                emit!(FieldId::BODY, body);
-                if let Some(cont) = continue_block {
-                    emit!(FieldId::CONTINUE_BLOCK, cont);
-                }
-            }
-            NodeKind::For { init, condition, update, body, continue_block, .. } => {
-                if let Some(i) = init {
-                    emit!(FieldId::INIT, i);
-                }
-                if let Some(c) = condition {
-                    emit!(FieldId::CONDITION, c);
-                }
-                if let Some(u) = update {
-                    emit!(FieldId::UPDATE, u);
-                }
-                emit!(FieldId::BODY, body);
-                if let Some(cont) = continue_block {
-                    emit!(FieldId::CONTINUE_BLOCK, cont);
-                }
-            }
-            NodeKind::Foreach { variable, list, body, continue_block } => {
-                emit!(FieldId::VARIABLE, variable);
-                emit!(FieldId::LIST, list);
-                emit!(FieldId::BODY, body);
-                if let Some(cb) = continue_block {
-                    emit!(FieldId::CONTINUE_BLOCK, cb);
-                }
-            }
-            NodeKind::Given { expr, body } => {
-                emit!(FieldId::EXPR, expr);
-                emit!(FieldId::BODY, body);
-            }
-            NodeKind::When { condition, body } => {
-                emit!(FieldId::CONDITION, condition);
-                emit!(FieldId::BODY, body);
-            }
-            NodeKind::Default { body } => emit!(FieldId::BODY, body),
-            NodeKind::StatementModifier { statement, condition, .. } => {
-                emit!(FieldId::STATEMENT, statement);
-                emit!(FieldId::CONDITION, condition);
-            }
-            NodeKind::LabeledStatement { statement, .. } => emit!(FieldId::STATEMENT, statement),
-
-            // Eval and Do blocks
-            NodeKind::Eval { block } => emit!(FieldId::BLOCK, block),
-            NodeKind::Do { block } => emit!(FieldId::BLOCK, block),
-            NodeKind::Defer { block } => emit!(FieldId::BLOCK, block),
-            NodeKind::Try { body, catch_blocks, finally_block } => {
-                emit!(FieldId::BODY, body);
-                for (_, catch_body) in catch_blocks {
-                    emit!(FieldId::CATCH, catch_body);
-                }
-                if let Some(finally) = finally_block {
-                    emit!(FieldId::FINALLY, finally);
-                }
-            }
-
-            // Function calls
-            NodeKind::FunctionCall { args, .. } | NodeKind::AmperCall { args, .. } => {
-                for arg in args {
-                    emit!(FieldId::ARGS, arg);
-                }
-            }
-            NodeKind::MethodCall { object, args, .. } => {
-                emit!(FieldId::OBJECT, object);
-                for arg in args {
-                    emit!(FieldId::ARGS, arg);
-                }
-            }
-            NodeKind::IndirectCall { object, args, .. } => {
-                emit!(FieldId::OBJECT, object);
-                for arg in args {
-                    emit!(FieldId::ARGS, arg);
-                }
-            }
-
-            // Functions
-            NodeKind::Subroutine { prototype, signature, body, .. } => {
-                if let Some(proto) = prototype {
-                    emit!(FieldId::PROTOTYPE, proto);
-                }
-                if let Some(sig) = signature {
-                    emit!(FieldId::SIGNATURE, sig);
-                }
-                emit!(FieldId::BODY, body);
-            }
-            NodeKind::Method { signature, body, .. } => {
-                if let Some(sig) = signature {
-                    emit!(FieldId::SIGNATURE, sig);
-                }
-                emit!(FieldId::BODY, body);
-            }
-            NodeKind::Return { value } => {
-                if let Some(v) = value {
-                    emit!(FieldId::VALUE, v);
-                }
-            }
-            NodeKind::Goto { target, .. } => emit!(FieldId::TARGET, target),
-            NodeKind::Signature { parameters } => {
-                for param in parameters {
-                    emit!(FieldId::PARAMETERS, param);
-                }
-            }
-            NodeKind::MandatoryParameter { variable } => emit!(FieldId::VARIABLE, variable),
-            NodeKind::OptionalParameter { variable, default_value } => {
-                emit!(FieldId::VARIABLE, variable);
-                emit!(FieldId::DEFAULT_VALUE, default_value);
-            }
-            NodeKind::SlurpyParameter { variable } => emit!(FieldId::VARIABLE, variable),
-            NodeKind::NamedParameter { variable, default_value, .. } => {
-                emit!(FieldId::VARIABLE, variable);
-                if let Some(default) = default_value {
-                    emit!(FieldId::DEFAULT_VALUE, default);
-                }
-            }
-
-            // Pattern matching
-            NodeKind::Match { expr, .. } => emit!(FieldId::EXPR, expr),
-            NodeKind::Substitution { expr, .. } => emit!(FieldId::EXPR, expr),
-            NodeKind::Transliteration { expr, .. } => emit!(FieldId::EXPR, expr),
-
-            // Containers
-            NodeKind::ArrayLiteral { elements } => {
-                for elem in elements {
-                    emit!(FieldId::ELEMENTS, elem);
-                }
-            }
-            NodeKind::HashLiteral { pairs } => {
-                for (key, value) in pairs {
-                    emit!(FieldId::KEY, key);
-                    emit!(FieldId::VALUE, value);
-                }
-            }
-
-            // Package system
-            NodeKind::Package { block, .. } => {
-                if let Some(b) = block {
-                    emit!(FieldId::BLOCK, b);
-                }
-            }
-            NodeKind::PhaseBlock { block, .. } => emit!(FieldId::BLOCK, block),
-            NodeKind::Class { body, .. } => emit!(FieldId::BODY, body),
-
-            // Error node might have a partial valid tree
-            NodeKind::Error { partial, .. } => {
-                if let Some(node) = partial {
-                    emit!(FieldId::PARTIAL, node);
-                }
-            }
-
-            // Leaf nodes (no children to traverse)
-            NodeKind::Variable { .. }
-            | NodeKind::Identifier { .. }
-            | NodeKind::Number { .. }
-            | NodeKind::String { .. }
-            | NodeKind::VString { .. }
-            | NodeKind::Heredoc { .. }
-            | NodeKind::Regex { .. }
-            | NodeKind::Readline { .. }
-            | NodeKind::Glob { .. }
-            | NodeKind::Typeglob { .. }
-            | NodeKind::Diamond
-            | NodeKind::Ellipsis
-            | NodeKind::Undef
-            | NodeKind::Use { .. }
-            | NodeKind::No { .. }
-            | NodeKind::Prototype { .. }
-            | NodeKind::DataSection { .. }
-            | NodeKind::Format { .. }
-            | NodeKind::LoopControl { .. }
-            | NodeKind::MissingExpression
-            | NodeKind::MissingStatement
-            | NodeKind::MissingIdentifier
-            | NodeKind::MissingBlock
-            | NodeKind::UnknownRest => {}
-        }
-
-        ControlFlow::Continue(())
-    }
-
-    /// Call a function on every direct child, preserving its structural field.
-    #[inline]
-    pub fn for_each_child_with_field<'a, F: FnMut(Option<FieldId>, &'a Node)>(&'a self, mut f: F) {
-        let _ = self.try_for_each_child_with_field(|field, child| {
-            f(field, child);
-            ControlFlow::<()>::Continue(())
-        });
-    }
-
-    /// Call a function on every direct child without field metadata.
-    #[inline]
-    pub fn for_each_child<'a, F: FnMut(&'a Node)>(&'a self, mut f: F) {
-        self.for_each_child_with_field(|_, child| f(child));
-    }
-
-    /// Count the total number of nodes in this subtree (inclusive).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use perl_ast::{Node, NodeKind, SourceLocation};
-    ///
-    /// let loc = SourceLocation { start: 0, end: 1 };
-    /// let leaf = Node::new(NodeKind::Number { value: "1".to_string() }, loc);
-    /// assert_eq!(leaf.count_nodes(), 1);
-    ///
-    /// let program = Node::new(
-    ///     NodeKind::Program { statements: vec![leaf] },
-    ///     loc,
-    /// );
-    /// assert_eq!(program.count_nodes(), 2);
-    /// ```
-    pub fn count_nodes(&self) -> usize {
-        self.count_nodes_impl(0)
-    }
-
-    /// Depth-bounded recursive helper for [`count_nodes`].
-    ///
-    /// Stops recursing at [`MAX_AST_DEPTH`] and counts the current node as 1,
-    /// skipping any further descendants.  This prevents stack overflow on
-    /// pathologically deep ASTs while preserving exact counts for normal inputs.
-    fn count_nodes_impl(&self, depth: usize) -> usize {
-        if depth >= MAX_AST_DEPTH {
-            return 1;
-        }
-        let mut count = 1;
-        self.for_each_child(|child| {
-            count += child.count_nodes_impl(depth + 1);
-        });
-        count
-    }
-
     /// Collect direct child nodes into a vector for convenience APIs.
     ///
     /// # Examples
@@ -1774,71 +1149,6 @@ impl Node {
     #[inline]
     pub fn contains_offset(&self, offset: usize) -> bool {
         self.location.start <= offset && offset < self.location.end
-    }
-
-    /// Find the most specific node whose source span contains `offset`.
-    ///
-    /// Returns `None` when `offset` is outside this node. Otherwise, returns this
-    /// node or the deepest descendant whose span contains the offset. This is useful
-    /// for LSP features that need to map a cursor byte offset to the smallest AST
-    /// construct at that position.
-    ///
-    /// The same half-open span semantics as [`Node::contains_offset`] apply: start
-    /// positions are inclusive and end positions are exclusive.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use perl_ast::{Node, NodeKind, SourceLocation};
-    ///
-    /// let left = Node::new(
-    ///     NodeKind::Identifier { name: "left".to_string() },
-    ///     SourceLocation { start: 0, end: 4 },
-    /// );
-    /// let right = Node::new(
-    ///     NodeKind::Number { value: "1".to_string() },
-    ///     SourceLocation { start: 7, end: 8 },
-    /// );
-    /// let expr = Node::new(
-    ///     NodeKind::Binary {
-    ///         op: "+".to_string(),
-    ///         left: Box::new(left),
-    ///         right: Box::new(right),
-    ///     },
-    ///     SourceLocation { start: 0, end: 8 },
-    /// );
-    ///
-    /// assert_eq!(
-    ///     expr.find_deepest_containing_offset(7).map(|node| node.kind.kind_name()),
-    ///     Some("Number"),
-    /// );
-    /// assert_eq!(expr.find_deepest_containing_offset(8), None);
-    /// ```
-    #[inline]
-    pub fn find_deepest_containing_offset(&self, offset: usize) -> Option<&Node> {
-        self.find_deepest_containing_offset_impl(offset, 0)
-    }
-
-    /// Depth-bounded recursive helper for [`find_deepest_containing_offset`].
-    ///
-    /// When [`MAX_AST_DEPTH`] is reached, returns `Some(self)` rather than
-    /// recursing into children.  The caller already knows `self` contains
-    /// `offset` (the outer `contains_offset` check passed), so the result
-    /// is still a valid, containing node — just not necessarily the deepest one.
-    fn find_deepest_containing_offset_impl(&self, offset: usize, depth: usize) -> Option<&Node> {
-        if !self.contains_offset(offset) {
-            return None;
-        }
-        if depth >= MAX_AST_DEPTH {
-            return Some(self);
-        }
-        let mut result = self;
-        self.for_each_child(|child| {
-            if let Some(descendant) = child.find_deepest_containing_offset_impl(offset, depth + 1) {
-                result = descendant;
-            }
-        });
-        Some(result)
     }
 
     /// Returns the byte length of this node's source span.
@@ -1931,10 +1241,15 @@ impl Drop for Node {
 mod node_clone;
 mod node_debug;
 mod node_eq;
+mod read_cursor;
 
 pub use node_debug::{
     NODE_DEBUG_MAX_BYTES, NODE_DEBUG_MAX_CHILDREN, NODE_DEBUG_MAX_DEPTH, NODE_DEBUG_MAX_NODES,
     NODE_DEBUG_MAX_PAYLOAD_CHARS, NODE_DEBUG_TRUNCATION_MARKER,
+};
+pub use read_cursor::{
+    AstReadExact, AstReadInstrumentCause, AstReadLimits, AstReadPath, AstReadPathStep,
+    AstReadResult, AstReadTruncation, AstReadWork, DeepestContainingMatch,
 };
 
 #[cfg(test)]
@@ -4112,10 +3427,9 @@ mod tests {
 // Depth-guard regression tests (--lib coverage for Codecov/Patch 95)
 // ---------------------------------------------------------------------------
 //
-// These tests verify that the three recursive AST operations — `to_sexp`,
-// `count_nodes`, and `find_deepest_containing_offset` — do NOT overflow the
-// stack on a pathologically deep input (50 000 levels), and that the depth
-// guard is transparent for shallow inputs that are well within MAX_AST_DEPTH.
+// These tests verify that `to_sexp` stays depth-guarded (#8832) and that
+// exact whole-tree reads (`count_nodes`, `find_deepest_containing_offset`)
+// complete iteratively on a pathologically deep input (50 000 levels).
 //
 // The tree is built iteratively (no recursion in the fixture builder itself),
 // so the fixture construction cannot itself overflow the stack.
@@ -4149,17 +3463,12 @@ mod depth_guard_tests {
 
     #[test]
     fn count_nodes_does_not_overflow_on_deep_input() -> TestResult {
-        // 50 000 levels deep: without the depth guard this stack-overflows.
+        // 50 000 levels deep: the exact iterative walk must return the
+        // independently constructed size, not a MAX_AST_DEPTH-truncated count.
         let deep = deep_chain(50_000);
         let count = deep.count_nodes();
         drop(deep);
-        // The guard fires at MAX_AST_DEPTH, so we count at most MAX_AST_DEPTH + 1
-        // nodes (root + one per guarded level).
-        assert!(count >= 1, "must count at least the root node");
-        assert!(
-            count <= MAX_AST_DEPTH + 2,
-            "count ({count}) must be bounded by the depth guard (MAX_AST_DEPTH={MAX_AST_DEPTH})"
-        );
+        assert_eq!(count, 50_001, "exact count must include every wrapper and the leaf");
         Ok(())
     }
 
@@ -4230,12 +3539,13 @@ mod depth_guard_tests {
 
     #[test]
     fn find_deepest_containing_offset_does_not_overflow_on_deep_input() -> TestResult {
-        // 50 000 levels deep: without the depth guard this stack-overflows.
+        // 50 000 levels deep: exact lookup must reach the leaf, not a node
+        // frozen at MAX_AST_DEPTH.
         let deep = deep_chain(50_000);
-        // Must return without panicking; result must be Some (offset 0 is inside the root).
-        assert!(
-            deep.find_deepest_containing_offset(0).is_some(),
-            "must return Some(&Node) for an in-range offset"
+        assert_eq!(
+            deep.find_deepest_containing_offset(0).map(|node| node.kind.kind_name()),
+            Some("Number"),
+            "must return the leaf, not a truncated wrapper"
         );
         drop(deep);
         Ok(())
@@ -4942,10 +4252,21 @@ mod deep_tree_destruction_tests {
                 "explicit clone stack must grow with chain depth, got {}",
                 work.max_explicit_stack_depth
             );
-            let bounded_population = cloned.count_nodes() as u64;
+            let truncated_population = match cloned
+                .count_nodes_bounded(AstReadLimits::max_depth(MAX_AST_DEPTH))
+            {
+                AstReadResult::Truncated { partial, .. } => partial as u64,
+                other => {
+                    assert!(
+                        matches!(other, AstReadResult::Truncated { .. }),
+                        "50k clone fixture must still truncate a depth-512 bounded read, got {other:?}"
+                    );
+                    0
+                }
+            };
             assert!(
-                bounded_population < work.nodes_rebuilt,
-                "work must record performed clone operations ({}) rather than depth-bounded population ({bounded_population})",
+                truncated_population < work.nodes_rebuilt,
+                "clone work must record performed rebuilds ({}) rather than a depth-512 truncated read ({truncated_population})",
                 work.nodes_rebuilt
             );
             assert_boxed_chain_eq(&original, &cloned, DEEP_DEPTH);

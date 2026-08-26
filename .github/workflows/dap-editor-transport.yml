@@ -1,0 +1,110 @@
+name: DAP Editor Transport
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - '.ci/dap/editor-transport-inventory.v1.json'
+      - '.ci/editor-clients/vimspector-perl-dap.v1.json'
+      - '.ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs'
+      - '.docker/perl-lsp/Dockerfile'
+      - 'book/src/dap/user-guide.md'
+      - 'clients/sublime/LSP-perllsp/dap_support.py'
+      - 'crates/perl-dap/**'
+      - 'crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs'
+      - 'docs/adr/0047-dap-stdio-only-editor-transport.md'
+      - 'docs/EDITORS/HELIX_SETUP.md'
+      - 'docs/how-to/EXTERNAL_DEBUGGER_PEER_QUICKSTART.md'
+      - 'docs/tutorials/DAP_USER_GUIDE.md'
+      - 'integrations/lsp4ij/upstream/0.20.1/dap/template.json'
+      - 'scripts/ci/dap_editor_transport*.py'
+      - 'scripts/tests/test_dap_editor_transport_inventory.py'
+      - 'scripts/ux/neovim/perl_dap.lua'
+      - 'vscode-extension/src/debugAdapter.ts'
+      - '.github/workflows/dap-editor-transport.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - '.ci/dap/editor-transport-inventory.v1.json'
+      - '.ci/editor-clients/vimspector-perl-dap.v1.json'
+      - '.ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs'
+      - '.docker/perl-lsp/Dockerfile'
+      - 'book/src/dap/user-guide.md'
+      - 'clients/sublime/LSP-perllsp/dap_support.py'
+      - 'crates/perl-dap/**'
+      - 'crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs'
+      - 'docs/adr/0047-dap-stdio-only-editor-transport.md'
+      - 'docs/EDITORS/HELIX_SETUP.md'
+      - 'docs/how-to/EXTERNAL_DEBUGGER_PEER_QUICKSTART.md'
+      - 'docs/tutorials/DAP_USER_GUIDE.md'
+      - 'integrations/lsp4ij/upstream/0.20.1/dap/template.json'
+      - 'scripts/ci/dap_editor_transport*.py'
+      - 'scripts/tests/test_dap_editor_transport_inventory.py'
+      - 'scripts/ux/neovim/perl_dap.lua'
+      - 'vscode-extension/src/debugAdapter.ts'
+      - '.github/workflows/dap-editor-transport.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: dap-editor-transport-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DAP_TRANSPORT_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  inventory:
+    name: Stdio-only editor transport
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ env.DAP_TRANSPORT_CANDIDATE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checkout identity and clean source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$DAP_TRANSPORT_CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Run editor-transport falsifiers
+        run: python3 scripts/tests/test_dap_editor_transport_inventory.py
+
+      - name: Enforce current inventory and ruling
+        run: |
+          python3 scripts/ci/dap_editor_transport_inventory.py check \
+            --root . \
+            --manifest .ci/dap/editor-transport-inventory.v1.json \
+            --receipt target/receipts/dap-editor-transport.json
+
+      - name: Publish inventory summary
+        shell: bash
+        run: |
+          {
+            echo '### DAP editor transport'
+            echo
+            echo '- Candidate: `'$DAP_TRANSPORT_CANDIDATE_SHA'`'
+            echo '- Receipt: `target/receipts/dap-editor-transport.json`'
+            echo
+            echo '```json'
+            cat target/receipts/dap-editor-transport.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload inventory receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: dap-editor-transport-${{ env.DAP_TRANSPORT_CANDIDATE_SHA }}
+          path: target/receipts/dap-editor-transport.json
+          if-no-files-found: error
+          retention-days: 14

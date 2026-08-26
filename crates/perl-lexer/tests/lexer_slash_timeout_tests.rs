@@ -92,13 +92,13 @@ fn test_pathological_regex_with_budget_limit() -> TestResult {
 }
 
 #[test]
-fn test_unterminated_regex_graceful_failure() {
+fn test_unterminated_regex_graceful_failure() -> TestResult {
     // Unterminated regex must recover with a token, then still emit EOF (#12504).
     let mut lexer = PerlLexer::new("if /pattern");
-    let keyword = lexer.next_token().expect("keyword");
+    let keyword = lexer.next_token().ok_or("keyword")?;
     assert!(matches!(keyword.token_type, TokenType::Keyword(_)));
 
-    let token = lexer.next_token().expect("unterminated regex recovery");
+    let token = lexer.next_token().ok_or("unterminated regex recovery")?;
     assert!(
         token.token_type.is_recovery_token(),
         "expected recovery token, got {:?}",
@@ -106,9 +106,10 @@ fn test_unterminated_regex_graceful_failure() {
     );
     assert_eq!(token.text.as_ref(), "/pattern");
 
-    let eof = lexer.next_token().expect("EOF after unterminated regex");
+    let eof = lexer.next_token().ok_or("EOF after unterminated regex")?;
     assert_eq!(eof.token_type, TokenType::EOF);
     assert!(lexer.next_token().is_none());
+    Ok(())
 }
 
 #[test]
