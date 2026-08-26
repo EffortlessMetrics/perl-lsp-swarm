@@ -398,6 +398,18 @@ export function _setExtensionContextForTest(context: vscode.ExtensionContext): v
 }
 
 /**
+ * Test helper — inject (or clear) the live lifecycle controller so unit tests
+ * can drive `restartServer` through real start/stop transitions with fake
+ * clients. Pass `undefined` to restore the no-controller fallback harness.
+ * @internal
+ */
+export function _setLanguageClientLifecycleForTest(
+  lifecycle: ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent> | undefined,
+): void {
+  languageClientLifecycle = lifecycle;
+}
+
+/**
  * Test helper — deliver a watchdog-sourced failure observation through the
  * same production arbiter entry point the watchdog interval calls (#7845).
  * The optional generation mirrors the probe-binding the interval captures.
@@ -2416,10 +2428,20 @@ async function restartServer(_context: vscode.ExtensionContext) {
     return;
   }
 
-  if (!client && !currentServerPath && !lifecycle.hasPendingServerPathOverride) {
-    // A dormant server has nothing to restart. An explicit restart request is
-    // itself a server-dependent entry point (#8180), so honour it by starting
-    // the server rather than reporting the extension as "not initialized".
+  // A dormant server has nothing to restart: only a lifecycle that never
+  // left its initial stopped state is dormant. A `failed` lifecycle owns a
+  // half-built generation that `restart()` must stop before starting (#12724),
+  // so it must fall through to the restart path even when the compatibility
+  // projections are stale. An explicit restart request is itself a
+  // server-dependent entry point (#8180), so a dormant request is honoured by
+  // starting the server rather than reporting the extension as "not
+  // initialized".
+  if (
+    !client &&
+    !currentServerPath &&
+    !lifecycle.hasPendingServerPathOverride &&
+    lifecycle.snapshot.state === 'stopped'
+  ) {
     if (!serverDemand) {
       vscode.window.showWarningMessage('Perl Language Server is not initialized yet.');
       return;
@@ -2432,7 +2454,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
       // Staying silent here would be worse than the old "not initialized"
       // warning: the user asked for a server and would get no answer at all.
       const message = describeDemandError(demand.error);
-      outputChannel.error(`Failed to start perl-lsp: ${message}`);
+      outputChannel?.error(`Failed to start perl-lsp: ${message}`);
       vscode.window
         .showErrorMessage(`Failed to start Perl Language Server: ${message}`, 'Show Output')
         .then((selection) => {
@@ -2480,7 +2502,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
       });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    outputChannel.error(`Failed to restart perl-lsp: ${message}`);
+    outputChannel?.error(`Failed to restart perl-lsp: ${message}`);
     // A rejected restart() means the running generation was stopped and its
     // replacement failed: the server is stopped. Tell the demand owner,
     // otherwise its stale `running`/in-flight belief suppresses all later
@@ -2913,11 +2935,25 @@ async function recoverFromObservedCrash(
   const replacementSnapshot = languageClientLifecycle.snapshot;
   if (replacementSnapshot.state === 'running') {
     await settleRecoveryEpisode(decision, 'recovered', replacementSnapshot.generation);
-  } else {
-    await settleRecoveryEpisode(decision, 'recovery_failed', null);
-    outputChannel?.error(
-      `[lifecycle] Auto-restart attempt ${attempt} did not reach the running state (state: ${replacementSnapshot.state}).`,
-    );
+    return;
+  }
+  outputChannel?.error(
+    `[lifecycle] Auto-restart attempt ${attempt} did not reach the running state (state: ${replacementSnapshot.state}).`,
+  );
+  await settleRecoveryEpisode(decision, 'recovery_failed', null);
+  // A replacement that failed during STARTUP (#12724) can never be observed
+  // again by the existing failure surfaces: it never reached Running, so no
+  // Running→Stopped crash event fires, and the watchdog only arms while
+  // running. Settling `recovery_failed` here would therefore deadlock
+  // convergence — readiness stays cleared and no later restart ever happens
+  // even though automatic budget remains. Re-arm instead: arbitrate the
+  // failed replacement generation's own recorded failure through this same
+  // entry point, so the arbiter keeps sole ownership of dedupe, budget, and
+  // exhaustion (fail-closed: genuinely repeated failures still end at the
+  // exhaustion dialog). An explicit recovery that superseded the failed
+  // generation meanwhile is handled by the stale-generation guard above.
+  if (replacementSnapshot.state === 'failed') {
+    await recoverFromObservedCrash('startup_failure', replacementSnapshot.generation);
   }
 }
 

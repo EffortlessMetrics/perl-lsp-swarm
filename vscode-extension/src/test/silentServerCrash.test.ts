@@ -10,9 +10,12 @@
  *   - a user-initiated stop sentinel suppresses the crash notification
  *   - a stable prior run resets the auto-restart budget
  *
- * The real lifecycle controller is not instantiated in this unit harness, so
- * `restartServer()` short-circuits with a warning (the counter is incremented
- * before `restartServer` is called, which is what these tests assert on).
+ * Most cases run without a lifecycle controller, so `restartServer()`
+ * short-circuits with a warning (the counter is incremented before
+ * `restartServer` is called, which is what these tests assert on). The
+ * #12724 convergence cases inject a live lifecycle controller with fake
+ * clients whose `start()` rejects, reproducing a replacement that fails
+ * during startup.
  */
 
 jest.mock('vscode-languageclient/node', () => ({
@@ -29,6 +32,9 @@ jest.mock('vscode-languageclient/node', () => ({
 }));
 
 import * as vscode from 'vscode';
+import type { LanguageClient, StateChangeEvent } from 'vscode-languageclient/node';
+import { ExtensionLanguageClientLifecycle } from '../extensionComposition';
+import type { LifecycleDisposable, LifecycleHooks } from '../languageClientLifecycle';
 import {
   handleClientStateChange,
   serverNotRunningMessage,
@@ -40,6 +46,7 @@ import {
   _setLastStartupDiagnosisForTest,
   _watchdogFailureForTest,
   _spawnReplacementCrashGenerationForTest,
+  _setLanguageClientLifecycleForTest,
 } from '../extension';
 
 // vscode-languageclient State numeric values (Stopped=1, Running=2, Starting=3).
@@ -82,11 +89,80 @@ function flush(): Promise<void> {
 const showErrorMessage = vscode.window.showErrorMessage as jest.Mock;
 const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
 
+// ---------------------------------------------------------------------------
+// #12724 harness: a live lifecycle controller with fake clients whose
+// `start()` can reject, modelling replacements that fail during startup on a
+// loaded host (the hosted-journey failure shape) without real processes.
+// ---------------------------------------------------------------------------
+
+interface FakeLifecycleEvent {
+  oldState: number;
+  newState: number;
+}
+
+class FakeLifecycleClient {
+  private readonly listeners = new Set<(event: FakeLifecycleEvent) => void>();
+  constructor(private readonly startOutcome: Promise<void>) {}
+  start(): Promise<void> {
+    return this.startOutcome;
+  }
+  async stop(): Promise<void> {}
+  dispose(): void | Promise<void> {}
+  onDidChangeState(listener: (event: FakeLifecycleEvent) => void): LifecycleDisposable {
+    this.listeners.add(listener);
+    return {
+      dispose: () => {
+        this.listeners.delete(listener);
+      },
+    };
+  }
+}
+
+function makeStartupFailingLifecycle(failuresBeforeSuccess: number): {
+  lifecycle: ExtensionLanguageClientLifecycle<FakeLifecycleClient, FakeLifecycleEvent>;
+  createdClients: () => number;
+} {
+  // The initial (pre-crash) generation starts successfully; only replacement
+  // generations after the crash fail during startup.
+  let created = 0;
+  const hooks: LifecycleHooks<FakeLifecycleClient, FakeLifecycleEvent> = {
+    resolveServerPath: async () => '/server/perllsp',
+    createClient: () => {
+      const isInitialGeneration = created === 0;
+      created += 1;
+      const willFailDuringStartup = !isInitialGeneration && created - 1 <= failuresBeforeSuccess;
+      return new FakeLifecycleClient(
+        willFailDuringStartup
+          ? Promise.reject(new Error('simulated slow-host startup failure'))
+          : Promise.resolve(),
+      );
+    },
+  };
+  return {
+    lifecycle: new ExtensionLanguageClientLifecycle(hooks),
+    createdClients: () => created,
+  };
+}
+
+function injectedLifecycle(
+  lifecycle: ExtensionLanguageClientLifecycle<FakeLifecycleClient, FakeLifecycleEvent>,
+): ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent> {
+  return lifecycle as unknown as ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent>;
+}
+
+/** Drain the recovery continuation chain (pure microtask/immmediate cascades). */
+async function drain(rounds = 40): Promise<void> {
+  for (let round = 0; round < rounds; round += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
 describe('mid-session silent server crash recovery (#4625)', () => {
   beforeEach(() => {
     _resetCrashRecoveryStateForTest();
     _setLastStartupDiagnosisForTest(undefined);
     _setExtensionContextForTest(makeContext());
+    _setLanguageClientLifecycleForTest(undefined);
     showErrorMessage.mockReset();
     showErrorMessage.mockResolvedValue(undefined);
     showWarningMessage.mockReset();
@@ -296,5 +372,55 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     expect(restartToasts).toHaveLength(2);
     expect(String(restartToasts[0][0])).toMatch(/attempt 1\/3/);
     expect(String(restartToasts[1][0])).toMatch(/attempt 2\/3/);
+  });
+
+  // ------------------------------------------------------------------
+  // #12724: a replacement that fails DURING STARTUP (never reaches
+  // Running) produces no further Running→Stopped crash event and no
+  // watchdog observation, so settling `recovery_failed` without re-arming
+  // deadlocks convergence: budget remains, but no restart ever happens
+  // again and documents are never re-marked ready. The recovery must
+  // re-arm by arbitrating the failed replacement's own recorded failure
+  // through the same entry point, while genuinely repeated failures still
+  // exhaust fail-closed into the exhaustion dialog.
+  // ------------------------------------------------------------------
+
+  test('a replacement failing during startup re-arms recovery until a replacement runs (#12724)', async () => {
+    // Attempts 1 and 2 reject during client.start(); attempt 3 succeeds.
+    const { lifecycle } = makeStartupFailingLifecycle(2);
+    _setLanguageClientLifecycleForTest(injectedLifecycle(lifecycle));
+    await lifecycle.start();
+    expect(lifecycle.snapshot.state).toBe('running');
+
+    handleClientStateChange(crashEvent() as never);
+    await drain();
+
+    expect(lifecycle.snapshot.state).toBe('running');
+    expect(_autoRestartAttemptsForTest()).toBe(3);
+    const restartToasts = showErrorMessage.mock.calls.filter((call) =>
+      /restarting automatically/i.test(String(call[0])),
+    );
+    expect(restartToasts).toHaveLength(3);
+    expect(String(restartToasts[0][0])).toMatch(/attempt 1\/3/);
+    expect(String(restartToasts[1][0])).toMatch(/attempt 2\/3/);
+    expect(String(restartToasts[2][0])).toMatch(/attempt 3\/3/);
+  });
+
+  test('genuinely repeated startup failures still exhaust the budget fail-closed (#12724)', async () => {
+    const { lifecycle } = makeStartupFailingLifecycle(Number.POSITIVE_INFINITY);
+    _setLanguageClientLifecycleForTest(injectedLifecycle(lifecycle));
+    await lifecycle.start();
+
+    handleClientStateChange(crashEvent() as never);
+    await drain();
+
+    expect(_autoRestartAttemptsForTest()).toBe(3);
+    expect(lifecycle.snapshot.state).toBe('failed');
+    const exhaustedToasts = showErrorMessage.mock.calls.filter((call) =>
+      /could not be restarted automatically/i.test(String(call[0])),
+    );
+    expect(exhaustedToasts).toHaveLength(1);
+    // The exhaustion dialog is terminal: it never offers an automatic retry.
+    expect(String(exhaustedToasts[0][0])).not.toMatch(/restarting automatically/i);
   });
 });
