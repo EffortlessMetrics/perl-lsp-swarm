@@ -56,12 +56,23 @@ fn compiler_interprocedural_summary_contract_lives_in_semantic_facts()
         module.contains("boundary_sites: Vec<BoundarySiteRef>"),
         "the packet must retain per-site boundary provenance"
     );
-    // The packet carries its own fail-closed validation seam (the module now
-    // has at least four `validate()` implementations: subject, ref, result,
+    // The packet carries its own fail-closed validation seam, anchored to
+    // the packet's own impl — a count alone would pass if the packet's
+    // validate were deleted and an unrelated one existed.
+    let packet_impl = module
+        .find("impl CallableSemanticSummary {")
+        .ok_or("the packet contract must have its own impl block")?;
+    let packet_section =
+        module.get(packet_impl..).ok_or("the packet impl anchor must be a valid slice boundary")?;
+    assert!(
+        packet_section.contains("pub fn validate(&self) -> Result<(), Vec<String>>"),
+        "CallableSemanticSummary must carry its own fail-closed validate()"
+    );
+    // And the module still validates every contract (subject, ref, result,
     // packet).
     assert!(
         module.matches("pub fn validate(&self) -> Result<(), Vec<String>>").count() >= 4,
-        "the packet contract must carry its own fail-closed validation"
+        "every contract must carry its own fail-closed validation"
     );
     // PlaceRole is a documented passthrough of the interim #2660 lexical-role
     // vocabulary owned by perl-parser-core, not a new authority.
@@ -98,12 +109,18 @@ fn compiler_interprocedural_summary_assembler_keeps_its_non_goals()
         assert!(assembler.contains(surface), "missing assembler surface: {surface}");
     }
     // Non-goals stay honest: no composing callee facts, no call graph/SCC,
-    // no project traversal, no fact extraction, no call resolution.
+    // no project traversal, no fact extraction, no call resolution. Comment
+    // lines are stripped before scanning so prose cannot false-positive.
+    let code_only = assembler
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
     for forbidden in
         ["fn compose(", "call_graph", "fn traverse", "fn extract_facts", "resolve_call"]
     {
         assert!(
-            !assembler.contains(forbidden),
+            !code_only.contains(forbidden),
             "the assembler must not implement non-goals: found {forbidden}"
         );
     }

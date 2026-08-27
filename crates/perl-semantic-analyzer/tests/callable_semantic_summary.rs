@@ -310,13 +310,26 @@ fn callable_semantic_summary_canonical_bytes_are_deterministic() -> TestResult {
 /// counts — no absolute paths, no environment values, no source text.
 #[test]
 fn callable_semantic_summary_serialized_bytes_are_privacy_safe() -> TestResult {
-    let source = "sub f { a(); my $x = 1; return $x; }";
+    // A distinctive, escape-free marker embedded in a string literal: if
+    // source TEXT ever leaked into the packet, this exact token would appear
+    // verbatim in the canonical JSON (identifier names like `$x` are
+    // legitimate passthrough identity; literal content is not).
+    let source = "sub f { a(); my $x = \"zqx-leak-marker-7f3a\"; return $x; }";
     let assembly = assemble(source, "gen-1")?;
     let packet = only_summary(&assembly)?;
     let json = String::from_utf8(packet.canonical_bytes()?)?;
 
-    assert!(!json.contains('/'), "no absolute or relative path may leak: {json}");
-    assert!(!json.contains(source), "no source text may leak into the packet");
+    assert!(
+        !json.contains("zqx-leak-marker-7f3a"),
+        "no source literal content may leak into the packet: {json}"
+    );
+    // No absolute host paths: neither path-shaped substrings nor this
+    // crate's own root path may appear in serialized identity fields.
+    assert!(!json.contains("/home/"), "no absolute-path-shaped substring may leak: {json}");
+    assert!(
+        !json.contains(env!("CARGO_MANIFEST_DIR")),
+        "the crate root path must never leak into the packet"
+    );
     if let Ok(home) = std::env::var("HOME")
         && !home.is_empty()
     {

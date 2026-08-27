@@ -56,6 +56,25 @@ fn body_shape(
     )
 }
 
+/// Resolve a named subroutine's body index from the body OWNER, never a
+/// hardcoded position: a lowering-order change must surface as an
+/// actionable error here, not a silently swapped shape.
+fn named_body_index(file: &HirFile, name: &str) -> Result<usize, Box<dyn Error>> {
+    file.bodies
+        .iter()
+        .position(|body| {
+            matches!(&body.owner,
+                perl_parser_core::hir::BodyOwnerKind::Subroutine { name: Some(owner) }
+                    if owner == name)
+        })
+        .ok_or_else(|| {
+            format!(
+                "no body owned by subroutine `{name}` — the lowering order or owner mapping changed"
+            )
+            .into()
+        })
+}
+
 #[test]
 fn callable_summary_input_identity_is_deterministic() -> TestResult {
     let first = parse_and_lower(SOURCE);
@@ -95,7 +114,8 @@ fn callable_summary_input_identity_is_deterministic() -> TestResult {
 
     // The callable bodies actually lower to operations (the assembler's
     // work law has something to count).
-    let f_shape = body_shape(&first, 1).ok_or("sub f body must exist")?;
+    let f_idx = named_body_index(&first, "f")?;
+    let f_shape = body_shape(&first, f_idx).ok_or("sub f body must exist")?;
     assert!(!f_shape.is_empty(), "sub f must lower to a non-empty op sequence");
     Ok(())
 }
@@ -105,8 +125,10 @@ fn callable_summary_input_identity_is_deterministic() -> TestResult {
 #[test]
 fn callable_summary_input_identity_preserves_body_boundaries() -> TestResult {
     let file = parse_and_lower(SOURCE);
-    let f_shape = body_shape(&file, 1).ok_or("sub f body must exist")?;
-    let g_shape = body_shape(&file, 2).ok_or("sub g body must exist")?;
+    let f_idx = named_body_index(&file, "f")?;
+    let g_idx = named_body_index(&file, "g")?;
+    let f_shape = body_shape(&file, f_idx).ok_or("sub f body must exist")?;
+    let g_shape = body_shape(&file, g_idx).ok_or("sub g body must exist")?;
 
     // PIR ids restart at zero per body lowering — the id is only meaningful
     // together with the body index.

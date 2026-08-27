@@ -350,7 +350,8 @@ fn assemble_one(
         return;
     }
 
-    let packet = build_packet(ctx, decl, decl_range, body_idx, body, &nodes, outbound, unmodeled);
+    let mut packet =
+        build_packet(ctx, decl, decl_range, body_idx, body, &nodes, outbound, unmodeled);
     // Fail closed: an assembled packet that fails its own contract
     // validation is a blocker naming the violations, never an invalid
     // summary reported as success.
@@ -360,6 +361,18 @@ fn assemble_one(
             violations.join("; ")
         ));
         return;
+    }
+    // Measure the canonical byte size AFTER validation, where the blocker
+    // channel exists: a serialization failure is an instrument error and
+    // becomes a blocker — never a fabricated 0-byte accounting presented
+    // as success. (Measured over the zero-filled ledger field; the field
+    // documents its own zero-filled measurement.)
+    match packet.canonical_bytes() {
+        Ok(bytes) => packet.work.bytes_retained = bytes.len() as u64,
+        Err(err) => {
+            block(&format!("packet serialization failed (instrument error, fail closed): {err}"));
+            return;
+        }
     }
     assembly.summaries.push(packet);
 }
@@ -463,8 +476,15 @@ fn callable_entity_id(
         .field("anchor-start", &range.start.to_string())
         .field("anchor-end", &range.end.to_string())
         .finish();
-    let high = fingerprint.get(..16).unwrap_or(&fingerprint);
-    EntityId(u64::from_str_radix(high, 16).unwrap_or(0))
+    // Derive the u64 by a deterministic byte-fold over the full fingerprint
+    // string (FNV-style wrapping multiply-add over every byte): no parsing,
+    // no failure path, and no fabricated sentinel identity — the derivation
+    // is total by construction.
+    let mut id = 0xcbf2_9ce4_8422_2325u64;
+    for byte in fingerprint.as_bytes() {
+        id = id.wrapping_mul(0x0000_0100_0000_01b3).wrapping_add(u64::from(*byte));
+    }
+    EntityId(id)
 }
 
 /// Content identity of one callable body: a canonical fingerprint over the
@@ -1050,7 +1070,10 @@ fn build_packet(
         ctx.privacy,
     );
 
-    let mut packet = CallableSemanticSummary::new(
+    // The packet leaves the constructor with a zero byte ledger; the caller
+    // (`assemble_one`) measures the canonical byte size after validation,
+    // where a serialization failure can become an explicit blocker.
+    CallableSemanticSummary::new(
         entity,
         decl.name.clone(),
         body_identity(ctx, body_idx, nodes, &outbound_calls, &boundary_sites),
@@ -1064,11 +1087,5 @@ fn build_packet(
         outbound_calls,
         boundary_sites,
         SummaryWorkLedger::new(1, 1, planned_ops, visited_ops, visited_ops, 0),
-    );
-    // Canonical byte size of the packet (serialized with a zero ledger
-    // field, then recorded — the field documents its own zero-filled
-    // measurement).
-    packet.work.bytes_retained =
-        packet.canonical_bytes().map(|bytes| bytes.len() as u64).unwrap_or(0);
-    packet
+    )
 }
