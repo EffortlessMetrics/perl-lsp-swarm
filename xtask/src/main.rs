@@ -2897,6 +2897,13 @@ enum CpanCorpusCommand {
         /// runs and lets cpanm skip already-installed modules.
         #[arg(long)]
         reset: bool,
+
+        /// Stop cleanly once this many minutes have elapsed, keeping completed
+        /// batches installed and emitting CPAN_CORPUS_INSTALL_COMPLETE=false.
+        /// Lets a scheduled warm lane end below runner preemption while
+        /// checkpointing forward progress (#12823).
+        #[arg(long)]
+        time_budget_minutes: Option<u64>,
     },
 
     /// Run parser corpus sweep against installed CPAN modules
@@ -5765,7 +5772,13 @@ fn run_cli(cli: Cli) -> Result<()> {
                     }
                     cpan_corpus::fetch_list(&config)
                 }
-                CpanCorpusCommand::Install { dist_list, install_dir, verbose, reset } => {
+                CpanCorpusCommand::Install {
+                    dist_list,
+                    install_dir,
+                    verbose,
+                    reset,
+                    time_budget_minutes,
+                } => {
                     if let Some(dl) = dist_list {
                         config.dist_list = dl;
                     }
@@ -5774,6 +5787,17 @@ fn run_cli(cli: Cli) -> Result<()> {
                         config.install_dir = id;
                     }
                     config.verbose = verbose;
+                    config.time_budget = match time_budget_minutes {
+                        None => None,
+                        Some(mins) => {
+                            let secs = mins.checked_mul(60).ok_or_else(|| {
+                                color_eyre::eyre::eyre!(
+                                    "--time-budget-minutes {mins} overflows the budget clock"
+                                )
+                            })?;
+                            Some(std::time::Duration::from_secs(secs))
+                        }
+                    };
                     cpan_corpus::install(&config)
                 }
                 CpanCorpusCommand::Sweep { output, enforce, verbose, install_dir } => {
