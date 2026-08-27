@@ -140,12 +140,16 @@ pub(super) fn observation_from_gate_result(
     };
 
     let duration_i64 = i64::try_from(result.duration_ms).unwrap_or(i64::MAX);
-    let started_at_unix_ms = unix_millis_now().map(|end| end.saturating_sub(duration_i64));
-    let ended_at_unix_ms = unix_millis_now();
-    let timing = ObservationTiming {
-        started_at_unix_ms,
-        ended_at_unix_ms,
-        duration_ms: if command_started { result.duration_ms } else { 0 },
+    // A never-started command has no product-command window at all, so its
+    // timing stays honestly empty instead of reporting spawn overhead; a
+    // started one derives start from a single observed endpoint so the
+    // ended-started invariant holds exactly.
+    let timing = if command_started {
+        let ended_at_unix_ms = unix_millis_now();
+        let started_at_unix_ms = ended_at_unix_ms.map(|end| end.saturating_sub(duration_i64));
+        ObservationTiming { started_at_unix_ms, ended_at_unix_ms, duration_ms: result.duration_ms }
+    } else {
+        ObservationTiming { started_at_unix_ms: None, ended_at_unix_ms: None, duration_ms: 0 }
     };
 
     let mut prerequisites_missing: Vec<String> = Vec::new();
@@ -383,7 +387,7 @@ mod fixtures {
             &gate,
             &result,
             &receipt_root,
-            dir.path().join("routed"),
+            &dir.path().join("routed"),
             None,
         )
         .expect("emission succeeds honestly");
@@ -405,7 +409,10 @@ mod fixtures {
     fn stale_published_plan_bytes_fail_closed() {
         let plan = compiled_fixture();
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut json = serde_json::to_value(&plan.canonical_json_expect()).expect("value");
+        let canonical: serde_json::Value =
+            serde_json::from_slice(&plan.canonical_json().expect("canonical bytes"))
+                .expect("value");
+        let mut json = canonical;
         json["subject"]["head_sha"] = serde_json::Value::String(SHA_B.to_string());
         let path = dir.path().join("tampered.json");
         std::fs::write(&path, serde_json::to_vec(&json).expect("bytes")).expect("write");
