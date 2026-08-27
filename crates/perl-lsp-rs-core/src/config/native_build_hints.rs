@@ -29,6 +29,9 @@ pub struct NativeBuildHints {
     /// Library link inputs (`-l*` / `-L*` flags, MSVC `*.lib` names) declared
     /// through the `LIBS` key.
     pub libs_flags: Vec<String>,
+    /// Ordered alternative linker specifications from `LIBS` array entries.
+    /// Each inner vector is one complete MakeMaker candidate.
+    pub libs_alternatives: Vec<Vec<String>>,
     /// Preprocessor definition flags (`-D*`) declared through the `DEFINE`
     /// key.
     pub define_flags: Vec<String>,
@@ -148,13 +151,25 @@ fn merge_typed_key(
     let extraction = extract_key_literal_values(source, key);
     push_failures(hints, script, key, extraction.failures);
 
-    let target = match key {
-        "LIBS" => &mut hints.libs_flags,
-        "DEFINE" => &mut hints.define_flags,
-        "OBJECT" => &mut hints.object_files,
-        _ => &mut hints.myextlib_files,
-    };
-    collect_unique(target, extraction.values.iter().flat_map(|value| hint_tokens(key, value)));
+    if key == "LIBS" {
+        for value in &extraction.values {
+            let tokens = tokenize_flags(value)
+                .into_iter()
+                .filter(|token| is_library_link_input(token))
+                .collect::<Vec<_>>();
+            if !tokens.is_empty() {
+                hints.libs_alternatives.push(tokens.clone());
+                collect_unique(&mut hints.libs_flags, tokens.into_iter());
+            }
+        }
+    } else {
+        let target = match key {
+            "DEFINE" => &mut hints.define_flags,
+            "OBJECT" => &mut hints.object_files,
+            _ => &mut hints.myextlib_files,
+        };
+        collect_unique(target, extraction.values.iter().flat_map(|value| hint_tokens(key, value)));
+    }
 }
 
 fn push_failures(
@@ -174,10 +189,9 @@ fn push_failures(
 /// static parser cannot resolve to the field's concrete input kind.
 fn hint_tokens(key: &str, value: &str) -> Vec<String> {
     match key {
-        "LIBS" => value
-            .split_whitespace()
+        "LIBS" => tokenize_flags(value)
+            .into_iter()
             .filter(|token| is_library_link_input(token))
-            .map(str::to_owned)
             .collect(),
         "DEFINE" => value
             .split_whitespace()
@@ -196,6 +210,42 @@ fn hint_tokens(key: &str, value: &str) -> Vec<String> {
             if is_static_archive_reference(archive) { vec![archive.to_owned()] } else { Vec::new() }
         }
     }
+}
+
+fn tokenize_flags(value: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for ch in value.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+        } else if ch == '\\' && quote.is_some() {
+            escaped = true;
+        } else if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            } else {
+                current.push(ch);
+            }
+        } else if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+        } else if ch.is_whitespace() {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(ch);
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }
 
 fn flatten_include_flags(value: &str) -> Vec<String> {
@@ -262,12 +312,47 @@ fn extract_key_literal_values(source: &str, key: &str) -> KeyLiteralExtraction {
             }
             Err(reason) => {
                 failures.push(reason);
-                search_from = value_start + 1;
+                search_from = value_start + rejected_value_len(source, value_start).max(1);
             }
         }
     }
 
     KeyLiteralExtraction { values, failures }
+}
+
+fn rejected_value_len(source: &str, start: usize) -> usize {
+    let bytes = source.as_bytes();
+    let mut idx = start;
+    let mut stack = Vec::new();
+    let mut quote = None;
+    let mut escaped = false;
+    while idx < bytes.len() {
+        let ch = bytes[idx] as char;
+        if let Some(active) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == active {
+                quote = None;
+            }
+            idx += 1;
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '(' | '[' | '{' => stack.push(ch),
+            ')' | ']' | '}' => {
+                if stack.pop().is_none() {
+                    return idx.saturating_sub(start);
+                }
+            }
+            ',' | ';' if stack.is_empty() => return idx.saturating_sub(start),
+            _ => {}
+        }
+        idx += 1;
+    }
+    idx.saturating_sub(start)
 }
 
 fn find_key_assignment(bytes: &[u8], key: &str, start: usize) -> Option<(usize, usize)> {
@@ -429,9 +514,17 @@ fn parse_quoted_string(source: &str, start: usize) -> Option<(String, usize)> {
             continue;
         }
 
-        if ch == '\\' {
+        if ch == '\\' && quote == b'"' {
             escaped = true;
             continue;
+        }
+
+        if ch == '\\' && quote == b'\'' {
+            let next = bytes.get(idx).copied();
+            if next == Some(b'\\') || next == Some(b'\'') {
+                escaped = true;
+                continue;
+            }
         }
 
         if ch as u8 == quote {
@@ -792,5 +885,56 @@ Module::Build->new(
     fn diagnostic_script_reports_workspace_file_names() {
         assert_eq!(NativeBuildScript::MakefilePl.file_name(), "Makefile.PL");
         assert_eq!(NativeBuildScript::BuildPl.file_name(), "Build.PL");
+    }
+
+    #[test]
+    fn rejected_nested_assignment_is_not_rescanned() -> TestResult {
+        let root = HintRoot::new()?;
+        root.write_makefile("WriteMakefile(LIBS => q(LIBS => '-levil'));\n")?;
+
+        let hints = root.hints();
+
+        assert!(hints.libs_flags.is_empty());
+        assert_eq!(hints.diagnostics.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn single_quoted_windows_paths_preserve_backslashes() -> TestResult {
+        let root = HintRoot::new()?;
+        root.write_makefile("WriteMakefile(MYEXTLIB => 'C:\\\\vendor\\\\foo.lib');")?;
+
+        let hints = root.hints();
+
+        assert_eq!(hints.myextlib_files, vec![r"C:\vendor\foo.lib".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn quoted_library_search_paths_remain_one_flag() -> TestResult {
+        let root = HintRoot::new()?;
+        root.write_makefile(r#"WriteMakefile(LIBS => '-L"/opt/vendor SDK/lib" -lfoo');"#)?;
+
+        let hints = root.hints();
+
+        assert_eq!(
+            hints.libs_flags,
+            vec!["-L/opt/vendor SDK/lib".to_string(), "-lfoo".to_string()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn libs_array_retains_ordered_alternatives() -> TestResult {
+        let root = HintRoot::new()?;
+        root.write_makefile("WriteMakefile(LIBS => ['-lgdbm', '-ldbm -lfoo']);")?;
+
+        let hints = root.hints();
+
+        assert_eq!(
+            hints.libs_alternatives,
+            vec![vec!["-lgdbm".to_string()], vec!["-ldbm".to_string(), "-lfoo".to_string()]]
+        );
+        Ok(())
     }
 }
