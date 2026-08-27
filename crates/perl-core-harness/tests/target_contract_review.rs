@@ -8,6 +8,7 @@ use model::{
     TargetTopologyDriftStatus, UpstreamTargetMatrix,
 };
 use perl_core_harness::target_contracts::{io, model};
+use perl_test_must::must_err_with;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -185,8 +186,10 @@ fn read_matrix_rejects_changed_target_id_in_part() -> TestResult {
         serde_json::Value::String("component_class".to_string());
     fs::write(&part_path, serde_json::to_vec_pretty(&part)?)?;
 
-    let error = io::read_matrix(temporary.path())
-        .expect_err("duplicate target ID in changed matrix part was accepted");
+    let error = must_err_with(
+        io::read_matrix(temporary.path()),
+        "duplicate target ID in changed matrix part was accepted",
+    );
     assert!(error.to_string().contains("target matrix"));
     Ok(())
 }
@@ -205,8 +208,10 @@ fn assert_loader_rejects_contract_mutation(
 
     let temporary = tempfile::NamedTempFile::new()?;
     fs::write(temporary.path(), serde_json::to_vec_pretty(&matrix)?)?;
-    let error = io::read_matrix(temporary.path())
-        .expect_err("offline loader accepted an invalid target contract");
+    let error = must_err_with(
+        io::read_matrix(temporary.path()),
+        "offline loader accepted an invalid target contract",
+    );
     assert!(
         error.to_string().contains(target_id),
         "loader error should identify {target_id}: {error}"

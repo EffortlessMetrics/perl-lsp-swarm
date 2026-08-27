@@ -1710,6 +1710,7 @@ dependencies = [
  "nix",
  "perl-core-harness-types",
  "perl-tdd-support",
+ "perl-test-must",
  "serde",
  "serde_json",
  "sha2",
