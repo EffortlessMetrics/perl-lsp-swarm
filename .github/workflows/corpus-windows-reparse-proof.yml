@@ -72,3 +72,13 @@ jobs:
           cargo test --locked -p xtask --lib
           dangling_protected_source_rejects_before_publication_write
           -- --nocapture
+
+      - name: Run non-skipping perl-corpus topology proof
+        env:
+          # The ten topology rejection tests must execute with real symlinks;
+          # an unprivileged runner must fail rather than certify a typed skip.
+          PLSW_REQUIRE_SYMLINK_PRIVILEGE: "1"
+        run: >-
+          cargo test --locked -p perl-corpus --lib
+          topology
+          -- --nocapture
