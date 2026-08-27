@@ -9,7 +9,7 @@
 //! and never enforce against partial state. Mutation controls are named per
 //! `.spec/12823-corpus-cache-cycle/acceptance.md`.
 
-use std::{fs, path::PathBuf};
+use std::{collections::BTreeSet, fs, path::PathBuf};
 
 use anyhow::{Result, anyhow, ensure};
 use serde_yaml_ng::Value;
@@ -28,6 +28,7 @@ const WARM_JOB: &str = "corpus-warm-full";
 const RATCHET_JOB: &str = "corpus-ratchet-full";
 const BOUNDED_JOB: &str = "corpus-ratchet-bounded";
 const PR_WRITER_JOB: &str = "open-ratchet-pr";
+const GOVERNED_JOBS: [&str; 4] = [BOUNDED_JOB, WARM_JOB, RATCHET_JOB, PR_WRITER_JOB];
 const INSTALL_STEP: &str = "Install CPAN corpus checkpoint";
 const CANONICAL_SAVE_STEP: &str = "Save CPAN corpus cache (canonical)";
 const CHECKPOINT_SAVE_STEP: &str = "Save CPAN corpus checkpoint (partial progress)";
@@ -106,32 +107,14 @@ fn step_id<'a>(step: &'a Value, steps: &'a [Value]) -> Result<&'a str> {
 }
 
 fn has_write_permissions(job: &Value) -> bool {
-    job.get("permissions").and_then(Value::as_mapping).is_some_and(|permissions| {
-        permissions.values().any(|permission| permission.as_str() == Some("write"))
-    })
-}
-
-fn full_chain_capabilities(job: &Value) -> Result<Vec<&'static str>> {
-    let rendered = serde_yaml_ng::to_string(job)?;
-    let mut capabilities = Vec::new();
-
-    // `cpan-corpus` covers direct xtask commands, repository-owned `just`
-    // aliases, full cache/install paths, and full receipt names. Job-level
-    // `uses` covers a reusable workflow that could hide the same operations.
-    if rendered.contains("cpan-corpus") {
-        capabilities.push("CPAN corpus command, alias, path, cache key, or receipt");
+    match job.get("permissions") {
+        None => false,
+        Some(Value::String(permission)) => permission == "write-all",
+        Some(Value::Mapping(permissions)) => {
+            permissions.values().any(|permission| permission.as_str() == Some("write"))
+        }
+        Some(_) => true,
     }
-    if job.get("uses").is_some() {
-        capabilities.push("reusable workflow");
-    }
-    if rendered.contains("actions/cache/restore@") || rendered.contains("actions/cache/save@") {
-        capabilities.push("cache reader or writer");
-    }
-    if rendered.contains("create-pull-request@") || has_write_permissions(job) {
-        capabilities.push("repository writer");
-    }
-
-    Ok(capabilities)
 }
 
 fn ensure_full_chain_is_fail_closed(workflow: &Value) -> Result<()> {
@@ -140,28 +123,24 @@ fn ensure_full_chain_is_fail_closed(workflow: &Value) -> Result<()> {
         .and_then(Value::as_mapping)
         .ok_or_else(|| anyhow!("workflow must declare jobs"))?;
 
-    for (job_name, job_value) in jobs {
-        let name =
-            job_name.as_str().ok_or_else(|| anyhow!("workflow job names must be strings"))?;
-        if name == BOUNDED_JOB {
-            continue;
-        }
+    let actual = jobs
+        .keys()
+        .map(|name| name.as_str().ok_or_else(|| anyhow!("workflow job names must be strings")))
+        .collect::<Result<BTreeSet<_>>>()?;
+    let governed = GOVERNED_JOBS.into_iter().collect::<BTreeSet<_>>();
+    ensure!(
+        actual == governed,
+        "containment governs exactly {governed:?}; ungoverned or missing jobs: actual={actual:?}"
+    );
 
-        let capabilities = full_chain_capabilities(job_value)?;
-        if capabilities.is_empty() {
-            continue;
-        }
-
-        let guard = condition(job_value, name)?.ok_or_else(|| {
-            anyhow!(
-                "full-chain-capable job `{name}` must carry an `if:` containment guard; capabilities: {}",
-                capabilities.join(", ")
-            )
+    for name in [WARM_JOB, RATCHET_JOB, PR_WRITER_JOB] {
+        let full_job = job(workflow, name)?;
+        let guard = condition(full_job, name)?.ok_or_else(|| {
+            anyhow!("contained full-corpus job `{name}` must carry an `if:` guard")
         })?;
         ensure!(
             guard.trim_start().starts_with("false &&"),
-            "unsafe v1 full-chain-capable job `{name}` must remain fail-closed until #13004 adds identity, manifest, quiescence, atomicity, retention, and hosted proof; capabilities: {}; guard was: {guard}",
-            capabilities.join(", ")
+            "unsafe v1 full-corpus job `{name}` must remain fail-closed until #13004 adds identity, manifest, quiescence, atomicity, retention, and hosted proof; guard was: {guard}"
         );
     }
 
@@ -176,6 +155,46 @@ fn ensure_bounded_top_50_is_safe_and_reachable(workflow: &Value) -> Result<()> {
         !guard.trim_start().starts_with("false &&")
             && guard.contains("github.event_name == 'pull_request'"),
         "containment must preserve the bounded top-50 PR proof lane; guard was: {guard}"
+    );
+
+    ensure!(!has_write_permissions(bounded), "bounded proof must remain read-only");
+    ensure!(bounded.get("uses").is_none(), "bounded proof must remain an inline job");
+    let steps = steps_of(bounded, BOUNDED_JOB)?;
+    ensure!(
+        !steps.iter().any(|step| {
+            step.get("uses").and_then(Value::as_str).is_some_and(|action| action.starts_with("./"))
+        }),
+        "bounded proof must not delegate to a repository-local action"
+    );
+    ensure!(
+        !steps.iter().filter_map(|step| step.get("run").and_then(Value::as_str)).any(|run| run
+            .lines()
+            .any(|line| line.split_whitespace().any(|token| token == "just"))),
+        "bounded proof must not delegate to a repository `just` alias"
+    );
+    let actual_step_names = steps
+        .iter()
+        .map(|step| {
+            step.get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("bounded steps must carry explicit names"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let expected_step_names = [
+        "Checkout bounded analysis tree",
+        "Install Rust toolchain",
+        "Cache cargo dependencies",
+        "Install just",
+        "Restore CPAN corpus cache (bounded)",
+        "Install CPAN corpus (bounded — top 50)",
+        "Save CPAN corpus cache (bounded)",
+        "Verify bounded corpus path",
+        "Sweep bounded corpus and emit receipt",
+        "Upload bounded corpus receipt",
+    ];
+    ensure!(
+        actual_step_names == expected_step_names,
+        "bounded proof step inventory drifted: {actual_step_names:?}"
     );
 
     let rendered = serde_yaml_ng::to_string(bounded)?;
@@ -195,10 +214,8 @@ fn ensure_bounded_top_50_is_safe_and_reachable(workflow: &Value) -> Result<()> {
         "bounded job must not consume a full-corpus list, install path, cache key, or receipt"
     );
     ensure!(
-        bounded.get("uses").is_none()
-            && !has_write_permissions(bounded)
-            && !rendered.contains("create-pull-request@"),
-        "bounded proof must remain read-only and inline"
+        !rendered.contains("create-pull-request@"),
+        "bounded proof must not acquire repository-writer behavior"
     );
     Ok(())
 }
@@ -246,77 +263,95 @@ fn unsafe_full_checkpoint_chain_is_explicitly_disabled() -> Result<()> {
 }
 
 #[test]
-fn containment_rejects_unguarded_fourth_job_alias() -> Result<()> {
+fn containment_rejects_unlisted_repository_alias_without_cpan_name() -> Result<()> {
     let candidate = workflow_with_extra_job(
-        "unsafe-full-alias",
+        "unlisted-bank-refresh",
         r#"
 if: github.event_name == 'schedule'
 runs-on: ubuntu-24.04
 steps:
-  - name: Re-enable the full install through a repository alias
-    run: just cpan-corpus-install
+  - name: Re-enable the full bank through an opaque repository alias
+    run: just refresh-full-bank
 "#,
     )?;
 
     let error = ensure_full_chain_is_fail_closed(&candidate)
         .err()
-        .ok_or_else(|| anyhow!("an unguarded fourth-job alias must fail containment"))?;
+        .ok_or_else(|| anyhow!("an unlisted repository alias job must fail containment"))?;
     let message = error.to_string();
-    ensure!(message.contains("unsafe-full-alias"), "unexpected refusal: {message}");
-    ensure!(message.contains("CPAN corpus"), "unexpected refusal: {message}");
+    ensure!(message.contains("unlisted-bank-refresh"), "unexpected refusal: {message}");
+    ensure!(message.contains("actual="), "unexpected refusal: {message}");
     Ok(())
 }
 
 #[test]
-fn containment_rejects_hidden_reusable_cache_and_writer_paths() -> Result<()> {
-    let controls = [
-        (
-            "unsafe-reusable",
-            r#"
-if: github.event_name == 'schedule'
-uses: ./.github/workflows/full-corpus.yml
-"#,
-            "reusable workflow",
-        ),
-        (
-            "unsafe-cache-writer",
-            r#"
-if: github.event_name == 'schedule'
-runs-on: ubuntu-24.04
-steps:
-  - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-    with:
-      path: target/full-bank
-      key: full-bank-${{ github.run_id }}
-"#,
-            "cache reader or writer",
-        ),
-        (
-            "unsafe-repository-writer",
-            r#"
-if: github.event_name == 'schedule'
-runs-on: ubuntu-24.04
-permissions:
-  contents: write
-steps:
-  - run: echo unsafe
-"#,
-            "repository writer",
-        ),
-    ];
+fn bounded_control_rejects_opaque_repository_alias_with_known_step_name() -> Result<()> {
+    let mut candidate = workflow()?;
+    let bounded = candidate
+        .get_mut("jobs")
+        .and_then(Value::as_mapping_mut)
+        .and_then(|jobs| jobs.get_mut(Value::String(BOUNDED_JOB.into())))
+        .ok_or_else(|| anyhow!("bounded job must exist for the negative control"))?;
+    let verify = bounded
+        .get_mut("steps")
+        .and_then(Value::as_sequence_mut)
+        .and_then(|steps| {
+            steps.iter_mut().find(|step| {
+                step.get("name").and_then(Value::as_str) == Some("Verify bounded corpus path")
+            })
+        })
+        .and_then(Value::as_mapping_mut)
+        .ok_or_else(|| anyhow!("bounded verify step must exist"))?;
+    verify.insert(Value::String("run".into()), Value::String("just refresh-full-bank".into()));
 
-    for (name, job_yaml, expected_capability) in controls {
-        let candidate = workflow_with_extra_job(name, job_yaml)?;
-        let error = ensure_full_chain_is_fail_closed(&candidate)
-            .err()
-            .ok_or_else(|| anyhow!("unguarded `{name}` control must fail containment"))?;
-        let message = error.to_string();
-        ensure!(message.contains(name), "unexpected refusal: {message}");
-        ensure!(
-            message.contains(expected_capability),
-            "refusal for `{name}` did not identify `{expected_capability}`: {message}"
-        );
-    }
+    let error = ensure_bounded_top_50_is_safe_and_reachable(&candidate)
+        .err()
+        .ok_or_else(|| anyhow!("opaque repository alias must fail containment"))?;
+    ensure!(error.to_string().contains("`just` alias"), "unexpected refusal: {error}");
+    Ok(())
+}
+
+#[test]
+fn bounded_control_rejects_scalar_write_all() -> Result<()> {
+    let mut candidate = workflow()?;
+    let bounded = candidate
+        .get_mut("jobs")
+        .and_then(Value::as_mapping_mut)
+        .and_then(|jobs| jobs.get_mut(Value::String(BOUNDED_JOB.into())))
+        .and_then(Value::as_mapping_mut)
+        .ok_or_else(|| anyhow!("bounded job must be mutable for the negative control"))?;
+    bounded.insert(Value::String("permissions".into()), Value::String("write-all".into()));
+
+    let error = ensure_bounded_top_50_is_safe_and_reachable(&candidate)
+        .err()
+        .ok_or_else(|| anyhow!("scalar `permissions: write-all` must fail containment"))?;
+    ensure!(error.to_string().contains("read-only"), "unexpected refusal: {error}");
+    Ok(())
+}
+
+#[test]
+fn bounded_control_rejects_step_local_action_indirection() -> Result<()> {
+    let mut candidate = workflow()?;
+    let bounded = candidate
+        .get_mut("jobs")
+        .and_then(Value::as_mapping_mut)
+        .and_then(|jobs| jobs.get_mut(Value::String(BOUNDED_JOB.into())))
+        .ok_or_else(|| anyhow!("bounded job must exist for the negative control"))?;
+    let checkout = bounded
+        .get_mut("steps")
+        .and_then(Value::as_sequence_mut)
+        .and_then(|steps| steps.first_mut())
+        .and_then(Value::as_mapping_mut)
+        .ok_or_else(|| anyhow!("bounded checkout step must exist"))?;
+    checkout.insert(
+        Value::String("uses".into()),
+        Value::String("./.github/actions/full-corpus".into()),
+    );
+
+    let error = ensure_bounded_top_50_is_safe_and_reachable(&candidate)
+        .err()
+        .ok_or_else(|| anyhow!("step-level local action indirection must fail containment"))?;
+    ensure!(error.to_string().contains("repository-local action"), "unexpected refusal: {error}");
     Ok(())
 }
 
