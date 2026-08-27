@@ -6,6 +6,14 @@
 const POTENTIALLY_EXPENSIVE_REGEX_RE =
   /(?:\([^)]*(?:[+*]|\{[0-9]+(?:,[0-9]*)?\})[^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
 
+export const MAX_MATCH_REGEX_LENGTH = 256;
+export const MAX_MATCH_STEP_TEXT_LENGTH = 512;
+export const MAX_MATCH_ATTEMPTS = 20_000;
+
+export interface GherkinMatchBudget {
+  tryConsume(): boolean;
+}
+
 type BranchFirst = string | 'unknown' | null;
 
 interface GroupFrame {
@@ -154,4 +162,27 @@ function hasOverlappingQuantifiedAlternation(source: string): boolean {
 
 export function isPotentiallyExpensiveRegex(source: string): boolean {
   return POTENTIALLY_EXPENSIVE_REGEX_RE.test(source) || hasOverlappingQuantifiedAlternation(source);
+}
+
+export function isSafeGherkinStepMatch(source: string, stepText: string): boolean {
+  if (source.length > MAX_MATCH_REGEX_LENGTH || stepText.length > MAX_MATCH_STEP_TEXT_LENGTH) {
+    return false;
+  }
+
+  return !isPotentiallyExpensiveRegex(source);
+}
+
+export function createGherkinMatchBudget(): GherkinMatchBudget {
+  let attempts = 0;
+
+  return {
+    tryConsume(): boolean {
+      if (attempts >= MAX_MATCH_ATTEMPTS) {
+        return false;
+      }
+
+      attempts += 1;
+      return true;
+    },
+  };
 }

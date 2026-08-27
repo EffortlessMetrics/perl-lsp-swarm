@@ -5,6 +5,7 @@ import {
   provideGherkinStepDefinitionLinks,
   registerGherkinProviders,
 } from '../gherkinProviders';
+import { classifyStepDefinitionStatus, parseGherkinStepLine } from '../gherkinStepDefinitions';
 
 describe('gherkin outline providers', () => {
   beforeEach(() => {
@@ -267,6 +268,86 @@ describe('gherkin outline providers', () => {
       ],
     );
     expect(links).toHaveLength(1);
+  });
+
+  test('supports the existing case-insensitive regex flag', () => {
+    const links = provideGherkinStepDefinitionLinks(
+      ['Feature: Flags', '  Scenario: Case', '    Given STATUS: PASS'].join('\n'),
+      { line: 2, character: 15 } as vscode.Position,
+      [
+        {
+          uri: vscode.Uri.file('/project/steps.pm'),
+          text: 'Given qr/^status: pass$/i, sub { return; };',
+        },
+      ],
+    );
+
+    expect(links).toHaveLength(1);
+  });
+
+  test('fails closed when the shared match budget is exhausted', () => {
+    const featureText = [
+      'Feature: Budget',
+      '  Scenario: Exhausted',
+      '    Given an unmatched step',
+    ].join('\n');
+    const definitions = Array.from(
+      { length: 20_001 },
+      (_unused, index) => `Given qr/^definition ${index}$/, sub { return; };`,
+    ).join('\n');
+
+    expect(
+      provideGherkinStepDefinitionLinks(
+        featureText,
+        { line: 2, character: 15 } as vscode.Position,
+        [{ uri: vscode.Uri.file('/project/steps.pm'), text: definitions }],
+      ),
+    ).toEqual([]);
+  });
+
+  test('keeps provider and step-definition matching parity for policy limits', () => {
+    const pattern = '^a$';
+    const stepText = 'a'.repeat(513);
+    const step = parseGherkinStepLine(`Given ${stepText}`, 2);
+    expect(step).not.toBeNull();
+    expect(classifyStepDefinitionStatus(step!, [`Given qr/${pattern}/, sub { return; };`])).toBe(
+      'ambiguous',
+    );
+
+    const featureText = ['Feature: Limits', '  Scenario: Oversized', `    Given ${stepText}`].join(
+      '\n',
+    );
+    expect(
+      provideGherkinStepDefinitionLinks(
+        featureText,
+        { line: 2, character: 15 } as vscode.Position,
+        [
+          {
+            uri: vscode.Uri.file('/project/steps.pm'),
+            text: `Given qr/${pattern}/, sub { return; };`,
+          },
+        ],
+      ),
+    ).toEqual([]);
+
+    const oversizedPattern = `^${'a'.repeat(257)}$`;
+    const shortStep = parseGherkinStepLine('Given a', 2);
+    expect(shortStep).not.toBeNull();
+    expect(
+      classifyStepDefinitionStatus(shortStep!, [`Given qr/${oversizedPattern}/, sub { return; };`]),
+    ).toBe('ambiguous');
+    expect(
+      provideGherkinStepDefinitionLinks(
+        ['Feature: Limits', '  Scenario: Oversized regex', '    Given a'].join('\n'),
+        { line: 2, character: 15 } as vscode.Position,
+        [
+          {
+            uri: vscode.Uri.file('/project/steps.pm'),
+            text: `Given qr/${oversizedPattern}/, sub { return; };`,
+          },
+        ],
+      ),
+    ).toEqual([]);
   });
 
   test('does not skip named-capture group step definitions (no false positive)', () => {

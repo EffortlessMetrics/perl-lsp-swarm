@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { isPotentiallyExpensiveRegex } from './gherkinRedosGuard';
+import { createGherkinMatchBudget, isSafeGherkinStepMatch } from './gherkinRedosGuard';
 
 const CREATE_STEP_DEFINITION_COMMAND = 'perl-lsp.createGherkinStepDefinition';
 const GHERKIN_STEP_RE = /^\s*(Given|When|Then|And|But)\b\s*(.*)$/;
@@ -14,13 +14,10 @@ const DEFAULT_EXCLUDE_GLOB = '{**/node_modules/**,**/blib/**}';
 const MAX_STEP_DEFINITION_FILES = 500;
 const MAX_STEP_DEFINITION_FILE_BYTES = 512 * 1024;
 const MAX_STEP_DEFINITION_TOTAL_BYTES = 16 * 1024 * 1024;
-const MAX_MATCH_REGEX_LENGTH = 256;
-const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // Rejecting ReDoS-shaped patterns bounds the cost of any single match, not the
 // number of matches. An accepted 16 MiB workspace can still hold hundreds of
 // thousands of individually linear-time step definitions, so the population
 // itself gets a budget. Ordinary suites are three orders of magnitude below it.
-const MAX_MATCH_ATTEMPTS = 20_000;
 // Catastrophic backtracking (ReDoS) requires a *quantified group that itself
 // contains a quantifier, a backreference, a lookaround, or alternation. A
 // single character class
@@ -236,22 +233,20 @@ export function classifyStepDefinitionStatus(
   sources: string[],
 ): StepDefinitionStatus {
   let ambiguous = false;
-  let attempts = 0;
+  const budget = createGherkinMatchBudget();
 
   for (const source of sources) {
     const scan = scanStepDefinitions(source);
     ambiguous = ambiguous || scan.ambiguous;
 
     for (const definition of scan.definitions) {
-      if (attempts >= MAX_MATCH_ATTEMPTS) {
+      if (!budget.tryConsume()) {
         // The population was never fully tested, so "undefined" would be a
         // claim this scan cannot support. Report the uncertainty instead; the
         // ambiguous path declines to generate rather than writing a stub that
         // may duplicate an untested definition.
         return 'ambiguous';
       }
-      attempts += 1;
-
       const matches = testExtractedDefinition(definition, step.text);
       if (matches === true) {
         return 'defined';
@@ -494,7 +489,7 @@ function testExtractedDefinition(
   definition: ExtractedStepDefinition,
   stepText: string,
 ): boolean | null {
-  if (!isSafeRegexForStepMatching(definition.pattern, stepText)) {
+  if (!isSafeGherkinStepMatch(definition.pattern, stepText)) {
     return null;
   }
 
@@ -503,14 +498,6 @@ function testExtractedDefinition(
   } catch {
     return null;
   }
-}
-
-function isSafeRegexForStepMatching(source: string, stepText: string): boolean {
-  if (source.length > MAX_MATCH_REGEX_LENGTH || stepText.length > MAX_MATCH_STEP_TEXT_LENGTH) {
-    return false;
-  }
-
-  return !isPotentiallyExpensiveRegex(source);
 }
 
 /**

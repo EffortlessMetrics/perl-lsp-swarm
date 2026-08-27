@@ -1,5 +1,9 @@
 import * as vscode from 'vscode';
-import { isPotentiallyExpensiveRegex } from './gherkinRedosGuard';
+import {
+  createGherkinMatchBudget,
+  isSafeGherkinStepMatch,
+  type GherkinMatchBudget,
+} from './gherkinRedosGuard';
 
 type OutlineKind = 'feature' | 'rule' | 'background' | 'scenario' | 'examples' | 'step';
 type StepKeyword = 'Given' | 'When' | 'Then' | 'And' | 'But' | '*';
@@ -60,8 +64,6 @@ const STEP_DEFINITION_FILE_GLOBS = [
 ] as const;
 const STEP_DEFINITION_EXCLUDE_GLOB = '{**/node_modules/**,**/blib/**,**/.git/**}';
 const STEP_DEFINITION_FILE_LIMIT = 1000;
-const MAX_MATCH_REGEX_LENGTH = 256;
-const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // Catastrophic backtracking (ReDoS) requires a *quantified group that itself
 // contains a quantifier, a backreference, a lookaround, or alternation. A
 // single character class followed by one quantifier
@@ -147,8 +149,13 @@ export function provideGherkinStepDefinitionLinks(
   }
 
   const matches: ParsedStepDefinition[] = [];
+  const budget = createGherkinMatchBudget();
   for (const document of documents) {
-    matches.push(...findMatchingStepDefinitions(step, document));
+    const documentMatches = findMatchingStepDefinitions(step, document, budget);
+    if (documentMatches === null) {
+      return [];
+    }
+    matches.push(...documentMatches);
   }
 
   matches.sort((left, right) => {
@@ -348,10 +355,15 @@ function resolveEffectiveKeyword(
 function findMatchingStepDefinitions(
   step: GherkinStepReference,
   document: StepDefinitionDocument,
-): ParsedStepDefinition[] {
+  budget: GherkinMatchBudget,
+): ParsedStepDefinition[] | null {
   const matches: ParsedStepDefinition[] = [];
 
   for (const definition of parseStepDefinitions(document)) {
+    if (!budget.tryConsume()) {
+      return null;
+    }
+
     if (!keywordsAreCompatible(step, definition.keyword)) {
       continue;
     }
@@ -555,7 +567,7 @@ function stepTextMatches(stepText: string, matcher: StepMatcher): boolean {
     return matcher.text === stepText;
   }
 
-  if (!isSafeRegexForStepMatching(matcher.source, stepText)) {
+  if (!isSafeGherkinStepMatch(matcher.source, stepText)) {
     return false;
   }
 
@@ -564,14 +576,6 @@ function stepTextMatches(stepText: string, matcher: StepMatcher): boolean {
   } catch {
     return false;
   }
-}
-
-function isSafeRegexForStepMatching(source: string, stepText: string): boolean {
-  if (source.length > MAX_MATCH_REGEX_LENGTH || stepText.length > MAX_MATCH_STEP_TEXT_LENGTH) {
-    return false;
-  }
-
-  return !isPotentiallyExpensiveRegex(source);
 }
 
 function normalizeRegexFlags(flags: string): string {

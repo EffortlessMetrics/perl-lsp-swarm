@@ -1,4 +1,4 @@
-import { isPotentiallyExpensiveRegex } from '../gherkinRedosGuard';
+import { isPotentiallyExpensiveRegex, isSafeGherkinStepMatch } from '../gherkinRedosGuard';
 
 describe('gherkin ReDoS guard (#6154)', () => {
   test.each(['^(a|aa)+$', '^(a|a)*$', '(x|xy)+z'])(
@@ -36,4 +36,26 @@ describe('gherkin ReDoS guard (#6154)', () => {
       expect(isPotentiallyExpensiveRegex(pattern)).toBe(false);
     },
   );
+
+  test.each([
+    ['anchored capture', '^I have "([^\"]+)"$', 'I have "alice"'],
+    ['alternation', '^status: (pass|fail)$', 'status: pass'],
+    ['character class', '^item [A-Z]+$', 'item ABC'],
+    ['fixed repetition', '^code [0-9]{4}$', 'code 1234'],
+    ['escaping', '^path\\/to\\/file$', 'path/to/file'],
+    ['supported flags', '^status: pass$', 'STATUS: PASS'],
+  ])('accepts %s through the shared match policy', (_name, source, stepText) => {
+    expect(isSafeGherkinStepMatch(source, stepText)).toBe(true);
+  });
+
+  test.each([
+    ['oversized regex', `^${'a'.repeat(257)}$`, 'a'],
+    ['oversized input', '^a$', 'a'.repeat(513)],
+    ['nested quantifier', '^(a+)+$', 'aaaaaaaa'],
+    ['quantified alternation', '^(a|aa)+$', 'aaaaaaaa'],
+    ['backreference', '^(a)\\1$', 'aa'],
+    ['lookahead', '^(?=a)a$', 'a'],
+  ])('rejects %s through the shared match policy', (_name, source, stepText) => {
+    expect(isSafeGherkinStepMatch(source, stepText)).toBe(false);
+  });
 });
