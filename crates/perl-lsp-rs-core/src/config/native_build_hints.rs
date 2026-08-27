@@ -344,7 +344,14 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
             ')' | ']' | '}' => {
-                if stack.pop().is_none() {
+                // Bound before the test rather than collapsed into a match
+                // guard: the pop mutates `stack`, and a guard would run that
+                // mutation during pattern selection. Binding keeps the side
+                // effect in the arm body where it has always been, and the
+                // arm is no longer a sole `if`, so the #6113
+                // `collapsible_match` deny is satisfied without an allow.
+                let unbalanced = stack.pop().is_none();
+                if unbalanced {
                     return idx.saturating_sub(start);
                 }
             }
@@ -1163,5 +1170,53 @@ Module::Build->new(
         assert_eq!(hints.libs_alternatives, vec![vec!["-lreal".to_string()]]);
         assert!(hints.diagnostics.is_empty());
         Ok(())
+    }
+
+    /// Characterization of every exit path of `rejected_value_len`'s
+    /// delimiter walk, pinned so the #6113 `collapsible_match` conversion of
+    /// the closing-delimiter arm is proven behavior-preserving rather than
+    /// assumed (#12910, #12914).
+    ///
+    /// These expectations were captured against the pre-conversion nested-`if`
+    /// source and must hold byte-for-byte after it.
+    #[test]
+    fn rejected_value_len_pins_every_delimiter_walk_exit() {
+        // The load-bearing case for the conversion: a BALANCED closer must
+        // consume its opener from the stack and keep walking. If the pop's
+        // side effect were lost, `(` would still be stacked at the comma, the
+        // `stack.is_empty()` guard would fail, and the walk would run to end
+        // of input and answer 3 instead of 2.
+        assert_eq!(rejected_value_len("(),", 0), 2, "balanced closer must pop and continue");
+
+        // An UNBALANCED closer is the early return inside the converted arm.
+        assert_eq!(rejected_value_len("foo)bar", 0), 3, "unbalanced closer stops the walk");
+        assert_eq!(rejected_value_len(")", 0), 0, "an immediate unbalanced closer stops at 0");
+
+        // Top-level separators stop the walk at their own offset.
+        assert_eq!(rejected_value_len("abc,def", 0), 3);
+        assert_eq!(rejected_value_len("abc;def", 0), 3);
+
+        // Separators nested inside brackets are not top-level stops, so the
+        // walk continues past them to the first separator outside.
+        assert_eq!(rejected_value_len("(a,b),c", 0), 5);
+        assert_eq!(rejected_value_len("[a;b];c", 0), 5);
+        assert_eq!(rejected_value_len("{a,b},c", 0), 5);
+
+        // Quoted spans suppress separators AND delimiters: the `)` inside the
+        // quotes must not pop the `(`.
+        assert_eq!(rejected_value_len("'a,b',c", 0), 5);
+        assert_eq!(rejected_value_len("\"a;b\";c", 0), 5);
+        assert_eq!(rejected_value_len("('a)b'),c", 0), 7);
+
+        // A backslash escape inside a quoted span defers the closing quote.
+        assert_eq!(rejected_value_len(r"'a\'b',c", 0), 6);
+
+        // No stop at all: the walk reports the remaining input.
+        assert_eq!(rejected_value_len("abc", 0), 3);
+        assert_eq!(rejected_value_len("", 0), 0);
+
+        // Offsets are always relative to `start`, never absolute.
+        assert_eq!(rejected_value_len("skip:abc,def", 5), 3);
+        assert_eq!(rejected_value_len("skip:(),", 5), 2);
     }
 }

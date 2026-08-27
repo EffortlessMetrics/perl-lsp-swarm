@@ -1005,25 +1005,24 @@ fn validate_packet_old_paths(root: &Map<String, Value>, violations: &mut Vec<Vio
         let disposition = string_field(entry, "disposition");
         match disposition {
             Some(value) if OLD_PATH_DISPOSITIONS.contains(&value) => match value {
-                "compatibility_projection" => {
+                // Pure `string_field` lookups, so collapsing them into guards
+                // is sound under the #6113 deny: a failing guard falls through
+                // to the `_` arm, which is the same no-op the inner `if`'s
+                // else-path performed (#12915).
+                "compatibility_projection"
                     if string_field(entry, "owner").is_none()
-                        || string_field(entry, "exit").is_none()
-                    {
-                        violations.push(Violation::new(
-                            "compatibility_projection_unowned",
-                            format!("old_paths: compatibility projection for {seam:?} needs an owner and an exit"),
-                        ));
-                    }
+                        || string_field(entry, "exit").is_none() =>
+                {
+                    violations.push(Violation::new(
+                        "compatibility_projection_unowned",
+                        format!("old_paths: compatibility projection for {seam:?} needs an owner and an exit"),
+                    ));
                 }
-                "still_live_independent" => {
-                    if string_field(entry, "owner").is_none() {
-                        violations.push(Violation::new(
-                            "still_live_unowned",
-                            format!(
-                                "old_paths: still-live independent seam {seam:?} needs an owner"
-                            ),
-                        ));
-                    }
+                "still_live_independent" if string_field(entry, "owner").is_none() => {
+                    violations.push(Violation::new(
+                        "still_live_unowned",
+                        format!("old_paths: still-live independent seam {seam:?} needs an owner"),
+                    ));
                 }
                 _ => {}
             },
@@ -1573,25 +1572,21 @@ fn validate_closure(root: &Map<String, Value>, doc: &Value, violations: &mut Vec
             );
             match string_field(entry, "state") {
                 Some(state) if ROLE_STATES.contains(&state) => match state {
-                    "terminal" => {
-                        if string_field(entry, "reference").is_none() {
-                            violations.push(Violation::new(
-                                "missing_role_reference",
-                                format!(
-                                    "review_state.roles: terminal role {role:?} must reference its individual review"
-                                ),
-                            ));
-                        }
+                    // Pure predicates; see the old_paths conversion above
+                    // for why the guard form preserves behavior (#12915).
+                    "terminal" if string_field(entry, "reference").is_none() => {
+                        violations.push(Violation::new(
+                            "missing_role_reference",
+                            format!(
+                                "review_state.roles: terminal role {role:?} must reference its individual review"
+                            ),
+                        ));
                     }
-                    "not_applicable" => {
-                        if string_field(entry, "reason").is_none() {
-                            violations.push(Violation::new(
-                                "role_not_applicable_unjustified",
-                                format!(
-                                    "review_state.roles: role {role:?} skipped without a reason"
-                                ),
-                            ));
-                        }
+                    "not_applicable" if string_field(entry, "reason").is_none() => {
+                        violations.push(Violation::new(
+                            "role_not_applicable_unjustified",
+                            format!("review_state.roles: role {role:?} skipped without a reason"),
+                        ));
                     }
                     _ => {}
                 },
@@ -3151,6 +3146,106 @@ mod tests {
         assert!(has(&unverified, "unverified_obligation"));
         let unowned = invalid_fixture("compatibility_projection_unowned.json")?;
         assert!(has(&unowned, "compatibility_projection_unowned"));
+        Ok(())
+    }
+
+    fn set_old_path_field(doc: &mut Value, key: &str, value: &str) -> TestResult {
+        let entry = doc
+            .get_mut("old_paths")
+            .and_then(Value::as_array_mut)
+            .and_then(|rows| rows.first_mut())
+            .and_then(Value::as_object_mut);
+        match entry {
+            Some(entry) => {
+                entry.insert(key.to_string(), Value::String(value.to_string()));
+                Ok(())
+            }
+            None => bail!("fixture must carry at least one old_paths row"),
+        }
+    }
+
+    fn drop_closure_role_field(doc: &mut Value, role: &str, key: &str) -> TestResult {
+        let rows = doc
+            .get_mut("review_state")
+            .and_then(|state| state.get_mut("roles"))
+            .and_then(Value::as_array_mut);
+        let rows = match rows {
+            Some(rows) => rows,
+            None => bail!("fixture must carry review_state.roles"),
+        };
+        let found = rows
+            .iter_mut()
+            .filter_map(Value::as_object_mut)
+            .find(|entry| entry.get("role").and_then(Value::as_str) == Some(role));
+        match found {
+            Some(entry) => {
+                entry.remove(key);
+                Ok(())
+            }
+            None => bail!("fixture carries no {role} role"),
+        }
+    }
+
+    /// Pins both directions of the four `old_paths` / `review_state.roles`
+    /// arms converted for the #6113 `collapsible_match` deny (#12915).
+    ///
+    /// Three of the four had no discriminating proof before this test:
+    /// inverting their conditions left the entire suite green, so a
+    /// conversion that changed control flow would have landed silently.
+    /// Each arm is now checked in the reporting AND the clearing direction.
+    #[test]
+    fn converted_old_path_and_role_arms_discriminate_in_both_directions() -> TestResult {
+        // old_paths / compatibility_projection: needs BOTH an owner and an exit.
+        let mut projection = invalid_fixture("compatibility_projection_unowned.json")?;
+        assert!(has(&projection, "compatibility_projection_unowned"));
+        set_old_path_field(&mut projection, "owner", "perl-lsp-core")?;
+        assert!(
+            has(&projection, "compatibility_projection_unowned"),
+            "an owner alone must not clear the projection violation",
+        );
+        set_old_path_field(&mut projection, "exit", "#10881")?;
+        assert!(
+            !has(&projection, "compatibility_projection_unowned"),
+            "an owner plus an exit must clear the projection violation",
+        );
+
+        // old_paths / still_live_independent: needs an owner.
+        let mut still_live = invalid_fixture("compatibility_projection_unowned.json")?;
+        set_old_path_field(&mut still_live, "disposition", "still_live_independent")?;
+        assert!(
+            has(&still_live, "still_live_unowned"),
+            "an unowned still-live independent seam must be reported",
+        );
+        set_old_path_field(&mut still_live, "owner", "perl-lsp-core")?;
+        assert!(
+            !has(&still_live, "still_live_unowned"),
+            "naming an owner must clear the still-live violation",
+        );
+
+        // review_state.roles / terminal: needs a reference.
+        let pristine = fixture("closure_service_marker_eligible.v1.json")?;
+        assert!(
+            !has(&pristine, "missing_role_reference"),
+            "the valid closure fixture must not report a missing role reference",
+        );
+        let mut unreferenced = pristine.clone();
+        drop_closure_role_field(&mut unreferenced, "builder_self_review", "reference")?;
+        assert!(
+            has(&unreferenced, "missing_role_reference"),
+            "a terminal role without a reference must be reported",
+        );
+
+        // review_state.roles / not_applicable: needs a reason.
+        assert!(
+            !has(&pristine, "role_not_applicable_unjustified"),
+            "the valid closure fixture must not report an unjustified skip",
+        );
+        let mut unjustified = pristine;
+        drop_closure_role_field(&mut unjustified, "specialist", "reason")?;
+        assert!(
+            has(&unjustified, "role_not_applicable_unjustified"),
+            "a not_applicable role without a reason must be reported",
+        );
         Ok(())
     }
 
