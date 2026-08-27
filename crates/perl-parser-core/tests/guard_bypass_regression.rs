@@ -133,7 +133,7 @@ fn power_chain_depth_hits_limit() {
 }
 
 #[test]
-fn deep_power_chain_recovery_surfaces_nesting_diagnostic() {
+fn deep_power_chain_recovery_surfaces_recursion_diagnostic() {
     let code = "1 ** ".repeat(2_000) + "1";
     let mut parser = Parser::new(&code);
     let output = parser.parse_with_recovery();
@@ -205,7 +205,7 @@ fn mixed_not_and_bang_nesting_hits_limit() {
 // --- Test 2: LSP-facing path (parse_with_recovery) ---
 
 #[test]
-fn deep_nesting_recovers_with_nesting_diagnostic_on_lsp_path() {
+fn deep_nesting_recovers_with_recursion_diagnostic_on_lsp_path() {
     // LSP uses parse_with_recovery(): deep nesting must yield a (partial) tree
     // AND a depth-guard diagnostic — not a crash, not a silent success.
     let code = "not ".repeat(300) + "1";
