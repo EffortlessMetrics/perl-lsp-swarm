@@ -38,6 +38,17 @@ just pr-fast
 The repository pins Rust channel `1.95.0` in `rust-toolchain.toml` and currently
 requires MSRV 1.95.
 
+### Windows symlink-privilege skips (#12567)
+
+Creating file symlinks on Windows requires `SeCreateSymbolicLinkPrivilege`,
+which unprivileged sessions hold only with Developer Mode enabled. Tests whose
+subject is symlink/reparse-point **rejection** use
+`perl_tdd_support::try_create_file_symlink` (and `try_create_dir_symlink`):
+they print a visible skip note and pass when the session lacks the privilege,
+and fail loudly on every other error. Enable Windows Developer Mode to opt out
+of these skips entirely — it is opt-in, never a requirement, and CI is
+unaffected (Linux runners hold the equivalent capability).
+
 ## Choose one coherent claim
 
 A useful pull request has:

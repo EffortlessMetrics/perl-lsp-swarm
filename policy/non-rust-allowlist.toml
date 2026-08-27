@@ -1844,6 +1844,19 @@ created = "2026-08-16"
 review_after = "2026-11-16"
 
 [[allow]]
+id = "non-rust-native-neovim-train-schema"
+path = "schemas/native_neovim_train.v1.schema.json"
+kind = "release_metadata"
+language = "json"
+surface = "tooling"
+classification = "documentation"
+owner = "neovim-train"
+reason = "Closed JSON Schema for the stable native Neovim implementation train manifest (#11392); applied by cargo xtask check-native-neovim-train."
+covered_by = ["cargo xtask check-native-neovim-train"]
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
 id = "non-rust-install-identity-verification-schema"
 path = "schemas/install_identity_verification.v1.schema.json"
 kind = "release_metadata"
