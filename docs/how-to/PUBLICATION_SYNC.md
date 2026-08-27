@@ -83,6 +83,14 @@ If their accepted release/schema identity does not match the target release,
 land a reviewed control-plane rollover first. Do not copy the prior packet and
 edit only the release string.
 
+For field semantics, the executable `scripts/publication_sync_check.py` is the
+authority used by the protected check. At the current v0.18 validator revision,
+`sync_join_sha` names the derived core join `J0`, not the PR-head join `J`.
+The schema description must agree with that executable contract. If the live
+schema and validator disagree, stop before constructing a packet and repair or
+roll the `perl-lsp` control-plane contract under a separate reviewed change;
+this swarm runbook does not override an external schema by inference.
+
 ## Phase 1 — preliminary reconciliation
 
 This phase may begin before final freeze. It reduces surprises; it is not the
@@ -203,22 +211,23 @@ every required port/equivalent reachable from S
 
 Freeze the exact ledger bytes/digest used by the publication packet.
 
-## Phase 4 — generate the publication projection
+## Phase 4 — projection contract and prerequisite
 
 The projection starts from the complete tree of `S`. Every intended difference
 must be declared in the release's projection manifest before the join.
 
-The current projection programme owns commands equivalent to:
+The swarm currently provides `cargo xtask sync-divergence scaffold` and
+`cargo xtask sync-divergence check` for reconciliation. It does not currently
+provide a `publication-sync` projection subcommand or a swarm-owned producer for
+`P`.
 
-```bash
-cargo xtask publication-sync plan ...
-cargo xtask publication-sync project ...
-cargo xtask publication-sync verify-projection ...
-```
-
-If the repository does not yet contain the accepted projection command for the
-release, the release remains blocked on that implementation. Do not replace it
-with a manual exclusion checklist.
+This runbook therefore treats projection generation as a hard prerequisite, not
+as an operation that this checkout can perform. Before a release transaction,
+identify a separately reviewed producer whose output is bound to `R`, `S`, the
+reconciliation evidence, and the manifest. If no accepted producer is
+available, stop here. Do not infer one from a command name, invoke an
+unimplemented `cargo xtask` path, or replace the missing producer with a manual
+exclusion checklist.
 
 The final manifest must cover, where applicable:
 
