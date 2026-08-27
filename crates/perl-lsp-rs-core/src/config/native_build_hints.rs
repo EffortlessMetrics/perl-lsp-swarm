@@ -343,10 +343,11 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
         match ch {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
-            ')' | ']' | '}' => {
-                if stack.pop().is_none() {
-                    return idx.saturating_sub(start);
-                }
+            // Guard form per the #6113 collapsible_match burn-down idiom: the
+            // pop runs exactly once when the closer pattern matches, and a
+            // non-empty stack falls through to the `_` arm as before.
+            ')' | ']' | '}' if stack.pop().is_none() => {
+                return idx.saturating_sub(start);
             }
             ',' | ';' if stack.is_empty() => return idx.saturating_sub(start),
             _ => {}
