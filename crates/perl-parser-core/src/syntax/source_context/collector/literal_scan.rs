@@ -1664,6 +1664,36 @@ mod tests {
     }
 
     #[test]
+    fn heredoc_quote_scan_respects_escapes_and_line_boundaries() -> Result<(), &'static str> {
+        assert_eq!(
+            super::heredoc_opener_on_line("my $s = \"a \\\" << EOF\";"),
+            None,
+            "an escaped double quote must not expose a quoted `<<`"
+        );
+        assert_eq!(
+            super::heredoc_opener_on_line("my $s = 'a \\\' << EOF';"),
+            None,
+            "an escaped single quote must not expose a quoted `<<`"
+        );
+
+        let source = "my $s = \"a << FAKE\";\nmy $x = <<REAL;\nbody\nREAL\ntail\n";
+        let regions = scan_heredoc_regions(source);
+        assert_eq!(regions.len(), 1, "the next line's real opener must remain visible");
+        let body_start = offset_of(source, "body").ok_or("fixture must contain a body")?;
+        let terminator_start =
+            offset_of(source, "REAL\ntail").ok_or("fixture must contain a terminator")?;
+        assert_eq!(
+            regions[0].start, body_start,
+            "the real heredoc body starts after the opener line"
+        );
+        assert_eq!(
+            regions[0].end, terminator_start,
+            "the real heredoc closes at the terminator line"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn heredoc_opener_found_after_a_quoted_shift_lookalike() {
         // The scan must skip the quoted `<<` and keep looking, not stop at the
         // first one and not give up on the line entirely. Taking the quoted
