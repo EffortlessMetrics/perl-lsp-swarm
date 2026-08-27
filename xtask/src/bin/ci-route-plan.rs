@@ -162,12 +162,14 @@ mod publication_spec {
     use std::time::{SystemTime, UNIX_EPOCH};
     // The falsifiers exercise the substrate's cleanup/temp/read-back seams
     // directly; production code paths go through `publish_atomically` only.
-    use xtask::durable_publish::{cleanup_failed_publication, create_unique_temp, verify_published};
     use xtask::ci_route_plan::{
         Applicability, CompileRoutePlanInput, ExpansionStatus, GateSelectorInput,
         LifecycleDisposition, LifecycleState, PlannedOutcome, PolicyRole, Resolution,
         RouteDispositionInput, RouteExecutionIdentity, RouteProfileExpansionInput,
         RouteSelectionEvidence, RouteSubjectRef, SelectorPlacement, SelectorProof, SelectorRole,
+    };
+    use xtask::durable_publish::{
+        cleanup_failed_publication, create_unique_temp, verify_published,
     };
 
     const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
