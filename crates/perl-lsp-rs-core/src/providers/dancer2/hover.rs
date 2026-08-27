@@ -318,6 +318,29 @@ mod tests {
         ast: perl_parser_core::Node,
     }
 
+    /// Projects the `Route` variant so any other projection reads as absent.
+    ///
+    /// Named rather than inlined so `route_projection_admits_only_route_variants`
+    /// can prove the discrimination that the route hover tests rely on (#12994
+    /// review: an inline projection mapping every variant to `Some` would keep
+    /// those tests green).
+    fn route_projection(projection: RouteHoverProjection) -> Option<(String, bool)> {
+        match projection {
+            RouteHoverProjection::Route { content, exact } => Some((content, exact)),
+            RouteHoverProjection::Keyword { .. } | RouteHoverProjection::Hook { .. } => None,
+        }
+    }
+
+    /// Projects the `Hook` variant so any other projection reads as absent.
+    ///
+    /// Proven by `hook_projection_admits_only_hook_variants`.
+    fn hook_projection(projection: RouteHoverProjection) -> Option<(String, bool)> {
+        match projection {
+            RouteHoverProjection::Hook { content, exact } => Some((content, exact)),
+            RouteHoverProjection::Route { .. } | RouteHoverProjection::Keyword { .. } => None,
+        }
+    }
+
     fn setup(source: &'static str) -> Setup {
         let mut parser = Parser::new(source);
         let ast = must_with(parser.parse(), "fixture must parse");
@@ -337,13 +360,8 @@ mod tests {
             hover_projection_at(&setup.activations, &setup.facts, &setup.ast, "main", offset),
             "route hover",
         );
-        let (content, exact) = must_some_with(
-            match projection {
-                RouteHoverProjection::Route { content, exact } => Some((content, exact)),
-                RouteHoverProjection::Keyword { .. } | RouteHoverProjection::Hook { .. } => None,
-            },
-            "expected route projection",
-        );
+        let (content, exact) =
+            must_some_with(route_projection(projection), "expected route projection");
         assert!(exact);
         assert!(content.contains("GET, HEAD"), "{content}");
         assert!(content.contains("pattern: `/users/:id`"), "{content}");
@@ -360,13 +378,8 @@ mod tests {
             hover_projection_at(&setup.activations, &setup.facts, &setup.ast, "main", offset),
             "route hover",
         );
-        let (content, _exact) = must_some_with(
-            match projection {
-                RouteHoverProjection::Route { content, exact } => Some((content, exact)),
-                RouteHoverProjection::Keyword { .. } | RouteHoverProjection::Hook { .. } => None,
-            },
-            "expected route projection",
-        );
+        let (content, _exact) =
+            must_some_with(route_projection(projection), "expected route projection");
         assert!(content.contains("route name: `user_show`"), "{content}");
         assert!(content.contains("pattern: `/users/:id`"), "{content}");
     }
@@ -380,13 +393,8 @@ mod tests {
             hover_projection_at(&setup.activations, &setup.facts, &setup.ast, "main", offset),
             "hook hover",
         );
-        let (content, exact) = must_some_with(
-            match projection {
-                RouteHoverProjection::Hook { content, exact } => Some((content, exact)),
-                RouteHoverProjection::Route { .. } | RouteHoverProjection::Keyword { .. } => None,
-            },
-            "expected hook projection",
-        );
+        let (content, exact) =
+            must_some_with(hook_projection(projection), "expected hook projection");
         assert!(exact);
         assert!(content.contains("Dancer2 hook"), "{content}");
         assert!(content.contains("hook: `before`"), "{content}");
@@ -413,5 +421,67 @@ mod tests {
             "params keyword",
         );
         assert_eq!(params.scope, DslKeywordScope::RouteHandlerOnly);
+    }
+
+    #[test]
+    fn route_projection_admits_only_route_variants() {
+        assert_eq!(
+            route_projection(RouteHoverProjection::Route {
+                content: "route content".to_string(),
+                exact: true,
+            }),
+            Some(("route content".to_string(), true)),
+        );
+        assert_eq!(
+            route_projection(RouteHoverProjection::Route {
+                content: "inexact route".to_string(),
+                exact: false,
+            }),
+            Some(("inexact route".to_string(), false)),
+        );
+        assert_eq!(
+            route_projection(RouteHoverProjection::Hook {
+                content: "hook content".to_string(),
+                exact: true,
+            }),
+            None,
+        );
+        assert_eq!(
+            route_projection(RouteHoverProjection::Keyword {
+                content: "keyword content".to_string(),
+            }),
+            None,
+        );
+    }
+
+    #[test]
+    fn hook_projection_admits_only_hook_variants() {
+        assert_eq!(
+            hook_projection(RouteHoverProjection::Hook {
+                content: "hook content".to_string(),
+                exact: true,
+            }),
+            Some(("hook content".to_string(), true)),
+        );
+        assert_eq!(
+            hook_projection(RouteHoverProjection::Hook {
+                content: "inexact hook".to_string(),
+                exact: false,
+            }),
+            Some(("inexact hook".to_string(), false)),
+        );
+        assert_eq!(
+            hook_projection(RouteHoverProjection::Route {
+                content: "route content".to_string(),
+                exact: true,
+            }),
+            None,
+        );
+        assert_eq!(
+            hook_projection(RouteHoverProjection::Keyword {
+                content: "keyword content".to_string(),
+            }),
+            None,
+        );
     }
 }
