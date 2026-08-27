@@ -37,6 +37,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use sha2::{Digest, Sha256};
+use walkdir::WalkDir;
 
 // The shared host-runner substrate is included exactly once per crate (in
 // `vim_host_run`, #10944); this module consumes that single instance rather
@@ -239,6 +241,7 @@ pub struct PlatformFields {
 pub struct VimToolchainIdentity {
     pub acquisition: VimAcquisitionIdentity,
     pub executable_sha256: String,
+    pub runtime_tree_sha256: String,
     pub version_summary: String,
     pub version_text_sha256: String,
     pub required_features: Vec<String>,
@@ -538,6 +541,57 @@ fn extract_runtime_subtree(archive_path: &Path, subtree: &str, dest: &Path) -> R
     }
     anyhow::ensure!(extracted > 0, "archive carried no entries under {subtree}");
     Ok(extracted)
+}
+
+/// Hash the complete extracted runtime deterministically. The relative path,
+/// entry kind, and file bytes are length-prefixed so path boundaries and
+/// empty directories cannot collide. WalkDir does not promise ordering, so
+/// entries are sorted before the canonical stream is hashed.
+fn runtime_tree_sha256(runtime_root: &Path) -> Result<String> {
+    let mut entries = Vec::new();
+    for entry in WalkDir::new(runtime_root).follow_links(false) {
+        let entry = entry.context("walking the extracted Vim runtime")?;
+        if entry.path() == runtime_root {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(runtime_root)
+            .context("computing an extracted runtime relative path")?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let kind = entry.file_type();
+        anyhow::ensure!(!kind.is_symlink(), "extracted runtime contains a symlink: {relative}");
+        anyhow::ensure!(kind.is_dir() || kind.is_file(), "extracted runtime contains unsupported entry: {relative}");
+        entries.push((relative, kind.is_dir(), entry.into_path()));
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut hasher = Sha256::new();
+    for (relative, is_dir, path) in entries {
+        hasher.update([if is_dir { b'd' } else { b'f' }]);
+        hasher.update((relative.len() as u64).to_le_bytes());
+        hasher.update(relative.as_bytes());
+        if !is_dir {
+            let length = fs::metadata(&path)
+                .with_context(|| format!("statting extracted runtime file {}", path.display()))?
+                .len();
+            hasher.update(length.to_le_bytes());
+            let mut file = fs::File::open(&path)
+                .with_context(|| format!("opening extracted runtime file {}", path.display()))?;
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let read = file
+                    .read(&mut buffer)
+                    .with_context(|| format!("reading extracted runtime file {}", path.display()))?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+        }
+    }
+    Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1001,6 +1055,17 @@ fn verify_manifest_core(
             manifest.vim.executable_sha256
         )));
     }
+    let runtime_root = vim_executable
+        .parent()
+        .ok_or_else(|| mismatch("cached Vim executable has no runtime parent".to_string()))?;
+    let actual_runtime = runtime_tree_sha256(runtime_root)
+        .map_err(|error| mismatch(format!("hashing the cached Vim runtime: {error:#}")))?;
+    if actual_runtime != manifest.vim.runtime_tree_sha256 {
+        return Err(mismatch(format!(
+            "cached Vim runtime digest {actual_runtime} does not match the recorded {}",
+            manifest.vim.runtime_tree_sha256
+        )));
+    }
     let version_text = probe(&vim_executable)
         .map_err(|error| mismatch(format!("cached Vim identity probe failed: {error:#}")))?;
     let actual_text =
@@ -1288,6 +1353,12 @@ fn build_fresh_entry(
 
     let executable_digest = file_sha256(&vim_executable)
         .map_err(|error| unresolved(format!("hashing the pinned executable: {error:#}")))?;
+    let runtime_tree_digest = runtime_tree_sha256(
+        vim_executable
+            .parent()
+            .ok_or_else(|| unresolved("provisioned Vim executable has no runtime parent".to_string()))?,
+    )
+    .map_err(|error| unresolved(format!("hashing the provisioned Vim runtime: {error:#}")))?;
     let version_summary = version_text.lines().next().unwrap_or_default().trim().to_string();
     let manifest = ToolchainManifest {
         schema_version: SCHEMA_VERSION.to_string(),
@@ -1298,6 +1369,7 @@ fn build_fresh_entry(
         vim: VimToolchainIdentity {
             acquisition: pins.acquisition.clone(),
             executable_sha256: executable_digest,
+            runtime_tree_sha256: runtime_tree_digest,
             version_summary,
             version_text_sha256: bytes_sha256(version_text.as_bytes())
                 .map_err(|error| unresolved(format!("{error:#}")))?,
@@ -1810,6 +1882,30 @@ mod tests {
         let healed = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
         assert!(!healed.cache_hit);
         verify_layout(&healed.manifest_path, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok(())
+    }
+
+    #[test]
+    fn corrupt_cached_runtime_support_file_is_rejected() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
+        let output = scratch.path().join("out");
+        let (inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
+        let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+
+        let support_file = first
+            .vim_executable_role
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("provisioned Vim executable has no parent"))?
+            .join("runtime/feature.txt");
+        let mut bytes = fs::read(&support_file)?;
+        bytes.push(b'\n');
+        fs::write(&support_file, bytes)?;
+
+        let error = verify_layout(&first.manifest_path, &probe).unwrap_err();
+        assert_class(&error, InstrumentFailureClass::IdentityMismatch);
+        assert!(error.detail.contains("runtime digest"), "{error}");
         Ok(())
     }
 
