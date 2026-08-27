@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12161 |
-| Rust-family files | 3720 |
-| Non-Rust files | 8441 |
-| Allowlisted | 6207 |
+| Total tracked files | 12183 |
+| Rust-family files | 3730 |
+| Non-Rust files | 8453 |
+| Allowlisted | 6219 |
 | Unclassified | 2234 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 446 |
-| documentation | 2760 |
+| config | 448 |
+| documentation | 2763 |
 | generated | 2 |
 | production | 331 |
 | test | 2032 |
-| tooling | 636 |
+| tooling | 643 |
 | unclassified | 2234 |
 
 ## Unclassified files
@@ -2566,6 +2566,8 @@
 | `.ci/examples/receipt-partial-failure.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/examples/receipt-pr-fast.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fix-forward/playbooks.toml` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/lite-xl-perl-upstream/receipts/public-replay.v1.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/lite-xl-perl-upstream/upstream-acceptance.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/codex-train.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/convergence.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/default-order.v1.json` | config | `non-rust-ci-config` | release/ci |
@@ -3068,6 +3070,9 @@
 | `.spec/11079-pl700-removal-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11084-import-cleanup-train-manifest/import_cleanup_train.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11178-lite-xl-bdd-journeys/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11178-lite-xl-bdd-journeys/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11178-lite-xl-bdd-journeys/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11246-clippy-map-err-ignore-boundaries/activation-plan.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11246-clippy-map-err-ignore-boundaries/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11246-clippy-map-err-ignore-boundaries/denominator.csv` | tooling | `non-rust-spec-tree` | developer-experience |
@@ -6353,6 +6358,7 @@
 | `scripts/ci/check_security_reconciliation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_source_commit_api.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/ci_classify.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/classify-ripr-lane-termination` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_common.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_docs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_production.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6570,6 +6576,11 @@
 | `scripts/install.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/lib/cargo-toolchain-guard.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/list-gates.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/lite_xl_public_replay.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/lite_xl_replay/__init__.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/lite_xl_replay/cli.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/lite_xl_replay/ledger.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/lite_xl_replay/public_replay.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/llvm.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/lsp-smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/marketing/check-demo-assets.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6656,6 +6667,7 @@
 | `scripts/tests/test-check-rust-toolchain-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-ci-audit-workflows-shim.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-ci-cost-monitor-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-classify-ripr-lane-termination.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-clean-tmp-targets.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-cleanup-completed-worktrees.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-cleanup-worktrees-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |

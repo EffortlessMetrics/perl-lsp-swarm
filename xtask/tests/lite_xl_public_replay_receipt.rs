@@ -203,8 +203,7 @@ fn pass_control(committed: &Value) -> Result<Value, Box<dyn Error>> {
         "version_output": "perllsp 9.9.9-test",
         "binary_sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     });
-    let digest =
-        committed.pointer("/ledger_sha256").cloned().unwrap_or_default();
+    let digest = committed.pointer("/ledger_sha256").cloned().unwrap_or_default();
     receipt["workspace"] = json!({
         "fixture_id": "fixture-test",
         "fixture_sha256": digest,
@@ -290,10 +289,7 @@ fn committed_receipt_is_an_honest_blocked_external_observation() -> Result<(), B
         .pointer("/gates/blockers")
         .and_then(Value::as_array)
         .ok_or_else(|| io::Error::other("committed receipt lacks gates.blockers"))?;
-    assert!(
-        blockers.len() >= 4,
-        "blockers must name the exact-source and released-subject gaps"
-    );
+    assert!(blockers.len() >= 4, "blockers must name the exact-source and released-subject gaps");
     for cell in committed["journey"]
         .as_object()
         .map(|it| it.keys().cloned().collect::<Vec<_>>())
@@ -338,11 +334,7 @@ fn blocked_gates_are_live_bound_to_the_current_surfaces() -> Result<(), Box<dyn 
     // committed blocked receipt is stale and must be regenerated: the gate
     // accounting is a live binding, not prose.
     let output = run(&root, Path::new(RECEIPT), &published)?;
-    assert_rejected(
-        &output,
-        "blocked receipt vs published subject",
-        "cannot deny it",
-    )?;
+    assert_rejected(&output, "blocked receipt vs published subject", "cannot deny it")?;
 
     // A blocked receipt cannot claim subjects the real manifest denies.
     for cell in [
@@ -369,11 +361,7 @@ fn blocked_gates_are_live_bound_to_the_current_surfaces() -> Result<(), Box<dyn 
     let path = target.join("blocked-claiming-exact-source.json");
     write_temp(&path, &serde_json::to_string_pretty(&claiming)?)?;
     let output = run(&root, &path, &real_manifest)?;
-    assert_rejected(
-        &output,
-        "claiming exact-source gate",
-        "no committed fixture records",
-    )?;
+    assert_rejected(&output, "claiming exact-source gate", "no committed fixture records")?;
 
     // The exact-source gate counts only genuine exact-source receipts: a
     // pass-shaped file caught by the glob but carrying another evidence stage
@@ -410,11 +398,7 @@ fn blocked_gates_are_live_bound_to_the_current_surfaces() -> Result<(), Box<dyn 
         &real_manifest,
         current_receipts.to_string_lossy().as_ref(),
     )?;
-    assert_rejected(
-        &output,
-        "blocked receipt vs committed exact-source pass",
-        "cannot deny it",
-    )?;
+    assert_rejected(&output, "blocked receipt vs committed exact-source pass", "cannot deny it")?;
 
     // Blockers are load-bearing: an empty list hides the absent subjects.
     let mut unblocked = committed.clone();
@@ -422,11 +406,7 @@ fn blocked_gates_are_live_bound_to_the_current_surfaces() -> Result<(), Box<dyn 
     let path = target.join("blocked-no-blockers.json");
     write_temp(&path, &serde_json::to_string_pretty(&unblocked)?)?;
     let output = run(&root, &path, &real_manifest)?;
-    assert_rejected(
-        &output,
-        "empty blockers",
-        "must name its absent external subjects",
-    )?;
+    assert_rejected(&output, "empty blockers", "must name its absent external subjects")?;
 
     // A non-passing receipt cannot claim a proven journey cell.
     let first_cell = committed["journey"]
@@ -438,11 +418,7 @@ fn blocked_gates_are_live_bound_to_the_current_surfaces() -> Result<(), Box<dyn 
     let path = target.join("blocked-journey-overclaim.json");
     write_temp(&path, &serde_json::to_string_pretty(&overclaim)?)?;
     let output = run(&root, &path, &real_manifest)?;
-    assert_rejected(
-        &output,
-        "blocked journey overclaim",
-        "cannot claim a proven journey cell",
-    )?;
+    assert_rejected(&output, "blocked journey overclaim", "cannot claim a proven journey cell")?;
     Ok(())
 }
 
@@ -742,12 +718,7 @@ fn pass_mutations_fail_closed_naming_the_exact_defect() -> Result<(), Box<dyn Er
         }
         let path = target.join(format!("pass-{}.json", label.replace([' ', '-'], "_")));
         write_temp(&path, &serde_json::to_string_pretty(&mutated)?)?;
-        let output = run_with_receipts_dir(
-            &root,
-            &path,
-            &published,
-            receipts.as_str(),
-        )?;
+        let output = run_with_receipts_dir(&root, &path, &published, receipts.as_str())?;
         assert_rejected(&output, &format!("pass mutation: {label}"), fragment)?;
     }
     Ok(())
