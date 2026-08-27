@@ -5065,10 +5065,7 @@ gates:
         assert!(trailer.contains("attempt 1/2: test_execution_reached=no"));
         assert!(trailer.contains("attempt 2/2: test_execution_reached=yes"));
         assert!(trailer.contains("attempt 2/2: passed after earlier watchdog timeout(s)"));
-        assert_eq!(
-            fs::read_to_string(log_path)?,
-            format!("test result: ok\\n{trailer}")
-        );
+        assert_eq!(fs::read_to_string(log_path)?, format!("test result: ok\\n{trailer}"));
         Ok(())
     }
 
@@ -5083,13 +5080,8 @@ gates:
             "sh -c 'if [ ! -e \\\"{marker}\\\" ]; then touch \\\"{marker}\\\"; sleep 2; else printf \\\"running 1 tests\\\\n\\\"; fi' # cargo test"
         );
 
-        let execution = run_shell_command_with_retries(
-            &command,
-            &log_path,
-            1,
-            1,
-            "synthetic_cargo_test_gate",
-        )?;
+        let execution =
+            run_shell_command_with_retries(&command, &log_path, 1, 1, "synthetic_cargo_test_gate")?;
 
         assert_eq!(execution.exit_code, 0);
         let log = fs::read_to_string(log_path)?;
