@@ -607,6 +607,7 @@ test_dry_run_reports_stale_refs_without_refreshing_them() {
   # Containment in an already-observed origin ref still proves the remote holds
   # the commits, so a REMOVE verdict survives the missing fetch.
   assert_contains "stale refs still prove a fully pushed branch" "$output" "pushed"
+  assert_no_mutating_git_commands "stale-ref inspection mutates nothing" "$case_dir"
 }
 
 # A registration whose path this OS view cannot resolve is not evidence that the
@@ -637,6 +638,7 @@ test_foreign_os_registration_is_preserved_for_review() {
   assert_contains "cross-OS registration is routed to REVIEW" "$output" "REVIEW"
   assert_contains "cross-OS row is counted, not dropped" "$output" "Total:   2"
   assert_contains "review rows are counted distinguishably" "$output" "Review:  1"
+  assert_no_mutating_git_commands "cross-OS inspection mutates nothing" "$case_dir"
 }
 
 test_unreachable_native_path_is_preserved_for_review() {
@@ -649,6 +651,7 @@ test_unreachable_native_path_is_preserved_for_review() {
   assert_contains "an absent path is reported as missing" "$output" "missing"
   assert_contains "an absent path is routed to REVIEW, never cleanup" "$output" "REVIEW"
   assert_contains "the absent row survives inspection" "$output" "Total:   2"
+  assert_no_mutating_git_commands "absent-path inspection mutates nothing" "$case_dir"
 }
 
 test_dry_run_message_claims_only_what_it_proves() {
