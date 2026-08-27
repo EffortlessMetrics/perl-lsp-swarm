@@ -75,30 +75,71 @@ const MAX_LABEL_CHARS: usize = 128;
 /// repair or drop the observation; construction never silently coerces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ObservationError {
-    EmptyIdentity { what: &'static str },
-    IdentityTooLong { what: &'static str, limit: usize },
-    UnknownCanonicalField { id: String },
-    EvidencePolicyMismatch { field: String },
-    MissingDeclaredEvidence { field: String },
-    UnsupportedValueKind { field: String },
-    ValueTooLong { field: String, limit: usize },
-    TextListTooLong { field: String, limit: usize },
-    TooManyFields { limit: usize },
-    PresentWithoutValue { field: String },
+    EmptyIdentity {
+        what: &'static str,
+    },
+    IdentityTooLong {
+        what: &'static str,
+        limit: usize,
+    },
+    UnknownCanonicalField {
+        id: String,
+    },
+    EvidencePolicyMismatch {
+        field: String,
+    },
+    MissingDeclaredEvidence {
+        field: String,
+    },
+    UnsupportedValueKind {
+        field: String,
+    },
+    ValueTooLong {
+        field: String,
+        limit: usize,
+    },
+    TextListTooLong {
+        field: String,
+        limit: usize,
+    },
+    TooManyFields {
+        limit: usize,
+    },
+    PresentWithoutValue {
+        field: String,
+    },
     LabelOutOfBounds,
-    TooManyClientLabels { limit: usize },
-    DuplicateCanonicalField { id: String },
-    DuplicateObservation { field: String },
-    UnsupportedEvidencePolicy { field: String },
-    MalformedValue { field: String, reason: MalformedReason },
+    TooManyClientLabels {
+        limit: usize,
+    },
+    DuplicateCanonicalField {
+        id: String,
+    },
+    DuplicateObservation {
+        field: String,
+    },
+    UnsupportedEvidencePolicy {
+        field: String,
+    },
+    MalformedValue {
+        field: String,
+        reason: MalformedReason,
+    },
+    /// An unmodeled external marker may not occupy a declared canonical
+    /// denominator slot; only a genuine canonical row covers an expected ID.
+    MarkerInsideDenominator {
+        marker: String,
+    },
 }
 
 /// Provenance class fixed by the observing adapter, never by transported
 /// data.
 ///
 /// Every class with a landed counterpart maps 1:1 onto the canonical
-/// [`ConfigSource`] vocabulary; the three issue-mandated extensions have no
-/// landed channel and therefore never admit a candidate value.
+/// [`ConfigSource`] vocabulary — including the derived project-metadata
+/// channel used by `workspace.declared_dependencies` and similar rows. The
+/// three issue-mandated extensions have no landed channel and therefore
+/// never admit a candidate value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) enum ConfigurationProvenanceClass {
     CompiledDefault,
@@ -110,6 +151,7 @@ pub(crate) enum ConfigurationProvenanceClass {
     ExplicitCliOrOperator,
     ProcessEnvironment,
     SystemOrInterpreterProbe,
+    ProjectMetadata,
     FeatureSpecificInternalSource,
     UnknownOrUnsupportedSource,
 }
@@ -126,6 +168,7 @@ impl ConfigurationProvenanceClass {
             Self::PerRootWorkspaceConfiguration => Some(ConfigSource::WorkspaceConfiguration),
             Self::ProcessEnvironment => Some(ConfigSource::Environment),
             Self::SystemOrInterpreterProbe => Some(ConfigSource::SystemProbe),
+            Self::ProjectMetadata => Some(ConfigSource::ProjectMetadata),
             Self::ExplicitCliOrOperator
             | Self::FeatureSpecificInternalSource
             | Self::UnknownOrUnsupportedSource => None,
@@ -143,6 +186,7 @@ impl ConfigurationProvenanceClass {
             Self::ExplicitCliOrOperator => "explicit_cli_or_operator",
             Self::ProcessEnvironment => "process_environment",
             Self::SystemOrInterpreterProbe => "system_or_interpreter_probe",
+            Self::ProjectMetadata => "project_metadata",
             Self::FeatureSpecificInternalSource => "feature_specific_internal_source",
             Self::UnknownOrUnsupportedSource => "unknown_or_unsupported_source",
         }
@@ -661,27 +705,36 @@ impl ConfigurationObservation {
             field.identity.push_identity_material(&mut material);
             let _ = write!(
                 material,
-                "key={};disp={};admission={};",
+                "key={};disp={}",
                 tag("k", key.as_bytes()),
                 field.disposition.discriminant(),
-                field.admission.discriminant(),
             );
+            // Malformed reasons are part of the typed fact and belong to the
+            // observation identity.
+            if let ConfigurationObservationDisposition::Malformed { reason } = field.disposition {
+                let _ = write!(material, ";reason={}", malformed_reason_discriminant(reason));
+            }
+            let _ = write!(material, ";admission={};", field.admission.discriminant());
             if let Some(validation) = &field.validation {
-                let _ = write!(material, "valid={validation:?};");
+                let _ = write!(material, "valid={};", validation_discriminant(*validation));
             }
             if let Some(evidence_policy) = &field.evidence_policy {
-                let _ = write!(material, "evidence={evidence_policy:?};");
+                let _ = write!(
+                    material,
+                    "evidence={};",
+                    evidence_policy_discriminant(*evidence_policy)
+                );
             }
             if let Some(value) = &field.normalized_value {
                 let _ = write!(material, "value={};", value.evidence_material());
             }
             for limitation in &field.limitations {
-                let _ = write!(material, "lim={limitation:?};");
+                let _ = write!(material, "lim={};", limitation_discriminant(*limitation));
             }
             material.push('|');
         }
         for limitation in &self.limitations {
-            let _ = write!(material, "env-lim={limitation:?};");
+            let _ = write!(material, "env-lim={};", limitation_discriminant(*limitation));
         }
         match self.completeness {
             ConfigurationCompleteness::Complete { expected, observed }
@@ -699,6 +752,72 @@ impl ConfigurationObservation {
         // Collision-resistant identity over the full canonical material; the
         // `sha256:` prefix names the algorithm explicitly on the wire.
         ConfigurationObservationFingerprint { digest: sha256_hex(material.as_bytes()) }
+    }
+}
+
+/// Fixed vocabulary discriminants for identity material. Derived `Debug`
+/// output is not a stable cross-compiler format, so the fingerprint never
+/// relies on it; each landed enum contributes an explicit, frozen token.
+fn validation_discriminant(validation: ConfigValidation) -> &'static str {
+    match validation {
+        ConfigValidation::Boolean => "boolean",
+        ConfigValidation::NonEmptyString => "non_empty_string",
+        ConfigValidation::OptionalNonEmptyString => "optional_non_empty_string",
+        ConfigValidation::StringList => "string_list",
+        ConfigValidation::UnsignedRange { .. } => "unsigned_range",
+        ConfigValidation::PositiveFloat => "positive_float",
+        ConfigValidation::KnownEnum => "known_enum",
+        ConfigValidation::RelativeWorkspacePathList => "relative_workspace_path_list",
+        ConfigValidation::AbsoluteExternalPathList => "absolute_external_path_list",
+        ConfigValidation::ExecutableAndArgs => "executable_and_args",
+        ConfigValidation::HttpHeaderName => "http_header_name",
+        ConfigValidation::SafeHeaderPrefix => "safe_header_prefix",
+        ConfigValidation::HttpsOrLoopbackEndpoint => "https_or_loopback_endpoint",
+        ConfigValidation::Unsigned => "unsigned",
+        ConfigValidation::Derived => "derived",
+    }
+}
+
+fn evidence_policy_discriminant(evidence_policy: EvidencePolicy) -> &'static str {
+    match evidence_policy {
+        EvidencePolicy::SafeValue => "safe_value",
+        EvidencePolicy::BoundedValue => "bounded_value",
+        EvidencePolicy::PathIdentityOnly => "path_identity_only",
+        EvidencePolicy::Redacted => "redacted",
+        EvidencePolicy::DerivedDigestOnly => "derived_digest_only",
+    }
+}
+
+fn limitation_discriminant(limitation: ConfigurationObservationLimitation) -> &'static str {
+    match limitation {
+        ConfigurationObservationLimitation::ClientDeclaredLabelsUnverified => {
+            "client_declared_labels_unverified"
+        }
+        ConfigurationObservationLimitation::ProvenanceFromTransportPositionOnly => {
+            "provenance_from_transport_position_only"
+        }
+        ConfigurationObservationLimitation::ProvenanceUnknownOrUnsupported => {
+            "provenance_unknown_or_unsupported"
+        }
+        ConfigurationObservationLimitation::EnvironmentFactNotPolicyWriter => {
+            "environment_fact_not_policy_writer"
+        }
+        ConfigurationObservationLimitation::PartialFieldPopulation => "partial_field_population",
+        ConfigurationObservationLimitation::PopulationBeyondDenominator => {
+            "population_beyond_denominator"
+        }
+        ConfigurationObservationLimitation::EnvelopeShapeUntrusted => "envelope_shape_untrusted",
+        ConfigurationObservationLimitation::SensitiveValueRedacted => "sensitive_value_redacted",
+    }
+}
+
+fn malformed_reason_discriminant(reason: MalformedReason) -> &'static str {
+    match reason {
+        MalformedReason::WrongShape => "wrong_shape",
+        MalformedReason::OutOfRange => "out_of_range",
+        MalformedReason::UnknownEnumMember => "unknown_enum_member",
+        MalformedReason::Oversized => "oversized",
+        MalformedReason::Undecodable => "undecodable",
     }
 }
 
@@ -731,18 +850,21 @@ pub(crate) struct ConfigurationObservationDraft {
 }
 
 impl ConfigurationObservationDraft {
+    /// Assembles an empty draft. Construction is total: `subject` and
+    /// `source` are validated by their own constructors, so no failure mode
+    /// remains here; populating and finishing carry the typed errors.
     pub(crate) fn new(
         subject: ConfigurationObservationSubject,
         source: ConfigurationSourceIdentity,
-    ) -> Result<Self, ObservationError> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             subject,
             source,
             expected_denominator: Vec::new(),
             fields: BTreeMap::new(),
             envelope_malformed: false,
             limitations: BTreeSet::new(),
-        })
+        }
     }
 
     /// Declares the expected denominator from canonical authority IDs.
@@ -797,6 +919,14 @@ impl ConfigurationObservationDraft {
             return Err(ObservationError::TooManyFields { limit: MAX_FIELDS_PER_OBSERVATION });
         }
         let key = identity.key().to_string();
+        // Namespace integrity: an unmodeled external marker never occupies a
+        // declared canonical denominator slot, so it cannot impersonate
+        // expected-ID coverage.
+        if matches!(identity, ObservedFieldIdentity::Unmodeled { .. })
+            && self.expected_denominator.iter().any(|id| id == identity.key())
+        {
+            return Err(ObservationError::MarkerInsideDenominator { marker: key });
+        }
         // A field is observed once per envelope: a later recording must never
         // silently overwrite an earlier one (permutation-sensitive receipts
         // are not deterministic observations).
@@ -832,13 +962,27 @@ impl ConfigurationObservationDraft {
             }
             // Execute the mechanically decidable catalog rules before any
             // evidence handling, so a value the authority would reject is a
-            // typed malformed outcome instead of an admitted observation.
-            // Structurally interactive rules (enum spellings, path/executable/
-            // header/endpoint shapes) require the generation/runtime pipeline
-            // and stay owned by the landed runtime slices (#7057).
+            // typed malformed outcome instead of an admitted observation:
+            // NonEmptyString / OptionalNonEmptyString reject empty text
+            // (absence for the optional variant travels as its own
+            // disposition), StringList rejects empty list items, and
+            // UnsignedRange bounds counts. Structurally interactive rules
+            // (enum spellings, path/executable/header/endpoint shapes)
+            // require the generation/runtime pipeline and stay owned by the
+            // landed runtime slices (#7057).
             match policy.validation {
-                ConfigValidation::NonEmptyString => {
+                ConfigValidation::NonEmptyString | ConfigValidation::OptionalNonEmptyString => {
                     if value.raw_text_parts().iter().any(|part| part.is_empty()) {
+                        return Err(ObservationError::MalformedValue {
+                            field: key.clone(),
+                            reason: MalformedReason::WrongShape,
+                        });
+                    }
+                }
+                ConfigValidation::StringList => {
+                    if let NormalizedValue::TextList(items) = &value
+                        && items.iter().any(String::is_empty)
+                    {
                         return Err(ObservationError::MalformedValue {
                             field: key.clone(),
                             reason: MalformedReason::WrongShape,
@@ -953,6 +1097,12 @@ impl ConfigurationObservationDraft {
         if disposition == ConfigurationObservationDisposition::Present {
             return Err(ObservationError::PresentWithoutValue { field: key });
         }
+        // Namespace integrity, mirroring record_present.
+        if matches!(identity, ObservedFieldIdentity::Unmodeled { .. })
+            && self.expected_denominator.iter().any(|id| id == identity.key())
+        {
+            return Err(ObservationError::MarkerInsideDenominator { marker: key });
+        }
         // Same fail-closed law as record_present: an ID that is not in the
         // canonical namespace must surface as UnknownCanonicalField, and only
         // the explicit Unmodeled variant may carry external markers.
@@ -1037,8 +1187,15 @@ impl ConfigurationObservationDraft {
                 | ConfigurationObservationDisposition::ExplicitReset => {}
             }
         }
-        let missing_expected =
-            self.expected_denominator.iter().any(|id| !self.fields.contains_key(id));
+        // An expected ID is covered only by a genuine canonical row; markers
+        // are rejected from denominator slots at recording time, so a bare
+        // key match already implies canonical, but the variant check keeps
+        // the coverage law explicit and future-proof.
+        let missing_expected = self.expected_denominator.iter().any(|id| {
+            !self.fields.get(id).is_some_and(|field| {
+                matches!(field.identity, ObservedFieldIdentity::Canonical { .. })
+            })
+        });
 
         // Coverage counts only the declared denominator population; rows
         // outside it (unmodeled facts, out-of-denominator recordings) are
@@ -1109,8 +1266,7 @@ mod tests {
         build: impl FnOnce(&mut ConfigurationObservationDraft),
     ) -> ConfigurationObservation {
         let mut draft =
-            ConfigurationObservationDraft::new(subject(scope), source(provenance, transport))
-                .expect("draft constructs");
+            ConfigurationObservationDraft::new(subject(scope), source(provenance, transport));
         build(&mut draft);
         draft.finish().expect("fixture observation finishes")
     }
@@ -1181,8 +1337,7 @@ mod tests {
         .with_client_label("trusted", "true")
         .expect("bounded label");
         let mut draft =
-            ConfigurationObservationDraft::new(subject(ObservationScope::Global), labeled)
-                .expect("draft constructs");
+            ConfigurationObservationDraft::new(subject(ObservationScope::Global), labeled);
         draft.expect_canonical_fields(&["ai.endpoint"]).expect("known row");
         draft
             .record_present(
@@ -1451,8 +1606,7 @@ mod tests {
                     ConfigurationProvenanceClass::CompiledDefault,
                     ObservationTransport::CompiledDefaultsEmitted,
                 ),
-            )
-            .expect("draft constructs");
+            );
             populate_first(&mut draft);
             draft.finish().expect("finishes")
         };
@@ -1463,8 +1617,7 @@ mod tests {
                     ConfigurationProvenanceClass::CompiledDefault,
                     ObservationTransport::CompiledDefaultsEmitted,
                 ),
-            )
-            .expect("draft constructs");
+            );
             populate_reversed(&mut draft);
             draft.finish().expect("finishes")
         };
@@ -1572,8 +1725,7 @@ mod tests {
                 ConfigurationProvenanceClass::UnknownOrUnsupportedSource,
                 ObservationTransport::Unidentified,
             ),
-        )
-        .expect("draft constructs");
+        );
         assert!(matches!(
             draft.expect_canonical_fields(&["not.a.canonical.field"]),
             Err(ObservationError::UnknownCanonicalField { .. })
@@ -1810,8 +1962,7 @@ mod tests {
         let mut safe_attempt = ConfigurationObservationDraft::new(
             subject(ObservationScope::Global),
             weak_source.clone(),
-        )
-        .expect("draft constructs");
+        );
         assert!(matches!(
             safe_attempt.record_present(
                 ObservedFieldIdentity::unmodeled("PERL5LIB"),
@@ -1824,8 +1975,7 @@ mod tests {
         let mut bounded_attempt = ConfigurationObservationDraft::new(
             subject(ObservationScope::Global),
             weak_source.clone(),
-        )
-        .expect("draft constructs");
+        );
         assert!(matches!(
             bounded_attempt.record_present(
                 ObservedFieldIdentity::unmodeled("PERL5LIB"),
@@ -1893,8 +2043,7 @@ mod tests {
                 ConfigurationProvenanceClass::CompiledDefault,
                 ObservationTransport::CompiledDefaultsEmitted,
             ),
-        )
-        .expect("draft constructs");
+        );
         let attempted = draft.expect_canonical_fields(&["ai.model", "ai.model"]);
         assert!(matches!(
             attempted,
@@ -1919,8 +2068,7 @@ mod tests {
                 ConfigurationProvenanceClass::TrustedUserOrMachineAdapter,
                 ObservationTransport::OperatorInvocation,
             ),
-        )
-        .expect("draft constructs");
+        );
         first
             .record_present(
                 ObservedFieldIdentity::canonical("ai.model"),
@@ -1945,8 +2093,7 @@ mod tests {
                 ConfigurationProvenanceClass::TrustedUserOrMachineAdapter,
                 ObservationTransport::OperatorInvocation,
             ),
-        )
-        .expect("draft constructs");
+        );
         second
             .record_disposition(
                 ObservedFieldIdentity::canonical("ai.model"),
@@ -1972,8 +2119,7 @@ mod tests {
                 ConfigurationProvenanceClass::GenericUnscopedClient,
                 ObservationTransport::ConfigurationPullResult { request_id: "req-x".to_string() },
             ),
-        )
-        .expect("draft constructs");
+        );
         let attempted = draft.record_disposition(
             ObservedFieldIdentity::canonical("not.a.canonical.field"),
             ConfigurationObservationDisposition::Absent,
@@ -2056,8 +2202,7 @@ mod tests {
                 ConfigurationProvenanceClass::TrustedUserOrMachineAdapter,
                 ObservationTransport::OperatorInvocation,
             ),
-        )
-        .expect("draft constructs");
+        );
 
         // ai.api_key_env carries Validation::NonEmptyString: an empty string
         // is a typed malformed value, not an admitted secret slot.
@@ -2096,6 +2241,154 @@ mod tests {
             Err(ObservationError::MalformedValue { reason: MalformedReason::OutOfRange, .. })
         ));
         ceiling.expect("boundary value within range records");
+    }
+
+    /// Falsifier #19: unmodeled external markers cannot occupy declared
+    /// canonical denominator slots, in either recording path.
+    #[test]
+    fn unmodeled_markers_cannot_occupy_denominator_slots() {
+        let mut draft = ConfigurationObservationDraft::new(
+            subject(ObservationScope::Global),
+            source(
+                ConfigurationProvenanceClass::PerRootWorkspaceConfiguration,
+                ObservationTransport::ConfigurationPullResult { request_id: "req-n".to_string() },
+            ),
+        );
+        draft.expect_canonical_fields(&["workspace.include_paths"]).expect("known row");
+        let impersonating_value = draft.record_present(
+            ObservedFieldIdentity::unmodeled("workspace.include_paths"),
+            NormalizedValue::Text("/opt/site/lib".to_string()),
+            Some(EvidencePolicy::DerivedDigestOnly),
+        );
+        assert!(matches!(
+            impersonating_value,
+            Err(ObservationError::MarkerInsideDenominator { marker }) if marker == "workspace.include_paths",
+        ));
+        let impersonating_disposition = draft.record_disposition(
+            ObservedFieldIdentity::unmodeled("workspace.include_paths"),
+            ConfigurationObservationDisposition::Absent,
+        );
+        assert!(matches!(
+            impersonating_disposition,
+            Err(ObservationError::MarkerInsideDenominator { .. })
+        ));
+
+        // The genuine canonical row still covers the slot afterwards.
+        draft
+            .record_present(
+                ObservedFieldIdentity::canonical("workspace.include_paths"),
+                NormalizedValue::TextList(vec!["lib".to_string()]),
+                None,
+            )
+            .expect("canonical recording lands");
+        let sealed = draft.finish().expect("finishes");
+        assert!(matches!(
+            sealed.completeness(),
+            ConfigurationCompleteness::Complete { expected: 1, observed: 1 }
+        ));
+    }
+
+    /// Falsifier #20: malformed reasons are part of the observation identity;
+    /// WrongShape and OutOfRange never share a fingerprint.
+    #[test]
+    fn malformed_reason_joins_fingerprint_identity() {
+        let record = |reason| {
+            finish(
+                ConfigurationProvenanceClass::GenericUnscopedClient,
+                ObservationTransport::ConfigurationPullResult { request_id: "req-r".to_string() },
+                ObservationScope::Global,
+                move |draft| {
+                    draft.expect_canonical_fields(&["formatting.enabled"]).expect("known row");
+                    draft
+                        .record_disposition(
+                            ObservedFieldIdentity::canonical("formatting.enabled"),
+                            ConfigurationObservationDisposition::Malformed { reason },
+                        )
+                        .expect("disposition records");
+                },
+            )
+        };
+        assert_ne!(
+            record(MalformedReason::WrongShape).fingerprint(),
+            record(MalformedReason::OutOfRange).fingerprint()
+        );
+    }
+
+    /// Falsifier #21: the remaining mechanically decidable rules execute —
+    /// OptionalNonEmptyString rejects empty text and StringList rejects empty
+    /// list items, both as typed malformed outcomes.
+    #[test]
+    fn optional_and_list_validation_arms_execute() {
+        let mut project = ConfigurationObservationDraft::new(
+            subject(ObservationScope::Root { root_identity: "root-a".to_string() }),
+            source(
+                ConfigurationProvenanceClass::ProjectFile,
+                ObservationTransport::ProjectFileRead {
+                    path_digest: "digest:.perl-lsp.toml".to_string(),
+                },
+            ),
+        );
+        let empty_optional = project.record_present(
+            ObservedFieldIdentity::canonical("critic.legacy_profile"),
+            NormalizedValue::Text(String::new()),
+            None,
+        );
+        assert!(matches!(
+            empty_optional,
+            Err(ObservationError::MalformedValue { reason: MalformedReason::WrongShape, .. })
+        ));
+        // Presence of an actual value is unaffected; absence travels through
+        // the Absent disposition instead of an empty string.
+        project
+            .record_present(
+                ObservedFieldIdentity::canonical("critic.legacy_profile"),
+                NormalizedValue::Text("legacy".to_string()),
+                None,
+            )
+            .expect("non-empty optional records");
+
+        let mut folder = ConfigurationObservationDraft::new(
+            subject(ObservationScope::Global),
+            source(
+                ConfigurationProvenanceClass::CompiledDefault,
+                ObservationTransport::CompiledDefaultsEmitted,
+            ),
+        );
+        let empty_item = folder.record_present(
+            ObservedFieldIdentity::canonical("critic.exclude"),
+            NormalizedValue::TextList(vec!["benchi".to_string(), String::new()]),
+            None,
+        );
+        assert!(matches!(
+            empty_item,
+            Err(ObservationError::MalformedValue { reason: MalformedReason::WrongShape, .. })
+        ));
+    }
+
+    /// Falsifier #22: the landed project-metadata channel maps to its own
+    /// provenance class, admitting derived dependency rows without falsely
+    /// labeling their source.
+    #[test]
+    fn project_metadata_channel_admits_declared_dependencies() {
+        let metadata = finish(
+            ConfigurationProvenanceClass::ProjectMetadata,
+            ObservationTransport::FeatureInternalState,
+            ObservationScope::Global,
+            |draft| {
+                draft.expect_canonical_fields(&["workspace.declared_dependencies"]).expect("row");
+                draft
+                    .record_present(
+                        ObservedFieldIdentity::canonical("workspace.declared_dependencies"),
+                        NormalizedValue::TextList(vec!["Plack".to_string()]),
+                        None,
+                    )
+                    .expect("metadata channel admits declared dependencies");
+            },
+        );
+        assert_eq!(metadata.provenance(), ConfigurationProvenanceClass::ProjectMetadata);
+        let row = metadata.observed_field("workspace.declared_dependencies").expect("recorded");
+        assert_eq!(row.admission(), SourceAuthorityAdmission::CandidateAdmitted);
+        assert!(matches!(row.normalized_value(), Some(NormalizedValue::DigestOnly(_))));
     }
 
     /// Pins the current fixture format; any schema-visible change must update
