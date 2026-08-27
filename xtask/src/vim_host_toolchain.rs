@@ -184,6 +184,21 @@ fn acquisition_failure(detail: impl Into<String>) -> InstrumentFailure {
     InstrumentFailure::new(InstrumentFailureClass::AcquisitionUnavailable, detail)
 }
 
+/// First non-empty stderr line, hard-capped, for embedding in typed failure
+/// messages. Bounded diagnostics name the failing subject without turning a
+/// chatty subprocess into an unbounded error dump.
+fn bounded_first_stderr_line(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let first = text.lines().find(|line| !line.trim().is_empty()).unwrap_or_default();
+    let trimmed = first.trim();
+    if trimmed.chars().count() > 160 {
+        let bounded: String = trimmed.chars().take(160).collect();
+        format!("{bounded}...")
+    } else {
+        trimmed.to_string()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Manifest schema v1 (deny_unknown_fields; deterministic serialization)
 // ---------------------------------------------------------------------------
@@ -796,7 +811,7 @@ fn acquire_vim_archive(downloads_dir: &Path, expected_sha256: &str) -> Toolchain
         return Err(acquisition_failure(format!(
             "curl could not fetch the pinned Vim archive (status {}): {}",
             fetched.status,
-            String::from_utf8_lossy(&fetched.stderr).trim()
+            bounded_first_stderr_line(&fetched.stderr)
         )));
     }
     let actual = file_sha256(&partial).map_err(|error| {
@@ -1052,6 +1067,20 @@ fn verify_manifest_core(
 /// revalidation failure deletes the entry and rebuilds from the pinned
 /// sources — a warm cache containing different bytes can never satisfy the
 /// role silently.
+/// The output root as an absolute directory. Every derived role (entry
+/// layout, vim-lsp checkout, handoff paths) is consumed by absolute-path
+/// contracts, so a relative `--output target/vim-toolchain` invocation must
+/// be anchored to the caller's working directory before any layout math,
+/// never after a successful download.
+fn absolutized_output_root(raw: &Path) -> ToolchainResult<PathBuf> {
+    if raw.is_absolute() {
+        return Ok(raw.to_path_buf());
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(raw))
+        .map_err(|error| acquisition_failure(format!("resolving the current directory: {error}")))
+}
+
 pub fn provision(
     inputs: &ProvisionInputs,
     probe: &dyn Fn(&Path) -> Result<String>,
@@ -1074,7 +1103,8 @@ pub fn provision(
     };
     let key = cache_key(&key_inputs).map_err(classify_authority)?;
     let dir_name = cache_dir_name(&key).map_err(classify_authority)?.to_string();
-    let entry_root = inputs.output_root.join(&dir_name);
+    let output_root = absolutized_output_root(&inputs.output_root)?;
+    let entry_root = output_root.join(&dir_name);
     let manifest_path = entry_root.join(MANIFEST_FILE_NAME);
 
     if manifest_path.exists() {
@@ -1082,6 +1112,11 @@ pub fn provision(
             .map_err(|error| mismatch(format!("reading the cached manifest: {error}")));
         if let Ok(manifest_bytes) = cached
             && let Ok(manifest) = serde_json::from_slice::<ToolchainManifest>(&manifest_bytes)
+            // The requested key is the governed identity of THIS run: a
+            // foreign manifest dropped into this directory still reproduces
+            // its own key, so only agreement with the currently requested
+            // identity may admit a cache hit (never the directory alone).
+            && manifest.cache_key == key
             && verify_manifest_core(&manifest, &manifest_bytes, &entry_root, probe).is_ok()
         {
             return Ok(ProvisionOutcome {
@@ -1098,6 +1133,7 @@ pub fn provision(
 
     rebuild_entry(
         inputs,
+        &output_root,
         &authority,
         authority_sha256,
         platform,
@@ -1112,6 +1148,7 @@ pub fn provision(
 #[allow(clippy::too_many_arguments)]
 fn rebuild_entry(
     inputs: &ProvisionInputs,
+    output_root: &Path,
     authority: &VimLspSubjectManifest,
     authority_sha256: String,
     platform: PlatformFields,
@@ -1126,9 +1163,13 @@ fn rebuild_entry(
     // swapped into place once it is complete and verified. Only this
     // process's own stale staging leftovers are swept; a concurrent
     // writer's staging directory is never touched.
-    let staging_root =
-        inputs.output_root.join(format!("{dir_name}.staging.{}", std::process::id()));
+    let staging_root = output_root.join(format!("{dir_name}.staging.{}", std::process::id()));
     let _ = fs::remove_dir_all(&staging_root);
+    // Healing law: a rebuild replaces derived state, not verified immutable
+    // subjects. Carry the digest-valid pinned archive from the superseded
+    // entry into the staging layout so offline healing stays possible;
+    // anything missing or drifted degrades silently into normal acquisition.
+    preserve_verified_archive(entry_root, &staging_root, &pins.acquisition.archive_sha256);
     match build_fresh_entry(
         inputs,
         authority,
@@ -1162,6 +1203,37 @@ fn rebuild_entry(
             Err(failure)
         }
     }
+}
+
+/// Carry the digest-verified pinned archive of a superseded entry into a
+/// fresh staging layout. Best-effort by contract: any absence, hashing
+/// problem, drift, or copy failure is a silent no-op and the subsequent
+/// acquisition proceeds exactly as if nothing existed — this path only ever
+/// prevents an unnecessary re-download, never substitutes identity evidence
+/// (the acquired/kept archive is still digest-bound before use).
+fn preserve_verified_archive(
+    superseded_entry: &Path,
+    staging_root: &Path,
+    expected_archive_sha256: &str,
+) {
+    let legacy = superseded_entry.join("downloads").join(format!("gvim_{VIM_RELEASE_TAG}.zip"));
+    if !legacy.is_file() {
+        return;
+    }
+    let Ok(actual) = file_sha256(&legacy) else { return };
+    if actual != expected_archive_sha256 {
+        return;
+    }
+    let Some(file_name) = legacy.file_name() else { return };
+    let target_dir = staging_root.join("downloads");
+    let target = target_dir.join(file_name);
+    if target.exists() {
+        return;
+    }
+    if fs::create_dir_all(&target_dir).is_err() {
+        return;
+    }
+    let _ = fs::copy(&legacy, &target);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1731,12 +1803,137 @@ mod tests {
         assert_class(&drifted, InstrumentFailureClass::IdentityMismatch);
 
         // Provision over the drifted cache must rebuild, never satisfy
-        // silently — and healing needs no network because the archive
-        // source itself is injected offline (a real rebuild deletes the
-        // whole entry, downloads/ included).
+        // silently. Healing needs no network in either shape: the injected
+        // source is offline by construction, and a production rebuild
+        // carries the digest-valid archive forward into the staging layout
+        // (preserve_verified_archive) instead of deleting it.
         let healed = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
         assert!(!healed.cache_hit);
         verify_layout(&healed.manifest_path, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok(())
+    }
+
+    fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
+        fs::create_dir_all(dst)?;
+        for entry in fs::read_dir(src)? {
+            let from = entry?.path();
+            let Some(name) = from.file_name() else { continue };
+            let to = dst.join(name);
+            if from.is_dir() {
+                copy_tree(&from, &to)?;
+            } else {
+                fs::copy(&from, &to)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The exact codex P1 scenario: material from another governed identity
+    /// placed under this run's key directory must never be reported as a
+    /// cache hit merely because it internally reproduces its own key.
+    #[test]
+    fn cache_hit_requires_the_currently_requested_key() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
+        let output = scratch.path().join("out");
+        let mk_inputs = |environment: &str| ProvisionInputs {
+            output_root: output.clone(),
+            repo_root: output.clone(),
+            authority: inline_authority(&fixture),
+            vim_lsp_source: Some(fixture.source_dir.clone()),
+            vim_archive_source: Some(archive.archive_path.clone()),
+            vim_archive_expected_sha256: Some(archive.archive_sha256.clone()),
+            vim_executable_expected_sha256: Some(archive.executable_sha256.clone()),
+            execution_environment: environment.to_string(),
+        };
+        let probe = static_probe(FULL_FEATURE_TEXT);
+
+        let installed = provision(&mk_inputs("local_runner"), &probe)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let foreign_material = installed
+            .manifest_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("manifest path has no parent directory"))?
+            .to_path_buf();
+        let foreign_bytes = fs::read(&installed.manifest_path)?;
+
+        let target = provision(&mk_inputs("ci_runner"), &probe)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let target_key = target.manifest.cache_key.clone();
+        let target_dir = target
+            .manifest_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("manifest path has no parent directory"))?
+            .to_path_buf();
+
+        // Hostile placement: the foreign (different-key) entry replaces the
+        // content of the currently requested key's directory.
+        let target_bytes = fs::read(&target.manifest_path)?;
+        assert_ne!(target_bytes, foreign_bytes);
+        fs::remove_dir_all(&target_dir)?;
+        copy_tree(&foreign_material, &target_dir)?;
+        assert_eq!(fs::read(&target.manifest_path)?, foreign_bytes);
+
+        let reprovisioned = provision(&mk_inputs("ci_runner"), &probe)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(
+            !reprovisioned.cache_hit,
+            "foreign internal-key-consistent material must not satisfy another key"
+        );
+        assert_eq!(reprovisioned.manifest.cache_key, target_key);
+        verify_layout(&reprovisioned.manifest_path, &probe)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok(())
+    }
+
+    /// The healing law: only a digest-valid pinned download may be carried
+    /// across a rebuild, and any absence/drift degrades to plain acquisition.
+    #[test]
+    fn preserve_verified_archive_carries_only_digest_valid_downloads() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let superseded = scratch.path().join("entry");
+        let staging_valid = scratch.path().join("staging-valid");
+        let staging_drifted = scratch.path().join("staging-drifted");
+        let archive_name = format!("gvim_{VIM_RELEASE_TAG}.zip");
+        let legacy = superseded.join("downloads").join(&archive_name);
+        fs::create_dir_all(
+            legacy
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("archive path has no parent directory"))?,
+        )?;
+        fs::write(&legacy, b"verified pinned archive bytes")?;
+        let pinned_digest = file_sha256(&legacy)?;
+
+        preserve_verified_archive(&superseded, &staging_valid, &pinned_digest);
+        let carried = staging_valid.join("downloads").join(&archive_name);
+        assert_eq!(fs::read(&carried)?, b"verified pinned archive bytes");
+
+        fs::write(&legacy, b"drifted immutable subject bytes")?;
+        preserve_verified_archive(&superseded, &staging_drifted, &pinned_digest);
+        assert!(!staging_drifted.join("downloads").exists());
+
+        preserve_verified_archive(
+            &scratch.path().join("missing"),
+            &staging_drifted,
+            &pinned_digest,
+        );
+        Ok(())
+    }
+
+    /// A relative `--output` invocation must be anchored to the working
+    /// directory before any layout math, or the absolute-path consumption
+    /// contracts fail only after a full network acquisition.
+    #[test]
+    fn relative_output_roots_are_anchored_before_layout_math() -> Result<()> {
+        let anchored = absolutized_output_root(Path::new("target/vim-toolchain"))
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let cwd = std::env::current_dir()?;
+        assert!(anchored.is_absolute());
+        assert_eq!(anchored, cwd.join("target/vim-toolchain"));
+        let already = absolutized_output_root(&cwd.join("elsewhere/out"))
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert_eq!(already, cwd.join("elsewhere/out"));
         Ok(())
     }
 
