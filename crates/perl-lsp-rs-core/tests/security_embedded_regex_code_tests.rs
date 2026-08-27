@@ -73,6 +73,16 @@ fn embedded_code_block_in_qr_is_flagged() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
+fn deferred_embedded_code_block_in_qr_is_flagged() -> Result<(), Box<dyn std::error::Error>> {
+    let got = codes(r#"my $r = qr/(??{ build_pattern() })/;"#);
+    assert!(
+        has_code(&got, "PL609"),
+        "qr/(??{{...}})/ should publish PL609 for deferred embedded code: {got:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn embedded_code_block_in_explicit_match_is_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let got = codes(r#"$x =~ m/(?{ print "hi" })/;"#);
     assert!(

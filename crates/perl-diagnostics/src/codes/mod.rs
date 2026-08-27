@@ -153,8 +153,9 @@ pub enum DiagnosticCode {
     /// Substitution replacement is evaluated as Perl code by the `e`/`ee`
     /// modifier (`s/pat/repl/e`) (#9818)
     SecuritySubstitutionEval,
-    /// Regular expression pattern embeds executable code with `(?{ ... })`
-    /// in `m//`, `qr//`, a bare regex literal, or a substitution pattern (#9818)
+    /// Regular expression pattern embeds immediate `(?{ ... })` or deferred
+    /// `(??{ ... })` executable code in `m//`, `qr//`, a bare regex literal,
+    /// or a substitution pattern (#9818)
     SecurityEmbeddedRegexCode,
 
     // Import (PL700-PL799)

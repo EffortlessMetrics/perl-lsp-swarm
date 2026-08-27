@@ -18,7 +18,7 @@
 //! | `PL606` | Warning | `readpipe()` executes shell commands (equivalent to qx//) |
 //! | `PL607` | Warning | Interpolated/concatenated SQL text in `->prepare()` / `->do()` (#5035) |
 //! | `PL608` | Warning | `s/pat/repl/e` evaluates the substitution replacement as Perl code (#9818) |
-//! | `PL609` | Warning | Embedded `(?{ ... })` code executes inside regex patterns (#9818) |
+//! | `PL609` | Warning | Embedded `(?{ ... })` or `(??{ ... })` code executes inside regex patterns (#9818) |
 
 use std::collections::HashMap;
 
@@ -41,8 +41,8 @@ use perl_diagnostics::codes::DiagnosticSeverity;
 /// - Interpolated or concatenated SQL text passed to DBI statement-taking
 ///   methods (`prepare`/`prepare_cached`/`do`) (#5035)
 /// - Substitutions evaluating their replacement as Perl code (`s///e`,
-///   `s///ee`) and embedded `(?{ ... })` code blocks in regex patterns
-///   (`m//`, `qr//`, bare literals) (#9818)
+///   `s///ee`) and embedded immediate/deferred code blocks (`(?{ ... })`,
+///   `(??{ ... })`) in regex patterns (`m//`, `qr//`, bare literals) (#9818)
 pub fn check_security(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
     walk_security_node(node, diagnostics, false);
     check_sql_injection(node, diagnostics);
@@ -352,7 +352,7 @@ fn walk_security_node(
         }
         NodeKind::Regex { has_embedded_code: true, .. } => {
             // Code-executing regex family (#9818): the parser computes
-            // `has_embedded_code` for `(?{ ... })` blocks, but the flag had
+            // `has_embedded_code` for immediate/deferred code blocks, but the flag had
             // no diagnostic consumer here. A bare regex literal has no bound
             // expression to traverse.
             push_embedded_pattern_code_diagnostic(node, diagnostics);
@@ -938,9 +938,9 @@ fn push_substitution_eval_diagnostic(node: &Node, diagnostics: &mut Vec<Diagnost
     });
 }
 
-/// Emit one PL609 diagnostic for an embedded `(?{ ... })` executable code
-/// block in a pattern (`m//`, `qr//`, a bare literal, or a substitution
-/// pattern) (#9818).
+/// Emit one PL609 diagnostic for an embedded immediate `(?{ ... })` or
+/// deferred `(??{ ... })` executable code block in a pattern (`m//`, `qr//`,
+/// a bare literal, or a substitution pattern) (#9818).
 ///
 /// Same no-native-alias boundary as [`push_substitution_eval_diagnostic`].
 fn push_embedded_pattern_code_diagnostic(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
@@ -949,16 +949,16 @@ fn push_embedded_pattern_code_diagnostic(node: &Node, diagnostics: &mut Vec<Diag
         range,
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::SecurityEmbeddedRegexCode.as_str().to_string()),
-        message: "Embedded (?{ ... }) code executes Perl code when this pattern matches."
+        message: "Embedded (?{ ... }) or (??{ ... }) code executes Perl code while this pattern is evaluated."
             .to_string(),
         related_information: vec![RelatedInformation {
             location: range,
-            message: "A (?{ ... }) block runs Perl code every time the regex matches; untrusted patterns allow code injection.".to_string(),
+            message: "An embedded code block runs Perl code during pattern matching or deferred-pattern construction; untrusted patterns allow code injection.".to_string(),
         }],
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
-        suggestion: Some("Remove the (?{ ... }) code block from the pattern".to_string()),
+        suggestion: Some("Remove the embedded executable code block from the pattern".to_string()),
     });
 }
 

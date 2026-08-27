@@ -477,8 +477,9 @@ impl DiagnosticCode {
                 input out of the evaluated expression.",
             ),
             Self::SecurityEmbeddedRegexCode => Some(
-                "A `(?{ ... })` block runs Perl code whenever the pattern matches. \
-                Remove the code block from the regex or keep untrusted patterns away from it.",
+                "An embedded `(?{ ... })` or `(??{ ... })` block runs Perl code while \
+                the pattern is evaluated. Remove the code block from the regex or keep \
+                untrusted patterns away from it.",
             ),
             Self::UnusedImport => Some(
                 "This module is imported but none of its exports appear to be used. \
