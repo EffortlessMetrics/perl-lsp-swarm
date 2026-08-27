@@ -43,6 +43,7 @@ mod facts;
 mod hover;
 mod signature;
 mod symbols;
+mod refs;
 mod targets;
 
 pub use activation::{
@@ -64,4 +65,5 @@ pub use symbols::{
     DANCER2_HOOK_LABEL, DANCER2_ROUTE_LABEL, Dancer2DocumentSymbol, dancer2_document_symbols,
     dancer2_request_kind, dancer2_workspace_entities,
 };
+pub use refs::{NamedRouteReference, named_route_reference_at, refusal_reasons};
 pub use targets::{Dancer2DefinitionTarget, definition_target_at};
