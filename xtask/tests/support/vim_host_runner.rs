@@ -1641,10 +1641,11 @@ fn walk_wire_value(
                             evidence.publish_diagnostics_batches.push(batch);
                         }
                     }
-                    "textDocument/didChange" => {
-                        if evidence.did_change_line.is_none() {
-                            evidence.did_change_line = Some(line_index);
-                        }
+                    // Latches the FIRST didChange line: once set, the guard
+                    // is false and the arm falls through to the catch-all,
+                    // exactly as the nested `if` did (#12910).
+                    "textDocument/didChange" if evidence.did_change_line.is_none() => {
+                        evidence.did_change_line = Some(line_index);
                     }
                     _ => {}
                 }
