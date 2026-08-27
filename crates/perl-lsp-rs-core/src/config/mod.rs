@@ -1803,6 +1803,71 @@ impl WorkspaceConfig {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) const SYSTEM_INC_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Test-only widening seam for the startup `@INC` probe deadline (#12902).
+///
+/// Memoization-claim tests need exactly one *successful* live probe: their
+/// oracle is that a second lookup reuses the cached outcome, not that a cold
+/// interpreter starts within 1 s. The `CreateProcess`/interpreter-init stall
+/// on a loaded or antivirus-scanned host counts against the same deadline and
+/// pushes an otherwise healthy probe past it, so those tests observed spurious
+/// `TimedOut` (6/10 even when run fully isolated). Retrying does not help: the
+/// probe is slow, not failing, so every attempt spends the same budget.
+///
+/// The override is thread-local and opt-in, so a widening test never relaxes
+/// the deadline observed by a sibling test running concurrently on another
+/// libtest worker thread, and it does not exist at all outside `cfg(test)`.
+/// The production latency contract stays covered by
+/// `get_system_inc_does_not_stall_on_slow_interpreter` and
+/// `output_with_timeout_kills_long_running_subprocess`, neither of which
+/// installs an override.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    static SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The startup `@INC` probe deadline the calling thread must enforce.
+///
+/// Always [`SYSTEM_INC_PROBE_TIMEOUT`] in a non-test build; see
+/// `SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE` for the test-only exception.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn effective_system_inc_probe_timeout() -> Duration {
+    #[cfg(test)]
+    {
+        if let Some(widened) = SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(std::cell::Cell::get) {
+            return widened;
+        }
+    }
+
+    SYSTEM_INC_PROBE_TIMEOUT
+}
+
+/// RAII widening of the calling thread's startup `@INC` probe deadline.
+///
+/// The previous value is restored on drop, so nesting, an early `?`, or a
+/// panicking assertion cannot leak a widened deadline into the next test that
+/// libtest schedules on the same worker thread.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) struct SystemIncProbeTimeoutGuard {
+    previous: Option<Duration>,
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl SystemIncProbeTimeoutGuard {
+    /// Widen this thread's probe deadline to `timeout` until the guard drops.
+    pub(crate) fn widen_to(timeout: Duration) -> Self {
+        let previous = SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(|cell| cell.replace(Some(timeout)));
+        Self { previous }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl Drop for SystemIncProbeTimeoutGuard {
+    fn drop(&mut self) {
+        SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(|cell| cell.set(self.previous));
+    }
+}
+
 /// Run `command` with a wall-clock timeout, killing the child if it exceeds
 /// `timeout`. Returns `io::Error` with kind `TimedOut` on timeout. Used by
 /// `fetch_perl_inc` so a hanging or slow `perl` interpreter cannot stall
@@ -5146,6 +5211,13 @@ profile = "recommended"
             Ok(path) => path,
             Err(_) => return Ok(()),
         };
+        // The claim here is memoization, not latency: exactly one live probe
+        // must succeed so the second lookup has a cached outcome to reuse.
+        // Under the production 1 s deadline a cold interpreter spawn made
+        // this test fail as `TimedOut` on loaded hosts (#12902). Widen only
+        // this thread's deadline; siblings keep the production bound, which
+        // `get_system_inc_does_not_stall_on_slow_interpreter` still asserts.
+        let _probe_budget = SystemIncProbeTimeoutGuard::widen_to(Duration::from_secs(60));
         let missing_perl = tempfile::tempdir()?.path().join("missing-perl");
         let mut config = WorkspaceConfig {
             use_system_inc: true,
@@ -5184,6 +5256,63 @@ profile = "recommended"
         let reused = config.get_system_inc_probe_outcome();
         assert_eq!(reused, cached, "second lookup must reuse the cached outcome");
         assert_eq!(config.get_system_inc().to_vec(), cached_paths);
+        Ok(())
+    }
+
+    /// Without an explicit widening guard every thread — including the one
+    /// running this test — must observe the production probe deadline. This
+    /// is the falsifier for a seam that silently relaxes the bound.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn effective_probe_timeout_defaults_to_the_production_bound() {
+        assert_eq!(
+            effective_system_inc_probe_timeout(),
+            SYSTEM_INC_PROBE_TIMEOUT,
+            "an un-widened thread must enforce the production probe deadline"
+        );
+    }
+
+    /// The widening seam must be thread-local and scoped: a sibling thread
+    /// running while the guard is alive still enforces the production bound,
+    /// and the widening thread restores it on drop. A process-global or
+    /// leaking override would relax the deadline for every concurrent test.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn probe_timeout_widening_is_thread_local_and_restored_on_drop() -> TestResult {
+        let widened = Duration::from_secs(60);
+        let sibling_observed = {
+            let _guard = SystemIncProbeTimeoutGuard::widen_to(widened);
+            assert_eq!(
+                effective_system_inc_probe_timeout(),
+                widened,
+                "the widening thread must observe its own override"
+            );
+
+            // Nested widening must not clobber the outer value on drop.
+            {
+                let _inner = SystemIncProbeTimeoutGuard::widen_to(Duration::from_secs(5));
+                assert_eq!(effective_system_inc_probe_timeout(), Duration::from_secs(5));
+            }
+            assert_eq!(
+                effective_system_inc_probe_timeout(),
+                widened,
+                "dropping a nested guard must restore the outer override"
+            );
+
+            std::thread::spawn(effective_system_inc_probe_timeout)
+                .join()
+                .map_err(|_| "sibling probe-timeout thread panicked")?
+        };
+
+        assert_eq!(
+            sibling_observed, SYSTEM_INC_PROBE_TIMEOUT,
+            "a concurrent thread must keep the production deadline while a sibling widens"
+        );
+        assert_eq!(
+            effective_system_inc_probe_timeout(),
+            SYSTEM_INC_PROBE_TIMEOUT,
+            "dropping the outermost guard must restore the production deadline"
+        );
         Ok(())
     }
 
