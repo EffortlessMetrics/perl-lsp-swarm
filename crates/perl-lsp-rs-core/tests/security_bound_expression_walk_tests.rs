@@ -25,8 +25,7 @@ fn has_code(codes: &[String], expected: &str) -> bool {
 }
 
 #[test]
-fn backtick_bound_to_match_is_still_flagged()
--> Result<(), Box<dyn std::error::Error>> {
+fn backtick_bound_to_match_is_still_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let got = codes("`ls` =~ /x/;");
     assert!(
         has_code(&got, "PL601"),
@@ -36,8 +35,7 @@ fn backtick_bound_to_match_is_still_flagged()
 }
 
 #[test]
-fn backtick_bound_to_substitution_is_still_flagged()
--> Result<(), Box<dyn std::error::Error>> {
+fn backtick_bound_to_substitution_is_still_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let got = codes("`ls` =~ s/a/b/;");
     assert!(
         has_code(&got, "PL601"),
@@ -47,8 +45,7 @@ fn backtick_bound_to_substitution_is_still_flagged()
 }
 
 #[test]
-fn readpipe_bound_to_match_is_still_flagged()
--> Result<(), Box<dyn std::error::Error>> {
+fn readpipe_bound_to_match_is_still_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let got = codes(r#"readpipe("ls") =~ /x/;"#);
     assert!(
         has_code(&got, "PL606"),
@@ -60,8 +57,7 @@ fn readpipe_bound_to_match_is_still_flagged()
 // --- controls ---
 
 #[test]
-fn backtick_in_assignment_control_is_flagged()
--> Result<(), Box<dyn std::error::Error>> {
+fn backtick_in_assignment_control_is_flagged() -> Result<(), Box<dyn std::error::Error>> {
     // The detection exists in ordinary positions; only placement must differ.
     let got = codes("my $x = `ls`;");
     assert!(
@@ -72,8 +68,7 @@ fn backtick_in_assignment_control_is_flagged()
 }
 
 #[test]
-fn variable_bound_to_match_is_not_flagged()
--> Result<(), Box<dyn std::error::Error>> {
+fn variable_bound_to_match_is_not_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let got = codes("$s =~ /x/;");
     assert!(
         !got.iter().any(|code| code.starts_with("PL6")),

@@ -31,8 +31,7 @@ fn has_security_family(codes: &[String]) -> bool {
 // --- s///e construct class (replacement evaluated as code): PL608 ---
 
 #[test]
-fn e_modifier_substitution_is_flagged()
--> Result<(), Box<dyn std::error::Error>> {
+fn e_modifier_substitution_is_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let got = codes(r#"$s =~ s/(\w+)/uc($1)/e;"#);
     assert!(
         has_code(&got, "PL608"),
@@ -42,8 +41,7 @@ fn e_modifier_substitution_is_flagged()
 }
 
 #[test]
-fn ee_modifier_substitution_is_flagged()
--> Result<(), Box<dyn std::error::Error>> {
+fn ee_modifier_substitution_is_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let got = codes(r#"$t =~ s/\$(\w+)/$$1/ee;"#);
     assert!(
         has_code(&got, "PL608"),
@@ -53,8 +51,7 @@ fn ee_modifier_substitution_is_flagged()
 }
 
 #[test]
-fn standalone_e_modifier_substitution_is_flagged()
--> Result<(), Box<dyn std::error::Error>> {
+fn standalone_e_modifier_substitution_is_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let got = codes(r#"s/version (\d+)/$1 + 1/e;"#);
     assert!(
         has_code(&got, "PL608"),
@@ -66,8 +63,7 @@ fn standalone_e_modifier_substitution_is_flagged()
 // --- (?{ ... }) construct class (executable pattern code): PL609 ---
 
 #[test]
-fn embedded_code_block_in_qr_is_flagged()
--> Result<(), Box<dyn std::error::Error>> {
+fn embedded_code_block_in_qr_is_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let got = codes(r#"my $r = qr/(?{ print "hi" })/;"#);
     assert!(
         has_code(&got, "PL609"),
@@ -77,8 +73,7 @@ fn embedded_code_block_in_qr_is_flagged()
 }
 
 #[test]
-fn embedded_code_block_in_explicit_match_is_flagged()
--> Result<(), Box<dyn std::error::Error>> {
+fn embedded_code_block_in_explicit_match_is_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let got = codes(r#"$x =~ m/(?{ print "hi" })/;"#);
     assert!(
         has_code(&got, "PL609"),
@@ -88,8 +83,7 @@ fn embedded_code_block_in_explicit_match_is_flagged()
 }
 
 #[test]
-fn embedded_code_block_in_bare_match_is_flagged()
--> Result<(), Box<dyn std::error::Error>> {
+fn embedded_code_block_in_bare_match_is_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let got = codes(r#"$x =~ /(?{ print "hi" })/;"#);
     assert!(
         has_code(&got, "PL609"),
@@ -99,8 +93,8 @@ fn embedded_code_block_in_bare_match_is_flagged()
 }
 
 #[test]
-fn embedded_code_block_in_substitution_pattern_is_flagged()
--> Result<(), Box<dyn std::error::Error>> {
+fn embedded_code_block_in_substitution_pattern_is_flagged() -> Result<(), Box<dyn std::error::Error>>
+{
     let got = codes(r#"$x =~ s/(?{ print "hi" })/ok/;"#);
     assert!(
         has_code(&got, "PL609"),
@@ -112,8 +106,7 @@ fn embedded_code_block_in_substitution_pattern_is_flagged()
 // --- negative controls: plain constructs stay silent ---
 
 #[test]
-fn plain_substitution_is_not_flagged()
--> Result<(), Box<dyn std::error::Error>> {
+fn plain_substitution_is_not_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let got = codes(r#"$s =~ s/a/b/;"#);
     assert!(
         !has_security_family(&got),
@@ -123,8 +116,7 @@ fn plain_substitution_is_not_flagged()
 }
 
 #[test]
-fn plain_match_is_not_flagged()
--> Result<(), Box<dyn std::error::Error>> {
+fn plain_match_is_not_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let got = codes(r#"$s =~ m/hello/;"#);
     assert!(
         !has_security_family(&got),
@@ -134,8 +126,7 @@ fn plain_match_is_not_flagged()
 }
 
 #[test]
-fn qr_without_embedded_code_is_not_flagged()
--> Result<(), Box<dyn std::error::Error>> {
+fn qr_without_embedded_code_is_not_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let got = codes(r#"my $re = qr/hello/;"#);
     assert!(
         !has_security_family(&got),
