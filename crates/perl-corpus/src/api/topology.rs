@@ -815,6 +815,28 @@ mod tests {
         );
     }
 
+    /// Windows twin of [`binding_rejects_intermediate_runtime_root_symlink`].
+    #[cfg(windows)]
+    #[test]
+    fn binding_rejects_intermediate_runtime_root_symlink()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parent = tempfile::tempdir()?;
+        let real_parent = parent.path().join("real");
+        let real_root = real_parent.join("repo");
+        let linked_parent = parent.path().join("linked");
+        fs::create_dir_all(&real_root)?;
+        // Raw Win32 twin: every creation error (including the unprivileged
+        // session's os error 1314) surfaces until the typed skip lands.
+        std::os::windows::fs::symlink_dir(&real_parent, &linked_parent)?;
+        let requested = linked_parent.join("repo");
+
+        assert_eq!(
+            topology_with(Vec::new()).with_root(&requested),
+            Err(CorpusTopologyError::SymlinkUnsupported { path: linked_parent })
+        );
+        Ok(())
+    }
+
     #[test]
     fn discovery_requires_each_governed_layer_directory() {
         let both_missing = tempfile::tempdir().expect("both-missing temporary directory");
@@ -1214,6 +1236,25 @@ mod tests {
         assert!(topology.assets.is_empty());
     }
 
+    /// Windows twin of [`excluded_metadata_symlink_does_not_block_discovery`].
+    #[cfg(windows)]
+    #[test]
+    fn excluded_metadata_symlink_does_not_block_discovery()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let target = root.path().join("README-target.md");
+        let link = root.path().join("crates/perl-corpus/fuzz/README.md");
+        fs::write(&target, "metadata")?;
+        fs::create_dir_all(root.path().join("crates/perl-corpus/fuzz"))?;
+        // Raw Win32 twin: every creation error (including the unprivileged
+        // session's os error 1314) surfaces until the typed skip lands.
+        std::os::windows::fs::symlink_file(&target, &link)?;
+
+        let topology = topology_from_root(root.path())?;
+        assert!(topology.assets.is_empty());
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn dangling_excluded_metadata_symlink_does_not_block_discovery() {
@@ -1228,6 +1269,24 @@ mod tests {
         let topology =
             topology_from_root(root.path()).expect("ignore dangling excluded metadata symlink");
         assert!(topology.assets.is_empty());
+    }
+
+    /// Windows twin of
+    /// [`dangling_excluded_metadata_symlink_does_not_block_discovery`].
+    #[cfg(windows)]
+    #[test]
+    fn dangling_excluded_metadata_symlink_does_not_block_discovery()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let link = root.path().join("crates/perl-corpus/fuzz/README.md");
+        fs::create_dir_all(root.path().join("crates/perl-corpus/fuzz"))?;
+        // Raw Win32 twin: every creation error (including the unprivileged
+        // session's os error 1314) surfaces until the typed skip lands.
+        std::os::windows::fs::symlink_file(&root.path().join("missing-readme-target.md"), &link)?;
+
+        let topology = topology_from_root(root.path())?;
+        assert!(topology.assets.is_empty());
+        Ok(())
     }
 
     #[cfg(unix)]
@@ -1248,6 +1307,26 @@ mod tests {
         );
     }
 
+    /// Windows twin of [`symlinked_entries_fail_closed`].
+    #[cfg(windows)]
+    #[test]
+    fn symlinked_entries_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let target = root.path().join("target.pl");
+        let link = root.path().join("test_corpus/linked.pl");
+        fs::write(&target, "1;")?;
+        fs::create_dir_all(root.path().join("test_corpus"))?;
+        // Raw Win32 twin: every creation error (including the unprivileged
+        // session's os error 1314) surfaces until the typed skip lands.
+        std::os::windows::fs::symlink_file(&target, &link)?;
+
+        assert_eq!(
+            topology_from_root(root.path()),
+            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+        );
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn dangling_selected_symlink_fails_as_symlink_unsupported() {
@@ -1263,6 +1342,26 @@ mod tests {
             topology_from_root(root.path()),
             Err(CorpusTopologyError::SymlinkUnsupported { path: link })
         );
+    }
+
+    /// Windows twin of
+    /// [`dangling_selected_symlink_fails_as_symlink_unsupported`].
+    #[cfg(windows)]
+    #[test]
+    fn dangling_selected_symlink_fails_as_symlink_unsupported()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let link = root.path().join("test_corpus/dangling.pl");
+        fs::create_dir_all(root.path().join("test_corpus"))?;
+        // Raw Win32 twin: every creation error (including the unprivileged
+        // session's os error 1314) surfaces until the typed skip lands.
+        std::os::windows::fs::symlink_file(&root.path().join("missing-target.pl"), &link)?;
+
+        assert_eq!(
+            topology_from_root(root.path()),
+            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+        );
+        Ok(())
     }
 
     #[cfg(unix)]
@@ -1285,6 +1384,30 @@ mod tests {
         );
     }
 
+    /// Windows twin of
+    /// [`symlinked_test_directory_cannot_hide_selected_descendants`].
+    #[cfg(windows)]
+    #[test]
+    fn symlinked_test_directory_cannot_hide_selected_descendants()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let target = root.path().join("outside-test-tree");
+        write_fixture(&target.join("case.pl"), "1;");
+        write_fixture(&target.join("Case.pm"), "package Case; 1;");
+        write_fixture(&target.join("case.t"), "ok 1;");
+        let link = root.path().join("test_corpus/linked");
+        fs::create_dir_all(root.path().join("test_corpus"))?;
+        // Raw Win32 twin: every creation error (including the unprivileged
+        // session's os error 1314) surfaces until the typed skip lands.
+        std::os::windows::fs::symlink_dir(&target, &link)?;
+
+        assert_eq!(
+            topology_from_root(root.path()),
+            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+        );
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlinked_fuzz_directory_cannot_hide_selected_descendants() {
@@ -1305,6 +1428,30 @@ mod tests {
         );
     }
 
+    /// Windows twin of
+    /// [`symlinked_fuzz_directory_cannot_hide_selected_descendants`].
+    #[cfg(windows)]
+    #[test]
+    fn symlinked_fuzz_directory_cannot_hide_selected_descendants()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let target = root.path().join("outside-fuzz-tree");
+        write_fixture(&target.join("crash-deadbeef"), "xqN<<\"");
+        write_fixture(&target.join("validation.txt"), "xqN<<\"");
+        write_fixture(&target.join("seed.pl"), "1;");
+        let link = root.path().join("crates/perl-corpus/fuzz/linked");
+        fs::create_dir_all(root.path().join("crates/perl-corpus/fuzz"))?;
+        // Raw Win32 twin: every creation error (including the unprivileged
+        // session's os error 1314) surfaces until the typed skip lands.
+        std::os::windows::fs::symlink_dir(&target, &link)?;
+
+        assert_eq!(
+            topology_from_root(root.path()),
+            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+        );
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlinked_directory_target_inside_root_still_fails_closed() {
@@ -1320,6 +1467,27 @@ mod tests {
             topology_from_root(root.path()),
             Err(CorpusTopologyError::SymlinkUnsupported { path: link })
         );
+    }
+
+    /// Windows twin of
+    /// [`symlinked_directory_target_inside_root_still_fails_closed`].
+    #[cfg(windows)]
+    #[test]
+    fn symlinked_directory_target_inside_root_still_fails_closed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let target = root.path().join("test_corpus/real");
+        write_fixture(&target.join("case.pl"), "1;");
+        let link = root.path().join("test_corpus/linked");
+        // Raw Win32 twin: every creation error (including the unprivileged
+        // session's os error 1314) surfaces until the typed skip lands.
+        std::os::windows::fs::symlink_dir(&target, &link)?;
+
+        assert_eq!(
+            topology_from_root(root.path()),
+            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+        );
+        Ok(())
     }
 
     #[cfg(unix)]
@@ -1340,6 +1508,28 @@ mod tests {
         );
     }
 
+    /// Windows twin of
+    /// [`symlinked_directory_target_outside_root_fails_closed`].
+    #[cfg(windows)]
+    #[test]
+    fn symlinked_directory_target_outside_root_fails_closed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        write_fixture(&outside.path().join("case.pl"), "1;");
+        let link = root.path().join("test_corpus/linked");
+        fs::create_dir_all(root.path().join("test_corpus"))?;
+        // Raw Win32 twin: every creation error (including the unprivileged
+        // session's os error 1314) surfaces until the typed skip lands.
+        std::os::windows::fs::symlink_dir(outside.path(), &link)?;
+
+        assert_eq!(
+            topology_from_root(root.path()),
+            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+        );
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn nested_intermediate_directory_symlink_fails_closed() {
@@ -1356,6 +1546,27 @@ mod tests {
             topology_from_root(root.path()),
             Err(CorpusTopologyError::SymlinkUnsupported { path: link })
         );
+    }
+
+    /// Windows twin of [`nested_intermediate_directory_symlink_fails_closed`].
+    #[cfg(windows)]
+    #[test]
+    fn nested_intermediate_directory_symlink_fails_closed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let target = root.path().join("outside-nested-tree");
+        write_fixture(&target.join("case.pl"), "1;");
+        let link = root.path().join("test_corpus/outer/linked");
+        fs::create_dir_all(root.path().join("test_corpus/outer"))?;
+        // Raw Win32 twin: every creation error (including the unprivileged
+        // session's os error 1314) surfaces until the typed skip lands.
+        std::os::windows::fs::symlink_dir(&target, &link)?;
+
+        assert_eq!(
+            topology_from_root(root.path()),
+            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+        );
+        Ok(())
     }
 
     #[cfg(unix)]
