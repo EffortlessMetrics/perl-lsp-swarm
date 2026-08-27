@@ -374,6 +374,18 @@ pub fn inspect_with_limits_and_probe(
         evidence.source_manifest = ManifestEvidence::unavailable("candidate is not a directory");
         return finish_plan(evidence);
     }
+    let candidate_directory_fingerprint = match directory_fingerprint(&candidate_path) {
+        Ok(value) => value,
+        Err(error) => {
+            evidence.instrument_failures.push(format!(
+                "candidate directory identity unavailable before observation: {error}"
+            ));
+            evidence.source_manifest = ManifestEvidence::unavailable(
+                "candidate directory identity unavailable; no candidate bytes were followed",
+            );
+            return finish_plan(evidence);
+        }
+    };
 
     let reader = FilesystemReader;
     evidence.source_manifest = collect_manifest(&candidate_path, limits, &reader);
@@ -465,6 +477,17 @@ pub fn inspect_with_limits_and_probe(
         active_use_probe,
         &mut evidence,
     );
+    match directory_fingerprint(&candidate_path) {
+        Ok(actual) if actual == candidate_directory_fingerprint => {}
+        Ok(_) => evidence.instrument_failures.push(format!(
+            "RACE_DETECTED candidate directory identity changed during observation: {}",
+            candidate_path.display()
+        )),
+        Err(error) => evidence.instrument_failures.push(format!(
+            "RACE_DETECTED candidate directory identity unavailable after observation {}: {error}",
+            candidate_path.display()
+        )),
+    }
     finish_plan(evidence)
 }
 
