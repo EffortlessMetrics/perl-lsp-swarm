@@ -145,20 +145,28 @@ struct SubjectIdentity {
 }
 
 impl SubjectIdentity {
-    fn capture(binary: &OsString, fixture: &Path) -> ProofResult<Self> {
-        let perl_path_out = Command::new("perl").arg("-e").arg("print $^X").output()?;
+    fn capture(binary: &OsString, perl_path: &Path, fixture: &Path) -> ProofResult<Self> {
+        let perl_path_out = Command::new(perl_path).arg("-e").arg("print $^X").output()?;
         if !perl_path_out.status.success() {
-            return Err("perl -e 'print $^X' failed while binding subject identity".into());
+            return Err(format!(
+                "{} -e 'print $^X' failed while binding subject identity",
+                perl_path.display()
+            )
+            .into());
         }
-        let perl_path = String::from_utf8_lossy(&perl_path_out.stdout).trim().to_string();
+        let _reported_perl_path = String::from_utf8_lossy(&perl_path_out.stdout).trim().to_string();
 
-        let perl_version_out = Command::new("perl").arg("-e").arg("print $^V").output()?;
+        let perl_version_out = Command::new(perl_path).arg("-e").arg("print $^V").output()?;
         if !perl_version_out.status.success() {
-            return Err("perl -e 'print $^V' failed while binding subject identity".into());
+            return Err(format!(
+                "{} -e 'print $^V' failed while binding subject identity",
+                perl_path.display()
+            )
+            .into());
         }
         let perl_version = String::from_utf8_lossy(&perl_version_out.stdout).trim().to_string();
 
-        let perl_sha256 = match fs::read(Path::new(&perl_path)) {
+        let perl_sha256 = match fs::read(perl_path) {
             Ok(bytes) => digest_bytes(&bytes),
             Err(error) => format!("unavailable:{error}"),
         };
@@ -168,7 +176,7 @@ impl SubjectIdentity {
             binary_sha256: sha256_file(&binary_path)?,
             binary_path: binary_path.to_string_lossy().to_string(),
             perl_sha256,
-            perl_path,
+            perl_path: perl_path.to_string_lossy().to_string(),
             perl_version,
             fixture_len: fs::metadata(fixture)?.len(),
             fixture_sha256: sha256_file(fixture)?,
@@ -294,7 +302,12 @@ enum ResponseOutcome {
 }
 
 impl StdioSession {
-    fn spawn(binary: &OsString, script: &str, canary_path: &str) -> ProofResult<Self> {
+    fn spawn(
+        binary: &OsString,
+        script: &str,
+        canary_path: &str,
+        perl_path: &Path,
+    ) -> ProofResult<Self> {
         let mut child = Command::new(binary)
             .arg("--stdio")
             .arg("--log-level")
@@ -375,9 +388,6 @@ impl StdioSession {
                 "TZ": "UTC"
             }
         });
-        let perl_path = common::resolve_launch_perl_path()
-            .map_err(std::io::Error::other)?
-            .ok_or("the availability gate resolved no pipe-capable launch interpreter")?;
         launch_arguments["perlPath"] = Value::String(perl_path.to_string_lossy().into_owned());
         let ResponseOutcome::Success(_) = session.request("launch", Some(launch_arguments))? else {
             return Err("launch of the real perl -d fixture failed".into());
@@ -816,7 +826,10 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
 
     let binary = configured_dap_binary();
     let fixture = fixture_path()?;
-    let identity = SubjectIdentity::capture(&binary, &fixture)?;
+    let perl_path = common::resolve_launch_perl_path()
+        .map_err(std::io::Error::other)?
+        .ok_or("the availability gate resolved no pipe-capable launch interpreter")?;
+    let identity = SubjectIdentity::capture(&binary, &perl_path, &fixture)?;
     let stop1_line = fixture_line("$VF::stop1 = 1;")?;
     let stop2_line = fixture_line("$VF::stop2 = 1;")?;
     assert!(stop2_line > stop1_line, "fixture must define STOP2 after STOP1");
@@ -844,7 +857,7 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
     }
 
     let mut matrix = Matrix::new();
-    let mut dap = StdioSession::spawn(&binary, &script_str, &canary_str)?;
+    let mut dap = StdioSession::spawn(&binary, &script_str, &canary_str, &perl_path)?;
 
     // Breakpoints on both proof stops, verified by the adapter.
     let bp_body = dap.expect_success(

@@ -85,40 +85,39 @@ mod cleanup_tests {
         })
     }
 
-    fn process_exists(pid: u32) -> bool {
+    fn process_exists(pid: u32) -> Result<bool> {
         #[cfg(windows)]
         {
-            Command::new("tasklist")
+            let output = Command::new("tasklist")
                 .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-                .output()
-                .map(|output| {
-                    String::from_utf8_lossy(&output.stdout).lines().any(|line| {
-                        line.split(',')
-                            .nth(1)
-                            .map(|field| field.trim_matches('"') == pid.to_string())
-                            .unwrap_or(false)
-                    })
-                })
-                .unwrap_or(false)
+                .output()?;
+            if !output.status.success() {
+                return Err(anyhow::anyhow!(
+                    "tasklist failed while checking PID {pid}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            Ok(String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                line.split(',')
+                    .nth(1)
+                    .map(|field| field.trim_matches('"') == pid.to_string())
+                    .unwrap_or(false)
+            }))
         }
         #[cfg(unix)]
         {
-            Command::new("kill")
-                .args(["-0", &pid.to_string()])
-                .status()
-                .map(|status| status.success())
-                .unwrap_or(false)
+            Ok(Command::new("kill").args(["-0", &pid.to_string()]).status()?.success())
         }
         #[cfg(not(any(windows, unix)))]
         {
             let _ = pid;
-            false
+            Ok(false)
         }
     }
 
     fn wait_for_process_exit(pid: u32, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
-        while process_exists(pid) {
+        while process_exists(pid)? {
             if Instant::now() >= deadline {
                 return Err(anyhow::anyhow!("DAP child {pid} survived adapter drop"));
             }
@@ -265,7 +264,7 @@ while (1) {
 
         let child_pid =
             wait_for_child_pid(&child_pid_file, Path::new(&path), Duration::from_secs(5))?;
-        if !process_exists(child_pid) {
+        if !process_exists(child_pid)? {
             return Err(anyhow::anyhow!(
                 "DAP launch marker named child {child_pid}, but it is not alive"
             ));

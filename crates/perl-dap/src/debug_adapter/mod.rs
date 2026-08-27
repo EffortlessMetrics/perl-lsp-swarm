@@ -635,17 +635,6 @@ impl DebugAdapter {
         }
     }
 
-    /// Return the operating-system PID owned by the active process session.
-    ///
-    /// This is a test-only observability seam for proving lifecycle cleanup;
-    /// it does not expose process control or alter the shipped adapter API.
-    #[cfg(any(test, feature = "test-helpers"))]
-    pub fn active_process_id_for_test(&self) -> Option<u32> {
-        lock_or_recover(&self.session, "debug_adapter.active_process_id")
-            .as_ref()
-            .map(|session| session.process.id())
-    }
-
     #[cfg(test)]
     fn seed_session_for_test(&self) -> io::Result<()> {
         // Spawn a cheap no-op subprocess so we have a real Child (no unsafe zeroed memory).

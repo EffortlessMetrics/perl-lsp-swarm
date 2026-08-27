@@ -110,6 +110,28 @@ fn main() {
 }
 "#,
     )?;
+    #[cfg(unix)]
+    let success_with_descendant = compile_probe_control(
+        controls.path(),
+        "probe_success_with_descendant",
+        r#"
+use std::{env, fs, process::Command};
+
+fn main() {
+    if let Some(pid_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE") {
+        let Ok(executable) = env::current_exe() else { return };
+        let Ok(descendant) = Command::new(executable)
+            .env_remove("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE")
+            .spawn()
+        else { return };
+        let _ = fs::write(pid_file, descendant.id().to_string());
+        println!("15");
+        return;
+    }
+    std::thread::sleep(std::time::Duration::from_secs(60));
+}
+"#,
+    )?;
 
     let stale_prefix = format!("{PROBE_PREFIX}{}-seeded-stale-control-", std::process::id());
     let seeded_stale =
@@ -164,7 +186,7 @@ fn main() {
         });
         let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(2))?;
         assert!(
-            process_exists(descendant_pid),
+            process_exists(descendant_pid)?,
             "{label} control must have a live descendant inheriting the probe pipes"
         );
         let result =
@@ -181,6 +203,45 @@ fn main() {
         assert!(
             after.iter().any(|path| path == seeded_stale.path()),
             "{label} probe must not delete the pre-existing stale control"
+        );
+    }
+
+    #[cfg(unix)]
+    {
+        let before = current_process_probe_artifacts()?;
+        let pid_file = controls.path().join("success-descendant.pid");
+        let probe = std::thread::spawn({
+            let binary = success_with_descendant.clone();
+            let pid_file = pid_file.clone();
+            move || {
+                common::probe_debuggee_perl_for_test_with_descendant_pid(
+                    &binary,
+                    Duration::from_secs(2),
+                    false,
+                    &pid_file,
+                )
+            }
+        });
+        let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(2))?;
+        assert!(
+            process_exists(descendant_pid)?,
+            "successful-parent control must have a live descendant inheriting probe pipes"
+        );
+        let result = probe
+            .join()
+            .map_err(|_| io::Error::other("successful-parent probe thread panicked"))?;
+        assert!(result.is_ok(), "successful-parent probe must report success: {result:?}");
+        wait_for_process_exit(descendant_pid, Duration::from_secs(2))?;
+
+        let after = current_process_probe_artifacts()?;
+        let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
+        assert!(
+            new_artifacts.is_empty(),
+            "successful-parent probe left newly created workspaces: {new_artifacts:?}"
+        );
+        assert!(
+            after.iter().any(|path| path == seeded_stale.path()),
+            "successful-parent probe must not delete the pre-existing stale control"
         );
     }
 
@@ -207,34 +268,33 @@ fn main() {
     Ok(())
 }
 
-fn process_exists(pid: u32) -> bool {
+fn process_exists(pid: u32) -> io::Result<bool> {
     #[cfg(windows)]
     {
-        Command::new("tasklist")
+        let output = Command::new("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-            .output()
-            .map(|output| {
-                String::from_utf8_lossy(&output.stdout).lines().any(|line| {
-                    line.split(',')
-                        .nth(1)
-                        .map(|field| field.trim_matches('"') == pid.to_string())
-                        .unwrap_or(false)
-                })
-            })
-            .unwrap_or(false)
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "tasklist failed while checking PID {pid}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+            line.split(',')
+                .nth(1)
+                .map(|field| field.trim_matches('"') == pid.to_string())
+                .unwrap_or(false)
+        }))
     }
     #[cfg(unix)]
     {
-        Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
+        Ok(Command::new("kill").args(["-0", &pid.to_string()]).status()?.success())
     }
     #[cfg(not(any(windows, unix)))]
     {
         let _ = pid;
-        false
+        Ok(false)
     }
 }
 
@@ -258,7 +318,7 @@ fn wait_for_pid_file(path: &Path, timeout: Duration) -> io::Result<u32> {
 
 fn wait_for_process_exit(pid: u32, timeout: Duration) -> io::Result<()> {
     let deadline = std::time::Instant::now() + timeout;
-    while process_exists(pid) {
+    while process_exists(pid)? {
         if std::time::Instant::now() >= deadline {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,

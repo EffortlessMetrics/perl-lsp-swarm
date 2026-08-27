@@ -623,6 +623,25 @@ fn launch_arguments(
     args
 }
 
+#[cfg(test)]
+mod launch_argument_tests {
+    use super::launch_arguments;
+    use serde_json::Value;
+    use std::path::Path;
+
+    #[test]
+    fn launch_arguments_preserve_exact_pinned_interpreter() {
+        let pinned = Path::new("C:/controls/pinned-perl.exe");
+        let args = launch_arguments("fixture.pl", Some("C:/work"), true, Some(pinned));
+
+        assert_eq!(
+            args.get("perlPath"),
+            Some(&Value::String(pinned.to_string_lossy().into_owned()))
+        );
+        assert_eq!(args.get("stopOnEntry"), Some(&Value::Bool(true)));
+    }
+}
+
 /// Resolve the interpreter for a shared launch convenience.
 ///
 /// An explicit debuggee pin is an identity constraint, not a preference. If
@@ -1031,6 +1050,12 @@ fn probe_debuggee_perl_with_options(
         return Err(fail("probe success cleanup writer thread panicked".to_string()));
     }
 
+    // A successful parent can still leave descendants holding the inherited
+    // pipe write ends. Close the probe's complete process-tree ownership
+    // boundary before joining readers; otherwise a descendant can make the
+    // reader join unbounded even though the direct child exited successfully.
+    terminate_probe_process_tree(&mut child);
+
     // The child has exited, so its pipe write ends are closing and the reader
     // threads reach EOF almost immediately; the bounded collector exists only
     // so a grandchild inheriting the write end cannot extend the probe past
@@ -1125,11 +1150,15 @@ fn terminate_probe_process_tree(child: &mut Child) {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 _ => {
-                    let _ = Command::new("kill").args(["-KILL", "--", &process_group]).status();
                     break;
                 }
             }
         }
+        // Do not make the SIGKILL fallback conditional on the direct child:
+        // it may already have exited while a signal-resistant descendant still
+        // owns the group's pipe handles. Killing the group is idempotent when
+        // no members remain and closes that bounded cleanup obligation.
+        let _ = Command::new("kill").args(["-KILL", "--", &process_group]).status();
     }
     let _ = child.kill();
     let _ = child.wait();
