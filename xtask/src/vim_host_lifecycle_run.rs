@@ -675,14 +675,44 @@ fn settle_probe(plan: &VimHostRunPlan, layout: &HermeticVimLayout) -> Result<Opt
 /// Compose the journey-level observation the receipt is built from: the
 /// aggregate cleanup (worst of), the prefixed per-host artifacts, and the
 /// designed-boundary driver-completeness.
-fn aggregate_journey_observation(sessions: &[HostSessionRecord]) -> ProcessObservation {
+///
+/// The aggregate is role-aware. Orderly-shape roles are judged through the
+/// substrate's own shutdown-path comparison as-is. Forced-shape roles
+/// (`assertion_failure_session`, `timeout_interruption_session`) can never
+/// produce a substrate `pass`: a nonzero exit or supervisor kill skips the
+/// driver shutdown path by design (#10944 degradation), so their owned-resource
+/// claim rests on the dedicated bounded settle probe and retained ledger. A
+/// clean settlement maps to `pass`, an observed survivor to `fail`, and an
+/// unavailable probe to `not_proven` — never silently zero. Raw per-session
+/// truths stay visible in the receipt limitations either way.
+pub fn forced_shape_settled(session: &HostSessionRecord) -> Option<(CleanupResult, &'static str)> {
+    match session.settled_probe_clean {
+        Some(true) => Some((CleanupResult::Pass, "forced shape settled to zero owned processes")),
+        Some(false) => Some((
+            CleanupResult::Fail,
+            "forced shape retained owned processes through the settle window",
+        )),
+        None => None,
+    }
+}
+
+pub fn aggregate_journey_observation(sessions: &[HostSessionRecord]) -> ProcessObservation {
     let mut cleanup = CleanupResult::Pass;
     let mut details = Vec::new();
     for session in sessions {
-        if session.observation.cleanup == CleanupResult::Fail || cleanup == CleanupResult::Fail {
+        let contributed = match session.role.as_str() {
+            "assertion_failure_session" | "timeout_interruption_session" => {
+                forced_shape_settled(session)
+            }
+            _ => None,
+        };
+        let (session_cleanup, session_detail) = match contributed {
+            Some((result, detail)) => (result, detail.to_string()),
+            None => (session.observation.cleanup, session.observation.cleanup_detail.clone()),
+        };
+        if session_cleanup == CleanupResult::Fail || cleanup == CleanupResult::Fail {
             cleanup = CleanupResult::Fail;
-        } else if session.observation.cleanup == CleanupResult::NotProven
-            || cleanup == CleanupResult::NotProven
+        } else if session_cleanup == CleanupResult::NotProven || cleanup == CleanupResult::NotProven
         {
             cleanup = CleanupResult::NotProven;
         }
@@ -690,12 +720,12 @@ fn aggregate_journey_observation(sessions: &[HostSessionRecord]) -> ProcessObser
             "host-{} ({}): {} ({})",
             session.index,
             session.role,
-            match session.observation.cleanup {
+            match session_cleanup {
                 CleanupResult::Pass => "pass",
                 CleanupResult::Fail => "fail",
                 CleanupResult::NotProven => "not_proven",
             },
-            session.observation.cleanup_detail
+            session_detail,
         ));
     }
     let artifacts: Vec<EvidenceArtifact> = sessions
@@ -762,6 +792,49 @@ fn lifecycle_limitations(
     ];
     if let Some(reason) = &judgment.failure_reason {
         limitations.push(format!("journey failed: {reason}"));
+    }
+    if judgment.cells.get(CELL_FAILURE_CLEANUP).is_some_and(|result| {
+        matches!(result, ObservationResult::Fail | ObservationResult::NotProven)
+    }) {
+        // A failing forced-failure cell must name its failing clause: an
+        // opaque fail would hide whether the defect is a leak (product), a
+        // missed settle (instrument), or a lost ledger (reporting).
+        let facts = failure_cleanup_facts(sessions);
+        let settles = sessions
+            .iter()
+            .filter(|session| {
+                matches!(
+                    session.role.as_str(),
+                    "assertion_failure_session" | "timeout_interruption_session"
+                )
+            })
+            .map(|session| {
+                format!(
+                    "host-{}={}",
+                    session.index,
+                    match session.settled_probe_clean {
+                        Some(true) => "settled",
+                        Some(false) => "survivors",
+                        None => "probe_unavailable",
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let settled_zero_text = if facts.probe_missing {
+            "false (probe unavailable)".to_string()
+        } else {
+            facts.settled_zero.to_string()
+        };
+        limitations.push(format!(
+            "failure_cleanup facts: assertion_typed={} timeout_bounded={} ledgers_retained={} \
+             settled_zero={} [{}]",
+            facts.assertion_typed,
+            facts.timeout_bounded,
+            facts.ledgers_retained,
+            settled_zero_text,
+            if settles.is_empty() { "no forced sessions" } else { &settles },
+        ));
     }
     for session in sessions {
         if session.observation.cleanup != CleanupResult::Pass {
@@ -872,6 +945,63 @@ fn session_attach_ok(session: &HostSessionRecord) -> bool {
 /// its honest not-exposed disposition; the relabel control must fail with
 /// exactly `host_replacement_absent`.
 #[allow(clippy::too_many_lines)]
+/// The named law inputs of the `failure_cleanup` cell. Both the judgment and
+/// the receipt limitations read these, so a failing cell always carries its
+/// exact failing clause — an opaque `fail` would be undiagnosable evidence.
+struct FailureCleanupFacts {
+    /// A forced-failure session ran at all (else the shape is unobserved).
+    observed: bool,
+    /// The assertion session exited typed: status 2, a `driver_failed` event
+    /// carrying its reason, and retained event evidence.
+    assertion_typed: bool,
+    /// The timeout session was bounded by the supervisor kill.
+    timeout_bounded: bool,
+    /// Every settle probe reported zero owned survivors.
+    settled_zero: bool,
+    /// Every forced-shape ledger was retained for judgment.
+    ledgers_retained: bool,
+    /// Any settle probe was unavailable: an instrument gap is `not_proven`,
+    /// never zero.
+    probe_missing: bool,
+}
+
+fn failure_cleanup_facts(sessions: &[HostSessionRecord]) -> FailureCleanupFacts {
+    let forced: Vec<&HostSessionRecord> = sessions
+        .iter()
+        .filter(|session| {
+            matches!(
+                session.role.as_str(),
+                "assertion_failure_session" | "timeout_interruption_session"
+            )
+        })
+        .collect();
+    let assertion_typed = forced.iter().any(|session| {
+        session.role == "assertion_failure_session"
+            && session.observation.status_code == Some(2)
+            && session.observation.events.iter().any(|event| {
+                event.kind == DriverEventKind::DriverFailed
+                    && event.details.get("reason") == Some(&"forced_assertion_failure".to_string())
+            })
+            && !session.observation.events.is_empty()
+    });
+    let timeout_bounded = forced.iter().any(|session| {
+        session.role == "timeout_interruption_session"
+            && session.observation.timed_out
+            && session.observation.kill_requested
+    });
+    let ledgers_retained = forced.iter().all(|session| session.ledger.is_some());
+    let probe_missing = forced.iter().any(|session| session.settled_probe_clean.is_none());
+    FailureCleanupFacts {
+        observed: !forced.is_empty(),
+        assertion_typed,
+        timeout_bounded,
+        settled_zero: !probe_missing
+            && forced.iter().all(|session| session.settled_probe_clean == Some(true)),
+        ledgers_retained,
+        probe_missing,
+    }
+}
+
 pub fn evaluate_lifecycle_observation(
     sessions: &[HostSessionRecord],
     variant: LifecycleFixtureVariant,
@@ -1156,35 +1286,14 @@ pub fn evaluate_lifecycle_observation(
     // with evidence preserved, and the timeout session was bounded by the
     // supervisor kill; both settled to zero owned processes through observed
     // probes.
-    let failure_session =
-        sessions.iter().find(|session| session.role == "assertion_failure_session");
-    let timeout_session =
-        sessions.iter().find(|session| session.role == "timeout_interruption_session");
-    let assertion_failed_typed = failure_session.is_some_and(|session| {
-        session.observation.status_code == Some(2)
-            && session.observation.events.iter().any(|event| {
-                event.kind == DriverEventKind::DriverFailed
-                    && event.details.get("reason") == Some(&"forced_assertion_failure".to_string())
-            })
-            && !session.observation.events.is_empty()
-    });
-    let timeout_bounded = timeout_session
-        .is_some_and(|session| session.observation.timed_out && session.observation.kill_requested);
-    let settled_zero = [failure_session, timeout_session]
-        .into_iter()
-        .flatten()
-        .all(|session| session.settled_probe_clean == Some(true));
-    // An unavailable settle probe is an instrument gap, never zero: the
-    // forced-failure paths ran but the owned-resource observation is missing,
-    // so the cell stays not-proven instead of failing or passing.
-    let cleanup_probe_missing = [failure_session, timeout_session]
-        .into_iter()
-        .flatten()
-        .any(|session| session.settled_probe_clean.is_none());
-    let failure_cleanup_observed = failure_session.is_some() || timeout_session.is_some();
-    let failure_cleanup_result = if !failure_cleanup_observed || cleanup_probe_missing {
+    let facts = failure_cleanup_facts(sessions);
+    let failure_cleanup_result = if !facts.observed || facts.probe_missing {
         ObservationResult::NotProven
-    } else if assertion_failed_typed && timeout_bounded && settled_zero && ledgers_retained {
+    } else if facts.assertion_typed
+        && facts.timeout_bounded
+        && facts.settled_zero
+        && facts.ledgers_retained
+    {
         ObservationResult::Pass
     } else {
         ObservationResult::Fail

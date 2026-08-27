@@ -27,8 +27,8 @@ use xtask::vim_host_lifecycle_run::{
     CELL_BUFFER_REOPEN, CELL_CANCELLATION, CELL_FAILURE_CLEANUP, CELL_HOST_REOPEN,
     CELL_LATE_RESULT, CELL_NORMAL_CLEANUP, CELL_REPEATED_SESSIONS, CELL_WORKSPACE_REOPEN,
     CLEAN_LINE_TEXT, DEFECT_LINE_TEXT, HostSessionRecord, LifecycleFixtureVariant, LifecycleWire,
-    PendingResponse, evaluate_lifecycle_observation, extract_lifecycle_wire, lifecycle_journey,
-    materialize_lifecycle_fixture,
+    PendingResponse, aggregate_journey_observation, evaluate_lifecycle_observation,
+    extract_lifecycle_wire, lifecycle_journey, materialize_lifecycle_fixture,
 };
 use xtask::vim_host_run::vim_host_runner::{
     self, DRIVER_SCHEMA_VERSION, DriverEvent, DriverEventKind, ProcessObservation,
@@ -1043,6 +1043,77 @@ fn a_leaked_process_fails_the_whole_journey() -> Result<()> {
 }
 
 #[test]
+fn a_surviving_forced_session_process_fails_the_aggregate() -> Result<()> {
+    // Real-host regression guard (CI run 33022125220 class): the substrate
+    // degrades designed forced shapes to not-proven (their exit skips the
+    // driver shutdown path), so the journey aggregate must judge them through
+    // the dedicated bounded settle probe instead. A survivor behind that probe
+    // is an owned leak and must fail the receipt cleanup — never be absorbed.
+    let dir = tempfile::tempdir()?;
+    let plan = scratch_lifecycle_plan(&dir.path().join("scratch"))?;
+    let digest = plan.identity.candidate_artifact_sha256.clone();
+    let mut sessions = canonical_sessions(&plan, &digest);
+    sessions[3].settled_probe_clean = Some(false);
+    let judgment = evaluate_lifecycle_observation(&sessions, LifecycleFixtureVariant::Canonical);
+    ensure!(
+        judgment.cells.get(CELL_FAILURE_CLEANUP) == Some(&ObservationResult::Fail),
+        "a surviving forced-session process must fail failure_cleanup"
+    );
+    let aggregate = aggregate_journey_observation(&sessions);
+    ensure!(
+        aggregate.cleanup == CleanupResult::Fail,
+        "a survivor behind the settle probe must fail the published process cleanup"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unavailable_forced_settle_probe_is_not_proven_never_zero() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let plan = scratch_lifecycle_plan(&dir.path().join("scratch"))?;
+    let digest = plan.identity.candidate_artifact_sha256.clone();
+    let mut sessions = canonical_sessions(&plan, &digest);
+    sessions[2].settled_probe_clean = None;
+    let judgment = evaluate_lifecycle_observation(&sessions, LifecycleFixtureVariant::Canonical);
+    ensure!(
+        judgment.cells.get(CELL_FAILURE_CLEANUP) == Some(&ObservationResult::NotProven),
+        "an unavailable forced-shape settle probe is an instrument gap, not zero"
+    );
+    let aggregate = aggregate_journey_observation(&sessions);
+    ensure!(
+        aggregate.cleanup == CleanupResult::NotProven,
+        "the published cleanup must stay honestly unproven when the probe is missing"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_published_cleanup_passes_over_designed_forced_shapes_with_clean_settles() -> Result<()> {
+    // The canonical fixture keeps hosts 3/4 at the real substrate shape:
+    // nonzero-exit/forced-kill sessions carry `not_proven` barrier comparison,
+    // yet their dedicated bounded probes settled clean. The receipt's
+    // published cleanup must then reflect every owned resource cleaned while
+    // the raw per-host truths remain visible as limitations, so the CI bind
+    // (`process_cleanup == pass`) proves exactly what it claims.
+    let dir = tempfile::tempdir()?;
+    let plan = scratch_lifecycle_plan(&dir.path().join("scratch"))?;
+    let digest = plan.identity.candidate_artifact_sha256.clone();
+    let sessions = canonical_sessions(&plan, &digest);
+    ensure!(
+        sessions[2].observation.cleanup == CleanupResult::NotProven
+            && sessions[3].observation.cleanup == CleanupResult::NotProven,
+        "fixture hosts 3/4 must model the real substrate degradation, never a fake pass"
+    );
+    let aggregate = aggregate_journey_observation(&sessions);
+    ensure!(
+        aggregate.cleanup == CleanupResult::Pass,
+        "clean forced-shape settles must compose a passing published cleanup"
+    );
+    ensure!(aggregate.cleanup_detail.contains("host-3"), "per-host truths stay in the detail");
+    ensure!(aggregate.cleanup_detail.contains("host-4"), "per-host truths stay in the detail");
+    Ok(())
+}
+
 fn empty_evidence_is_not_proven_not_passed() -> Result<()> {
     let judgment = evaluate_lifecycle_observation(&[], LifecycleFixtureVariant::Canonical);
     ensure!(judgment.result == ObservationResult::NotProven);
