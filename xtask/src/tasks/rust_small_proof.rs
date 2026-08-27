@@ -15,7 +15,7 @@
 //!
 //! Boundaries kept on purpose:
 //!
-//! - `cargo fmt --all -- --check` stays a workflow yml literal:
+//! - The workspace-wide formatting check stays a workflow yml literal:
 //!   scripts/ci/test_rustfmt_required_workflow.py pins that line per lane for
 //!   #9127/#12320 ownership, and this task does not relocate their claim.
 //! - The workflow yml configures `git config --global --add safe.directory`
@@ -96,10 +96,6 @@ const SCORECARD_CENSUS_ARGS: &[&str] = &[
     "--list",
 ];
 
-/// References scorecard execution argv with frozen snapshot writes: any insta
-/// snapshot drift surfaces as a product/test failure, never as a silently
-/// rewritten fixture. This is exactly what every route ran before
-/// consolidation (the old `INSTA_UPDATE=no cargo test ...` line).
 /// References scorecard execution argv with frozen snapshot writes: any insta
 /// snapshot drift surfaces as a product/test failure, never as a silently
 /// rewritten fixture. This is exactly what every route ran before
