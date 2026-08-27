@@ -46,6 +46,27 @@ fn subject() -> CallApplicationSubject {
         package: Some("My::Package".to_string()),
         inputs: vec![CallInput::ExactValue(fact(101)), CallInput::Omitted],
         context: CallContext { receiver: ReceiverKind::Function, lexical_scope: Some(ScopeId(1)) },
+        body: BodyIdentity::Exact("sha256:caller-body".to_string()),
+        source: SourceIdentity {
+            document: FileId(1),
+            workspace_root: Some("repo".to_string()),
+            project_generation: Some(generation()),
+            profile: ProfileIdentity::new(
+                Some("5.38".to_string()),
+                vec!["strict".to_string(), "signatures".to_string()],
+                Some("linux-x86_64".to_string()),
+                Some("default".to_string()),
+            ),
+        },
+        call_phase: CallPhase::Runtime,
+        world_generation: Some(generation()),
+        call_edge_id: crate::EdgeId(500),
+        substitutions: vec![
+            ParameterSubstitution { parameter: 0, place: CallInput::ExactValue(fact(101)) },
+            ParameterSubstitution { parameter: 1, place: CallInput::Omitted },
+        ],
+        policy_identity: ApplicationPolicyIdentity::SummaryBacked,
+        component: ComponentIdentity { max_depth: 8, component_id: None },
     }
 }
 
@@ -349,4 +370,109 @@ fn canonical_serialization_is_deterministic_and_bounded() {
         swapped.privacy,
     );
     assert_eq!(must(serde_json::to_vec(&reordered)), a);
+}
+
+#[test]
+fn falsifier_identity_body_change_is_a_different_subject() {
+    // The operator-review tuple: changed body must never validate as the
+    // same subject — the two subjects must differ in canonical bytes.
+    let mut changed = subject();
+    changed.body = BodyIdentity::Exact("sha256:other-body".to_string());
+    assert_ne!(must(serde_json::to_vec(&subject())), must(serde_json::to_vec(&changed)));
+    assert!(changed.validate().is_ok());
+
+    // An empty Exact body identity is not an identity.
+    let mut empty = subject();
+    empty.body = BodyIdentity::Exact(String::new());
+    assert!(empty.validate().is_err());
+}
+
+#[test]
+fn falsifier_identity_profile_change_is_a_different_subject() {
+    let mut changed = subject();
+    changed.source.profile = ProfileIdentity::new(
+        Some("5.40".to_string()),
+        vec!["strict".to_string()],
+        Some("linux-x86_64".to_string()),
+        Some("default".to_string()),
+    );
+    assert_ne!(must(serde_json::to_vec(&subject())), must(serde_json::to_vec(&changed)));
+
+    // Source document and call-site anchor file must agree.
+    let mut mismatched = subject();
+    mismatched.source.document = FileId(2);
+    assert!(mismatched.validate().is_err());
+
+    // Unsorted features are rejected ("strict" sorts after "signatures").
+    let mut unordered = subject();
+    unordered.source.profile = ProfileIdentity {
+        perl_version: None,
+        features: vec!["strict".to_string(), "signatures".to_string()],
+        platform: None,
+        capability: None,
+    };
+    assert!(unordered.validate().is_err());
+}
+
+#[test]
+fn falsifier_identity_substitution_shape_is_enforced() {
+    // Parameter beyond the input positions is rejected.
+    let mut out_of_range = subject();
+    out_of_range.substitutions =
+        vec![ParameterSubstitution { parameter: 7, place: CallInput::Omitted }];
+    assert!(out_of_range.validate().is_err());
+
+    // Duplicate parameters are rejected.
+    let mut duplicated = subject();
+    duplicated.substitutions = vec![
+        ParameterSubstitution { parameter: 0, place: CallInput::Omitted },
+        ParameterSubstitution { parameter: 0, place: CallInput::ExactValue(fact(101)) },
+    ];
+    assert!(duplicated.validate().is_err());
+
+    // A zero-depth component bound is rejected.
+    let mut zero_depth = subject();
+    zero_depth.component = ComponentIdentity { max_depth: 0, component_id: None };
+    assert!(zero_depth.validate().is_err());
+}
+
+#[test]
+fn falsifier_identity_phase_and_policy_stay_distinct() {
+    let phases = [CallPhase::CompileTime, CallPhase::Runtime, CallPhase::Unknown];
+    let serialized: Vec<String> = phases.iter().map(|p| must(serde_json::to_string(p))).collect();
+    assert_ne!(serialized[0], serialized[1]);
+    assert_ne!(serialized[1], serialized[2]);
+
+    let mut policy_changed = subject();
+    policy_changed.policy_identity = ApplicationPolicyIdentity::Direct;
+    assert_ne!(must(serde_json::to_vec(&subject())), must(serde_json::to_vec(&policy_changed)));
+
+    // A different call edge is a different subject.
+    let mut edge_changed = subject();
+    edge_changed.call_edge_id = crate::EdgeId(501);
+    assert_ne!(must(serde_json::to_vec(&subject())), must(serde_json::to_vec(&edge_changed)));
+}
+
+#[test]
+fn falsifier_cross_generation_result_reuse_is_rejected() {
+    // A G2 result must never validate while answering a G1 subject (#12672
+    // operator review).
+    let mut r = result();
+    r.source_generation = SourceGeneration::known("gen-2");
+    let violations = must_err(r.validate());
+    assert!(violations.iter().any(|v| v.contains("cross-generation reuse")));
+
+    // Unknown result generation is rejected fail-closed.
+    let mut r = result();
+    r.source_generation = SourceGeneration::Unknown;
+    assert!(r.validate().is_err());
+
+    // A Fresh summary whose generation disagrees with the subject is
+    // rejected even when the result generation matches.
+    let mut r = result();
+    if let Some(summary) = &mut r.summary_ref {
+        summary.currentness = SummaryCurrentness::Fresh(SourceGeneration::known("gen-2"));
+    }
+    let violations = must_err(r.validate());
+    assert!(violations.iter().any(|v| v.contains("cross-generation reuse")));
 }

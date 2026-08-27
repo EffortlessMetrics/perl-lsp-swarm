@@ -80,9 +80,116 @@ pub struct CallContext {
     pub lexical_scope: Option<ScopeId>,
 }
 
+/// Content identity of a callable body — an identity reference, never the
+/// content itself.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum BodyIdentity {
+    /// A stable content identity (e.g. a content hash) for the caller and
+    /// callee bodies the subject reasons over. Two subjects with different
+    /// body identities are different subjects — a changed body must never
+    /// validate as the same call.
+    Exact(String),
+    /// Body identity not established — explicit, never a silent default.
+    Unknown,
+}
+
+/// Toolchain/profile subject the call is interpreted under. Features are
+/// sorted and deduplicated at construction for deterministic bytes.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileIdentity {
+    /// Perl version identity, when established.
+    pub perl_version: Option<String>,
+    /// Feature flags in effect (canonical order).
+    pub features: Vec<String>,
+    /// Platform identity, when established.
+    pub platform: Option<String>,
+    /// Capability configuration identity, when established.
+    pub capability: Option<String>,
+}
+
+impl ProfileIdentity {
+    /// Construct with canonical feature ordering applied.
+    #[must_use]
+    pub fn new(
+        perl_version: Option<String>,
+        mut features: Vec<String>,
+        platform: Option<String>,
+        capability: Option<String>,
+    ) -> Self {
+        features.sort();
+        features.dedup();
+        Self { perl_version, features, platform, capability }
+    }
+}
+
+/// Source/document/root/project/profile identity of the call site.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceIdentity {
+    /// Document the call site lives in.
+    pub document: FileId,
+    /// Workspace root identity, when established.
+    pub workspace_root: Option<String>,
+    /// Accepted project/workspace generation the subject is valid under,
+    /// when established.
+    pub project_generation: Option<SourceGeneration>,
+    /// Toolchain/profile the call is interpreted under.
+    pub profile: ProfileIdentity,
+}
+
+/// Whether the call executes at compile time or runtime. The phases are
+/// contract-distinct and must never collapse.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum CallPhase {
+    /// Compile-time execution (BEGIN/CHECK/UNITCHECK).
+    CompileTime,
+    /// Runtime execution.
+    Runtime,
+    /// Phase not established.
+    Unknown,
+}
+
+/// Parameter/place substitution relation for one call input.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ParameterSubstitution {
+    /// Callee parameter position (ordered, unique per subject).
+    pub parameter: u32,
+    /// The input place substituted into it.
+    pub place: CallInput,
+}
+
+/// Identity of the summary/application policy the subject composes under.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ApplicationPolicyIdentity {
+    /// Direct composition without summaries.
+    Direct,
+    /// Composition through callable summaries.
+    SummaryBacked,
+    /// A named consumer policy.
+    ConsumerNamed(String),
+}
+
+/// Bounded depth and component identity for recursive composition.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ComponentIdentity {
+    /// Maximum composition depth (must be positive).
+    pub max_depth: u32,
+    /// Strongly-connected component identity, when established.
+    pub component_id: Option<u64>,
+}
+
 /// One exact caller/callee/call/input/context subject
 /// (`call_application_subject.v1`). Every identity facet is explicit: an
 /// incomplete subject is a validation violation, never an implicit default.
+/// Name/package/anchor alone do not identify the subject — body, source/
+/// profile, phase, edge, substitution, policy, and component identities are
+/// all part of what "this exact call" means (#12672 operator review).
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallApplicationSubject {
@@ -105,6 +212,24 @@ pub struct CallApplicationSubject {
     pub inputs: Vec<CallInput>,
     /// Lexical/receiver context of the call.
     pub context: CallContext,
+    /// Content identity of the caller/callee bodies.
+    pub body: BodyIdentity,
+    /// Document/root/project/profile identity of the call site.
+    pub source: SourceIdentity,
+    /// Compile-time vs runtime phase of the call.
+    pub call_phase: CallPhase,
+    /// Accepted workspace/CompilerWorld generation the subject composes
+    /// under, when established.
+    pub world_generation: Option<SourceGeneration>,
+    /// Canonical call-edge identity.
+    pub call_edge_id: crate::EdgeId,
+    /// Ordered parameter/place substitutions. Parameters are unique and
+    /// canonically ordered at construction.
+    pub substitutions: Vec<ParameterSubstitution>,
+    /// Summary/application policy identity.
+    pub policy_identity: ApplicationPolicyIdentity,
+    /// Bounded depth and component identity for recursive composition.
+    pub component: ComponentIdentity,
 }
 
 impl CallApplicationSubject {
@@ -120,10 +245,46 @@ impl CallApplicationSubject {
         if self.anchor.end_byte < self.anchor.start_byte {
             violations.push("call-site anchor end precedes its start".to_string());
         }
-        // A file identity of FileId(u32::MAX) is the sentinel used by
+        // A file identity of FileId(u64::MAX) is the sentinel used by
         // synthetic fixtures for "no file"; a real subject must name a file.
         if self.anchor.file_id == NO_FILE {
             violations.push("call-site anchor must name a real file identity".to_string());
+        }
+        if self.source.document != self.anchor.file_id {
+            violations.push(
+                "source document and call-site anchor file must agree (one call, one document)"
+                    .to_string(),
+            );
+        }
+        if let BodyIdentity::Exact(hash) = &self.body
+            && hash.is_empty()
+        {
+            violations.push("an Exact body identity must not be empty".to_string());
+        }
+        if self.source.profile.features.windows(2).any(|pair| pair[0] >= pair[1]) {
+            violations.push(
+                "profile features must be strictly sorted and deduplicated (canonical ordering)"
+                    .to_string(),
+            );
+        }
+        if self.component.max_depth == 0 {
+            violations.push("component max_depth must be positive".to_string());
+        }
+        for (index, substitution) in self.substitutions.iter().enumerate() {
+            if substitution.parameter as usize >= self.inputs.len() {
+                violations.push(format!(
+                    "substitution parameter {} has no matching input position ({} inputs)",
+                    substitution.parameter,
+                    self.inputs.len()
+                ));
+            }
+            if index > 0 && self.substitutions[index - 1].parameter >= substitution.parameter {
+                violations.push(
+                    "substitution parameters must be unique and strictly increasing (canonical \
+                     ordering)"
+                        .to_string(),
+                );
+            }
         }
         if violations.is_empty() { Ok(()) } else { Err(violations) }
     }
@@ -432,6 +593,33 @@ impl InterproceduralFactResult {
         }
         if let Err(subject_violations) = self.subject.validate() {
             violations.extend(subject_violations.into_iter().map(|v| format!("subject: {v}")));
+        }
+        // Cross-generation binding: the result answers exactly the subject's
+        // generation — a result for G2 must never validate while answering a
+        // G1 subject, and a Fresh summary's generation must agree with the
+        // subject's (#12672 operator review).
+        match (&self.source_generation, &self.subject.source_generation) {
+            (SourceGeneration::Known(result_gen), SourceGeneration::Known(subject_gen)) => {
+                if result_gen != subject_gen {
+                    violations.push(format!(
+                        "result generation {result_gen} differs from the subject's generation \
+                         {subject_gen} (cross-generation reuse)"
+                    ));
+                }
+            }
+            _ => violations
+                .push("result and subject generations must both be known and equal".to_string()),
+        }
+        if let Some(summary) = &self.summary_ref
+            && let SummaryCurrentness::Fresh(SourceGeneration::Known(fresh_gen)) =
+                &summary.currentness
+            && let SourceGeneration::Known(subject_gen) = &self.subject.source_generation
+            && fresh_gen != subject_gen
+        {
+            violations.push(format!(
+                "summary is Fresh({fresh_gen}) but the subject is generation {subject_gen} \
+                 (cross-generation reuse)"
+            ));
         }
         match &self.outcome {
             InterproceduralOutcome::Composed => {
