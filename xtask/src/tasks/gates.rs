@@ -41,6 +41,7 @@ pub mod disposition;
 mod first_failure;
 mod planning_types;
 pub mod route_profile;
+mod routed_result_adapter;
 
 pub use first_failure::{is_cargo_test_command, parse_first_failure};
 
@@ -632,6 +633,13 @@ pub struct GateRunnerConfig {
     #[allow(dead_code)]
     pub parallel: bool,
     pub verbose: bool,
+    /// Optional published `ci_route_plan.v1` (#10179). When set, the runner
+    /// consumes and validates the canonical plan/row identity before any
+    /// execution and emits one normalized, durably published
+    /// `routed_gate_result.v1` (#9156) per executed planned `run` row under
+    /// `target/receipts/routed-results/`. Unset keeps legacy behavior so
+    /// current workflow topology is unchanged.
+    pub route_plan_path: Option<PathBuf>,
     /// Explicit opt-in that this run inspects the STAGED tree (`git
     /// write-tree`), never the working tree (issue #3786). Required for
     /// `GateTier::Commit` — see `run()`'s early validation — so an agent
@@ -657,6 +665,7 @@ impl Default for GateRunnerConfig {
             fail_fast: false,
             parallel: false,
             verbose: false,
+            route_plan_path: None,
             staged: false,
         }
     }
@@ -1445,6 +1454,22 @@ fn run_gate_plan(
     let log_dir = root.join("target/receipts/logs");
     fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
 
+    // #9156: consume and validate the canonical plan/row identity BEFORE any
+    // gate executes, then emit exactly one normalized result per planned
+    // `run` row. Unset keeps legacy behavior (topology unchanged).
+    let routed_gate_plan = match config.route_plan_path.as_deref() {
+        Some(plan_path) => {
+            let compiled = routed_result_adapter::load_compiled_plan(plan_path)?;
+            let selected_names: Vec<&str> =
+                plan.selected.iter().map(|planned| planned.gate.name.as_str()).collect();
+            routed_result_adapter::ensure_plan_covers_selection(&compiled, &selected_names)?;
+            let output_dir = root.join(routed_result_adapter::ROUTED_RESULTS_DIR);
+            fs::create_dir_all(&output_dir).context("Failed to create routed-results directory")?;
+            Some((compiled, output_dir))
+        }
+        None => None,
+    };
+
     // Run each gate
     let mut results: Vec<GateResult> = Vec::new();
     let mut tier_summaries: HashMap<String, TierSummary> = HashMap::new();
@@ -1473,6 +1498,20 @@ fn run_gate_plan(
         let result =
             run_single_gate(gate, policy, &log_dir, config, plan.staged_tree_oid.as_deref())?;
         emit_gate_end(gate, &result);
+
+        // One executed planned `run` row -> one normalized result (#9156).
+        if let Some((compiled, output_dir)) = &routed_gate_plan {
+            let hosted = routed_result_adapter::collect_hosted_identity();
+            routed_result_adapter::emit_planned_run_row_result(
+                compiled,
+                gate,
+                &result,
+                &root.join("target/receipts"),
+                output_dir,
+                hosted,
+            )
+            .with_context(|| format!("normalized routed-gate result failed for {}", gate.name))?;
+        }
 
         // Update tier summary
         let tier_summary = tier_summaries.entry(gate.tier.clone()).or_default();

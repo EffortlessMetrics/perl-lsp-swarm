@@ -40,8 +40,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ci_route_plan::{
-    canonical_json, deserialize_option_reject_null, Applicability, CiRoutePlanV1,
-    LifecycleDisposition, PolicyRole, CI_ROUTE_PLAN_SCHEMA,
+    Applicability, CI_ROUTE_PLAN_SCHEMA, CiRoutePlanV1, LifecycleDisposition, PolicyRole,
+    canonical_json, deserialize_option_reject_null,
 };
 
 /// Domain contract identity of this payload.
@@ -153,12 +153,6 @@ pub struct ChildObservation {
     pub signal: Option<String>,
     pub timed_out: bool,
     pub cancelled: bool,
-}
-
-impl ChildObservation {
-    fn never_ran() -> Self {
-        Self { exit_code: None, signal: None, timed_out: false, cancelled: false }
-    }
 }
 
 /// Timing observation in UNIX milliseconds.
@@ -458,7 +452,7 @@ pub fn build_routed_result(
         _ => {
             return Err(format!(
                 "gate {gate_id:?} has no planned run row (scoped-noop/quarantined/error rows do not execute)"
-            ))
+            ));
         }
     };
     if row.applicability != Applicability::Applicable {
@@ -495,7 +489,7 @@ pub fn build_routed_result(
         }
         RoutedReaderGateStatus::CancelledAfterStart if !observation.child.cancelled => {
             return Err(
-                "runner reports cancellation but the child shows no cancellation flag".to_string(),
+                "runner reports cancellation but the child shows no cancellation flag".to_string()
             );
         }
         RoutedReaderGateStatus::SpawnErrorBeforeStart
@@ -512,31 +506,24 @@ pub fn build_routed_result(
     check_timing(&observation.timing).map_err(|error| format!("timing: {error}"))?;
 
     // --- instrument plane -------------------------------------------------
-    let mut instrument_detail = String::new();
-    let instrument_outcome;
-    match prerequisites.state {
-        PrerequisiteState::Ready => {
-            if !observation.command_started {
-                instrument_outcome = TerminalOutcome::InstrumentFailure;
-                instrument_detail = "command never started despite ready prerequisites".to_string();
-            } else {
-                instrument_outcome = TerminalOutcome::Success;
-                instrument_detail = "prerequisites ready; process started".to_string();
-            }
+    let (instrument_outcome, instrument_detail) = match prerequisites.state {
+        PrerequisiteState::Ready if observation.command_started => {
+            (TerminalOutcome::Success, "prerequisites ready; process started".to_string())
         }
+        PrerequisiteState::Ready => (
+            TerminalOutcome::InstrumentFailure,
+            "command never started despite ready prerequisites".to_string(),
+        ),
         PrerequisiteState::Missing => {
-            instrument_outcome = TerminalOutcome::Missing;
-            instrument_detail = format_missing_prerequisites(&prerequisites);
+            (TerminalOutcome::Missing, format_missing_prerequisites(&prerequisites))
         }
         PrerequisiteState::Failed => {
-            instrument_outcome = TerminalOutcome::InstrumentFailure;
-            instrument_detail = format_dependency_failures(&prerequisites);
+            (TerminalOutcome::InstrumentFailure, format_dependency_failures(&prerequisites))
         }
         PrerequisiteState::Stale => {
-            instrument_outcome = TerminalOutcome::Stale;
-            instrument_detail = "prerequisite evidence stale".to_string();
+            (TerminalOutcome::Stale, "prerequisite evidence stale".to_string())
         }
-    }
+    };
 
     // --- product plane ----------------------------------------------------
     let product_outcome = if prerequisites.state != PrerequisiteState::Ready {
@@ -600,10 +587,7 @@ pub fn build_routed_result(
         child: observation.child.clone(),
         timing: observation.timing.clone(),
         hosted: observation.hosted.clone(),
-        product: PlaneOutcome {
-            outcome: product_outcome,
-            detail: product_detail(product_outcome),
-        },
+        product: PlaneOutcome { outcome: product_outcome, detail: product_detail(product_outcome) },
         instrument: PlaneOutcome { outcome: instrument_outcome, detail: instrument_detail },
         // Reporting truth arrives only from actual publication attempts;
         // until then the run itself asserts nothing about reporting.
@@ -631,9 +615,7 @@ struct PlannedOutcomeRunSnapshot {
 fn product_detail(outcome: TerminalOutcome) -> String {
     match outcome {
         TerminalOutcome::Success => "gate command reached and established a passing verdict".into(),
-        TerminalOutcome::Failure => {
-            "gate command ran and established a failing verdict".into()
-        }
+        TerminalOutcome::Failure => "gate command ran and established a failing verdict".into(),
         TerminalOutcome::Timeout => "gate command exceeded its planned timeout".into(),
         TerminalOutcome::Cancelled => "gate command was cancelled after start".into(),
         TerminalOutcome::BlockedNotProven => {
@@ -671,8 +653,7 @@ fn check_timing(timing: &ObservationTiming) -> Result<(), String> {
             if end < start {
                 return Err("ended before started".to_string());
             }
-            let delta =
-                u64::try_from(end - start).map_err(|_| "duration overflow".to_string())?;
+            let delta = u64::try_from(end - start).map_err(|_| "duration overflow".to_string())?;
             if delta != timing.duration_ms {
                 return Err(format!(
                     "duration_ms {} does not equal ended-started ({delta})",
@@ -694,7 +675,9 @@ fn check_timing(timing: &ObservationTiming) -> Result<(), String> {
 }
 
 fn build_reproduce_command(profile: &str, gate_id: &str, head_sha: &str) -> String {
-    format!("cargo xtask ci-route-plan explain --profile {profile} --gate {gate_id} --at {head_sha}")
+    format!(
+        "cargo xtask ci-route-plan explain --profile {profile} --gate {gate_id} --at {head_sha}"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -716,10 +699,10 @@ fn validate_result(result: &RoutedGateResultV1) -> Result<(), String> {
             return Err("empty subject identity".to_string());
         }
     }
-    if let Some(sha) = &result.subject.base_sha {
-        if sha.is_empty() {
-            return Err("empty base_sha".to_string());
-        }
+    if let Some(sha) = &result.subject.base_sha
+        && sha.is_empty()
+    {
+        return Err("empty base_sha".to_string());
     }
     if result.row.gate_id.is_empty() || result.row.command.is_empty() {
         return Err("planned row identity incomplete".to_string());
@@ -734,10 +717,10 @@ fn validate_result(result: &RoutedGateResultV1) -> Result<(), String> {
         if artifact.role.is_empty() || artifact.path.is_empty() {
             return Err("artifact reference lacks role or path".to_string());
         }
-        if let Some(sha256) = &artifact.sha256 {
-            if !is_hex_sha256(sha256) {
-                return Err(format!("artifact {} sha256 is not lowercase hex sha256", artifact.path));
-            }
+        if let Some(sha256) = &artifact.sha256
+            && !is_hex_sha256(sha256)
+        {
+            return Err(format!("artifact {} sha256 is not lowercase hex sha256", artifact.path));
         }
     }
     validate_hosted_identity(result.hosted.as_ref())?;
@@ -745,11 +728,9 @@ fn validate_result(result: &RoutedGateResultV1) -> Result<(), String> {
     validate_plane_honesty(result)?;
     let recomputed = result.semantic_fingerprint_of()?;
     if recomputed != result.result_fingerprint {
-        return Err(
-            "result_fingerprint does not match the recomputed canonical preimage; \
+        return Err("result_fingerprint does not match the recomputed canonical preimage; \
              the record is stale or tampered"
-                .to_string(),
-        );
+            .to_string());
     }
     Ok(())
 }
@@ -775,28 +756,27 @@ fn validate_plane_honesty(result: &RoutedGateResultV1) -> Result<(), String> {
         || result.child.timed_out
         || result.child.cancelled;
 
-    if result.prerequisites.state != PrerequisiteState::Ready {
-        if result.command_started || child_touched {
-            return Err(
-                "not-ready prerequisites coexist with claimed post-prerequisite activity"
-                    .to_string(),
-            );
-        }
-        if result.product.outcome != TerminalOutcome::BlockedNotProven {
-            return Err(
-                "a blocked/unproven prerequisite set cannot yield any product outcome other than blocked_not_proven"
-                    .to_string(),
-            );
-        }
+    if result.prerequisites.state != PrerequisiteState::Ready
+        && (result.command_started || child_touched)
+    {
+        return Err(
+            "not-ready prerequisites coexist with claimed post-prerequisite activity".to_string()
+        );
+    }
+    if result.prerequisites.state != PrerequisiteState::Ready
+        && result.product.outcome != TerminalOutcome::BlockedNotProven
+    {
+        return Err(
+            "a blocked/unproven prerequisite set cannot yield any product outcome other than blocked_not_proven"
+                .to_string(),
+        );
     }
 
-    if !result.command_started {
-        if child_touched {
-            return Err("never-started command carries terminal child facts".to_string());
-        }
-        if result.product.outcome.is_product_verdict() {
-            return Err("never-started command carries a product verdict".to_string());
-        }
+    if !result.command_started && child_touched {
+        return Err("never-started command carries terminal child facts".to_string());
+    }
+    if !result.command_started && result.product.outcome.is_product_verdict() {
+        return Err("never-started command carries a product verdict".to_string());
     }
 
     match result.product.outcome {
@@ -839,7 +819,8 @@ fn validate_plane_honesty(result: &RoutedGateResultV1) -> Result<(), String> {
 }
 
 fn is_hex_sha256(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    value.len() == 64
+        && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 // ---------------------------------------------------------------------------
@@ -855,7 +836,10 @@ fn is_hex_sha256(value: &str) -> bool {
 /// The final name is content-addressed (`<gate>-<fingerprint-prefix>.json`),
 /// so repeat publication of identical bytes is idempotent while anything
 /// else lands under a different name instead of clobbering history.
-pub fn publish_routed_receipt(directory: &Path, result: &RoutedGateResultV1) -> Result<PathBuf, String> {
+pub fn publish_routed_receipt(
+    directory: &Path,
+    result: &RoutedGateResultV1,
+) -> Result<PathBuf, String> {
     let bytes = result.canonical_json()?;
     fs::create_dir_all(directory)
         .map_err(|error| format!("receipt directory {}: {error}", directory.display()))?;
@@ -868,31 +852,51 @@ pub fn publish_routed_receipt(directory: &Path, result: &RoutedGateResultV1) -> 
     let destination = directory.join(format!("{stem}-{short_fingerprint}.json"));
 
     let temp_path = directory.join(unique_temp_name(&stem));
-    let publish_error = (|| -> Result<(), String> {
-        let mut file = fs::File::create(&temp_path)
-            .map_err(|error| format!("temporary artifact {}: {error}", temp_path.display()))?;
-        file.write_all(&bytes)
-            .map_err(|error| format!("partial write into {}: {error}", temp_path.display()))?;
-        file.sync_all()
-            .map_err(|error| format!("flush failed for {}: {error}", temp_path.display()))?;
-        drop(file);
-        fs::rename(&temp_path, &destination).map_err(|error| {
-            format!("atomic rename onto {}: {error}", destination.display())
-        })?;
-        let read_back = fs::read(&destination)
-            .map_err(|error| format!("read-back failed for {}: {error}", destination.display()))?;
-        if read_back != bytes {
-            return Err("published receipt read-back differs from encoded bytes".to_string());
+    match write_flush_promote(&temp_path, &destination, &bytes) {
+        Ok(()) => Ok(destination),
+        // Pre-promotion failure: only this writer's temporary is provably
+        // ours to remove; anything at the destination predates this attempt.
+        Err(PromotionFailure::BeforePromotion(error)) => {
+            let _ = fs::remove_file(&temp_path);
+            Err(error)
         }
-        Ok(())
-    })();
-
-    if publish_error.is_err() {
-        let _ = fs::remove_file(&temp_path);
-        let _ = fs::remove_file(&destination);
-        return Err(publish_error.unwrap_err());
+        // Post-promotion failure (read-back): the destination may already
+        // hold this writer's promoted bytes or a concurrent writer's
+        // completed artifact; never delete it — the typed refusal states the
+        // artifact could not be verified by this invocation.
+        Err(PromotionFailure::AfterPromotion(error)) => Err(error),
     }
-    Ok(destination)
+}
+
+enum PromotionFailure {
+    BeforePromotion(String),
+    AfterPromotion(String),
+}
+
+fn write_flush_promote(
+    temp_path: &Path,
+    destination: &Path,
+    bytes: &[u8],
+) -> Result<(), PromotionFailure> {
+    let before = |error: String| PromotionFailure::BeforePromotion(error);
+    let after = |error: String| PromotionFailure::AfterPromotion(error);
+
+    let mut file = fs::File::create(temp_path)
+        .map_err(|error| before(format!("temporary artifact {}: {error}", temp_path.display())))?;
+    file.write_all(bytes)
+        .map_err(|error| before(format!("partial write into {}: {error}", temp_path.display())))?;
+    file.sync_all()
+        .map_err(|error| before(format!("flush failed for {}: {error}", temp_path.display())))?;
+    drop(file);
+    fs::rename(temp_path, destination)
+        .map_err(|error| after(format!("atomic rename onto {}: {error}", destination.display())))?;
+    let read_back = fs::read(destination).map_err(|error| {
+        after(format!("read-back failed for {}: {error}", destination.display()))
+    })?;
+    if read_back != bytes {
+        return Err(after("published receipt read-back differs from encoded bytes".to_string()));
+    }
+    Ok(())
 }
 
 fn sanitize_component(value: &str) -> String {
@@ -908,9 +912,8 @@ fn unique_temp_name(stem: &str) -> String {
     let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| u64::try_from(duration.subsec_nanos()).ok())
-        .unwrap_or(0);
+        .unwrap_or_default()
+        .subsec_nanos();
     format!(".tmp-{stem}-{nanos}-{sequence}.json")
 }
 

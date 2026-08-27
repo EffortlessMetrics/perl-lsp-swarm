@@ -8,6 +8,8 @@
 //! mis-attribution class the issue lists is exercised against the type's
 //! validation alone, plus the durable publication pipeline.
 
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -15,16 +17,15 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 use xtask::ci_route_plan::{
     Applicability, CiRoutePlanV1, CompileRoutePlanInput, ExpansionStatus, GateSelectorInput,
-    LifecycleDisposition, LifecycleState, PolicyRole, Resolution,
-    RouteDispositionInput, RouteExecutionIdentity, RouteProfileExpansionInput,
-    RouteSelectionEvidence, RouteSubjectRef, SelectorPlacement, SelectorProof, SelectorRole,
+    LifecycleDisposition, LifecycleState, PolicyRole, Resolution, RouteDispositionInput,
+    RouteExecutionIdentity, RouteProfileExpansionInput, RouteSelectionEvidence, RouteSubjectRef,
+    SelectorPlacement, SelectorProof, SelectorRole,
 };
 use xtask::routed_result::{
-    build_routed_result, publish_routed_receipt, ArtifactRef, ChildObservation,
-    HostedIdentity, ObservationTiming, PlaneOutcome, PlanAuthorityIdentity, PlannedRowIdentity,
-    PrerequisiteEvidence, PrerequisiteState, RoutedReaderGateStatus,
-    RoutedGateResultV1, RunObservation, FINGERPRINT_DOMAIN, ROUTED_GATE_RESULT_PRODUCER,
-    ROUTED_GATE_RESULT_SCHEMA,
+    ArtifactRef, ChildObservation, FINGERPRINT_DOMAIN, HostedIdentity, ObservationTiming,
+    PlanAuthorityIdentity, PlaneOutcome, PlannedRowIdentity, PrerequisiteEvidence,
+    PrerequisiteState, ROUTED_GATE_RESULT_PRODUCER, ROUTED_GATE_RESULT_SCHEMA, RoutedGateResultV1,
+    RoutedReaderGateStatus, RunObservation, build_routed_result, publish_routed_receipt,
 };
 
 const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -156,11 +157,7 @@ fn timing(started: bool) -> ObservationTiming {
             duration_ms: 3_500,
         }
     } else {
-        ObservationTiming {
-            started_at_unix_ms: None,
-            ended_at_unix_ms: None,
-            duration_ms: 0,
-        }
+        ObservationTiming { started_at_unix_ms: None, ended_at_unix_ms: None, duration_ms: 0 }
     }
 }
 
@@ -217,18 +214,11 @@ fn product_pass_with_reporting_failure_keeps_two_facts() {
     };
     // Any semantic mutation invalidates the recorded identity until the
     // record is re-sealed; here the writer re-seals its own edit.
-    result.result_fingerprint =
-        result.semantic_fingerprint_of().expect("re-seal after mutation");
+    result.result_fingerprint = result.semantic_fingerprint_of().expect("re-seal after mutation");
     // Product stays success while reporting failure is retained exactly.
     result.validate().expect("plane independence is legal");
-    assert!(matches!(
-        result.product.outcome,
-        xtask::routed_result::TerminalOutcome::Success
-    ));
-    assert!(!matches!(
-        result.reporting.outcome,
-        xtask::routed_result::TerminalOutcome::Success
-    ));
+    assert!(matches!(result.product.outcome, xtask::routed_result::TerminalOutcome::Success));
+    assert!(!matches!(result.reporting.outcome, xtask::routed_result::TerminalOutcome::Success));
 }
 
 #[test]
@@ -243,7 +233,12 @@ fn missing_binary_is_block_not_proven_without_product_verdict() {
             dependency_gates: BTreeMap::new(),
         }),
         command_started: false,
-        child: ChildObservation { exit_code: None, signal: None, timed_out: false, cancelled: false },
+        child: ChildObservation {
+            exit_code: None,
+            signal: None,
+            timed_out: false,
+            cancelled: false,
+        },
         timing: timing(false),
         artifacts: Vec::new(),
     };
@@ -254,10 +249,7 @@ fn missing_binary_is_block_not_proven_without_product_verdict() {
         result.product.outcome,
         xtask::routed_result::TerminalOutcome::BlockedNotProven
     ));
-    assert!(matches!(
-        result.instrument.outcome,
-        xtask::routed_result::TerminalOutcome::Missing
-    ));
+    assert!(matches!(result.instrument.outcome, xtask::routed_result::TerminalOutcome::Missing));
     assert!(result.prerequisites.missing_artifacts.contains(&"target/release/perllsp".to_string()));
 }
 
@@ -307,12 +299,16 @@ fn prerequisite_failure_cannot_be_labelled_product_failure() {
             )]),
         }),
         command_started: false,
-        child: ChildObservation { exit_code: None, signal: None, timed_out: false, cancelled: false },
+        child: ChildObservation {
+            exit_code: None,
+            signal: None,
+            timed_out: false,
+            cancelled: false,
+        },
         timing: timing(false),
         artifacts: Vec::new(),
     };
-    let result =
-        build_routed_result(&plan, "fmt_gate", honest).expect("honest block builds");
+    let result = build_routed_result(&plan, "fmt_gate", honest).expect("honest block builds");
     result.validate().expect("honest block validates");
     assert!(matches!(
         result.product.outcome,
@@ -340,10 +336,7 @@ fn timeout_signal_cancel_stay_distinct() {
     };
     let result = build_routed_result(&plan, "fmt_gate", timeout_observation).expect("timeout");
     result.validate().expect("timeout shape validates");
-    assert!(matches!(
-        result.product.outcome,
-        xtask::routed_result::TerminalOutcome::Timeout
-    ));
+    assert!(matches!(result.product.outcome, xtask::routed_result::TerminalOutcome::Timeout));
 
     // A watchdog kill flattened into assertion failure would be a different,
     // rejected world: Failure with no exit code but a signal is only valid
@@ -363,10 +356,7 @@ fn timeout_signal_cancel_stay_distinct() {
         artifacts: Vec::new(),
     };
     let result = build_routed_result(&plan, "fmt_gate", flattened).expect("signal fail");
-    assert!(matches!(
-        result.product.outcome,
-        xtask::routed_result::TerminalOutcome::Failure
-    ));
+    assert!(matches!(result.product.outcome, xtask::routed_result::TerminalOutcome::Failure));
     assert!(result.child.signal.is_some());
 
     let cancelled_observation = RunObservation {
@@ -383,13 +373,9 @@ fn timeout_signal_cancel_stay_distinct() {
         timing: timing(true),
         artifacts: Vec::new(),
     };
-    let result =
-        build_routed_result(&plan, "fmt_gate", cancelled_observation).expect("cancelled");
+    let result = build_routed_result(&plan, "fmt_gate", cancelled_observation).expect("cancelled");
     result.validate().expect("cancelled shape validates");
-    assert!(matches!(
-        result.product.outcome,
-        xtask::routed_result::TerminalOutcome::Cancelled
-    ));
+    assert!(matches!(result.product.outcome, xtask::routed_result::TerminalOutcome::Cancelled));
 }
 
 #[test]
@@ -448,8 +434,7 @@ fn tampered_fingerprint_or_unknown_fields_fail_closed() {
 
     // Explicit null for an optional (base_sha) is not a canonical spelling.
     let mut value: serde_json::Value =
-        serde_json::from_slice(&build_success(&compiled_plan()).canonical_json().unwrap())
-            .unwrap();
+        serde_json::from_slice(&build_success(&compiled_plan()).canonical_json().unwrap()).unwrap();
     value["subject"]["base_sha"] = serde_json::Value::Null;
     assert!(
         serde_json::from_value::<RoutedGateResultV1>(value).is_err(),
@@ -514,9 +499,7 @@ fn unsupported_runner_status_has_a_closed_vocabulary() {
             artifacts: Vec::new(),
         };
         if let Ok(result) = build_routed_result(&plan, "fmt_gate", observation) {
-            result
-                .validate()
-                .unwrap_or_else(|error| panic!("closed vocabulary outcome: {error}"));
+            result.validate().unwrap_or_else(|error| panic!("closed vocabulary outcome: {error}"));
         }
     }
 }
