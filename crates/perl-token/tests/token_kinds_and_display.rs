@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 //! Tests for TokenKind classification, display_name coverage, and source location tracking.
 //!
 //! Supplements existing test files with:
@@ -6,6 +7,7 @@
 //! - Source location (span) tracking and consistency
 //! - Missing variant coverage (Field, Goto in keyword lists)
 //! - Token equality across different construction paths
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_token::{Token, TokenKind};
 use std::sync::Arc;
@@ -935,50 +937,51 @@ fn bitwise_operators() {
 
 #[test]
 fn token_span_length() {
-    let tok = Token::new(TokenKind::Identifier, "hello", 10, 15);
-    assert_eq!(tok.end - tok.start, 5);
-    assert_eq!(tok.end - tok.start, tok.text.len());
+    let tok = Token::new_checked(TokenKind::Identifier, "hello", 10, 15).expect("valid token");
+    assert_eq!(tok.end() - tok.start(), 5);
+    assert_eq!(tok.end() - tok.start(), tok.text.len());
 }
 
 #[test]
 fn token_span_zero_width_at_position() {
     // EOF tokens typically have zero-width spans
-    let tok = Token::new(TokenKind::Eof, "", 42, 42);
-    assert_eq!(tok.start, tok.end);
-    assert_eq!(tok.end - tok.start, 0);
+    let tok = Token::new_checked(TokenKind::Eof, "", 42, 42).expect("valid token");
+    assert_eq!(tok.start(), tok.end());
+    assert_eq!(tok.end() - tok.start(), 0);
 }
 
 #[test]
 fn token_span_preserves_exact_offsets() {
-    let tok = Token::new(TokenKind::String, "\"hello world\"", 100, 113);
-    assert_eq!(tok.start, 100);
-    assert_eq!(tok.end, 113);
-    assert_eq!(tok.end - tok.start, 13);
+    let tok =
+        Token::new_checked(TokenKind::String, "\"hello world\"", 100, 113).expect("valid token");
+    assert_eq!(tok.start(), 100);
+    assert_eq!(tok.end(), 113);
+    assert_eq!(tok.end() - tok.start(), 13);
 }
 
 #[test]
 fn token_sequence_spans_are_monotonically_increasing() {
     // my $x = 42;
     let tokens = [
-        Token::new(TokenKind::My, "my", 0, 2),
-        Token::new(TokenKind::ScalarSigil, "$", 3, 4),
-        Token::new(TokenKind::Identifier, "x", 4, 5),
-        Token::new(TokenKind::Assign, "=", 6, 7),
-        Token::new(TokenKind::Number, "42", 8, 10),
-        Token::new(TokenKind::Semicolon, ";", 10, 11),
+        Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token"),
+        Token::new_checked(TokenKind::ScalarSigil, "$", 3, 4).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "x", 4, 5).expect("valid token"),
+        Token::new_checked(TokenKind::Assign, "=", 6, 7).expect("valid token"),
+        Token::new_checked(TokenKind::Number, "42", 8, 10).expect("valid token"),
+        Token::new_checked(TokenKind::Semicolon, ";", 10, 11).expect("valid token"),
     ];
     for window in tokens.windows(2) {
         assert!(
-            window[0].start <= window[1].start,
+            window[0].start() <= window[1].start(),
             "token start positions should be monotonically increasing: {} > {}",
-            window[0].start,
-            window[1].start
+            window[0].start(),
+            window[1].start()
         );
         assert!(
-            window[0].end <= window[1].end,
+            window[0].end() <= window[1].end(),
             "token end positions should be monotonically increasing: {} > {}",
-            window[0].end,
-            window[1].end
+            window[0].end(),
+            window[1].end()
         );
     }
 }
@@ -986,21 +989,21 @@ fn token_sequence_spans_are_monotonically_increasing() {
 #[test]
 fn token_sequence_non_overlapping_spans() {
     let tokens = [
-        Token::new(TokenKind::Sub, "sub", 0, 3),
-        Token::new(TokenKind::Identifier, "greet", 4, 9),
-        Token::new(TokenKind::LeftParen, "(", 9, 10),
-        Token::new(TokenKind::RightParen, ")", 10, 11),
-        Token::new(TokenKind::LeftBrace, "{", 12, 13),
-        Token::new(TokenKind::RightBrace, "}", 14, 15),
+        Token::new_checked(TokenKind::Sub, "sub", 0, 3).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "greet", 4, 9).expect("valid token"),
+        Token::new_checked(TokenKind::LeftParen, "(", 9, 10).expect("valid token"),
+        Token::new_checked(TokenKind::RightParen, ")", 10, 11).expect("valid token"),
+        Token::new_checked(TokenKind::LeftBrace, "{", 12, 13).expect("valid token"),
+        Token::new_checked(TokenKind::RightBrace, "}", 14, 15).expect("valid token"),
     ];
     for window in tokens.windows(2) {
         assert!(
-            window[0].end <= window[1].start,
+            window[0].end() <= window[1].start(),
             "tokens should not overlap: {:?} ends at {} but {:?} starts at {}",
-            window[0].kind,
-            window[0].end,
-            window[1].kind,
-            window[1].start,
+            window[0].kind(),
+            window[0].end(),
+            window[1].kind(),
+            window[1].start(),
         );
     }
 }
@@ -1009,8 +1012,8 @@ fn token_sequence_non_overlapping_spans() {
 fn token_span_with_unicode_byte_offsets() {
     // Unicode: byte offsets, not char offsets
     let text = "日本語"; // 9 bytes (3 chars * 3 bytes each)
-    let tok = Token::new(TokenKind::String, text, 0, 9);
-    assert_eq!(tok.end - tok.start, 9);
+    let tok = Token::new_checked(TokenKind::String, text, 0, 9).expect("valid token");
+    assert_eq!(tok.end() - tok.start(), 9);
     assert_eq!(tok.text.len(), 9);
     assert_eq!(tok.text.chars().count(), 3);
 }
@@ -1018,9 +1021,10 @@ fn token_span_with_unicode_byte_offsets() {
 #[test]
 fn token_start_end_can_represent_end_of_large_file() {
     let large_offset = 10_000_000;
-    let tok = Token::new(TokenKind::Eof, "", large_offset, large_offset);
-    assert_eq!(tok.start, large_offset);
-    assert_eq!(tok.end, large_offset);
+    let tok =
+        Token::new_checked(TokenKind::Eof, "", large_offset, large_offset).expect("valid token");
+    assert_eq!(tok.start(), large_offset);
+    assert_eq!(tok.end(), large_offset);
 }
 
 // ===========================================================================
@@ -1030,38 +1034,38 @@ fn token_start_end_can_represent_end_of_large_file() {
 #[test]
 fn token_equality_ignores_arc_identity() {
     // Two tokens with same fields but different Arc allocations are equal
-    let a = Token::new(TokenKind::Identifier, "foo", 0, 3);
-    let b = Token::new(TokenKind::Identifier, "foo", 0, 3);
+    let a = Token::new_checked(TokenKind::Identifier, "foo", 0, 3).expect("valid token");
+    let b = Token::new_checked(TokenKind::Identifier, "foo", 0, 3).expect("valid token");
     assert_eq!(a, b);
     assert!(!Arc::ptr_eq(&a.text, &b.text)); // different allocations
 }
 
 #[test]
 fn token_equality_considers_all_fields() {
-    let base = Token::new(TokenKind::Number, "42", 10, 12);
+    let base = Token::new_checked(TokenKind::Number, "42", 10, 12).expect("valid token");
 
     // Different kind
-    let diff_kind = Token::new(TokenKind::String, "42", 10, 12);
+    let diff_kind = Token::new_checked(TokenKind::String, "42", 10, 12).expect("valid token");
     assert_ne!(base, diff_kind);
 
     // Different text
-    let diff_text = Token::new(TokenKind::Number, "43", 10, 12);
+    let diff_text = Token::new_checked(TokenKind::Number, "43", 10, 12).expect("valid token");
     assert_ne!(base, diff_text);
 
-    // Different start
-    let diff_start = Token::new(TokenKind::Number, "42", 11, 12);
+    // Different start (same text width, shifted span)
+    let diff_start = Token::new_checked(TokenKind::Number, "42", 11, 13).expect("valid token");
     assert_ne!(base, diff_start);
 
-    // Different end
-    let diff_end = Token::new(TokenKind::Number, "42", 10, 13);
+    // Different end (same start, matching wider text)
+    let diff_end = Token::new_checked(TokenKind::Number, "421", 10, 13).expect("valid token");
     assert_ne!(base, diff_end);
 }
 
 #[test]
 fn token_equality_with_shared_arc() {
     let shared: Arc<str> = Arc::from("shared");
-    let a = Token { kind: TokenKind::Identifier, text: shared.clone(), start: 0, end: 6 };
-    let b = Token { kind: TokenKind::Identifier, text: shared, start: 0, end: 6 };
+    let a = Token::new_checked(TokenKind::Identifier, shared.clone(), 0, 6).expect("valid token");
+    let b = Token::new_checked(TokenKind::Identifier, shared, 0, 6).expect("valid token");
     assert_eq!(a, b);
 }
 
@@ -1071,11 +1075,11 @@ fn token_equality_with_shared_arc() {
 
 #[test]
 fn field_token_construction() {
-    let tok = Token::new(TokenKind::Field, "field", 0, 5);
-    assert_eq!(tok.kind, TokenKind::Field);
+    let tok = Token::new_checked(TokenKind::Field, "field", 0, 5).expect("valid token");
+    assert_eq!(tok.kind(), TokenKind::Field);
     assert_eq!(&*tok.text, "field");
-    assert_eq!(tok.start, 0);
-    assert_eq!(tok.end, 5);
+    assert_eq!(tok.start(), 0);
+    assert_eq!(tok.end(), 5);
 }
 
 #[test]
@@ -1099,24 +1103,24 @@ fn field_is_copy() {
 fn field_in_class_declaration_sequence() {
     // class Foo { field $name; }
     let tokens = [
-        Token::new(TokenKind::Class, "class", 0, 5),
-        Token::new(TokenKind::Identifier, "Foo", 6, 9),
-        Token::new(TokenKind::LeftBrace, "{", 10, 11),
-        Token::new(TokenKind::Field, "field", 12, 17),
-        Token::new(TokenKind::ScalarSigil, "$", 18, 19),
-        Token::new(TokenKind::Identifier, "name", 19, 23),
-        Token::new(TokenKind::Semicolon, ";", 23, 24),
-        Token::new(TokenKind::RightBrace, "}", 25, 26),
+        Token::new_checked(TokenKind::Class, "class", 0, 5).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "Foo", 6, 9).expect("valid token"),
+        Token::new_checked(TokenKind::LeftBrace, "{", 10, 11).expect("valid token"),
+        Token::new_checked(TokenKind::Field, "field", 12, 17).expect("valid token"),
+        Token::new_checked(TokenKind::ScalarSigil, "$", 18, 19).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "name", 19, 23).expect("valid token"),
+        Token::new_checked(TokenKind::Semicolon, ";", 23, 24).expect("valid token"),
+        Token::new_checked(TokenKind::RightBrace, "}", 25, 26).expect("valid token"),
     ];
-    assert_eq!(tokens[0].kind, TokenKind::Class);
-    assert_eq!(tokens[3].kind, TokenKind::Field);
-    assert_eq!(tokens[4].kind, TokenKind::ScalarSigil);
+    assert_eq!(tokens[0].kind(), TokenKind::Class);
+    assert_eq!(tokens[3].kind(), TokenKind::Field);
+    assert_eq!(tokens[4].kind(), TokenKind::ScalarSigil);
 }
 
 #[test]
 fn goto_token_construction() {
-    let tok = Token::new(TokenKind::Goto, "goto", 0, 4);
-    assert_eq!(tok.kind, TokenKind::Goto);
+    let tok = Token::new_checked(TokenKind::Goto, "goto", 0, 4).expect("valid token");
+    assert_eq!(tok.kind(), TokenKind::Goto);
     assert_eq!(&*tok.text, "goto");
 }
 

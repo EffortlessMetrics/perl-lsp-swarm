@@ -473,11 +473,7 @@ fn test_ripr_seam_name_format_exact() {
     let ast = parse("my %h = (-or => 1);");
     let sexp = ast.to_sexp();
     // Must contain the exact string "-or" (not "or", not "-OR", not "- or").
-    assert!(
-        sexp.contains("\"") && sexp.contains("-or"),
-        "Expected exact '-or' string in identifier, got:\n{}",
-        sexp
-    );
+    assert!(sexp.contains("-or"), "Expected exact '-or' string in identifier, got:\n{}", sexp);
 }
 
 /// Test that consuming the keyword token (self.tokens.next()) happens correctly.

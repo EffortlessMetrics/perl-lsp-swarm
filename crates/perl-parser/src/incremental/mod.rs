@@ -80,16 +80,16 @@ fn validate_edits(source: &str, edits: &[Edit]) -> Result<usize> {
             );
         }
 
-        if let Some(previous) = previous {
-            if edit.start_byte < previous.old_end_byte || edit.start_byte == previous.start_byte {
-                anyhow::bail!(
-                    "incremental edit ranges are overlapping or share an ambiguous start: {}..{} and {}..{}",
-                    previous.start_byte,
-                    previous.old_end_byte,
-                    edit.start_byte,
-                    edit.old_end_byte
-                );
-            }
+        if let Some(previous) = previous
+            && (edit.start_byte < previous.old_end_byte || edit.start_byte == previous.start_byte)
+        {
+            anyhow::bail!(
+                "incremental edit ranges are overlapping or share an ambiguous start: {}..{} and {}..{}",
+                previous.start_byte,
+                previous.old_end_byte,
+                edit.start_byte,
+                edit.old_end_byte
+            );
         }
         previous = Some(edit);
 
