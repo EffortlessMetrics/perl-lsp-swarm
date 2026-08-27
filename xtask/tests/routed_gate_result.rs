@@ -15,14 +15,14 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 use xtask::ci_route_plan::{
     Applicability, CiRoutePlanV1, CompileRoutePlanInput, ExpansionStatus, GateSelectorInput,
-    LifecycleDisposition, LifecycleState, PlannedOutcome, PolicyRole, Resolution,
+    LifecycleDisposition, LifecycleState, PolicyRole, Resolution,
     RouteDispositionInput, RouteExecutionIdentity, RouteProfileExpansionInput,
     RouteSelectionEvidence, RouteSubjectRef, SelectorPlacement, SelectorProof, SelectorRole,
 };
 use xtask::routed_result::{
     build_routed_result, publish_routed_receipt, ArtifactRef, ChildObservation,
     HostedIdentity, ObservationTiming, PlaneOutcome, PlanAuthorityIdentity, PlannedRowIdentity,
-    PrerequisiteEvidence, PrerequisiteState, ResultSubjectRef, RoutedReaderGateStatus,
+    PrerequisiteEvidence, PrerequisiteState, RoutedReaderGateStatus,
     RoutedGateResultV1, RunObservation, FINGERPRINT_DOMAIN, ROUTED_GATE_RESULT_PRODUCER,
     ROUTED_GATE_RESULT_SCHEMA,
 };
@@ -144,6 +144,7 @@ fn hosted() -> HostedIdentity {
         job: Some("fast".to_string()),
         run_id: Some("90210".to_string()),
         run_attempt: 2,
+        matrix: Some("shard:2/4".to_string()),
     }
 }
 
@@ -214,6 +215,10 @@ fn product_pass_with_reporting_failure_keeps_two_facts() {
         outcome: xtask::routed_result::TerminalOutcome::InstrumentFailure,
         detail: "codecov upload failed after green gate".to_string(),
     };
+    // Any semantic mutation invalidates the recorded identity until the
+    // record is re-sealed; here the writer re-seals its own edit.
+    result.result_fingerprint =
+        result.semantic_fingerprint_of().expect("re-seal after mutation");
     // Product stays success while reporting failure is retained exactly.
     result.validate().expect("plane independence is legal");
     assert!(matches!(
@@ -404,6 +409,8 @@ fn canonical_bytes_are_order_independent_and_domain_separated() {
             sha256: Some(DIGEST_C.to_string()),
         },
     ];
+    // Re-seal after the writer's mutation; tamper-evidence stays strict.
+    left.result_fingerprint = left.semantic_fingerprint_of().expect("re-seal");
     let mut right = left.clone();
     right.artifacts.reverse();
 

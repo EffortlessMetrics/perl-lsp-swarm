@@ -26,6 +26,7 @@ pub mod native_helix_actions;
 pub mod native_neovim_actions;
 pub mod publication_drift;
 pub mod rust_hygiene;
+pub mod routed_result;
 pub mod vim_host_diagnostics_run;
 pub mod vim_host_freshness_run;
 pub mod vim_host_run;
