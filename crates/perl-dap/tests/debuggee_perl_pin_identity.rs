@@ -1,11 +1,8 @@
 //! Identity proof for a valid configured debuggee pin (#12594).
 //!
-//! The availability matrix proves that a rejected pin cannot be rescued by a
-//! PATH interpreter. This companion test proves the positive direction with
-//! two usable path identities: the ambient `perl` executable and an explicit
-//! spelling of that same executable through a `.` path component. Both are
-//! independently exercised by the real pipe-conformance probe, then the pin
-//! is selected and the resolver must retain the exact pinned spelling.
+//! This drives the real DAP launch boundary with a valid pin and a deliberately
+//! conflicting PATH interpreter, then observes the selected identity in the
+//! stopped session.
 
 #![expect(
     clippy::print_stderr,
@@ -15,12 +12,17 @@
 
 mod common;
 
-use common::{DEBUGGEE_PERL_OVERRIDE_ENV, probe_debuggee_perl_for_test, resolve_debuggee_perl};
+use common::{
+    DEBUGGEE_PERL_OVERRIDE_ENV, DapWorkflowSession, probe_debuggee_perl_for_test,
+    resolve_debuggee_perl,
+};
 use std::env;
 use std::error::Error;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
+use tempfile::tempdir;
 
 struct EnvGuard(Option<std::ffi::OsString>);
 
@@ -60,7 +62,6 @@ fn valid_pin_selects_the_pinned_usable_identity() -> Result<(), Box<dyn Error>> 
         eprintln!("SKIP valid pin identity: no perl executable is available on PATH");
         return Ok(());
     };
-
     let Some(parent) = ambient.parent() else {
         return Err("ambient perl path has no parent directory".into());
     };
@@ -69,10 +70,6 @@ fn valid_pin_selects_the_pinned_usable_identity() -> Result<(), Box<dyn Error>> 
     };
     let pinned = parent.join(".").join(name);
 
-    // Establish that both the ambient spelling and the explicit spelling are
-    // usable under the same real pipe probe before testing selection. A
-    // resolver that only records the pin without executing it cannot satisfy
-    // this control.
     if let Err(reason) = probe_debuggee_perl_for_test(&ambient, Duration::from_secs(15), false) {
         eprintln!("SKIP valid pin identity: ambient perl is not pipe-capable ({reason})");
         return Ok(());
@@ -82,22 +79,47 @@ fn valid_pin_selects_the_pinned_usable_identity() -> Result<(), Box<dyn Error>> 
         return Ok(());
     }
 
+    let controls = tempdir()?;
+    let conflicting = controls.path().join(if cfg!(windows) { "perl.exe" } else { "perl" });
+    let source = controls.path().join("conflicting.rs");
+    fs::write(&source, "fn main() { std::process::exit(97); }\n")?;
+    let output = Command::new("rustc")
+        .args(["--edition", "2024"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&conflicting)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to compile conflicting PATH control: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+
     let _guard = EnvGuard::set(pinned.as_os_str());
     let resolved = resolve_debuggee_perl().ok_or("valid pin did not resolve")?;
-    let launch_path = common::resolve_launch_perl_path()
-        .map_err(|reason| format!("valid pin could not resolve for launch: {reason}"))?;
-    assert_eq!(
-        launch_path,
-        Some(pinned.clone()),
-        "shared launch helpers must receive the exact pinned identity"
-    );
-    assert_eq!(
-        resolved.binary, pinned,
-        "resolver must retain the exact usable pinned identity instead of selecting PATH perl"
-    );
+    assert_eq!(resolved.binary, pinned, "resolver must retain the exact usable pinned identity");
     assert!(
         !resolved.identity.trim().is_empty(),
-        "selected pinned interpreter must produce a non-empty probe identity"
+        "selected pinned interpreter must produce a probe identity"
     );
+    let script = controls.path().join("identity.pl");
+    fs::write(&script, "print \"PIN_IDENTITY:$^X\\n\";\n")?;
+    let mut session = DapWorkflowSession::new(Duration::from_secs(15))?;
+    session.launch_pinned_with_env(
+        &pinned,
+        script.to_str().ok_or("script path is not UTF-8")?,
+        &serde_json::json!({"PATH": controls.path()}),
+    )?;
+    let stopped = session.wait_stopped()?;
+    let (identity, _) = session.evaluate_expression("$^X", stopped.thread_id)?;
+    assert!(
+        identity.contains(
+            pinned.file_name().and_then(|name| name.to_str()).ok_or("pinned name is not UTF-8")?
+        ),
+        "the launched debugger identity must come from the pinned interpreter, got {identity:?}"
+    );
+    session.disconnect()?;
     Ok(())
 }

@@ -17,7 +17,7 @@
 
 mod common;
 
-use common::{DEBUGGEE_PERL_OVERRIDE_ENV, resolve_debuggee_perl};
+use common::{DEBUGGEE_PERL_OVERRIDE_ENV, last_probe_pid_for_test, resolve_debuggee_perl};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -88,11 +88,12 @@ fn probe_workspace_cleanup_covers_each_child_exit_path() -> io::Result<()> {
         "probe_timeout",
         "fn main() { std::thread::sleep(std::time::Duration::from_secs(60)); }\n",
     )?;
+    let hanging = compile_probe_control(
+        controls.path(),
+        "probe_hanging",
+        "fn main() { std::thread::sleep(std::time::Duration::from_secs(60)); }\n",
+    )?;
 
-    // Seed a same-process artifact before taking the baseline. A proof that
-    // merely asserts the entire prefix is empty would confuse this legitimate
-    // stale entry with a leak; the production sweep must be judged by its
-    // baseline delta instead.
     let stale_prefix = format!("{PROBE_PREFIX}{}-seeded-stale-control-", std::process::id());
     let seeded_stale =
         tempfile::Builder::new().prefix(&stale_prefix).tempdir_in(std::env::temp_dir())?;
@@ -102,15 +103,11 @@ fn probe_workspace_cleanup_covers_each_child_exit_path() -> io::Result<()> {
         "seeded same-process stale artifact must be visible in the baseline"
     );
 
-    // Run each production cleanup branch through the real probe implementation.
-    // The last argument injects a deterministic `try_wait` error after spawn;
-    // the short budget keeps the timeout case bounded without weakening the
-    // production ten-second deadline.
     let cases = [
         ("success", success.as_path(), Duration::from_secs(2), false, true),
         ("no-banner", no_banner.as_path(), Duration::from_secs(2), false, false),
         ("timeout", timeout.as_path(), Duration::from_millis(100), false, false),
-        ("wait-error", success.as_path(), Duration::from_secs(2), true, false),
+        ("wait-error", hanging.as_path(), Duration::from_secs(2), true, false),
     ];
     for (label, binary, budget, simulate_wait_error, should_succeed) in cases {
         let before = current_process_probe_artifacts()?;
@@ -121,6 +118,14 @@ fn probe_workspace_cleanup_covers_each_child_exit_path() -> io::Result<()> {
 
         let result = common::probe_debuggee_perl_for_test(binary, budget, simulate_wait_error);
         assert_eq!(result.is_ok(), should_succeed, "unexpected {label} probe result: {result:?}");
+        if label == "wait-error" {
+            let pid = last_probe_pid_for_test()
+                .ok_or_else(|| io::Error::other("wait-error probe did not record a child pid"))?;
+            assert!(
+                !process_exists(pid),
+                "wait-error probe child {pid} was not terminated and reaped"
+            );
+        }
 
         let after = current_process_probe_artifacts()?;
         let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
@@ -134,9 +139,6 @@ fn probe_workspace_cleanup_covers_each_child_exit_path() -> io::Result<()> {
         );
     }
 
-    // Keep the pin environment restoration proof from the original sweep: the
-    // helper above exercises the direct probe, while this final resolution
-    // path confirms the resolver still rejects an explicitly broken pin.
     {
         struct Guard(Option<std::ffi::OsString>);
         impl Drop for Guard {
@@ -158,4 +160,28 @@ fn probe_workspace_cleanup_covers_each_child_exit_path() -> io::Result<()> {
         );
     }
     Ok(())
+}
+
+fn process_exists(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
+            .unwrap_or(false)
+    }
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = pid;
+        false
+    }
 }

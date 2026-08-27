@@ -76,6 +76,8 @@
 //! only after every row passed and the canary stayed empty; a missing,
 //! skipped, or failed run never writes one (fail-closed).
 
+mod common;
+
 use perl_dap::DapMessage;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -143,20 +145,18 @@ struct SubjectIdentity {
 }
 
 impl SubjectIdentity {
-    fn capture(binary: &OsString, fixture: &Path) -> ProofResult<Self> {
-        let perl_path_out = Command::new("perl").arg("-e").arg("print $^X").output()?;
+    fn capture(binary: &OsString, perl: &Path, fixture: &Path) -> ProofResult<Self> {
+        let perl_path_out = Command::new(perl).arg("-e").arg("print $^X").output()?;
         if !perl_path_out.status.success() {
             return Err("perl -e 'print $^X' failed while binding subject identity".into());
         }
-        let perl_path = String::from_utf8_lossy(&perl_path_out.stdout).trim().to_string();
-
-        let perl_version_out = Command::new("perl").arg("-e").arg("print $^V").output()?;
+        let perl_version_out = Command::new(perl).arg("-e").arg("print $^V").output()?;
         if !perl_version_out.status.success() {
             return Err("perl -e 'print $^V' failed while binding subject identity".into());
         }
         let perl_version = String::from_utf8_lossy(&perl_version_out.stdout).trim().to_string();
 
-        let perl_sha256 = match fs::read(Path::new(&perl_path)) {
+        let perl_sha256 = match fs::read(perl) {
             Ok(bytes) => digest_bytes(&bytes),
             Err(error) => format!("unavailable:{error}"),
         };
@@ -166,7 +166,7 @@ impl SubjectIdentity {
             binary_sha256: sha256_file(&binary_path)?,
             binary_path: binary_path.to_string_lossy().to_string(),
             perl_sha256,
-            perl_path,
+            perl_path: perl.to_string_lossy().to_string(),
             perl_version,
             fixture_len: fs::metadata(fixture)?.len(),
             fixture_sha256: sha256_file(fixture)?,
@@ -292,7 +292,12 @@ enum ResponseOutcome {
 }
 
 impl StdioSession {
-    fn spawn(binary: &OsString, script: &str, canary_path: &str) -> ProofResult<Self> {
+    fn spawn(
+        binary: &OsString,
+        script: &str,
+        canary_path: &str,
+        perl_path: &Path,
+    ) -> ProofResult<Self> {
         let mut child = Command::new(binary)
             .arg("--stdio")
             .arg("--log-level")
@@ -360,12 +365,8 @@ impl StdioSession {
         session.wait_event("initialized")?;
 
         // Bind the debuggee to the exact interpreter whose identity the
-        // receipt records. `perlPath` is passed only when the PATH-probed
-        // interpreter's path is directly usable from this host (POSIX hosts
-        // and native Windows installs); a cygwin-style `/usr/bin/perl`
-        // self-reported path is recorded but not forced on the launch,
-        // leaving the adapter's normal resolution in charge on that host
-        // class.
+        // receipt records. The configured, pipe-probed path is always passed
+        // at the launch boundary; the adapter must not re-resolve ambient PATH.
         let mut launch_arguments = json!({
             "program": script,
             "args": [canary_path],
@@ -377,9 +378,7 @@ impl StdioSession {
                 "TZ": "UTC"
             }
         });
-        if let Some(perl_path) = spawnable_perl_path() {
-            launch_arguments["perlPath"] = Value::String(perl_path);
-        }
+        launch_arguments["perlPath"] = Value::String(perl_path.to_string_lossy().into_owned());
         let ResponseOutcome::Success(_) = session.request("launch", Some(launch_arguments))? else {
             return Err("launch of the real perl -d fixture failed".into());
         };
@@ -567,32 +566,6 @@ fn note_to_stderr(text: &str) {
     use std::io::Write;
     let mut stderr = std::io::stderr().lock();
     let _ = writeln!(stderr, "{text}");
-}
-
-/// Absolute path of the PATH-resolved interpreter when that path is directly
-/// usable as a `perlPath` launch value from this host; `None` when only a
-/// POSIX-style self-reported path exists (cygwin hosts).
-fn spawnable_perl_path() -> Option<String> {
-    let output = Command::new("perl").arg("-e").arg("print $^X").output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() || !Path::new(&path).is_file() {
-        return None;
-    }
-    Some(path)
-}
-
-fn perl_available() -> bool {
-    Command::new("perl").arg("-e").arg("1").output().is_ok()
-}
-
-fn require_perl_env() -> bool {
-    match std::env::var_os("PERL_LSP_DAP_REQUIRE_PERL") {
-        Some(_) => true,
-        None => perl_available(),
-    }
 }
 
 fn fixture_path() -> ProofResult<PathBuf> {
@@ -828,14 +801,14 @@ fn write_receipt_to(
 
 #[test]
 fn value_format_stdio_proof_matrix() -> ProofResult<()> {
-    if !require_perl_env() {
+    let Some(perl) = common::debuggee_perl_or_typed_skip("value_format_stdio_proof_matrix") else {
         note_to_stderr("SKIP value_format_stdio_proof_matrix: perl not available");
         return Ok(());
-    }
+    };
 
     let binary = configured_dap_binary();
     let fixture = fixture_path()?;
-    let identity = SubjectIdentity::capture(&binary, &fixture)?;
+    let identity = SubjectIdentity::capture(&binary, &perl.binary, &fixture)?;
     let stop1_line = fixture_line("$VF::stop1 = 1;")?;
     let stop2_line = fixture_line("$VF::stop2 = 1;")?;
     assert!(stop2_line > stop1_line, "fixture must define STOP2 after STOP1");
@@ -863,7 +836,7 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
     }
 
     let mut matrix = Matrix::new();
-    let mut dap = StdioSession::spawn(&binary, &script_str, &canary_str)?;
+    let mut dap = StdioSession::spawn(&binary, &script_str, &canary_str, &perl.binary)?;
 
     // Breakpoints on both proof stops, verified by the adapter.
     let bp_body = dap.expect_success(

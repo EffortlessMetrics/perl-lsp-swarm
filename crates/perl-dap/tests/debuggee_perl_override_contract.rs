@@ -129,13 +129,6 @@ fn debuggee_pin_is_the_single_availability_source_of_truth() -> Result<(), Box<d
             "availability gate and live-session resolution must agree: \
              both must reject a failed pin"
         );
-        let launch_error = common::resolve_launch_perl_path()
-            .err()
-            .ok_or("a rejected pin must not fall back to ambient launch resolution")?;
-        assert!(
-            launch_error.contains(DEBUGGEE_PERL_OVERRIDE_ENV),
-            "launch failure must identify the rejected pin, got: {launch_error}"
-        );
     }
 
     // ── Scenario B: strict mode rejects a broken pin by name ────────────────
@@ -167,6 +160,13 @@ fn debuggee_pin_is_the_single_availability_source_of_truth() -> Result<(), Box<d
             verdict.is_err(),
             "{REQUIRE_PERL_ENV}=1 must hard-fail when the \
              {DEBUGGEE_PERL_OVERRIDE_ENV} pin fails its probe; got silent acceptance"
+        );
+        let launch_error = common::resolve_launch_perl_path()
+            .err()
+            .ok_or("a rejected pin must not fall back to ambient launch resolution")?;
+        assert!(
+            launch_error.contains(DEBUGGEE_PERL_OVERRIDE_ENV),
+            "launch failure must identify the rejected pin, got: {launch_error}"
         );
         // The repaired diagnostic names the pinned interpreter and its probe
         // failure; blaming PATH would mean the early return never consulted
