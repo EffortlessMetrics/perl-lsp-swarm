@@ -521,6 +521,12 @@ pub struct GateMetrics {
     /// #11797 asks the receipt to make explicit), `None` for non-test gates.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub test_execution_reached: Option<bool>,
+    /// Per-attempt reach evidence for retried cargo test gates. Each entry
+    /// corresponds to one executed attempt, in order. This preserves the
+    /// first attempt's compile-only result when a retry truncates its log.
+    /// Empty for non-test gates and omitted for backwards-compatible receipts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub test_execution_reached_attempts: Vec<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2085,6 +2091,12 @@ fn run_single_gate(
                 metrics.get_or_insert_with(GateMetrics::default).test_execution_reached =
                     Some(reached);
             }
+            if !execution.test_execution_reached_attempts.is_empty() {
+                metrics
+                    .get_or_insert_with(GateMetrics::default)
+                    .test_execution_reached_attempts =
+                    execution.test_execution_reached_attempts.clone();
+            }
 
             // For failing cargo test gates, extract the first failure details
             let first_failure = if status == "fail" && is_cargo_test_command(command) {
@@ -2136,6 +2148,7 @@ pub(crate) struct ShellExecutionResult {
     pub(crate) stdout: String,
     pub(crate) exit_code: i32,
     pub(crate) timed_out: bool,
+    pub(crate) test_execution_reached_attempts: Vec<bool>,
 }
 
 /// Run a gate command, retrying only when an attempt is killed by the
@@ -2153,8 +2166,8 @@ pub(crate) struct ShellExecutionResult {
 /// exit (`fail`) is never retried — a real assertion failure must stay red.
 ///
 /// Each attempt truncates the gate log; when more than one attempt ran, a
-/// trailer records the attempt count so receipts stay honest about what the
-/// single visible log represents.
+/// trailer records the attempt count and the receipt retains bounded per-attempt
+/// test-binary reach evidence so earlier compile-only attempts are not erased.
 fn run_shell_command_with_retries(
     command: &str,
     log_path: &Path,
@@ -2165,8 +2178,15 @@ fn run_shell_command_with_retries(
     let total_attempts = 1u32 + retry_count;
     let mut attempt = 1u32;
     let mut timeouts_seen = 0u32;
+    let mut test_execution_reached_attempts = Vec::new();
     loop {
         let mut execution = run_shell_command_with_timeout(command, log_path, timeout_secs)?;
+        if is_cargo_test_command(command) {
+            let reached = log_reaches_test_execution(command, log_path)
+                .or_else(|| parse_test_execution_reached(command, &execution.stdout))
+                .unwrap_or(false);
+            test_execution_reached_attempts.push(reached);
+        }
         if execution.timed_out {
             timeouts_seen += 1;
             let trailer = append_retry_trailer(
@@ -2201,6 +2221,7 @@ fn run_shell_command_with_retries(
                 append_retry_trailer(log_path, gate_name, attempt, total_attempts, &outcome)?;
             execution.stdout.push_str(&trailer);
         }
+        execution.test_execution_reached_attempts = test_execution_reached_attempts;
         return Ok(execution);
     }
 }
@@ -2306,7 +2327,12 @@ pub(crate) fn run_shell_command_with_timeout_in(
 
     let stdout = read_gate_output(log_path);
 
-    Ok(ShellExecutionResult { stdout, exit_code, timed_out })
+    Ok(ShellExecutionResult {
+        stdout,
+        exit_code,
+        timed_out,
+        test_execution_reached_attempts: Vec::new(),
+    })
 }
 
 fn read_gate_output(log_path: &Path) -> String {
@@ -2705,8 +2731,8 @@ fn parse_test_metrics(output: &str) -> Option<GateMetrics> {
 /// wires `log_reaches_test_execution` first so the verdict covers the full
 /// final-attempt log rather than its retained tail. When retries ran, this
 /// reflects the final recorded attempt: each retry truncates the gate log,
-/// so earlier attempts' reach evidence is not retained in this field (the
-/// final attempt's retry trailer names the earlier timeouts).
+/// The companion `test_execution_reached_attempts` metric retains the bounded
+/// in-order evidence for every attempt.
 ///
 /// The "running N tests" line is the libtest harness's own preamble printed
 /// once the linked test binary starts executing; a compile timeout — even
