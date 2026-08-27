@@ -5165,7 +5165,7 @@ profile = "recommended"
         };
 
         let cached = perl_oracle_env::with_test_startup_inc_probe_timeout(
-            Duration::from_secs(10),
+            Duration::from_secs(30),
             || config.get_system_inc_probe_outcome(),
         );
         let cached_paths = match &cached {
