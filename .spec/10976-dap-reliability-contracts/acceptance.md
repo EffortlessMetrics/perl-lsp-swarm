@@ -92,6 +92,8 @@ below. Order is fixed; each names its kind and expected verdict.
 | T10 | prose-scope | make `consumers` contain an out-of-vocabulary value | reject |
 | T11 | command-spelling | put `cargo xtask check` text into a `disposition_basis` | reject |
 | T12 | determinism | rotate `contract_nodes` array; canonical semantic digest must stay identical while file-order law rejects unsorted storage | digest-stable + reject |
+| T13 | population | drop the final contract node from the manifest | reject |
+| T14 | scope-law | changed/untracked path outside the four-file bundle set (or a required bundle path missing from it) | reject |
 
 ## Claim boundary
 

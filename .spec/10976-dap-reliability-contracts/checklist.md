@@ -14,7 +14,7 @@ only executable proof is the embedded checker below.
 
 ### Step 2: Fail-closed controls first
 
-- Write the falsifier mutations T01–T12 (`acceptance.md` §Test-Grid, fixed
+- Write the falsifier mutations T01–T14 (`acceptance.md` §Test-Grid, fixed
   order) before trusting any positive result.
 - Verify: each mutation throws against the real manifest.
 
@@ -70,10 +70,11 @@ affect results; all comparisons are ordinal. The checker asserts:
    basis non-empty; semantic authority non-empty unless NOT_PROVEN;
    controller/fan_in nodes keep non-empty authority summaries;
 5. markdown contracts: required headings/terms present; acceptance Test-Grid
-   rows T01..T12 present in fixed order;
-6. T01–T12 fail-closed mutation controls all reject (including the two-sided
-   T12: rotation preserves the canonical digest, unsorted storage still
-   rejects);
+   rows T01..T14 present in fixed order;
+6. T01–T14 fail-closed mutation controls all reject (T12 is two-sided:
+   rotation preserves the canonical digest while unsorted storage still
+   rejects; T13 is population drift; T14 is enforced bidirectionally inside
+   the changed-scope check above);
 7. prints SHA-256 per file plus the canonical semantic digest; two runs must be
    byte-identical.
 
@@ -95,11 +96,24 @@ function Assert-Hygiene([byte[]]$b, [string]$path) {
 }
 foreach ($p in $files) { Assert-Hygiene $bytes[$p] $p }
 
-# --- 1. exact changed-path set ---
+# --- 1. exact changed-path set: committed patch + index + worktree + untracked ---
+$base = git merge-base origin/main HEAD
+if ($LASTEXITCODE -ne 0) { throw 'merge-base with origin/main failed' }
+$paths = New-Object System.Collections.Generic.List[string]
+# (a) committed candidate paths, independent of worktree state
+$nameStatus = @(& git diff --name-status $base HEAD)
+if ($LASTEXITCODE -ne 0) { throw 'committed diff failed' }
+foreach ($line in $nameStatus) {
+  if ($line -match '^([RCA])([0-9]*)\t(.+)\t(.+)$') {
+    $paths.Add($Matches[4])
+  } elseif ($line -match '^([ADM])\t(.+)$') {
+    if ($Matches[1] -ne 'D') { $paths.Add($Matches[2]) }
+  } elseif ($line.Trim().Length -gt 0) { throw "malformed name-status line: '$line'" }
+}
+# (b) staged, unstaged, and untracked NUL-porcelain paths
 $statusLine = & git status --porcelain=v1 -z --untracked-files=all
 if ($LASTEXITCODE -ne 0) { throw 'git status failed' }
 $raw = ($statusLine -join '')
-$paths = New-Object System.Collections.Generic.List[string]
 $i = 0
 while ($i -lt $raw.Length) {
   if ($raw[$i] -eq [char]0) { $i++; continue }
@@ -121,6 +135,10 @@ while ($i -lt $raw.Length) {
 $allowed = $files + @('docs/policy/NON_RUST_INVENTORY.md')
 $unexpected = @($paths | Where-Object { $_ -notin $allowed })
 if ($unexpected.Count -gt 0) { throw "unexpected changed/untracked paths: $($unexpected -join ', ')" }
+# T14 direction: every required bundle path must appear in the changed set
+foreach ($req in $files) {
+  if (-not (@($paths | Where-Object { $_ -eq $req }).Count)) { throw "required bundle path absent from committed/status set: $req" }
+}
 
 $manifest = Get-Content -LiteralPath "$root/reliability.manifest.json" -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
 
@@ -149,6 +167,17 @@ $rootKeys = @('schema','schema_version','programme','role_vocabulary','dispositi
 $viewOrder = @('FAM-LIFECYCLE','FAM-SOURCE','FAM-BREAKPOINT','FAM-INSPECTION','FAM-CAPABILITY','FAM-TRANSPORT','FAM-EVIDENCE')
 $suffixOf = @{ 'FAM-LIFECYCLE'='LC'; 'FAM-SOURCE'='SR'; 'FAM-BREAKPOINT'='BP'; 'FAM-INSPECTION'='IN'; 'FAM-CAPABILITY'='CP'; 'FAM-TRANSPORT'='TR'; 'FAM-EVIDENCE'='EV' }
 $nodeKeys = @('stable_semantic_id','family_view','issue','train_slot','role','semantic_authority','disposition','disposition_basis','hard_dependency_issues','covered_invariants','consumers')
+# Authoritative enumerated decision population (issue-body expansion, reviewed on #10976).
+# Semantic revision of this pin must move together with the manifest.
+$expectedIssues = @(1742,4346,4786,4973,6056,6680,6684,6688,6694,6949,6952,6991,7187,7206,7276,7278,7310,7337,7338,7339,7340,7341,7342,7343,7344,7345,7346,7347,7348,7363,7364,7366,7486,7565,7566,7567,7568,8045,8172,8354,8368,8564,8581,8591,8602,8615,8624,8635,8656,8668,8687,8691,8703,8707,8974,8981,9021,9035,9042,9045,9046,9048,9050,9051,9054,9057,9059,9064,9065,9069,9074,9081,9522,9527,9528,9529,9530,9531,9532,9533,9534,9535,9536,9537,9538,9568,9570,9578,9581,9765,10524,10563,10564,10565,10566,10567,10736,10745,10752,10759,10765,10774,10782,10789,10797,10891,10926)
+function Invoke-Population-Law($M) {
+  $have = @($M['contract_nodes'] | ForEach-Object { $_['issue'] })
+  if ($have.Count -ne $expectedIssues.Count) { throw "T13 population drift: have $($have.Count) want $($expectedIssues.Count)" }
+  $want = @($expectedIssues | Sort-Object)
+  for ($k = 0; $k -lt $want.Count; $k++) {
+    if ([int]$have[$k] -ne [int]$want[$k]) { throw "T13 population mismatch at rank $k : have $($have[$k]) want $($want[$k])" }
+  }
+}
 $viewKeys = @('view_id','title','compiled_invariants','first_falsifier','compilation_boundary_note','consumers')
 
 function Assert-ExactKeys($obj, [string[]]$keys, [string]$where) {
@@ -260,6 +289,7 @@ function Invoke-Root-Key-Law($M) {
   foreach ($k in $M.Keys) { if ([string]$k -notin $rootKeys) { throw "root: unknown key added ($k)" } }
   if (@($M.Keys).Count -ne $rootKeys.Count) { throw 'root key cardinality changed' }
 }
+Invoke-Population-Law $manifest
 Invoke-Role-Law $manifest
 Invoke-Invariant-Uniqueness $manifest
 Invoke-Consumer-Law $manifest
@@ -282,7 +312,7 @@ foreach ($m in [regex]::Matches($acc, '\| T(\d\d) \|')) {
   if ([int]$m.Groups[1].Value -ne $rowIdx) { throw "test-grid rows out of fixed order near T$rowIdx" }
   $rowIdx++
 }
-if ($rowIdx -ne 13) { throw "expected 12 test-grid rows, saw $($rowIdx - 1)" }
+if ($rowIdx -ne 15) { throw "expected 14 test-grid rows, saw $($rowIdx - 1)" }
 
 # --- 5. canonical digest + determinism ---
 function Canonicalize($node) {
@@ -330,6 +360,7 @@ function Expect-Reject([string]$name, [scriptblock]$mutate) {
   try { Invoke-View-Omission-Law $m } catch { return }
   try { Invoke-Orphan-Law $m } catch { return }
   try { Invoke-Root-Key-Law $m } catch { return }
+  try { Invoke-Population-Law $m } catch { return }
   throw "negative control did not reject: $name"
 }
 Expect-Reject 'T01' { param($m) $m['contract_nodes'][0].Remove('disposition_basis') }
@@ -343,6 +374,7 @@ Expect-Reject 'T08' { param($m) $m['contract_nodes'][10]['covered_invariants'] =
 Expect-Reject 'T09' { param($m) $m['contract_nodes'][3]['semantic_authority'] = 'authority abcdef0123456789abcd token' }
 Expect-Reject 'T10' { param($m) $m['contract_nodes'][5]['consumers'] = @('99999') }
 Expect-Reject 'T11' { param($m) $m['contract_nodes'][7]['disposition_basis'] = 'proof obligation is cargo xtask check tidy' }
+Expect-Reject 'T13' { param($m) $keep = @($m['contract_nodes']); $m['contract_nodes'] = @($keep[0..($keep.Count - 2)]) }
 # T12a rotation preserves semantic digest
 $rotNodes = @()
 $rotNodes += $manifest['contract_nodes'][$manifest['contract_nodes'].Count - 1]
@@ -364,7 +396,7 @@ foreach ($p in $files) {
   "FILE  $h  $p"
 }
 "CANON $d1"
-"OK    dap_reliability_contracts.v1 laws hold; T01-T12 all rejected"
+"OK    dap_reliability_contracts.v1 laws hold; T01-T14 all rejected"
 ```
 
 ## Adjacent-defect transfer boundary
