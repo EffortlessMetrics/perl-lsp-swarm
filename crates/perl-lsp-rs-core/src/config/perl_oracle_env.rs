@@ -968,14 +968,14 @@ mod tests {
             perl_path: Some(perl.to_string_lossy().into_owned()),
             ..WorkspaceConfig::default()
         };
-        let widened = Duration::from_secs(3);
-        let timeout = PerlOracleEnv::with_startup_inc_probe_timeout(widened, || {
+        let unmistakable = Duration::from_nanos(1);
+        let timeout = PerlOracleEnv::with_startup_inc_probe_timeout(unmistakable, || {
             PerlOracleEnv::for_startup_inc_probe(&config).map(|oracle| oracle.timeout)
         })
         .ok_or("startup probe constructor returned None with a resolved Perl")?;
 
-        if timeout != widened {
-            return Err(format!("constructor used {timeout:?}, expected {widened:?}").into());
+        if timeout != unmistakable {
+            return Err(format!("constructor used {timeout:?}, expected {unmistakable:?}").into());
         }
         Ok(())
     }
