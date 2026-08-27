@@ -50,9 +50,9 @@ pub mod compare;
 pub mod compare_parsers;
 pub mod compat_inventory;
 pub mod compiler_lexical_cutline;
-pub mod compiler_upstream_status;
 pub mod compiler_oracle;
 pub mod compiler_profile;
+pub mod compiler_upstream_status;
 #[cfg(feature = "legacy")]
 pub mod corpus;
 pub mod corpus_audit;
