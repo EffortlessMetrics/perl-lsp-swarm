@@ -234,9 +234,8 @@ fn default_receipt_schema() -> String {
 
 impl TopologyRegister {
     /// Parse and validate a register from TOML text.
-    pub fn from_str(source: &str) -> Result<Self> {
-        let mut register: Self =
-            toml::from_str(source).context("parse test topology register")?;
+    pub fn from_toml_str(source: &str) -> Result<Self> {
+        let mut register: Self = toml::from_str(source).context("parse test topology register")?;
         // Rows inherit the register cohort unless they declare their own;
         // a foreign explicit cohort is a register-authority violation.
         for row in &mut register.rows {
@@ -260,7 +259,7 @@ impl TopologyRegister {
         let path = path.as_ref();
         let source = std::fs::read_to_string(path)
             .with_context(|| format!("read test topology register {}", path.display()))?;
-        Self::from_str(&source)
+        Self::from_toml_str(&source)
             .with_context(|| format!("validate test topology register {}", path.display()))
     }
 
@@ -323,7 +322,7 @@ status = \"declared_pending\"
 
     #[test]
     fn minimal_register_document_parses() -> Result<()> {
-        let register = TopologyRegister::from_str(MINIMAL)?;
+        let register = TopologyRegister::from_toml_str(MINIMAL)?;
         assert_eq!(register.cohort, "compiler-profile");
         assert_eq!(register.rows.len(), 1);
         Ok(())

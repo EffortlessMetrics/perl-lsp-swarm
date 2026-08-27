@@ -621,7 +621,7 @@ pub fn build_fan_in(
     }
 
     for row in register.rows() {
-        let required_now = required_selected.iter().any(|id| *id == row.target_id);
+        let required_now = required_selected.contains(&row.target_id);
         if !required_now {
             continue;
         }

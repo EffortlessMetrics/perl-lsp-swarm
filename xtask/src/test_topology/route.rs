@@ -166,10 +166,10 @@ pub fn check_discovery_membership(
     let watched: BTreeSet<&str> = register.watch_packages.iter().map(String::as_str).collect();
     let mut known_targets: BTreeSet<(&str, &str)> = BTreeSet::new();
     for row in register.rows() {
-        if let Some(execution) = &row.execution {
-            if let Some(target_name) = execution.cargo_test_target_name() {
-                known_targets.insert((execution.cargo_package(), target_name));
-            }
+        if let Some(execution) = &row.execution
+            && let Some(target_name) = execution.cargo_test_target_name()
+        {
+            known_targets.insert((execution.cargo_package(), target_name));
         }
     }
     discovered
