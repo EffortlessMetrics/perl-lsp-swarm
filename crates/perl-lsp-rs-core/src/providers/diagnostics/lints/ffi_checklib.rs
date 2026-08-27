@@ -350,6 +350,7 @@ mod tests {
     use super::*;
 
     use std::fs;
+    use std::panic::{UnwindSafe, catch_unwind};
 
     use perl_parser::Parser;
     use perl_test_must::{must, must_with};
@@ -378,6 +379,22 @@ mod tests {
         }
     }
 
+    fn panic_text(operation: impl FnOnce() + UnwindSafe) -> Result<String, String> {
+        let payload = catch_unwind(operation)
+            .err()
+            .ok_or_else(|| String::from("expected operation to panic"))?;
+
+        if let Some(message) = payload.downcast_ref::<String>() {
+            return Ok(message.clone());
+        }
+
+        if let Some(message) = payload.downcast_ref::<&'static str>() {
+            return Ok((*message).to_owned());
+        }
+
+        Err(String::from("panic payload was not a string"))
+    }
+
     #[test]
     fn missing_library_emits_diagnostic() {
         let diags =
@@ -386,6 +403,30 @@ mod tests {
             diags.iter().any(|d| d.message.contains("ffi_checklib_missing_3574")),
             "expected a missing-library diagnostic, got: {diags:?}"
         );
+    }
+
+    #[test]
+    fn fixture_write_failure_preserves_operation_and_path_context() -> Result<(), String> {
+        let tempdir = tempdir().map_err(|error| format!("create fixture directory: {error}"))?;
+        let path = tempdir.path().join("ffi_checklib_failure_fixture");
+        fs::create_dir(&path).map_err(|error| format!("create failure fixture: {error}"))?;
+        let path_display = path.display().to_string();
+
+        let message = panic_text(|| {
+            must_with(
+                fs::write(&path, b""),
+                format_args!("write FFI::CheckLib fixture library {}", path.display()),
+            );
+        })?;
+
+        if !message.contains("write FFI::CheckLib fixture library") {
+            return Err(format!("missing write operation context: {message}"));
+        }
+        if !message.contains(&path_display) {
+            return Err(format!("missing fixture path context: {message}"));
+        }
+
+        Ok(())
     }
 
     #[test]
