@@ -65,8 +65,12 @@ pub enum TargetStatus {
 }
 
 /// Exact execution mechanism of an active row.
+///
+/// Externally tagged so registers declare the mechanism as its own TOML
+/// table (`[row.execution.cargo_test]`) while dormant rows omit execution
+/// entirely.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(rename_all = "snake_case")]
 pub enum ExecutionKind {
     /// One cargo test invocation against an exact package/target/filter.
     #[serde(rename_all = "snake_case")]
@@ -90,7 +94,9 @@ pub struct TopologyRow {
     pub target_id: String,
     /// Owning leaf/contract issue for claim-boundary navigation.
     pub owner_issue: u64,
-    /// Cohort identifier; one file per cohort keeps rows bounded.
+    /// Cohort identifier. Rows normally omit this and inherit the register
+    /// header's cohort at load; an explicit value must match that header.
+    #[serde(default)]
     pub cohort: String,
     /// Product-tree/profile/candidate/store subject in declared vocabulary.
     pub subject: String,
@@ -142,7 +148,9 @@ impl TopologyRow {
         if self.receipt_schema != RECEIPT_SCHEMA_VERSION {
             bail!(
                 "topology row {} receipt_schema {:?} must be {:?}",
-                self.target_id, self.receipt_schema, RECEIPT_SCHEMA_VERSION
+                self.target_id,
+                self.receipt_schema,
+                RECEIPT_SCHEMA_VERSION
             );
         }
         match self.status {
@@ -191,27 +199,23 @@ impl ExecutionKind {
     }
 }
 
-/// Cohort header declaration inside a register file.
+/// Parsed canonical register for one cohort.
+///
+/// The cohort header (`cohort`, `register_id`, `description`) lives directly
+/// on this struct: serde flattening is incompatible with array-of-table
+/// registers under the TOML deserializer, and a flat header keeps the on-disk
+/// shape identical while all header authority stays explicit in
+/// [`TopologyRegister::validate`]. Rows stay strictly deny-unknown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RegisterCohortDeclaration {
+pub struct TopologyRegister {
+    /// Wire format version, pinned to [`REGISTER_SCHEMA_VERSION`].
+    pub schema_version: String,
     /// Cohort selector name (`--cohort compiler-profile`).
     pub cohort: String,
     /// Stable register identity including schema version suffix.
     pub register_id: String,
     /// Human summary kept short and factual.
     pub description: String,
-}
-
-/// Parsed canonical register for one cohort.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TopologyRegister {
-    /// Wire format version, pinned to [`REGISTER_SCHEMA_VERSION`].
-    pub schema_version: String,
-    /// Cohort declaration header.
-    #[serde(flatten)]
-    pub cohort: RegisterCohortDeclaration,
     /// Workspace packages scanned by the omitted-new-target guard.
     #[serde(default)]
     pub watch_packages: Vec<String>,
@@ -231,8 +235,22 @@ fn default_receipt_schema() -> String {
 impl TopologyRegister {
     /// Parse and validate a register from TOML text.
     pub fn from_str(source: &str) -> Result<Self> {
-        let register: Self =
+        let mut register: Self =
             toml::from_str(source).context("parse test topology register")?;
+        // Rows inherit the register cohort unless they declare their own;
+        // a foreign explicit cohort is a register-authority violation.
+        for row in &mut register.rows {
+            if row.cohort.is_empty() {
+                row.cohort = register.cohort.clone();
+            } else if row.cohort != register.cohort {
+                bail!(
+                    "row {} declares foreign cohort {:?}; register owns {:?}",
+                    row.target_id,
+                    row.cohort,
+                    register.cohort
+                );
+            }
+        }
         register.validate()?;
         Ok(register)
     }
@@ -251,12 +269,13 @@ impl TopologyRegister {
         if self.schema_version != REGISTER_SCHEMA_VERSION {
             bail!(
                 "register schema_version {:?} must be {:?}",
-                self.schema_version, REGISTER_SCHEMA_VERSION
+                self.schema_version,
+                REGISTER_SCHEMA_VERSION
             );
         }
-        if self.cohort.cohort.trim().is_empty()
-            || self.cohort.register_id.trim().is_empty()
-            || self.cohort.description.trim().is_empty()
+        if self.cohort.trim().is_empty()
+            || self.register_id.trim().is_empty()
+            || self.description.trim().is_empty()
         {
             bail!("register cohort header fields must not be empty");
         }
@@ -268,7 +287,7 @@ impl TopologyRegister {
             row.validate()?;
         }
         if self.rows.is_empty() {
-            bail!("register {} declares no rows", self.cohort.register_id);
+            bail!("register {} declares no rows", self.register_id);
         }
         Ok(())
     }
@@ -276,5 +295,37 @@ impl TopologyRegister {
     /// Rows filtered by cohort-external consumers; order preserved.
     pub fn rows(&self) -> &[TopologyRow] {
         &self.rows
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal dormant-row register covering every required header and row
+    /// field; the smallest document the parser must accept.
+    const MINIMAL: &str = "\
+schema_version = \"test_topology_register.v1\"
+cohort = \"compiler-profile\"
+register_id = \"minimal.v1\"
+description = \"smallest valid register\"
+
+[[row]]
+target_id = \"fixture/only\"
+owner_issue = 1
+cohort = \"compiler-profile\"
+subject = \"s\"
+claim_boundary = \"c\"
+proof_role = \"p\"
+route_class = \"required_affected\"
+status = \"declared_pending\"
+";
+
+    #[test]
+    fn minimal_register_document_parses() -> Result<()> {
+        let register = TopologyRegister::from_str(MINIMAL)?;
+        assert_eq!(register.cohort, "compiler-profile");
+        assert_eq!(register.rows.len(), 1);
+        Ok(())
     }
 }

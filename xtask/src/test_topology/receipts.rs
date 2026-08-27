@@ -14,7 +14,7 @@
 //! artifact bytes.
 
 use crate::test_topology::model::{
-    RouteClass, TargetStatus, TopologyRegister, TopologyRow, RECEIPT_SCHEMA_VERSION,
+    RECEIPT_SCHEMA_VERSION, RouteClass, TargetStatus, TopologyRegister, TopologyRow,
 };
 
 /// Aggregate fan-in artifact wire format version.
@@ -130,6 +130,38 @@ impl LibTestSummary {
 /// Parse every `test result:` line in captured libtest output, summing all
 /// blocks. Returns `None` when no summary exists at all, which is itself
 /// instrument failure: a zero exit without counters proves no work ran.
+///
+/// Real libtest summaries look like
+/// `test result: ok. 12 passed; 3 failed; 1 ignored; 4 filtered out; finished in 0.01s`
+/// — a status token with trailing period followed by `<count> <word>`
+/// segments. Anything unshapeable rejects the whole capture so malformed or
+/// foreign output can never read as evidence.
+/// Counting word bucket for one libtest summary segment.
+///
+/// Returns the parsed value plus which counter it belongs to.
+fn parse_counter(text: &str) -> Option<(u32, &'static str)> {
+    for (word, bucket) in [
+        ("filtered out", "filtered"),
+        ("passed", "passed"),
+        ("ignored", "ignored"),
+        ("failed", "failed"),
+    ] {
+        if let Some(count) = text.strip_suffix(word) {
+            return Some((count.trim().parse::<u32>().ok()?, bucket));
+        }
+    }
+    None
+}
+
+/// Parse every `test result:` line in captured libtest output, summing all
+/// blocks. Returns `None` when no summary exists at all, which is itself
+/// instrument failure: a zero exit without counters proves no work ran.
+///
+/// Real libtest summaries look like
+/// `test result: ok. 12 passed; 3 failed; 1 ignored; 4 filtered out; finished in 0.01s`
+/// — a status token with trailing period followed by `<count> <word>`
+/// segments. Anything unshapeable rejects the whole capture so malformed or
+/// foreign output can never read as evidence.
 pub fn parse_libtest_summaries(output: &str) -> Option<LibTestSummary> {
     let mut total = LibTestSummary::default();
     let mut found = false;
@@ -137,23 +169,43 @@ pub fn parse_libtest_summaries(output: &str) -> Option<LibTestSummary> {
         let Some(rest) = line.trim().strip_prefix("test result: ") else {
             continue;
         };
-        let fields = rest.split(';').map(str::trim).collect::<Vec<_>>();
-        if fields.first().copied() != Some("ok") && fields.first().copied() != Some("FAILED") {
-            return None;
-        }
         let mut counts = LibTestSummary::default();
-        for field in &fields {
-            if let Some(value) = field.strip_prefix("passed") {
-                counts.passed += value.trim().parse::<u32>().ok()?;
-            } else if let Some(value) = field.strip_prefix("failed") {
-                counts.failed += value.trim().parse::<u32>().ok()?;
-            } else if let Some(value) = field.strip_prefix("ignored") {
-                counts.ignored += value.trim().parse::<u32>().ok()?;
-            } else if let Some(value) = field.strip_prefix("filtered out") {
-                counts.filtered_out += value.trim().parse::<u32>().ok()?;
-            } else if !field.starts_with("measured") && !field.starts_with("finished in") {
+        let mut saw_status = false;
+        let mut saw_counter = false;
+        for segment in rest.split(';').map(str::trim) {
+            if segment.is_empty() {
                 return None;
             }
+            // The status token stands alone (`ok.` / `FAILED.`) or fuses with
+            // the first counter segment (`ok. 12 passed`).
+            let body =
+                match segment.strip_prefix("ok. ").or_else(|| segment.strip_prefix("FAILED. ")) {
+                    Some(body) => {
+                        saw_status = true;
+                        body
+                    }
+                    None => {
+                        if segment == "ok." || segment == "FAILED." {
+                            saw_status = true;
+                            continue;
+                        }
+                        segment
+                    }
+                };
+            if let Some((value, bucket)) = parse_counter(body) {
+                saw_counter = true;
+                match bucket {
+                    "filtered" => counts.filtered_out += value,
+                    "passed" => counts.passed += value,
+                    "ignored" => counts.ignored += value,
+                    _ => counts.failed += value,
+                }
+            } else if !body.starts_with("finished in") && !body.starts_with("measured") {
+                return None;
+            }
+        }
+        if !saw_status || !saw_counter {
+            return None;
         }
         found = true;
         total.passed += counts.passed;
@@ -209,9 +261,7 @@ pub fn evaluate_run(
         return ReceiptVerdict::CancelledOrInstrumentFailure { detail };
     }
     if timed_out {
-        return ReceiptVerdict::TimedOut {
-            budget_seconds: row.budget_seconds,
-        };
+        return ReceiptVerdict::TimedOut { budget_seconds: row.budget_seconds };
     }
     let Some(summary) = parse_libtest_summaries(output) else {
         return ReceiptVerdict::CancelledOrInstrumentFailure {
@@ -219,9 +269,7 @@ pub fn evaluate_run(
         };
     };
     if summary.ignored > 0 {
-        return ReceiptVerdict::IgnoredOrSkippedPresent {
-            count: summary.ignored,
-        };
+        return ReceiptVerdict::IgnoredOrSkippedPresent { count: summary.ignored };
     }
     if summary.executed_work() == 0 {
         return ReceiptVerdict::ZeroSelection;
@@ -232,10 +280,10 @@ pub fn evaluate_run(
             minimum: row.min_work_items,
         };
     }
-    if summary.failed > 0 || (!exit_ok && summary.passed == 0) {
-        return ReceiptVerdict::FailedTests {
-            failed: summary.failed.max(u32::from(!exit_ok)),
-        };
+    // Green requires exit zero: a dying process over passing counters is an
+    // instrument contradiction, never pass coverage.
+    if summary.failed > 0 || !exit_ok {
+        return ReceiptVerdict::FailedTests { failed: summary.failed.max(u32::from(!exit_ok)) };
     }
     ReceiptVerdict::Pass
 }
@@ -336,7 +384,9 @@ pub fn canonical_fan_in_digest(
                         "work",
                         format!(
                             "{}/{}/{}/{}",
-                            entry.work.passed, entry.work.failed, entry.work.ignored,
+                            entry.work.passed,
+                            entry.work.failed,
+                            entry.work.ignored,
                             entry.work.filtered_out
                         ),
                     ),
@@ -401,33 +451,19 @@ pub enum FanInViolation {
     /// Receipts exist for the row but from other heads only.
     StaleOnlyEvidence { target_id: String, heads: Vec<String> },
     /// The row's current-head receipt did not pass.
-    NotGreen {
-        target_id: String,
-        verdict: ReceiptVerdict,
-    },
+    NotGreen { target_id: String, verdict: ReceiptVerdict },
     /// A dormant row was selected by affected routing.
     DormantSelected { target_id: String },
     /// Row appears in multiple same-head receipts.
     DuplicateReceipt { target_id: String },
     /// Receipt carries a namespace outside the row's route-class lanes.
-    NamespaceTransfer {
-        target_id: String,
-        expected: Vec<String>,
-        observed: String,
-    },
+    NamespaceTransfer { target_id: String, expected: Vec<String>, observed: String },
     /// Receipt route class does not answer for the registered row class.
-    ClassMismatch {
-        target_id: String,
-        expected: String,
-        observed: String,
-    },
+    ClassMismatch { target_id: String, expected: String, observed: String },
     /// Receipt retries exceed the structural zero ceiling.
     RetryLaundering { target_id: String, retries: u32 },
     /// Receipt does not answer for any registered row of this cohort.
-    UnregisteredTarget {
-        target_id: String,
-        observed_head: String,
-    },
+    UnregisteredTarget { target_id: String, observed_head: String },
 }
 
 /// Fallback deterministic label if serialization ever fails (never expected;
@@ -458,7 +494,9 @@ pub fn load_receipts(
         register.rows().iter().map(|row| (row.target_id.as_str(), row)).collect();
     let dir_entries = match std::fs::read_dir(receipts_dir) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), Vec::new())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Vec::new(), Vec::new()));
+        }
         Err(error) => {
             return Err(error)
                 .with_context(|| format!("read receipts directory {}", receipts_dir.display()));
@@ -485,11 +523,11 @@ pub fn load_receipts(
                 receipt.schema_version
             );
         }
-        if receipt.cohort != register.cohort.cohort {
+        if receipt.cohort != register.cohort {
             continue;
         }
         match rows_by_id.get(receipt.target_id.as_str()) {
-            Some(row) if row.cohort == register.cohort.cohort => registered.push(receipt),
+            Some(row) if row.cohort == register.cohort => registered.push(receipt),
             _ => unregistered.push(receipt),
         }
     }
@@ -563,8 +601,8 @@ pub fn build_fan_in(
 
     for receipt in registered_receipts.iter().filter(|r| r.head_sha == head_sha) {
         // Admission itself decides greenness; duplicates are detected below.
-        let occupied = accepted.contains_key(&receipt.target_id)
-            || auxiliary.contains_key(&receipt.target_id);
+        let occupied =
+            accepted.contains_key(&receipt.target_id) || auxiliary.contains_key(&receipt.target_id);
         if !occupied {
             match admit::decide(register, receipt, head_sha) {
                 admit::Decision::AdmitRequired(entry) => {
@@ -577,9 +615,8 @@ pub fn build_fan_in(
                 admit::Decision::ForeignHead => {}
             }
         } else {
-            violations.push(FanInViolation::DuplicateReceipt {
-                target_id: receipt.target_id.clone(),
-            });
+            violations
+                .push(FanInViolation::DuplicateReceipt { target_id: receipt.target_id.clone() });
         }
     }
 
@@ -590,9 +627,8 @@ pub fn build_fan_in(
         }
         match row.status {
             TargetStatus::DeclaredPending => {
-                violations.push(FanInViolation::DormantSelected {
-                    target_id: row.target_id.clone(),
-                });
+                violations
+                    .push(FanInViolation::DormantSelected { target_id: row.target_id.clone() });
             }
             TargetStatus::Active if accepted.contains_key(&row.target_id) => {}
             TargetStatus::Active => {
@@ -602,9 +638,8 @@ pub fn build_fan_in(
                     .map(|r| r.head_sha.clone())
                     .collect();
                 if heads.is_empty() {
-                    violations.push(FanInViolation::MissingReceipt {
-                        target_id: row.target_id.clone(),
-                    });
+                    violations
+                        .push(FanInViolation::MissingReceipt { target_id: row.target_id.clone() });
                 } else {
                     violations.push(FanInViolation::StaleOnlyEvidence {
                         target_id: row.target_id.clone(),
@@ -619,12 +654,11 @@ pub fn build_fan_in(
         serde_json::to_string(violation).unwrap_or_else(|_| violation_discriminant(violation))
     });
 
-    let digest =
-        canonical_fan_in_digest(&register.cohort.cohort, head_sha, &accepted)?;
+    let digest = canonical_fan_in_digest(&register.cohort, head_sha, &accepted)?;
 
     Ok(FanInReport {
         schema_version: FAN_IN_SCHEMA_VERSION.to_owned(),
-        cohort: register.cohort.cohort.clone(),
+        cohort: register.cohort.clone(),
         head_sha: head_sha.to_owned(),
         base_sha: base_sha.to_owned(),
         namespace: namespace.tag().to_owned(),
@@ -659,10 +693,7 @@ mod admit {
         if receipt.head_sha != head_sha {
             return Decision::ForeignHead;
         }
-        let Some(row) = register
-            .rows()
-            .iter()
-            .find(|row| row.target_id == receipt.target_id)
+        let Some(row) = register.rows().iter().find(|row| row.target_id == receipt.target_id)
         else {
             return Decision::Reject(FanInViolation::UnregisteredTarget {
                 target_id: receipt.target_id.clone(),

@@ -42,17 +42,17 @@ pub mod route;
 pub mod runner;
 
 pub use model::{
-    ExecutionKind, RegisterCohortDeclaration, RouteClass, TargetStatus, TopologyRegister,
-    TopologyRow, RECEIPT_SCHEMA_VERSION, REGISTER_SCHEMA_VERSION,
+    ExecutionKind, RECEIPT_SCHEMA_VERSION, REGISTER_SCHEMA_VERSION, RouteClass, TargetStatus,
+    TopologyRegister, TopologyRow,
 };
 pub use receipts::{
-    build_fan_in, canonical_fan_in_digest, evaluate_run, load_receipts,
-    parse_libtest_summaries, LibTestCounters, LibTestSummary, ReceiptVerdict, ScopeNamespace,
-    ScopedNoopProof, TestTopologyReceipt, FanInEntry, FanInReport, FanInViolation,
+    FanInEntry, FanInReport, FanInViolation, LibTestCounters, LibTestSummary, ReceiptVerdict,
+    ScopeNamespace, ScopedNoopProof, TestTopologyReceipt, build_fan_in, canonical_fan_in_digest,
+    evaluate_run, load_receipts, parse_libtest_summaries,
 };
 pub use route::{
-    check_discovery_membership, discover_workspace_test_targets, path_under_root,
-    select_active_scope, DiscoveryViolation, DiscoveredTestTarget, SelectionDecision,
-    SelectionResult, CONTROL_PLANE_PREFIXES,
+    CONTROL_PLANE_PREFIXES, DiscoveredTestTarget, DiscoveryViolation, SelectionDecision,
+    SelectionResult, check_discovery_membership, discover_workspace_test_targets, path_under_root,
+    select_active_scope,
 };
 pub use runner::{receipt_path, run_row, run_selected_rows, write_receipt_atomic};

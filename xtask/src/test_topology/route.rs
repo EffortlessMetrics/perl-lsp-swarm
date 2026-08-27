@@ -64,14 +64,9 @@ pub struct SelectionResult {
 /// `changed` holds repo-relative paths from the diff (unsorted is fine);
 /// cohort identity comes from the register. A single unclassifiable change
 /// still produces its classification reason in any scoped no-op.
-pub fn select_active_scope(
-    register: &TopologyRegister,
-    changed: &[PathBuf],
-) -> SelectionResult {
-    let changed_norm: Vec<String> = changed
-        .iter()
-        .map(|path| normalize(&path.to_string_lossy()))
-        .collect();
+pub fn select_active_scope(register: &TopologyRegister, changed: &[PathBuf]) -> SelectionResult {
+    let changed_norm: Vec<String> =
+        changed.iter().map(|path| normalize(&path.to_string_lossy())).collect();
     if changed.is_empty() {
         return SelectionResult {
             decision: SelectionDecision::EmptyChangeSet,
@@ -79,9 +74,9 @@ pub fn select_active_scope(
         };
     }
 
-    let control_plane_change = changed_norm.iter().any(|path| {
-        CONTROL_PLANE_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
-    });
+    let control_plane_change = changed_norm
+        .iter()
+        .any(|path| CONTROL_PLANE_PREFIXES.iter().any(|prefix| path.starts_with(prefix)));
 
     let mut selected = BTreeSet::new();
     let mut dormant_selected = BTreeSet::new();
@@ -120,7 +115,7 @@ pub fn select_active_scope(
 
     let decision = if selected.is_empty() && dormant_selected.is_empty() {
         SelectionDecision::ScopedNoop(ScopedNoopProof {
-            cohort: register.cohort.cohort.clone(),
+            cohort: register.cohort.clone(),
             classified_files: changed_norm
                 .iter()
                 .map(|file| ClassifiedFile {
@@ -139,10 +134,7 @@ pub fn select_active_scope(
         }
     };
 
-    SelectionResult {
-        decision,
-        dormant_selected: dormant_selected.into_iter().collect(),
-    }
+    SelectionResult { decision, dormant_selected: dormant_selected.into_iter().collect() }
 }
 
 /// Workspace test-target discovery result for the omitted-new-target guard.
@@ -171,14 +163,12 @@ pub fn check_discovery_membership(
     register: &TopologyRegister,
     discovered: &[DiscoveredTestTarget],
 ) -> Vec<DiscoveryViolation> {
-    let watched: BTreeSet<&str> =
-        register.watch_packages.iter().map(String::as_str).collect();
+    let watched: BTreeSet<&str> = register.watch_packages.iter().map(String::as_str).collect();
     let mut known_targets: BTreeSet<(&str, &str)> = BTreeSet::new();
     for row in register.rows() {
         if let Some(execution) = &row.execution {
             if let Some(target_name) = execution.cargo_test_target_name() {
-                known_targets
-                    .insert((execution.cargo_package(), target_name));
+                known_targets.insert((execution.cargo_package(), target_name));
             }
         }
     }
@@ -192,8 +182,7 @@ pub fn check_discovery_membership(
                     .any(|marker| target.target_name.contains(marker.as_str()))
         })
         .filter(|target| {
-            !known_targets
-                .contains(&(target.package.as_str(), target.target_name.as_str()))
+            !known_targets.contains(&(target.package.as_str(), target.target_name.as_str()))
         })
         .map(|target| DiscoveryViolation::OmittedNewTarget {
             package: target.package.clone(),
@@ -217,12 +206,8 @@ impl crate::test_topology::model::ExecutionKind {
     pub fn render_argv(&self) -> Vec<String> {
         match self {
             Self::CargoTest { package, test_target, filter, feature_profile } => {
-                let mut argv = vec![
-                    "cargo".to_owned(),
-                    "test".to_owned(),
-                    "-p".to_owned(),
-                    package.clone(),
-                ];
+                let mut argv =
+                    vec!["cargo".to_owned(), "test".to_owned(), "-p".to_owned(), package.clone()];
                 if let Some(target) = test_target {
                     argv.push("--test".to_owned());
                     argv.push(target.clone());
@@ -273,16 +258,14 @@ struct MetadataDocument {
 /// This is the deterministic input of the omitted-new-target drift guard: a
 /// new leaf whose test target matches a cohort namespace marker but has no
 /// registered topology row fails the check instead of entering CI silently.
-pub fn discover_workspace_test_targets(
-    root: &Path,
-) -> anyhow::Result<Vec<DiscoveredTestTarget>> {
+pub fn discover_workspace_test_targets(root: &Path) -> anyhow::Result<Vec<DiscoveredTestTarget>> {
     let output = duct::cmd("cargo", ["metadata", "--format-version", "1", "--no-deps"])
         .dir(root)
         .stderr_capture()
         .read()
         .map_err(|error| anyhow::anyhow!("cargo metadata failed: {error}"))?;
-    let document: MetadataDocument =
-        serde_json::from_str(&output).map_err(|error| anyhow::anyhow!("parse metadata: {error}"))?;
+    let document: MetadataDocument = serde_json::from_str(&output)
+        .map_err(|error| anyhow::anyhow!("parse metadata: {error}"))?;
     let mut discovered = Vec::new();
     for package in document.packages {
         for target in package.targets {

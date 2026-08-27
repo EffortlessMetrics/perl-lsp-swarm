@@ -10,11 +10,9 @@
 //! hand-forged positive counter is rejected at fan-in.
 
 use crate::test_topology::model::{
-    ExecutionKind, TopologyRegister, TopologyRow, RECEIPT_SCHEMA_VERSION,
+    ExecutionKind, RECEIPT_SCHEMA_VERSION, TopologyRegister, TopologyRow,
 };
-use crate::test_topology::receipts::{
-    LibTestCounters, ScopeNamespace, TestTopologyReceipt,
-};
+use crate::test_topology::receipts::{LibTestCounters, ScopeNamespace, TestTopologyReceipt};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -66,10 +64,8 @@ pub fn run_row(
     std::fs::create_dir_all(receipts_dir)
         .with_context(|| format!("create receipts directory {}", receipts_dir.display()))?;
 
-    let stdout_path = receipts_dir
-        .join(format!("{}.stdout.log", artifact_stem(&row.target_id)));
-    let stderr_path = receipts_dir
-        .join(format!("{}.stderr.log", artifact_stem(&row.target_id)));
+    let stdout_path = receipts_dir.join(format!("{}.stdout.log", artifact_stem(&row.target_id)));
+    let stderr_path = receipts_dir.join(format!("{}.stderr.log", artifact_stem(&row.target_id)));
     let stdout_file = std::fs::File::create(&stdout_path)
         .with_context(|| format!("create {}", stdout_path.display()))?;
     let stderr_file = std::fs::File::create(&stderr_path)
@@ -106,16 +102,10 @@ pub fn run_row(
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let exit_ok = status.map(|exit| exit.success()).unwrap_or(false);
 
-    let output =
-        std::fs::read_to_string(&stdout_path).unwrap_or_default();
+    let output = std::fs::read_to_string(&stdout_path).unwrap_or_default();
 
-    let verdict = crate::test_topology::receipts::evaluate_run(
-        row,
-        &output,
-        exit_ok,
-        timed_out,
-        None,
-    );
+    let verdict =
+        crate::test_topology::receipts::evaluate_run(row, &output, exit_ok, timed_out, None);
 
     let summary_work = crate::test_topology::receipts::parse_libtest_summaries(&output)
         .map(LibTestCounters::from)
@@ -123,7 +113,7 @@ pub fn run_row(
 
     let receipt = TestTopologyReceipt {
         schema_version: RECEIPT_SCHEMA_VERSION.to_owned(),
-        cohort: register.cohort.cohort.clone(),
+        cohort: register.cohort.clone(),
         target_id: row.target_id.clone(),
         head_sha: head_sha.to_owned(),
         base_sha: base_sha.to_owned(),
@@ -146,14 +136,11 @@ fn render_argv(execution: &ExecutionKind) -> Vec<String> {
 }
 
 /// Write one receipt atomically (temp file + rename) into `receipts_dir`.
-pub fn write_receipt_atomic(
-    receipts_dir: &Path,
-    receipt: &TestTopologyReceipt,
-) -> Result<()> {
+pub fn write_receipt_atomic(receipts_dir: &Path, receipt: &TestTopologyReceipt) -> Result<()> {
     std::fs::create_dir_all(receipts_dir)?;
     let final_path = receipt_path(receipts_dir, &receipt.target_id);
-    let temp_path =
-        receipts_dir.join(format!(".{}.tmp", final_path.file_name().unwrap_or_default().to_string_lossy()));
+    let temp_path = receipts_dir
+        .join(format!(".{}.tmp", final_path.file_name().unwrap_or_default().to_string_lossy()));
     let body = serde_json::to_vec_pretty(receipt)?;
     {
         use std::io::Write as _;
@@ -185,20 +172,9 @@ pub fn run_selected_rows(
     let mut receipts = Vec::new();
     for row in rows {
         if matches!(row.status, crate::test_topology::model::TargetStatus::DeclaredPending) {
-            anyhow::bail!(
-                "refusing to route declared_pending target {}",
-                row.target_id
-            );
+            anyhow::bail!("refusing to route declared_pending target {}", row.target_id);
         }
-        receipts.push(run_row(
-            root,
-            register,
-            row,
-            head_sha,
-            base_sha,
-            namespace,
-            receipts_dir,
-        )?);
+        receipts.push(run_row(root, register, row, head_sha, base_sha, namespace, receipts_dir)?);
     }
     Ok(receipts)
 }

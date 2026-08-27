@@ -6546,16 +6546,10 @@ fn test_topology_register(
     root: &std::path::Path,
     cohort: &str,
 ) -> Result<xtask::test_topology::TopologyRegister> {
-    if !cohort
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-    {
+    if !cohort.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
         color_eyre::eyre::bail!("cohort selector {cohort:?} must be a plain slug");
     }
-    let path = root
-        .join(".ci")
-        .join("test-topology")
-        .join(format!("{cohort}.v1.toml"));
+    let path = root.join(".ci").join("test-topology").join(format!("{cohort}.v1.toml"));
     xtask::test_topology::TopologyRegister::load(&path).map_err(|error| eyre!(error.to_string()))
 }
 
@@ -6581,15 +6575,14 @@ fn test_topology_list(cohort: &str, json: bool) -> Result<()> {
     if json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&register)
-                .map_err(|error| eyre!(error.to_string()))?
+            serde_json::to_string_pretty(&register).map_err(|error| eyre!(error.to_string()))?
         );
         return Ok(());
     }
     println!(
         "register {} cohort {} rows {}",
-        register.cohort.register_id,
-        register.cohort.cohort,
+        register.register_id,
+        register.cohort,
         register.rows().len()
     );
     for row in register.rows() {
@@ -6597,11 +6590,8 @@ fn test_topology_list(cohort: &str, json: bool) -> Result<()> {
             xtask::test_topology::TargetStatus::Active => "active",
             xtask::test_topology::TargetStatus::DeclaredPending => "declared_pending",
         };
-        let work = if row.min_work_items > 0 {
-            row.min_work_items.to_string()
-        } else {
-            "-".to_owned()
-        };
+        let work =
+            if row.min_work_items > 0 { row.min_work_items.to_string() } else { "-".to_owned() };
         println!(
             "{:<70} {:<16} {:<18} owner=#{:<6} min_work={:<5} {}",
             row.target_id,
@@ -6665,18 +6655,17 @@ fn test_topology_route(request: TestTopologyRouteRequest) -> Result<()> {
     };
 
     // Omitted-new-target guard runs on every route decision.
-    let mut violations: Vec<tt::FanInViolation> =
-        test_topology_topology_guard(&root, &register)
-            .into_iter()
-            .map(|violation| match violation {
-                tt::DiscoveryViolation::OmittedNewTarget { package, target_name } => {
-                    tt::FanInViolation::UnregisteredTarget {
-                        target_id: format!("{package}::{target_name}"),
-                        observed_head: head_sha.clone(),
-                    }
+    let mut violations: Vec<tt::FanInViolation> = test_topology_topology_guard(&root, &register)
+        .into_iter()
+        .map(|violation| match violation {
+            tt::DiscoveryViolation::OmittedNewTarget { package, target_name } => {
+                tt::FanInViolation::UnregisteredTarget {
+                    target_id: format!("{package}::{target_name}"),
+                    observed_head: head_sha.clone(),
                 }
-            })
-            .collect();
+            }
+        })
+        .collect();
 
     let selection = tt::select_active_scope(&register, &changed);
     if !selection.dormant_selected.is_empty() {
@@ -6693,14 +6682,17 @@ fn test_topology_route(request: TestTopologyRouteRequest) -> Result<()> {
     };
 
     if request.dry_run {
-        println!("{}", serde_json::json!({
-            "cohort": register.cohort.cohort,
-            "head_sha": head_sha,
-            "base_sha": base_sha,
-            "namespace": request.namespace.tag(),
-            "required_selected": required_ids,
-            "decision": format!("{:?}", selection.decision),
-        }));
+        println!(
+            "{}",
+            serde_json::json!({
+                "cohort": register.cohort,
+                "head_sha": head_sha,
+                "base_sha": base_sha,
+                "namespace": request.namespace.tag(),
+                "required_selected": required_ids,
+                "decision": format!("{:?}", selection.decision),
+            })
+        );
         return Ok(());
     }
 
@@ -6716,10 +6708,7 @@ fn test_topology_route(request: TestTopologyRouteRequest) -> Result<()> {
     for row in &selected_rows {
         if let Some(execution) = &row.execution {
             if execution.render_argv().is_empty() {
-                color_eyre::eyre::bail!(
-                    "active row {} rendered an empty command",
-                    row.target_id
-                );
+                color_eyre::eyre::bail!("active row {} rendered an empty command", row.target_id);
             }
         }
     }
@@ -6746,9 +6735,8 @@ fn test_topology_route(request: TestTopologyRouteRequest) -> Result<()> {
         _ => Vec::new(),
     };
 
-    let (registered, unregistered) =
-        tt::load_receipts(&register, &request.receipts_dir)
-            .map_err(|error| eyre!(error.to_string()))?;
+    let (registered, unregistered) = tt::load_receipts(&register, &request.receipts_dir)
+        .map_err(|error| eyre!(error.to_string()))?;
     let report = tt::build_fan_in(
         &register,
         &base_sha,
@@ -6772,7 +6760,7 @@ fn test_topology_route(request: TestTopologyRouteRequest) -> Result<()> {
 
     println!(
         "topology route {}: required={} accepted={} auxiliary={} scoped_noops={} violations={} digest={} artifact={}",
-        register.cohort.cohort,
+        register.cohort,
         report.required_targets.len(),
         report.accepted.len(),
         report.auxiliary.len(),
@@ -6818,9 +6806,8 @@ fn test_topology_receipts_check(request: TestTopologyReceiptsRequest) -> Result<
         None => test_topology_git(&root, &["rev-parse", "HEAD"])?,
     };
 
-    let (registered, unregistered) =
-        tt::load_receipts(&register, &request.receipts_dir)
-            .map_err(|error| eyre!(error.to_string()))?;
+    let (registered, unregistered) = tt::load_receipts(&register, &request.receipts_dir)
+        .map_err(|error| eyre!(error.to_string()))?;
 
     let required_ids = if request.required_targets.is_empty() {
         let base_sha = if request.base_sha.is_empty() {
@@ -6834,16 +6821,13 @@ fn test_topology_receipts_check(request: TestTopologyReceiptsRequest) -> Result<
                 .filter(|line| !line.trim().is_empty())
                 .map(PathBuf::from)
                 .collect();
-        tt::select_active_scope(&register, &changed)
-            .decision
-            .selected_target_ids()
-            .to_vec()
+        tt::select_active_scope(&register, &changed).decision.selected_target_ids().to_vec()
     } else {
         request.required_targets.clone()
     };
 
     let noop_proof = tt::ScopedNoopProof {
-        cohort: register.cohort.cohort.clone(),
+        cohort: register.cohort.clone(),
         classified_files: Vec::new(),
         head_sha: head_sha.clone(),
     };
@@ -6869,7 +6853,7 @@ fn test_topology_receipts_check(request: TestTopologyReceiptsRequest) -> Result<
 
     println!(
         "receipts check {}: required={} accepted={} violations={} digest={}",
-        register.cohort.cohort,
+        register.cohort,
         report.required_targets.len(),
         report.accepted.len(),
         report.violations.len(),
@@ -6891,7 +6875,6 @@ fn test_topology_receipts_check(request: TestTopologyReceiptsRequest) -> Result<
         );
     }
 }
-
 
 #[cfg(test)]
 mod tests {
