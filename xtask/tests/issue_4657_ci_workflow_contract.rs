@@ -146,6 +146,11 @@ fn ci_workflows_keep_issue_4657_hardening() -> Result<(), Box<dyn std::error::Er
 /// envelope is least likely to have spare headroom. These exact-value pins do
 /// not set budgets; they witness them, so any future change must confront and
 /// consciously update this contract instead of drifting past review.
+///
+/// Enforcement lives on the required `Compile All Targets (bit-rot guard)`
+/// lane itself (`ci.yml` executes this test as a required merge surface): no
+/// gate row or other workflow ran this binary before #12863, so an unenforced
+/// witness would have been indistinguishable from none.
 #[test]
 fn compile_all_targets_budget_envelope_stays_witnessed() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
@@ -202,6 +207,17 @@ fn compile_all_targets_budget_envelope_stays_witnessed() -> Result<(), Box<dyn s
         "job `check-all-targets.timeout-minutes` drifted from 25 (the wrapper \
          watchdog raised from 15 for the grown bit-rot guard); name stays \
          pinned because branch protection depends on it. Extracted job:\n{job}"
+    );
+    // The required job does not reach this recipe through the gate runner; it
+    // has an independent `run:` step (#12863 P2). Pin that invocation too, or
+    // a ci.yml-only edit could redirect the compile step while the policy row
+    // — and every pin above — stays unchanged and green.
+    assert!(
+        job.contains("\n        run: just check-all-targets\n"),
+        "job `check-all-targets` compile step drifted from `just \
+         check-all-targets`: the gate-row budget pins above describe exactly \
+         this invocation, so the required job must not silently execute a \
+         different command under the same watchdog. Extracted job:\n{job}"
     );
 
     Ok(())
