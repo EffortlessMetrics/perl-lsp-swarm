@@ -435,6 +435,26 @@ fn complete_diagnostics_event_stream_validates_and_laws_reject_forgeries() -> Re
 // Wire-mining laws
 // ---------------------------------------------------------------------------
 
+/// `did_change_line` is the ordering anchor for "this batch arrived after the
+/// edit", so it must record the FIRST didChange, not the last. A log with two
+/// edits is the only shape that can tell those apart — the single-edit case
+/// below passes either way.
+#[test]
+fn wire_evidence_keeps_the_first_did_change_line() -> Result<()> {
+    let log = concat!(
+        "12:00:01 {\"method\":\"initialized\"}\n",
+        "12:00:02 {\"method\":\"textDocument/didChange\",\"params\":{\"textDocument\":{\"uri\":\"file:///w/workspace/project/main.pl\"}}}\n",
+        "12:00:03 {\"method\":\"textDocument/didChange\",\"params\":{\"textDocument\":{\"uri\":\"file:///w/workspace/project/main.pl\"}}}\n",
+    );
+    let evidence = vim_host_runner::extract_wire_evidence(log.as_bytes());
+    ensure!(
+        evidence.did_change_line == Some(1),
+        "the first didChange line wins, got {:?}",
+        evidence.did_change_line
+    );
+    Ok(())
+}
+
 #[test]
 fn wire_evidence_mines_batches_and_did_change_ordering() -> Result<()> {
     let log = concat!(

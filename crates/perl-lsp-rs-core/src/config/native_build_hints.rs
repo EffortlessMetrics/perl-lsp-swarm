@@ -344,9 +344,15 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
             ')' | ']' | '}' => {
-                if stack.pop().is_none() {
+                // An unbalanced closer ends the rejected value: it belongs to
+                // whatever encloses the assignment, not to the value being
+                // skipped. `let`-else rather than a match-arm guard because
+                // `Vec::pop` takes `&mut stack`, which a guard would hoist
+                // into pattern-guard borrow position (#12859 kept the same
+                // shape out of guards for exactly that reason).
+                let Some(_opener) = stack.pop() else {
                     return idx.saturating_sub(start);
-                }
+                };
             }
             ',' | ';' if stack.is_empty() => return idx.saturating_sub(start),
             _ => {}
@@ -733,6 +739,42 @@ mod tests {
     use super::*;
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    /// `rejected_value_len` decides how far the scanner skips past a value it
+    /// could not parse, so every terminator branch is a resync boundary: get
+    /// one wrong and `extract_key_literal_values` either re-parses bytes it
+    /// already rejected or swallows the next assignment. These pin all four
+    /// branches, including the unbalanced-closer path whose shape changed
+    /// under the `collapsible_match` deny (#6113).
+    #[test]
+    fn rejected_value_len_stops_at_an_unbalanced_closer() {
+        assert_eq!(rejected_value_len("foo) trailing", 0), 3);
+        assert_eq!(rejected_value_len("prefix foo] trailing", 7), 3);
+    }
+
+    #[test]
+    fn rejected_value_len_keeps_scanning_through_balanced_groups() {
+        // The inner `)` closes its own `(` and must not end the value; the
+        // top-level comma does.
+        assert_eq!(rejected_value_len("qw(a b),rest", 0), 7);
+        assert_eq!(rejected_value_len("[{a}],rest", 0), 5);
+    }
+
+    #[test]
+    fn rejected_value_len_ignores_delimiters_inside_quotes() {
+        // The `)` is inside single quotes, so the top-level comma at index 4
+        // is the terminator.
+        assert_eq!(rejected_value_len("')' , rest", 0), 4);
+        // `\"` is an escaped quote, so the string literal never closes and the
+        // comma stays quoted: the whole 6-byte input is consumed.
+        assert_eq!(rejected_value_len(r#""a\",b"#, 0), 6);
+    }
+
+    #[test]
+    fn rejected_value_len_consumes_the_remainder_when_unterminated() {
+        assert_eq!(rejected_value_len("unterminated", 0), 12);
+        assert_eq!(rejected_value_len("qw(open", 0), 7);
+    }
 
     /// Fresh temporary workspace root accepting optional build scripts.
     struct HintRoot {

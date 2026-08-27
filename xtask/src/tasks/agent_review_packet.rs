@@ -1005,25 +1005,22 @@ fn validate_packet_old_paths(root: &Map<String, Value>, violations: &mut Vec<Vio
         let disposition = string_field(entry, "disposition");
         match disposition {
             Some(value) if OLD_PATH_DISPOSITIONS.contains(&value) => match value {
-                "compatibility_projection" => {
+                "compatibility_projection"
                     if string_field(entry, "owner").is_none()
-                        || string_field(entry, "exit").is_none()
-                    {
-                        violations.push(Violation::new(
-                            "compatibility_projection_unowned",
-                            format!("old_paths: compatibility projection for {seam:?} needs an owner and an exit"),
-                        ));
-                    }
+                        || string_field(entry, "exit").is_none() =>
+                {
+                    violations.push(Violation::new(
+                        "compatibility_projection_unowned",
+                        format!(
+                            "old_paths: compatibility projection for {seam:?} needs an owner and an exit"
+                        ),
+                    ));
                 }
-                "still_live_independent" => {
-                    if string_field(entry, "owner").is_none() {
-                        violations.push(Violation::new(
-                            "still_live_unowned",
-                            format!(
-                                "old_paths: still-live independent seam {seam:?} needs an owner"
-                            ),
-                        ));
-                    }
+                "still_live_independent" if string_field(entry, "owner").is_none() => {
+                    violations.push(Violation::new(
+                        "still_live_unowned",
+                        format!("old_paths: still-live independent seam {seam:?} needs an owner"),
+                    ));
                 }
                 _ => {}
             },
@@ -1573,25 +1570,19 @@ fn validate_closure(root: &Map<String, Value>, doc: &Value, violations: &mut Vec
             );
             match string_field(entry, "state") {
                 Some(state) if ROLE_STATES.contains(&state) => match state {
-                    "terminal" => {
-                        if string_field(entry, "reference").is_none() {
-                            violations.push(Violation::new(
-                                "missing_role_reference",
-                                format!(
-                                    "review_state.roles: terminal role {role:?} must reference its individual review"
-                                ),
-                            ));
-                        }
+                    "terminal" if string_field(entry, "reference").is_none() => {
+                        violations.push(Violation::new(
+                            "missing_role_reference",
+                            format!(
+                                "review_state.roles: terminal role {role:?} must reference its individual review"
+                            ),
+                        ));
                     }
-                    "not_applicable" => {
-                        if string_field(entry, "reason").is_none() {
-                            violations.push(Violation::new(
-                                "role_not_applicable_unjustified",
-                                format!(
-                                    "review_state.roles: role {role:?} skipped without a reason"
-                                ),
-                            ));
-                        }
+                    "not_applicable" if string_field(entry, "reason").is_none() => {
+                        violations.push(Violation::new(
+                            "role_not_applicable_unjustified",
+                            format!("review_state.roles: role {role:?} skipped without a reason"),
+                        ));
                     }
                     _ => {}
                 },
@@ -3049,6 +3040,7 @@ pub fn run(update_golden: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::eyre;
 
     type TestResult<T = ()> = Result<T>;
 
@@ -3151,6 +3143,78 @@ mod tests {
         assert!(has(&unverified, "unverified_obligation"));
         let unowned = invalid_fixture("compatibility_projection_unowned.json")?;
         assert!(has(&unowned, "compatibility_projection_unowned"));
+        Ok(())
+    }
+
+    /// `closure_open_finding.v1.json` is a VALID fixture, so it already pins
+    /// the negative sense of both role-state obligations: a `terminal` role
+    /// carrying a `reference` and a `not_applicable` role carrying a `reason`
+    /// raise nothing. Drop each justification and the matching violation must
+    /// appear — otherwise the obligation is unenforced and the valid fixture
+    /// proves only that nothing fires.
+    #[test]
+    fn role_state_obligations_fire_when_their_justification_is_dropped() -> TestResult {
+        let base = fixture("closure_open_finding.v1.json")?;
+        assert!(valid(&base), "the base fixture must start clean");
+
+        let strip_role_field = |state: &str, field: &str| -> TestResult<Value> {
+            let mut doc = base.clone();
+            let roles = doc
+                .as_object_mut()
+                .and_then(|root| root.get_mut("review_state"))
+                .and_then(Value::as_object_mut)
+                .and_then(|review_state| review_state.get_mut("roles"))
+                .and_then(Value::as_array_mut)
+                .ok_or_else(|| eyre!("fixture must expose review_state.roles"))?;
+            let target = roles
+                .iter_mut()
+                .filter_map(Value::as_object_mut)
+                .find(|role| role.get("state").and_then(Value::as_str) == Some(state))
+                .ok_or_else(|| eyre!("fixture must carry a {state} role"))?;
+            target
+                .remove(field)
+                .ok_or_else(|| eyre!("the {state} role must start with a {field}"))?;
+            Ok(doc)
+        };
+
+        assert!(has(&strip_role_field("terminal", "reference")?, "missing_role_reference"));
+        assert!(has(
+            &strip_role_field("not_applicable", "reason")?,
+            "role_not_applicable_unjustified"
+        ));
+        Ok(())
+    }
+
+    /// Same shape for the old-path dispositions: `still_live_independent`
+    /// without an owner must be rejected, and naming an owner must clear it.
+    /// `compatibility_projection_unowned` has a fixture; this one did not.
+    #[test]
+    fn still_live_old_path_requires_an_owner() -> TestResult {
+        let base = fixture("challenger_service_marker.v1.json")?;
+        assert!(valid(&base), "the base fixture must start clean");
+
+        let with_disposition = |owner: Option<&str>| -> TestResult<Value> {
+            let mut doc = base.clone();
+            let entry = doc
+                .as_object_mut()
+                .and_then(|root| root.get_mut("old_paths"))
+                .and_then(Value::as_array_mut)
+                .and_then(|paths| paths.first_mut())
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| eyre!("fixture must expose an old_paths entry"))?;
+            entry.insert(
+                "disposition".to_string(),
+                Value::String("still_live_independent".to_string()),
+            );
+            match owner {
+                Some(owner) => entry.insert("owner".to_string(), Value::String(owner.to_string())),
+                None => entry.remove("owner"),
+            };
+            Ok(doc)
+        };
+
+        assert!(has(&with_disposition(None)?, "still_live_unowned"));
+        assert!(!has(&with_disposition(Some("#10858"))?, "still_live_unowned"));
         Ok(())
     }
 

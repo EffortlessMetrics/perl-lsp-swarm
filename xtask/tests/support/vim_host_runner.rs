@@ -1642,9 +1642,10 @@ fn walk_wire_value(
                         }
                     }
                     "textDocument/didChange" => {
-                        if evidence.did_change_line.is_none() {
-                            evidence.did_change_line = Some(line_index);
-                        }
+                        // First didChange wins, exactly as the previous
+                        // `is_none()` arm body did, without the lone-`if` shape
+                        // the armed `collapsible_match` deny rejects (#6113).
+                        evidence.did_change_line.get_or_insert(line_index);
                     }
                     _ => {}
                 }

@@ -37,9 +37,9 @@ use std::process::Command;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
-#[cfg(not(target_arch = "wasm32"))]
-use super::SYSTEM_INC_PROBE_TIMEOUT;
 use super::WorkspaceConfig;
+#[cfg(not(target_arch = "wasm32"))]
+use super::effective_system_inc_probe_timeout;
 
 #[cfg(all(not(target_arch = "wasm32"), windows))]
 const PERLDOC_EXECUTABLE_CANDIDATES: &[&str] =
@@ -214,7 +214,8 @@ impl PerlOracleEnv {
     ///   `@INC` probe contract).
     /// - `allow_local_lib`: always `false` for the startup probe; `local::lib`
     ///   activation is not part of the declared seam contract.
-    /// - `timeout`: defaults to 1 second (matches `SYSTEM_INC_PROBE_TIMEOUT`).
+    /// - `timeout`: `effective_system_inc_probe_timeout()` — the production
+    ///   `SYSTEM_INC_PROBE_TIMEOUT` (1 second) on every non-test build.
     /// - `cwd`: current working directory of the LSP process (best-effort;
     ///   the startup probe does not depend on cwd).
     /// - `extra_env`: empty.
@@ -232,7 +233,7 @@ impl PerlOracleEnv {
         Some(Self {
             perl_binary,
             cwd,
-            timeout: SYSTEM_INC_PROBE_TIMEOUT,
+            timeout: effective_system_inc_probe_timeout(),
             allow_perl5lib: config.use_perl5lib,
             allow_perl5opt: false,
             allow_local_lib: false,
@@ -250,7 +251,7 @@ impl PerlOracleEnv {
     /// - `allow_perl5opt`: always `false` so ambient runtime flags cannot
     ///   alter module lookup.
     /// - `allow_local_lib`: always `false`; explicit config owns lookup.
-    /// - `timeout`: `SYSTEM_INC_PROBE_TIMEOUT`.
+    /// - `timeout`: `effective_system_inc_probe_timeout()`.
     /// - `cwd` and `perl_binary`: resolved by the startup `@INC` probe helper.
     ///
     /// Returns `None` when `use_system_inc` is disabled or the Perl binary
