@@ -2946,6 +2946,15 @@ enum CpanCorpusCommand {
         /// runs and lets cpanm skip already-installed modules.
         #[arg(long)]
         reset: bool,
+
+        /// Install only one zero-based partition of the distribution list.
+        /// Partitions make large CI corpus installs independently retryable.
+        #[arg(long, requires = "partition_count", value_parser = clap::value_parser!(usize))]
+        partition: Option<usize>,
+
+        /// Number of partitions used with --partition.
+        #[arg(long, requires = "partition", value_parser = clap::value_parser!(usize))]
+        partition_count: Option<usize>,
     },
 
     /// Run parser corpus sweep against installed CPAN modules
@@ -5910,7 +5919,14 @@ fn run_cli(cli: Cli) -> Result<()> {
                     }
                     cpan_corpus::fetch_list(&config)
                 }
-                CpanCorpusCommand::Install { dist_list, install_dir, verbose, reset } => {
+                CpanCorpusCommand::Install {
+                    dist_list,
+                    install_dir,
+                    verbose,
+                    reset,
+                    partition,
+                    partition_count,
+                } => {
                     if let Some(dl) = dist_list {
                         config.dist_list = dl;
                     }
@@ -5919,6 +5935,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                         config.install_dir = id;
                     }
                     config.verbose = verbose;
+                    config.partition = partition.zip(partition_count);
                     cpan_corpus::install(&config)
                 }
                 CpanCorpusCommand::Sweep { output, enforce, verbose, install_dir } => {

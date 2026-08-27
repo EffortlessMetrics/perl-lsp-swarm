@@ -129,12 +129,72 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # Keep each cold-install slice below the hosted-runner preemption envelope.
+  # A terminated slice loses only its own artifact and can be retried without
+  # restarting the other slices or rebuilding a single 1000-distribution job.
+  corpus-ratchet-full-install:
+    name: CPAN corpus install (partition ${{ matrix.partition }})
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full' && github.ref_name == github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+
+      - name: Restore CPAN corpus partition cache
+        id: cpan-partition-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: target/cpan-corpus-part-${{ matrix.partition }}
+          key: cpan-corpus-part-${{ matrix.partition }}-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-1000-distributions.txt') }}
+          restore-keys: |
+            cpan-corpus-part-${{ matrix.partition }}-${{ runner.os }}-
+
+      - name: Install CPAN corpus partition
+        id: cpan-partition-install
+        if: steps.cpan-partition-cache.outputs.cache-hit != 'true'
+        run: |
+          cargo xtask cpan-corpus install \
+            --partition "${{ matrix.partition }}" \
+            --partition-count 10 \
+            --install-dir "target/cpan-corpus-part-${{ matrix.partition }}"
+
+      - name: Save CPAN corpus partition cache
+        if: steps.cpan-partition-cache.outputs.cache-hit != 'true' && steps.cpan-partition-install.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: target/cpan-corpus-part-${{ matrix.partition }}
+          key: cpan-corpus-part-${{ matrix.partition }}-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-1000-distributions.txt') }}
+
+      - name: Upload CPAN corpus partition
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cpan-corpus-part-${{ matrix.partition }}-${{ github.run_id }}
+          path: target/cpan-corpus-part-${{ matrix.partition }}/lib/perl5
+          retention-days: 2
+          if-no-files-found: error
   corpus-ratchet-full:
     name: CPAN corpus ratchet (full — 1000 distributions)
+    needs: corpus-ratchet-full-install
     # A manual full run must come from the default branch. `workflow_dispatch`
-    # accepts any ref, and this lane executes repository-owned Rust and shares a
-    # `target/cpan-corpus` cache key with the scheduled default-branch run, so a
-    # branch dispatch could otherwise seed that cache and feed the writer.
+    # accepts any ref, and this lane executes repository-owned Rust and consumes
+    # artifacts produced by the trusted default-branch install partitions.
     if: |
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' &&
@@ -170,26 +230,15 @@ jobs:
         with:
           tool: just
 
-      - name: Restore CPAN corpus cache (full)
-        id: cpan-corpus-cache-restore
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      - name: Download CPAN corpus partitions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: target/cpan-corpus
-          key: cpan-corpus-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-1000-distributions.txt') }}
-          restore-keys: |
-            cpan-corpus-${{ runner.os }}-
+          pattern: cpan-corpus-part-*-${{ github.run_id }}
+          path: target/cpan-corpus/lib/perl5
+          merge-multiple: true
 
-      - name: Install CPAN corpus
-        id: cpan-install
-        if: steps.cpan-corpus-cache-restore.outputs.cache-hit != 'true'
-        run: cargo xtask cpan-corpus install
-
-      - name: Save CPAN corpus cache (full)
-        if: steps.cpan-install.outcome == 'success'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: target/cpan-corpus
-          key: cpan-corpus-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-1000-distributions.txt') }}
+      - name: Verify assembled corpus
+        run: test -d "$GITHUB_WORKSPACE/target/cpan-corpus/lib/perl5"
 
       - name: Verify corpus baseline path
         run: test -d "$GITHUB_WORKSPACE/target/cpan-corpus/lib/perl5"

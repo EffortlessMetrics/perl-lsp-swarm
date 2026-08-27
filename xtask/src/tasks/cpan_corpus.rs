@@ -84,6 +84,8 @@ pub struct CpanCorpusConfig {
     /// mode — only modules that are missing or out-of-date get installed.
     /// This turns re-runs into a cheap cache hit instead of a full rebuild.
     pub force_reset: bool,
+    /// Optional zero-based partition and total partition count for CI.
+    pub partition: Option<(usize, usize)>,
 }
 
 impl Default for CpanCorpusConfig {
@@ -99,6 +101,7 @@ impl Default for CpanCorpusConfig {
             top_n: 1000,
             verbose: false,
             force_reset: false,
+            partition: None,
         }
     }
 }
@@ -215,11 +218,22 @@ pub fn install(config: &CpanCorpusConfig) -> Result<()> {
         ));
     }
 
-    println!(
-        "Installing {} distributions into {}",
-        distributions.len(),
-        config.install_dir.display()
-    );
+    if let Some((partition, partition_count)) = config.partition {
+        let original_len = distributions.len();
+        distributions = partition_distributions(distributions, partition, partition_count)?;
+        println!(
+            "Installing partition {partition}/{partition_count}: {} of {} distributions into {}",
+            distributions.len(),
+            original_len,
+            config.install_dir.display()
+        );
+    } else {
+        println!(
+            "Installing {} distributions into {}",
+            distributions.len(),
+            config.install_dir.display()
+        );
+    }
 
     let preserved_dist_list =
         config.dist_list.strip_prefix(&config.install_dir).ok().map(|_| config.dist_list.as_path());
@@ -335,6 +349,25 @@ pub fn install(config: &CpanCorpusConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn partition_distributions(
+    distributions: Vec<String>,
+    partition: usize,
+    partition_count: usize,
+) -> Result<Vec<String>> {
+    if partition_count == 0 || partition >= partition_count {
+        return Err(color_eyre::eyre::eyre!(
+            "invalid corpus partition {partition}/{partition_count}"
+        ));
+    }
+
+    Ok(distributions
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| index % partition_count == partition)
+        .map(|(_, distribution)| distribution)
+        .collect())
 }
 
 fn normalize_distribution_for_cpanm(distribution: &str) -> String {
@@ -852,6 +885,27 @@ mod tests {
         assert_eq!(dists, vec!["Moose", "DBI", "Try-Tiny"]);
         fs::remove_dir_all(&dir)?;
         Ok(())
+    }
+
+    #[test]
+    fn partition_distributions_is_deterministic_and_complete() -> Result<()> {
+        let distributions = (0..10).map(|index| format!("Dist{index}")).collect();
+        let partitions = (0..3)
+            .map(|partition| partition_distributions(distributions.clone(), partition, 3))
+            .collect::<Result<Vec<_>>>()?;
+
+        assert_eq!(partitions[0], ["Dist0", "Dist3", "Dist6", "Dist9"]);
+        assert_eq!(partitions[1], ["Dist1", "Dist4", "Dist7"]);
+        assert_eq!(partitions[2], ["Dist2", "Dist5", "Dist8"]);
+        assert_eq!(partitions.into_iter().flatten().count(), distributions.len());
+        Ok(())
+    }
+
+    #[test]
+    fn partition_distributions_rejects_invalid_partition() {
+        let distributions = vec!["Moose".to_string()];
+        assert!(partition_distributions(distributions.clone(), 0, 0).is_err());
+        assert!(partition_distributions(distributions, 2, 2).is_err());
     }
 
     #[test]
