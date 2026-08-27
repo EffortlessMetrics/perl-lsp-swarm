@@ -1536,6 +1536,12 @@ jobs:
       - name: Publish-provenance contract (required merge surface)
         run: cargo test -p xtask --test post_publish_smoke_version_provenance --locked -- --nocapture
 
+      # Same reasoning as the contracts above: the #11382 TDD-facade
+      # recurrence guard otherwise only executes through diff-routed advisory
+      # lanes, so stale facade imports could merge without it ever running.
+      - name: TDD facade consumer contract (required merge surface)
+        run: cargo test -p xtask --test parser_tdd_facade_consumers --locked -- --nocapture
+
       # #12863/#12693: no gate row or other workflow executed the budget witness
       # below, so its pins could all fail while every required check stayed
       # green. It reads exactly the two files this job budgets, so run it next
