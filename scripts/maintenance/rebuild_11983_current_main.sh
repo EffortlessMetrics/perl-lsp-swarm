@@ -40,7 +40,6 @@ run_cherry_pick_or_skip_empty() {
     echo "$label failed for a non-empty-cherry-pick reason; refusing no-op skip." >&2
     return 1
   fi
-  rm -f "$capture_file"
   local cherry_pick_head
   cherry_pick_head="$(git rev-parse --verify CHERRY_PICK_HEAD 2>/dev/null || true)"
   if [ "$cherry_pick_head" != "$expected_commit" ]; then

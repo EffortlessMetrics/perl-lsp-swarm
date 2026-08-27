@@ -357,6 +357,10 @@ def main() -> None:
         raise RuntimeError("rebuild invokes the obsolete provider-confidence command")
     if "check-provider-confidence-matrix" not in rebuild_script:
         raise RuntimeError("rebuild omits the current provider-confidence command")
+    receipt_output = rebuild_script.index("    cat \"$capture_file\"", rebuild_script.index("printf 'command-output:"))
+    receipt_cleanup = rebuild_script.index('  rm -f "$capture_file"', receipt_output)
+    if receipt_cleanup < receipt_output:
+        raise RuntimeError("empty cherry-pick evidence removes diagnostic before recording it")
     with tempfile.TemporaryDirectory(prefix="rebuild-11983-imports-") as directory:
         path = Path(directory) / "text_sync.rs"
         old = "old import\n"
