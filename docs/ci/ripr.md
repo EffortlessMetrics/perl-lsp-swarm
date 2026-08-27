@@ -23,14 +23,19 @@ oracle-aware than coverage, far cheaper than mutation testing.
 During the proof-lane rollout, the `ripr` workflow blocks PRs that introduce
 named new diff-scoped gaps in changed production files or fail to produce
 current receipts. This is one required deterministic contract: current diff,
-review, and Repo-wide receipts must be generated and validated. The
+review, and Repo-wide receipts must be generated and validated whenever the
+exact typed scope decision is `run`. The sole initial exception is an exact PR
+whose complete changed-file set is `docs/project/status/release.md`; it keeps
+the `ripr+ New Gap Gate` context but satisfies it as a base-owned
+`scoped_noop`, with every RIPR implementation job skipped. The
 static `ripr` sensor itself remains advisory (`policy/ub-review.toml`); a sensor
 availability failure is not treated as a clean result or as a receipt-integrity
 pass. Non-production-only static findings remain visible in the receipts but do
 not create a merge-blocking repair packet. Repo-wide RIPR+ total zero remains a burn-down target
-until the final enforcement slice. The workflow still runs for
-every PR when it is ready for review so docs-only, policy-only, workflow-only,
-and code PRs all carry current proof receipts.
+until the final enforcement slice. The workflow itself still runs for every PR
+when it is ready for review. Policy-only, workflow-only, code, unaudited docs,
+mixed, stale, malformed, and unknown subjects run full proof; only the one
+audited narrative path can take the typed no-op.
 
 ## What ripr does
 
@@ -62,8 +67,10 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 ## When it runs
 
 - Every PR targeting `master` or `main`.
-- No path filter is applied: docs-only, policy-only, workflow-only, and code
-  PRs all run the RIPR proof workflow so every merge has current proof receipts.
+- No path filter is applied at workflow trigger level: the required context remains present for
+  docs-only, policy-only, workflow-only, and code PRs. The base-owned exact
+  classifier may skip RIPR implementation jobs only for
+  `docs/project/status/release.md` and otherwise selects full proof.
 - Draft PRs are skipped while draft, then the explicit `ready_for_review`
   trigger runs the workflow before the PR can merge.
 - Manual via `workflow_dispatch`.
@@ -73,6 +80,19 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 ---
 
 ## Behavior
+
+- Before runner selection, the router reads the exact PR base/head and changed
+  file count, downloads the classifier and allowlist from that exact base SHA,
+  reads all file pages, and re-reads the PR identity. API errors, missing
+  bootstrap artifacts, movement, count mismatch, malformed/duplicate paths,
+  renames, or an unknown policy field select full proof. Merge-group, manual,
+  scheduled cache seed, and other non-PR subjects always run full proof.
+- A `scoped_noop` result records subject, base/head SHAs, file count and digest,
+  policy/classifier identities, and both base-artifact SHA-256 digests. The
+  aggregate accepts it only when every RIPR implementation and fallback job is
+  skipped. The path digest uses sorted compact-JSON UTF-8 encoding; the single
+  allowed path has digest
+  `794d5f956c9b3140e585d22c2d57e2d858bf571128598e641b39ab72e17d23ad`.
 
 - When a ripr evidence lane is killed by platform runner teardown instead of
   failing on findings (#6807, #12563, #12771), the gate classifies the lane log

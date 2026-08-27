@@ -447,3 +447,54 @@ fn ripr_infra_classifier_is_shared_tested_and_boundary_documented()
 
     Ok(())
 }
+
+#[test]
+fn ripr_scoped_noop_keeps_the_required_context_and_skips_only_on_typed_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let workflow =
+        fs::read_to_string(root.join(".github/workflows/ripr.yml"))?.replace("\r\n", "\n");
+    let docs = fs::read_to_string(root.join("docs/ci/ripr.md"))?;
+
+    if workflow.contains("\n    paths:") || workflow.contains("\n    paths-ignore:") {
+        return Err(
+            "the required RIPR context must never be removed by a workflow path filter".into()
+        );
+    }
+    for required in [
+        "name: ripr+ New Gap Gate",
+        "pull-requests: read",
+        "GH_TOKEN: ${{ github.token }}",
+        "RUNNER_TOKEN: ${{ secrets.EM_RUNNER_READ_TOKEN }}",
+        "contents/scripts/ci/classify-narrative-docs-scope.py?ref=${EVENT_BASE_SHA}",
+        "contents/policy/ci-narrative-docs-scope.toml?ref=${EVENT_BASE_SHA}",
+        "gh api --paginate --slurp",
+        "pulls/${PR_NUMBER}/files?per_page=100",
+        "scope_policy_digest",
+        "scope_classifier_digest",
+        "if [ \"$ROUTER_TARGET\" = \"scoped_noop\" ]; then",
+        "[ \"$SCOPE_FILE_COUNT\" != \"$EXPECTED_CHANGED_FILES\" ]",
+        "scoped_noop requires every RIPR implementation job to skip",
+        "if [ \"$SCOPE_DECISION\" != \"run\" ]; then",
+    ] {
+        if !workflow.contains(required) {
+            return Err(format!("RIPR scoped-noop contract is missing `{required}`").into());
+        }
+    }
+    if workflow.matches("needs.route-ripr.outputs.scope_decision == 'run'").count() != 4 {
+        return Err("every RIPR implementation/fallback job must require typed run".into());
+    }
+    for required in [
+        "docs/project/status/release.md",
+        "base-owned",
+        "paginated",
+        "renames",
+        "794d5f956c9b3140e585d22c2d57e2d858bf571128598e641b39ab72e17d23ad",
+    ] {
+        if !docs.contains(required) {
+            return Err(format!("RIPR docs omit scoped-noop boundary `{required}`").into());
+        }
+    }
+
+    Ok(())
+}

@@ -1,0 +1,4 @@
+schema_version = 1
+policy_identity = "ci-narrative-docs-scope:v1"
+classifier_identity = "classify-narrative-docs-scope.py:v1"
+allowed_paths = ["docs/project/status/release.md"]

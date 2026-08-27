@@ -222,3 +222,63 @@ fn compile_all_targets_budget_envelope_stays_witnessed() -> Result<(), Box<dyn s
 
     Ok(())
 }
+
+#[test]
+fn rust_small_scoped_noop_is_base_owned_exact_and_fail_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/em-ci-routed-rust.yml"))?
+        .replace("\r\n", "\n");
+    let policy = fs::read_to_string(root.join("policy/ci-narrative-docs-scope.toml"))?;
+    let classifier = fs::read_to_string(root.join("scripts/ci/classify-narrative-docs-scope.py"))?;
+    let result = job_block(&workflow, "rust-small-result")
+        .ok_or("Rust Small workflow is missing rust-small-result")?;
+
+    if !policy.lines().any(|line| line == "allowed_paths = [\"docs/project/status/release.md\"]") {
+        return Err("narrative scope must allow exactly the one audited release-status path".into());
+    }
+    if workflow.contains("\n    paths:") || workflow.contains("\n    paths-ignore:") {
+        return Err(
+            "the required Rust Small context must never be removed by a workflow path filter"
+                .into(),
+        );
+    }
+    for required in [
+        "GH_TOKEN: ${{ github.token }}",
+        "RUNNER_TOKEN: ${{ secrets.EM_RUNNER_READ_TOKEN }}",
+        "pull-requests: read",
+        "contents/scripts/ci/classify-narrative-docs-scope.py?ref=${EVENT_BASE_SHA}",
+        "contents/policy/ci-narrative-docs-scope.toml?ref=${EVENT_BASE_SHA}",
+        "gh api --paginate --slurp",
+        "pulls/${PR_NUMBER}/files?per_page=100",
+        "scope_policy_digest",
+        "scope_classifier_digest",
+    ] {
+        if !workflow.contains(required) {
+            return Err(format!("Rust Small scoped-noop route is missing `{required}`").into());
+        }
+    }
+    if !classifier.contains("previous_filename")
+        || !classifier.contains("rename_or_unknown_file_status")
+    {
+        return Err("narrative scope classifier must fail closed on renames".into());
+    }
+    if workflow.matches("needs.route-rust-small.outputs.scope_decision == 'run'").count() != 4 {
+        return Err("every Rust Small implementation/fallback job must require typed run".into());
+    }
+    for required in [
+        "name: Perl LSP Rust Small Result",
+        "if [ \"$ROUTER_TARGET\" = \"scoped_noop\" ]; then",
+        "[ \"$SCOPE_FILE_COUNT\" != \"1\" ]",
+        "[ \"$SCOPE_BASE_SHA\" != \"$EXPECTED_BASE_SHA\" ]",
+        "[ \"$SCOPE_HEAD_SHA\" != \"$EXPECTED_HEAD_SHA\" ]",
+        "scoped_noop requires every Rust implementation job to skip",
+        "if [ \"$SCOPE_DECISION\" != \"run\" ]; then",
+    ] {
+        if !result.contains(required) {
+            return Err(format!("Rust Small aggregate does not fail closed on `{required}`").into());
+        }
+    }
+
+    Ok(())
+}
