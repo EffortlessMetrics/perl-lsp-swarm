@@ -46,7 +46,7 @@
     "server_binary": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "command"],
+      "required": ["path", "sha256", "command"],
       "properties": {
         "path": { "minLength": 1, "type": "string" },
         "sha256": { "pattern": "^[0-9a-f]{64}$", "type": "string" },

@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12119 |
-| Rust-family files | 3711 |
-| Non-Rust files | 8408 |
-| Allowlisted | 6174 |
+| Total tracked files | 12137 |
+| Rust-family files | 3717 |
+| Non-Rust files | 8420 |
+| Allowlisted | 6186 |
 | Unclassified | 2234 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 444 |
-| documentation | 2757 |
+| config | 446 |
+| documentation | 2758 |
 | generated | 2 |
-| production | 329 |
-| test | 2026 |
-| tooling | 616 |
+| production | 331 |
+| test | 2032 |
+| tooling | 617 |
 | unclassified | 2234 |
 
 ## Unclassified files
@@ -3066,6 +3066,7 @@
 | `.spec/11079-pl700-removal-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11084-import-cleanup-train-manifest/import_cleanup_train.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11246-clippy-map-err-ignore-boundaries/activation-plan.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11246-clippy-map-err-ignore-boundaries/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11246-clippy-map-err-ignore-boundaries/denominator.csv` | tooling | `non-rust-spec-tree` | developer-experience |
@@ -6164,6 +6165,16 @@
 | `integrations/claude-code/plugins/perl-lsp-rs/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `integrations/claude-code/plugins/perl-lsp-rs/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `integrations/claude-code/plugins/perl-lsp-rs/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `integrations/lsp4ij/host-journey/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `integrations/lsp4ij/host-journey/declared-host.launch-spec.example.json` | config | `non-rust-lsp4ij-declared-host-example` | editor/lsp4ij |
+| `integrations/lsp4ij/host-journey/host-fixture/app.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `integrations/lsp4ij/host-journey/host-fixture/lib/Greeting.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `integrations/lsp4ij/host-journey/host-fixture/t/greeting.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `integrations/lsp4ij/host-journey/lsp4ij-host-receipt.v1.schema.json` | production | `non-rust-lsp4ij-host-receipt-schema` | editor/lsp4ij |
+| `integrations/lsp4ij/host-journey/lsp4ij-launch-spec.v1.schema.json` | production | `non-rust-lsp4ij-launch-spec-schema` | editor/lsp4ij |
+| `integrations/lsp4ij/host-journey/tests/test_lsp4ij_host_journey_contracts.py` | test | `non-rust-lsp4ij-host-journey-tests` | editor/lsp4ij |
+| `integrations/lsp4ij/host-journey/validate_lsp4ij_host_receipt.py` | test | `non-rust-lsp4ij-host-receipt-validator` | editor/lsp4ij |
+| `integrations/lsp4ij/host-journey/validate_lsp4ij_launch_spec.py` | test | `non-rust-lsp4ij-launch-spec-validator` | editor/lsp4ij |
 | `integrations/lsp4ij/installer-policy.json` | production | `non-rust-lsp4ij-installer-policy` | release/downstream-integrations |
 | `integrations/lsp4ij/perl-dap/installer.json` | production | `non-rust-lsp4ij-perl-dap-installer` | release/downstream-integrations |
 | `integrations/lsp4ij/perl-lsp/README.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6248,6 +6259,7 @@
 | `schemas/agent_review_packet.v1.schema.json` | config | `non-rust-agent-review-packet-schema` | tooling/agent-review |
 | `schemas/binary_identity_protocol.v1.schema.json` | config | `non-rust-binary-identity-schema` | identity |
 | `schemas/compiler_lexical_cutline_cases.v1.schema.json` | config | `non-rust-compiler-lexical-cutline-schema` | compiler |
+| `schemas/import_cleanup_train.v1.schema.json` | config | `non-rust-import-cleanup-train-schema` | tooling/train-graph |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
 | `schemas/loaded_module_reload_family.v1.schema.json` | config | `non-rust-loaded-module-reload-family-schema` | identity |
 | `schemas/perl_builtin_semantics.v1.schema.json` | config | `non-rust-compiler-builtin-semantics-schema` | compiler |

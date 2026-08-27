@@ -1,23 +1,31 @@
 #!/usr/bin/env python3
-"""Validate one LSP4IJ real-host session receipt (the observed evidence).
+"""Validate one LSP4IJ real-host session receipt against its declared launch spec.
 
 A receipt is admissible only if every recorded observation carries
 ``live_wire_capture`` origin plus a digest of the captured bytes, the exact
 current-source binary identity is present, the maintained LSP4IJ line is
 respected, and the supervised process ledger records an orderly shutdown.
+The receipt must also be bound to its precondition: the validator recomputes
+the canonical digest of the supplied launch spec, requires the recorded
+``launch_spec_digest`` to match it exactly, and rejects every drift between
+the declared subject (source SHA, IDE, plugin, binary) and what the session
+observed.
+
 Receipts stamped with any other origin are synthetic; synthetic receipts are
 forbidden for production closure.
 
-Exit codes: 0 valid, 1 invalid receipt, 2 usage error.
+Exit codes: 0 valid, 1 invalid receipt or spec binding, 2 usage error.
 """
 from __future__ import annotations
 
 import json
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import validate_lsp4ij_launch_spec as launch_spec_contract
 
 # docs/EDITORS/INTELLIJ_IDEA_SETUP.md declares 0.20.0 and newer as the
 # maintained LSP4IJ line; an observed subject below it is not reviewable here.
@@ -135,6 +143,9 @@ def validate(payload: dict[str, Any]) -> None:
     require(isinstance(command, list) and len(command) == 2, "server_binary.command must have two entries")
     require(command[1] == "--stdio", "server_binary.command must use stdio")
     require(Path(str(command[0])).name in {"perllsp", "perllsp.exe"}, "server_binary.command must launch perllsp")
+    require(launch_spec_contract.same_file_reference(binary["path"], command[0]),
+            "server_binary.command[0] must target exactly the recorded server_binary.path; "
+            "otherwise the identity would be attributed to a different executable")
 
     init = payload.get("session_initialize")
     require(isinstance(init, dict), "session_initialize must be an object")
@@ -211,19 +222,66 @@ def validate(payload: dict[str, Any]) -> None:
             "all_orderly_exited must be true; the supervised process must shut down cleanly")
 
 
+def validate_bound_to_launch_spec(receipt: dict[str, Any], spec: dict[str, Any]) -> None:
+    """Bind the receipt to its declared precondition.
+
+    Recomputes the canonical launch-spec digest (must equal the recorded
+    ``launch_spec_digest``) and rejects every drift between the declared
+    subject and the observed subject: source SHA, IDE identity, plugin
+    identity, and the exact binary reference + digest.
+    """
+    launch_spec_contract.validate(spec)
+    expected_digest = launch_spec_contract.canonical_spec_digest(spec)
+    require(receipt.get("launch_spec_digest") == expected_digest,
+            "launch_spec_digest does not match the canonical digest of the supplied launch spec; "
+            "the receipt is not bound to this declared precondition")
+
+    spec_binary = spec["server_binary"]
+    receipt_binary = receipt["server_binary"]
+    drifts: list[str] = []
+    if str(receipt.get("source_sha")) != str(spec.get("source_sha")):
+        drifts.append(f"source_sha: {spec.get('source_sha')} declared vs {receipt.get('source_sha')} recorded")
+    spec_ide, host = spec["declared_ide"], receipt["host"]
+    for field in ("product", "build_number", "platform", "arch"):
+        if str(spec_ide[field]) != str(host[field]):
+            drifts.append(f"ide.{field}: {spec_ide[field]!r} declared vs {host[field]!r} recorded")
+    spec_plugin, receipt_plugin = spec["lsp4ij_plugin"], receipt["lsp4ij_plugin"]
+    for field in ("id", "version"):
+        if str(spec_plugin[field]) != str(receipt_plugin[field]):
+            drifts.append(f"plugin.{field}: {spec_plugin[field]!r} declared vs {receipt_plugin[field]!r} recorded")
+    if spec_plugin.get("pinned_commit") is not None:
+        if str(receipt_plugin.get("pinned_commit")) != str(spec_plugin["pinned_commit"]):
+            drifts.append("plugin.pinned_commit drifted between declaration and observation")
+    if not launch_spec_contract.same_file_reference(spec_binary["path"], receipt_binary["path"]):
+        drifts.append(f"binary path: {spec_binary['path']!r} declared vs {receipt_binary['path']!r} recorded")
+    if str(spec_binary["sha256"]) != str(receipt_binary["sha256"]):
+        drifts.append(
+            f"binary sha256: {spec_binary['sha256']} declared vs {receipt_binary['sha256']} recorded"
+        )
+    if not launch_spec_contract.same_file_reference(spec_binary["command"][0], receipt_binary["command"][0]):
+        drifts.append(
+            f"command target: {spec_binary['command'][0]!r} declared vs "
+            f"{receipt_binary['command'][0]!r} recorded"
+        )
+    if drifts:
+        raise ValueError("receipt/launch-spec subject drift: " + "; ".join(drifts))
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print("usage: validate_lsp4ij_host_receipt.py RECEIPT.json", file=sys.stderr)
+    if len(argv) != 3:
+        print("usage: validate_lsp4ij_host_receipt.py RECEIPT.json LAUNCH_SPEC.json", file=sys.stderr)
         return 2
-    path = Path(argv[1])
+    receipt_path, spec_path = Path(argv[1]), Path(argv[2])
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
         require(isinstance(payload, dict), "receipt root must be an object")
         validate(payload)
+        spec_payload = json.loads(spec_path.read_text(encoding="utf-8"))
+        validate_bound_to_launch_spec(payload, spec_payload)
     except (OSError, json.JSONDecodeError, ValueError) as error:
-        print(f"{path}: {error}", file=sys.stderr)
+        print(f"{receipt_path}: {error}", file=sys.stderr)
         return 1
-    print(f"validated {path}")
+    print(f"validated {receipt_path} against {spec_path}")
     return 0
 
 

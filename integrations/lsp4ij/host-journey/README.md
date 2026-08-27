@@ -32,7 +32,13 @@ produced by an actual hosted run and published as run artifacts.
 3. **Maintained line.** Observed or declared LSP4IJ subjects below 0.20.0 are
    rejected (docs/EDITORS/INTELLIJ_IDEA_SETUP.md).
 4. **stdio only.** `perllsp --stdio`, exactly two command tokens.
-5. **Hermetic.** The four sandbox roots are pairwise distinct, run-owned, and
+5. **Bound to its precondition.** The launch-spec digest is defined as SHA-256
+   over `json.dumps(spec, sort_keys=True, separators=(",", ":"))` UTF-8 bytes.
+   Receipt validation requires the matching spec file as a second input,
+   recomputes that digest, and rejects any subject drift between declaration
+   and observation (source SHA, IDE, plugin, binary path/command/digest). A
+   receipt alone never closes a claim.
+6. **Hermetic.** The four sandbox roots are pairwise distinct, run-owned, and
    replace config/system/plugins/log state; ambient user profiles, ambient
    plugin directories, and ambient settings are bypassed entirely.
 
@@ -71,9 +77,13 @@ the artifacts exist.
    over each captured message body (initialize request/response, diagnostics
    settle evidence, one captured response per provider tap), pid ledger entries
    for every spawned `perllsp`, orderly shutdown confirmation.
-7. **Assemble + validate the receipt**, then **publish both spec and receipt as
-   run artifacts** and attach the validator verdict to the controlling issue:
-   `python integrations/lsp4ij/host-journey/validate_lsp4ij_host_receipt.py RECEIPT.json`
+7. **Assemble + validate the receipt against its spec**, then **publish both
+   the spec and the receipt as run artifacts** and attach the validator verdict
+   to the controlling issue:
+
+   ```bash
+   python integrations/lsp4ij/host-journey/validate_lsp4ij_host_receipt.py RECEIPT.json LAUNCH_SPEC.json
+   ```
 
 ## What a first green run closes
 

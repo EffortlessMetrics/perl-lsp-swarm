@@ -81,10 +81,16 @@
         "request_sha256": { "pattern": "^[0-9a-f]{64}$", "type": "string" },
         "response_sha256": { "pattern": "^[0-9a-f]{64}$", "type": "string" },
         "observed_capabilities": {
-          "description": "Presence map over the judged core-surface provider names (completion, hover, diagnostic, ...), mirroring the provider_taps enum; at least one entry must be true. Interpreted meanings stay owned by the client-support registry, not by this receipt.",
+          "description": "Presence map over the judged core-surface provider names (completion, hover, diagnostic, ...), mirroring the provider_taps enum; completion/hover/diagnostic are required true. Interpreted meanings stay owned by the client-support registry, not by this receipt.",
           "additionalProperties": { "type": "boolean" },
           "minProperties": 1,
+          "properties": {
+            "completion": { "const": true },
+            "diagnostic": { "const": true },
+            "hover": { "const": true }
+          },
           "propertyNames": { "pattern": "^[a-zA-Z][A-Za-z]*$" },
+          "required": ["completion", "hover", "diagnostic"],
           "type": "object"
         }
       }

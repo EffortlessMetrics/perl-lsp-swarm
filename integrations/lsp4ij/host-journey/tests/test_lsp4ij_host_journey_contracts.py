@@ -40,6 +40,9 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+BINARY_SHA = _sha("perllsp-binary")
+
+
 def make_valid_launch_spec() -> dict:
     return {
         "schema_version": 1,
@@ -61,6 +64,7 @@ def make_valid_launch_spec() -> dict:
         },
         "server_binary": {
             "path": "${CARGO_TARGET_DIR}/release/perllsp.exe",
+            "sha256": BINARY_SHA,
             "command": ["${CARGO_TARGET_DIR}/release/perllsp.exe", "--stdio"],
         },
         "sandbox": {
@@ -88,7 +92,9 @@ def make_valid_receipt() -> dict:
         "stage": "exact_source_local",
         "source_sha": PLACEHOLDER_SOURCE_SHA,
         "recorded_at": "2026-08-26T18:00:00+00:00",
-        "launch_spec_digest": _sha("launch-spec"),
+        # Bound for real: recomputed from the calibration launch spec using
+        # the exact canonicalization the validators enforce.
+        "launch_spec_digest": spec_validator.canonical_spec_digest(make_valid_launch_spec()),
         "host": {
             "product": "IntelliJ IDEA Community Edition",
             "build_number": VALID_BUILD_NUMBER,
@@ -104,9 +110,9 @@ def make_valid_receipt() -> dict:
             "pinned_commit": VENDORED_LSP4IJ_COMMIT,
         },
         "server_binary": {
-            "path": "target/release/perllsp.exe",
-            "sha256": _sha("perllsp-binary"),
-            "command": ["target/release/perllsp.exe", "--stdio"],
+            "path": "${CARGO_TARGET_DIR}/release/perllsp.exe",
+            "sha256": BINARY_SHA,
+            "command": ["${CARGO_TARGET_DIR}/release/perllsp.exe", "--stdio"],
         },
         "session_initialize": {
             "origin": "live_wire_capture",
@@ -238,6 +244,33 @@ class LaunchSpecContractTest(ContractCase):
             make_valid_launch_spec,
             spec_validator,
         )
+
+    def test_omitted_binary_digest_is_rejected(self) -> None:
+        self.assertRejected(
+            lambda s: s["server_binary"].pop("sha256"),
+            make_valid_launch_spec,
+            spec_validator,
+        )
+
+    def test_declared_path_and_command_target_must_be_the_same_reference(self) -> None:
+        def diverge(s: dict) -> None:
+            s["server_binary"]["path"] = "${CARGO_TARGET_DIR}/release/perllsp.exe"
+            s["server_binary"]["command"] = ["${PERLLSP_OVERRIDE_DIR}/perllsp.exe", "--stdio"]
+
+        self.assertRejected(diverge, make_valid_launch_spec, spec_validator)
+
+    def test_separator_and_case_normalization_still_bind_one_reference(self) -> None:
+        spec = make_valid_launch_spec()
+        if spec_validator.os.path.sep == "\\":
+            spec["server_binary"]["command"][0] = "${cargo_target_dir}\\RELEASE\\perllsp.exe"
+        else:
+            spec["server_binary"]["command"][0] = "${CARGO_TARGET_DIR}/release/../release/perllsp.exe"
+        spec_validator.validate(spec)
+        # Same declared reference, different byte-level spelling: this is a
+        # different spec file, so a receipt bound to it must carry ITS digest.
+        receipt = make_valid_receipt()
+        receipt["launch_spec_digest"] = spec_validator.canonical_spec_digest(spec)
+        receipt_validator.validate_bound_to_launch_spec(receipt, spec)
 
 
 class HostReceiptContractTest(ContractCase):
@@ -400,32 +433,98 @@ class SchemaValidatorParityTest(unittest.TestCase):
         capability_map = receipt_schema["properties"]["session_initialize"]["properties"]["observed_capabilities"]
         self.assertEqual(capability_map.get("additionalProperties"), {"type": "boolean"})
 
+    def test_schema_encodes_the_required_true_core_capabilities(self) -> None:
+        """Schema-only consumers must reach the same core verdict as the hand validator."""
+        receipt_schema = self._load("lsp4ij-host-receipt.v1.schema.json")
+        capability_map = receipt_schema["properties"]["session_initialize"]["properties"]["observed_capabilities"]
+        self.assertEqual(set(capability_map["required"]), {"completion", "hover", "diagnostic"})
+        for name in ("completion", "hover", "diagnostic"):
+            self.assertEqual(capability_map["properties"][name], {"const": True})
+
+    def test_launch_spec_schema_requires_the_binary_digest(self) -> None:
+        spec_schema = self._load("lsp4ij-launch-spec.v1.schema.json")
+        self.assertEqual(
+            set(spec_schema["properties"]["server_binary"]["required"]),
+            {"path", "sha256", "command"},
+        )
+
+
+class ReceiptLaunchSpecBindingTest(ContractCase):
+    """A receipt means nothing unless it is provably the observation of its
+    declared precondition; the validator must bind them."""
+
+    def test_calibration_pair_binds_cleanly(self) -> None:
+        receipt_validator.validate_bound_to_launch_spec(make_valid_receipt(), make_valid_launch_spec())
+
+    def test_receipt_supplied_with_a_different_spec_is_rejected(self) -> None:
+        other = make_valid_launch_spec()
+        other["source_sha"] = "1" * 40
+        with self.assertRaises(ValueError):
+            receipt_validator.validate_bound_to_launch_spec(make_valid_receipt(), other)
+
+    def test_identity_drift_under_a_correctly_recomputed_digest_is_rejected(self) -> None:
+        drifted = make_valid_receipt()
+        drifted["lsp4ij_plugin"]["version"] = "0.21.0"
+        with self.assertRaises(ValueError):
+            receipt_validator.validate_bound_to_launch_spec(drifted, make_valid_launch_spec())
+
+    def test_source_sha_drift_between_observation_and_declaration_is_rejected(self) -> None:
+        drifted = make_valid_receipt()
+        drifted["source_sha"] = "a" * 40
+        with self.assertRaises(ValueError):
+            receipt_validator.validate_bound_to_launch_spec(drifted, make_valid_launch_spec())
+
+    def test_command_target_drift_from_the_declared_path_is_rejected(self) -> None:
+        drifted = make_valid_receipt()
+        drifted["server_binary"]["command"][0] = "${CARGO_TARGET_DIR}/debug/perllsp.exe"
+        with self.assertRaises(ValueError):
+            receipt_validator.validate_bound_to_launch_spec(drifted, make_valid_launch_spec())
+
 
 class ValidatorCliBehaviorTest(unittest.TestCase):
-    def _run(self, script: str, target: Path | None) -> subprocess.CompletedProcess[str]:
+    def _run(self, script: str, *targets: Path | None) -> subprocess.CompletedProcess[str]:
         command = [sys.executable, str(HOST_JOURNEY_DIR / script)]
-        if target is not None:
-            command.append(str(target))
+        command.extend(str(t) for t in targets if t is not None)
         return subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
 
-    def test_cli_success_invalid_and_usage_codes(self) -> None:
+    def test_receipt_cli_requires_the_launch_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            good = Path(tmp) / "receipt.json"
-            good.write_text(json.dumps(make_valid_receipt()), encoding="utf-8")
-            self.assertEqual(self._run("validate_lsp4ij_host_receipt.py", good).returncode, 0)
+            receipt = Path(tmp) / "receipt.json"
+            receipt.write_text(json.dumps(make_valid_receipt()), encoding="utf-8")
+            usage = self._run("validate_lsp4ij_host_receipt.py", receipt)
+            self.assertEqual(usage.returncode, 2)
+
+            spec = Path(tmp) / "spec.json"
+            spec.write_text(json.dumps(make_valid_launch_spec()), encoding="utf-8")
+            good = self._run("validate_lsp4ij_host_receipt.py", receipt, spec)
+            self.assertEqual(good.returncode, 0)
+
+    def test_receipt_cli_rejects_a_mismatched_launch_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt = Path(tmp) / "receipt.json"
+            receipt.write_text(json.dumps(make_valid_receipt()), encoding="utf-8")
+            other = make_valid_launch_spec()
+            other["declared_ide"]["build_number"] = "IC-251.23774.435"
+            wrong = Path(tmp) / "other-spec.json"
+            wrong.write_text(json.dumps(other), encoding="utf-8")
+            bound = self._run("validate_lsp4ij_host_receipt.py", receipt, wrong)
+            self.assertEqual(bound.returncode, 1)
+            self.assertIn("launch_spec_digest", bound.stderr)
+
+    def test_invalid_or_missing_files_exit_nonzero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = Path(tmp) / "spec.json"
+            spec.write_text(json.dumps(make_valid_launch_spec()), encoding="utf-8")
 
             bad = Path(tmp) / "bad.json"
             bad.write_text(json.dumps({"schema_version": 2}), encoding="utf-8")
-            invalid = self._run("validate_lsp4ij_host_receipt.py", bad)
+            invalid = self._run("validate_lsp4ij_host_receipt.py", bad, spec)
             self.assertEqual(invalid.returncode, 1)
             self.assertIn("bad.json", invalid.stderr)
 
             missing = Path(tmp) / "absent.json"
-            nonexistent = self._run("validate_lsp4ij_host_receipt.py", missing)
+            nonexistent = self._run("validate_lsp4ij_host_receipt.py", missing, spec)
             self.assertEqual(nonexistent.returncode, 1)
-
-            usage = self._run("validate_lsp4ij_host_receipt.py", None)
-            self.assertEqual(usage.returncode, 2)
 
     def test_launch_spec_cli_end_to_end(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

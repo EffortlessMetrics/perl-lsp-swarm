@@ -11,7 +11,9 @@ Exit codes: 0 valid, 1 invalid spec, 2 usage error.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -42,6 +44,25 @@ KNOWN_KEYS = {
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
+
+
+def canonical_spec_bytes(payload: dict[str, Any]) -> bytes:
+    """The one canonical byte string a receipt's launch_spec_digest is bound to."""
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def canonical_spec_digest(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(canonical_spec_bytes(payload)).hexdigest()
+
+
+def same_file_reference(left: Any, right: Any) -> bool:
+    """Placeholder-tolerant executable binding: after OS-normalizing separators
+    and case, the declared binary path and the launched command target must be
+    the identical reference. Placeholders are allowed only when both fields
+    spell the exact same reference."""
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    return os.path.normcase(os.path.normpath(left)) == os.path.normcase(os.path.normpath(right))
 
 
 def _is_sha256(value: Any) -> bool:
@@ -96,15 +117,17 @@ def validate(payload: dict[str, Any]) -> None:
 
     binary = payload.get("server_binary")
     require(isinstance(binary, dict), "server_binary must be an object")
-    require(set(binary) <= {"path", "command", "sha256"}, "server_binary keys drifted from the v1 contract")
-    require({"path", "command"} <= set(binary), "server_binary requires path and command")
+    require(set(binary) == {"path", "command", "sha256"}, "server_binary keys drifted from the v1 contract")
     require(isinstance(binary["path"], str) and binary["path"] != "", "server_binary.path must be non-empty")
+    require(_is_sha256(binary["sha256"]),
+            "server_binary.sha256 is required and must be a lowercase SHA-256 digest of the declared binary")
     command = binary["command"]
     require(isinstance(command, list) and len(command) == 2, "server_binary.command must have two entries")
     require(command[1] == "--stdio", "server_binary.command must use stdio")
     require(Path(str(command[0])).name in {"perllsp", "perllsp.exe"}, "server_binary.command must launch perllsp")
-    if binary.get("sha256") is not None:
-        require(_is_sha256(binary["sha256"]), "server_binary.sha256 must be a lowercase SHA-256 digest")
+    require(same_file_reference(binary["path"], command[0]),
+            "server_binary.command[0] must target exactly the declared server_binary.path; "
+            "a declared path with a different launched executable invalidates the subject")
 
     sandbox = payload.get("sandbox")
     require(isinstance(sandbox, dict), "sandbox must be an object")
