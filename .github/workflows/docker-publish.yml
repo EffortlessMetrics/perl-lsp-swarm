@@ -29,6 +29,79 @@ permissions:
   packages: write
 
 jobs:
+  # Dispatch-selected refs used to flow straight into every build/publish job
+  # of this workflow while registry credentials were mounted (#9595). This
+  # gate resolves the two trusted subjects server-side — the repository
+  # default-branch head and the commit behind the declared version's
+  # `v<version>` tag — over an anonymous `git ls-remote`, with no checkout and
+  # no token mounted. A dispatch-selected ref that is neither of those fails
+  # closed here, before any credential-bearing job is scheduled. `init` stays
+  # independent so version-validation feedback remains visible on rejected
+  # runs.
+  resolve-trusted-anchor:
+    name: Resolve trusted publish anchor
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: none
+    outputs:
+      approved_sha: ${{ steps.anchor.outputs.approved_sha }}
+    steps:
+      - name: Resolve trusted anchors server-side
+        id: anchor
+        env:
+          REPO_URL: https://github.com/${{ github.repository }}.git
+          SELECTED_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          VERSION_INPUT_RAW: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if ! [[ "$SELECTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Dispatch subject is not a full commit SHA."
+            exit 1
+          fi
+
+          if [ -z "$DEFAULT_BRANCH" ] || ! [[ "$DEFAULT_BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,200}$ ]]; then
+            echo "::error::Repository default branch is missing or oddly named; refusing to derive a trusted anchor."
+            exit 1
+          fi
+
+          shas_for() {
+            git ls-remote "$REPO_URL" "$@" | awk '{print $1}' | sort -u
+          }
+
+          DEFAULT_HEAD=$(shas_for "refs/heads/${DEFAULT_BRANCH}" | sed -n '1p')
+          if ! [[ "$DEFAULT_HEAD" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Could not resolve refs/heads/${DEFAULT_BRANCH} server-side; refusing to approve this run."
+            exit 1
+          fi
+
+          APPROVED=""
+          if [ "$SELECTED_SHA" = "$DEFAULT_HEAD" ]; then
+            APPROVED="$SELECTED_SHA"
+            printf 'Approved %s: selected ref matches the current %s head.\n' "$SELECTED_SHA" "$DEFAULT_BRANCH"
+          elif [[ "$VERSION_INPUT_RAW" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            # Release orchestration cuts annotated tags (`git tag -a`), whose
+            # `refs/tags/v<X>` object id differs from the tagged commit that
+            # dispatch selects, so the peeled `^{}` commit must be compared too.
+            TAG_SHAS=$(shas_for "refs/tags/v${VERSION_INPUT_RAW}" "refs/tags/v${VERSION_INPUT_RAW}^{}")
+            if grep -qx "$SELECTED_SHA" <<<"$TAG_SHAS"; then
+              APPROVED="$SELECTED_SHA"
+              printf 'Approved %s: selected ref matches tag refs/tags/v%s.\n' "$SELECTED_SHA" "$VERSION_INPUT_RAW"
+            fi
+          fi
+
+          if [ -z "$APPROVED" ]; then
+            {
+              echo "::error::Publishing requires a trusted anchor: dispatch on the repository default branch (${DEFAULT_BRANCH}) or on a ref whose commit equals tag v${VERSION_INPUT_RAW}."
+              echo "::error::Unapproved refs cannot reach a credential-bearing step (#9595/#9597)."
+            } >&2
+            exit 1
+          fi
+
+          printf 'approved_sha=%s\n' "$APPROVED" >> "$GITHUB_OUTPUT"
+
   init:
     name: Prepare version metadata
     runs-on: ubuntu-24.04
@@ -62,7 +135,7 @@ jobs:
   build:
     name: Build builder image (multi-arch)
     runs-on: ubuntu-24.04
-    needs: init
+    needs: [init, resolve-trusted-anchor]
     timeout-minutes: 150
 
     steps:
@@ -70,6 +143,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Registry credentials below mount only next to gate-approved source
+          # (#9595): the build context and Dockerfile are the approved subject,
+          # never an operator-selected ref.
+          ref: ${{ needs.resolve-trusted-anchor.outputs.approved_sha }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
@@ -135,7 +212,7 @@ jobs:
   build-perl-runtime:
     name: Build perl-lsp runtime image (multi-arch)
     runs-on: ubuntu-24.04
-    needs: init
+    needs: [init, resolve-trusted-anchor]
     timeout-minutes: 60
 
     steps:
@@ -143,6 +220,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Registry credentials below mount only next to gate-approved source
+          # (#9595).
+          ref: ${{ needs.resolve-trusted-anchor.outputs.approved_sha }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
@@ -206,7 +286,7 @@ jobs:
   publish-dockerhub:
     name: Publish to Docker Hub
     runs-on: ubuntu-24.04
-    needs: init
+    needs: [init, resolve-trusted-anchor]
     timeout-minutes: 150
     if: github.event.inputs.push != 'false'
 
@@ -215,6 +295,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Docker Hub credentials below mount only next to gate-approved
+          # source (#9595).
+          ref: ${{ needs.resolve-trusted-anchor.outputs.approved_sha }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
@@ -259,7 +342,7 @@ jobs:
   publish-dockerhub-perl:
     name: Publish perl-lsp runtime to Docker Hub
     runs-on: ubuntu-24.04
-    needs: init
+    needs: [init, resolve-trusted-anchor]
     timeout-minutes: 60
     if: github.event.inputs.push != 'false'
 
@@ -268,6 +351,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Docker Hub credentials below mount only next to gate-approved
+          # source (#9595).
+          ref: ${{ needs.resolve-trusted-anchor.outputs.approved_sha }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0

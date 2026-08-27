@@ -216,6 +216,18 @@ enum Commands {
         command: EditorCompatCommand,
     },
 
+    /// Provision and verify the content-bound Vim + vim-lsp host test
+    /// instrument (vim_vim_lsp_host_toolchain.v1, #11372): the pinned Vim
+    /// release bytes plus the #11369-pinned vim-lsp subject, acquired,
+    /// digest-verified, cached under exact-identity keys, revalidated on
+    /// every use, and handed off as ephemeral roles. Test-instrument
+    /// identity only: no support verdict, journey, or receipt.
+    #[command(name = "vim-host-toolchain")]
+    VimHostToolchain {
+        #[command(subcommand)]
+        command: VimHostToolchainCommand,
+    },
+
     /// Validate the shared adversarial review-packet, review-finding, and
     /// advisory closure-projection contracts (#10881): the closed schemas,
     /// the programme-neutral fixtures, the fail-closed negative controls,
@@ -2644,6 +2656,37 @@ enum EditorCompatCommand {
 }
 
 #[derive(Subcommand)]
+enum VimHostToolchainCommand {
+    /// Acquire (or revalidate) the pinned toolchain under --output and write
+    /// the deterministic identity manifest. Network is used only for
+    /// immutable subjects missing from the cache; an existing valid entry is
+    /// a pure offline revalidation, and any drift deletes and rebuilds.
+    Provision {
+        /// Output/cache root directory for the provisioned toolchain.
+        #[arg(long)]
+        output: PathBuf,
+
+        /// Offline vim-lsp acquisition: clone the pinned commit from this
+        /// local checkout instead of the governed upstream URL. The subject
+        /// identity law is identical in both modes.
+        #[arg(long)]
+        vim_lsp_source: Option<PathBuf>,
+
+        /// Execution-environment label recorded in identity.
+        #[arg(long, default_value = "local_runner")]
+        environment: String,
+    },
+    /// Offline revalidation of one provisioned identity manifest against its
+    /// sibling subjects: recomputes every digest and refuses any drift as a
+    /// typed instrument failure. Never touches the network.
+    Verify {
+        /// Path to a provisioned vim_vim_lsp_host_toolchain.v1.json.
+        #[arg(long)]
+        manifest: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum VimEditorCompatCommand {
     /// Execute a hermetic host journey: start exact Vim headless, load the
     /// pinned vim-lsp, register the canonical perllsp --stdio server, attach
@@ -2662,6 +2705,12 @@ enum VimEditorCompatCommand {
     /// reload route, project config through the restart route, client
     /// settings through the live push channel, stale generation rejection,
     /// and provider ownership — against the governed freshness fixture.
+    /// `save-format` (#11396) runs the seven-cell format-on-save journey —
+    /// the documented BufWritePre autocmd owner over the canonical sync
+    /// format action, one-save-one-invocation cardinality, exact applied and
+    /// legitimate no-change bytes, distinct disabled/refused/failure
+    /// dispositions, and stale-result rejection — against the governed save
+    /// fixture.
     Run {
         /// Exact client subject id (see
         /// `xtask::vim_host_run::VimClientSubject::known_ids`).
@@ -2669,13 +2718,13 @@ enum VimEditorCompatCommand {
         subject: String,
 
         /// Hermetic journey to execute: host-lifecycle, bootstrap-diagnostics,
-        /// or freshness-generations.
+        /// freshness-generations, or save-format.
         #[arg(long, default_value = "host-lifecycle")]
         journey: String,
 
-        /// Fixture variant for the bootstrap-diagnostics and
-        /// freshness-generations journeys (canonical must pass; the negative
-        /// controls must fail with their typed reason).
+        /// Fixture variant for the bootstrap-diagnostics,
+        /// freshness-generations, and save-format journeys (canonical must
+        /// pass; the negative controls must fail with their typed reason).
         #[arg(long, default_value = "canonical")]
         fixture_variant: String,
 
@@ -4664,6 +4713,43 @@ fn run_cli(cli: Cli) -> Result<()> {
             println!("validated {validated} specialized vim/vim-lsp observations");
             Ok(())
         }
+        Commands::VimHostToolchain { command } => match command {
+            VimHostToolchainCommand::Provision { output, vim_lsp_source, environment } => {
+                let repo_root = utils::project_root().map_err(|error| eyre!(error.to_string()))?;
+                let inputs = xtask::vim_host_toolchain::ProvisionInputs {
+                    output_root: output,
+                    repo_root: repo_root.clone(),
+                    authority: xtask::vim_host_toolchain::SubjectAuthoritySource::RepoRoot(
+                        repo_root,
+                    ),
+                    vim_lsp_source,
+                    vim_archive_source: None,
+                    vim_archive_expected_sha256: None,
+                    vim_executable_expected_sha256: None,
+                    execution_environment: environment,
+                };
+                let outcome = xtask::vim_host_toolchain::provision(
+                    &inputs,
+                    &xtask::vim_host_toolchain::probe_vim_version,
+                )
+                .map_err(|error| eyre!("{error}"))?;
+                println!("{}", xtask::vim_host_toolchain::render_handoff(&outcome));
+                Ok(())
+            }
+            VimHostToolchainCommand::Verify { manifest } => {
+                xtask::vim_host_toolchain::verify_layout(
+                    &manifest,
+                    &xtask::vim_host_toolchain::probe_vim_version,
+                )
+                .map_err(|error| eyre!("{error}"))?;
+                println!(
+                    "verified: {} identity holds for {}",
+                    xtask::vim_host_toolchain::SCHEMA_VERSION,
+                    manifest.display()
+                );
+                Ok(())
+            }
+        },
         Commands::EditorCompat { command } => match command {
             EditorCompatCommand::Vim { command } => match command {
                 VimEditorCompatCommand::Run {
@@ -4678,6 +4764,65 @@ fn run_cli(cli: Cli) -> Result<()> {
                 } => {
                     let repo_root =
                         utils::project_root().map_err(|error| eyre!(error.to_string()))?;
+                    if journey == "save-format" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_save_format_run::SaveFormatFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_save_format_run::host_save_format_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim save-format run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} driver_failure={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.driver_failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.driver_failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
+                                        outcome.driver_failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim save-format run did not pass: {result:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     if journey == "freshness-generations" {
                         // Same subject law as the host-lifecycle path: an
                         // unknown subject id is a typed error before any run,
@@ -4799,7 +4944,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                     if journey != "host-lifecycle" {
                         return Err(eyre!(
                             "unknown journey {journey}: known journeys are host-lifecycle, \
-                             bootstrap-diagnostics, freshness-generations"
+                             bootstrap-diagnostics, freshness-generations, save-format"
                         ));
                     }
                     let outcome = xtask::vim_host_run::host_run_from_cli(
