@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12118 |
-| Rust-family files | 3707 |
-| Non-Rust files | 8411 |
-| Allowlisted | 6165 |
+| Total tracked files | 12124 |
+| Rust-family files | 3712 |
+| Non-Rust files | 8412 |
+| Allowlisted | 6166 |
 | Unclassified | 2246 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 443 |
-| documentation | 2750 |
+| documentation | 2751 |
 | generated | 2 |
 | production | 328 |
 | test | 2026 |
@@ -4689,6 +4689,7 @@
 | `docs/devex/ripr-dogfood/devex-golden-outputs-20260507.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/devex/ripr-dogfood/devex-receipt-contract-20260507.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/devex/ripr-dogfood/devex-test-gap-20260507.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/distribution/INSTALL_CLAIM_SURFACES.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/examples/github-actions/setup-perl-lsp-consumer.yml` | documentation | `non-rust-docs-tree` | docs |
 | `docs/examples/helix/languages.toml` | documentation | `non-rust-docs-tree` | docs |
 | `docs/examples/intellij/README.md` | documentation | `non-rust-docs-tree` | docs |

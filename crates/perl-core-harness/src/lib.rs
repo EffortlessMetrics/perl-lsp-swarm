@@ -151,6 +151,42 @@ pub mod invocation_trace {
     pub use validate::{validate_invocation_trace_receipt, validate_trace_receipt_subject_binding};
 }
 
+/// Strict pure fan-in join proving one complete observed runner subject
+/// (`observed_runner_subject.v1`, #12287): the observed `t/TEST` membership
+/// (#12281/#12283), its independently reconstructed plan (#7737), and the
+/// effective-invocation observation set (#12284/#12285) joined one-to-one
+/// under the exact #12286 transfer relation and #12158 producer identity.
+/// Representation only: no upstream execution, tracing, compiler invocation,
+/// production selection, or accepted-state transition.
+pub mod observed_subject {
+    /// Strict constructors, digests, freshness, and the join arithmetic.
+    #[path = "build.rs"]
+    pub mod build;
+    /// Receipt, binding, row, disposition, diagnostic, state, and work types.
+    #[path = "model.rs"]
+    pub mod model;
+    /// Fail-closed structural validation re-proving receipt-traveled laws.
+    #[path = "validate.rs"]
+    pub mod validate;
+
+    #[cfg(test)]
+    #[path = "tests.rs"]
+    mod tests;
+
+    pub use build::{
+        build_observed_runner_subject, check_observed_runner_subject, observed_subject_freshness,
+        observed_subject_payload_digest,
+    };
+    pub use model::{
+        JoinWork, OBSERVED_RUNNER_SUBJECT_SCHEMA_VERSION, OBSERVED_SUBJECT_CLAIM_BOUNDARY,
+        ObservedRunnerSubjectInput, ObservedRunnerSubjectPayload, ObservedRunnerSubjectRow,
+        ObservedRunnerSubjectV1, ObservedSubjectBindings, ObservedSubjectState,
+        OrdinaryInstrumentedEquivalenceIdentity, ProducerSubjectIdentity, SubjectDiagnostic,
+        SubjectJoinDisposition,
+    };
+    pub use validate::validate_observed_runner_subject_shape;
+}
+
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
 use perl_core_harness_types::{
