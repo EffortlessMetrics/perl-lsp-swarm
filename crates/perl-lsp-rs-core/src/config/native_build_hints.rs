@@ -344,7 +344,12 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
             ')' | ']' | '}' => {
-                if stack.pop().is_none() {
+                // Pop first, then decide: an unbalanced closer ends the value.
+                // The pop must stay in the arm body rather than move into a
+                // match guard, because a guard that fails still leaves the
+                // stack mutated (#12919).
+                let opener = stack.pop();
+                if opener.is_none() {
                     return idx.saturating_sub(start);
                 }
             }
