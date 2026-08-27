@@ -482,14 +482,9 @@ fn hir_canonical_sub_body_lexical_resolution() -> Result<(), Box<dyn std::error:
     let stmt2 = sub_body.stmt(root.stmts[1]).ok_or("second stmt")?;
     let expr_id = match stmt2 {
         HirStmt::Expr(id) => *id,
-        HirStmt::Let { init, .. } => {
-            // Tolerate if the parser merged both into one Let — check the init
-            if let Some(id) = init {
-                *id
-            } else {
-                return Ok(()); // no init to check
-            }
-        }
+        // Tolerate if the parser merged both into one Let — check the init.
+        // A `Let` with no init has nothing to check and joins the catch-all.
+        HirStmt::Let { init: Some(id), .. } => *id,
         _ => return Ok(()),
     };
 
