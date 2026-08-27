@@ -405,6 +405,245 @@ fn test_explain_provider_decision_rejects_non_object_request_receipt()
 }
 
 #[test]
+fn test_explain_provider_decision_rejects_oversized_receipt_id()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+    let result = provider.execute_command(
+        "perl.explainProviderDecision",
+        vec![json!({
+            "provider": "rename",
+            "receipt_id": "a".repeat(65_536)
+        })],
+    );
+
+    let error = match result {
+        Ok(value) => {
+            return Err(format!("oversized receipt_id should reject the request: {value}").into());
+        }
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("receipt_id") && error.contains("too long"),
+        "error should name receipt_id and the length bound, got: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_rejects_oversized_scenario()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+    let result = provider.execute_command(
+        "perl.explainProviderDecision",
+        vec![json!({
+            "provider": "rename",
+            "scenario": "s".repeat(65_536)
+        })],
+    );
+
+    let error = match result {
+        Ok(value) => {
+            return Err(format!("oversized scenario should reject the request: {value}").into());
+        }
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("scenario") && error.contains("too long"),
+        "error should name scenario and the length bound, got: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_bounds_echo_fields_not_transport_input()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+
+    // This is deliberately a negative control for the claim: an unrelated
+    // unknown member of the same size is still materialized and ignored by
+    // this handler. The guard protects the fields that enter the explanation
+    // and response, not the generic JSON frame or every request allocation.
+    let result = provider.execute_command(
+        "perl.explainProviderDecision",
+        vec![json!({
+            "provider": "rename",
+            "receipt_id": "safe-receipt",
+            "ignored_large_member": "x".repeat(65_536),
+        })],
+    )?;
+    assert_eq!(
+        result.get("receipt_id").and_then(Value::as_str),
+        Some("safe-receipt"),
+        "a valid echo field remains available when an unrelated large member is ignored"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_preserves_uri_and_digest_identifier_shapes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+
+    // The v1 schema preserves caller-supplied strings. In particular, digest
+    // and URI-like identifiers may contain punctuation outside the old
+    // implementation vocabulary and must round-trip unchanged (#2758).
+    for (field, value) in [
+        ("receipt_id", "sha256:0123456789abcdef0123456789abcdef"),
+        ("receipt_id", "urn:perl-lsp:receipt/2026-08-27?kind=provider"),
+        ("scenario", "release/v0.18?mode=explain&host=vim"),
+        ("scenario", "résumé-navigation"),
+    ] {
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!(value);
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request])?;
+        assert_eq!(
+            result.get(field).and_then(Value::as_str),
+            Some(value),
+            "schema-compatible {field} must round-trip unchanged"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_rejects_empty_identifier()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+    for field in ["receipt_id", "scenario"] {
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!("");
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request]);
+        let error = match result {
+            Ok(value) => return Err(format!("empty {field} should reject: {value}").into()),
+            Err(error) => error,
+        };
+        assert!(error.contains(field) && error.contains("must not be empty"), "{error}");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_preserves_tracked_identifier_shapes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+
+    // Every shape below is harvested from tracked receipts, snapshots, UX
+    // scenarios, or documented defaults: lower-case hyphenated ids, underscored
+    // UX scenarios, `.rs` file labels, and markdown-anchor document receipts.
+    // The explanation-field law must accept each unchanged (#2758).
+    for (receipt_id, scenario) in [
+        ("semantic-shadow-compare", Some("mojolicious-safe-delete")),
+        ("runtime-request", Some("realbaseline-rename-fallback-noise")),
+        (
+            "docs/project/status/provider_confidence_matrix.md#goto-definition",
+            Some("dynamic-boundary-navigation"),
+        ),
+        (
+            "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
+            Some("ux_scenario_30_mojolicious_navigation_quality"),
+        ),
+        ("safe-delete-runtime", Some("ux_scenario_01_simple_file.rs")),
+    ] {
+        let result = provider.execute_command(
+            "perl.explainProviderDecision",
+            vec![json!({
+                "provider": "rename",
+                "receipt_id": receipt_id,
+                "scenario": scenario,
+            })],
+        )?;
+        assert_eq!(
+            result.get("receipt_id").and_then(Value::as_str),
+            Some(receipt_id),
+            "legitimate receipt_id must round-trip unchanged"
+        );
+        assert_eq!(
+            result.get("scenario").and_then(Value::as_str),
+            scenario,
+            "legitimate scenario must round-trip unchanged"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_accepts_identifier_bound_at_limit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+
+    // An echo field of exactly 1024 bytes is accepted; one more byte fails
+    // closed with the named-field diagnostic for either field (#2758).
+    for field in ["receipt_id", "scenario"] {
+        let at_limit = "a".repeat(1024);
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!(at_limit);
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request])?;
+        assert_eq!(
+            result.get(field).and_then(Value::as_str).map(str::len),
+            Some(1024),
+            "{field} at the explanation-field bound must round-trip unchanged"
+        );
+
+        let over_limit = "a".repeat(1025);
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!(over_limit);
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request]);
+        let error = match result {
+            Ok(value) => {
+                return Err(format!("{field} over the bound should reject: {value}").into());
+            }
+            Err(error) => error,
+        };
+        assert!(
+            error.contains(field) && error.contains("too long"),
+            "error should name {field} and the length bound, got: {error}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_bounds_multibyte_identifiers_by_bytes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+
+    // U+00E9 occupies two UTF-8 bytes: 512 repetitions are exactly 1024
+    // bytes, while 513 repetitions are 1026 bytes. This rejects a
+    // character-count implementation of the byte bound (#2758).
+    for field in ["receipt_id", "scenario"] {
+        let at_limit = "é".repeat(512);
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!(at_limit);
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request])?;
+        assert_eq!(
+            result.get(field).and_then(Value::as_str).map(str::len),
+            Some(1024),
+            "{field} at the multibyte byte bound must round-trip unchanged"
+        );
+
+        let over_limit = "é".repeat(513);
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!(over_limit);
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request]);
+        let error = match result {
+            Ok(value) => {
+                return Err(format!(
+                    "multibyte {field} over the byte bound should reject: {value}"
+                )
+                .into());
+            }
+            Err(error) => error,
+        };
+        assert!(
+            error.contains(field) && error.contains("too long"),
+            "error should name {field} and the byte length bound, got: {error}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn test_explain_provider_decision_defaults_to_live_provider_receipt()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = ExecuteCommandProvider::new();

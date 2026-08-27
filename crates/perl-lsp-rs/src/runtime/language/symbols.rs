@@ -203,21 +203,24 @@ impl LspServer {
                             ast,
                             &doc.text,
                         );
-                    let mut document_symbols = document_symbols_to_json(live_result.symbols);
 
-                    // Append Test2/Test::More subtest symbols so the outline shows
-                    // the subtest tree. Subtest calls only exist in test files, so
+                    // Merge Test2/Test::More subtests into their lexically
+                    // enclosing outline scopes (#1792): each subtest nests under
+                    // the innermost scope the parse proves instead of floating at
+                    // the top level. Subtest calls only exist in test files, so
                     // this is empty for ordinary source.
+                    let mut outline = live_result.symbols;
                     let subtests = perl_lsp_rs_core::providers::testing::subtest::discover_subtests(
                         ast, &doc.text,
                     );
                     if !subtests.is_empty() {
-                        let subtest_symbols =
-                            perl_lsp_rs_core::providers::testing::subtest::subtest_document_symbols(
-                                &subtests,
-                            );
-                        document_symbols.extend(document_symbols_to_json(subtest_symbols));
+                        perl_lsp_rs_core::providers::testing::subtest::nest_subtest_symbols_in_outline(
+                            &mut outline,
+                            &subtests,
+                            &doc.text,
+                        );
                     }
+                    let mut document_symbols = document_symbols_to_json(outline);
 
                     // Append POD section symbols from a direct line scan
                     document_symbols.extend(pod_section_symbols(&doc.text));

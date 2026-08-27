@@ -1358,10 +1358,8 @@ impl LspServer {
                     }
                 }
             }
-            NodeKind::Package { block, .. } => {
-                if let Some(b) = block {
-                    return Self::find_phase_block_at_offset(b, offset);
-                }
+            NodeKind::Package { block: Some(b), .. } => {
+                return Self::find_phase_block_at_offset(b, offset);
             }
             NodeKind::PhaseBlock { block, .. } => {
                 return Self::find_phase_block_at_offset(block, offset);
