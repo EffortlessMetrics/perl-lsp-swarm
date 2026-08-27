@@ -667,24 +667,50 @@ pub fn workflow_timeout() -> Duration {
 /// perl fails loudly instead of vacuously greening.
 pub const REQUIRE_PERL_ENV: &str = "PERL_LSP_DAP_REQUIRE_PERL";
 
-/// Returns `true` when `perl` is on `PATH`.
+/// Returns `true` when an interpreter is available for DAP tests.
 ///
-/// When [`REQUIRE_PERL_ENV`] is set to a truthy value, a missing perl is
-/// treated as a hard failure (an `assert!` panic) instead of a silent skip.
+/// Availability follows the same single source of truth as live-session
+/// resolution: when [`DEBUGGEE_PERL_OVERRIDE_ENV`] pins an interpreter, that
+/// pin — actually probed over piped stdio — exclusively decides availability;
+/// PATH presence neither rescues a rejected pin nor vetoes a capable one
+/// (claim #12594 repair r2, finding 1). A PATH-only early return used to win
+/// here, letting gates such as the scorecard harness proceed while the pin
+/// named the only interpreter live sessions were allowed to touch.
+///
+/// Without a pin, availability stays the cheap PATH oracle.
+///
+/// When [`REQUIRE_PERL_ENV`] is set to a truthy value, unavailability is a
+/// hard failure (an `assert!` panic) instead of a silent skip, diagnosing
+/// whichever source was consulted and why it rejected — including the full
+/// per-candidate probe failures of a rejected pin.
 pub fn perl_available() -> bool {
-    let available = PerlOracleEnv::for_dap_test_fixture().is_some();
-    if !available {
+    let unavailable_reason: Option<String> =
+        if std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some() {
+            match resolved_debuggee_perl_or_reason() {
+                Ok(_) => None,
+                Err(diagnostics) => Some(format!(
+                    "the {DEBUGGEE_PERL_OVERRIDE_ENV} pinned interpreter failed its \
+                     pipe-capability probe ({diagnostics})"
+                )),
+            }
+        } else if PerlOracleEnv::for_dap_test_fixture().is_some() {
+            None
+        } else {
+            Some("perl interpreter not found on PATH".to_string())
+        };
+    if let Some(reason) = unavailable_reason {
         let strict = std::env::var(REQUIRE_PERL_ENV)
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         assert!(
             !strict,
             "{REQUIRE_PERL_ENV}=1 is set, which forbids the silent DAP-test \
-             SKIP path — perl interpreter not found on PATH. \
-             Install perl or unset the env var."
+             SKIP path — {reason}. Install/repair a pipe-capable perl, fix the \
+             pin, or unset the env vars."
         );
+        return false;
     }
-    available
+    true
 }
 
 // ─── Live-session debuggee perl resolution (#12594 item 6b) ──────────────────
@@ -786,10 +812,18 @@ struct ProbeFailure {
 /// negative result ([`resolved_debuggee_perl_or_reason`]).
 fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
     let fail = |reason: String| ProbeFailure { reason, transient: false };
-    let probe_dir =
-        std::env::temp_dir().join(format!("perl-lsp-dap-debuggee-probe-{}", std::process::id()));
-    fs::create_dir_all(&probe_dir).map_err(|e| fail(format!("cannot create probe dir: {e}")))?;
-    let script = probe_dir.join("pipe_probe.pl");
+    // RAII workspace under the system temp directory: dropped — recursively
+    // removed — on every exit path of this function (success, spawn error,
+    // missing pipe, deadline kill alike), so probing never leaks
+    // `perl-lsp-dap-debuggee-probe-*` artifacts into the system temp dir
+    // (claim #12594 repair r2, finding 2). The pid-keyed prefix keeps
+    // concurrent suites' workspaces distinguishable for hygiene proofs.
+    let probe_prefix = format!("perl-lsp-dap-debuggee-probe-{}-", std::process::id());
+    let probe_dir = tempfile::Builder::new()
+        .prefix(&probe_prefix)
+        .tempdir()
+        .map_err(|e| fail(format!("cannot create probe dir: {e}")))?;
+    let script = probe_dir.path().join("pipe_probe.pl");
     fs::write(
         &script,
         "use strict;\nuse warnings;\nmy $x = 10;\nmy $y = $x + 5;\nprint \"$y\\n\";\n",

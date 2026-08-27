@@ -48,10 +48,7 @@ struct EnvGuard {
 
 impl EnvGuard {
     fn capture(keys: &'static [&'static str]) -> Self {
-        let saved = keys
-            .iter()
-            .map(|key| (*key, std::env::var_os(key)))
-            .collect();
+        let saved = keys.iter().map(|key| (*key, std::env::var_os(key))).collect();
         Self { saved }
     }
 
