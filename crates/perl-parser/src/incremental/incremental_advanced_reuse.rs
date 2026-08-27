@@ -1388,5 +1388,4 @@ mod tests {
         assert_eq!(result.reuse_map.get(&10).map(|s| s.target_position), Some(100));
         assert_eq!(result.reuse_map.get(&20).map(|s| s.target_position), Some(110));
     }
-
 }
