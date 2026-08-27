@@ -14,7 +14,6 @@
     reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
 )]
 use perl_dap::{DapMessage, DebugAdapter};
-use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
@@ -35,10 +34,6 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 //   Line 16:     print "Result: $y\n";
 //
 const MODULE_BREAKPOINT_LINE: u64 = 14; // my $x = 1 — first executable line in sub run
-
-fn perl_available() -> bool {
-    PerlOracleEnv::for_dap_test_fixture().is_some()
-}
 
 fn smoke_timeout() -> Duration {
     if std::env::var_os("LLVM_PROFILE_FILE").is_some()
@@ -177,10 +172,11 @@ fn test_module_breakpoint_accepted_without_session() -> TestResult {
 /// Skips when `perl` is not on `PATH`.
 #[test]
 fn test_module_breakpoint_hit_status_receipt() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_module_breakpoint_hit_status_receipt - perl not available");
+    let Some(perl) =
+        common::debuggee_perl_or_typed_skip("test_module_breakpoint_hit_status_receipt")
+    else {
         return Ok(());
-    }
+    };
 
     let (_dir, script_str, module_str) = setup_fixtures()?;
     let timeout = smoke_timeout();
@@ -202,6 +198,7 @@ fn test_module_breakpoint_hit_status_receipt() -> TestResult {
                 "program": script_str,
                 "args": [],
                 "stopOnEntry": true,
+                "perlPath": perl.binary,
                 "env": {
                     "PERL_PERTURB_KEYS": "0",
                     "PERL_HASH_SEED": "0",

@@ -5,22 +5,22 @@
 //! required to drive a real `perl -d` debug session in tests.
 
 #![allow(dead_code)]
-// Shared helpers; each integration target uses a subset.
-// Typed SKIP/diagnostic helpers print to stderr (see `debuggee_perl_or_typed_skip`);
-// the shared module opt-out is inherited by every including test binary, matching
-// the file-level pattern used across crates/perl-dap/tests.
-#![allow(clippy::print_stderr)]
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel, sync_channel};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 // ─── Public surface ───────────────────────────────────────────────────────────
 
@@ -120,6 +120,30 @@ impl DapWorkflowSession {
         Ok(())
     }
 
+    /// Launch a pinned script with a conflicting PATH, keeping the proof on
+    /// the real DAP launch boundary.
+    #[cfg(test)]
+    pub fn launch_pinned_with_env(
+        &mut self,
+        perl_binary: &Path,
+        script_path: &str,
+        env_overrides: &Value,
+    ) -> Result<(), String> {
+        let mut args = launch_arguments(script_path, None, true, Some(perl_binary));
+        let launch_env = args
+            .get_mut("env")
+            .and_then(Value::as_object_mut)
+            .ok_or("launch arguments missing env object")?;
+        if let Some(env) = env_overrides.as_object() {
+            for (key, value) in env {
+                launch_env.insert(key.clone(), value.clone());
+            }
+        }
+        let resp = self.request("launch", Some(args));
+        self.expect_success(&resp, "launch")?;
+        Ok(())
+    }
+
     /// Launch a script with explicit `stopOnEntry` control.
     ///
     /// When `stop_on_entry` is `true`, the adapter emits a `stopped(reason=entry)` event
@@ -134,7 +158,7 @@ impl DapWorkflowSession {
         // Gated callers use this helper after `perl_available()`. Resolve the
         // same pinned identity here as well so a valid pin controls the live
         // process, even when the caller uses the legacy convenience method.
-        let perl_binary = resolve_debuggee_perl().map(|perl| perl.binary.clone());
+        let perl_binary = resolve_launch_perl_path()?;
         let args = launch_arguments(script_path, None, stop_on_entry, perl_binary.as_deref());
         let resp = self.request("launch", Some(args));
         self.expect_success(&resp, "launch")?;
@@ -148,7 +172,7 @@ impl DapWorkflowSession {
     pub fn launch_with_cwd(&mut self, script_path: &str, cwd: &str) -> Result<(), String> {
         // Keep the explicit cwd path under the same pin-propagating contract
         // as `launch`; this is a gated live-session consumer too.
-        let perl_binary = resolve_debuggee_perl().map(|perl| perl.binary.clone());
+        let perl_binary = resolve_launch_perl_path()?;
         let args = launch_arguments(script_path, Some(cwd), false, perl_binary.as_deref());
         let resp = self.request("launch", Some(args));
         self.expect_success(&resp, "launch")?;
@@ -599,6 +623,29 @@ fn launch_arguments(
     args
 }
 
+/// Resolve the interpreter for a shared launch convenience.
+///
+/// An explicit debuggee pin is an identity constraint, not a preference. If
+/// its pipe-conformance probe fails, return the diagnostic instead of omitting
+/// `perlPath` and allowing the adapter to fall back to PATH/profile resolution.
+/// With no pin, retain the existing ambient fallback for callers that use these
+/// low-level helpers without the normal availability gate.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn resolve_launch_perl_path() -> Result<Option<PathBuf>, String> {
+    if std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some() {
+        return resolved_debuggee_perl_or_reason().map(|perl| Some(perl.binary.clone())).map_err(
+            |reason| {
+                format!(
+                    "{DEBUGGEE_PERL_OVERRIDE_ENV} is set but its pinned interpreter \
+                     cannot be used for a DAP launch: {reason}"
+                )
+            },
+        );
+    }
+
+    Ok(resolve_debuggee_perl().map(|perl| perl.binary.clone()))
+}
+
 const RECENT_EVENT_LIMIT: usize = 8;
 const DIAGNOSTIC_ATOM_LIMIT: usize = 64;
 
@@ -762,6 +809,8 @@ struct DebuggeePerlResolution {
 }
 
 static DEBUGGEE_PERL: OnceLock<DebuggeePerlResolution> = OnceLock::new();
+#[cfg(test)]
+static LAST_PROBE_PID: AtomicU32 = AtomicU32::new(0);
 
 fn debuggee_perl_candidates() -> Vec<PathBuf> {
     if let Some(pinned) = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV) {
@@ -822,6 +871,48 @@ struct ProbeFailure {
 /// resolver retries once on a transient-class failure before caching a
 /// negative result ([`resolved_debuggee_perl_or_reason`]).
 fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
+    probe_debuggee_perl_with_options(binary, DEBUGGEE_PROBE_BUDGET, false, None)
+}
+
+/// Test-only entry point for exercising every child/workspace exit path with a
+/// short deadline and a deterministic `try_wait` failure injection. The
+/// production resolver always uses `probe_debuggee_perl` above, so this seam
+/// cannot alter shipped adapter behavior.
+#[cfg(test)]
+pub(crate) fn probe_debuggee_perl_for_test(
+    binary: &Path,
+    budget: Duration,
+    simulate_wait_error: bool,
+) -> Result<DebuggeePerl, String> {
+    probe_debuggee_perl_with_options(binary, budget, simulate_wait_error, None)
+        .map_err(|failure| failure.reason)
+}
+
+#[cfg(test)]
+pub(crate) fn probe_debuggee_perl_for_test_with_descendant_pid(
+    binary: &Path,
+    budget: Duration,
+    simulate_wait_error: bool,
+    descendant_pid_file: &Path,
+) -> Result<DebuggeePerl, String> {
+    probe_debuggee_perl_with_options(binary, budget, simulate_wait_error, Some(descendant_pid_file))
+        .map_err(|failure| failure.reason)
+}
+
+#[cfg(test)]
+pub(crate) fn last_probe_pid_for_test() -> Option<u32> {
+    match LAST_PROBE_PID.load(Ordering::Acquire) {
+        0 => None,
+        pid => Some(pid),
+    }
+}
+
+fn probe_debuggee_perl_with_options(
+    binary: &Path,
+    probe_budget: Duration,
+    mut simulate_wait_error: bool,
+    descendant_pid_file: Option<&Path>,
+) -> Result<DebuggeePerl, ProbeFailure> {
     let fail = |reason: String| ProbeFailure { reason, transient: false };
     // RAII workspace under the system temp directory: dropped — recursively
     // removed — on every exit path of this function (success, spawn error,
@@ -841,7 +932,8 @@ fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
     )
     .map_err(|e| fail(format!("cannot write probe script: {e}")))?;
 
-    let mut child = Command::new(binary)
+    let mut command = Command::new(binary);
+    command
         .args(["-d", "--"])
         .arg(&script)
         .stdin(Stdio::piped())
@@ -850,18 +942,25 @@ fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
         .env_remove("PERL5LIB")
         .env_remove("PERL5OPT")
         .env("LC_ALL", "C")
-        .env("TZ", "UTC")
-        .spawn()
-        .map_err(|e| fail(format!("cannot spawn: {e}")))?;
+        .env("TZ", "UTC");
+    if let Some(descendant_pid_file) = descendant_pid_file {
+        command.env("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE", descendant_pid_file);
+    }
+    // A dedicated process group lets cleanup terminate descendants on Unix;
+    // Windows uses taskkill's process-tree mode below. Both are test-helper
+    // ownership boundaries: the probe owns the complete subprocess tree.
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command.spawn().map_err(|e| fail(format!("cannot spawn: {e}")))?;
+    #[cfg(test)]
+    LAST_PROBE_PID.store(child.id(), Ordering::Release);
 
     let Some(stdout_pipe) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
+        terminate_probe_process_tree(&mut child);
         return Err(fail("stdout pipe unavailable".to_string()));
     };
     let Some(stderr_pipe) = child.stderr.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
+        terminate_probe_process_tree(&mut child);
         return Err(fail("stderr pipe unavailable".to_string()));
     };
 
@@ -880,19 +979,34 @@ fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
     let stdout_chunks = drain_pipe(stdout_pipe);
     let stderr_chunks = drain_pipe(stderr_pipe);
 
-    let deadline = Instant::now() + DEBUGGEE_PROBE_BUDGET;
+    // The injected wait error is test-only. Give a controlled descendant a
+    // scheduling window to start before exercising that immediate error path;
+    // otherwise the test could validate cleanup of a pre-spawn race instead of
+    // cleanup of a live process tree holding inherited pipe handles.
+    if simulate_wait_error {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let deadline = Instant::now() + probe_budget;
     let status = loop {
-        match child.try_wait() {
+        let wait_result = if simulate_wait_error {
+            simulate_wait_error = false;
+            Err(io::Error::other("injected probe wait failure"))
+        } else {
+            child.try_wait()
+        };
+        match wait_result {
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    terminate_probe_process_tree(&mut child);
                     let _ = writer.join();
+                    join_pipe_reader(stdout_chunks);
+                    join_pipe_reader(stderr_chunks);
                     return Err(ProbeFailure {
                         reason: format!(
                             "no exit within {}s — perl5db cannot bootstrap over piped stdio",
-                            DEBUGGEE_PROBE_BUDGET.as_secs()
+                            probe_budget.as_secs()
                         ),
                         transient: true,
                     });
@@ -905,9 +1019,10 @@ fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
                 // process, and join the small stdin writer after the child
                 // closes the pipe. The TempDir guard then removes the script
                 // workspace on this path as well.
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate_probe_process_tree(&mut child);
                 let _ = writer.join();
+                join_pipe_reader(stdout_chunks);
+                join_pipe_reader(stderr_chunks);
                 return Err(fail(format!("probe wait failed: {e}")));
             }
         }
@@ -939,12 +1054,17 @@ fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
     })
 }
 
+struct PipeDrain {
+    receiver: Receiver<Vec<u8>>,
+    thread: JoinHandle<()>,
+}
+
 /// Drain `pipe` to EOF on a background thread, forwarding chunks to the
-/// returned receiver. Killing the debuggee closes its pipe write ends, which
-/// unblocks the reader — the deadline loop never waits on the drain.
-fn drain_pipe<R: Read + Send + 'static>(pipe: R) -> Receiver<Vec<u8>> {
+/// returned receiver. The join handle remains owned by the probe so cleanup
+/// cannot silently return while a detached reader is still blocked on a pipe.
+fn drain_pipe<R: Read + Send + 'static>(pipe: R) -> PipeDrain {
     let (tx, rx) = channel();
-    std::thread::spawn(move || {
+    let thread = std::thread::spawn(move || {
         let mut pipe = pipe;
         let mut buf = [0u8; 4096];
         loop {
@@ -958,20 +1078,59 @@ fn drain_pipe<R: Read + Send + 'static>(pipe: R) -> Receiver<Vec<u8>> {
             }
         }
     });
-    rx
+    PipeDrain { receiver: rx, thread }
 }
 
 /// Collect drained chunks into a string, bounded well inside the probe budget.
-fn collect_pipe_output(rx: Receiver<Vec<u8>>) -> String {
+fn collect_pipe_output(drain: PipeDrain) -> String {
     let mut bytes = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(chunk) => bytes.extend_from_slice(&chunk),
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+    while let Ok(chunk) =
+        drain.receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+    {
+        bytes.extend_from_slice(&chunk);
+    }
+    let _ = drain.thread.join();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn join_pipe_reader(drain: PipeDrain) {
+    drop(drain.receiver);
+    let _ = drain.thread.join();
+}
+
+/// Terminate the complete probe process tree before joining pipe readers.
+///
+/// Killing only the direct child is insufficient: a descendant can inherit a
+/// stdout/stderr handle and keep a reader blocked after the parent exits. The
+/// probe owns the tree, so timeout and wait-error cleanup must close that whole
+/// ownership boundary before joining either reader.
+fn terminate_probe_process_tree(child: &mut Child) {
+    let pid = child.id();
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).status();
+    }
+    #[cfg(unix)]
+    {
+        let process_group = format!("-{pid}");
+        let _ = Command::new("kill").args(["-TERM", "--", &process_group]).status();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => {
+                    let _ = Command::new("kill").args(["-KILL", "--", &process_group]).status();
+                    break;
+                }
+            }
         }
     }
-    String::from_utf8_lossy(&bytes).into_owned()
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Diagnostic identity from the probe's own output — the perl5db banner line
@@ -1058,6 +1217,10 @@ fn resolved_debuggee_perl_or_reason() -> Result<&'static DebuggeePerl, String> {
 /// diagnostics) when no pipe-capable interpreter can be resolved. Under
 /// [`REQUIRE_PERL_ENV`] strict mode an unresolved debuggee perl is a hard
 /// failure instead of a skip, matching [`perl_available`].
+#[expect(
+    clippy::print_stderr,
+    reason = "Typed integration-test skip diagnostics belong on stderr."
+)]
 pub fn debuggee_perl_or_typed_skip(test_name: &str) -> Option<&'static DebuggeePerl> {
     match resolved_debuggee_perl_or_reason() {
         Ok(perl) => Some(perl),

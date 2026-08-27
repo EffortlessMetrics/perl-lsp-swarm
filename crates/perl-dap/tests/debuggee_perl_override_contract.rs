@@ -23,10 +23,6 @@
 //! as its own test binary: mutating process-wide env/state here cannot race
 //! the rest of the DAP suites.
 
-#![expect(
-    clippy::print_stderr,
-    reason = "Integration-test diagnostic output; tracing is not wired into test helpers."
-)]
 #![allow(unsafe_code)] // required for std::env::set_var/remove_var in Rust 2024 (unsafe fn)
 
 mod common;
@@ -161,9 +157,16 @@ fn debuggee_pin_is_the_single_availability_source_of_truth() -> Result<(), Box<d
             None => "<no panic: strict mode accepted a rejected pin>".to_string(),
         };
         assert!(
-            !verdict.is_ok(),
+            verdict.is_err(),
             "{REQUIRE_PERL_ENV}=1 must hard-fail when the \
              {DEBUGGEE_PERL_OVERRIDE_ENV} pin fails its probe; got silent acceptance"
+        );
+        let launch_error = common::resolve_launch_perl_path()
+            .err()
+            .ok_or("a rejected pin must not fall back to ambient launch resolution")?;
+        assert!(
+            launch_error.contains(DEBUGGEE_PERL_OVERRIDE_ENV),
+            "launch failure must identify the rejected pin, got: {launch_error}"
         );
         // The repaired diagnostic names the pinned interpreter and its probe
         // failure; blaming PATH would mean the early return never consulted

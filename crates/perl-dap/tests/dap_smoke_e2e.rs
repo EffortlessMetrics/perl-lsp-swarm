@@ -1,11 +1,6 @@
 //! End-to-end DAP smoke test using the native debug adapter and real `perl -d`.
 
-#![expect(
-    clippy::print_stderr,
-    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
-)]
 use perl_dap::{DapMessage, DebugAdapter};
-use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
 use std::fs::write;
 use std::sync::mpsc::{Receiver, sync_channel};
@@ -15,10 +10,6 @@ use tempfile::tempdir;
 mod common;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-fn perl_available() -> bool {
-    PerlOracleEnv::for_dap_test_fixture().is_some()
-}
 
 fn smoke_timeout() -> Duration {
     if std::env::var_os("LLVM_PROFILE_FILE").is_some()
@@ -69,10 +60,9 @@ fn stopped_reason(message: &DapMessage) -> Option<String> {
 
 #[test]
 fn dap_smoke_e2e() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping dap_smoke_e2e - perl executable is not available");
+    let Some(perl) = common::debuggee_perl_or_typed_skip("dap_smoke_e2e") else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script_path = workspace.path().join("smoke.pl");
@@ -115,6 +105,7 @@ print "$x\n";
                 "program": script_path_str,
                 "args": [],
                 "stopOnEntry": true,
+                "perlPath": perl.binary,
                 "env": {
                     "PERL_PERTURB_KEYS": "0",
                     "PERL_HASH_SEED": "0",
