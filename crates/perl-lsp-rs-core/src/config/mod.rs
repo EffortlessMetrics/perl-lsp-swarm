@@ -5137,8 +5137,25 @@ profile = "recommended"
     }
 
     /// A second lookup must reuse the first probe result rather than launch a
-    /// new interpreter. The missing path makes a reprobe observably fail with
-    /// `IoFailed`, so a fast second process cannot satisfy this oracle.
+    /// new interpreter.
+    ///
+    /// The oracle is the `missing_perl` swap: an explicit non-empty
+    /// `perl_path` always wins in `PerlToolchainProfile::resolve`, so a
+    /// relaunch after the swap spawns a path that does not exist and lands in
+    /// `IoFailed`. Step 1 below *proves* that discriminator on a fresh config
+    /// rather than assuming it, so the reuse assertion cannot pass vacuously.
+    ///
+    /// The live sentinel probe remains the strict oracle for `perl_args`
+    /// passthrough and stdout parsing whenever the host actually runs it, but
+    /// it is no longer required to *succeed* for the memoization claim.
+    /// `SYSTEM_INC_PROBE_TIMEOUT` is a 1 s wall-clock budget that has to cover
+    /// `CreateProcess`/`fork` plus interpreter startup, and a cold spawn under
+    /// full-suite parallelism can transiently exceed it (#12902), which made
+    /// this test fail as a spurious `TimedOut`. A cached `TimedOut`
+    /// discriminates against a relaunch's `IoFailed` exactly as well as a
+    /// cached `Paths` does, so the claim survives host-scheduler weather.
+    /// Every other outcome — notably the `NonZeroExit` class that the sentinel
+    /// program's arg-quoting regressions produce — still fails loudly.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn get_system_inc_reuses_cached_probe_without_relaunching() -> TestResult {
@@ -5147,43 +5164,105 @@ profile = "recommended"
             Err(_) => return Ok(()),
         };
         let missing_perl = tempfile::tempdir()?.path().join("missing-perl");
+        // Quote-, space-, and backslash-free program: the sentinel arg
+        // passes through the oracle's env-stripped command, where
+        // embedded double quotes broke arg quoting into a NonZeroExit,
+        // and msys perl on Windows ate the backslash of a qq newline
+        // escape. The trailing semicolon is load-bearing —
+        // `fetch_perl_inc` appends its own `-e` block and perl
+        // concatenates -e programs into ONE script, so without it the
+        // concatenation is a syntax error — and the chr(10) keeps the
+        // sentinel on its own line so it never fuses with the first
+        // @INC entry.
+        let sentinel_args: Vec<String> =
+            vec!["-e".into(), "print(qq(cache-sentinel).chr(10));".into()];
+
+        // 1. Prove the discriminator instead of assuming it: a *fresh* config
+        //    pointed at the missing interpreter really does relaunch and fail
+        //    to spawn, so every reuse assertion below is non-vacuous.
+        let mut relaunched = WorkspaceConfig {
+            use_system_inc: true,
+            perl_path: Some(missing_perl.to_string_lossy().into_owned()),
+            perl_args: sentinel_args.clone(),
+            ..WorkspaceConfig::default()
+        };
+        assert_eq!(
+            relaunched.get_system_inc_probe_outcome(),
+            SystemIncProbeOutcome::IoFailed,
+            "an uncached probe against the missing interpreter must be observably \
+             distinct from any outcome the live probe can cache",
+        );
+
+        // 2. Populate the cache from a live probe.
         let mut config = WorkspaceConfig {
             use_system_inc: true,
             perl_path: Some(perl_path.to_string_lossy().into_owned()),
-            // Quote-, space-, and backslash-free program: the sentinel arg
-            // passes through the oracle's env-stripped command, where
-            // embedded double quotes broke arg quoting into a NonZeroExit,
-            // and msys perl on Windows ate the backslash of a qq newline
-            // escape. The trailing semicolon is load-bearing —
-            // `fetch_perl_inc` appends its own `-e` block and perl
-            // concatenates -e programs into ONE script, so without it the
-            // concatenation is a syntax error — and the chr(10) keeps the
-            // sentinel on its own line so it never fuses with the first
-            // @INC entry.
-            perl_args: vec!["-e".into(), "print(qq(cache-sentinel).chr(10));".into()],
+            perl_args: sentinel_args,
             ..WorkspaceConfig::default()
         };
 
         let cached = config.get_system_inc_probe_outcome();
-        let cached_paths = match &cached {
-            SystemIncProbeOutcome::Paths(paths)
-                if paths.iter().any(|path| path == Path::new("cache-sentinel")) =>
-            {
-                paths.clone()
-            }
-            other => {
-                return Err(
-                    format!("expected the sentinel probe to produce Paths, got {other:?}").into()
+        match &cached {
+            SystemIncProbeOutcome::Paths(paths) => {
+                assert!(
+                    paths.iter().any(|path| path == Path::new("cache-sentinel")),
+                    "the live probe must pass perl_args through and parse the \
+                     sentinel out of stdout, got {paths:?}",
                 );
             }
-        };
+            // Transient host-spawn weather, not a contract failure (#12902).
+            // The cached value still discriminates against a relaunch below.
+            SystemIncProbeOutcome::TimedOut => {}
+            other => {
+                return Err(format!(
+                    "expected the sentinel probe to produce Paths (or a transient \
+                     TimedOut), got {other:?}"
+                )
+                .into());
+            }
+        }
+        let cached_paths = config.get_system_inc().to_vec();
 
-        // Changing the public probe input after the first lookup is only a
-        // test discriminator; normal settings updates invalidate the cache.
+        // 3. Changing the public probe input after the first lookup is only a
+        //    test discriminator; normal settings updates invalidate the cache.
         config.perl_path = Some(missing_perl.to_string_lossy().into_owned());
         let reused = config.get_system_inc_probe_outcome();
         assert_eq!(reused, cached, "second lookup must reuse the cached outcome");
         assert_eq!(config.get_system_inc().to_vec(), cached_paths);
+        Ok(())
+    }
+
+    /// The same reuse law, proven with no subprocess at all.
+    ///
+    /// `get_system_inc_reuses_cached_probe_without_relaunching` needs a live
+    /// interpreter and returns early when the host has none, so on a
+    /// perl-less runner nothing currently proves that `ensure_system_inc_probe`
+    /// short-circuits on a populated cache. Seeding the cache with a value no
+    /// live probe could ever produce closes that gap deterministically: an
+    /// implementation that relaunched would spawn the missing interpreter and
+    /// return `IoFailed`, which can never equal the sentinel.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn populated_system_inc_cache_short_circuits_the_probe() -> TestResult {
+        let missing_perl = tempfile::tempdir()?.path().join("missing-perl");
+        let sentinel = vec![PathBuf::from("::never-produced-by-a-live-probe::")];
+        let mut config = WorkspaceConfig {
+            use_system_inc: true,
+            perl_path: Some(missing_perl.to_string_lossy().into_owned()),
+            ..WorkspaceConfig::default()
+        };
+        config.system_inc_cache = Some(SystemIncProbeOutcome::Paths(sentinel.clone()));
+
+        assert_eq!(
+            config.get_system_inc_probe_outcome(),
+            SystemIncProbeOutcome::Paths(sentinel.clone()),
+            "a populated cache must short-circuit the probe entirely",
+        );
+        assert_eq!(
+            config.get_system_inc().to_vec(),
+            sentinel,
+            "the fail-closed path accessor must serve the cached paths too",
+        );
         Ok(())
     }
 
