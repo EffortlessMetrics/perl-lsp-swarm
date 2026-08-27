@@ -159,6 +159,13 @@ test "$result" -eq {0 if expect_skip else 1}
                     raise RuntimeError(f"empty cherry-pick receipt omitted {line!r}")
         elif skipped.exists():
             raise RuntimeError("unverified empty cherry-pick was incorrectly skipped")
+        elif cherry_pick_skip_status:
+            receipt = evidence / "empty-cherry-pick-first_cherry-pick_--continue.txt"
+            if not receipt.is_file():
+                raise RuntimeError("failed empty cherry-pick skip did not retain a receipt")
+            receipt_text = receipt.read_text(encoding="utf-8")
+            if "The previous cherry-pick is now empty" not in receipt_text:
+                raise RuntimeError("failed empty cherry-pick receipt omitted the diagnostic")
 
 
 # Independent oracle for the artifacts reproduced from d174ec1e9 on current
@@ -335,6 +342,14 @@ def main() -> None:
         cherry_pick_status=1,
         dirty_tree=False,
         expect_skip=True,
+    )
+    exercise_empty_cherry_pick_guard(
+        cherry_pick_head="d174ec1e9845056b8e1a193001ce88a2ea9eaebe",
+        expected_commit="d174ec1e9845056b8e1a193001ce88a2ea9eaebe",
+        cherry_pick_status=1,
+        cherry_pick_skip_status=7,
+        dirty_tree=False,
+        expect_skip=False,
     )
     exercise_empty_cherry_pick_guard(
         cherry_pick_head="0f6a4334eb5a53df54a5ed40103659a63578b6f5",
