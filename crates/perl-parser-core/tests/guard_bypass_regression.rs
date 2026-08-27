@@ -30,6 +30,14 @@ fn is_structural_nesting_family(error: &ParseError) -> bool {
     matches!(error, ParseError::NestingTooDeep { .. })
 }
 
+fn is_recovered_error(error: &ParseError) -> bool {
+    matches!(error, ParseError::Recovered { .. })
+}
+
+fn never_matches(_: &ParseError) -> bool {
+    false
+}
+
 fn parse_fails_with(
     code: &str,
     expected: fn(&ParseError) -> bool,
@@ -37,7 +45,8 @@ fn parse_fails_with(
 ) -> bool {
     let mut parser = Parser::new(code);
     let result = parser.parse();
-    has_exclusive_error_family(result.as_ref().err(), parser.errors(), expected, forbidden)
+    result.is_err()
+        && has_exclusive_error_family(result.as_ref().err(), parser.errors(), expected, forbidden)
 }
 
 fn has_exclusive_error_family(
@@ -140,26 +149,26 @@ fn parse_error_oracle_rejects_contradictory_guard_families() {
         None,
         &errors,
         is_recursion_guard_error,
-        is_structural_nesting_error
+        is_structural_nesting_family
     ));
     assert!(!has_exclusive_error_family(
         Some(&errors[0]),
         &errors[1..],
         is_recursion_guard_error,
-        is_structural_nesting_error
+        is_structural_nesting_family
     ));
     assert!(!has_exclusive_error_family(
         Some(&errors[1]),
         &errors[..1],
         is_recursion_guard_error,
-        is_structural_nesting_error
+        is_structural_nesting_family
     ));
 }
 
 #[test]
 fn recursion_oracle_rejects_structural_guard_substitution() {
     let code = nested_eval_blocks(600);
-    assert!(!parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_error));
+    assert!(!parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_family));
 }
 
 #[test]
@@ -169,6 +178,20 @@ fn recursion_oracle_rejects_lifted_limit_signature() {
 
     let lifted_structural_limit = ParseError::NestingTooDeep { depth: 513, max_depth: 513 };
     assert!(!is_structural_nesting_error(&lifted_structural_limit));
+}
+
+#[test]
+fn parse_fails_with_rejects_successful_recovery_with_recorded_errors() {
+    let code = "my $x = ; print 1;";
+    let mut parser = Parser::new(code);
+    let result = parser.parse();
+    assert!(result.is_ok(), "the recovery fixture should return a partial AST");
+    assert!(
+        parser.errors().iter().any(is_recovered_error),
+        "the recovery fixture should record a recovered diagnostic"
+    );
+
+    assert!(!parse_fails_with(code, is_recovered_error, never_matches));
 }
 
 // --- parse_word_not_expr (precedence.rs) ---
