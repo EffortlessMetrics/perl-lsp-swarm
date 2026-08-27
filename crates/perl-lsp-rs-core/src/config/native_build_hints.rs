@@ -343,11 +343,9 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
         match ch {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
-            ')' | ']' | '}' => {
-                if stack.pop().is_none() {
-                    return idx.saturating_sub(start);
-                }
-            }
+            // The guard pops for every closer; an empty stack means the
+            // value underflowed its opener, which ends the rejected span.
+            ')' | ']' | '}' if stack.pop().is_none() => return idx.saturating_sub(start),
             ',' | ';' if stack.is_empty() => return idx.saturating_sub(start),
             _ => {}
         }
@@ -1163,5 +1161,50 @@ Module::Build->new(
         assert_eq!(hints.libs_alternatives, vec![vec!["-lreal".to_string()]]);
         assert!(hints.diagnostics.is_empty());
         Ok(())
+    }
+
+    /// Direct exit pins for the rejected-value delimiter walk (#12910).
+    ///
+    /// `rejected_value_len` decides how far `extract_key_literal_values`
+    /// skips after a malformed value, so a wrong exit silently re-scans or
+    /// swallows the next assignment. Each case below fixes one exit:
+    /// bracket underflow, a *balanced* closer that must be consumed rather
+    /// than treated as an exit, nesting, quoting, escapes, and exhaustion.
+    ///
+    /// The balanced cases are the discriminating ones for the arm shape: the
+    /// closer branch pops unconditionally and only exits when the stack was
+    /// already empty, so any rewrite that stops popping (or that exits on
+    /// every closer) changes `,`/`;` recognition on the next iteration.
+    #[test]
+    fn rejected_value_len_pins_every_delimiter_walk_exit() {
+        // Underflowing closer at depth zero ends the span at its offset.
+        assert_eq!(rejected_value_len("abc)def", 0), 3);
+        assert_eq!(rejected_value_len(")rest", 0), 0);
+
+        // A balanced closer is consumed, so the following top-level
+        // terminator is the real exit.
+        assert_eq!(rejected_value_len("(a,b);tail", 0), 5);
+        assert_eq!(rejected_value_len("[{a},{b}];rest", 0), 9);
+
+        // Separators inside an open group are not exits.
+        assert_eq!(rejected_value_len("(a;b),z", 0), 5);
+
+        // Quoted delimiters are inert, including a quoted closer that must
+        // not underflow the stack.
+        assert_eq!(rejected_value_len("'a,b';rest", 0), 5);
+        assert_eq!(rejected_value_len("')';tail", 0), 3);
+        // A backslash-escaped quote does not close the string, so the later
+        // comma stays inert and the walk exhausts the input.
+        assert_eq!(rejected_value_len(r#""a\",b"#, 0), 6);
+        // The same escape inside a string that does close: the comma after
+        // the real closer is the exit.
+        assert_eq!(rejected_value_len(r#""a\"b",c"#, 0), 6);
+
+        // No terminator at all consumes the remainder.
+        assert_eq!(rejected_value_len("(unterminated", 0), 13);
+        assert_eq!(rejected_value_len("", 0), 0);
+
+        // Offsets are relative to `start`, which is how the caller advances.
+        assert_eq!(rejected_value_len("LIBS => (a,b);tail", 8), 5);
     }
 }
