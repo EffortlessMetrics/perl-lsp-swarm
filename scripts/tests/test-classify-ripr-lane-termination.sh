@@ -160,5 +160,35 @@ else
   fail "classifier must emit its decision_boundary line"
 fi
 
+# --- Review round-2 boundary pins ---------------------------------------------
+#
+# Pins for the two scenarios raised in review (lone cancellation, wall-clock
+# timeout). The adopted taxonomy (#6807/#12563, inheriting #12771's marker
+# set) counts API cancellation as positive runner-teardown evidence, so both
+# classify infra-no-proof. This is deliberately bounded, not proof-hiding:
+#   - the gate handles lane_result==cancelled upstream with a blocking error,
+#     so user/API cancels never reach this classifier;
+#   - a misclassified termination costs at most ONE same-head rerun whose own
+#     trusted outcome arbitrates the SHA — the classification arms the retry,
+#     it is never the verdict;
+#   - a deterministic timeout reproduces on attempt 2 and lands on the loud
+#     not-proven-infra-retry-exhausted bound; no further automation runs.
+
+LONE_CANCEL="${WORK}/lone-cancel.log"
+cat >"${LONE_CANCEL}" <<'EOF'
+2026-08-26T08:12:04Z ##[error]The operation was canceled.
+EOF
+expect_eq "PIN: lone API-cancellation is teardown evidence under adopted taxonomy" \
+  "infra-no-proof" "$(classify_field "${LONE_CANCEL}" classification)"
+
+TIMEOUT_KILL="${WORK}/timeout-kill.log"
+cat >"${TIMEOUT_KILL}" <<'EOF'
+2026-08-26T02:30:00Z info: ripr exposure pass 4/5
+2026-08-26T06:00:00Z ##[error]The job running on runner cx43-03 has exceeded the maximum execution time of 210 minutes.
+2026-08-26T06:00:01Z ##[error]The operation was canceled.
+EOF
+expect_eq "PIN: wall-clock timeout without receipt reruns once then lands on the loud bound" \
+  "infra-no-proof" "$(classify_field "${TIMEOUT_KILL}" classification)"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
