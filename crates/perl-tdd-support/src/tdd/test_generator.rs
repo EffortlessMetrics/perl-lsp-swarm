@@ -935,10 +935,13 @@ impl RefactoringSuggester {
             | NodeKind::Ternary { .. } => {
                 *complexity += 1;
             }
-            NodeKind::Binary { op: operator, .. } => {
-                if operator == "&&" || operator == "||" || operator == "and" || operator == "or" {
-                    *complexity += 1;
-                }
+            NodeKind::Binary { op: operator, .. }
+                if operator == "&&"
+                    || operator == "||"
+                    || operator == "and"
+                    || operator == "or" =>
+            {
+                *complexity += 1;
             }
             _ => {}
         }
