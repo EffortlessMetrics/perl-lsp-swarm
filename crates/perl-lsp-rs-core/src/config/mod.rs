@@ -5139,6 +5139,16 @@ profile = "recommended"
     /// A second lookup must reuse the first probe result rather than launch a
     /// new interpreter. The missing path makes a reprobe observably fail with
     /// `IoFailed`, so a fast second process cannot satisfy this oracle.
+    ///
+    /// The oracle therefore discriminates for every first outcome except
+    /// `IoFailed` itself, and the memoization claim does not depend on the
+    /// live probe *succeeding*. That matters because the first probe is
+    /// bounded by `SYSTEM_INC_PROBE_TIMEOUT` (1s) and host spawn latency —
+    /// antivirus scan storms, cold interpreter DLL loads, full-suite
+    /// parallelism — can exceed that budget, which made an unconditional
+    /// `Paths` requirement flake as a spurious `TimedOut` (#12902).
+    /// A successful probe is still held to the stronger sentinel claim below,
+    /// so healthy hosts lose no coverage.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn get_system_inc_reuses_cached_probe_without_relaunching() -> TestResult {
@@ -5146,7 +5156,10 @@ profile = "recommended"
             Ok(path) => path,
             Err(_) => return Ok(()),
         };
-        let missing_perl = tempfile::tempdir()?.path().join("missing-perl");
+        // Bind the temp dir: dropping it here would delete the directory
+        // out from under the path the reprobe is supposed to fail on.
+        let missing_perl_dir = tempfile::tempdir()?;
+        let missing_perl = missing_perl_dir.path().join("missing-perl");
         let mut config = WorkspaceConfig {
             use_system_inc: true,
             perl_path: Some(perl_path.to_string_lossy().into_owned()),
@@ -5165,18 +5178,33 @@ profile = "recommended"
         };
 
         let cached = config.get_system_inc_probe_outcome();
-        let cached_paths = match &cached {
-            SystemIncProbeOutcome::Paths(paths)
-                if paths.iter().any(|path| path == Path::new("cache-sentinel")) =>
-            {
-                paths.clone()
-            }
-            other => {
-                return Err(
-                    format!("expected the sentinel probe to produce Paths, got {other:?}").into()
+        match &cached {
+            // A successful probe must carry this test's sentinel: that proves
+            // the subprocess really ran the program configured above rather
+            // than some other interpreter invocation.
+            SystemIncProbeOutcome::Paths(paths) => {
+                assert!(
+                    paths.iter().any(|path| path == Path::new("cache-sentinel")),
+                    "successful probe must contain the sentinel, got {paths:?}",
                 );
             }
-        };
+            // A bounded live-probe failure is still a discriminating baseline:
+            // the reprobe against `missing_perl` spawns and fails immediately,
+            // so it cannot reproduce any of these classes.
+            SystemIncProbeOutcome::TimedOut
+            | SystemIncProbeOutcome::NonZeroExit
+            | SystemIncProbeOutcome::SuccessfulEmpty => {}
+            // `IoFailed` is exactly the reprobe signature so it cannot
+            // discriminate, and `Unavailable`/`Disabled` mean no interpreter
+            // ran at all even though the toolchain resolved one above.
+            other => {
+                return Err(format!(
+                    "first probe landed in a non-discriminating outcome: {other:?}"
+                )
+                .into());
+            }
+        }
+        let cached_paths = config.get_system_inc().to_vec();
 
         // Changing the public probe input after the first lookup is only a
         // test discriminator; normal settings updates invalidate the cache.
