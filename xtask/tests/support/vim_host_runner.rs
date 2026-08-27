@@ -1641,11 +1641,11 @@ fn walk_wire_value(
                             evidence.publish_diagnostics_batches.push(batch);
                         }
                     }
-                    // Latches the FIRST didChange line: once set, the guard
-                    // is false and the arm falls through to the catch-all,
-                    // exactly as the nested `if` did (#12910).
-                    "textDocument/didChange" if evidence.did_change_line.is_none() => {
-                        evidence.did_change_line = Some(line_index);
+                    // Set-once latch on the FIRST didChange line: `get_or_insert`
+                    // is the shape #12910 asks for here, and states the
+                    // keep-the-earliest intent the nested `if` only implied.
+                    "textDocument/didChange" => {
+                        evidence.did_change_line.get_or_insert(line_index);
                     }
                     _ => {}
                 }

@@ -343,13 +343,15 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
         match ch {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
-            // `stack.pop()` is a side effect, so this guarded arm is only
-            // equivalent to the nested `if` because a match guard runs at
-            // most once for the arm whose pattern matched, and a `Some`
-            // falls through to the catch-all arm — exactly the no-op the
-            // nested `if` performed (#12910).
-            ')' | ']' | '}' if stack.pop().is_none() => {
-                return idx.saturating_sub(start);
+            ')' | ']' | '}' => {
+                // Bind the pop before testing it. A mutating call reads as a
+                // pure condition inside a match guard, so #12910 asks for the
+                // `let` at every side-effecting site: the pop must happen
+                // exactly once per closer whether or not the walk ends here.
+                let closed_an_open_group = stack.pop().is_some();
+                if !closed_an_open_group {
+                    return idx.saturating_sub(start);
+                }
             }
             ',' | ';' if stack.is_empty() => return idx.saturating_sub(start),
             _ => {}
