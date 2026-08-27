@@ -120,7 +120,20 @@ branch_deletion_admitted() {
     if ! command -v gh >/dev/null 2>&1; then
         return 1
     fi
-    if ! pr_number="$(gh pr list --head "$branch" --state merged --json number --jq '.[0].number' 2>/dev/null)"; then
+
+    # Bind the lookup to the repository origin actually points at. Without
+    # --repo, gh infers the repository from the working directory, so the PR
+    # this branch is matched against may not belong to the repo whose branch
+    # is about to be deleted. An underivable origin is a fail-closed refusal.
+    local repo_slug
+    repo_slug="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null \
+        | sed -E 's#\.git$##; s#^.*[:/]([^/]+/[^/]+)$#\1#')" || return 1
+    if [[ -z "$repo_slug" || "$repo_slug" != */* ]]; then
+        return 1
+    fi
+
+    if ! pr_number="$(gh pr list --repo "$repo_slug" --head "$branch" --state merged \
+        --json number --jq '.[0].number' 2>/dev/null)"; then
         return 1
     fi
     if [[ ! "$pr_number" =~ ^[0-9]+$ ]]; then
@@ -129,6 +142,35 @@ branch_deletion_admitted() {
 
     bash "$SCRIPT_DIR/branch-deletion-admission" plan --pr "$pr_number" --remote origin \
         >/dev/null 2>&1
+}
+
+# Succeed only when the local branch tip is the tip the admission was granted
+# for. The admission reasons about the REMOTE branch; deleting the local ref is
+# a separate act, and a local tip carrying commits that never reached the remote
+# is unsalvaged work no admission covered.
+#
+# A `-d`/`-D` ladder cannot supply this. Squash-merge leaves the branch unmerged
+# by reachability, so `-d` always refuses and any fallback to `-D` is
+# unconditional — the safe form would be decorative. Compare tips instead.
+local_tip_is_admitted() {
+    local branch="$1" local_sha remote_sha
+
+    local_sha="$(git -C "$REPO_ROOT" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)" \
+        || return 1
+    [[ -n "$local_sha" ]] || return 1
+
+    # Prefer the live remote. Squash-merge often deletes the remote branch, so
+    # an absent ref falls back to the last-known remote-tracking ref; when
+    # neither can be read we retain rather than guess.
+    remote_sha="$(git -C "$REPO_ROOT" ls-remote origin "refs/heads/$branch" 2>/dev/null \
+        | awk 'NR==1{print $1}')"
+    if [[ -z "$remote_sha" ]]; then
+        remote_sha="$(git -C "$REPO_ROOT" rev-parse --verify --quiet \
+            "refs/remotes/origin/$branch" 2>/dev/null)"
+    fi
+    [[ -n "$remote_sha" ]] || return 1
+
+    [[ "$local_sha" == "$remote_sha" ]]
 }
 
 # Remove a worktree. Uses git worktree remove (no --force) so git's own dirty-check
@@ -145,12 +187,13 @@ remove_worktree() {
         # shared #3957 ownership read does not retain the worktree we just
         # removed. Every refusal retains the branch and reports why.
         if branch_deletion_admitted "$branch"; then
-            # Try the safe form first so git's own merged-check stays live, the
-            # same belt-and-suspenders the worktree removal above relies on.
-            # Only escalate to -D once the admission has already established a
-            # merged parent PR, matching agent-cleanup.ps1's -d/-D ladder.
-            if ! git -C "$REPO_ROOT" branch -d "$branch" 2>/dev/null; then
+            # The admission covers the remote branch. Delete the local ref only
+            # when it is the same tip, so unpushed local commits are never
+            # discarded under a remote-scoped authorization.
+            if local_tip_is_admitted "$branch"; then
                 git -C "$REPO_ROOT" branch -D "$branch" 2>/dev/null || true
+            else
+                echo "    -> retaining local branch $branch: local tip is not the admitted remote tip" >&2
             fi
         else
             echo "    -> retaining local branch $branch: branch-deletion admission refused" >&2

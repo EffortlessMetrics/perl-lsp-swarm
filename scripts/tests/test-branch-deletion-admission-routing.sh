@@ -33,9 +33,13 @@ fi
 pass 'cleanup-completed-worktrees has no local branch delete path'
 
 REPO="$TMP/repo"
+git init -q --bare "$REPO.git"
 git init -q -b main "$REPO"
 git -C "$REPO" config user.email test@example.invalid
 git -C "$REPO" config user.name test
+# The helper binds its PR lookup to origin and refuses when it cannot derive
+# one, so every fixture needs a real origin.
+git -C "$REPO" remote add origin "$REPO.git"
 printf 'init\n' > "$REPO/file"
 git -C "$REPO" add file
 git -C "$REPO" commit -qm init
@@ -82,5 +86,72 @@ git -C "$REPO" show-ref --verify --quiet refs/heads/feature/retained \
 grep -qF 'run --quiet --locked -p xtask --bin branch-deletion-admission -- plan --pr 123 --remote origin' "$TMP/admission.log" \
     || fail 'local branch deletion did not use the shared admission'
 pass 'retaining admission preserves the local branch after worktree cleanup'
+
+# An ADMITTED branch whose local tip never reached the remote must still be
+# retained: the admission covers the REMOTE branch, and unpushed local commits
+# are unsalvaged work no admission authorized. This is the case a `-d`/`-D`
+# ladder cannot catch — squash-merge leaves the branch unmerged by
+# reachability, so `-d` always refuses and the fallback to `-D` deletes anyway.
+#
+# Both repos below have a real origin so the check discriminates on tip
+# divergence, not on an unreadable remote.
+setup_admitted_repo() {
+    local repo="$1" wt="$2" branch="$3" extra_local_commit="$4"
+    git init -q --bare "$repo.git"
+    git init -q -b main "$repo"
+    git -C "$repo" config user.email test@example.invalid
+    git -C "$repo" config user.name test
+    git -C "$repo" remote add origin "$repo.git"
+    printf 'init\n' > "$repo/file"
+    git -C "$repo" add file
+    git -C "$repo" commit -qm init
+    git -C "$repo" push -q origin main
+    git -C "$repo" worktree add -q -b "$branch" "$wt"
+    printf 'feature\n' > "$wt/file"
+    git -C "$wt" add file
+    git -C "$wt" commit -qm feature
+    # Push BEFORE any extra commit, so origin holds the earlier tip.
+    git -C "$wt" push -q origin "$branch"
+    if [[ "$extra_local_commit" == "yes" ]]; then
+        printf 'unpushed\n' >> "$wt/file"
+        git -C "$wt" add file
+        git -C "$wt" commit -qm 'local commit that never reached origin'
+    fi
+    # Merge LAST so the branch is reachable from main either way and the
+    # worktree still classifies clean-finished; only the origin tip differs.
+    git -C "$repo" merge --no-ff -qm "merge-$branch" "$branch"
+}
+
+cat > "$TMP/bin/cargo" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "--version" ]]; then
+  printf 'cargo 1.95.0 (0000000000 2026-01-01)\n'
+  exit 0
+fi
+printf '%s\n' "$*" > "${ADMISSION_LOG}"
+exit 0
+STUB
+chmod +x "$TMP/bin/cargo"
+
+# Diverged local tip -> retained.
+setup_admitted_repo "$TMP/diverged" "$TMP/wt-diverged" feature/unpushed yes
+PATH="$TMP/bin:$PATH" ADMISSION_LOG="$TMP/admission-diverged.log" \
+REPO_ROOT="$TMP/diverged" bash "$ROOT/scripts/swarm-clean" --apply >/dev/null 2>&1 || true
+grep -qF 'plan --pr 123 --remote origin' "$TMP/admission-diverged.log" \
+    || fail 'the diverged scenario never reached the shared admission'
+git -C "$TMP/diverged" show-ref --verify --quiet refs/heads/feature/unpushed \
+    || fail 'an admitted branch whose local tip never reached origin was deleted'
+pass 'an admitted branch with an unpushed local tip is retained'
+
+# Positive control: local tip == origin tip -> deleted. Without this the test
+# above would pass even if the helper retained unconditionally.
+setup_admitted_repo "$TMP/insync" "$TMP/wt-insync" feature/insync no
+PATH="$TMP/bin:$PATH" ADMISSION_LOG="$TMP/admission-insync.log" \
+REPO_ROOT="$TMP/insync" bash "$ROOT/scripts/swarm-clean" --apply >/dev/null 2>&1 || true
+if git -C "$TMP/insync" show-ref --verify --quiet refs/heads/feature/insync; then
+    fail 'positive control: an admitted branch already at the origin tip was not deleted'
+fi
+pass 'an admitted branch already at the origin tip is deleted'
 
 printf 'All branch-deletion admission routing checks passed.\n'
