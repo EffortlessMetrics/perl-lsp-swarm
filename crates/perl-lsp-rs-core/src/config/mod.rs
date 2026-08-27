@@ -5298,14 +5298,25 @@ profile = "recommended"
     /// boundary, must default to the production constant, and must not leak
     /// onto sibling harness threads.
     ///
-    /// The end-to-end half is an A/B on one identical probe input: widened it
-    /// returns `Paths`, zeroed it returns `TimedOut`. Both halves are
-    /// deterministic rather than racy — `output_with_timeout` polls
-    /// `try_wait` immediately after spawn, the probe program sleeps 50 ms
-    /// before printing `@INC`, and `elapsed >= Duration::ZERO` always holds
-    /// on that first poll. Neither half is asserted against the production
-    /// 1 s bound, which is the host-weather race this change exists to
-    /// remove (#12902).
+    /// Every assertion here is deterministic. The discriminating one is the
+    /// oracle constructor: it reads the seam rather than the constant, and no
+    /// scheduling can perturb that.
+    ///
+    /// There is deliberately **no** "zero budget must produce `TimedOut`"
+    /// assertion. `output_with_timeout` checks `try_wait` *before* the
+    /// deadline and returns the child's output as soon as it has exited, so a
+    /// parent descheduled past the probe program's runtime would observe
+    /// `Paths` under any budget — a scheduling-dependent oracle, i.e. exactly
+    /// the class of flake this change exists to remove. Making the child
+    /// long-lived instead would make the outcome `TimedOut` under the
+    /// production bound too, so it would stop discriminating the override at
+    /// all; no deterministic end-to-end outcome A/B exists here.
+    ///
+    /// The remaining links stay covered elsewhere: `fetch_perl_inc` passing
+    /// `oracle.timeout` through is unchanged and proven end-to-end by
+    /// `get_system_inc_does_not_stall_on_slow_interpreter`, and
+    /// `output_with_timeout` honouring the budget it is handed is proven by
+    /// `output_with_timeout_kills_long_running_subprocess`.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn system_inc_probe_timeout_override_is_thread_scoped() -> TestResult {
@@ -5336,30 +5347,25 @@ profile = "recommended"
             "an un-overridden oracle must carry the production bound",
         );
         {
-            let _widened = SystemIncProbeTimeoutOverride::install(WIDENED_SYSTEM_INC_PROBE_TIMEOUT);
-            let mut widened = config.clone();
-            assert!(
-                matches!(widened.get_system_inc_probe_outcome(), SystemIncProbeOutcome::Paths(_)),
-                "a widened budget must let the 50 ms probe complete",
-            );
-        }
-
-        {
-            let _guard = SystemIncProbeTimeoutOverride::install(Duration::ZERO);
-            assert_eq!(effective_system_inc_probe_timeout(), Duration::ZERO);
+            let _guard = SystemIncProbeTimeoutOverride::install(WIDENED_SYSTEM_INC_PROBE_TIMEOUT);
+            assert_eq!(effective_system_inc_probe_timeout(), WIDENED_SYSTEM_INC_PROBE_TIMEOUT);
             assert_eq!(
                 PerlOracleEnv::for_startup_inc_probe(&config)
                     .ok_or("for_startup_inc_probe returned None unexpectedly")?
                     .timeout,
-                Duration::ZERO,
+                WIDENED_SYSTEM_INC_PROBE_TIMEOUT,
                 "the oracle constructor must read the seam, not the constant",
             );
 
-            let mut overridden = config.clone();
-            assert_eq!(
-                overridden.get_system_inc_probe_outcome(),
-                SystemIncProbeOutcome::TimedOut,
-                "the overridden budget must reach the subprocess boundary",
+            // Not a discriminator — the production bound usually covers this
+            // probe too. It is here so the widened value is known to produce a
+            // working probe rather than only a plausible `Duration`, and it is
+            // safe in both directions: an early-exiting child still yields
+            // `Paths` under a wide budget.
+            let mut widened = config.clone();
+            assert!(
+                matches!(widened.get_system_inc_probe_outcome(), SystemIncProbeOutcome::Paths(_)),
+                "a widened budget must let the 50 ms probe complete",
             );
 
             let sibling = std::thread::spawn(effective_system_inc_probe_timeout)
