@@ -1800,8 +1800,86 @@ impl WorkspaceConfig {
 /// remote filesystem, or even a cold cache can comfortably exceed it.
 /// 1000 ms is short enough that a stalled probe does not noticeably block
 /// the LSP and long enough that healthy probes succeed reliably.
+///
+/// Oracle construction must go through
+/// [`effective_system_inc_probe_timeout`], which collapses to this constant in
+/// production and honors a thread-local test-only widening under `cfg(test)`
+/// (#12902).
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) const SYSTEM_INC_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Effective wall-clock budget for one bounded startup-`@INC` probe subprocess.
+///
+/// Production callers always observe [`SYSTEM_INC_PROBE_TIMEOUT`]. Under
+/// `cfg(test)` a thread-local override may widen the budget for the calling
+/// test only: memoization claims about the probe cache must survive hosts
+/// whose process creation intermittently stalls for seconds (Windows
+/// full-suite parallelism, antivirus scan storms), but widening the constant
+/// itself would either weaken the production latency contract or race
+/// concurrent sibling tests that rely on the 1 s bound.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn effective_system_inc_probe_timeout() -> Duration {
+    #[cfg(test)]
+    if let Some(budget) = system_inc_probe_test_budget() {
+        return budget;
+    }
+    SYSTEM_INC_PROBE_TIMEOUT
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod system_inc_probe_budget {
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    thread_local! {
+        static TEST_BUDGET: Cell<Option<Duration>> = const { Cell::new(None) };
+    }
+
+    pub(crate) fn current() -> Option<Duration> {
+        TEST_BUDGET.with(Cell::get)
+    }
+
+    /// Guard holding a widened probe budget on the calling thread; restored on
+    /// drop so a failing assertion cannot leak it into later tests that reuse
+    /// this thread.
+    pub(crate) struct BudgetGuard;
+
+    impl Drop for BudgetGuard {
+        fn drop(&mut self) {
+            TEST_BUDGET.with(|cell| cell.set(None));
+        }
+    }
+
+    #[allow(dead_code)] // consumed by latency-sensitive oracle tests only
+    pub(crate) fn widen(budget: Duration) -> BudgetGuard {
+        TEST_BUDGET.with(|cell| cell.set(Some(budget)));
+        BudgetGuard
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn system_inc_probe_test_budget() -> Option<Duration> {
+    crate::config::system_inc_probe_budget::current()
+}
+
+/// Widen the bounded startup-`@INC` probe budget on the calling thread until
+/// the returned guard drops. Test-only: production code paths never call into
+/// this module's `cfg(test)` surface, so no other thread or release build can
+/// observe it.
+///
+/// Rationale (#12902): this host class
+/// intermittently spends multiple seconds inside `CreateProcess` / interpreter
+/// initialization under parallel test load, which made any single live probe
+/// race the fixed 1 s `SYSTEM_INC_PROBE_TIMEOUT` and classify as `TimedOut`
+/// even when the interpreter was healthy. Tests whose claim is memoization or
+/// output classification rather than latency scoping use this guard to keep
+/// their verdict pinned to semantics instead of scheduler weather.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn widen_system_inc_probe_budget_for_tests(
+    budget: Duration,
+) -> system_inc_probe_budget::BudgetGuard {
+    crate::config::system_inc_probe_budget::widen(budget)
+}
 
 /// Run `command` with a wall-clock timeout, killing the child if it exceeds
 /// `timeout`. Returns `io::Error` with kind `TimedOut` on timeout. Used by
@@ -5146,6 +5224,14 @@ profile = "recommended"
             Ok(path) => path,
             Err(_) => return Ok(()),
         };
+        // Flake receipts (#12902): verdicts here raced the
+        // fixed 1 s probe budget whenever host process creation or interpreter
+        // startup stalled for seconds — under parallel full-suite load on
+        // Windows and even isolated. Widening this thread's budget keeps the
+        // claim pinned to memoization semantics; the 1 s production bound
+        // itself stays covered by `get_system_inc_does_not_stall_on_slow_interpreter`.
+        let _generous_budget =
+            crate::config::widen_system_inc_probe_budget_for_tests(Duration::from_secs(60));
         let missing_perl = tempfile::tempdir()?.path().join("missing-perl");
         let mut config = WorkspaceConfig {
             use_system_inc: true,
@@ -5184,6 +5270,7 @@ profile = "recommended"
         let reused = config.get_system_inc_probe_outcome();
         assert_eq!(reused, cached, "second lookup must reuse the cached outcome");
         assert_eq!(config.get_system_inc().to_vec(), cached_paths);
+        drop(_generous_budget);
         Ok(())
     }
 
