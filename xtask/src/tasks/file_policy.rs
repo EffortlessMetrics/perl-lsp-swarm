@@ -26,7 +26,7 @@
 //!
 //! Refs: #8174, #8566.
 
-use color_eyre::eyre::{Context, Result, bail, ensure, eyre};
+use color_eyre::eyre::{Context, Result, bail, eyre};
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -2199,6 +2199,7 @@ fn render_migration_candidates_markdown(candidates: &[MigrationCandidate]) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::ensure;
 
     fn make_entry(
         id: &str,
