@@ -184,7 +184,7 @@ PY
   else
     continue_status=$?
     printf '%s\n' "$continue_output" >&2
-    if [ "$continue_status" -ne 1 ] || ! grep -qi "empty cherry-pick" <<<"$continue_output"; then
+    if [ "$continue_status" -ne 1 ] || ! grep -Eqi "cherry-pick .*empty|empty .*cherry-pick" <<<"$continue_output"; then
       echo "cherry-pick --continue failed for a non-empty-cherry-pick reason; refusing no-op skip." >&2
       exit 1
     fi
