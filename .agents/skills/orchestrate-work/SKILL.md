@@ -190,12 +190,15 @@ discard it to make the ledger tidy.
 
 - push surviving work-in-progress to a named salvage branch and **open a salvage PR**
   for it immediately — or reuse the lane's existing PR if it has one. Before either,
-  confirm the original writer cannot also write: verify process-group or budget death
-  through the task handle, or record an explicit writer-authority transfer in the
-  durable subject — silence alone is not confirmation, and reusing the existing PR
-  assumes this lane is now its single writer. The hosted workflows validate pull
-  requests and main, not arbitrary branch pushes, so a branch-only push starts no
-  hosted proof; without the PR, the claim retains `NOT_PROVEN`. With the salvage PR
+  establish a single writer: either verify through the task handle that the task is dead
+  and cannot resume, then confirm its process tree has exited and its locks are gone; or
+  obtain the prior writer's acknowledged authority handoff, stop or revoke that writer
+  so it cannot resume, and only then record the transfer in the durable subject.
+  Process-group exit, budget exhaustion, silence, or a unilateral transfer record alone
+  is insufficient; reusing the existing PR assumes this lane is now its single writer.
+  The hosted workflows validate pull requests and main, not arbitrary branch pushes,
+  so a branch-only push starts no hosted proof; without the PR, the claim retains
+  `NOT_PROVEN`. With the salvage PR
   open, remote CI becomes the verification of record rather than a local re-proof the
   quiet lane can no longer run;
 - order relaunches by dependency-gate priority, not by which lane died first;
