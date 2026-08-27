@@ -13,6 +13,9 @@ examples. It is not a second workflow engine.
   exact-subject machine-evidence boundary.
 - [GitHub surfaces](GITHUB_SURFACES.md) — durable issue, PR, review, check, thread, label,
   and merge authority.
+- [Reserved-surface register](RESERVED_SURFACES.md) — advisory ownership boundaries for
+  seams where concurrent lanes have risked same-seam writes; consult before the first
+  write to a listed surface.
 - [Skill contract](SKILL_CONTRACT.md) — public flows and atomic skill composition.
 
 The machine-readable document inventory is

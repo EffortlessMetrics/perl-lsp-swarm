@@ -80,10 +80,12 @@ paths = [
   "scripts/test/vim-clients/",
   "scripts/test/vim-host-driver.vim",
   ".github/workflows/vim-hermetic-host.yml",
+  "xtask/src/lib.rs",
+  "xtask/src/main.rs",
 ]
 owner_issues = [11396, 11372]
 status = "open"
-notes = "Racing vim leaves on 2026-08-26: format-on-save ownership (#11396, branch agent/vim-lsp-format-on-save-host) and content-bound host toolchain provisioning (#11372, branch fix/11372-vim-host-toolchain). Both wire new xtask modules through the shared trunk registration points xtask/src/{lib,main}.rs, so the second leaf rebases onto the first leaf's wiring instead of editing it in parallel."
+notes = "Vim-host leaves (#11396 format-on-save ownership, #11372 content-bound toolchain provisioning) share scripts/test/vim-clients drivers, the hermetic-host workflow, and the xtask trunk registration points for new modules. Whichever leaf lands owns that wiring baseline; each later vim claim rebases onto landed wiring instead of re-editing it, coordinating through its live issue at brief time."
 
 [[surfaces]]
 name = "framework-adapters-canonical-facts"
@@ -104,7 +106,7 @@ name = "parser-consumers-facade-imports"
 paths = [".ci/coverage-packs.toml", ".github/workflows/ci.yml"]
 owner_issues = [11377, 11382, 11389]
 status = "open"
-notes = "Three facade-import sweep drivers were simultaneously open on 2026-08-26 (semantic #11377, TDD #11382, workspace/index #11389). Their diffs genuinely overlap beyond their named crates: all three edit .ci/coverage-packs.toml, .github/workflows/ci.yml, and perl-lsp-rs facade import sites. Drivers agree on landing order at brief time; the later lanes resolve onto landed coverage-pack state."
+notes = "Facade-import sweeps (semantic #11377, TDD #11382, workspace/index #11389) overlap beyond their named crates: each edits .ci/coverage-packs.toml, .github/workflows/ci.yml, and perl-lsp-rs facade import sites; observed simultaneously open on 2026-08-26. A driver that lands owns the landed coverage-pack state as baseline; remaining sweeps reconcile onto it through their controlling issues."
 
 [[surfaces]]
 name = "devex-shared-build-cache"

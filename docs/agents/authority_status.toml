@@ -173,3 +173,15 @@ path = ".spec/3988-merge-readiness/spec.md"
 status = "historical"
 successor = "docs/agents/REVIEW_CURRENTNESS.md"
 notes = "Completed mechanism snapshot. Exact-subject machine evidence survives; exact-head human-review ceremony does not."
+
+[[documents]]
+path = "docs/agents/RESERVED_SURFACES.md"
+status = "current"
+successor = ""
+notes = "PR #12781 lands the advisory ownership-boundary index requested by #12562. It declares itself the current reserved-surface register and defers runtime liveness and topology to root AGENTS.md and live GitHub state."
+
+[[documents]]
+path = "docs/agents/reserved_surfaces.toml"
+status = "current"
+successor = ""
+notes = "PR #12781 lands the machine companion of docs/agents/RESERVED_SURFACES.md. Rows record durable surface ownership boundaries only, never lane liveness, topology, or task order."

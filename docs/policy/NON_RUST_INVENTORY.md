@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12070 |
-| Rust-family files | 3680 |
-| Non-Rust files | 8390 |
-| Allowlisted | 6144 |
+| Total tracked files | 12076 |
+| Rust-family files | 3681 |
+| Non-Rust files | 8395 |
+| Allowlisted | 6149 |
 | Unclassified | 2246 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 440 |
-| documentation | 2742 |
+| documentation | 2745 |
 | generated | 2 |
 | production | 328 |
 | test | 2020 |
-| tooling | 612 |
+| tooling | 614 |
 | unclassified | 2246 |
 
 ## Unclassified files
@@ -2343,6 +2343,7 @@
 | `.changes/unreleased/product-12639-Fixed-235500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12641-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12765-Changed-154500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -4350,6 +4351,7 @@
 | `docs/agents/IMPLEMENTATION_WORKER.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/ORCHESTRATION_ROLES.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/README.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/agents/RESERVED_SURFACES.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/REVIEW_CURRENTNESS.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/ROLE_ROUTER_FIXTURES.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/SCOUT_PROMPTS.md` | documentation | `non-rust-docs-tree` | docs |
@@ -4372,6 +4374,7 @@
 | `docs/agents/lenses/test-economics.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/lenses/vision-alignment.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/pr-ledger.schema.json` | documentation | `non-rust-docs-tree` | docs |
+| `docs/agents/reserved_surfaces.toml` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/workflow-outcome.schema.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/architecture/perl-oracle-subprocess-contract.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/architecture/perl-subprocess-seams.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6318,6 +6321,7 @@
 | `scripts/ci/dap_editor_transport_inventory.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_editor_transport_scan.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_editor_transport_schema.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/dap_editor_transport_security.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_protocol_authority.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_scorecard_model.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_scorecard_packet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6665,6 +6669,7 @@
 | `scripts/tests/test-windows-fresh-path-oracle.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-worktree-manager.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test_dap_editor_transport_inventory.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test_dap_editor_transport_security.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test_dap_protocol_authority.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test_dap_scorecard_packet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test_dap_scorecard_runtime.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
