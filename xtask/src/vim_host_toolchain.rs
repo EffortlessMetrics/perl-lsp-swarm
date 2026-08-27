@@ -1126,6 +1126,43 @@ fn verify_manifest_core(
     )
 }
 
+/// Upgrade a pre-runtime-digest manifest without reacquiring an already
+/// verified vim-lsp checkout. The schema version intentionally remains v1, so
+/// caches written before this field existed need a local, fully verified
+/// migration rather than being treated as a network-required rebuild.
+fn migrate_legacy_manifest(
+    manifest_path: &Path,
+    manifest_bytes: &[u8],
+    key: &str,
+    entry_root: &Path,
+    probe: &dyn Fn(&Path) -> Result<String>,
+) -> Option<ProvisionOutcome> {
+    let mut value = serde_json::from_slice::<serde_json::Value>(manifest_bytes).ok()?;
+    let vim = value.get_mut("vim")?.as_object_mut()?;
+    if vim.contains_key("runtime_tree_sha256") {
+        return None;
+    }
+    let runtime_root = entry_root.join("vim").join("vim92");
+    let digest = runtime_tree_sha256(&runtime_root).ok()?;
+    vim.insert("runtime_tree_sha256".to_string(), serde_json::Value::String(digest));
+    let migrated_bytes = serde_json::to_vec_pretty(&value).ok()?;
+    let manifest = serde_json::from_slice::<ToolchainManifest>(&migrated_bytes).ok()?;
+    if manifest.cache_key != key
+        || verify_manifest_core(&manifest, &migrated_bytes, entry_root, probe).is_err()
+    {
+        return None;
+    }
+    fs::write(manifest_path, &migrated_bytes).ok()?;
+    Some(ProvisionOutcome {
+        manifest_sha256: bytes_sha256(&migrated_bytes).ok()?,
+        manifest_path: manifest_path.to_path_buf(),
+        manifest,
+        cache_hit: true,
+        vim_executable_role: entry_root.join("vim").join("vim92").join("vim.exe"),
+        vim_lsp_runtimepath_role: entry_root.join("vim-lsp"),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Provision
 // ---------------------------------------------------------------------------
@@ -1180,24 +1217,30 @@ pub fn provision(
     if manifest_path.exists() {
         let cached = fs::read(&manifest_path)
             .map_err(|error| mismatch(format!("reading the cached manifest: {error}")));
-        if let Ok(manifest_bytes) = cached
-            && let Ok(manifest) = serde_json::from_slice::<ToolchainManifest>(&manifest_bytes)
-            // The requested key is the governed identity of THIS run: a
-            // foreign manifest dropped into this directory still reproduces
-            // its own key, so only agreement with the currently requested
-            // identity may admit a cache hit (never the directory alone).
-            && manifest.cache_key == key
-            && verify_manifest_core(&manifest, &manifest_bytes, &entry_root, probe).is_ok()
-        {
-            return Ok(ProvisionOutcome {
-                manifest_sha256: file_sha256(&manifest_path)
-                    .map_err(|error| mismatch(format!("{error:#}")))?,
-                manifest_path,
-                manifest,
-                cache_hit: true,
-                vim_executable_role: entry_root.join("vim").join("vim92").join("vim.exe"),
-                vim_lsp_runtimepath_role: entry_root.join("vim-lsp"),
-            });
+        if let Ok(manifest_bytes) = cached {
+            if let Ok(manifest) = serde_json::from_slice::<ToolchainManifest>(&manifest_bytes)
+                // The requested key is the governed identity of THIS run: a
+                // foreign manifest dropped into this directory still reproduces
+                // its own key, so only agreement with the currently requested
+                // identity may admit a cache hit (never the directory alone).
+                && manifest.cache_key == key
+                && verify_manifest_core(&manifest, &manifest_bytes, &entry_root, probe).is_ok()
+            {
+                return Ok(ProvisionOutcome {
+                    manifest_sha256: file_sha256(&manifest_path)
+                        .map_err(|error| mismatch(format!("{error:#}")))?,
+                    manifest_path,
+                    manifest,
+                    cache_hit: true,
+                    vim_executable_role: entry_root.join("vim").join("vim92").join("vim.exe"),
+                    vim_lsp_runtimepath_role: entry_root.join("vim-lsp"),
+                });
+            }
+            if let Some(migrated) =
+                migrate_legacy_manifest(&manifest_path, &manifest_bytes, &key, &entry_root, probe)
+            {
+                return Ok(migrated);
+            }
         }
     }
 
@@ -1855,6 +1898,36 @@ mod tests {
         assert!(second.cache_hit, "identical rerun must be an exact-identity cache hit");
         assert_eq!(first.manifest_path, second.manifest_path);
         assert_eq!(before, fs::read(&second.manifest_path)?);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_manifest_migrates_without_vim_lsp_reacquisition() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
+        let output = scratch.path().join("out");
+        let (mut inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
+        let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+
+        let mut legacy =
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&first.manifest_path)?)?;
+        legacy
+            .get_mut("vim")
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|vim| vim.remove("runtime_tree_sha256"))
+            .ok_or_else(|| anyhow::anyhow!("fresh manifest did not contain runtime digest"))?;
+        fs::write(&first.manifest_path, serde_json::to_vec_pretty(&legacy)?)?;
+
+        // With no local vim-lsp source, any rebuild would need network access.
+        // Successful migration therefore proves the existing checkout was
+        // retained and reverified locally.
+        inputs.vim_lsp_source = None;
+        let migrated = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(migrated.cache_hit);
+        assert!(migrated.manifest.vim.runtime_tree_sha256.starts_with("sha256:"));
+        verify_layout(&migrated.manifest_path, &probe)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
         Ok(())
     }
 
