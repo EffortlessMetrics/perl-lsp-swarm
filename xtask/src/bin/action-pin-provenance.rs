@@ -23,14 +23,30 @@ const DEFAULT_LEDGER: &str = ".ci/policies/action-pin-provenance.toml";
 struct Args {
     #[arg(long)]
     root: Option<PathBuf>,
+    /// Exact recorded comparator tree (event-time base SHA for push/merge_group).
     #[arg(long)]
     base: Option<String>,
+    /// Compare against the true merge base of this git revision and HEAD,
+    /// resolved at run time so the scanned result's own incorporated base side
+    /// is used even after intervening merges rebuilt it (#10194). Fails closed
+    /// when ancestry cannot be proven.
+    #[arg(long, conflicts_with = "base")]
+    merge_base: Option<String>,
     #[arg(long)]
     receipt: Option<PathBuf>,
     #[arg(long)]
     strict_all: bool,
     #[arg(long, default_value = DEFAULT_LEDGER)]
     ledger: PathBuf,
+}
+
+/// Where the effective comparator came from, recorded verbatim in the receipt.
+#[derive(Clone, Copy, Debug)]
+enum BaseSource {
+    /// Caller supplied the exact comparator commit (`--base`).
+    Recorded,
+    /// Comparator resolved at run time as merge-base(revision, HEAD).
+    MergeBase,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -111,6 +127,7 @@ struct Receipt {
     schema_version: &'static str,
     receipt_kind: &'static str,
     base: Option<String>,
+    base_source: Option<String>,
     base_compared: bool,
     strict_all: bool,
     passed: bool,
@@ -130,12 +147,22 @@ fn main() -> Result<()> {
     let ledger = load_ledger(&ledger_path)?;
     let pattern = uses_pattern()?;
     let current = scan_worktree(&root, &pattern)?;
-    let (base, compared) = match args.base.as_deref().filter(|v| !v.trim().is_empty()) {
-        Some(base) => (scan_git_ref(&root, base, &pattern)?, true),
+    let comparator = if let Some(spec) = non_empty(args.merge_base.as_deref()) {
+        // The scanned worktree is a merge result; compare it against the base
+        // tree actually incorporated into that result, resolved now.
+        Some((resolve_merge_base(&root, spec)?, BaseSource::MergeBase))
+    } else if let Some(recorded) = non_empty(args.base.as_deref()) {
+        Some((recorded.to_owned(), BaseSource::Recorded))
+    } else {
+        None
+    };
+    let (base, compared) = match &comparator {
+        Some((comparator_sha, _)) => (scan_git_ref(&root, comparator_sha, &pattern)?, true),
         None => (Vec::new(), false),
     };
     let mut receipt = validate(current, base, compared, args.strict_all, &ledger);
-    receipt.base = args.base;
+    receipt.base = comparator.as_ref().map(|(sha, _)| sha.clone());
+    receipt.base_source = comparator.as_ref().map(|(sha, source)| base_source_label(sha, *source));
     for issue in &receipt.issues {
         eprintln!(
             "::{} file={},line={}::[{}] {}",
@@ -156,7 +183,40 @@ fn main() -> Result<()> {
         "Action-pin provenance passed ({} external use(s), {} new/changed, {} warning(s))",
         receipt.occurrence_count, receipt.new_or_changed_count, receipt.warning_count
     );
+    if let Some((sha, source)) = &comparator {
+        println!("Comparator: {} ({})", sha, base_source_label(sha, *source));
+    }
     Ok(())
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|v| !v.is_empty())
+}
+
+fn base_source_label(comparator_sha: &str, source: BaseSource) -> String {
+    match source {
+        BaseSource::Recorded => format!("recorded:{comparator_sha}"),
+        BaseSource::MergeBase => format!("merge_base(git merge-base <rev> HEAD):{comparator_sha}"),
+    }
+}
+
+/// Resolves the exact commit describing the shared history of `revision` and
+/// HEAD inside the repository rooted at `root`. Fails closed so an unprovable
+/// comparator can never silently degrade into no comparison or a stale one.
+fn resolve_merge_base(root: &Path, revision: &str) -> Result<String> {
+    let output =
+        Command::new("git").current_dir(root).args(["merge-base", revision, "HEAD"]).output()?;
+    if !output.status.success() {
+        return Err(eyre!(
+            "git merge-base {revision} HEAD failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let sha = String::from_utf8(output.stdout)?.trim().to_ascii_lowercase();
+    if sha.len() != 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(eyre!("git merge-base {revision} HEAD returned unexpected output: {sha}"));
+    }
+    Ok(sha)
 }
 
 fn default_root() -> PathBuf {
@@ -321,6 +381,7 @@ fn validate(
         schema_version: RECEIPT_SCHEMA,
         receipt_kind: "action_pin_provenance",
         base: None,
+        base_source: None,
         base_compared: compared,
         strict_all: strict,
         passed: error_count == 0,
