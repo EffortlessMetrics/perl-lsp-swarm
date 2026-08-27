@@ -299,12 +299,13 @@ fn unquoted_heredoc_marker(line: &str, carry: ScanCarry) -> (Option<usize>, Scan
                         &mut escaped,
                     ) {
                         // Closed on this line: answer the rest by the legacy
-                        // rule, exactly as before. The window starts at
-                        // `index` because the prefix was modelled and is
-                        // already known to hold no unquoted `<<` or `#`, so
-                        // anything `<<`-shaped back there is string content
-                        // and must not be resurrected.
-                        Some(_) => (legacy_heredoc_marker(line, index), ScanCarry::Clear),
+                        // rule, windowed to start *past the literal's closing
+                        // delimiter*. Everything before that is either modelled
+                        // prefix (already known to hold no unquoted `<<` or
+                        // `#`) or the literal's own body, and `find("<<")` must
+                        // see neither: the prefix's markers are string content,
+                        // and the body's are the construct's own text.
+                        Some(resumed) => (legacy_heredoc_marker(line, resumed), ScanCarry::Clear),
                         // Still open at end of line: the rest of the line is
                         // literal content and owns no opener. Carrying the
                         // literal keeps the following lines out of the scan
@@ -1917,15 +1918,16 @@ mod tests {
             regions[0].end < source.len(),
             "the body must close at END, not run to EOF: {regions:?}"
         );
-        // A bare regex is detected the same way. Note what falling back really
-        // buys: the legacy rule, holes included. Here legacy reads the `#`
-        // inside the regex as a comment marker and suppresses the opener. That
-        // is the pre-#5456 answer, unchanged — this PR neither fixes nor
-        // worsens it.
+        // A bare regex is detected the same way. This assertion used to pin
+        // `None` and call it "the legacy rule, holes included" — but the hole
+        // was the legacy scan reading the `#` *inside* the regex as a comment
+        // marker. Windowing the fallback past the literal's closing delimiter
+        // removes that reach, and the answer now matches perl 5.38.2, which
+        // runs the fixture printing `body` then `tail`.
         assert_eq!(
             super::heredoc_opener_on_line("$x =~ /a#b/; print <<EOF;"),
-            None,
-            "falling back inherits the legacy rule exactly, including its holes"
+            Some(("EOF".to_string(), false)),
+            "the fallback must not see the construct's own body"
         );
     }
 
@@ -2023,6 +2025,39 @@ mod tests {
     /// code. `q{` + `<<EOF` opened a phantom heredoc whose body ran to EOF and
     /// took `code();` with it. Verified against perl 5.38.2: `syntax OK`, `$s`
     /// is an ordinary 7-character string, and the trailing statement runs.
+    /// #12934 review (CHANGES_REQUIRED): the fallback window started at the
+    /// literal's *opening* offset, so `find("<<")` searched the construct's own
+    /// body and rediscovered a marker the scan had just consumed. Verified
+    /// against perl 5.38.2: both fixtures are `syntax OK` with no heredoc.
+    #[test]
+    fn marker_inside_a_closed_quote_like_literal_opens_no_heredoc() {
+        for line in [
+            "my $s = q{a <<FAKE}; print 1;",
+            "my $r = qr/a <<FAKE/; print 1;",
+            "my $t = qq{a <<FAKE}; print 1;",
+        ] {
+            assert_eq!(
+                super::heredoc_opener_on_line(line),
+                None,
+                "a marker inside the consumed literal must not be rediscovered: {line}"
+            );
+        }
+        // Region level, same line: nothing is classified as heredoc, so the
+        // statement after it stays code.
+        let source = "my $s = q{a <<FAKE}; print 1;\ncode();\n";
+        assert!(
+            scan_heredoc_regions(source).is_empty(),
+            "no region expected: {:?}",
+            scan_heredoc_regions(source)
+        );
+        // The window must not swallow a real opener that follows the literal.
+        assert_eq!(
+            super::heredoc_opener_on_line("my $s = q{a <<FAKE}; print <<EOF;"),
+            Some(("EOF".to_string(), false)),
+            "a real opener after the closed literal is still found"
+        );
+    }
+
     #[test]
     fn quote_like_literal_spanning_lines_opens_no_heredoc() {
         let source = "my $s = q{\n<<EOF\n};\ncode();\n";
