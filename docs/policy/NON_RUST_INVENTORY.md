@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12161 |
-| Rust-family files | 3720 |
-| Non-Rust files | 8441 |
-| Allowlisted | 6207 |
-| Unclassified | 2234 |
+| Total tracked files | 12204 |
+| Rust-family files | 3737 |
+| Non-Rust files | 8467 |
+| Allowlisted | 6215 |
+| Unclassified | 2252 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 446 |
-| documentation | 2760 |
+| config | 447 |
+| documentation | 2764 |
 | generated | 2 |
 | production | 331 |
 | test | 2032 |
-| tooling | 636 |
-| unclassified | 2234 |
+| tooling | 639 |
+| unclassified | 2252 |
 
 ## Unclassified files
 
@@ -124,6 +124,24 @@
 | `distribution/test-release.sh` | `sh` |
 | `distribution/windows/update-manifests.ps1` | `ps1` |
 | `distribution/winget/perl-lsp.yaml` | `yaml` |
+| `fixtures/agent_packet_dogfood_core/analysis_train_synthetic_transfer.v1.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/golden/agent_packet_dogfood_core.advisory.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/chain_of_thought_in_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/credential_in_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/dangling_intervention_ref.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/expected_errors.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/machine_local_path_in_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_model_identity.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_packet_digest.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_scope_ceiling.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_subject.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/oversized_event_excerpt.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/tampered_event_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/tampered_packet_envelope.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/unknown_disposition.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/unknown_root_field.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/unsorted_event_sequences.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/parser_p05_synthetic.v1.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A01-file-wide-suppression-carveout.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A02-dead-code-baseline-absorption.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A03-cfg-test-attr-general-carveout.json` | `json` |
@@ -2691,6 +2709,7 @@
 | `.ci/release/evidence.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/risk-tags.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/agent-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/schemas/agent-packet-dogfood.core.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/ci-route-plan.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-ux.schema.json` | config | `non-rust-ci-config` | release/ci |
@@ -3068,6 +3087,9 @@
 | `.spec/11079-pl700-removal-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11084-import-cleanup-train-manifest/import_cleanup_train.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11178-lite-xl-bdd-journeys/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11178-lite-xl-bdd-journeys/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11178-lite-xl-bdd-journeys/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11246-clippy-map-err-ignore-boundaries/activation-plan.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11246-clippy-map-err-ignore-boundaries/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11246-clippy-map-err-ignore-boundaries/denominator.csv` | tooling | `non-rust-spec-tree` | developer-experience |
@@ -6044,6 +6066,7 @@
 | `fixtures/agent_implementation_packet/invalid/unconditional_profile_with_decision.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/live_observed_candidate.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/shuffled/bounded_leaf_offline_shuffled.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_packet_dogfood_core/golden/agent_packet_dogfood_core.advisory.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `fixtures/agent_review_packet/challenger_service_marker.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/agent_review_packet/closure_open_finding.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/agent_review_packet/closure_service_marker_eligible.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
@@ -6353,6 +6376,7 @@
 | `scripts/ci/check_security_reconciliation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_source_commit_api.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/ci_classify.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/classify-ripr-lane-termination` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_common.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_docs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_production.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6635,6 +6659,7 @@
 | `scripts/test/vim-host-diagnostics-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-freshness-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-host-save-format-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_iterative_parser.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6656,6 +6681,7 @@
 | `scripts/tests/test-check-rust-toolchain-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-ci-audit-workflows-shim.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-ci-cost-monitor-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-classify-ripr-lane-termination.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-clean-tmp-targets.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-cleanup-completed-worktrees.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-cleanup-worktrees-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
