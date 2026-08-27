@@ -767,41 +767,44 @@ mod tests {
         CorpusTopology::from_paths(&CorpusPaths::from_root(root.to_path_buf()))
     }
 
-    fn create_file_symlink_for_test(original: &Path, link: &Path) -> bool {
+    #[cfg(any(unix, windows))]
+    fn create_file_symlink_for_test(original: &Path, link: &Path) -> Result<bool, std::io::Error> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::symlink;
 
-            symlink(original, link).expect("create file symlink");
-            true
+            symlink(original, link)?;
+            Ok(true)
         }
         #[cfg(windows)]
         {
             if perl_tdd_support::symlink_test_decision().skip_visibly() {
-                return false;
+                return Ok(false);
             }
             perl_tdd_support::try_create_file_symlink(original, link)
-                .expect("create file symlink")
-                .is_some()
+                .map(|created| created.is_some())
         }
     }
 
-    fn create_directory_symlink_for_test(original: &Path, link: &Path) -> bool {
+    #[cfg(any(unix, windows))]
+    fn create_directory_symlink_for_test(
+        original: &Path,
+        link: &Path,
+    ) -> Result<bool, std::io::Error> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::symlink;
 
-            symlink(original, link).expect("create directory symlink");
-            true
+            symlink(original, link)?;
+            Ok(true)
         }
         #[cfg(windows)]
         {
             if perl_tdd_support::symlink_test_decision().skip_visibly() {
-                return false;
+                return Ok(false);
             }
             perl_tdd_support::try_create_dir_symlink(original, link)
-                .expect("create directory symlink")
-                .is_some()
+                .map(|created| created.is_some())
         }
     }
 
@@ -836,14 +839,15 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn binding_rejects_intermediate_runtime_root_symlink() {
+    fn binding_rejects_intermediate_runtime_root_symlink() -> Result<(), Box<dyn std::error::Error>>
+    {
         let parent = tempfile::tempdir().expect("temporary directory");
         let real_parent = parent.path().join("real");
         let real_root = real_parent.join("repo");
         let linked_parent = parent.path().join("linked");
         fs::create_dir_all(&real_root).expect("create real runtime root");
-        if !create_directory_symlink_for_test(&real_parent, &linked_parent) {
-            return;
+        if !create_directory_symlink_for_test(&real_parent, &linked_parent)? {
+            return Ok(());
         }
         let requested = linked_parent.join("repo");
 
@@ -851,6 +855,7 @@ mod tests {
             topology_with(Vec::new()).with_root(&requested),
             Err(CorpusTopologyError::SymlinkUnsupported { path: linked_parent })
         );
+        Ok(())
     }
 
     #[test]
@@ -1238,72 +1243,80 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn excluded_metadata_symlink_does_not_block_discovery() {
+    fn excluded_metadata_symlink_does_not_block_discovery() -> Result<(), Box<dyn std::error::Error>>
+    {
         let root = tempfile::tempdir().expect("temporary directory");
         let target = root.path().join("README-target.md");
         let link = root.path().join("crates/perl-corpus/fuzz/README.md");
         write_fixture(&target, "metadata");
         fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
-        if !create_file_symlink_for_test(&target, &link) {
-            return;
+        if !create_file_symlink_for_test(&target, &link)? {
+            return Ok(());
         }
 
         let topology = topology_from_root(root.path()).expect("ignore excluded metadata symlink");
         assert!(topology.assets.is_empty());
+        Ok(())
     }
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn dangling_excluded_metadata_symlink_does_not_block_discovery() {
+    fn dangling_excluded_metadata_symlink_does_not_block_discovery()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir().expect("temporary directory");
         let link = root.path().join("crates/perl-corpus/fuzz/README.md");
         fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
-        if !create_file_symlink_for_test(&root.path().join("missing-readme-target.md"), &link) {
-            return;
+        if !create_file_symlink_for_test(&root.path().join("missing-readme-target.md"), &link)? {
+            return Ok(());
         }
 
         let topology =
             topology_from_root(root.path()).expect("ignore dangling excluded metadata symlink");
         assert!(topology.assets.is_empty());
+        Ok(())
     }
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn symlinked_entries_fail_closed() {
+    fn symlinked_entries_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir().expect("temporary directory");
         let target = root.path().join("target.pl");
         let link = root.path().join("test_corpus/linked.pl");
         write_fixture(&target, "1;");
         fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
-        if !create_file_symlink_for_test(&target, &link) {
-            return;
+        if !create_file_symlink_for_test(&target, &link)? {
+            return Ok(());
         }
 
         assert_eq!(
             topology_from_root(root.path()),
             Err(CorpusTopologyError::SymlinkUnsupported { path: link })
         );
+        Ok(())
     }
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn dangling_selected_symlink_fails_as_symlink_unsupported() {
+    fn dangling_selected_symlink_fails_as_symlink_unsupported()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir().expect("temporary directory");
         let link = root.path().join("test_corpus/dangling.pl");
         fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
-        if !create_file_symlink_for_test(&root.path().join("missing-target.pl"), &link) {
-            return;
+        if !create_file_symlink_for_test(&root.path().join("missing-target.pl"), &link)? {
+            return Ok(());
         }
 
         assert_eq!(
             topology_from_root(root.path()),
             Err(CorpusTopologyError::SymlinkUnsupported { path: link })
         );
+        Ok(())
     }
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn symlinked_test_directory_cannot_hide_selected_descendants() {
+    fn symlinked_test_directory_cannot_hide_selected_descendants()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir().expect("temporary directory");
         let target = root.path().join("outside-test-tree");
         write_fixture(&target.join("case.pl"), "1;");
@@ -1311,19 +1324,21 @@ mod tests {
         write_fixture(&target.join("case.t"), "ok 1;");
         let link = root.path().join("test_corpus/linked");
         fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
-        if !create_directory_symlink_for_test(&target, &link) {
-            return;
+        if !create_directory_symlink_for_test(&target, &link)? {
+            return Ok(());
         }
 
         assert_eq!(
             topology_from_root(root.path()),
             Err(CorpusTopologyError::SymlinkUnsupported { path: link })
         );
+        Ok(())
     }
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn symlinked_fuzz_directory_cannot_hide_selected_descendants() {
+    fn symlinked_fuzz_directory_cannot_hide_selected_descendants()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir().expect("temporary directory");
         let target = root.path().join("outside-fuzz-tree");
         write_fixture(&target.join("crash-deadbeef"), "xqN<<\"");
@@ -1331,67 +1346,74 @@ mod tests {
         write_fixture(&target.join("seed.pl"), "1;");
         let link = root.path().join("crates/perl-corpus/fuzz/linked");
         fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
-        if !create_directory_symlink_for_test(&target, &link) {
-            return;
+        if !create_directory_symlink_for_test(&target, &link)? {
+            return Ok(());
         }
 
         assert_eq!(
             topology_from_root(root.path()),
             Err(CorpusTopologyError::SymlinkUnsupported { path: link })
         );
+        Ok(())
     }
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn symlinked_directory_target_inside_root_still_fails_closed() {
+    fn symlinked_directory_target_inside_root_still_fails_closed()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir().expect("temporary directory");
         let target = root.path().join("test_corpus/real");
         write_fixture(&target.join("case.pl"), "1;");
         let link = root.path().join("test_corpus/linked");
-        if !create_directory_symlink_for_test(&target, &link) {
-            return;
+        if !create_directory_symlink_for_test(&target, &link)? {
+            return Ok(());
         }
 
         assert_eq!(
             topology_from_root(root.path()),
             Err(CorpusTopologyError::SymlinkUnsupported { path: link })
         );
+        Ok(())
     }
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn symlinked_directory_target_outside_root_fails_closed() {
+    fn symlinked_directory_target_outside_root_fails_closed()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir().expect("temporary directory");
         let outside = tempfile::tempdir().expect("outside temporary directory");
         write_fixture(&outside.path().join("case.pl"), "1;");
         let link = root.path().join("test_corpus/linked");
         fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
-        if !create_directory_symlink_for_test(outside.path(), &link) {
-            return;
+        if !create_directory_symlink_for_test(outside.path(), &link)? {
+            return Ok(());
         }
 
         assert_eq!(
             topology_from_root(root.path()),
             Err(CorpusTopologyError::SymlinkUnsupported { path: link })
         );
+        Ok(())
     }
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn nested_intermediate_directory_symlink_fails_closed() {
+    fn nested_intermediate_directory_symlink_fails_closed() -> Result<(), Box<dyn std::error::Error>>
+    {
         let root = tempfile::tempdir().expect("temporary directory");
         let target = root.path().join("outside-nested-tree");
         write_fixture(&target.join("case.pl"), "1;");
         let link = root.path().join("test_corpus/outer/linked");
         fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
-        if !create_directory_symlink_for_test(&target, &link) {
-            return;
+        if !create_directory_symlink_for_test(&target, &link)? {
+            return Ok(());
         }
 
         assert_eq!(
             topology_from_root(root.path()),
             Err(CorpusTopologyError::SymlinkUnsupported { path: link })
         );
+        Ok(())
     }
 
     #[cfg(unix)]
