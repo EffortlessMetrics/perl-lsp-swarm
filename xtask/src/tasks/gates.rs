@@ -2166,6 +2166,19 @@ fn run_single_gate(
         }
         Err(e) => {
             let duration_ms = start.elapsed().as_millis() as u64;
+            let metrics = if e.test_execution_reached_attempts.is_empty() {
+                None
+            } else {
+                let test_execution_reached = e
+                    .test_execution_reached_attempts
+                    .last()
+                    .and_then(|evidence| evidence.test_execution_reached);
+                Some(GateMetrics {
+                    test_execution_reached,
+                    test_execution_reached_attempts: e.test_execution_reached_attempts.clone(),
+                    ..GateMetrics::default()
+                })
+            };
             Ok(GateResult {
                 gate_name: gate.name.clone(),
                 tier: gate.tier.clone(),
@@ -2175,8 +2188,8 @@ fn run_single_gate(
                 command: command.to_string(),
                 exit_code: None,
                 output_summary: Some(format!("Execution error: {}", e)),
-                log_path: None,
-                metrics: None,
+                log_path: log_path.exists().then(|| format!("logs/{}.log", gate.name)),
+                metrics,
                 artifacts: None,
                 first_failure: None,
             })
@@ -2190,6 +2203,31 @@ pub(crate) struct ShellExecutionResult {
     pub(crate) exit_code: i32,
     pub(crate) timed_out: bool,
     pub(crate) test_execution_reached_attempts: Vec<TestExecutionAttemptEvidence>,
+}
+
+#[derive(Debug)]
+struct ShellExecutionFailure {
+    message: String,
+    test_execution_reached_attempts: Vec<TestExecutionAttemptEvidence>,
+}
+
+impl ShellExecutionFailure {
+    fn new(
+        error: color_eyre::Report,
+        test_execution_reached_attempts: Vec<TestExecutionAttemptEvidence>,
+    ) -> Self {
+        Self { message: format!("{error:#}"), test_execution_reached_attempts }
+    }
+
+    fn message(message: String) -> Self {
+        Self { message, test_execution_reached_attempts: Vec::new() }
+    }
+}
+
+impl std::fmt::Display for ShellExecutionFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
 }
 
 /// Run a gate command, retrying only when an attempt is killed by the
@@ -2216,27 +2254,30 @@ fn run_shell_command_with_retries(
     retry_count: u32,
     configured_retry_limit: u32,
     gate_name: &str,
-) -> Result<ShellExecutionResult> {
+) -> std::result::Result<ShellExecutionResult, ShellExecutionFailure> {
     if configured_retry_limit > MAX_GATE_RETRIES {
-        bail!(
-            "configured retry limit {} exceeds supported safety ceiling {}",
-            configured_retry_limit,
-            MAX_GATE_RETRIES
-        );
+        return Err(ShellExecutionFailure::message(format!(
+            "configured retry limit {configured_retry_limit} exceeds supported safety ceiling {MAX_GATE_RETRIES}"
+        )));
     }
     if retry_count > configured_retry_limit {
-        bail!(
+        return Err(ShellExecutionFailure::message(format!(
             "gate {gate_name} retry_count {retry_count} exceeds configured limit {configured_retry_limit}"
-        );
+        )));
     }
-    let total_attempts = retry_count
-        .checked_add(1)
-        .ok_or_else(|| eyre!("gate {gate_name} retry_count overflows the attempt count"))?;
+    let total_attempts = retry_count.checked_add(1).ok_or_else(|| {
+        ShellExecutionFailure::message(format!(
+            "gate {gate_name} retry_count overflows the attempt count"
+        ))
+    })?;
     let mut attempt = 1u32;
     let mut timeouts_seen = 0u32;
     let mut test_execution_reached_attempts = Vec::new();
     loop {
-        let mut execution = run_shell_command_with_timeout(command, log_path, timeout_secs)?;
+        let mut execution = run_shell_command_with_timeout(command, log_path, timeout_secs)
+            .map_err(|error| {
+                ShellExecutionFailure::new(error, test_execution_reached_attempts.clone())
+            })?;
         if is_cargo_test_command(command) {
             test_execution_reached_attempts
                 .push(attempt_reach_evidence(attempt, command, log_path));
@@ -2249,7 +2290,10 @@ fn run_shell_command_with_retries(
                 attempt,
                 total_attempts,
                 "watchdog timeout",
-            )?;
+            )
+            .map_err(|error| {
+                ShellExecutionFailure::new(error, test_execution_reached_attempts.clone())
+            })?;
             execution.stdout.push_str(&trailer);
             if attempt < total_attempts {
                 eprintln!(
@@ -2272,7 +2316,10 @@ fn run_shell_command_with_retries(
                 format!("exited {} after earlier watchdog timeout(s)", execution.exit_code)
             };
             let trailer =
-                append_retry_trailer(log_path, gate_name, attempt, total_attempts, &outcome)?;
+                append_retry_trailer(log_path, gate_name, attempt, total_attempts, &outcome)
+                    .map_err(|error| {
+                        ShellExecutionFailure::new(error, test_execution_reached_attempts.clone())
+                    })?;
             execution.stdout.push_str(&trailer);
         }
         execution.test_execution_reached_attempts = test_execution_reached_attempts;
@@ -3059,6 +3106,16 @@ fn validate_attempt_histories(receipt: &Receipt) -> Result<()> {
                     evidence.attempt
                 );
             }
+        }
+        if let Some(final_attempt) = metrics.test_execution_reached_attempts.last()
+            && metrics.test_execution_reached != final_attempt.test_execution_reached
+        {
+            bail!(
+                "gate '{}' legacy final-attempt evidence {:?} contradicts typed final row {:?}",
+                gate.gate_name,
+                metrics.test_execution_reached,
+                final_attempt.test_execution_reached
+            );
         }
     }
     Ok(())
@@ -5229,6 +5286,46 @@ gates:
     }
 
     #[test]
+    #[cfg(unix)]
+    fn retry_trailer_failure_preserves_captured_attempt_evidence() -> color_eyre::eyre::Result<()> {
+        let tmp = tempdir()?;
+        let gate_name = "synthetic-retry-trailer-failure";
+        let log_path = tmp.path().join(format!("{gate_name}.log"));
+        let command = format!(
+            "rm -f '{}'; sleep 3; exit 0; true && cargo test --lib --locked",
+            log_path.display()
+        );
+        let mut gate = pr_gate(gate_name, GatePlanningRole::AlwaysOn, &command);
+        gate.tags.push("test".to_string());
+        gate.timeout_seconds = 1;
+        gate.retry_count = 1;
+        let policy = policy_with_gates(vec![gate.clone()]);
+
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+
+        color_eyre::eyre::ensure!(
+            result.status == "error",
+            "trailer instrumentation failure did not remain an error: {}",
+            result.status
+        );
+        let metrics = result.metrics.ok_or_else(|| {
+            color_eyre::eyre::eyre!("executed attempt evidence was erased on trailer failure")
+        })?;
+        color_eyre::eyre::ensure!(
+            metrics.test_execution_reached.is_none(),
+            "unknown final attempt unexpectedly produced legacy evidence"
+        );
+        color_eyre::eyre::ensure!(
+            metrics.test_execution_reached_attempts
+                == vec![TestExecutionAttemptEvidence { attempt: 1, test_execution_reached: None }],
+            "unexpected evidence retained after trailer failure: {:?}",
+            metrics.test_execution_reached_attempts
+        );
+        Ok(())
+    }
+
+    #[test]
     fn retry_runner_rejects_oversized_counts_before_execution() -> color_eyre::eyre::Result<()> {
         let tmp = tempdir()?;
         for retry_count in [MAX_GATE_RETRIES + 1, u32::MAX] {
@@ -5275,6 +5372,70 @@ gates:
             color_eyre::eyre::ensure!(
                 error.to_string().contains("ordinals must be contiguous"),
                 "unexpected attempt validation error: {error:#}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_round_trip_enforces_legacy_final_attempt_consistency() -> color_eyre::eyre::Result<()>
+    {
+        let tmp = tempdir()?;
+        for (case, final_reached) in [("true", Some(true)), ("false", Some(false)), ("null", None)]
+        {
+            let receipt = test_receipt_with_metrics(GateMetrics {
+                test_execution_reached: final_reached,
+                test_execution_reached_attempts: vec![TestExecutionAttemptEvidence {
+                    attempt: 1,
+                    test_execution_reached: final_reached,
+                }],
+                ..GateMetrics::default()
+            });
+            let path = tmp.path().join(format!("matching-{case}.json"));
+            write_receipt(&receipt, &path)?;
+            let loaded = load_receipt(&path)?;
+            validate_attempt_histories(&loaded)?;
+        }
+
+        let legacy_only = test_receipt_with_metrics(GateMetrics {
+            test_execution_reached: Some(true),
+            ..GateMetrics::default()
+        });
+        validate_attempt_histories(&legacy_only)?;
+
+        let contradictions = [
+            (Some(true), Some(false)),
+            (Some(false), Some(true)),
+            (Some(true), None),
+            (Some(false), None),
+            (None, Some(true)),
+            (None, Some(false)),
+        ];
+        for (index, (legacy, typed)) in contradictions.into_iter().enumerate() {
+            let receipt = test_receipt_with_metrics(GateMetrics {
+                test_execution_reached: legacy,
+                test_execution_reached_attempts: vec![TestExecutionAttemptEvidence {
+                    attempt: 1,
+                    test_execution_reached: typed,
+                }],
+                ..GateMetrics::default()
+            });
+            let path = tmp.path().join(format!("contradiction-{index}.json"));
+            let Err(write_error) = write_receipt(&receipt, &path) else {
+                color_eyre::eyre::bail!("contradictory receipt unexpectedly wrote: {index}");
+            };
+            color_eyre::eyre::ensure!(
+                write_error.to_string().contains("contradicts typed final row"),
+                "unexpected write rejection: {write_error:#}"
+            );
+
+            fs::write(&path, serde_json::to_string_pretty(&receipt)?)?;
+            let Err(load_error) = load_receipt(&path) else {
+                color_eyre::eyre::bail!("contradictory receipt unexpectedly loaded: {index}");
+            };
+            color_eyre::eyre::ensure!(
+                load_error.to_string().contains("contradicts typed final row"),
+                "unexpected load rejection: {load_error:#}"
             );
         }
         Ok(())

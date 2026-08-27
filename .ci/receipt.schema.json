@@ -365,7 +365,7 @@
         },
         "test_execution_reached": {
           "type": "boolean",
-          "description": "Diagnostic only: for cargo-test-class gates, whether the final measured attempt reached the linked test binary. This field does not authorize the gate status."
+          "description": "Diagnostic only: for cargo-test-class gates, whether the final measured attempt reached the linked test binary. When attempt history is present this must equal its final measured row and must be absent when that row is unknown. This field does not authorize the gate status."
         },
         "test_execution_reached_attempts": {
           "type": "array",
