@@ -380,12 +380,26 @@ if empty(s:failures) && s:variant ==# 'manual_comparator_only'
   call s:EmitOwnerConfigured(s:save_timeout)
   let s:req_before = VimLspHostWireRequestCount('textDocument/formatting')
   let s:resp_before = VimLspHostWireResponseCount('textDocument/formatting')
+  let s:err_before = VimLspHostWireErrorResponseCount('textDocument/formatting')
+  let s:empty_before = VimLspHostWireEmptyResponseCount('textDocument/formatting')
+  let s:edits_before = VimLspHostWireEditsResponseCount('textDocument/formatting')
   call VimLspHostManualComparatorFormat()
   let s:resp_expr = 'VimLspHostWireResponseCount(''textDocument/formatting'') >= '
         \ . (s:resp_before + 1)
   if !s:WaitFor(s:resp_expr, s:budget)
     call s:Fail('comparator_response_never_settled')
   else
+    " Classify from the wire like every other settlement (#12763 thread
+    " 3864145173): the settled result may equally be empty or an error.
+    if VimLspHostWireErrorResponseCount('textDocument/formatting') > s:err_before
+      let s:response_kind = 'error'
+    elseif VimLspHostWireEmptyResponseCount('textDocument/formatting') > s:empty_before
+      let s:response_kind = 'empty'
+    elseif VimLspHostWireEditsResponseCount('textDocument/formatting') > s:edits_before
+      let s:response_kind = 'edits'
+    else
+      let s:response_kind = 'unknown'
+    endif
     let s:save_index += 1
     call s:Emit('save_settlement_observed', {
           \ 'save_index': string(s:save_index),
@@ -394,7 +408,7 @@ if empty(s:failures) && s:variant ==# 'manual_comparator_only'
           \ 'disposition': 'applied',
           \ 'requests_before': string(s:req_before),
           \ 'requests_after': string(VimLspHostWireRequestCount('textDocument/formatting')),
-          \ 'response_kind': 'edits',
+          \ 'response_kind': s:response_kind,
           \ 'buffer_sha256': 'sha256:' . VimLspHostBufferTextSha256(),
           \ 'file_sha256': 'sha256:' . VimLspHostFileTextSha256(expand('%:p')),
           \ })
@@ -412,12 +426,26 @@ if empty(s:failures) && s:variant ==# 'duplicate_owner'
   call s:EmitOwnerConfigured(s:save_timeout)
   let s:req_before = VimLspHostWireRequestCount('textDocument/formatting')
   let s:resp_before = VimLspHostWireResponseCount('textDocument/formatting')
+  let s:err_before = VimLspHostWireErrorResponseCount('textDocument/formatting')
+  let s:empty_before = VimLspHostWireEmptyResponseCount('textDocument/formatting')
+  let s:edits_before = VimLspHostWireEditsResponseCount('textDocument/formatting')
   call VimLspHostOrdinaryWrite()
   let s:req_expr = 'VimLspHostWireRequestCount(''textDocument/formatting'') >= '
         \ . (s:req_before + 2)
   let s:resp_expr = 'VimLspHostWireResponseCount(''textDocument/formatting'') >= '
         \ . (s:resp_before + 2)
   if s:WaitFor(s:req_expr, s:budget) && s:WaitFor(s:resp_expr, s:budget)
+    " Classify from the wire like every other settlement (#12763 thread
+    " 3864145173).
+    if VimLspHostWireErrorResponseCount('textDocument/formatting') > s:err_before
+      let s:response_kind = 'error'
+    elseif VimLspHostWireEmptyResponseCount('textDocument/formatting') > s:empty_before
+      let s:response_kind = 'empty'
+    elseif VimLspHostWireEditsResponseCount('textDocument/formatting') > s:edits_before
+      let s:response_kind = 'edits'
+    else
+      let s:response_kind = 'unknown'
+    endif
     let s:save_index += 1
     call s:Emit('save_settlement_observed', {
           \ 'save_index': string(s:save_index),
@@ -426,12 +454,20 @@ if empty(s:failures) && s:variant ==# 'duplicate_owner'
           \ 'disposition': 'applied',
           \ 'requests_before': string(s:req_before),
           \ 'requests_after': string(VimLspHostWireRequestCount('textDocument/formatting')),
-          \ 'response_kind': 'edits',
+          \ 'response_kind': s:response_kind,
           \ 'buffer_sha256': 'sha256:' . VimLspHostBufferTextSha256(),
           \ 'file_sha256': 'sha256:' . VimLspHostFileTextSha256(expand('%:p')),
           \ })
+    " The expected negative control is only lawful once its falsifier was
+    " actually observed (#12763 thread 3864145196): this exact reason is what
+    " the CLI accepts as a successful duplicate-owner run.
+    call s:Fail('duplicate_invocation_observed')
+  else
+    " The waits never observed two invocations and two settlements: report
+    " the instrument failure instead of the accepted control reason so a
+    " never-exercised control cannot pass CI.
+    call s:Fail('duplicate_invocations_never_observed')
   endif
-  call s:Fail('duplicate_invocation_observed')
 endif
 
 if empty(s:failures) && s:variant ==# 'canonical'
@@ -475,15 +511,31 @@ if empty(s:failures) && s:variant ==# 'canonical'
       endif
       let s:req_before = VimLspHostWireRequestCount('textDocument/formatting')
       let s:resp_before = VimLspHostWireResponseCount('textDocument/formatting')
+      let s:err_before = VimLspHostWireErrorResponseCount('textDocument/formatting')
+      let s:empty_before = VimLspHostWireEmptyResponseCount('textDocument/formatting')
+      let s:edits_before = VimLspHostWireEditsResponseCount('textDocument/formatting')
       call VimLspHostOrdinaryWrite()
       " The response settles AFTER the write returned: that is the released
-      " stale result on the wire.
+      " stale result on the wire, classified from these same counters below.
       let s:resp_expr = 'VimLspHostWireResponseCount(''textDocument/formatting'') >= '
             \ . (s:resp_before + 1)
       if !s:WaitFor(s:resp_expr, s:budget)
         call s:Fail('stale_response_never_released')
       else
         let s:req_after = VimLspHostWireRequestCount('textDocument/formatting')
+        " Classify the specific settled response from the wire's own
+        " direction-aware counters (#12763 thread 3864145173): held bytes
+        " alone cannot separate a rejected edit result from a settled empty
+        " or error, so every claim below is gated on this classification.
+        if VimLspHostWireErrorResponseCount('textDocument/formatting') > s:err_before
+          let s:response_kind = 'error'
+        elseif VimLspHostWireEmptyResponseCount('textDocument/formatting') > s:empty_before
+          let s:response_kind = 'empty'
+        elseif VimLspHostWireEditsResponseCount('textDocument/formatting') > s:edits_before
+          let s:response_kind = 'edits'
+        else
+          let s:response_kind = 'unknown'
+        endif
         " Bounded bytes-held window: the buffer stays exactly the bulk bytes
         " and no further formatting request is issued while the late result
         " is already settled (adapter scope law: digests baked in).
@@ -495,6 +547,9 @@ if empty(s:failures) && s:variant ==# 'canonical'
         elseif s:stable == 0
           call s:Fail('stale_bytes_claim_false')
         else
+          if s:response_kind !=# 'edits'
+            call s:Fail('stale_late_response_not_edits')
+          endif
           let s:hold_index += 1
           call s:Emit('stale_result_hold_observed', {
                 \ 'hold_index': string(s:hold_index),
@@ -502,7 +557,7 @@ if empty(s:failures) && s:variant ==# 'canonical'
                 \ 'requests_before': string(s:req_before),
                 \ 'requests_after': string(s:req_after),
                 \ 'bytes_held': '1',
-                \ 'late_response_rejected': '1',
+                \ 'late_response_rejected': s:response_kind ==# 'edits' ? '1' : '0',
                 \ })
         endif
         let s:save_index += 1
@@ -513,7 +568,7 @@ if empty(s:failures) && s:variant ==# 'canonical'
               \ 'disposition': 'stale_rejected',
               \ 'requests_before': string(s:req_before),
               \ 'requests_after': string(s:req_after),
-              \ 'response_kind': 'edits',
+              \ 'response_kind': s:response_kind,
               \ 'buffer_sha256': 'sha256:' . VimLspHostBufferTextSha256(),
               \ 'file_sha256': 'sha256:' . VimLspHostFileTextSha256(expand('%:p')),
               \ })

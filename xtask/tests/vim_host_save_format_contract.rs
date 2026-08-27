@@ -916,6 +916,146 @@ fn a_registration_for_another_candidate_cannot_own_the_result() -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Thin-script source laws (#12763 review threads)
+//
+// The judgment above can only be as honest as the thin scripts that produce
+// its events, so these laws pin the script-side honesty mechanically: no
+// fabricated response-kind labels, a duplicate-owner control that fails the
+// instrument unless the falsifier was actually observed, a stale rejection
+// classified from the wire, digests that keep trailing-newline states
+// distinct, and a CI trigger that actually fires on formatter changes.
+// ---------------------------------------------------------------------------
+
+fn save_format_driver_source() -> Result<String> {
+    fs::read_to_string(repo_root().join("scripts/test/vim-host-save-format-driver.vim"))
+        .context("reading scripts/test/vim-host-save-format-driver.vim")
+}
+
+fn vim_lsp_adapter_source() -> Result<String> {
+    fs::read_to_string(repo_root().join("scripts/test/vim-clients/vim-lsp-adapter.vim"))
+        .context("reading scripts/test/vim-clients/vim-lsp-adapter.vim")
+}
+
+#[test]
+fn every_save_settlement_carries_a_classified_or_declared_absent_response_kind() -> Result<()> {
+    // A settled formatting response must never be pre-labeled: an empty or
+    // error result recorded as edits would let unchanged bytes satisfy a cell
+    // that claims a real edit result was observed and judged (#12763 P1).
+    let driver = save_format_driver_source()?;
+    for fabricated in
+        ["'response_kind': 'edits'", "'response_kind': 'empty'", "'response_kind': 'error'"]
+    {
+        ensure!(
+            !driver.contains(fabricated),
+            "driver hardcodes {fabricated}: every settlement response_kind must come from \
+             classifying the actual wire counters (or the declared 'absent')"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn duplicate_owner_control_fails_closed_when_the_falsifier_was_never_observed() -> Result<()> {
+    // `duplicate_invocation_observed` is the typed reason the CLI accepts as a
+    // successful negative control, so it may only be emitted after the two
+    // requests and responses were actually observed; an unobserved wait is an
+    // instrument failure with its own reason (#12763 thread 3864145196).
+    let driver = save_format_driver_source()?;
+    let accepted_control_hits =
+        driver.matches("'duplicate_invocation_observed'").count();
+    ensure!(
+        accepted_control_hits == 1,
+        "the accepted negative-control reason must appear exactly once (observed branch), found \
+         {accepted_control_hits}"
+    );
+    ensure!(
+        driver.contains("'duplicate_invocations_never_observed'"),
+        "a failed observation of the two-invocation falsifier must emit the distinct instrument \
+         failure reason, never the accepted negative-control reason"
+    );
+    Ok(())
+}
+
+#[test]
+fn stale_leg_rejection_is_classified_from_the_wire_and_requires_edits() -> Result<()> {
+    // The held-bytes window cannot distinguish "an edit result arrived late
+    // and was rejected" from "nothing arrived to reject", so the stale leg
+    // must classify the specific settled response through the same
+    // direction-aware counters as ordinary saves and fail closed when the
+    // settled response carries no edit result (#12763 thread 3864145173).
+    let driver = save_format_driver_source()?;
+    ensure!(
+        driver.contains("s:Fail('stale_late_response_not_edits')"),
+        "a settled non-edits response in the stale leg must be an instrument failure, not a \
+         rejection claim"
+    );
+    // Ordinary saves classify once; the stale leg adds its own classification,
+    // so each counter must appear at least twice.
+    for counter in [
+        "VimLspHostWireErrorResponseCount(",
+        "VimLspHostWireEmptyResponseCount(",
+        "VimLspHostWireEditsResponseCount(",
+    ] {
+        let hits = driver.matches(counter).count();
+        ensure!(
+            hits >= 2,
+            "{counter} must back at least the ordinary-save and stale-leg classifications, found \
+             {hits}"
+        );
+    }
+    ensure!(
+        !driver.contains("'late_response_rejected': '1'"),
+        "late_response_rejected must be gated on the classified response kind, never hardcoded"
+    );
+    Ok(())
+}
+
+#[test]
+fn exact_byte_digests_keep_trailing_blank_line_and_final_newline_states_distinct() -> Result<()> {
+    // Collapsing a trailing empty item before appending one newline maps two
+    // different byte texts (with and without one more blank line) onto one
+    // digest, so both exact-byte checks can pass despite different bytes
+    // (#12763 thread 3864145199).
+    let adapter = vim_lsp_adapter_source()?;
+    ensure!(
+        !adapter.contains("remove(l:lines"),
+        "digest helpers must not strip line items before hashing: stripping collapses trailing \
+         newline states into one identity"
+    );
+    // The buffer carries content lines only; the document-final newline lives
+    // in end-of-line state, so the buffer identity unconditionally joins and
+    // appends the terminator.
+    ensure!(
+        adapter.contains(r#"sha256(join(a:lines, "\n") . "\n")"#),
+        "buffer digest must hash the joined content lines plus their terminator verbatim"
+    );
+    // Binary-mode reads encode the final-newline state as a trailing empty
+    // item, so the file identity reconstructs the exact bytes from that item.
+    ensure!(
+        adapter.contains("readfile(a:path, 'b')")
+            && adapter.contains(r#"join(l:lines, "\n")"#),
+        "file digest must hash raw binary-mode bytes reconstructed exactly"
+    );
+    Ok(())
+}
+
+#[test]
+fn hermetic_host_ci_triggers_on_the_production_formatter_crate() -> Result<()> {
+    // perl-lsp-rs-core depends on perl-lsp-perltidy and invokes its native
+    // formatter, so a PR changing only the formatter crate must re-run the
+    // end-to-end save proof (#12763 thread 3864145182).
+    let workflow = fs::read_to_string(
+        repo_root().join(".github/workflows/vim-hermetic-host.yml"),
+    )
+    .context("reading .github/workflows/vim-hermetic-host.yml")?;
+    ensure!(
+        workflow.contains("\"crates/perl-lsp-perltidy/**\""),
+        "the hermetic host workflow path filter must include crates/perl-lsp-perltidy/**"
+    );
+    Ok(())
+}
+
 #[test]
 fn the_failure_cell_carries_the_family_disposition_token() -> Result<()> {
     let plan = scratch_save_format_plan(&tempfile::tempdir()?.path().join("p"))?;

@@ -11,6 +11,7 @@ on:
       - "scripts/test/vim-clients/**"
       - ".ci/editor-clients/vim-vim-lsp-*.json"
       - "crates/perl-lsp-rs-core/**"
+      - "crates/perl-lsp-perltidy/**"
       - "crates/perl-lsp-rs/**"
       - "crates/perl-diagnostics/**"
       - "crates/perl-module/**"

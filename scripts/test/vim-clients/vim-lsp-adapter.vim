@@ -693,24 +693,38 @@ function! s:IncomingNeedleCount() abort
   return s:WireCountCore('["<---"', s:wire_needle, 0)
 endfunction
 
-" Exact-bytes identities. Both surfaces normalize the same way: the byte text
-" is the newline-joined lines plus one trailing newline (a file ending in a
-" newline yields the same identity as the buffer holding it), so buffer and
-" file digests are directly comparable to each other and to the Rust-authored
-" texts.
+" Exact-bytes identities (#12763 thread 3864145199): each surface reconstructs
+" its exact bytes without collapsing trailing newline states — a text and that
+" same text plus one more blank line must hash differently, while the same
+" bytes read through either surface hash identically.
 
-function! s:LinesToTextSha256(lines) abort
-  let l:lines = copy(a:lines)
-  if !empty(l:lines) && l:lines[-1] ==# ''
-    call remove(l:lines, -1)
+" The buffer stores line CONTENT only: the document-final newline lives in
+" end-of-line state (never as a trailing empty item), and a genuine blank
+" final line IS a content item. Joining the content lines with newline
+" separators and appending the terminator therefore round-trips the exact
+" buffer bytes and keeps both trailing states distinct.
+function! s:BufferTextSha256(lines) abort
+  return sha256(join(a:lines, "\n") . "\n")
+endfunction
+
+" Binary-mode reads keep a trailing empty item as the final-newline artifact,
+" so the item list itself encodes whether the file ends in a newline:
+" joining with newline separators and appending the terminator only when the
+" final item carries content reconstructs the exact bytes — the identity the
+" buffer helper assigns to the same loaded text.
+function! s:FileTextSha256(path) abort
+  let l:lines = readfile(a:path, 'b')
+  let l:text = join(l:lines, "\n")
+  if !empty(l:lines) && l:lines[-1] !=# ''
+    let l:text .= "\n"
   endif
-  return sha256(join(l:lines, "\n") . "\n")
+  return sha256(l:text)
 endfunction
 
 function! VimLspHostBufferTextSha256() abort
-  return s:LinesToTextSha256(getline(1, '$'))
+  return s:BufferTextSha256(getline(1, '$'))
 endfunction
 
 function! VimLspHostFileTextSha256(path) abort
-  return s:LinesToTextSha256(readfile(a:path, 'b'))
+  return s:FileTextSha256(a:path)
 endfunction
