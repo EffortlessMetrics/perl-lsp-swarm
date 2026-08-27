@@ -574,7 +574,7 @@ gates:
     tier: pr_fast
     description: "Inline-completion provider registration tests (lsp_inline_completion_registration_tests)"
     required: true
-# This integration target launches `perllsp`; build it once so the test
+    # This integration target launches `perllsp`; build it once so the test
     # harness never falls back to compiling the server inside its initialize
     # timeout (#9785).
     command: cargo build -p perllsp --locked && cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests
