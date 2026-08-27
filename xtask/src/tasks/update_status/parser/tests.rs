@@ -50,6 +50,31 @@ fn test_corpus_section_count() -> Result<()> {
 }
 
 #[test]
+fn test_corpus_section_count_includes_extensionless_documents() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let corpus = root.path().join("tree-sitter-perl/test/corpus");
+    std::fs::create_dir_all(&corpus)?;
+    // Tree-sitter corpus convention: every document in the directory is a
+    // corpus file regardless of filename; sections are delimited by `=` marker
+    // lines. The governed corpus mixes `.txt` and extensionless documents.
+    let sectioned_document = "================================================================================\n\
+         DOCUMENTED CASE\n\
+         ================================================================================\n\
+         code\n\
+         --------------------------------------------------------------------------------\n\
+         (source_file)\n";
+    std::fs::write(corpus.join("documented.txt"), sectioned_document)?;
+    std::fs::write(corpus.join("extensionless"), sectioned_document)?;
+
+    let sections = count_corpus_sections(root.path());
+    assert_eq!(
+        sections, 4,
+        "extensionless corpus documents must count toward the section denominator"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_parser_status_marker_contract() -> Result<()> {
     let root = crate::utils::project_root()?;
     let target_file = "docs/project/status/parser.md";

@@ -459,8 +459,7 @@ fn policy_required_check(policy: &toml::Value, name: &str) -> bool {
     policy.get("checks").and_then(toml::Value::as_array).into_iter().flatten().any(|item| {
         item.get("name").and_then(toml::Value::as_str) == Some(name)
             && item.get("required").and_then(toml::Value::as_bool) == Some(true)
-            && item.get("enforcement").and_then(toml::Value::as_str)
-                == Some("github-branch-protection")
+            && item.get("enforcement").and_then(toml::Value::as_str) == Some("github-ruleset")
     })
 }
 

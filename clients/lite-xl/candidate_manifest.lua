@@ -411,6 +411,55 @@ return {
         ["server.lua"] = "53adee31734e1b6a4c76662640d66bd792864400",
       },
     },
+    {
+      id = "leaf_10653", issue = 10653, pull_request = 12709,
+      title = "workspace configuration never executes project-local Lua",
+      candidate_sha = "7eea107b67d56944e883103f4624ceb32198824d",
+      changed_paths = { "init.lua" },
+      hard_prerequisites = { "leaf_11172" },
+      class = "security",
+      upstream_state = "internal",
+      owner_issue = 10653,
+      conflict_keys = { "lite-xl.upstream.init.lua" },
+      invalidation_inputs = { "upstream_base_ref", "candidate_sha" },
+      content = {
+        ["init.lua"] = "07966add53faa9b91c5fbeb87cc1a971dd26604b",
+      },
+    },
+    {
+      id = "leaf_10657", issue = 10657, pull_request = 12715,
+      title = "single-send request ids with terminal typed timeouts",
+      candidate_sha = "bb9ae34060c61043925ea47fb9de417cfdcccb28",
+      changed_paths = { "init.lua", "server.lua" },
+      hard_prerequisites = { "leaf_10653", "leaf_11172" },
+      class = "protocol",
+      upstream_state = "internal",
+      owner_issue = 10657,
+      conflict_keys = {
+        "lite-xl.upstream.init.lua", "lite-xl.upstream.server.lua",
+      },
+      invalidation_inputs = { "upstream_base_ref", "candidate_sha" },
+      content = {
+        ["init.lua"] = "6c100e6c65e5817435e5f0c6e5ff84aa370e5bba",
+        ["server.lua"] = "aa42bd58fd8d3b48bd115f662c3d2af2b9aeddd8",
+      },
+    },
+    {
+      id = "leaf_11198", issue = 11198, pull_request = 12670,
+      title = "document symbols keep duplicate identities and exact "
+        .. "navigation targets",
+      candidate_sha = "722cfc77530cc3e0a9cc4abf2740d53696a121ca",
+      changed_paths = { "init.lua" },
+      hard_prerequisites = { "leaf_10657" },
+      class = "document",
+      upstream_state = "internal",
+      owner_issue = 11198,
+      conflict_keys = { "lite-xl.upstream.init.lua" },
+      invalidation_inputs = { "upstream_base_ref", "candidate_sha" },
+      content = {
+        ["init.lua"] = "c5184e2657826ee6f9d7320bff4e70b6bb8119a9",
+      },
+    },
   },
 
   profiles = {
@@ -439,6 +488,7 @@ return {
         "leaf_11115", "leaf_11108", "leaf_11124", "leaf_11147",
         "leaf_11128", "leaf_11143", "leaf_11165", "leaf_10845",
         "leaf_10873", "leaf_10833", "leaf_11188", "leaf_11172",
+        "leaf_10653", "leaf_10657", "leaf_11198",
       },
     },
     {
@@ -458,6 +508,7 @@ return {
         "leaf_11115", "leaf_11108", "leaf_11124", "leaf_11147",
         "leaf_11128", "leaf_11143", "leaf_11165", "leaf_10845",
         "leaf_10873", "leaf_10833", "leaf_11188", "leaf_11172",
+        "leaf_10653", "leaf_10657",
       },
     },
     {

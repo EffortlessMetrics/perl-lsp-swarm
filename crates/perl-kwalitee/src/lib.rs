@@ -37,6 +37,7 @@
 // Production code stays under the workspace `unwrap_used`/`expect_used` deny;
 // test code may use `expect()`/`unwrap()` for concise fixture construction.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 mod evaluator;
 mod evidence;
