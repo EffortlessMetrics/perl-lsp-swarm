@@ -4161,6 +4161,26 @@ enum EmacsIntegrationCommand {
         #[arg(long, default_value_t = 180_000)]
         timeout_ms: u64,
     },
+    /// Governed Emacs host-journey and fixture/cell manifest operations
+    /// (#11768). Offline, deterministic, and second-run clean; validating or
+    /// explaining cells proves no host behavior.
+    Journeys {
+        #[command(subcommand)]
+        command: EmacsJourneysCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum EmacsJourneysCommand {
+    /// Validate the compiled journey manifest against its fail-closed laws
+    /// and print a deterministic summary receipt.
+    Check,
+    /// Explain one governed identity: `summary`, a stable cell id
+    /// (`emacs.<class>.<name>`), or a registered journey-class token.
+    Explain {
+        /// Journey class, stable cell id, or `summary`.
+        subject: String,
+    },
 }
 
 /// Union of the Emacs train command families over the stable
@@ -5314,6 +5334,46 @@ fn run_cli(cli: Cli) -> Result<()> {
                         Err(eyre!("host run did not pass: {:?}", outcome.result))
                     }
                 }
+                EmacsIntegrationCommand::Journeys { command } => match command {
+                    EmacsJourneysCommand::Check => {
+                        let summary = xtask::emacs_host_journeys::validate_compiled_registry()
+                            .map_err(|error| eyre!(error.to_string()))?;
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&summary)
+                                .map_err(|error| eyre!(error.to_string()))?
+                        );
+                        Ok(())
+                    }
+                    EmacsJourneysCommand::Explain { subject } => {
+                        let cells = xtask::emacs_host_journeys::registry();
+                        let (class, matched) = xtask::emacs_host_journeys::lookup(&cells, &subject)
+                            .map_err(|error| eyre!(error.to_string()))?;
+                        let mut explained = serde_json::json!({
+                            "schema_version": xtask::emacs_host_journeys::MANIFEST_SCHEMA_VERSION,
+                            "subject": subject,
+                        });
+                        if let Some(class) = class {
+                            explained["journey_class"] = serde_json::Value::String(class);
+                        }
+                        let mut rows = Vec::new();
+                        for cell in matched {
+                            let digest = xtask::emacs_host_journeys::cell_digest(cell)
+                                .map_err(|error| eyre!(error.to_string()))?;
+                            rows.push(serde_json::json!({
+                                "cell": cell,
+                                "digest": digest,
+                            }));
+                        }
+                        explained["cells"] = serde_json::Value::Array(rows);
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&explained)
+                                .map_err(|error| eyre!(error.to_string()))?
+                        );
+                        Ok(())
+                    }
+                },
             },
         },
         Commands::RepoHygiene { base, head, receipt, summary } => {
