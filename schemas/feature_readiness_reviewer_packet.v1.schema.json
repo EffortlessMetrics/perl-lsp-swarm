@@ -4,11 +4,13 @@
   "title": "feature_readiness_reviewer_packet.v1",
   "description": "Feature-readiness train adversarial reviewer packet (FR-C05 #11286), generated from the same stable/current/candidate subject as the builder packet but emphasizing falsification rather than the builder narrative. Adapts the shared adversarial review-packet contract agent_review_packet.v1 (#10881); it is not a second review database.",
   "type": "object",
+  "additionalProperties": false,
   "properties": {
     "schema": { "const": "feature_readiness_reviewer_packet.v1" },
     "review_id": { "type": "string", "pattern": "^frrvw_[0-9a-f]{16}$" },
     "subject": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "node_id": { "type": "string", "minLength": 1 },
         "issues": { "type": "array", "items": { "type": "integer" }, "minItems": 1 },
@@ -20,6 +22,7 @@
     },
     "builder_ref": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "packet_id": { "type": "string", "pattern": "^frbld_[0-9a-f]{16}$" },
         "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
@@ -28,6 +31,7 @@
     },
     "currentness": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "base_head": { "type": "string", "minLength": 1 },
         "live_state": { "enum": ["unknown", "observed"] },
@@ -41,6 +45,7 @@
       "minItems": 3,
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "name": { "$ref": "#/$defs/review_lens" },
           "applicable": { "type": "boolean" },
@@ -55,6 +60,7 @@
       "minItems": 1,
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "stage": { "$ref": "#/$defs/example_stage" },
           "question": { "type": "string", "minLength": 1 }
@@ -67,6 +73,7 @@
       "minItems": 1,
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "subject": { "type": "string", "minLength": 1 },
           "requirement": { "type": "string", "minLength": 1 }
@@ -78,6 +85,7 @@
       "type": "array",
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "seam": { "type": "string", "minLength": 1 },
           "terminal_disposition": { "$ref": "#/$defs/terminal_old_path_disposition" }
@@ -87,6 +95,7 @@
     },
     "stop": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "reviewer_must_not": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
       },

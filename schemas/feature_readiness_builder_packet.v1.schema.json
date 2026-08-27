@@ -4,11 +4,13 @@
   "title": "feature_readiness_builder_packet.v1",
   "description": "Feature-readiness train builder packet (FR-C05 #11286). One deterministic, content-addressed model-neutral work contract for one feature-readiness node at its true role. Adapts the shared bounded builder-packet contract agent_implementation_packet.v1 (#10872); it is not a second generic prompt framework.",
   "type": "object",
+  "additionalProperties": false,
   "properties": {
     "schema": { "const": "feature_readiness_builder_packet.v1" },
     "packet_id": { "type": "string", "pattern": "^frbld_[0-9a-f]{16}$" },
     "repository": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "name": { "const": "EffortlessMetrics/perl-lsp-swarm" }
       },
@@ -16,6 +18,7 @@
     },
     "work": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "node_id": { "type": "string" },
         "issues": { "type": "array", "items": { "type": "integer" }, "minItems": 1 },
@@ -42,6 +45,7 @@
     },
     "claim_ceiling": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "establishes": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
         "cannot_establish": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
@@ -61,9 +65,11 @@
     },
     "planes": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "stable": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
             "status": { "const": "embedded_fixture_registry" },
             "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
@@ -73,6 +79,7 @@
         },
         "current_tree": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
             "status": { "enum": ["unavailable"] },
             "owner_issue": { "const": 11280 }
@@ -81,6 +88,7 @@
         },
         "offline_readiness": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
             "status": { "enum": ["unavailable"] },
             "owner_issue": { "const": 11281 }
@@ -96,6 +104,7 @@
       "minItems": 1,
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "ref": { "type": "string", "minLength": 1 },
           "subject": { "type": "string", "minLength": 1 },
@@ -110,12 +119,14 @@
       "minItems": 1,
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "feature": { "type": "string", "minLength": 1 },
           "provider_or_client": { "type": "string", "minLength": 1 },
           "source_subject": { "type": "string", "minLength": 1 },
           "policy": {
             "type": "object",
+            "additionalProperties": false,
             "properties": {
               "semantic": { "type": "string", "minLength": 1 },
               "currentness": { "type": "string", "minLength": 1 },
@@ -142,6 +153,7 @@
     },
     "surfaces": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "allowed": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
         "forbidden": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
@@ -153,6 +165,7 @@
       "minItems": 1,
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "id": { "type": "string", "minLength": 1 },
           "kind": { "type": "string", "minLength": 1 },
@@ -179,6 +192,7 @@
     },
     "durable_spec": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "disposition": { "$ref": "#/$defs/durable_spec_disposition" },
         "owner": { "type": "string", "minLength": 1 },
@@ -193,9 +207,11 @@
     },
     "proof": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "first_falsifier": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
             "description": { "type": "string", "minLength": 1 },
             "expected_red_reason": { "type": "string", "minLength": 1 },
@@ -209,6 +225,7 @@
           "minItems": 1,
           "items": {
             "type": "object",
+            "additionalProperties": false,
             "properties": {
               "class": { "$ref": "#/$defs/control_class" },
               "subject": { "type": "string", "minLength": 1 }
@@ -221,6 +238,7 @@
           "minItems": 1,
           "items": {
             "type": "object",
+            "additionalProperties": false,
             "properties": {
               "id": { "type": "string", "minLength": 1 },
               "command": { "type": "string", "minLength": 1 },
@@ -241,12 +259,14 @@
     },
     "delivery": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "branch_suggestion": { "type": "string", "minLength": 1 },
         "pr_title_suggestion": { "type": "string", "minLength": 1 },
         "base_head": { "type": "string", "minLength": 1 },
         "issues": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
             "controller": { "type": "integer" },
             "dependencies": { "type": "array", "items": { "type": "integer" } },
@@ -257,7 +277,16 @@
         "changed_surfaces": { "type": "array", "items": { "type": "string" } },
         "old_path_dispositions": {
           "type": "array",
-          "items": { "$ref": "#/$defs/terminal_old_path_disposition" }
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "seam": { "type": "string", "minLength": 1 },
+              "terminal_disposition": { "$ref": "#/$defs/terminal_old_path_disposition" }
+            },
+            "required": ["seam", "terminal_disposition"]
+          }
         },
         "limitations": { "type": "array", "items": { "type": "string" } },
         "review_map": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
@@ -276,6 +305,7 @@
     },
     "stop": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "conditions": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
         "forbidden_actions": {
@@ -425,6 +455,7 @@
     },
     "live_plane": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "state": { "enum": ["unknown", "observed"] },
         "snapshot_digest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },

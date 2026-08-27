@@ -337,7 +337,7 @@ fn live_snapshots_change_only_live_sections() -> TestResult {
     assert_eq!(quiet.pointer("/planes/live/required_action").and_then(Value::as_str), Some("none"));
 
     let parsed = build::LiveSnapshot::parse(
-        br#"{"head_sha": "c3ab8ff13720e8ad9047dd39466b3c8974e592c2", "required_action": "repair", "writer_active": false}"#,
+        br#"{"head_sha": "c3ab8ff13720e8ad9047dd39466b3c8974e592c2", "candidate_branch": null, "required_action": "repair", "writer_active": false}"#,
     )?;
     assert_eq!(parsed.required_action.as_str(), "repair");
     Ok(())
@@ -428,6 +428,38 @@ fn compact_projections_stay_lossless_for_every_node() {
     }
 }
 
+// Every documented artifact cell must survive the dense projection: an
+// id(mode)-only artifact row drops owner/proof/check/lens/impact constraints.
+#[test]
+fn compact_projection_detects_dropped_artifact_cells() {
+    let (builder, _) = builder_of("fr_9415_dap_reliability_leaf");
+    let compact_text = render::compact(&builder);
+    let mut stripped = builder.clone();
+    if let Some(items) = stripped.pointer_mut("/artifacts").and_then(Value::as_array_mut) {
+        for item in items.iter_mut().filter_map(Value::as_object_mut) {
+            for field in [
+                "owner",
+                "required_change_or_proof",
+                "check_command",
+                "review_lens",
+                "claim_impact",
+            ] {
+                item.insert(field.to_owned(), Value::String("(dropped cell)".to_owned()));
+            }
+        }
+    }
+    let loss = render::validate_compact_lossless(&stripped, &compact_text);
+    assert!(
+        codes(&loss).iter().all(|code| *code == "compact_loss"),
+        "artifact-cell loss must be reported as compact_loss: {:?}",
+        codes(&loss)
+    );
+    assert!(
+        !loss.is_empty(),
+        "an artifact reduced to cells absent from the compact projection must be detected"
+    );
+}
+
 // Dropped stop conditions are a rendering regression, not a style choice.
 #[test]
 fn compact_projection_detects_dropped_constraints() {
@@ -497,6 +529,206 @@ fn schema_files_match_closed_vocabularies() -> TestResult {
         }
     }
     Ok(())
+}
+
+// Finding: the builder schema pinned delivery.old_path_dispositions items to
+// the bare terminal-disposition string while the generator, the Rust
+// validator, and the reviewer schema all treat every row as
+// {seam, terminal_disposition}. The schema must describe the emitted shape.
+#[test]
+fn builder_schema_describes_emitted_old_path_rows() -> TestResult {
+    let schema = read_schema_file("schemas/feature_readiness_builder_packet.v1.schema.json")?;
+    let items = schema.pointer("/properties/delivery/properties/old_path_dispositions/items");
+    let Some(items) = items else {
+        panic!("builder schema must constrain delivery.old_path_dispositions items");
+    };
+    assert_eq!(items.get("type"), Some(&Value::String("object".to_owned())));
+    let required: Vec<&str> = items
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        required.as_slice(),
+        &["seam", "terminal_disposition"],
+        "old-path rows must carry seam identity beside the terminal disposition"
+    );
+    assert_eq!(
+        items.pointer("/properties/terminal_disposition/$ref"),
+        Some(&Value::String("#/$defs/terminal_old_path_disposition".to_owned())),
+        "the terminal vocabulary stays pinned through $defs"
+    );
+
+    // Discriminating consumer control: a string-form row still fails closed.
+    let (builder, _) = builder_of("fr_5108_navigation_truth_repair");
+    let string_form = mutate(&builder, &|doc| {
+        if let Some(delivery) = doc.get_mut("delivery").and_then(Value::as_object_mut) {
+            delivery.insert("old_path_dispositions".to_owned(), serde_json::json!(["removed"]));
+        }
+    });
+    assert!(
+        codes(&validate::validate_builder(&string_form)).contains(&"old_path_unterminated"),
+        "string-form old-path rows must never satisfy the delivery audit"
+    );
+    Ok(())
+}
+
+// Both new schema files are closed surfaces: unknown keys must be rejected by
+// standard JSON Schema validation exactly as the Rust validator rejects them.
+#[test]
+fn schema_files_reject_unknown_fields_everywhere() -> TestResult {
+    for file in [
+        "schemas/feature_readiness_builder_packet.v1.schema.json",
+        "schemas/feature_readiness_reviewer_packet.v1.schema.json",
+    ] {
+        let schema = read_schema_file(file)?;
+        let mut open_objects: Vec<String> = Vec::new();
+        assert_every_object_is_closed(&schema, &mut String::from("$"), &mut open_objects);
+        assert!(
+            open_objects.is_empty(),
+            "{file}: object schemas without additionalProperties:false: {open_objects:?}"
+        );
+    }
+    Ok(())
+}
+
+fn read_schema_file(file: &str) -> TestResult<Value> {
+    let root = crate::utils::project_root()?;
+    let text = std::fs::read_to_string(root.join(file))
+        .map_err(|error| color_eyre::eyre::eyre!("reading {file}: {error}"))?;
+    serde_json::from_str(&text).map_err(|error| color_eyre::eyre::eyre!("parsing {file}: {error}"))
+}
+
+fn assert_every_object_is_closed(value: &Value, path: &mut String, open: &mut Vec<String>) {
+    if let Some(object) = value.as_object() {
+        if object.get("type").and_then(Value::as_str) == Some("object")
+            && object.get("additionalProperties") != Some(&Value::Bool(false))
+        {
+            open.push(path.clone());
+        }
+        for (key, child) in object {
+            let length = path.len();
+            path.push('/');
+            path.push_str(key);
+            assert_every_object_is_closed(child, path, open);
+            path.truncate(length);
+        }
+    } else if let Some(items) = value.as_array() {
+        for (index, child) in items.iter().enumerate() {
+            let length = path.len();
+            path.push_str(&format!("/{index}"));
+            assert_every_object_is_closed(child, path, open);
+            path.truncate(length);
+        }
+    }
+}
+
+// A `--all --check` denominator gate consumes `--live-snapshot`: an
+// unreadable or malformed snapshot fails closed instead of silently running
+// the offline denominator.
+#[test]
+fn all_check_consumes_the_live_snapshot() -> TestResult {
+    use super::FeatureReadinessTrainCommand;
+    let command = |snapshot: Option<std::path::PathBuf>| FeatureReadinessTrainCommand::Packet {
+        node: None,
+        reviewer: false,
+        markdown: false,
+        compact: false,
+        check: true,
+        live_snapshot: snapshot,
+        all: true,
+    };
+    let Err(error) =
+        super::run(command(Some(std::path::PathBuf::from("definitely-absent/snapshot.json"))))
+    else {
+        panic!("--all --check must fail closed when --live-snapshot cannot be read");
+    };
+    assert!(
+        error.to_string().contains("reading live snapshot"),
+        "the failure must name the unreadable snapshot input: {error}"
+    );
+
+    let mut complete = std::env::temp_dir();
+    complete.push(format!("fr-live-complete-{}.json", std::process::id()));
+    std::fs::write(
+        &complete,
+        br#"{"head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "candidate_branch": null, "writer_active": false, "required_action": "none"}"#,
+    )?;
+    let ran = super::run(command(Some(complete.clone())));
+    let _ = std::fs::remove_file(complete);
+    ran?;
+
+    let incomplete =
+        std::env::temp_dir().join(format!("fr-live-partial-{}.json", std::process::id()));
+    std::fs::write(&incomplete, br#"{"head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#)?;
+    let result = super::run(command(Some(incomplete.clone())));
+    let _ = std::fs::remove_file(incomplete);
+    let Err(error) = result else {
+        panic!("--all --check must reject an incomplete live snapshot");
+    };
+    assert!(
+        error.to_string().contains("incomplete live snapshot"),
+        "the failure must name the incomplete observation set: {error}"
+    );
+    Ok(())
+}
+
+// A snapshot supplies observations, not defaults: omitting writer/action
+// state fails closed naming the missing cells instead of implying
+// writer_active=false under an `observed` banner.
+#[test]
+fn live_snapshot_parsing_requires_complete_observations() -> TestResult {
+    let head_only =
+        build::LiveSnapshot::parse(br#"{"head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#);
+    let Err(error) = head_only else {
+        panic!("a head-only snapshot hides unknown writer/action state; it must fail closed");
+    };
+    let message = error.to_string();
+    for missing in ["candidate_branch", "writer_active", "required_action"] {
+        assert!(
+            message.contains(missing),
+            "the diagnostic must name every missing observation ({missing}): {message}"
+        );
+    }
+
+    let complete = build::LiveSnapshot::parse(
+        br#"{"head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "candidate_branch": null, "writer_active": true, "required_action": "repair"}"#,
+    )?;
+    assert!(complete.writer_active);
+    assert_eq!(complete.candidate_branch, None);
+    assert_eq!(complete.required_action.as_str(), "repair");
+
+    let typed_wrong_shape = build::LiveSnapshot::parse(
+        br#"{"head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "candidate_branch": 7, "writer_active": false, "required_action": "none"}"#,
+    );
+    assert!(typed_wrong_shape.is_err());
+    Ok(())
+}
+
+// A reviewer-mode check binds its verdict to the reviewer bytes: both digests
+// stay on the receipt with labeled roles, never one digest wearing two hats.
+#[test]
+fn check_receipt_reports_both_labeled_digests() {
+    let line = super::check_receipt_line(
+        "fr_8305_import_containment_leaf",
+        "reviewer",
+        "a".repeat(64).as_str(),
+        "b".repeat(64).as_str(),
+    );
+    assert!(line.starts_with("FR_PACKET_CHECK node=fr_8305_import_containment_leaf"), "{line}");
+    assert!(line.contains("packet=reviewer"), "selected role must be named: {line}");
+    let builder = format!("builder_digest={}", "a".repeat(64));
+    let review = format!("reviewer_digest={}", "b".repeat(64));
+    assert!(line.contains(&builder), "builder digest must carry its role label: {line}");
+    assert!(line.contains(&review), "reviewer digest must be reported, not discarded: {line}");
+
+    let builder_mode = super::check_receipt_line(
+        "fr_8305_import_containment_leaf",
+        "builder",
+        "a".repeat(64).as_str(),
+        "b".repeat(64).as_str(),
+    );
+    assert!(builder_mode.contains("packet=builder"));
 }
 
 // Role/disposition separation across the mandated representative fixtures.

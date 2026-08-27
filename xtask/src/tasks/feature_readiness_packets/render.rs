@@ -356,10 +356,20 @@ pub fn compact(doc: &Value) -> String {
             if index > 0 {
                 out.push_str("; ");
             }
+            // The whole artifact worklist is load-bearing (#11286): dropping
+            // owner/proof/check/lens/impact cells would strip the consumer's
+            // generator identity and claim consequences from the projection.
             out.push_str(&format!(
-                "{}({})",
+                "{}[{}]({}) owner={} now={} proof={} check={} lens={} impact={}",
                 artifact.get("id").and_then(Value::as_str).unwrap_or("?"),
+                artifact.get("kind").and_then(Value::as_str).unwrap_or("?"),
                 artifact.get("mode").and_then(Value::as_str).unwrap_or("?"),
+                artifact.get("owner").and_then(Value::as_str).unwrap_or("?"),
+                artifact.get("current_disposition").and_then(Value::as_str).unwrap_or("?"),
+                artifact.get("required_change_or_proof").and_then(Value::as_str).unwrap_or("?"),
+                artifact.get("check_command").and_then(Value::as_str).unwrap_or("?"),
+                artifact.get("review_lens").and_then(Value::as_str).unwrap_or("?"),
+                artifact.get("claim_impact").and_then(Value::as_str).unwrap_or("?"),
             ));
         }
         out.push('\n');
@@ -504,6 +514,26 @@ pub fn validate_compact_lossless(builder: &Value, compact_text: &str) -> Vec<Vio
                 "compact_loss",
                 format!("compact projection dropped artifact {id:?}"),
             ));
+        }
+        for field in [
+            "kind",
+            "mode",
+            "owner",
+            "current_disposition",
+            "required_change_or_proof",
+            "check_command",
+            "review_lens",
+            "claim_impact",
+        ] {
+            let value = artifact.get(field).and_then(Value::as_str).unwrap_or("");
+            if !value.is_empty() && !compact_text.contains(value) {
+                violations.push(Violation::new(
+                    "compact_loss",
+                    format!(
+                        "compact projection dropped artifact {id:?} cell {field:?} ({value:?})"
+                    ),
+                ));
+            }
         }
     }
     for condition in strings(builder.pointer("/stop/conditions")) {

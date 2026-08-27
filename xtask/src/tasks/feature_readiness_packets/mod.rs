@@ -54,9 +54,11 @@ pub enum FeatureReadinessTrainCommand {
         #[arg(long)]
         check: bool,
 
-        /// Optional exact live snapshot JSON (head/candidate/writer state);
-        /// without it the packet states live state unknown and requires a
-        /// read-only preflight before any write action.
+        /// Optional exact live snapshot JSON (head/candidate/writer/action
+        /// observations — all four keys are required; a deliberately unknown
+        /// candidate branch is written as `null`). Without it the packet
+        /// states live state unknown and requires a read-only preflight
+        /// before any write action.
         #[arg(long = "live-snapshot")]
         live_snapshot: Option<std::path::PathBuf>,
 
@@ -91,7 +93,7 @@ pub fn run(command: FeatureReadinessTrainCommand) -> Result<()> {
                 if node.is_some() {
                     bail!("--all validates the whole denominator; do not also name a node");
                 }
-                return run_all();
+                return run_all(live_snapshot.as_deref());
             }
             let Some(node) = node.as_deref() else {
                 bail!(
@@ -132,7 +134,7 @@ fn run_one(
     let node = find_node(&registry_nodes, query)?;
     let live = load_snapshot(snapshot_path)?;
     let (builder_doc, builder_digest) = build::builder_document(node, live.as_ref());
-    let (reviewer_doc, _reviewer_digest) = build::reviewer_document(node, live.as_ref());
+    let (reviewer_doc, reviewer_digest) = build::reviewer_document(node, live.as_ref());
 
     let builder_violations = validate::validate_builder(&builder_doc);
     let reviewer_violations = validate::validate_reviewer(&reviewer_doc);
@@ -160,11 +162,17 @@ fn run_one(
                 render::validate_compact_lossless(&builder_doc, &render::compact(&builder_doc));
             report_violations("compact", node.node_id, &loss)?;
         }
+        // Both generated documents are bound to the receipt with labeled
+        // roles: a persisted reviewer-check line must stay attached to the
+        // reviewer bytes it validated, never to the builder digest.
         println!(
-            "FR_PACKET_CHECK node={} packet={} digest={} status=ok",
-            node.node_id,
-            if reviewer { "reviewer" } else { "builder" },
-            builder_digest
+            "{}",
+            check_receipt_line(
+                node.node_id,
+                if reviewer { "reviewer" } else { "builder" },
+                &builder_digest,
+                &reviewer_digest,
+            )
         );
         return Ok(());
     }
@@ -172,13 +180,31 @@ fn run_one(
     Ok(())
 }
 
-fn run_all() -> Result<()> {
+/// The `--check` receipt: one deterministic line binding both packet digests
+/// to their roles so downstream consumers cannot attach a check result to the
+/// wrong document.
+fn check_receipt_line(
+    node_id: &str,
+    selected_packet: &str,
+    builder_digest: &str,
+    reviewer_digest: &str,
+) -> String {
+    format!(
+        "FR_PACKET_CHECK node={node_id} packet={selected_packet} \
+         builder_digest={builder_digest} reviewer_digest={reviewer_digest} status=ok"
+    )
+}
+
+fn run_all(snapshot_path: Option<&Path>) -> Result<()> {
+    // The denominator gate consumes the same snapshot evidence as a
+    // single-node check: an unreadable or incomplete snapshot fails closed
+    // here instead of silently degrading to an offline run.
+    let live = load_snapshot(snapshot_path)?;
     let registry_nodes = nodes::all_nodes();
     let mut checked = 0usize;
     for node in &registry_nodes {
-        let live = None;
-        let (builder_doc, builder_digest) = build::builder_document(node, live);
-        let (reviewer_doc, _) = build::reviewer_document(node, live);
+        let (builder_doc, builder_digest) = build::builder_document(node, live.as_ref());
+        let (reviewer_doc, _) = build::reviewer_document(node, live.as_ref());
         report_violations("builder", node.node_id, &validate::validate_builder(&builder_doc))?;
         report_violations("reviewer", node.node_id, &validate::validate_reviewer(&reviewer_doc))?;
         report_violations(
@@ -188,7 +214,7 @@ fn run_all() -> Result<()> {
         )?;
         // Determinism: two independent builds of the same node must agree
         // byte-for-byte, including content-addressed identity.
-        let rebuilt = build::builder_document(node, live);
+        let rebuilt = build::builder_document(node, live.as_ref());
         if render::canonical_json(&rebuilt.0) != render::canonical_json(&builder_doc) {
             bail!("non-deterministic builder generation for {}", node.node_id);
         }

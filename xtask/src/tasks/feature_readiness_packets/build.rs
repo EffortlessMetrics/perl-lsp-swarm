@@ -22,6 +22,11 @@ const OFFLINE_READINESS_OWNER_ISSUE: u32 = 11281;
 const INSTRUMENT_FAILURE_BEHAVIOR: &str = "instrument failure marks the affected cell NOT_PROVEN in the receipt; it never becomes a pass, an empty success, or a skip";
 
 /// An explicit, complete live observation consumed from `--live-snapshot`.
+///
+/// A snapshot is evidence, never a source of defaults: every observation key
+/// must be supplied by the caller (a deliberately unknown candidate branch is
+/// written as `null`), so `writer_active: false` and
+/// `required_action: "none"` can only ever mean *observed*, not *unobserved*.
 #[derive(Clone, Debug)]
 pub struct LiveSnapshot {
     pub head_sha: String,
@@ -32,8 +37,9 @@ pub struct LiveSnapshot {
 }
 
 impl LiveSnapshot {
-    /// Parse one caller-supplied snapshot document. Unknown keys and values
-    /// fail closed; the file digest becomes part of packet identity.
+    /// Parse one caller-supplied snapshot document. Missing observations,
+    /// mistyped values, and unknown keys all fail closed with a diagnostic
+    /// naming the exact cell; the file digest becomes part of packet identity.
     pub fn parse(bytes: &[u8]) -> color_eyre::eyre::Result<Self> {
         use color_eyre::eyre::{Context, bail};
         let doc: Value =
@@ -42,6 +48,7 @@ impl LiveSnapshot {
             .as_object()
             .ok_or_else(|| color_eyre::eyre::eyre!("live snapshot must be an object"))?;
         let mut head_sha = None;
+        let mut candidate_branch_seen = false;
         let mut candidate_branch = None;
         let mut writer_active = None;
         let mut required_action = None;
@@ -54,8 +61,15 @@ impl LiveSnapshot {
                         })?);
                 }
                 "candidate_branch" => {
-                    candidate_branch =
-                        object.get("candidate_branch").and_then(Value::as_str).map(str::to_owned);
+                    candidate_branch_seen = true;
+                    if let Some(value) =
+                        object.get("candidate_branch").filter(|value| !value.is_null())
+                    {
+                        let Some(text) = value.as_str() else {
+                            bail!("live-snapshot candidate_branch must be a string or null");
+                        };
+                        candidate_branch = Some(text.to_owned());
+                    }
                 }
                 "writer_active" => {
                     writer_active = Some(
@@ -89,11 +103,36 @@ impl LiveSnapshot {
         {
             bail!("live-snapshot head_sha must be 40-64 hex characters");
         }
+        // Fail closed on incomplete observations: an `observed` live plane
+        // binds candidate/writer/action facts, so a partial snapshot may not
+        // shrink into defaults that would hide an active writer or required
+        // repair behind preflight_required=false.
+        let missing: Vec<&str> = [
+            ("candidate_branch", candidate_branch_seen),
+            ("writer_active", writer_active.is_some()),
+            ("required_action", required_action.is_some()),
+        ]
+        .into_iter()
+        .filter(|(_, seen)| !seen)
+        .map(|(key, _)| key)
+        .collect();
+        if !missing.is_empty() {
+            bail!(
+                "incomplete live snapshot: no explicit observation for {}; an observed plane cannot default writer/action state, supply them explicitly (null is allowed only for candidate_branch)",
+                missing.join(", ")
+            );
+        }
+        let Some(writer_active) = writer_active else {
+            bail!("incomplete live snapshot: missing explicit writer_active");
+        };
+        let Some(required_action) = required_action else {
+            bail!("incomplete live snapshot: missing explicit required_action");
+        };
         Ok(Self {
             head_sha,
             candidate_branch,
-            writer_active: writer_active.unwrap_or(false),
-            required_action: required_action.unwrap_or(LiveAction::None),
+            writer_active,
+            required_action,
             source_digest: crate::tasks::emacs_train_context::digest::sha256_hex(bytes),
         })
     }
@@ -370,6 +409,10 @@ fn live_plane_value(live: Option<&LiveSnapshot>) -> Value {
             "required_action": "none",
             "preflight_required": true,
         }),
+        // Reachable only with a snapshot that parse() accepted as a complete
+        // observation: every writer/candidate/action cell was supplied
+        // explicitly, so `observed` never hides an unobserved state and
+        // preflight_required=false is earned rather than assumed.
         Some(snapshot) => json!({
             "state": "observed",
             "snapshot_digest": snapshot.source_digest,
