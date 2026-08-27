@@ -154,8 +154,11 @@ def write_manifest(
         patch.write_text("\n".join(patch_segments), encoding="utf-8")
         reject.write_text("\n".join(reject_segments), encoding="utf-8")
         log_count = len(reject_segments) if mutation == "duplicate" else len(patch_segments)
+        log_numbers = list(range(1, log_count + 1))
+        if mutation == "reorder" and index == 4:
+            log_numbers.reverse()
         log.write_text(
-            "".join(f"Rejected hunk #{number}.\n" for number in range(1, log_count + 1)),
+            "".join(f"Rejected hunk #{number}.\n" for number in log_numbers),
             encoding="utf-8",
         )
         rows.append(f"{path}\t{patch}\t{log}\t{reject}\n")
@@ -190,6 +193,9 @@ def main() -> None:
         raise RuntimeError("independent fixture hunk count drifted")
 
     replace_stale_import = load_rebuild_import_helper()
+    rebuild_script = (ROOT / "scripts/maintenance/rebuild_11983_current_main.sh").read_text(encoding="utf-8")
+    if "git ls-files --others --exclude-standard" not in rebuild_script:
+        raise RuntimeError("empty cherry-pick guard does not reject untracked files")
     with tempfile.TemporaryDirectory(prefix="rebuild-11983-imports-") as directory:
         path = Path(directory) / "text_sync.rs"
         old = "old import\n"
@@ -241,6 +247,11 @@ def main() -> None:
             root / "hunk-header" / "evidence",
             "hunk identity omitted or reused",
             Path("reject-0.rej"),
+        )
+        expect_rejection(
+            write_manifest(root / "reorder", mutation="reorder"),
+            root / "reorder" / "evidence",
+            "reject hunk ordinals",
         )
         table_mismatch = write_manifest(root / "table-mismatch")
         table_path = "crates/perl-dap/features_sot.toml"

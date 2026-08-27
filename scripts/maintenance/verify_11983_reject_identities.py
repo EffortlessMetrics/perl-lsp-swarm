@@ -257,7 +257,7 @@ def validate_manifest(
                     "reject hunk is absent from or ambiguous within the reviewed patch",
                 )
             patch_indices.append(matches[0] + 1)
-        if sorted(patch_indices) != sorted(rejected_hunks):
+        if patch_indices != rejected_hunks:
             _retain(
                 reject,
                 scope,

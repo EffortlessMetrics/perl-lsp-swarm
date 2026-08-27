@@ -9,6 +9,13 @@ second_commit="0f6a4334eb5a53df54a5ed40103659a63578b6f5"
 first_commit_noop=false
 second_commit_noop=false
 
+reconstruction_tree_is_clean() {
+  [ -z "$(git diff --cached --name-only)" ] &&
+    [ -z "$(git diff --name-only --diff-filter=U)" ] &&
+    git diff --quiet &&
+    [ -z "$(git ls-files --others --exclude-standard)" ]
+}
+
 run_cherry_pick_or_skip_empty() {
   local label="$1"
   shift
@@ -26,9 +33,7 @@ run_cherry_pick_or_skip_empty() {
     return 1
   fi
   if ! git rev-parse --verify CHERRY_PICK_HEAD >/dev/null 2>&1 || \
-    [ -n "$(git diff --cached --name-only)" ] || \
-    [ -n "$(git diff --name-only --diff-filter=U)" ] || \
-    ! git diff --quiet; then
+    ! reconstruction_tree_is_clean; then
     echo "$label reported empty but left staged, unresolved, or working-tree state; refusing no-op skip." >&2
     return 1
   fi
