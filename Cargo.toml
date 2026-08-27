@@ -371,6 +371,10 @@ insta = "1.47.2"
 # Profile for development - slightly optimized for better performance
 [profile.dev]
 opt-level = 1
+# line-tables-only keeps backtraces symbolized (fn/file/line — .cargo/config.toml
+# sets RUST_BACKTRACE=1) while dropping variable/type debuginfo, which dominates
+# dev target/ size under parallel multi-worktree dev (#12791).
+debug = "line-tables-only"
 
 # Profile for agent builds - optimized for lower artifact footprint
 [profile.agent]

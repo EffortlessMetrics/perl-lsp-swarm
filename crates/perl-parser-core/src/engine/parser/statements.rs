@@ -18,7 +18,7 @@ impl<'a> Parser<'a> {
                 // the terminal cause at this exact branch so the Ok path of
                 // `parse_with_recovery` cannot report a clean completion for
                 // an AST whose remainder is explicitly unparsed.
-                self.ok_path_stop_cause = Some(ParseStopCause::LexerBudgetExhausted);
+                self.operation.record_terminal(ParseStopCause::LexerBudgetExhausted);
                 break; // Stop parsing but preserve earlier nodes
             }
 
