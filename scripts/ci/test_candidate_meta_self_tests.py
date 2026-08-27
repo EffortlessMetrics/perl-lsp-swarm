@@ -77,6 +77,17 @@ def bash_executable() -> str:
     return executable
 
 
+def python_executable() -> str:
+    """Use the interpreter name exposed by the host's shell environment."""
+    return "python" if os.name == "nt" else "python3"
+
+
+def executable_workflow_script() -> str:
+    """Adapt only the host interpreter name while preserving the workflow body."""
+    script = candidate_self_test_script()
+    return script.replace("python3 -m unittest", f"{python_executable()} -m unittest")
+
+
 def initialize_base(root: Path, files: dict[Path, str] | None = None) -> str:
     """Create the immutable PR-base fixture and return its commit id."""
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
@@ -144,7 +155,7 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
                 else base_sha if include_pr_base else ""
             )
             result = subprocess.run(
-                [bash_executable(), "-c", candidate_self_test_script()],
+                [bash_executable(), "-c", executable_workflow_script()],
                 cwd=root,
                 env=environment,
                 capture_output=True,
@@ -265,7 +276,7 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
             environment["GITHUB_STEP_SUMMARY"] = str(root / "summary.md")
             environment["PR_BASE_SHA"] = base_sha
             result = subprocess.run(
-                [bash_executable(), "-c", candidate_self_test_script()],
+                [bash_executable(), "-c", executable_workflow_script()],
                 cwd=root,
                 env=environment,
                 capture_output=True,
