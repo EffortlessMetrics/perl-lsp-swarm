@@ -161,9 +161,9 @@ jobs:
             )"
             echo "api_scope=${api_scope}" >> "$GITHUB_OUTPUT"
             if [ "${api_scope}" = "true" ]; then
-            echo "::notice::API-surface change detected — public-api-pr / semver-pr rails will run"
+              echo "::notice::API-surface change detected — public-api-pr / semver-pr rails will run"
             else
-            echo "::notice::No API-surface change — API rails report green scoped-noop (#2266)"
+              echo "::notice::No API-surface change — API rails report green scoped-noop (#2266)"
             fi
 
             docs_only=true
@@ -552,7 +552,6 @@ jobs:
               echo "::warning::Breaking changes detected in ${crate}"
             fi
           done
-
 
   # ── PR Smoke: advisory fast feedback for every PR ────────────────────
   # ADVISORY (continue-on-error): this lane runs the `pr-fast` xtask tier, whose
