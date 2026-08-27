@@ -11,9 +11,9 @@ use std::collections::HashMap;
 use std::cell::RefCell;
 
 use xtask::branch_deletion_admission::{
-    DeletionAdmission, DeletionExecutor, ReadOnlyCommands, branch_deletion_command,
-    collect_request, evaluate, execute_admitted_deletion, repository_from_remote_url,
-    verify_remote_identity,
+    DeletionAdmission, DeletionExecutor, ReadOnlyCommands, RemoteIdentity, branch_deletion_command,
+    collect_request, evaluate, execute_admitted_deletion, parse_remote_identity,
+    repository_from_remote_url, verify_remote_identity,
 };
 
 const BRANCH: &str = "agent/vim-activation-root-7762";
@@ -102,8 +102,8 @@ fn healthy() -> FakeCommands {
 /// the trivial reason that live collection never admits anything.
 #[test]
 fn a_fully_read_unencumbered_subject_is_admitted() -> Result<(), Box<dyn std::error::Error>> {
-    let request = collect_request(&healthy(), 7799, "origin")?;
-    let outcome = evaluate(&request);
+    let collected = collect_request(&healthy(), 7799, "origin")?;
+    let outcome = evaluate(&collected.request);
     assert_eq!(outcome.admission, DeletionAdmission::SafeToDelete, "{}", outcome.detail);
     assert_eq!(outcome.repository, "EffortlessMetrics/perl-lsp-swarm");
     assert_eq!(outcome.admitted_sha.as_deref(), Some(HEAD_SHA));
@@ -141,20 +141,70 @@ fn repository_identity_comes_from_the_remote() -> Result<(), Box<dyn std::error:
 #[test]
 fn remote_identity_is_verified_not_merely_named() {
     let commands = healthy();
+    let expected = parse_remote_identity("https://github.com/EffortlessMetrics/perl-lsp-swarm.git")
+        .unwrap_or_else(|| unreachable_identity());
     assert!(
-        verify_remote_identity(&commands, "origin", "EffortlessMetrics/perl-lsp-swarm").is_ok(),
+        verify_remote_identity(&commands, "origin", &expected).is_ok(),
         "the matching repository must verify",
     );
+
+    let other = parse_remote_identity("https://github.com/SomeoneElse/perl-lsp-swarm.git")
+        .unwrap_or_else(|| unreachable_identity());
     assert!(
-        verify_remote_identity(&commands, "origin", "SomeoneElse/perl-lsp-swarm").is_err(),
+        verify_remote_identity(&commands, "origin", &other).is_err(),
         "a different repository must be refused, not accepted",
+    );
+
+    // Host is part of identity: same owner/name on another server must NOT
+    // verify. Comparing only owner/name would accept this.
+    let impostor =
+        parse_remote_identity("https://evil.example.com/EffortlessMetrics/perl-lsp-swarm.git")
+            .unwrap_or_else(|| unreachable_identity());
+    assert_eq!(
+        impostor.repository.render(),
+        expected.repository.render(),
+        "the fixture is only meaningful if owner/name match",
+    );
+    assert_ne!(impostor, expected, "identity must distinguish the host");
+    assert!(
+        verify_remote_identity(&commands, "origin", &impostor).is_err(),
+        "a same-named repository on another host must be refused",
     );
 
     let unreadable = FakeCommands::default().failing("git remote get-url", "no such remote");
     assert!(
-        verify_remote_identity(&unreadable, "origin", "EffortlessMetrics/perl-lsp-swarm").is_err(),
+        verify_remote_identity(&unreadable, "origin", &expected).is_err(),
         "an unreadable remote must be an error, never a pass",
     );
+}
+
+/// Only reached if a fixture URL fails to parse, which would make the test
+/// meaningless rather than merely failing.
+fn unreachable_identity() -> RemoteIdentity {
+    RemoteIdentity {
+        host: "fixture-url-failed-to-parse".to_string(),
+        repository: xtask::branch_deletion_admission::RepositoryId::new("invalid", "invalid"),
+    }
+}
+
+/// Host, port and `user@` handling in remote identity.
+#[test]
+fn remote_identity_keeps_the_host_and_normalises_it() {
+    let cases = [
+        ("https://github.com/O/R.git", "github.com", "O/R"),
+        ("git@github.com:O/R.git", "github.com", "O/R"),
+        ("ssh://git@GitHub.com:22/O/R.git", "github.com", "O/R"),
+        ("https://evil.example.com/O/R", "evil.example.com", "O/R"),
+    ];
+    for (url, host, repository) in cases {
+        let identity = parse_remote_identity(url).unwrap_or_else(|| unreachable_identity());
+        assert_eq!(identity.host, host, "host for {url}");
+        assert_eq!(identity.repository.render(), repository, "repository for {url}");
+    }
+
+    for url in ["", "not-a-url", "https://github.com/onlyowner", "https:///O/R"] {
+        assert!(parse_remote_identity(url).is_none(), "{url:?} must not parse");
+    }
 }
 
 /// An unreadable or unparseable child listing must retain. "The listing
@@ -162,12 +212,12 @@ fn remote_identity_is_verified_not_merely_named() {
 #[test]
 fn an_unreadable_child_listing_retains() -> Result<(), Box<dyn std::error::Error>> {
     let unreachable = healthy().failing("gh pr list", "gh: could not reach api.github.com");
-    let outcome = evaluate(&collect_request(&unreachable, 7799, "origin")?);
+    let outcome = evaluate(&collect_request(&unreachable, 7799, "origin")?.request);
     assert_eq!(outcome.admission, DeletionAdmission::RetainGraphNotProven, "{}", outcome.detail);
     assert_eq!(branch_deletion_command(&outcome), None);
 
     let garbled = healthy().on("gh pr list", "{not json");
-    let outcome = evaluate(&collect_request(&garbled, 7799, "origin")?);
+    let outcome = evaluate(&collect_request(&garbled, 7799, "origin")?.request);
     assert_eq!(outcome.admission, DeletionAdmission::RetainGraphNotProven, "{}", outcome.detail);
     Ok(())
 }
@@ -186,7 +236,7 @@ fn a_page_limit_listing_is_reported_as_truncated() -> Result<(), Box<dyn std::er
     let full_page = healthy().on("gh pr list", &format!("[{}]", rows.join(",")));
 
     // Every row targets a different base, so only truncation can retain here.
-    let outcome = evaluate(&collect_request(&full_page, 7799, "origin")?);
+    let outcome = evaluate(&collect_request(&full_page, 7799, "origin")?.request);
     assert_eq!(
         outcome.admission,
         DeletionAdmission::RetainGraphNotProven,
@@ -206,7 +256,7 @@ fn a_live_open_child_retains() -> Result<(), Box<dyn std::error::Error>> {
             r#"[{{"number":7810,"state":"OPEN","isDraft":true,"headRefName":"agent/child","baseRefName":"{BRANCH}","mergeable":"CONFLICTING"}}]"#
         ),
     );
-    let outcome = evaluate(&collect_request(&with_child, 7799, "origin")?);
+    let outcome = evaluate(&collect_request(&with_child, 7799, "origin")?.request);
     assert_eq!(outcome.admission, DeletionAdmission::RetainOpenChildren, "{}", outcome.detail);
     assert_eq!(outcome.retained_children.len(), 1);
     assert_eq!(outcome.retained_children[0].number, 7810);
@@ -220,14 +270,14 @@ fn a_live_open_child_retains() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn an_unreadable_or_moved_tip_retains() -> Result<(), Box<dyn std::error::Error>> {
     let unreadable = healthy().failing("git ls-remote", "connection reset");
-    let outcome = evaluate(&collect_request(&unreadable, 7799, "origin")?);
+    let outcome = evaluate(&collect_request(&unreadable, 7799, "origin")?.request);
     assert_eq!(outcome.admission, DeletionAdmission::RetainBranchMoved, "{}", outcome.detail);
 
     let advanced = healthy().on(
         "git ls-remote origin",
         &format!("2222222222222222222222222222222222222222\trefs/heads/{BRANCH}\n"),
     );
-    let outcome = evaluate(&collect_request(&advanced, 7799, "origin")?);
+    let outcome = evaluate(&collect_request(&advanced, 7799, "origin")?.request);
     assert_eq!(outcome.admission, DeletionAdmission::RetainBranchMoved, "{}", outcome.detail);
     Ok(())
 }
@@ -241,7 +291,7 @@ fn local_worktree_ownership_blocks_and_fails_closed() -> Result<(), Box<dyn std:
         "git worktree list",
         &format!("worktree /repo/wt-7762\nHEAD {HEAD_SHA}\nbranch refs/heads/{BRANCH}\n"),
     );
-    let outcome = evaluate(&collect_request(&owned, 7799, "origin")?);
+    let outcome = evaluate(&collect_request(&owned, 7799, "origin")?.request);
     assert_eq!(outcome.admission, DeletionAdmission::RetainGraphNotProven, "{}", outcome.detail);
     assert!(
         outcome.detail.contains("wt-7762"),
@@ -250,7 +300,7 @@ fn local_worktree_ownership_blocks_and_fails_closed() -> Result<(), Box<dyn std:
     );
 
     let unreadable = healthy().failing("git worktree list", "not a git repository");
-    let outcome = evaluate(&collect_request(&unreadable, 7799, "origin")?);
+    let outcome = evaluate(&collect_request(&unreadable, 7799, "origin")?.request);
     assert_eq!(outcome.admission, DeletionAdmission::RetainGraphNotProven, "{}", outcome.detail);
     Ok(())
 }
@@ -265,7 +315,7 @@ fn a_non_terminal_parent_retains() -> Result<(), Box<dyn std::error::Error>> {
                 r#"{{"number":7799,"state":"{state}","merged":{merged},"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
             ),
         );
-        let outcome = evaluate(&collect_request(&commands, 7799, "origin")?);
+        let outcome = evaluate(&collect_request(&commands, 7799, "origin")?.request);
         assert_eq!(
             outcome.admission,
             DeletionAdmission::RetainParentNotTerminal,
@@ -325,9 +375,10 @@ fn the_deletion_path_refuses_every_retaining_outcome() -> Result<(), Box<dyn std
     ];
 
     for commands in retaining {
-        let outcome = evaluate(&collect_request(&commands, 7799, "origin")?);
+        let outcome = evaluate(&collect_request(&commands, 7799, "origin")?.request);
         let deleter = RecordingDeleter::default();
-        let result = execute_admitted_deletion(&commands, &deleter, &outcome);
+        let bound = collect_request(&commands, 7799, "origin")?.remote_identity;
+        let result = execute_admitted_deletion(&commands, &deleter, &outcome, &bound);
         assert!(result.is_err(), "{:?} must refuse deletion", outcome.admission);
         assert!(
             deleter.invocations.borrow().is_empty(),
@@ -344,9 +395,10 @@ fn the_deletion_path_refuses_every_retaining_outcome() -> Result<(), Box<dyn std
 #[test]
 fn an_admitted_deletion_runs_the_leased_argv_without_a_shell()
 -> Result<(), Box<dyn std::error::Error>> {
-    let outcome = evaluate(&collect_request(&healthy(), 7799, "origin")?);
+    let outcome = evaluate(&collect_request(&healthy(), 7799, "origin")?.request);
     let deleter = RecordingDeleter::default();
-    execute_admitted_deletion(&healthy(), &deleter, &outcome)?;
+    let bound = collect_request(&healthy(), 7799, "origin")?.remote_identity;
+    execute_admitted_deletion(&healthy(), &deleter, &outcome, &bound)?;
 
     let invocations = deleter.invocations.borrow();
     assert_eq!(invocations.len(), 1, "exactly one deletion");
@@ -382,11 +434,12 @@ fn a_branch_name_with_shell_metacharacters_stays_one_argument()
         )
         .on("git ls-remote origin", &format!("{HEAD_SHA}\trefs/heads/{hostile}\n"));
 
-    let outcome = evaluate(&collect_request(&commands, 7799, "origin")?);
+    let outcome = evaluate(&collect_request(&commands, 7799, "origin")?.request);
     assert_eq!(outcome.admission, DeletionAdmission::SafeToDelete, "{}", outcome.detail);
 
     let deleter = RecordingDeleter::default();
-    execute_admitted_deletion(&commands, &deleter, &outcome)?;
+    let bound = collect_request(&commands, 7799, "origin")?.remote_identity;
+    execute_admitted_deletion(&commands, &deleter, &outcome, &bound)?;
     let invocations = deleter.invocations.borrow();
     assert!(
         invocations[0].contains(&hostile.to_string()),
@@ -401,13 +454,14 @@ fn a_branch_name_with_shell_metacharacters_stays_one_argument()
 /// repository must stop the deletion.
 #[test]
 fn the_deletion_path_reverifies_remote_identity() -> Result<(), Box<dyn std::error::Error>> {
-    let outcome = evaluate(&collect_request(&healthy(), 7799, "origin")?);
+    let outcome = evaluate(&collect_request(&healthy(), 7799, "origin")?.request);
     assert_eq!(outcome.admission, DeletionAdmission::SafeToDelete);
 
     let moved_remote =
         healthy().on("git remote get-url origin", "https://github.com/SomeoneElse/other.git\n");
     let deleter = RecordingDeleter::default();
-    let result = execute_admitted_deletion(&moved_remote, &deleter, &outcome);
+    let bound = collect_request(&healthy(), 7799, "origin")?.remote_identity;
+    let result = execute_admitted_deletion(&moved_remote, &deleter, &outcome, &bound);
     assert!(result.is_err(), "a repository mismatch must refuse the deletion");
     assert!(deleter.invocations.borrow().is_empty(), "nothing may be executed once identity fails",);
     Ok(())

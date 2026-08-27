@@ -53,25 +53,56 @@ impl ReadOnlyCommands for SystemCommands {
     }
 }
 
-/// Parse `owner/name` out of a git remote URL.
+/// A remote's full identity: the host as well as `owner/name`.
 ///
-/// Handles the `https://host/owner/name(.git)` and `git@host:owner/name(.git)`
-/// forms. Anything else is unparseable and must not be guessed at.
-pub fn repository_from_remote_url(url: &str) -> Option<RepositoryId> {
+/// Host matters. `github.com/Owner/Repo` and `evil.example.com/Owner/Repo`
+/// share an `owner/name`, so comparing only that would accept a remote
+/// pointing at an entirely different server as if it were the admitted
+/// repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteIdentity {
+    pub host: String,
+    pub repository: RepositoryId,
+}
+
+impl RemoteIdentity {
+    /// Canonical `host/owner/name`, compared exactly.
+    pub fn render(&self) -> String {
+        format!("{}/{}", self.host, self.repository.render())
+    }
+}
+
+/// Parse a git remote URL into host and `owner/name`.
+///
+/// Handles the `scheme://[user@]host[:port]/owner/name(.git)` and
+/// `[user@]host:owner/name(.git)` forms. Anything else is unparseable and must
+/// not be guessed at.
+pub fn parse_remote_identity(url: &str) -> Option<RemoteIdentity> {
     let trimmed = url.trim().trim_end_matches('/');
     let without_suffix = trimmed.strip_suffix(".git").unwrap_or(trimmed);
-    let path = match without_suffix.split_once("://") {
-        // https://host/owner/name → host/owner/name → drop the host
-        Some((_scheme, rest)) => rest.split_once('/').map(|(_host, path)| path)?,
-        // git@host:owner/name
-        None => without_suffix.split_once(':').map(|(_host, path)| path)?,
+    let (host, path) = match without_suffix.split_once("://") {
+        Some((_scheme, rest)) => rest.split_once('/')?,
+        None => without_suffix.split_once(':')?,
     };
+    // Drop any `user@` prefix and any `:port` suffix; compare hosts
+    // case-insensitively, as DNS does.
+    let host = host.rsplit('@').next().unwrap_or(host);
+    let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
     let (owner, name) = path.rsplit_once('/')?;
     let owner = owner.rsplit('/').next().unwrap_or(owner);
-    if owner.is_empty() || name.is_empty() {
+    if host.is_empty() || owner.is_empty() || name.is_empty() {
         return None;
     }
-    Some(RepositoryId::new(owner, name))
+    Some(RemoteIdentity { host, repository: RepositoryId::new(owner, name) })
+}
+
+/// Parse just `owner/name` out of a git remote URL.
+///
+/// Used where the host is not the discriminator — the child graph comes from a
+/// single host by construction. Remote *binding* must use
+/// [`parse_remote_identity`] instead.
+pub fn repository_from_remote_url(url: &str) -> Option<RepositoryId> {
+    parse_remote_identity(url).map(|identity| identity.repository)
 }
 
 fn parent_terminality(state: &str, merged: bool) -> ParentTerminality {
@@ -196,16 +227,17 @@ pub fn collect_request(
     commands: &dyn ReadOnlyCommands,
     parent_number: u64,
     remote: &str,
-) -> Result<AdmissionRequest> {
+) -> Result<LiveCollection> {
     // Repository identity comes from the remote itself, so the admission is
     // bound to the repository the deletion would actually target rather than
     // to a caller-supplied label.
     let remote_url = commands
         .capture("git", &["remote", "get-url", remote])
         .map_err(|error| eyre!("reading the URL of remote {remote}: {error}"))?;
-    let repository = repository_from_remote_url(&remote_url).ok_or_else(|| {
-        eyre!("remote {remote} URL {:?} is not owner/name shaped", remote_url.trim())
+    let remote_identity = parse_remote_identity(&remote_url).ok_or_else(|| {
+        eyre!("remote {remote} URL {:?} is not host/owner/name shaped", remote_url.trim())
     })?;
+    let repository = remote_identity.repository.clone();
 
     let parent_json = commands.capture(
         "gh",
@@ -293,13 +325,28 @@ pub fn collect_request(
         },
     };
 
-    Ok(AdmissionRequest {
-        branch: collect_branch(commands, remote, &parent.head_ref_name),
-        worktree_ownership: collect_worktree_ownership(commands, &parent.head_ref_name),
-        parent: parent_subject,
-        graph,
-        remote: remote.to_string(),
+    Ok(LiveCollection {
+        request: AdmissionRequest {
+            branch: collect_branch(commands, remote, &parent.head_ref_name),
+            worktree_ownership: collect_worktree_ownership(commands, &parent.head_ref_name),
+            parent: parent_subject,
+            graph,
+            remote: remote.to_string(),
+        },
+        remote_identity,
     })
+}
+
+/// What one live collection observed.
+///
+/// `remote_identity` is deliberately *not* part of [`AdmissionRequest`]: the
+/// request is serialisable and therefore forgeable, while the identity a
+/// deletion is bound to must come from the process that actually read the
+/// remote.
+#[derive(Debug, Clone)]
+pub struct LiveCollection {
+    pub request: AdmissionRequest,
+    pub remote_identity: RemoteIdentity,
 }
 
 /// Confirm the remote resolves to the repository the admission was granted
@@ -310,15 +357,17 @@ pub fn collect_request(
 pub fn verify_remote_identity(
     commands: &dyn ReadOnlyCommands,
     remote: &str,
-    expected: &str,
+    expected: &RemoteIdentity,
 ) -> Result<()> {
     let url = commands.capture("git", &["remote", "get-url", remote])?;
-    let observed = repository_from_remote_url(&url)
-        .ok_or_else(|| eyre!("remote {remote} URL {:?} is not owner/name shaped", url.trim()))?;
-    if observed.render() != expected {
+    let observed = parse_remote_identity(&url).ok_or_else(|| {
+        eyre!("remote {remote} URL {:?} is not host/owner/name shaped", url.trim())
+    })?;
+    if &observed != expected {
         return Err(eyre!(
-            "remote {remote} resolves to {} but the admission was granted against {expected}",
-            observed.render()
+            "remote {remote} resolves to {} but the admission was granted against {}",
+            observed.render(),
+            expected.render()
         ));
     }
     Ok(())
@@ -371,6 +420,7 @@ pub fn execute_admitted_deletion(
     reads: &dyn ReadOnlyCommands,
     deleter: &dyn DeletionExecutor,
     outcome: &super::model::AdmissionOutcome,
+    expected_remote: &RemoteIdentity,
 ) -> Result<()> {
     if !outcome.admission.admits_deletion() {
         return Err(eyre!(
@@ -380,7 +430,9 @@ pub fn execute_admitted_deletion(
         ));
     }
 
-    verify_remote_identity(reads, &outcome.remote, &outcome.repository)?;
+    // Bound to what collection observed — host included — not to a label that
+    // travelled through the serialisable request.
+    verify_remote_identity(reads, &outcome.remote, expected_remote)?;
 
     let argv = super::route::branch_deletion_command(outcome).ok_or_else(|| {
         eyre!("admission for {} produced no leased deletion command", outcome.branch)

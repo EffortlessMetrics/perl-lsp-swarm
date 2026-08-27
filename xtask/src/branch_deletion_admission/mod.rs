@@ -16,8 +16,9 @@ mod route;
 
 pub use evaluate::evaluate;
 pub use live::{
-    DeletionExecutor, ReadOnlyCommands, SystemCommands, SystemDeletion, collect_request,
-    execute_admitted_deletion, repository_from_remote_url, verify_remote_identity,
+    DeletionExecutor, LiveCollection, ReadOnlyCommands, RemoteIdentity, SystemCommands,
+    SystemDeletion, collect_request, execute_admitted_deletion, parse_remote_identity,
+    repository_from_remote_url, verify_remote_identity,
 };
 pub use model::{
     AdmissionOutcome, AdmissionRequest, BRANCH_DELETION_ADMISSION_POLICY_VERSION,
@@ -27,6 +28,7 @@ pub use model::{
 };
 pub use route::{
     branch_deletion_command, merge_command, remote_verification_command, render_disposition,
+    render_snapshot_disposition,
 };
 
 use clap::{Parser, Subcommand};
@@ -110,14 +112,15 @@ fn run(args: Args) -> Result<()> {
     match args.command {
         BranchDeletionAdmissionCommand::Plan { pr, remote, json } => {
             let commands = SystemCommands;
-            let request = collect_request(&commands, pr, &remote)?;
-            let outcome = evaluate(&request);
+            let collected = collect_request(&commands, pr, &remote)?;
+            let outcome = evaluate(&collected.request);
 
             // The verification command is not merely named here: for an
-            // admitted outcome it is actually run, so a caller pointed at a
-            // different repository fails before any deletion is emitted.
+            // admitted outcome it is actually run, against the full identity
+            // collection observed (host included), so a caller pointed at a
+            // different server fails before any deletion is emitted.
             if outcome.admission.admits_deletion() {
-                verify_remote_identity(&commands, &remote, &outcome.repository)?;
+                verify_remote_identity(&commands, &remote, &collected.remote_identity)?;
             }
 
             emit(&outcome, json)?;
@@ -131,14 +134,19 @@ fn run(args: Args) -> Result<()> {
             // Collect and delete in one process: the window between the graph
             // read and the deletion is as small as this design can make it.
             // It cannot be zero — see the residual on `branch_deletion_command`.
-            let request = collect_request(&commands, pr, &remote)?;
-            let outcome = evaluate(&request);
+            let collected = collect_request(&commands, pr, &remote)?;
+            let outcome = evaluate(&collected.request);
             emit(&outcome, false)?;
 
             if !outcome.admission.admits_deletion() {
                 std::process::exit(RETAIN_EXIT_CODE);
             }
-            execute_admitted_deletion(&commands, &SystemDeletion, &outcome)?;
+            execute_admitted_deletion(
+                &commands,
+                &SystemDeletion,
+                &outcome,
+                &collected.remote_identity,
+            )?;
             Ok(())
         }
         BranchDeletionAdmissionCommand::Admit { request, json } => {
@@ -147,13 +155,36 @@ fn run(args: Args) -> Result<()> {
                 .wrap_err("parsing the branch-deletion admission request")?;
             let outcome = evaluate(&parsed);
 
-            emit(&outcome, json)?;
+            // Snapshot evaluation, not authorization: this request came from
+            // the caller, so a structurally valid but forged one could reach
+            // SAFE_TO_DELETE. Nothing runnable is emitted, and the deletion
+            // paths (`plan`/`cleanup`) read the live subjects themselves.
+            emit_snapshot(&outcome, json)?;
             if !outcome.admission.admits_deletion() {
                 std::process::exit(RETAIN_EXIT_CODE);
             }
             Ok(())
         }
     }
+}
+
+/// Render a snapshot-derived outcome, with nothing runnable attached.
+fn emit_snapshot(outcome: &AdmissionOutcome, json: bool) -> Result<()> {
+    let rendered = if json {
+        let envelope = serde_json::json!({
+            "outcome": outcome,
+            "authorizing": false,
+            "note": "snapshot evaluation; authorization requires `plan` or `cleanup`",
+        });
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&envelope)
+                .wrap_err("serializing the admission outcome")?
+        )
+    } else {
+        format!("{}\n", render_snapshot_disposition(outcome))
+    };
+    write_out(&rendered)
 }
 
 /// Render an outcome to stdout in the caller's chosen shape.
@@ -174,6 +205,10 @@ fn emit(outcome: &AdmissionOutcome, json: bool) -> Result<()> {
         format!("{}\n", render_disposition(outcome))
     };
 
+    write_out(&rendered)
+}
+
+fn write_out(rendered: &str) -> Result<()> {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
     handle.write_all(rendered.as_bytes()).wrap_err("writing the admission outcome")?;

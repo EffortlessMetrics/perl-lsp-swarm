@@ -98,13 +98,14 @@ pub fn remote_verification_command(outcome: &AdmissionOutcome) -> Option<(Vec<St
     ))
 }
 
-/// Human-readable disposition, for logs and PR comments.
+/// Disposition only, with no runnable command attached.
 ///
-/// For an admitted outcome this also prints the exact leased command to run.
-/// Emitting it is the point: a caller who hand-rolls
-/// `git push origin --delete` reintroduces the unleased deletion this module
-/// exists to prevent, so the safe form is the one placed in front of them.
-pub fn render_disposition(outcome: &AdmissionOutcome) -> String {
+/// Used where the outcome was computed from a *caller-supplied* snapshot
+/// rather than live collection. Such an outcome can be structurally valid and
+/// still describe a world that does not exist, so it must not hand anyone
+/// something to run: authorization comes only from the live paths, which read
+/// the subjects themselves.
+pub fn render_snapshot_disposition(outcome: &AdmissionOutcome) -> String {
     let mut rendered = format!(
         "{} {} (#{}) — {}",
         outcome.admission.as_str(),
@@ -130,6 +131,22 @@ pub fn render_disposition(outcome: &AdmissionOutcome) -> String {
             child.next_owner.as_str(),
         ));
     }
+
+    rendered
+}
+
+/// Human-readable disposition *with* the commands a live caller should run.
+///
+/// For an admitted outcome this prints the identity check and the exact leased
+/// deletion. Emitting them is the point: a caller who hand-rolls
+/// `git push origin --delete` reintroduces the unleased deletion this module
+/// exists to prevent, so the safe form is the one placed in front of them.
+///
+/// Only ever used for outcomes derived from live collection. Snapshot
+/// evaluation uses [`render_snapshot_disposition`], which attaches nothing
+/// runnable.
+pub fn render_disposition(outcome: &AdmissionOutcome) -> String {
+    let mut rendered = render_snapshot_disposition(outcome);
 
     if let Some((verification, expected_repository)) = remote_verification_command(outcome) {
         rendered
