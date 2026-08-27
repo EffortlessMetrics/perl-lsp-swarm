@@ -8,9 +8,7 @@
 
 mod common;
 
-use common::{
-    DEBUGGEE_PERL_OVERRIDE_ENV, DapWorkflowSession, probe_debuggee_perl_for_test, workflow_timeout,
-};
+use common::{DapWorkflowSession, probe_debuggee_perl_for_test, workflow_timeout};
 use serial_test::serial;
 use std::env;
 use std::error::Error;
@@ -58,8 +56,13 @@ fn find_pipe_usable_path_perl() -> Result<Option<PathBuf>, Box<dyn Error>> {
     Ok(None)
 }
 
-fn observe_pin_for_path(launch_path: &str, script: &str, cwd: &str) -> Result<String, String> {
-    let mut session = DapWorkflowSession::new(workflow_timeout())?;
+fn observe_pin_for_path(
+    launch_path: &str,
+    pinned: &std::path::Path,
+    script: &str,
+    cwd: &str,
+) -> Result<String, String> {
+    let mut session = DapWorkflowSession::new_with_perl(workflow_timeout(), Some(pinned))?;
     match launch_path {
         "launch" => {
             session.launch(script)?;
@@ -112,8 +115,6 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
     path_value.push(if cfg!(windows) { ";" } else { ":" });
     path_value.push(env::var_os("PATH").unwrap_or_default());
     let _path_guard = EnvGuard::set("PATH", &path_value);
-    let _pin_guard = EnvGuard::set(DEBUGGEE_PERL_OVERRIDE_ENV, pinned.as_os_str());
-
     let script = controls.path().join("launch-paths.pl");
     fs::write(
         &script,
@@ -122,7 +123,7 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
     let script_text = script.to_string_lossy().into_owned();
     let cwd = controls.path().to_string_lossy().into_owned();
     for launch_path in ["launch", "launch_with_stop_on_entry", "launch_with_cwd"] {
-        let reported = observe_pin_for_path(launch_path, &script_text, &cwd)
+        let reported = observe_pin_for_path(launch_path, &pinned, &script_text, &cwd)
             .map_err(|error| format!("{launch_path} failed: {error}"))?;
         let reported_lower = reported.to_ascii_lowercase();
         assert!(

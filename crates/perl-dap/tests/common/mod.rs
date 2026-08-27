@@ -68,6 +68,7 @@ pub struct DapWorkflowSession {
     pub rx: Receiver<DapMessage>,
     pub timeout: Duration,
     seq: i64,
+    perl_path: Option<PathBuf>,
 }
 
 // Shared workflow-test helpers are consumed incrementally by DAP scenarios.
@@ -75,7 +76,7 @@ pub struct DapWorkflowSession {
 impl DapWorkflowSession {
     #[cfg(test)]
     pub fn with_receiver_for_test(rx: Receiver<DapMessage>, timeout: Duration) -> Self {
-        Self { adapter: DebugAdapter::new(), rx, timeout, seq: 0 }
+        Self { adapter: DebugAdapter::new(), rx, timeout, seq: 0, perl_path: None }
     }
 
     /// Create a new session and send `initialize`.
@@ -83,11 +84,19 @@ impl DapWorkflowSession {
     /// Returns an error if initialization fails or the `initialized` event is
     /// not received within `timeout`.
     pub fn new(timeout: Duration) -> Result<Self, String> {
+        let perl_path = resolve_launch_perl_path()?;
+        Self::new_with_perl(timeout, perl_path.as_deref())
+    }
+
+    /// Create a session and make every convenience launch helper use the
+    /// supplied interpreter path verbatim.
+    pub fn new_with_perl(timeout: Duration, perl_path: Option<&Path>) -> Result<Self, String> {
         let mut adapter = DebugAdapter::new();
         let (tx, rx) = sync_channel(64);
         adapter.set_event_sender(tx);
 
-        let mut session = Self { adapter, rx, timeout, seq: 0 };
+        let mut session =
+            Self { adapter, rx, timeout, seq: 0, perl_path: perl_path.map(Path::to_path_buf) };
 
         let resp = session.request("initialize", None);
         session.expect_success(&resp, "initialize")?;
@@ -159,7 +168,7 @@ impl DapWorkflowSession {
         // Gated callers use this helper after `perl_available()`. Resolve the
         // same pinned identity here as well so a valid pin controls the live
         // process, even when the caller uses the legacy convenience method.
-        let args = resolved_launch_arguments(script_path, None, stop_on_entry)?;
+        let args = launch_arguments(script_path, None, stop_on_entry, self.perl_path.as_deref());
         let resp = self.request("launch", Some(args));
         self.expect_success(&resp, "launch")?;
         Ok(())
@@ -172,7 +181,7 @@ impl DapWorkflowSession {
     pub fn launch_with_cwd(&mut self, script_path: &str, cwd: &str) -> Result<(), String> {
         // Keep the explicit cwd path under the same pin-propagating contract
         // as `launch`; this is a gated live-session consumer too.
-        let args = resolved_launch_arguments(script_path, Some(cwd), false)?;
+        let args = launch_arguments(script_path, Some(cwd), false, self.perl_path.as_deref());
         let resp = self.request("launch", Some(args));
         self.expect_success(&resp, "launch")?;
         Ok(())
@@ -935,6 +944,56 @@ pub(crate) fn probe_debuggee_perl_for_test_with_descendant_pid(
         .map_err(|failure| failure.reason)
 }
 
+#[cfg(windows)]
+struct ProbeJob {
+    handle: winapi::shared::ntdef::HANDLE,
+}
+
+#[cfg(windows)]
+impl ProbeJob {
+    fn assign(child: &Child) -> io::Result<Self> {
+        use std::os::windows::io::AsRawHandle;
+        use std::ptr::null_mut;
+        use winapi::um::jobapi2::{
+            AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+        };
+        use winapi::um::winnt::{
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JobObjectExtendedLimitInformation,
+        };
+
+        let handle = unsafe { CreateJobObjectW(null_mut(), null_mut()) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                (&mut limits as *mut JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) != 0
+        };
+        let assigned = configured
+            && unsafe { AssignProcessToJobObject(handle, child.as_raw_handle() as _) != 0 };
+        if !assigned {
+            let error = io::Error::last_os_error();
+            unsafe { winapi::um::handleapi::CloseHandle(handle) };
+            return Err(error);
+        }
+        Ok(Self { handle })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProbeJob {
+    fn drop(&mut self) {
+        unsafe { winapi::um::handleapi::CloseHandle(self.handle) };
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn last_probe_pid_for_test() -> Option<u32> {
     match LAST_PROBE_PID.load(Ordering::Acquire) {
@@ -988,6 +1047,12 @@ fn probe_debuggee_perl_with_options(
     #[cfg(unix)]
     command.process_group(0);
     let mut child = command.spawn().map_err(|e| fail(format!("cannot spawn: {e}")))?;
+    #[cfg(windows)]
+    let _probe_job = ProbeJob::assign(&child).map_err(|error| {
+        let _ = child.kill();
+        let _ = child.wait();
+        fail(format!("cannot assign probe process tree to a kill-on-close job: {error}"))
+    })?;
     #[cfg(test)]
     LAST_PROBE_PID.store(child.id(), Ordering::Release);
 
