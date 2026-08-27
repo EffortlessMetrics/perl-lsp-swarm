@@ -1184,10 +1184,11 @@ Module::Build->new(
 
     /// An unbalanced closer at depth zero ends the value at its own offset.
     #[test]
-    fn rejected_value_len_stops_at_an_unmatched_closer() {
+    fn rejected_value_len_stops_at_an_unmatched_closer() -> TestResult {
         assert_eq!(rejected_value_len(")rest", 0), 0);
         assert_eq!(rejected_value_len("ab]rest", 0), 2);
         assert_eq!(rejected_value_len("ab}rest", 0), 2);
+        Ok(())
     }
 
     /// A balanced group is consumed whole; the walk ends at the first
@@ -1195,51 +1196,57 @@ Module::Build->new(
     /// side effect: without the pop the stack never drains, the trailing
     /// separator is never seen at depth zero, and the walk runs to the end.
     #[test]
-    fn rejected_value_len_drains_balanced_groups_before_the_separator() {
+    fn rejected_value_len_drains_balanced_groups_before_the_separator() -> TestResult {
         assert_eq!(rejected_value_len("(a), b", 0), 3);
         assert_eq!(rejected_value_len("[a]; b", 0), 3);
         assert_eq!(rejected_value_len("{[()]}, b", 0), 6);
+        Ok(())
     }
 
     /// Separators nested inside a group do not end the value.
     #[test]
-    fn rejected_value_len_ignores_separators_inside_groups() {
+    fn rejected_value_len_ignores_separators_inside_groups() -> TestResult {
         assert_eq!(rejected_value_len("(a, b); tail", 0), 6);
         assert_eq!(rejected_value_len("[a; b], tail", 0), 6);
+        Ok(())
     }
 
     /// A closer that merely returns the walk to depth zero does not end it —
     /// only a closer with nothing left on the stack does.
     #[test]
-    fn rejected_value_len_ends_only_on_the_extra_closer() {
+    fn rejected_value_len_ends_only_on_the_extra_closer() -> TestResult {
         // Two openers, three closers: the walk survives the first two and
         // stops exactly at the third.
         assert_eq!(rejected_value_len("([a])) tail", 0), 5);
+        Ok(())
     }
 
     /// Delimiters and separators inside quotes are inert, and a backslash
     /// escapes the closing quote.
     #[test]
-    fn rejected_value_len_treats_quoted_delimiters_as_inert() {
+    fn rejected_value_len_treats_quoted_delimiters_as_inert() -> TestResult {
         assert_eq!(rejected_value_len("')', x", 0), 3);
         assert_eq!(rejected_value_len("\"a,b\", tail", 0), 5);
         assert_eq!(rejected_value_len("'a\\'b)', tail", 0), 7);
+        Ok(())
     }
 
     /// With no closer and no separator the walk consumes the remainder.
     #[test]
-    fn rejected_value_len_consumes_the_remainder_when_unterminated() {
+    fn rejected_value_len_consumes_the_remainder_when_unterminated() -> TestResult {
         assert_eq!(rejected_value_len("abc", 0), 3);
         assert_eq!(rejected_value_len("(a, b", 0), 5);
         assert_eq!(rejected_value_len("'unclosed", 0), 9);
+        Ok(())
     }
 
     /// The returned length is relative to `start`, not to the buffer.
     #[test]
-    fn rejected_value_len_is_relative_to_the_start_offset() {
+    fn rejected_value_len_is_relative_to_the_start_offset() -> TestResult {
         //            0123456789
         let source = "KEY => a, b";
         assert_eq!(rejected_value_len(source, 7), 1);
         assert_eq!(rejected_value_len(source, 0), 8);
+        Ok(())
     }
 }
