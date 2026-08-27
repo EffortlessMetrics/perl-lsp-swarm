@@ -1,3 +1,5 @@
+import { parseStrictSemver, type ParsedSemver } from './strictSemver';
+
 export type MigrationDisposition =
   | 'unchanged'
   | 'renamed_compatible'
@@ -18,6 +20,61 @@ export type MigrationScope =
 
 export type MigrationSecurityClass = 'ordinary' | 'machine_sensitive' | 'process_execution';
 
+function isMigrationDisposition(value: unknown): value is MigrationDisposition {
+  switch (value) {
+    case 'unchanged':
+    case 'renamed_compatible':
+    case 'renamed_requires_user_action':
+    case 'deprecated_read_only':
+    case 'removed_inert':
+    case 'replaced_by_standard_vscode_setting':
+    case 'replaced_by_server_or_project_config':
+    case 'unsupported_legacy_value':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isMigrationScope(value: unknown): value is MigrationScope {
+  switch (value) {
+    case 'user':
+    case 'workspace':
+    case 'workspace-folder':
+    case 'resource':
+    case 'machine':
+    case 'machine-overridable':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isConflictPolicy(
+  value: unknown,
+): value is ConfigurationMigrationRow['old_plus_new_conflict_policy'] {
+  switch (value) {
+    case 'current_wins':
+    case 'legacy_only':
+    case 'action_required':
+    case 'not_applicable':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isMigrationSecurityClass(value: unknown): value is MigrationSecurityClass {
+  switch (value) {
+    case 'ordinary':
+    case 'machine_sensitive':
+    case 'process_execution':
+      return true;
+    default:
+      return false;
+  }
+}
+
 export type CompatibilityWindow =
   | { kind: 'no_expiry' }
   | {
@@ -31,30 +88,11 @@ export type CompatibilityWindow =
       post_expiry_disposition: 'action_required' | 'invalid' | 'inert';
     };
 
-export type MigrationVersion = {
-  major: string;
-  minor: string;
-  patch: string;
-  prerelease: string[];
-};
-
-const SEMVER =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+export type MigrationVersion = ParsedSemver;
 
 /** Parse the exact SemVer subset accepted by both registry validation and runtime expiry. */
 export function parseMigrationVersion(value: unknown): MigrationVersion | null {
-  if (typeof value !== 'string') return null;
-  const match = SEMVER.exec(value);
-  if (!match) return null;
-  const major = match[1];
-  const minor = match[2];
-  const patch = match[3];
-  if (major === undefined || minor === undefined || patch === undefined) return null;
-  const prerelease = match[4]?.split('.') ?? [];
-  if (prerelease.some((part) => /^\d+$/.test(part) && part.length > 1 && part.startsWith('0'))) {
-    return null;
-  }
-  return { major, minor, patch, prerelease };
+  return parseStrictSemver(value);
 }
 
 /** Keep JSON-loaded or future registry variants from becoming runtime policy by accident. */
@@ -124,13 +162,13 @@ function isMigrationRowShape(value: unknown): value is ConfigurationMigrationRow
     typeof row.introduced_version === 'string' &&
     typeof row.last_supported_version === 'string' &&
     (typeof row.new_key_or_authority === 'string' || row.new_key_or_authority === null) &&
-    typeof row.old_scope === 'string' &&
-    (typeof row.new_scope === 'string' || row.new_scope === null) &&
-    typeof row.migration_disposition === 'string' &&
+    isMigrationScope(row.old_scope) &&
+    (isMigrationScope(row.new_scope) || row.new_scope === null) &&
+    isMigrationDisposition(row.migration_disposition) &&
     typeof row.automatic_read_compatibility === 'boolean' &&
     typeof row.explicit_write_allowed === 'boolean' &&
-    typeof row.old_plus_new_conflict_policy === 'string' &&
-    typeof row.security_trust_class === 'string' &&
+    isConflictPolicy(row.old_plus_new_conflict_policy) &&
+    isMigrationSecurityClass(row.security_trust_class) &&
     typeof row.warning_reason_code === 'string' &&
     'compatibility_window' in row &&
     (typeof row.expiry_owner_issue === 'number' || row.expiry_owner_issue === null) &&
@@ -196,8 +234,19 @@ export function normalizedMigrationRegistry(
   };
 }
 
+function canonicalizeJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeJson);
+  if (typeof value !== 'object' || value === null) return value;
+
+  const canonical: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort()) {
+    canonical[key] = canonicalizeJson((value as Record<string, unknown>)[key]);
+  }
+  return canonical;
+}
+
 export function serializeMigrationRegistry(registry: ConfigurationMigrationRegistry): string {
-  return `${JSON.stringify(normalizedMigrationRegistry(registry), null, 2)}\n`;
+  return `${JSON.stringify(canonicalizeJson(normalizedMigrationRegistry(registry)), null, 2)}\n`;
 }
 
 export function findMigrationRows(

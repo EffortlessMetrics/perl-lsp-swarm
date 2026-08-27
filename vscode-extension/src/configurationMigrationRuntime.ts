@@ -2,7 +2,6 @@ import type {
   ConfigurationMigrationRegistry,
   ConfigurationMigrationRow,
   CompatibilityWindow,
-  MigrationVersion,
   MigrationScope,
 } from './configurationMigrationRegistry';
 import {
@@ -12,6 +11,7 @@ import {
   parseMigrationVersion,
   validateMigrationRegistry,
 } from './configurationMigrationRegistry';
+import { compareStrictSemver } from './strictSemver';
 
 export type MigrationRuntimeStatus =
   | 'not_applicable'
@@ -114,53 +114,15 @@ function result(
   };
 }
 
-function compareNumericIdentifier(left: string, right: string): number {
-  if (left.length !== right.length) return left.length < right.length ? -1 : 1;
-  return left === right ? 0 : left < right ? -1 : 1;
-}
-
-function compareVersion(left: MigrationVersion, right: MigrationVersion): number {
-  const numericParts: Array<[string, string]> = [
-    [left.major, right.major],
-    [left.minor, right.minor],
-    [left.patch, right.patch],
-  ];
-  for (const [a, b] of numericParts) {
-    const comparison = compareNumericIdentifier(a, b);
-    if (comparison !== 0) return comparison;
-  }
-  if (left.prerelease.length === 0 || right.prerelease.length === 0) {
-    return left.prerelease.length === right.prerelease.length
-      ? 0
-      : left.prerelease.length === 0
-        ? 1
-        : -1;
-  }
-  for (
-    let index = 0;
-    index < Math.max(left.prerelease.length, right.prerelease.length);
-    index += 1
-  ) {
-    const a = left.prerelease[index];
-    const b = right.prerelease[index];
-    if (a === undefined || b === undefined) return a === undefined ? -1 : 1;
-    const an = /^\d+$/.test(a);
-    const bn = /^\d+$/.test(b);
-    if (an && bn) {
-      const comparison = compareNumericIdentifier(a, b);
-      if (comparison !== 0) return comparison;
-    }
-    if (an !== bn) return an ? -1 : 1;
-    if (a !== b) return a < b ? -1 : 1;
-  }
-  return 0;
-}
-
 function isExpired(row: ConfigurationMigrationRow, extensionVersion: string): boolean {
   if (row.compatibility_window.kind === 'no_expiry') return false;
   const current = parseMigrationVersion(extensionVersion);
   const threshold = parseMigrationVersion(row.compatibility_window.version);
-  return !current || !threshold || compareVersion(current, threshold) >= 0;
+  if (!current || !threshold) return true;
+  const comparison = compareStrictSemver(current, threshold);
+  return row.compatibility_window.kind === 'through_extension_version'
+    ? comparison > 0
+    : comparison >= 0;
 }
 
 type RowSelection =
@@ -252,7 +214,14 @@ export function interpretLegacyConfiguration(
     row.compatibility_window.kind !== 'no_expiry' &&
     isExpired(row, input.extension_version ?? '')
   ) {
-    return result(input, row, 'expired', MISSING_VALUE, true);
+    // Expiry revokes only legacy-derived authority. A value already present at
+    // the current key remains canonical, so downstream consumers never have to
+    // choose between reporting the expired legacy row and preserving user data.
+    const currentValue =
+      input.current_value_present && row.new_key_or_authority !== null
+        ? input.current_value
+        : MISSING_VALUE;
+    return result(input, row, 'expired', currentValue, true);
   }
   switch (row.migration_disposition) {
     case 'unchanged':

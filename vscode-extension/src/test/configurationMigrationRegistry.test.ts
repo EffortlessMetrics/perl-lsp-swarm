@@ -56,6 +56,19 @@ describe('public-beta configuration migration registry', () => {
     expect(first.indexOf('aaa_future_row')).toBeLessThan(first.indexOf('v017_mcp_servers_removed'));
   });
 
+  test('serializes equivalent registries independently of object insertion order', () => {
+    const registry = cloneRegistry();
+    const row = registry.rows[0]!;
+    const reorderedRow = Object.fromEntries(Object.entries(row).reverse());
+    const reorderedRegistry = Object.fromEntries(
+      Object.entries({ ...registry, rows: [reorderedRow] }).reverse(),
+    ) as unknown as ConfigurationMigrationRegistry;
+
+    expect(serializeMigrationRegistry(reorderedRegistry)).toBe(
+      serializeMigrationRegistry(registry),
+    );
+  });
+
   test('rejects duplicate exact historical subjects', () => {
     const registry = cloneRegistry();
     registry.rows.push({
