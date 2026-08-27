@@ -8,7 +8,7 @@
 //! - semver-check covers all 5 facade crates
 //! - CONTRIBUTING.md documents the public API workflow
 //!
-//! Tests assert config state, not runtime behavior.
+//! Tests cover both configuration and the shared shell adapter's runtime behavior.
 
 use std::fs;
 use std::path::PathBuf;
@@ -240,16 +240,8 @@ fn contributing_md_documents_public_api_workflow() -> Result<(), Box<dyn std::er
 #[test]
 fn public_api_check_script_has_correct_fail_semantics() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
-    let justfile = fs::read_to_string(root.join("justfile"))?;
+    let check_body = fs::read_to_string(root.join("scripts/ci/public_api_ratchet.sh"))?;
 
-    // Extract the public-api-check recipe body (up to the next recipe header)
-    let check_body = justfile
-        .split("public-api-check:")
-        .nth(1)
-        .ok_or("Could not find public-api-check recipe in justfile")?
-        .split("\npublic-api-update:")
-        .next()
-        .ok_or("Could not delimit public-api-check recipe body")?;
 
     assert!(
         check_body.contains("set -euo pipefail"),
@@ -265,9 +257,7 @@ fn public_api_check_script_has_correct_fail_semantics() -> Result<(), Box<dyn st
         "public-api-check must grep for '^pub ' items"
     );
     assert!(
-        check_body.contains("grep \"^pub \" > \"/tmp/${crate}-current.txt\" || true")
-            || check_body.contains("grep \"^pub \" > \"/tmp/${crate}-current.txt\"  || true")
-            || (check_body.contains("grep \"^pub \"") && check_body.contains("|| true")),
+        check_body.contains("grep '^pub '") && check_body.contains("|| true"),
         "public-api-check grep pipeline must end with '|| true' to prevent set -e abort on empty output"
     );
 
@@ -276,9 +266,74 @@ fn public_api_check_script_has_correct_fail_semantics() -> Result<(), Box<dyn st
         "public-api-check must use 'diff -u' to compare baseline vs current"
     );
 
-    assert!(check_body.contains("FAILED=1"), "public-api-check must set FAILED=1 on diff mismatch");
+    assert!(check_body.contains("failed=1"), "public-api-check must record failure on diff mismatch");
 
     assert!(check_body.contains("exit 1"), "public-api-check must exit 1 when FAILED > 0");
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn public_api_ratchet_executes_fail_closed_fixture() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    let fixture = tempfile::tempdir()?;
+    let baseline_dir = fixture.path().join("baselines");
+    fs::create_dir(&baseline_dir)?;
+    fs::write(baseline_dir.join("demo.txt"), "pub fn stable\n")?;
+
+    let generator = fixture.path().join("generator.sh");
+    fs::write(
+        &generator,
+        r##"#!/usr/bin/env bash
+set -euo pipefail
+case "${GENERATOR_MODE:?}" in
+  fail) echo "controlled generator failure" >&2; exit 7 ;;
+  empty) printf 'private helper\n' ;;
+  stable) printf 'pub fn stable\n' ;;
+  changed) printf 'pub fn changed\n' ;;
+esac
+"##,
+    )?;
+    let mut permissions = fs::metadata(&generator)?.permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&generator, permissions)?;
+
+    let script = project_root().join("scripts/ci/public_api_ratchet.sh");
+    let run = |mode: &str, generator_mode: &str| {
+        Command::new("bash")
+            .arg(&script)
+            .arg(mode)
+            .env("PUBLIC_API_ROOT", fixture.path())
+            .env("PUBLIC_API_WORK_DIR", fixture.path().join("work"))
+            .env("PUBLIC_API_BASELINES_DIR", &baseline_dir)
+            .env("PUBLIC_API_GENERATOR", &generator)
+            .env("PUBLIC_API_CRATES", "demo")
+            .env("GENERATOR_MODE", generator_mode)
+            .output()
+    };
+
+    fs::create_dir(fixture.path().join("work"))?;
+    let failed = run("check", "fail")?;
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stdout).contains("INSTRUMENT-FAIL demo"));
+
+    let empty = run("check", "empty")?;
+    assert!(!empty.status.success());
+    assert!(String::from_utf8_lossy(&empty.stdout).contains("generated API surface is empty"));
+
+    let update_failed = run("update", "fail")?;
+    assert!(!update_failed.status.success());
+    assert_eq!(fs::read_to_string(baseline_dir.join("demo.txt"))?, "pub fn stable\n");
+
+    let stable = run("check", "stable")?;
+    assert!(stable.status.success());
+
+    let changed = run("update", "changed")?;
+    assert!(changed.status.success());
+    assert_eq!(fs::read_to_string(baseline_dir.join("demo.txt"))?, "pub fn changed\n");
 
     Ok(())
 }
@@ -286,7 +341,7 @@ fn public_api_check_script_has_correct_fail_semantics() -> Result<(), Box<dyn st
 /// Test H (edge case): Facade crate list is in sync across justfile, CI, and baseline directory
 ///
 /// This test verifies that the set of 5 facade crates is consistent in:
-/// - justfile `public-api-check` and `public-api-update` recipes
+/// - the shared adapter used by `public-api-check` and `public-api-update`
 /// - CI workflow `.github/workflows/ci-nightly.yml` public-api-check job
 /// - baseline directory `.ci/public-api-baselines/`
 ///
@@ -297,20 +352,13 @@ fn facade_crate_list_consistency() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let expected_crates = vec!["perl-lsp-rs", "perl-parser", "perl-uri", "perl-dap", "perllsp"];
 
-    // Read justfile and verify all 5 crates appear in public-api recipes
-    let justfile = fs::read_to_string(root.join("justfile"))?;
-    let public_api_section = justfile
-        .split("public-api-check:")
-        .nth(1)
-        .ok_or("Could not find public-api-check recipe in justfile")?
-        .split("public-api-update:") // End at next recipe
-        .next()
-        .ok_or("Could not parse public-api-check recipe")?;
+    // The shared adapter owns the list used by both recipes.
+    let public_api_section = fs::read_to_string(root.join("scripts/ci/public_api_ratchet.sh"))?;
 
     for crate_name in &expected_crates {
         assert!(
             public_api_section.contains(crate_name),
-            "Justfile public-api-check recipe must reference facade crate: {}",
+            "public-api ratchet adapter must reference facade crate: {}",
             crate_name
         );
     }
