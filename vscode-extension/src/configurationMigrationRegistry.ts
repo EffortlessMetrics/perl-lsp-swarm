@@ -31,6 +31,43 @@ export type CompatibilityWindow =
       post_expiry_disposition: 'action_required' | 'invalid' | 'inert';
     };
 
+export type MigrationVersion = {
+  major: string;
+  minor: string;
+  patch: string;
+  prerelease: string[];
+};
+
+const SEMVER =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+
+/** Parse the exact SemVer subset accepted by both registry validation and runtime expiry. */
+export function parseMigrationVersion(value: unknown): MigrationVersion | null {
+  if (typeof value !== 'string') return null;
+  const match = SEMVER.exec(value);
+  if (!match) return null;
+  const prerelease = match[4]?.split('.') ?? [];
+  if (prerelease.some((part) => /^\d+$/.test(part) && part.length > 1 && part.startsWith('0'))) {
+    return null;
+  }
+  return { major: match[1], minor: match[2], patch: match[3], prerelease };
+}
+
+/** Keep JSON-loaded or future registry variants from becoming runtime policy by accident. */
+export function isValidCompatibilityWindow(value: unknown): value is CompatibilityWindow {
+  if (typeof value !== 'object' || value === null || !('kind' in value)) return false;
+  const window = value as { kind?: unknown; version?: unknown; post_expiry_disposition?: unknown };
+  if (window.kind === 'no_expiry') return true;
+  return (
+    (window.kind === 'through_extension_version' ||
+      window.kind === 'removed_in_extension_version') &&
+    parseMigrationVersion(window.version) !== null &&
+    (window.post_expiry_disposition === 'action_required' ||
+      window.post_expiry_disposition === 'invalid' ||
+      window.post_expiry_disposition === 'inert')
+  );
+}
+
 export interface ConfigurationMigrationRow {
   migration_id: string;
   old_key: string;
@@ -60,6 +97,17 @@ export interface ConfigurationMigrationRegistry {
   target_release: string;
   source_public_release: string;
   rows: ConfigurationMigrationRow[];
+}
+
+/** Reject missing or future registry envelopes before their contents become policy. */
+export function isSupportedMigrationRegistry(
+  value: unknown,
+): value is ConfigurationMigrationRegistry {
+  if (typeof value !== 'object' || value === null) return false;
+  const registry = value as { schema_version?: unknown; rows?: unknown };
+  return (
+    registry.schema_version === 'vscode_configuration_migration.v2' && Array.isArray(registry.rows)
+  );
 }
 
 /// Dispositions under which a setting keeps no configuration authority at all,
@@ -136,6 +184,12 @@ export function validateMigrationRegistry(registry: ConfigurationMigrationRegist
   const migrationIds = new Set<string>();
   const exactHistoricalSubjects = new Set<string>();
 
+  const candidate: unknown = registry;
+  if (!isSupportedMigrationRegistry(candidate)) {
+    errors.push('migration registry envelope is missing or unsupported');
+    return errors;
+  }
+
   for (const row of registry.rows) {
     if (migrationIds.has(row.migration_id)) {
       errors.push(`duplicate migration_id: ${row.migration_id}`);
@@ -193,15 +247,23 @@ export function validateMigrationRegistry(registry: ConfigurationMigrationRegist
     ) {
       errors.push(`migration expiry owner must be a positive issue number: ${row.migration_id}`);
     }
-    if (
-      row.compatibility_window.kind !== 'no_expiry' &&
-      !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(
-        row.compatibility_window.version,
-      )
-    ) {
-      errors.push(`migration expiry version is not valid SemVer: ${row.migration_id}`);
+    const compatibilityWindow: unknown = row.compatibility_window;
+    if (!isValidCompatibilityWindow(compatibilityWindow)) {
+      if (
+        typeof compatibilityWindow === 'object' &&
+        compatibilityWindow !== null &&
+        'kind' in compatibilityWindow &&
+        compatibilityWindow.kind !== 'no_expiry' &&
+        'version' in compatibilityWindow &&
+        parseMigrationVersion(compatibilityWindow.version) === null
+      ) {
+        errors.push(`migration expiry version is not valid SemVer: ${row.migration_id}`);
+      } else {
+        errors.push(`migration compatibility window is not valid: ${row.migration_id}`);
+      }
     }
     if (
+      isValidCompatibilityWindow(row.compatibility_window) &&
       row.migration_disposition === 'removed_inert' &&
       row.compatibility_window.kind !== 'no_expiry' &&
       row.compatibility_window.post_expiry_disposition !== 'inert'
@@ -209,6 +271,7 @@ export function validateMigrationRegistry(registry: ConfigurationMigrationRegist
       errors.push(`removed_inert migration must remain inert after expiry: ${row.migration_id}`);
     }
     if (
+      isValidCompatibilityWindow(row.compatibility_window) &&
       row.migration_disposition === 'unsupported_legacy_value' &&
       row.compatibility_window.kind !== 'no_expiry' &&
       row.compatibility_window.post_expiry_disposition !== 'invalid'

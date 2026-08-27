@@ -2,9 +2,15 @@ import type {
   ConfigurationMigrationRegistry,
   ConfigurationMigrationRow,
   CompatibilityWindow,
+  MigrationVersion,
   MigrationScope,
 } from './configurationMigrationRegistry';
-import { findMigrationRows } from './configurationMigrationRegistry';
+import {
+  findMigrationRows,
+  isSupportedMigrationRegistry,
+  isValidCompatibilityWindow,
+  parseMigrationVersion,
+} from './configurationMigrationRegistry';
 
 export type MigrationRuntimeStatus =
   | 'not_applicable'
@@ -74,6 +80,8 @@ export const INVALID_REASON_CODES = {
    * exists. This is a defect in the registry, not in the user's settings.
    */
   ambiguous: 'legacy_registry_ambiguous',
+  /** The registry row contains an unknown or malformed compatibility window. */
+  registry_invalid: 'legacy_registry_invalid',
 } as const;
 
 function result(
@@ -84,6 +92,10 @@ function result(
   noticeRequired = false,
   reasonCode: string | null = row?.warning_reason_code ?? null,
 ): MigrationRuntimeResult {
+  const compatibilityWindow =
+    row && isValidCompatibilityWindow(row.compatibility_window)
+      ? row.compatibility_window
+      : { kind: 'no_expiry' as const };
   return {
     migration_id: row?.migration_id ?? null,
     legacy_key: input.old_key,
@@ -95,35 +107,26 @@ function result(
     reason_code: reasonCode,
     notice_required: noticeRequired,
     disk_write_allowed: row?.explicit_write_allowed ?? false,
-    compatibility_window: row?.compatibility_window ?? { kind: 'no_expiry' },
+    compatibility_window: compatibilityWindow,
     post_expiry_disposition:
-      row?.compatibility_window.kind === 'no_expiry'
-        ? null
-        : (row?.compatibility_window.post_expiry_disposition ?? null),
+      compatibilityWindow.kind === 'no_expiry' ? null : compatibilityWindow.post_expiry_disposition,
   };
 }
 
-type ParsedVersion = { major: number; minor: number; patch: number; prerelease: string[] };
-const SEMVER =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
-
-function parseVersion(value: string): ParsedVersion | null {
-  const match = SEMVER.exec(value);
-  if (!match) return null;
-  const prerelease = match[4]?.split('.') ?? [];
-  if (prerelease.some((part) => /^\d+$/.test(part) && part.length > 1 && part.startsWith('0')))
-    return null;
-  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), prerelease };
+function compareNumericIdentifier(left: string, right: string): number {
+  if (left.length !== right.length) return left.length < right.length ? -1 : 1;
+  return left === right ? 0 : left < right ? -1 : 1;
 }
 
-function compareVersion(left: ParsedVersion, right: ParsedVersion): number {
-  const numericParts: Array<[number, number]> = [
+function compareVersion(left: MigrationVersion, right: MigrationVersion): number {
+  const numericParts: Array<[string, string]> = [
     [left.major, right.major],
     [left.minor, right.minor],
     [left.patch, right.patch],
   ];
   for (const [a, b] of numericParts) {
-    if (a !== b) return a < b ? -1 : 1;
+    const comparison = compareNumericIdentifier(a, b);
+    if (comparison !== 0) return comparison;
   }
   if (left.prerelease.length === 0 || right.prerelease.length === 0) {
     return left.prerelease.length === right.prerelease.length
@@ -142,7 +145,10 @@ function compareVersion(left: ParsedVersion, right: ParsedVersion): number {
     if (a === undefined || b === undefined) return a === undefined ? -1 : 1;
     const an = /^\d+$/.test(a);
     const bn = /^\d+$/.test(b);
-    if (an && bn && a.length !== b.length) return a.length < b.length ? -1 : 1;
+    if (an && bn) {
+      const comparison = compareNumericIdentifier(a, b);
+      if (comparison !== 0) return comparison;
+    }
     if (an !== bn) return an ? -1 : 1;
     if (a !== b) return a < b ? -1 : 1;
   }
@@ -151,8 +157,8 @@ function compareVersion(left: ParsedVersion, right: ParsedVersion): number {
 
 function isExpired(row: ConfigurationMigrationRow, extensionVersion: string): boolean {
   if (row.compatibility_window.kind === 'no_expiry') return false;
-  const current = parseVersion(extensionVersion);
-  const threshold = parseVersion(row.compatibility_window.version);
+  const current = parseMigrationVersion(extensionVersion);
+  const threshold = parseMigrationVersion(row.compatibility_window.version);
   return !current || !threshold || compareVersion(current, threshold) >= 0;
 }
 
@@ -191,6 +197,17 @@ export function interpretLegacyConfiguration(
   registry: ConfigurationMigrationRegistry,
   input: MigrationRuntimeInput,
 ): MigrationRuntimeResult {
+  const candidate: unknown = registry;
+  if (!isSupportedMigrationRegistry(candidate)) {
+    return result(
+      input,
+      null,
+      'invalid',
+      MISSING_VALUE,
+      true,
+      INVALID_REASON_CODES.registry_invalid,
+    );
+  }
   if (!input.legacy_value_present) {
     return result(input, null, 'not_applicable');
   }
@@ -208,6 +225,16 @@ export function interpretLegacyConfiguration(
   }
 
   const row = selection.row;
+  if (!isValidCompatibilityWindow(row.compatibility_window)) {
+    return result(
+      input,
+      row,
+      'invalid',
+      MISSING_VALUE,
+      true,
+      INVALID_REASON_CODES.registry_invalid,
+    );
+  }
   if (
     row.compatibility_window.kind !== 'no_expiry' &&
     isExpired(row, input.extension_version ?? '')

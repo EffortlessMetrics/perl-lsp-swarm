@@ -128,6 +128,25 @@ describe('public-beta configuration migration registry', () => {
     expect(validateMigrationRegistry(registry)).toEqual([]);
   });
 
+  test.each(['01.18.0', '0.18.0-01'])(
+    'rejects SemVer forms runtime cannot parse: %s',
+    (version) => {
+      const registry = cloneRegistry();
+      registry.rows[0] = {
+        ...registry.rows[0]!,
+        compatibility_window: {
+          kind: 'removed_in_extension_version',
+          version,
+          post_expiry_disposition: 'inert',
+        },
+      };
+
+      expect(validateMigrationRegistry(registry)).toContain(
+        'migration expiry version is not valid SemVer: v017_mcp_servers_removed',
+      );
+    },
+  );
+
   test('orders rows by code point rather than host collation', () => {
     // localeCompare is host-dependent: Swedish collation orders 'ä' after 'z',
     // English does not. A locale-sensitive sort would serialize the same registry
