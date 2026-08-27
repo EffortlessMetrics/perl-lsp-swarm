@@ -11531,3 +11531,33 @@ exit 1
         assert!(unavailable.evidence_refs.is_empty());
     }
 }
+
+#[cfg(test)]
+mod digest_intake_case_tests {
+    //! #7725: Git identities and sha256 digests accepted by the publication
+    //! and evidence intake validators must keep exactly one canonical
+    //! serialized spelling: lower-case hexadecimal.
+
+    use super::{validate_digest, validate_git_sha};
+
+    #[test]
+    fn git_shas_accept_only_canonical_lower_case_hex() {
+        assert!(validate_git_sha(&"cd".repeat(20), "landed commit").is_ok());
+        assert!(validate_git_sha(&"01".repeat(32), "landed commit").is_ok());
+        assert!(validate_git_sha(&"CD".repeat(20), "landed commit").is_err());
+        assert!(validate_git_sha(&"EF".repeat(32), "landed commit").is_err());
+        assert!(validate_git_sha(&"cD".repeat(20), "landed commit").is_err());
+        assert!(validate_git_sha(&"zz".repeat(20), "landed commit").is_err());
+        assert!(validate_git_sha(&"cd".repeat(19), "landed commit").is_err());
+    }
+
+    #[test]
+    fn sha256_digests_keep_prefix_policy_and_require_lower_case() {
+        assert!(validate_digest(&format!("sha256:{}", "ab".repeat(32)), "receipt digest").is_ok());
+        assert!(validate_digest(&format!("sha256:{}", "AB".repeat(32)), "receipt digest").is_err());
+        assert!(validate_digest(&format!("sha256:{}", "aB".repeat(32)), "receipt digest").is_err());
+        assert!(validate_digest(&"ab".repeat(32), "receipt digest").is_err());
+        assert!(validate_digest(&format!("sha1:{}", "ab".repeat(32)), "receipt digest").is_err());
+        assert!(validate_digest(&format!("sha256:{}", "ab".repeat(31)), "receipt digest").is_err());
+    }
+}

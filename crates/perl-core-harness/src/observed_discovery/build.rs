@@ -534,4 +534,27 @@ mod contract_tests {
         expected.sort_unstable();
         assert_eq!(required_limitations(), expected);
     }
+
+    /// #7725: referenced raw-discovery identities must be spelled with the
+    /// one canonical serialized form, lower-case hexadecimal.
+    #[test]
+    fn discovery_digests_accept_only_canonical_lower_case_hex() {
+        assert!(validate_sha256_field(&"ab".repeat(32), "raw discovery digest").is_ok());
+        assert!(rejected_as(
+            validate_sha256_field(&"AB".repeat(32), "raw discovery digest"),
+            "raw discovery digest"
+        ));
+        assert!(rejected_as(
+            validate_sha256_field(&"aB".repeat(32), "raw discovery digest"),
+            "raw discovery digest"
+        ));
+        assert!(rejected_as(
+            validate_sha256_field(&"zz".repeat(32), "raw discovery digest"),
+            "raw discovery digest"
+        ));
+        assert!(rejected_as(
+            validate_sha256_field(&"ab".repeat(31), "raw discovery digest"),
+            "raw discovery digest"
+        ));
+    }
 }

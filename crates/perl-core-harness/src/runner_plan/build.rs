@@ -354,3 +354,20 @@ fn validate_sha256(value: &str, label: &str) -> Result<(), String> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod digest_intake_case_tests {
+    //! #7725: digests entering the runner-plan authority must keep exactly
+    //! one canonical serialized spelling: lower-case hexadecimal.
+
+    use super::validate_sha256;
+
+    #[test]
+    fn runner_plan_digests_accept_only_canonical_lower_case_hex() {
+        assert!(validate_sha256(&"ab".repeat(32), "plan fingerprint").is_ok());
+        assert!(validate_sha256(&"AB".repeat(32), "plan fingerprint").is_err());
+        assert!(validate_sha256(&"aB".repeat(32), "plan fingerprint").is_err());
+        assert!(validate_sha256(&"zz".repeat(32), "plan fingerprint").is_err());
+        assert!(validate_sha256(&"ab".repeat(31), "plan fingerprint").is_err());
+    }
+}

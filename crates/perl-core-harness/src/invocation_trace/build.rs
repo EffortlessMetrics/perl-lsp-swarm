@@ -382,8 +382,8 @@ mod contract_tests {
     //! even when the public surface only reports the first rejection.
 
     use super::{
-        required_limitations, validate_reference, validate_sha256_field, validate_target_id,
-        validate_trace_session_id,
+        RunnerArtifactIdentity, required_limitations, validate_artifact, validate_reference,
+        validate_sha256_field, validate_target_id, validate_trace_session_id,
     };
     use crate::invocation_trace::model::SUBJECT_VALIDATIONS_PER_CONSTRUCTION;
 
@@ -453,5 +453,32 @@ mod contract_tests {
         expected.sort_unstable();
         assert_eq!(required_limitations(), expected);
         assert_eq!(SUBJECT_VALIDATIONS_PER_CONSTRUCTION, 4);
+    }
+
+    /// #7725: trace-bound identities must be spelled with the one canonical
+    /// serialized form, lower-case hexadecimal.
+    #[test]
+    fn trace_identities_accept_only_canonical_lower_case_hex() {
+        assert!(validate_sha256_field(&"ab".repeat(32), "matrix fingerprint").is_ok());
+        assert!(rejected_as(
+            validate_sha256_field(&"AB".repeat(32), "matrix fingerprint"),
+            "matrix fingerprint"
+        ));
+        assert!(rejected_as(
+            validate_sha256_field(&"aB".repeat(32), "matrix fingerprint"),
+            "matrix fingerprint"
+        ));
+
+        let artifact = RunnerArtifactIdentity {
+            canonical_path: "t/TEST".to_string(),
+            content_sha256: "aB".repeat(32),
+        };
+        let message = validate_artifact(&artifact).expect_err("mixed case must reject");
+        assert!(message.contains("runner artifact digest"), "{message}");
+        let lower_artifact = RunnerArtifactIdentity {
+            canonical_path: "t/TEST".to_string(),
+            content_sha256: "ab".repeat(32),
+        };
+        assert!(validate_artifact(&lower_artifact).is_ok());
     }
 }

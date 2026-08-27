@@ -633,3 +633,29 @@ fn validate_git_sha(value: &str, label: &str) -> Result<(), String> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod digest_intake_case_tests {
+    //! #7725: target-matrix identities and fingerprints must keep exactly
+    //! one canonical serialized spelling: lower-case hexadecimal.
+
+    use super::{validate_git_sha, validate_sha256};
+
+    #[test]
+    fn matrix_fingerprints_accept_only_canonical_lower_case_hex() {
+        assert!(validate_sha256(&"ab".repeat(32), "target matrix fingerprint").is_ok());
+        assert!(validate_sha256(&"AB".repeat(32), "target matrix fingerprint").is_err());
+        assert!(validate_sha256(&"aB".repeat(32), "target matrix fingerprint").is_err());
+        assert!(validate_sha256(&"zz".repeat(32), "target matrix fingerprint").is_err());
+        assert!(validate_sha256(&"ab".repeat(31), "target matrix fingerprint").is_err());
+    }
+
+    #[test]
+    fn target_contract_git_shas_accept_only_canonical_lower_case_hex() {
+        assert!(validate_git_sha(&"cd".repeat(20), "contract head").is_ok());
+        assert!(validate_git_sha(&"CD".repeat(20), "contract head").is_err());
+        assert!(validate_git_sha(&"cD".repeat(20), "contract head").is_err());
+        assert!(validate_git_sha(&"zz".repeat(20), "contract head").is_err());
+        assert!(validate_git_sha(&"cd".repeat(21), "contract head").is_err());
+    }
+}
