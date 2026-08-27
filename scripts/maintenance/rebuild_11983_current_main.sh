@@ -64,7 +64,10 @@ run_cherry_pick_or_skip_empty() {
     printf 'command-output:\n'
     cat "$capture_file"
   } > "$evidence_dir/empty-cherry-pick-$evidence_suffix.txt"
-  git cherry-pick --skip
+  if ! git cherry-pick --skip; then
+    echo "$label failed while skipping the verified empty cherry-pick; refusing no-op success." >&2
+    return 1
+  fi
   cherry_pick_noop=true
   return 0
 }

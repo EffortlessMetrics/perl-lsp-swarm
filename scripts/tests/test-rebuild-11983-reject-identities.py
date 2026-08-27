@@ -38,6 +38,7 @@ def exercise_empty_cherry_pick_guard(
     cherry_pick_head: str,
     expected_commit: str,
     cherry_pick_status: int,
+    cherry_pick_skip_status: int = 0,
     dirty_tree: bool,
     expect_skip: bool,
     untracked_file: bool = False,
@@ -90,6 +91,9 @@ case "$*" in
     exit 0
     ;;
   "cherry-pick --skip")
+    if [ "${CHERRY_PICK_SKIP_STATUS:-0}" -ne 0 ]; then
+      exit "${CHERRY_PICK_SKIP_STATUS}"
+    fi
     : > "${SKIPPED}"
     ;;
   *)
@@ -102,7 +106,7 @@ esac
         )
         fake_git.chmod(0o755)
         harness = f"""\
-set -u
+set -euo pipefail
 evidence_dir={root.as_posix()}/evidence
 mkdir -p "$evidence_dir"
 export PATH="{root.as_posix()}:$PATH"
@@ -122,6 +126,7 @@ test "$result" -eq {0 if expect_skip else 1}
                 "EXPECTED_COMMIT": expected_commit,
                 "FAKE_CHERRY_PICK_HEAD": cherry_pick_head,
                 "CHERRY_PICK_STATUS": str(cherry_pick_status),
+                "CHERRY_PICK_SKIP_STATUS": str(cherry_pick_skip_status),
                 "DIRTY_TREE": str(int(dirty_tree)),
                 "UNTRACKED_FILE": str(int(untracked_file)),
                 "SKIPPED": f"{root.as_posix()}/skipped",
@@ -148,6 +153,7 @@ test "$result" -eq {0 if expect_skip else 1}
                 f"cherry-pick-head: {cherry_pick_head}",
                 "current-head: current-tree-head",
                 "tree-status: clean",
+                "The previous cherry-pick is now empty",
             ):
                 if line not in receipt_text:
                     raise RuntimeError(f"empty cherry-pick receipt omitted {line!r}")
@@ -285,7 +291,7 @@ def write_manifest(
         )
         reject.write_text("\n".join(reject_segments), encoding="utf-8")
         log_count = len(reject_segments) if mutation == "duplicate" else len(patch_segments)
-        log_numbers = list(range(1, log_count + 1))
+        log_numbers = [1] * log_count if mutation == "duplicate" else list(range(1, log_count + 1))
         if mutation == "ordinal_reorder" and index == 4:
             log_numbers.reverse()
         log.write_text(
