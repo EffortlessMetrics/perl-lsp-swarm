@@ -344,7 +344,12 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
             ')' | ']' | '}' => {
-                if stack.pop().is_none() {
+                // Bind the pop before testing it: an `if stack.pop().is_none()`
+                // arm body trips the armed `collapsible_match` deny (#6113),
+                // and clippy's suggested collapse hides this mutation inside a
+                // match guard that is evaluated for every closing delimiter.
+                let popped = stack.pop();
+                if popped.is_none() {
                     return idx.saturating_sub(start);
                 }
             }
