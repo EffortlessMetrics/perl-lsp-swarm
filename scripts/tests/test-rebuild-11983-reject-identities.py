@@ -351,6 +351,14 @@ def main() -> None:
         raise RuntimeError("empty cherry-pick helper does not capture combined output")
     if "previous[[:space:]]+cherry-pick[[:space:]]+is[[:space:]]+now[[:space:]]+empty" not in rebuild_script:
         raise RuntimeError("empty cherry-pick helper lacks the expected diagnostic matcher")
+    classification_start = rebuild_script.index("  local cherry_pick_head")
+    classification_end = rebuild_script.index("\n\n# Identity gate", classification_start)
+    classification = rebuild_script[classification_start:classification_end]
+    receipt_start = classification.index("printf 'command-output:\\n'")
+    receipt_cat = classification.index('cat "$capture_file"', receipt_start)
+    receipt_cleanup = classification.index('rm -f "$capture_file"', receipt_cat)
+    if receipt_cat > receipt_cleanup:
+        raise RuntimeError("empty cherry-pick evidence removes capture before reading it")
     if 'run_cherry_pick_or_skip_empty "first cherry-pick" "$first_commit" git cherry-pick "$first_commit"' not in rebuild_script:
         raise RuntimeError("initial cherry-pick bypasses the guarded helper")
     if "-- provider-confidence-matrix" in rebuild_script:
