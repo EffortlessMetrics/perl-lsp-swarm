@@ -99,18 +99,24 @@ use std::{env, fs, process::Command, thread, time::Duration};
 
 fn main() {
     if let Some(pid_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE") {
-        let Ok(executable) = env::current_exe() else { return };
-        let Ok(descendant) = Command::new(executable)
-            .env_remove("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE")
-            .spawn()
-        else { return };
+        #[cfg(unix)]
+        let descendant = Command::new("sh")
+            .args(["-c", "trap '' TERM; sleep 60"])
+            .spawn();
+        #[cfg(windows)]
+        let descendant = {
+            let Ok(executable) = env::current_exe() else { return };
+            Command::new(executable)
+                .env_remove("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE")
+                .spawn()
+        };
+        let Ok(descendant) = descendant else { return };
         let _ = fs::write(pid_file, descendant.id().to_string());
     }
     thread::sleep(Duration::from_secs(60));
 }
 "#,
     )?;
-    #[cfg(unix)]
     let success_with_descendant = compile_probe_control(
         controls.path(),
         "probe_success_with_descendant",
@@ -185,10 +191,7 @@ fn main() {
             )
         });
         let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(2))?;
-        assert!(
-            process_exists(descendant_pid)?,
-            "{label} control must have a live descendant inheriting the probe pipes"
-        );
+        wait_for_process_start(descendant_pid, Duration::from_secs(2))?;
         let result =
             probe.join().map_err(|_| io::Error::other(format!("{label} probe thread panicked")))?;
         assert!(result.is_err(), "{label} probe must fail through its cleanup path");
@@ -206,7 +209,6 @@ fn main() {
         );
     }
 
-    #[cfg(unix)]
     {
         let before = current_process_probe_artifacts()?;
         let pid_file = controls.path().join("success-descendant.pid");
@@ -223,10 +225,7 @@ fn main() {
             }
         });
         let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(2))?;
-        assert!(
-            process_exists(descendant_pid)?,
-            "successful-parent control must have a live descendant inheriting probe pipes"
-        );
+        wait_for_process_start(descendant_pid, Duration::from_secs(2))?;
         let result = probe
             .join()
             .map_err(|_| io::Error::other("successful-parent probe thread panicked"))?;
@@ -328,4 +327,20 @@ fn wait_for_process_exit(pid: u32, timeout: Duration) -> io::Result<()> {
         std::thread::sleep(Duration::from_millis(25));
     }
     Ok(())
+}
+
+fn wait_for_process_start(pid: u32, timeout: Duration) -> io::Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if process_exists(pid)? {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("descendant process {pid} was not observable after its PID was written"),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }

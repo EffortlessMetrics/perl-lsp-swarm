@@ -991,11 +991,11 @@ fn probe_debuggee_perl_with_options(
     LAST_PROBE_PID.store(child.id(), Ordering::Release);
 
     let Some(stdout_pipe) = child.stdout.take() else {
-        terminate_probe_process_tree(&mut child);
+        terminate_probe_process_tree(&mut child, descendant_pid_file);
         return Err(fail("stdout pipe unavailable".to_string()));
     };
     let Some(stderr_pipe) = child.stderr.take() else {
-        terminate_probe_process_tree(&mut child);
+        terminate_probe_process_tree(&mut child, descendant_pid_file);
         return Err(fail("stderr pipe unavailable".to_string()));
     };
 
@@ -1019,7 +1019,7 @@ fn probe_debuggee_perl_with_options(
     // otherwise the test could validate cleanup of a pre-spawn race instead of
     // cleanup of a live process tree holding inherited pipe handles.
     if simulate_wait_error {
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_secs(1));
     }
 
     let deadline = Instant::now() + probe_budget;
@@ -1034,7 +1034,7 @@ fn probe_debuggee_perl_with_options(
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    terminate_probe_process_tree(&mut child);
+                    terminate_probe_process_tree(&mut child, descendant_pid_file);
                     let _ = writer.join();
                     join_pipe_reader(stdout_chunks);
                     join_pipe_reader(stderr_chunks);
@@ -1054,7 +1054,7 @@ fn probe_debuggee_perl_with_options(
                 // process, and join the small stdin writer after the child
                 // closes the pipe. The TempDir guard then removes the script
                 // workspace on this path as well.
-                terminate_probe_process_tree(&mut child);
+                terminate_probe_process_tree(&mut child, descendant_pid_file);
                 let _ = writer.join();
                 join_pipe_reader(stdout_chunks);
                 join_pipe_reader(stderr_chunks);
@@ -1070,7 +1070,7 @@ fn probe_debuggee_perl_with_options(
     // pipe write ends. Close the probe's complete process-tree ownership
     // boundary before joining readers; otherwise a descendant can make the
     // reader join unbounded even though the direct child exited successfully.
-    terminate_probe_process_tree(&mut child);
+    terminate_probe_process_tree(&mut child, descendant_pid_file);
 
     // The child has exited, so its pipe write ends are closing and the reader
     // threads reach EOF almost immediately; the bounded collector exists only
@@ -1148,11 +1148,23 @@ fn join_pipe_reader(drain: PipeDrain) {
 /// stdout/stderr handle and keep a reader blocked after the parent exits. The
 /// probe owns the tree, so timeout and wait-error cleanup must close that whole
 /// ownership boundary before joining either reader.
-fn terminate_probe_process_tree(child: &mut Child) {
+fn terminate_probe_process_tree(child: &mut Child, descendant_pid_file: Option<&Path>) {
     let pid = child.id();
     #[cfg(windows)]
     {
         let _ = Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).status();
+        // A successful parent may already have exited by the time cleanup
+        // starts. In that case taskkill cannot discover a descendant through
+        // the dead root, so kill the controlled descendant explicitly before
+        // joining readers that own inherited pipe handles.
+        if let Some(descendant_pid_file) = descendant_pid_file
+            && let Ok(pid_text) = fs::read_to_string(descendant_pid_file)
+            && let Ok(descendant_pid) = pid_text.trim().parse::<u32>()
+        {
+            let _ = Command::new("taskkill")
+                .args(["/PID", &descendant_pid.to_string(), "/T", "/F"])
+                .status();
+        }
     }
     #[cfg(unix)]
     {
