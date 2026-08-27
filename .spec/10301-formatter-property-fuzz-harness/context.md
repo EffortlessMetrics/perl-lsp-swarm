@@ -29,7 +29,8 @@ must rerun the count, dependency, API, and source-location checks against the
 implementation branch's merge base before writing code. Any mismatch or missing
 source leaves the affected proposition `NOT_PROVEN` until this bundle is updated.
 
-The canonical consumer APIs a harness must bind already exist and are typed:
+The current typed APIs are transitional research evidence, not the seam a new
+harness may canonize:
 
 - `PerlFormatter::{format_document, format_range} -> FormatResult`
   {`formatted`, `edits: Vec<TextEdit>`, `changed`, `diagnostics`}
@@ -41,11 +42,12 @@ The canonical consumer APIs a harness must bind already exist and are typed:
   {content_digest, config_fingerprint, actual_engine}, `FormatChangeSummary`,
   and `FormatSafetyEvidence` {parse_before, parse_after,
   literal_preservation, utf8, line_endings};
-- an independent byte-edit applicator exists:
+- a proof-only byte-edit applicator exists:
   `apply_edits_exact` + `EditSpec`/`PositionEncoding`
-  (`src/native/edit_application.rs:31-144`) — the "independent application ==
-  rendered bytes" invariant can be checked without reusing production edit
-  derivation;
+  (`src/native/edit_application.rs:31-144`), but `src/native.rs` explicitly
+  describes it as production-unwired #8048 proof infrastructure owned by the
+  #10239/#10242 migration. It proves that a strict oracle is feasible; it is
+  not the future product authority and the harness must not import it;
 - refusal taxonomy constants are stable string codes
   (`PARSE_ERROR_CODE`, `PARSE_INCOMPLETE_CODE`, `UNSAFE_RANGE_CODE`,
   `PARSE_PRESERVATION_CODE`, `LITERAL_PRESERVE_CODE`);
@@ -69,6 +71,12 @@ Honest capability boundary on today's tree (gates what this harness may claim):
 - the representative breadth corpus (#9327) is OPEN with zero tree
   references, so generator families must come from the formatter's own
   admitted safe-subset registry, not from #9327 identities.
+- #10237 and #10239 are OPEN: today's UTF-16 `TextRange`/`TextEdit` facade does
+  not carry the byte-native exact-source, requested, admitted, widening,
+  configuration, and final-coverage identities required by FPH-002/003/006.
+  #7138 owns the applicable deterministic plan and strict application
+  authority. Treat those merges as prerequisite wake events, not as consumers
+  of a harness built on the transitional facade.
 
 ## Approach chosen (deterministic seedable property harness inside the crate's tests tree)
 
@@ -79,13 +87,16 @@ evidence:
    crate's integration-test tree.** One checker, admitted-family registry,
    strategies, and receipt types live under
    `tests/support/formatter_property_harness/`; the integration test owns only
-   orchestration and acceptance/mutation tests. The checker consumes only
-   canonical production APIs
-   (`format_*_typed`, `apply_edits_exact`) twice per case from fresh
-   formatter contexts, and enforces: deterministic outcome, Applied ⇒ exact
-   plan equality after independent application + ordered non-overlapping
-   target-contained edits, second pass == legitimate NoChange, refusal ⇒
-   empty plan + exact reason class, bounded generation, normalized receipts.
+   orchestration and acceptance/mutation tests. After #10237/#10239 and the
+   applicable #7138 authority land, the checker consumes only the canonical
+   byte-native formatter request/result/edit-plan seam twice per case from
+   fresh formatter contexts. A separate test-owned strict applicator shares no
+   mapper, clamping, constructor, or application code with production. It
+   enforces deterministic outcome; exact requested/admitted/widened/source/
+   configuration identity; Applied ⇒ exact plan equality after independent
+   application plus ordered non-overlapping target-contained byte edits;
+   second pass == legitimate NoChange; refusal ⇒ empty plan + exact reason
+   class; bounded generation; and normalized receipts.
    The checker is fallible and returns typed case identity on failure; the
    support module and integration test add no panic-family,
    unchecked-indexing, or unsafe exceptions.
@@ -107,17 +118,32 @@ evidence:
 4. Perl::Tidy differential oracle — rejected: wrong authority, subprocess
    nondeterminism; banned by the issue.
 5. Full cancellation/budget property family now — rejected as gated: the
-   invariants are pre-wired but dormant, reporting `not_proven` until #7140
-   lands checkpoint inputs; claiming them green today would be fabricated
-   coverage.
+   mandatory row reports `not_proven` until #7140 lands checkpoint inputs. That
+   makes the aggregate profile and producer command non-pass; a green test that
+   merely observes dormancy would be fabricated coverage.
+
+## Prerequisite and wake contract
+
+Implementation is stopped on #10237, then #10239, then the applicable #7138
+strict plan/application surface. At each merge, re-read the issue disposition
+and revalidate exact type/module ownership before proceeding; any mismatch
+keeps the harness `NOT_PROVEN`. #7140, #7101/#7104/#7111/#7120, and #8146 are
+additional mandatory-evidence wakes. Until all mandatory rows have real
+oracles, an implementation may exercise the aggregation logic but cannot
+produce an aggregate `pass`, close #10301, or satisfy #7147/#9749.
 
 ## Seed, shrink, replay, and CI-economics contract
 
-- The focused profile runs one deterministic exemplar for every admitted
-  family plus exactly 64 generated cases selected by a programmatic fixed
-  `FPH_SEED`, on one test thread. Seed, generator schema, admitted
-  families, source digest, target, configuration fingerprint, and invariant
-  outcomes are part of the normalized receipt; the same seed/profile must
+- The generator identity pins locked `proptest 1.11.0`, the relevant lockfile
+  digest, `RngAlgorithm::ChaCha`, domain-separated 32-byte expansion of each
+  `FPH_SEED` under `formatter-property-harness.v1`, and a versioned strategy
+  fingerprint. Changing any identity must change the normalized receipt.
+- Focused evaluates every admitted-family exemplar once, every persisted entry
+  once, then exactly 64 novel cases on one test thread. Scheduled and release
+  replay exemplars and persistence once per whole profile, then evaluate
+  16×256 and 64×256 novel cases respectively. Receipts keep separate ordered
+  counts and digests for exemplars, persisted replays, novel cases, and total
+  evaluations. Seed set + corpus + strategy + locked proptest identities must
   regenerate the same ordered cases and receipt.
 - Proptest shrink persistence uses
   `tests/formatter_property_harness_tests.proptest-regressions`. Every persisted
@@ -127,20 +153,41 @@ evidence:
   admitted-family exemplars plus checked-in minimized entries form the
   canonical corpus. Every profile receipt binds a corpus schema/version and
   digest, so corpus addition, removal, or reordering cannot masquerade as a
-  replay of the same input set.
-- Focused runs every-family exemplars plus 64 generated cases with at most
-  1,024 shrink iterations. Scheduled runs 16 fixed seeds × 256 cases with at
-  most 4,096 shrink iterations. Release runs 64 fixed seeds × 256 cases with
-  at most 4,096 shrink iterations and records the supplied exact candidate,
-  profile, and schema. These are work-count limits, not product latency claims.
+  replay of the same input set. Novel runners disable implicit persistence
+  replay because the producer owns exactly-once replay; a fallible canonical
+  writer atomically appends a newly minimized case from the same strategy.
+- Focused uses at most 1,024 shrink iterations; scheduled and release use at
+  most 4,096. Scheduled/release require caller-supplied
+  `FPH_CANDIDATE_SHA=<40-hex-sha>` and record candidate, profile, and schema.
+  These are work-count limits, not product latency claims.
   Schema `formatter_property_harness.v1` is written atomically at
   `target/formatter-property-harness/<profile>/receipt.json` with stable row
   ordering and no timestamp or absolute path. Scheduled and release consumers
   retain it; release consumers validate the required caller-supplied candidate
-  binding rather than asking the harness to spawn Git.
+  binding rather than asking the harness to spawn Git. All profiles invoke
+  `run_formatter_property_profile`; the separate
+  `validate_formatter_property_receipt` entry point validates schema,
+  candidate, profile, aggregate status, counts, and ordered digests.
   Before either is enabled, its owner records a measured LEM projection and
   routing rationale. Missing, timed-out, crashed, stale-schema, or
   instrument-failed evidence is `NOT_PROVEN`, never pass.
+
+## Result and policy-inventory contract
+
+Every mandatory row and the aggregate use `pass | fail | not_proven`.
+Aggregation is `fail` if any row fails; otherwise `not_proven` if any mandatory
+row is dormant, missing, stale, timed out, crashed, or instrument-failed;
+otherwise `pass`. The producer atomically writes the receipt and exits non-zero
+for both non-pass results, so Cargo green cannot substitute for evidence. The
+validator independently rejects a non-pass or mismatched receipt.
+
+`fph_policy_pins` recursively enumerates the exact allowed files under
+`tests/support/formatter_property_harness/` and fails on any unlisted file. It
+also scans every Rust file under the crate's `src/` and `tests/` trees for the
+unique harness ownership marker, checker definition, producer, and validator;
+adding a rogue support module or second checker is a required red mutation.
+The complete inventory receives the oracle/process and panic/unsafe/unchecked-
+indexing source pins; repository ratchets remain independent backstops.
 
 ## Claim boundary
 
@@ -161,8 +208,9 @@ but disjoint surfaces: this claim touches only perltidy test support/tests, its
 proptest dev-dependency, and the lockfile if dependency wiring changes it;
 #10302 touches `benches/`,
 additive counters in `src/native/`, and `.github/workflows/ci-nightly.yml`.
-Upstream chain issues (#7101/#7104/#8146/#10237/#10239/#7138/#7140/#9327) are
-consumers of this instrument, not modified by it.
+#10237/#10239 and applicable #7138 are byte-native prerequisites; #7101/#7104/
+#7111/#7120/#8146/#7140 are mandatory-evidence prerequisites. #9327 and later
+workflow consumers remain outside this instrument PR.
 
 ## Rollback
 
