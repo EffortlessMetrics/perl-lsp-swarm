@@ -1832,7 +1832,13 @@ thread_local! {
 ///   leak into siblings running concurrently. In particular
 ///   `get_system_inc_does_not_stall_on_slow_interpreter` keeps asserting the
 ///   production 1 s bound.
+///
+/// `#[must_use]` because restoration happens in `Drop`: a bare
+/// `SystemIncProbeTimeoutGuard::widen_to(..);` statement would compile, drop
+/// the guard at the end of that statement, and leave the very test that asked
+/// for a wider budget running under the production one.
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[must_use = "the timeout guard must remain alive for the scoped test"]
 pub(crate) struct SystemIncProbeTimeoutGuard(Option<Duration>);
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
