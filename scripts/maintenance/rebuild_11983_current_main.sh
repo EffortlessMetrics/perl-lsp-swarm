@@ -108,22 +108,36 @@ def replace_exact(path: str, old: str, new: str) -> None:
     file.write_text(text.replace(old, new), encoding="utf-8")
 
 
+def replace_stale_import(path: str, old: str, new: str, stale_marker: str) -> None:
+    file = Path(path)
+    text = file.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count == 1:
+        file.write_text(text.replace(old, new), encoding="utf-8")
+        return
+    if count == 0 and stale_marker not in text:
+        return
+    raise SystemExit(f"{path}: expected one stale import or an already-current import")
+
+
 text_sync = "crates/perl-lsp-rs/src/runtime/text_sync.rs"
-replace_exact(
+replace_stale_import(
     text_sync,
     "    Arc, AtomicBool, AtomicU32, CodeFormatter, DocumentState, FormattingOptions, HashMap,\n"
     "    JsonRpcError, LspServer, Mutex, Node, NonZeroU32, Ordering, Parser, Value,\n",
     "    Arc, AtomicBool, AtomicU32, DocumentState, HashMap, JsonRpcError, LspServer, Mutex,\n"
     "    Node, NonZeroU32, Ordering, Parser, Value,\n",
+    "CodeFormatter",
 )
 
 lifecycle = "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs"
-replace_exact(
+replace_stale_import(
     lifecycle,
     "    Arc, AtomicU32, CodeFormatter, FormattingOptions, JsonRpcError, LspServer, NonZeroU32, Value,\n"
     "    invalid_params, json, source_path_from_uri,\n",
     "    Arc, AtomicU32, JsonRpcError, LspServer, NonZeroU32, Value, invalid_params, json,\n"
     "    source_path_from_uri,\n",
+    "CodeFormatter",
 )
 
 e2e = Path("crates/perl-lsp-rs/tests/lsp_batteries_e2e_workflow_test.rs")
