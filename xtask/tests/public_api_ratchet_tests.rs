@@ -12,6 +12,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 fn project_root() -> PathBuf {
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -241,8 +242,7 @@ fn contributing_md_documents_public_api_workflow() -> Result<(), Box<dyn std::er
 fn public_api_check_script_has_correct_fail_semantics() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let justfile = fs::read_to_string(root.join("justfile"))?;
-
-    // Extract the public-api-check recipe body (up to the next recipe header)
+    let adapter = fs::read_to_string(root.join("scripts/ci/public-api-ratchet.sh"))?;
     let check_body = justfile
         .split("public-api-check:")
         .nth(1)
@@ -251,35 +251,14 @@ fn public_api_check_script_has_correct_fail_semantics() -> Result<(), Box<dyn st
         .next()
         .ok_or("Could not delimit public-api-check recipe body")?;
 
-    assert!(
-        check_body.contains("set -euo pipefail"),
-        "public-api-check must use 'set -euo pipefail'"
-    );
-
-    // The grep invocation must have '|| true' to avoid aborting the loop when
-    // cargo-public-api produces empty output (e.g., due to a compile error silenced
-    // by `2>/dev/null`).  Without it, grep exits 1 on zero matches and set -e kills
-    // the script before the FAILED counter is evaluated.
-    assert!(
-        check_body.contains("grep \"^pub \"") || check_body.contains("grep '^pub '"),
-        "public-api-check must grep for '^pub ' items"
-    );
-    assert!(
-        check_body.contains("grep \"^pub \" > \"/tmp/${crate}-current.txt\" || true")
-            || check_body.contains("grep \"^pub \" > \"/tmp/${crate}-current.txt\"  || true")
-            || (check_body.contains("grep \"^pub \"") && check_body.contains("|| true")),
-        "public-api-check grep pipeline must end with '|| true' to prevent set -e abort on empty output"
-    );
-
-    assert!(
-        check_body.contains("diff -u"),
-        "public-api-check must use 'diff -u' to compare baseline vs current"
-    );
-
-    assert!(check_body.contains("FAILED=1"), "public-api-check must set FAILED=1 on diff mismatch");
-
-    assert!(check_body.contains("exit 1"), "public-api-check must exit 1 when FAILED > 0");
-
+    assert!(check_body.contains("set -euo pipefail"));
+    assert!(check_body.contains("public-api-ratchet.sh check"));
+    assert!(adapter.contains("grep \"^pub \""));
+    assert!(adapter.contains("|| true"));
+    assert!(adapter.contains("INSTRUMENT-FAIL"));
+    assert!(adapter.contains("diff -u"));
+    assert!(adapter.contains("failed=1"));
+    assert!(adapter.contains("exit 1"));
     Ok(())
 }
 
@@ -545,4 +524,21 @@ fn tool_version_pinned_consistently() -> Result<(), Box<dyn std::error::Error>> 
     );
 
     Ok(())
+/// Test the executable fixture against the real shared adapter.
+#[test]
+fn public_api_ratchet_fixture_executes_fail_closed_paths() -> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let output = Command::new("bash")
+        .arg(root.join("scripts/ci/test_public_api_ratchet.sh"))
+        .current_dir(&root)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "public-api fixture failed:\\nstdout:\\n{}\\nstderr:\\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
 }
