@@ -228,6 +228,10 @@ pub struct FlakePolicy {
     pub known_flaky_patterns: Vec<FlakyPattern>,
 }
 
+/// Hard safety ceiling for automatic gate retries. The checked-in flake
+/// policy may tighten this limit, but cannot raise it without a code review.
+const MAX_GATE_RETRIES: u32 = 2;
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct QuarantinedGate {
@@ -441,6 +445,10 @@ pub struct EnvironmentInfo {
     pub ci_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci_run_id: Option<String>,
+    /// Provider retry attempt for the same CI run id. Together with
+    /// `ci_run_id` and the receipt subject SHA this distinguishes reruns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ci_run_attempt: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci_run_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -521,12 +529,19 @@ pub struct GateMetrics {
     /// #11797 asks the receipt to make explicit), `None` for non-test gates.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub test_execution_reached: Option<bool>,
-    /// Per-attempt reach evidence for retried cargo test gates. Each entry
-    /// corresponds to one executed attempt, in order. This preserves the
-    /// first attempt's compile-only result when a retry truncates its log.
-    /// Empty for non-test gates and omitted for backwards-compatible receipts.
+    /// Per-attempt reach evidence for cargo test gates. Attempt ordinals make
+    /// missing or duplicate rows invalid; `None` means the full attempt log
+    /// could not be read and therefore must not be reported as compile-only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub test_execution_reached_attempts: Vec<bool>,
+    pub test_execution_reached_attempts: Vec<TestExecutionAttemptEvidence>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct TestExecutionAttemptEvidence {
+    pub attempt: u32,
+    /// `Some(true)` reached libtest, `Some(false)` is a measured compile-only
+    /// attempt, and `None` is instrumentation-unknown.
+    pub test_execution_reached: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -762,7 +777,31 @@ pub(crate) fn load_policy_for_inspection(path: &Path) -> Result<GatePolicy> {
         .with_context(|| format!("Failed to read gate policy from {}", path.display()))?;
     let policy: GatePolicy = serde_yaml_ng::from_str(&content)
         .with_context(|| format!("Failed to parse gate policy from {}", path.display()))?;
+    validate_retry_policy(&policy)?;
     Ok(policy)
+}
+
+fn validate_retry_policy(policy: &GatePolicy) -> Result<()> {
+    let configured_limit =
+        policy.flake_policy.as_ref().map_or(MAX_GATE_RETRIES, |flake| flake.max_retries);
+    if configured_limit > MAX_GATE_RETRIES {
+        bail!(
+            "flake_policy.max_retries {} exceeds the supported safety ceiling {}",
+            configured_limit,
+            MAX_GATE_RETRIES
+        );
+    }
+    for gate in &policy.gates {
+        if gate.retry_count > configured_limit {
+            bail!(
+                "gate '{}' retry_count {} exceeds flake_policy.max_retries {}",
+                gate.name,
+                gate.retry_count,
+                configured_limit
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Filter gates based on tier and gate name filter
@@ -2053,6 +2092,7 @@ fn run_single_gate(
         &log_path,
         timeout_secs,
         gate.retry_count,
+        policy.flake_policy.as_ref().map_or(MAX_GATE_RETRIES, |flake| flake.max_retries),
         &gate.name,
     );
     let duration_ms = start.elapsed().as_millis() as u64;
@@ -2085,8 +2125,10 @@ fn run_single_gate(
             // an early `running N tests` preamble can scroll out of the tail
             // before an intra-test hang produces any summary footer, which
             // would misclassify the hang as a compile-only overrun.
-            if let Some(reached) = log_reaches_test_execution(command, &log_path)
-                .or_else(|| parse_test_execution_reached(command, &execution.stdout))
+            if let Some(reached) = execution
+                .test_execution_reached_attempts
+                .last()
+                .and_then(|evidence| evidence.test_execution_reached)
             {
                 metrics.get_or_insert_with(GateMetrics::default).test_execution_reached =
                     Some(reached);
@@ -2142,11 +2184,12 @@ fn run_single_gate(
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ShellExecutionResult {
     pub(crate) stdout: String,
     pub(crate) exit_code: i32,
     pub(crate) timed_out: bool,
-    pub(crate) test_execution_reached_attempts: Vec<bool>,
+    pub(crate) test_execution_reached_attempts: Vec<TestExecutionAttemptEvidence>,
 }
 
 /// Run a gate command, retrying only when an attempt is killed by the
@@ -2171,19 +2214,32 @@ fn run_shell_command_with_retries(
     log_path: &Path,
     timeout_secs: u64,
     retry_count: u32,
+    configured_retry_limit: u32,
     gate_name: &str,
 ) -> Result<ShellExecutionResult> {
-    let total_attempts = 1u32 + retry_count;
+    if configured_retry_limit > MAX_GATE_RETRIES {
+        bail!(
+            "configured retry limit {} exceeds supported safety ceiling {}",
+            configured_retry_limit,
+            MAX_GATE_RETRIES
+        );
+    }
+    if retry_count > configured_retry_limit {
+        bail!(
+            "gate {gate_name} retry_count {retry_count} exceeds configured limit {configured_retry_limit}"
+        );
+    }
+    let total_attempts = retry_count
+        .checked_add(1)
+        .ok_or_else(|| eyre!("gate {gate_name} retry_count overflows the attempt count"))?;
     let mut attempt = 1u32;
     let mut timeouts_seen = 0u32;
     let mut test_execution_reached_attempts = Vec::new();
     loop {
         let mut execution = run_shell_command_with_timeout(command, log_path, timeout_secs)?;
         if is_cargo_test_command(command) {
-            let reached = log_reaches_test_execution(command, log_path)
-                .or_else(|| parse_test_execution_reached(command, &execution.stdout))
-                .unwrap_or(false);
-            test_execution_reached_attempts.push(reached);
+            test_execution_reached_attempts
+                .push(attempt_reach_evidence(attempt, command, log_path));
         }
         if execution.timed_out {
             timeouts_seen += 1;
@@ -2222,6 +2278,15 @@ fn run_shell_command_with_retries(
         execution.test_execution_reached_attempts = test_execution_reached_attempts;
         return Ok(execution);
     }
+}
+
+fn attempt_reach_evidence(
+    attempt: u32,
+    command: &str,
+    log_path: &Path,
+) -> TestExecutionAttemptEvidence {
+    let test_execution_reached = log_reaches_test_execution(command, log_path).ok().flatten();
+    TestExecutionAttemptEvidence { attempt, test_execution_reached }
 }
 
 /// Append an attempt trailer to the gate log. Each fresh attempt truncates
@@ -2633,6 +2698,10 @@ fn collect_metadata(timestamp: DateTime<Utc>) -> Result<ReceiptMetadata> {
     };
 
     let ci_run_id = std::env::var("GITHUB_RUN_ID").ok();
+    let ci_run_attempt = std::env::var("GITHUB_RUN_ATTEMPT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|attempt| *attempt > 0);
 
     let ci_run_url = ci_run_id.as_ref().and_then(|run_id| {
         std::env::var("GITHUB_REPOSITORY")
@@ -2667,6 +2736,7 @@ fn collect_metadata(timestamp: DateTime<Utc>) -> Result<ReceiptMetadata> {
             env_type,
             ci_provider,
             ci_run_id,
+            ci_run_attempt,
             ci_run_url,
             pr_number,
             nix_shell: Some(nix_shell),
@@ -2751,24 +2821,31 @@ fn parse_test_execution_reached(command: &str, output: &str) -> Option<bool> {
 /// scrolled past that boundary before a hang would otherwise be reported as
 /// `Some(false)` (compile-only overrun) even though the binary ran. This
 /// streams the whole file line by line so the verdict never depends on how
-/// much output followed the marker. Returns the same tri-state contract as
-/// the string variant, and `None` when the log cannot be read at all (the
-/// caller falls back to the retained tail).
-fn log_reaches_test_execution(command: &str, log_path: &Path) -> Option<bool> {
+/// much output followed the marker. Read failures are errors rather than
+/// `false`: missing instrumentation cannot become compile-only evidence.
+fn log_reaches_test_execution(command: &str, log_path: &Path) -> Result<Option<bool>> {
     if !is_cargo_test_command(command) {
-        return None;
+        return Ok(None);
     }
-    let file = fs::File::open(log_path).ok()?;
+    let file = fs::File::open(log_path)
+        .with_context(|| format!("Failed to open gate log {}", log_path.display()))?;
     let reader = std::io::BufReader::new(file);
-    // filter_map, not map_while: gate logs can contain arbitrary test
-    // subprocess bytes, so an invalid-UTF-8 line must be skipped without
-    // ending the scan before a later libtest marker.
-    Some(
-        reader
-            .lines()
-            .filter_map(|line| line.ok())
-            .any(|line| is_test_binary_execution_marker(&line)),
-    )
+    // Gate logs can contain arbitrary subprocess bytes. Invalid UTF-8 lines
+    // are skipped without ending the scan, but actual I/O failure leaves the
+    // attempt unknown.
+    for line in reader.lines() {
+        match line {
+            Ok(line) if is_test_binary_execution_marker(&line) => return Ok(Some(true)),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("Failed while scanning gate log {}", log_path.display())
+                });
+            }
+        }
+    }
+    Ok(Some(false))
 }
 
 /// A single line from cargo test output that proves the libtest binary
@@ -2936,6 +3013,7 @@ fn output_summary(receipt: &Receipt) -> Result<()> {
 
 /// Write receipt to file
 fn write_receipt(receipt: &Receipt, path: &PathBuf) -> Result<()> {
+    validate_attempt_histories(receipt)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -2951,7 +3029,39 @@ fn load_receipt(path: &PathBuf) -> Result<Receipt> {
         .with_context(|| format!("Failed to read baseline receipt from {}", path.display()))?;
     let receipt: Receipt = serde_json::from_str(&content)
         .with_context(|| format!("Failed to parse baseline receipt from {}", path.display()))?;
+    validate_attempt_histories(&receipt)?;
     Ok(receipt)
+}
+
+fn validate_attempt_histories(receipt: &Receipt) -> Result<()> {
+    for gate in &receipt.gates {
+        let Some(metrics) = &gate.metrics else {
+            continue;
+        };
+        if metrics.test_execution_reached_attempts.len() > (MAX_GATE_RETRIES + 1) as usize {
+            bail!(
+                "gate '{}' has {} attempt-evidence rows; maximum is {}",
+                gate.gate_name,
+                metrics.test_execution_reached_attempts.len(),
+                MAX_GATE_RETRIES + 1
+            );
+        }
+        for (index, evidence) in metrics.test_execution_reached_attempts.iter().enumerate() {
+            let expected = u32::try_from(index)
+                .ok()
+                .and_then(|value| value.checked_add(1))
+                .ok_or_else(|| eyre!("attempt-evidence index overflow"))?;
+            if evidence.attempt != expected {
+                bail!(
+                    "gate '{}' attempt-evidence row {} declares attempt {}; ordinals must be contiguous from 1",
+                    gate.gate_name,
+                    expected,
+                    evidence.attempt
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Compare two receipts and generate diff
@@ -3232,18 +3342,19 @@ mod tests {
     use super::{
         DiffResult, FirstFailure, GateDefinition, GateMetrics, GatePlanningConfig,
         GatePlanningRole, GatePolicy, GateResult, GateRunnerConfig, GateTier, GlobalSettings,
-        MAX_GATE_OUTPUT_BYTES, MetricChange, OutputFormat, PackageTargetIndex, Receipt,
-        VERSION_SYNC_GATE_COMMAND, blocking_failure_gate_names, build_agent_receipt,
-        build_pr_fast_plan_from_scope, build_pr_fast_plan_from_scope_with_targets,
-        commit_advisories, compare_receipts, determine_overall_status,
-        extend_plan_with_non_pr_fast_static_gates, extend_plan_with_static_tiers,
-        extract_output_summary, failure_guidance, filter_gates, is_blocking_gate_status,
-        is_cargo_test_command, is_latest_commit, load_policy_for_inspection, load_receipt,
-        log_reaches_test_execution, output_diff, parse_first_failure, parse_test_execution_reached,
-        parse_test_metrics, plan_gates, read_gate_output, run_gate_plan, run_internal_commit_check,
-        run_internal_xtask_gate, run_shell_command_with_timeout, run_single_gate,
+        MAX_GATE_OUTPUT_BYTES, MAX_GATE_RETRIES, MetricChange, OutputFormat, PackageTargetIndex,
+        Receipt, TestExecutionAttemptEvidence, VERSION_SYNC_GATE_COMMAND, attempt_reach_evidence,
+        blocking_failure_gate_names, build_agent_receipt, build_pr_fast_plan_from_scope,
+        build_pr_fast_plan_from_scope_with_targets, commit_advisories, compare_receipts,
+        determine_overall_status, extend_plan_with_non_pr_fast_static_gates,
+        extend_plan_with_static_tiers, extract_output_summary, failure_guidance, filter_gates,
+        is_blocking_gate_status, is_cargo_test_command, is_latest_commit,
+        load_policy_for_inspection, load_receipt, log_reaches_test_execution, output_diff,
+        parse_first_failure, parse_test_execution_reached, parse_test_metrics, plan_gates,
+        read_gate_output, run_gate_plan, run_internal_commit_check, run_internal_xtask_gate,
+        run_shell_command_with_retries, run_shell_command_with_timeout, run_single_gate,
         selects_commit_tier_gate, shell_command_watchdog_timeout, staged_guard_violation,
-        static_gate_plan, write_receipt,
+        static_gate_plan, validate_attempt_histories, write_receipt,
     };
     use crate::tasks::ci_scope::{
         ArchWidener, DirectCrate, HeavyLaneEntry, LaneDecisions, LaneEntry, PlatformOverrides,
@@ -4764,26 +4875,25 @@ gates:
             "precondition: the fixture must exceed the retained-tail bound"
         );
         assert_eq!(
-            log_reaches_test_execution(CARGO_COMMAND, &log_path),
+            log_reaches_test_execution(CARGO_COMMAND, &log_path).ok().flatten(),
             Some(true),
             "a preamble outside the 4 MiB tail still proves the binary ran"
         );
         let compile_only = "   Compiling perl-lsp-rs-core v0.17.0\n".repeat(64);
         std::fs::write(&log_path, compile_only).expect("rewrite gate log");
         assert_eq!(
-            log_reaches_test_execution(CARGO_COMMAND, &log_path),
+            log_reaches_test_execution(CARGO_COMMAND, &log_path).ok().flatten(),
             Some(false),
             "compile-only full logs stay false"
         );
         assert_eq!(
-            log_reaches_test_execution(NON_CARGO_COMMAND, &log_path),
+            log_reaches_test_execution(NON_CARGO_COMMAND, &log_path).ok().flatten(),
             None,
             "non-cargo-test commands carry no claim regardless of log shape"
         );
-        assert_eq!(
-            log_reaches_test_execution(CARGO_COMMAND, &tmp.path().join("missing.log")),
-            None,
-            "unreadable logs defer to the caller's fallback"
+        assert!(
+            log_reaches_test_execution(CARGO_COMMAND, &tmp.path().join("missing.log")).is_err(),
+            "unreadable logs must remain instrumentation-unknown"
         );
     }
 
@@ -4796,7 +4906,9 @@ gates:
             log_reaches_test_execution(
                 "cargo build -p perllsp --locked && env -u RUSTC_WRAPPER cargo test",
                 &log_path
-            ),
+            )
+            .ok()
+            .flatten(),
             Some(true),
             "the lsp_smoke env-wrapped shape must gain the receipt diagnostic"
         );
@@ -5064,11 +5176,8 @@ gates:
     #[test]
     #[cfg(unix)]
     fn retried_cargo_test_gate_retains_each_attempt_reach_result() -> color_eyre::eyre::Result<()> {
-        static MARKER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let seq = MARKER_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let marker =
-            std::env::temp_dir().join(format!("gate-retry-reach-{}-{seq}", std::process::id()));
-        let _ = std::fs::remove_file(&marker);
+        let tmp = tempdir()?;
+        let marker = tmp.path().join("gate-retry-reach");
         let marker_display = marker.display().to_string();
         let command = format!(
             "if [ -f {marker_display} ]; then printf 'running 2 tests\\n'; exit 0; \
@@ -5079,20 +5188,98 @@ gates:
         gate.timeout_seconds = 1;
         gate.retry_count = 1;
         let policy = policy_with_gates(vec![gate.clone()]);
-        let tmp = tempdir()?;
 
         let result =
             run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
-        let _ = std::fs::remove_file(&marker);
 
         let metrics = result
             .metrics
             .as_ref()
             .ok_or_else(|| color_eyre::eyre::eyre!("cargo test gate should populate metrics"))?;
-        assert_eq!(metrics.test_execution_reached, Some(true));
-        assert_eq!(metrics.test_execution_reached_attempts, vec![false, true]);
+        color_eyre::eyre::ensure!(
+            metrics.test_execution_reached == Some(true),
+            "final-attempt compatibility field was not true: {:?}",
+            metrics.test_execution_reached
+        );
+        let expected_attempts = vec![
+            TestExecutionAttemptEvidence { attempt: 1, test_execution_reached: Some(false) },
+            TestExecutionAttemptEvidence { attempt: 2, test_execution_reached: Some(true) },
+        ];
+        color_eyre::eyre::ensure!(
+            metrics.test_execution_reached_attempts.as_slice() == expected_attempts.as_slice(),
+            "unexpected attempt evidence: {:?}",
+            metrics.test_execution_reached_attempts
+        );
         Ok(())
     }
+
+    #[test]
+    fn unreadable_attempt_log_is_unknown_not_compile_only() -> color_eyre::eyre::Result<()> {
+        let tmp = tempdir()?;
+        let evidence = attempt_reach_evidence(
+            1,
+            "cargo test -p xtask --locked",
+            &tmp.path().join("missing.log"),
+        );
+        color_eyre::eyre::ensure!(
+            evidence == TestExecutionAttemptEvidence { attempt: 1, test_execution_reached: None },
+            "unreadable attempt log was not preserved as unknown: {evidence:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retry_runner_rejects_oversized_counts_before_execution() -> color_eyre::eyre::Result<()> {
+        let tmp = tempdir()?;
+        for retry_count in [MAX_GATE_RETRIES + 1, u32::MAX] {
+            let Err(error) = run_shell_command_with_retries(
+                "command-must-not-run",
+                &tmp.path().join("never-created.log"),
+                1,
+                retry_count,
+                MAX_GATE_RETRIES,
+                "oversized-retry",
+            ) else {
+                color_eyre::eyre::bail!(
+                    "oversized retry count {retry_count} unexpectedly executed"
+                );
+            };
+            color_eyre::eyre::ensure!(
+                error.to_string().contains("exceeds configured limit"),
+                "unexpected rejection for {retry_count}: {error:#}"
+            );
+            color_eyre::eyre::ensure!(
+                !tmp.path().join("never-created.log").exists(),
+                "oversized retry count spawned the command"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_rejects_missing_or_duplicate_attempt_ordinals() -> color_eyre::eyre::Result<()> {
+        for ordinals in [vec![1, 3], vec![1, 1]] {
+            let receipt = test_receipt_with_metrics(GateMetrics {
+                test_execution_reached_attempts: ordinals
+                    .into_iter()
+                    .map(|attempt| TestExecutionAttemptEvidence {
+                        attempt,
+                        test_execution_reached: Some(false),
+                    })
+                    .collect(),
+                ..GateMetrics::default()
+            });
+            let Err(error) = validate_attempt_histories(&receipt) else {
+                color_eyre::eyre::bail!("non-contiguous attempt evidence unexpectedly validated");
+            };
+            color_eyre::eyre::ensure!(
+                error.to_string().contains("ordinals must be contiguous"),
+                "unexpected attempt validation error: {error:#}"
+            );
+        }
+        Ok(())
+    }
+
     /// #10023 race family: a gate whose attempt hits the watchdog must retry
     /// when policy declares retry_count, and the final log must record the
     /// attempt history. The family gates' budgets are dominated by cold-cache
