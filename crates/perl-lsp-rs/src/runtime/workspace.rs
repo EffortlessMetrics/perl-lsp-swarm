@@ -1608,18 +1608,18 @@ impl LspServer {
                         coordinator.notify_parse_complete(&uri);
                     }
                 }
-                FileChangeType::CREATED | FileChangeType::CHANGED => {
+                FileChangeType::CREATED | FileChangeType::CHANGED
                     // CREATED and CHANGED are debounced so that bulk operations
                     // (git checkout, formatter rewrites, etc.) coalesce into a
                     // single batch rather than triggering many sequential file reads.
-                    if !self.schedule_file_watcher_uri(&uri) {
-                        // `false` means the event was NOT queued: no debouncer
-                        // is installed (unit-test path), or the coalescer
-                        // reported Overflowed/Unavailable/ShuttingDown (#8064).
-                        // Either way, fall through to immediate synchronous
-                        // processing so degraded modes never lose events.
-                        self.process_file_watcher_uri_immediate(&uri);
-                    }
+                    if !self.schedule_file_watcher_uri(&uri) =>
+                {
+                    // `false` means the event was NOT queued: no debouncer
+                    // is installed (unit-test path), or the coalescer
+                    // reported Overflowed/Unavailable/ShuttingDown (#8064).
+                    // Either way, fall through to immediate synchronous
+                    // processing so degraded modes never lose events.
+                    self.process_file_watcher_uri_immediate(&uri);
                 }
                 _ => {}
             }
