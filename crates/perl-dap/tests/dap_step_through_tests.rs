@@ -377,32 +377,23 @@ fn test_variables_request_during_stepping_sequence() -> Result<(), Box<dyn std::
 
 #[test]
 // AC:3535
-fn test_scopes_request_during_stepping_sequence() -> Result<(), Box<dyn std::error::Error>> {
-    // Scopes must be available between step operations.
+fn test_scopes_request_after_stepping_without_session_is_empty()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Without an active session, next must not fabricate stopped-frame authority.
     let mut adapter = make_adapter();
 
-    adapter.handle_request(1, "next", Some(json!({"threadId": 1})));
+    let next_response = adapter.handle_request(1, "next", Some(json!({"threadId": 1})));
+    let next_body = assert_response(next_response, "next", false)?;
+    assert!(next_body.is_none(), "rejected next must not return a response body");
 
     let scopes_response = adapter.handle_request(2, "scopes", Some(json!({"frameId": 1})));
-
-    match scopes_response {
-        DapMessage::Response { success, command, body, .. } => {
-            assert!(success, "scopes request after stepping should succeed");
-            assert_eq!(command, "scopes");
-            let body = body.ok_or("scopes response must have a body")?;
-            let scopes = body
-                .get("scopes")
-                .and_then(|v| v.as_array())
-                .ok_or("scopes body must have a scopes array")?;
-            assert!(!scopes.is_empty(), "expected at least one scope");
-            assert_eq!(
-                scopes[0].get("name").and_then(|n| n.as_str()),
-                Some("Locals"),
-                "first scope should be Locals"
-            );
-        }
-        _ => return Err("Expected Response for scopes".into()),
-    }
+    let body = assert_response(scopes_response, "scopes", true)?
+        .ok_or("scopes response must have a body")?;
+    let scopes = body
+        .get("scopes")
+        .and_then(|v| v.as_array())
+        .ok_or("scopes body must have a scopes array")?;
+    assert!(scopes.is_empty(), "scopes must be empty without an admitted stopped frame");
     Ok(())
 }
 
