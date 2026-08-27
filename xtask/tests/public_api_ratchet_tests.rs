@@ -528,9 +528,7 @@ fn tool_version_pinned_consistently() -> Result<(), Box<dyn std::error::Error>> 
 
 /// Test the executable fixture against the real shared adapter.
 #[test]
-fn public_api_ratchet_fixture_executes_fail_closed_paths()
-    -> Result<(), Box<dyn std::error::Error>>
-{
+fn public_api_ratchet_fixture_executes_fail_closed_paths() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let output = Command::new("bash")
         .arg(root.join("scripts/ci/test_public_api_ratchet.sh"))
@@ -544,4 +542,3 @@ fn public_api_ratchet_fixture_executes_fail_closed_paths()
     );
     Ok(())
 }
-
