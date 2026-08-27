@@ -296,7 +296,7 @@ fn validate_trace_session_id(session: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_artifact(artifact: &RunnerArtifactIdentity) -> Result<(), String> {
+pub(crate) fn validate_artifact(artifact: &RunnerArtifactIdentity) -> Result<(), String> {
     let path = &artifact.canonical_path;
     if path.is_empty() || path.len() > 1024 {
         return Err("runner artifact path must be nonempty and at most 1024 characters".to_string());
