@@ -189,9 +189,9 @@ workflow_result = "propagate"
 events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
 required = false
 policy_role = "advisory"
-applicability = "conditional"
+applicability = "always-or-scoped-noop"
 enforcement = "neither"
-reason = "Selected deterministic contexts are promoted separately from this advisory summary."
+reason = "#12911 hardens this established aggregate as an always-emitted required-promotion candidate; it remains advisory until ruleset 16664791 registration and read-back."
 
 [[checks]]
 name = "Gate Enforcement Contract"
