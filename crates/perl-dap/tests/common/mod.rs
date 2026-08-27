@@ -4,7 +4,12 @@
 //! higher-level helpers that chain the request → event → response cycles
 //! required to drive a real `perl -d` debug session in tests.
 
-#![allow(dead_code)] // Shared helpers; each integration target uses a subset.
+#![allow(dead_code)]
+// Shared helpers; each integration target uses a subset.
+// Typed SKIP/diagnostic helpers print to stderr (see `debuggee_perl_or_typed_skip`);
+// the shared module opt-out is inherited by every including test binary, matching
+// the file-level pattern used across crates/perl-dap/tests.
+#![allow(clippy::print_stderr)]
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
