@@ -146,7 +146,18 @@ fn pull_request_labeled_trigger_is_configured(workflow: &str) -> bool {
     };
     pull_request.lines().any(|line| {
         let trimmed = line.trim();
-        trimmed.starts_with("types:") && trimmed.contains("labeled")
+        let Some(values) = trimmed.strip_prefix("types:").map(str::trim) else {
+            return false;
+        };
+        let Some(values) = values.strip_prefix('[').and_then(|values| values.strip_suffix(']'))
+        else {
+            return false;
+        };
+        values
+            .split(',')
+            .map(str::trim)
+            .map(|value| value.trim_matches(['\'', '"']))
+            .any(|value| value == "labeled")
     })
 }
 
@@ -401,6 +412,14 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
         !pull_request_labeled_trigger_is_configured(&without_labeled),
         "removing labeled activity must fail the dispatch contract"
     );
+    for false_positive in ["unlabeled", "labeled-extra"] {
+        let fixture =
+            format!("\n  pull_request:\n    types: [opened, {false_positive}]\n  schedule:\n");
+        assert!(
+            !pull_request_labeled_trigger_is_configured(&fixture),
+            "{false_positive} must not satisfy the exact labeled activity contract"
+        );
+    }
     let public_api = job_section(&nightly, "public-api-check")
         .ok_or("ci-nightly.yml must define the public-api-check job")?;
     let label = pull_request_label_gate(public_api)
@@ -457,6 +476,13 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
 
     let policy = read(&root, ".github/workflows/workflow-policy.yml")?;
     assert!(workflow_policy_covers_public_api_inputs(&policy));
+    assert!(
+        policy.contains("name: Install just for executable recipe proofs")
+            && policy.contains("uses: taiki-e/install-action@")
+            && policy.contains("name: Public API ratchet executable proof")
+            && policy.contains("run: bash scripts/tests/test-public-api-ratchet.sh"),
+        "workflow policy must execute the ratchet fixture with its required just installation"
+    );
     let without_justfile = policy.replace("      - 'justfile'\n", "");
     assert!(
         !workflow_policy_covers_public_api_inputs(&without_justfile),
