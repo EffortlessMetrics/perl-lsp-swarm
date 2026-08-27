@@ -12,8 +12,9 @@
 //! 1. each workflow carries a credentialess gate job (`resolve-trusted-anchor`)
 //!    that resolves the trusted subjects server-side — the repository's
 //!    default-branch head and the commit behind the dispatch version's
-//!    `v<version>` tag — via anonymous `git ls-remote`, with no checkout and no
-//!    token mounted;
+//!    `v<version>` tag (queried through its peeled `^{}` commit, because
+//!    release orchestration cuts annotated tags) — via anonymous `git
+//!    ls-remote`, with no checkout and no token mounted;
 //! 2. a run is approved only when the dispatch-selected subject equals one of
 //!    those anchors; anything else fails closed before any credential-bearing
 //!    job is scheduled;
@@ -112,10 +113,14 @@ fn validate_anchor_contract(workflow: &Value) -> Result<()> {
     );
 
     let script = combined_run_script(gate)?;
+    // `^{}` pins the annotated-tag peel: release orchestration cuts tags with
+    // `git tag -a`, so an unpeeled `refs/tags/v<X>` comparison rejects every
+    // normal orchestrated release instead of approving its commit.
     for required in [
         "git ls-remote",
         "refs/heads/",
         "refs/tags/v",
+        "^{}",
         "SELECTED_SHA",
         "approved_sha=",
         TRUSTED_ANCHOR_ERROR,
@@ -135,7 +140,10 @@ fn validate_anchor_contract(workflow: &Value) -> Result<()> {
 
     for (name, job) in jobs_mapping_iter(workflow)? {
         let mut blob = String::new();
-        collect_matches(job, "${{ secrets.", &mut blob);
+        // Match bare `secrets.` too: `if:` conditions consume secrets without
+        // the `${{ ... }}` wrapper, so the wrapper-spelled needle would let a
+        // credential consumer slip past this clause undetected.
+        collect_matches(job, "secrets.", &mut blob);
         if blob.is_empty() || name == GATE_JOB {
             continue;
         }
@@ -166,7 +174,7 @@ fn validate_anchor_contract(workflow: &Value) -> Result<()> {
             .iter()
             .position(|step| {
                 let mut hit = String::new();
-                collect_matches(step, "${{ secrets.", &mut hit);
+                collect_matches(step, "secrets.", &mut hit);
                 !hit.is_empty()
             })
             .ok_or_else(|| anyhow!("job `{name}` references secrets outside any step"))?;
@@ -186,7 +194,9 @@ fn assert_consumed_secrets(workflow: &Value, expected: &[&str]) -> Result<()> {
             continue;
         }
         let mut blob = String::new();
-        collect_matches(job, "${{ secrets.", &mut blob);
+        // Same widened needle as the shared contract: bare `secrets.` in an
+        // `if:` condition mounts credentials just like `${{ secrets.* }}`.
+        collect_matches(job, "secrets.", &mut blob);
         for secret in ["VSCE_PAT", "OVSX_PAT", "GITHUB_TOKEN", "DOCKER_USERNAME", "DOCKER_PASSWORD"]
         {
             if blob.contains(secret) {
@@ -244,7 +254,7 @@ jobs:
           VERSION_INPUT_RAW: ${{ github.event.inputs.version }}
         run: |
           git ls-remote "$REPO_URL" "refs/heads/${DEFAULT_BRANCH}"
-          git ls-remote "$REPO_URL" "refs/tags/v${VERSION_INPUT_RAW}"
+          git ls-remote "$REPO_URL" "refs/tags/v${VERSION_INPUT_RAW}" "refs/tags/v${VERSION_INPUT_RAW}^{}"
           echo '::error::Publishing requires a trusted anchor'
           printf 'approved_sha=%s\n' "$SELECTED_SHA"
   build-publish:
@@ -338,6 +348,44 @@ fn credential_step_ahead_of_pinned_checkout_fails_closed() -> Result<()> {
 }
 
 #[test]
+fn wrapperless_secret_use_before_checkout_fails_closed() -> Result<()> {
+    // `if:` conditions consume secrets without the `${{ }}` wrapper. Under the
+    // historical wrapper-spelled needle this swap stayed invisible, so the
+    // detector itself must match the bare spelling.
+    let checkout_at =
+        FIXTURE_YAML.find("      - name: Checkout").ok_or_else(|| anyhow!("fixture drifted"))?;
+    let login_at =
+        FIXTURE_YAML.find("      - name: Log in").ok_or_else(|| anyhow!("fixture drifted"))?;
+    assert!(checkout_at < login_at, "fixture drifted: step order changed");
+    let (head, rest) = FIXTURE_YAML.split_at(checkout_at);
+    let (checkout_step, secret_steps) = rest.split_at(login_at - checkout_at);
+    let swapped_without_wrapper = format!("{head}{secret_steps}{checkout_step}")
+        .replace("${{ secrets.GITHUB_TOKEN }}", "secrets.GITHUB_TOKEN");
+    ensure!(
+        !swapped_without_wrapper.contains("${{ secrets."),
+        "fixture drifted: wrapper strip failed"
+    );
+    let message = rejection_of(&swapped_without_wrapper)?;
+    ensure!(
+        message.contains("before its first step touches a secret"),
+        "unexpected rejection: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn unpeeled_annotated_tag_comparison_fails_closed() -> Result<()> {
+    // Dropping only the peeled `^{}` query reintroduces the regression where
+    // every orchestrated release (cut with `git tag -a`) is rejected.
+    let dual_query = "\"refs/tags/v${VERSION_INPUT_RAW}\" \"refs/tags/v${VERSION_INPUT_RAW}^{}\"\n";
+    assert!(FIXTURE_YAML.contains(dual_query), "fixture drifted: dual tag query missing");
+    let mutated = FIXTURE_YAML.replace(dual_query, "\"refs/tags/v${VERSION_INPUT_RAW}\"\n");
+    let message = rejection_of(&mutated)?;
+    ensure!(message.contains("gate script missing `^{}`"), "unexpected rejection: {message}");
+    Ok(())
+}
+
+#[test]
 fn gate_consuming_a_secret_stays_rejected() -> Result<()> {
     let mutated = FIXTURE_YAML.replacen(
         "          SELECTED_SHA: ${{ github.sha }}",
@@ -405,8 +453,13 @@ fn combined_run_script(job: &Value) -> Result<String> {
     let mut script = String::new();
     for step in steps_of(job)? {
         if let Ok(run) = mapping_value(step, "run").and_then(scalar_string) {
-            script.push_str(run);
-            script.push('\n');
+            // Comment-only lines are dropped: shape clauses describe executed
+            // commands, and prose may legitimately spell the same tokens.
+            script.extend(
+                run.lines()
+                    .filter(|line| !line.trim_start().starts_with('#'))
+                    .map(|line| format!("{line}\n")),
+            );
         }
     }
     Ok(script)

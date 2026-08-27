@@ -56,7 +56,7 @@ jobs:
           fi
 
           shas_for() {
-            git ls-remote "$REPO_URL" "$1" | awk '{print $1}' | sort -u
+            git ls-remote "$REPO_URL" "$@" | awk '{print $1}' | sort -u
           }
 
           DEFAULT_HEAD=$(shas_for "refs/heads/${DEFAULT_BRANCH}" | sed -n '1p')
@@ -70,7 +70,10 @@ jobs:
             APPROVED="$SELECTED_SHA"
             printf 'Approved %s: selected ref matches the current %s head.\n' "$SELECTED_SHA" "$DEFAULT_BRANCH"
           elif [[ "$VERSION_INPUT_RAW" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-            TAG_SHAS=$(shas_for "refs/tags/v${VERSION_INPUT_RAW}")
+            # Release orchestration cuts annotated tags (`git tag -a`), whose
+            # `refs/tags/v<X>` object id differs from the tagged commit that
+            # dispatch selects, so the peeled `^{}` commit must be compared too.
+            TAG_SHAS=$(shas_for "refs/tags/v${VERSION_INPUT_RAW}" "refs/tags/v${VERSION_INPUT_RAW}^{}")
             if grep -qx "$SELECTED_SHA" <<<"$TAG_SHAS"; then
               APPROVED="$SELECTED_SHA"
               printf 'Approved %s: selected ref matches tag refs/tags/v%s.\n' "$SELECTED_SHA" "$VERSION_INPUT_RAW"
