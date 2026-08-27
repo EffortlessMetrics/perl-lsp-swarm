@@ -344,7 +344,11 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
             ')' | ']' | '}' => {
-                if stack.pop().is_none() {
+                // Bound rather than tested inline: `pop` mutates, and #6113's
+                // `collapsible_match` deny is satisfied by the binding without
+                // moving a side effect into a match guard.
+                let matched_opener = stack.pop();
+                if matched_opener.is_none() {
                     return idx.saturating_sub(start);
                 }
             }
@@ -1041,6 +1045,36 @@ Module::Build->new(
     fn diagnostic_script_reports_workspace_file_names() {
         assert_eq!(NativeBuildScript::MakefilePl.file_name(), "Makefile.PL");
         assert_eq!(NativeBuildScript::BuildPl.file_name(), "Build.PL");
+    }
+
+    /// `rejected_value_len` decides how far the scanner advances past a value
+    /// it could not parse, so an off-by-one or a lost `stack.pop()` silently
+    /// turns a rejection into an infinite rescan or a swallowed second key.
+    /// These cases pin every exit of its delimiter walk — in particular the
+    /// unmatched-closer exit, whose `pop` is a side effect that must run
+    /// exactly once per closing delimiter (#12859 lint collapse).
+    #[test]
+    fn rejected_value_len_stops_at_each_delimiter_boundary() {
+        // Unmatched closer at depth 0 ends the value at that byte.
+        assert_eq!(rejected_value_len("abc) tail", 0), 3);
+        // A balanced group is consumed whole: the inner closer only pops.
+        assert_eq!(rejected_value_len("q(a, b), tail", 0), 7);
+        // Nested groups pop back to depth 0 before the outer closer ends it.
+        assert_eq!(rejected_value_len("(a[b]{c}))rest", 0), 9);
+        // A depth-0 separator ends the value; one inside a group does not.
+        assert_eq!(rejected_value_len("a, b", 0), 1);
+        assert_eq!(rejected_value_len("a; b", 0), 1);
+        assert_eq!(rejected_value_len("(a, b); c", 0), 6);
+        // A closer inside quotes is inert, so it never reaches the pop; the
+        // first depth-0 `,` after the closing quote is the boundary.
+        assert_eq!(rejected_value_len("')', ',';", 0), 3);
+        // An escaped quote does not end the string, so the `,` inside it stays
+        // inert and the `;` after the real close is the boundary.
+        assert_eq!(rejected_value_len(r#""a\", b" ; c"#, 0), 9);
+        // No boundary at all consumes the remainder.
+        assert_eq!(rejected_value_len("bare", 0), 4);
+        // `start` is an offset into `source`, and the length is relative to it.
+        assert_eq!(rejected_value_len("KEY => abc) tail", 7), 3);
     }
 
     #[test]

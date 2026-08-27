@@ -1641,10 +1641,11 @@ fn walk_wire_value(
                             evidence.publish_diagnostics_batches.push(batch);
                         }
                     }
+                    // First-wins, expressed directly: `get_or_insert` is the
+                    // same set-once the nested `if` performed, without the
+                    // arm shape #6113's `collapsible_match` deny rejects.
                     "textDocument/didChange" => {
-                        if evidence.did_change_line.is_none() {
-                            evidence.did_change_line = Some(line_index);
-                        }
+                        evidence.did_change_line.get_or_insert(line_index);
                     }
                     _ => {}
                 }
