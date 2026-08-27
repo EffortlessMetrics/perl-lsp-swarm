@@ -47,6 +47,12 @@ For an existing draft, inspect that named condition. When it is complete, re-eva
 
 ## PR review index
 
+Proportionality mirrors `$review-pr`'s carve-out: a candidate whose cumulative diff is
+mechanical — generated regeneration, lint-site collapse, allowlist row removal,
+comment-only edits — may publish a reduced index of three sections: **Claim**,
+**Proof**, and **What this does not establish**. The full index remains the default
+for anything crossing a production seam.
+
 ```markdown
 ## Claim
 ## Controlling issue
@@ -84,8 +90,10 @@ still presents as one coherent candidate.
 
 Where a reviewer has already pushed, read what landed and verify it against observed
 behavior before adopting it — a reviewer's push carries no proof, so restate it — or
-replace it and say why in the thread. Treat the result as a new authored candidate and
-invalidate the affected review dimensions.
+replace it and say why in the thread. Adopt by fast-forwarding onto the foreign head
+plus re-proving the affected dimensions; do not force-push over a foreign commit —
+rebase the branch so the foreign head remains an ancestor. Treat the result as a new
+authored candidate and invalidate the affected review dimensions.
 
 Recreating a closed PR is separate. If the existing head and base branches still exist
 and GitHub permits reopening, reopen and preserve the review record. A fresh PR is needed

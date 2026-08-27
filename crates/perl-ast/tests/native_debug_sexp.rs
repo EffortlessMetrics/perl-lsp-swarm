@@ -3,7 +3,8 @@
 //! These tests pin the one-root grammar, #8424 child order, escaping, recovery
 //! visibility, and authority boundaries. Snapshot byte changes are projection
 //! changes, not AST semantic proof. Tree-sitter CST compatibility is issue 8047.
-//! AST equality is issue 7045. Bounded iterative rendering is issue 8832.
+//! AST equality is issue 7045. Bounded iterative rendering is issue 8832
+//! (`crates/perl-ast/tests/bounded_native_debug_render.rs`).
 
 #[path = "helpers.rs"]
 mod helpers;

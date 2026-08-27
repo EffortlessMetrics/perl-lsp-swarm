@@ -317,11 +317,11 @@ impl IncrementalDocument {
         _reusable: Vec<Arc<Node>>,
     ) -> ParseResult<(Node, bool)> {
         // For small edits within a single token, try fast path
-        if self.is_single_token_edit(edit) {
-            if let Some(node) = self.fast_token_update(source, edit) {
-                self.metrics.nodes_reparsed = 1;
-                return Ok((node, true));
-            }
+        if self.is_single_token_edit(edit)
+            && let Some(node) = self.fast_token_update(source, edit)
+        {
+            self.metrics.nodes_reparsed = 1;
+            return Ok((node, true));
         }
 
         // Otherwise use partial parsing with reuse
@@ -461,10 +461,10 @@ impl IncrementalDocument {
                 if self.update_token_in_tree(variable, source, edit) {
                     return true;
                 }
-                if let Some(init) = initializer {
-                    if self.update_token_in_tree(init, source, edit) {
-                        return true;
-                    }
+                if let Some(init) = initializer
+                    && self.update_token_in_tree(init, source, edit)
+                {
+                    return true;
                 }
             }
             NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
@@ -482,10 +482,10 @@ impl IncrementalDocument {
                         return true;
                     }
                 }
-                if let Some(else_b) = else_branch {
-                    if self.update_token_in_tree(else_b, source, edit) {
-                        return true;
-                    }
+                if let Some(else_b) = else_branch
+                    && self.update_token_in_tree(else_b, source, edit)
+                {
+                    return true;
                 }
             }
             NodeKind::While { condition, body, .. } => {
@@ -583,10 +583,10 @@ impl IncrementalDocument {
                         return true;
                     }
                 }
-                if let Some(else_b) = else_branch {
-                    if self.insert_reusable(else_b, reusable) {
-                        return true;
-                    }
+                if let Some(else_b) = else_branch
+                    && self.insert_reusable(else_b, reusable)
+                {
+                    return true;
                 }
             }
             NodeKind::While { condition, body, .. } => {
@@ -598,20 +598,20 @@ impl IncrementalDocument {
                 }
             }
             NodeKind::For { init, condition, update, body, .. } => {
-                if let Some(i) = init {
-                    if self.insert_reusable(i, reusable) {
-                        return true;
-                    }
+                if let Some(i) = init
+                    && self.insert_reusable(i, reusable)
+                {
+                    return true;
                 }
-                if let Some(c) = condition {
-                    if self.insert_reusable(c, reusable) {
-                        return true;
-                    }
+                if let Some(c) = condition
+                    && self.insert_reusable(c, reusable)
+                {
+                    return true;
                 }
-                if let Some(u) = update {
-                    if self.insert_reusable(u, reusable) {
-                        return true;
-                    }
+                if let Some(u) = update
+                    && self.insert_reusable(u, reusable)
+                {
+                    return true;
                 }
                 if self.insert_reusable(body, reusable) {
                     return true;
@@ -621,10 +621,10 @@ impl IncrementalDocument {
                 if self.insert_reusable(variable, reusable) {
                     return true;
                 }
-                if let Some(init) = initializer {
-                    if self.insert_reusable(init, reusable) {
-                        return true;
-                    }
+                if let Some(init) = initializer
+                    && self.insert_reusable(init, reusable)
+                {
+                    return true;
                 }
             }
             NodeKind::Assignment { lhs, rhs, .. } => {
@@ -757,10 +757,10 @@ impl IncrementalDocument {
                     if let Some(found) = self.find_in_node(variable, pos) {
                         return Some(found);
                     }
-                    if let Some(init) = initializer {
-                        if let Some(found) = self.find_in_node(init, pos) {
-                            return Some(found);
-                        }
+                    if let Some(init) = initializer
+                        && let Some(found) = self.find_in_node(init, pos)
+                    {
+                        return Some(found);
                     }
                 }
                 NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
@@ -778,10 +778,10 @@ impl IncrementalDocument {
                             return Some(found);
                         }
                     }
-                    if let Some(else_b) = else_branch {
-                        if let Some(found) = self.find_in_node(else_b, pos) {
-                            return Some(found);
-                        }
+                    if let Some(else_b) = else_branch
+                        && let Some(found) = self.find_in_node(else_b, pos)
+                    {
+                        return Some(found);
                     }
                 }
                 NodeKind::While { condition, body, .. } => {

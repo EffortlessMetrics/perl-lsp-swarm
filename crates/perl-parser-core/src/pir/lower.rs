@@ -406,28 +406,28 @@ impl Lowerer {
             // Hold this boundary for the coderef call HIR emits next.
             self.pending_dynamic_callee = Some(id);
         }
-        if kind == PirDynamicBoundaryKind::SymbolicReference {
-            if let Some(deref_id) = self.pending_deref.take() {
-                if let Some(deref) = self.nodes.iter_mut().find(|node| {
-                    node.id == deref_id && node.source_anchor.range == Some(item.range)
-                }) {
-                    deref.dynamic_boundary = Some(id);
-                }
-            }
+        if kind == PirDynamicBoundaryKind::SymbolicReference
+            && let Some(deref_id) = self.pending_deref.take()
+            && let Some(deref) = self
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == deref_id && node.source_anchor.range == Some(item.range))
+        {
+            deref.dynamic_boundary = Some(id);
         }
-        if kind == PirDynamicBoundaryKind::EmbeddedRegexCode {
-            if let Some(owner_id) = self.pending_regex_boundary_owner.take() {
-                // Key solely on the unique node id: the pending owner is the
-                // immediately-preceding regex op and is cleared for any other
-                // item, so id alone identifies it. Do not re-guard on the range
-                // — that would silently drop the link (leaving `embedded_code:
-                // true` with `dynamic_boundary: None`, an invariant break) if a
-                // future HIR change emitted the boundary with its own sub-range.
-                if let Some(owner) = self.nodes.iter_mut().find(|node| node.id == owner_id) {
-                    owner.dynamic_boundary = Some(id);
-                } else {
-                    debug_assert!(false, "pending_regex_boundary_owner pointed at a missing node");
-                }
+        if kind == PirDynamicBoundaryKind::EmbeddedRegexCode
+            && let Some(owner_id) = self.pending_regex_boundary_owner.take()
+        {
+            // Key solely on the unique node id: the pending owner is the
+            // immediately-preceding regex op and is cleared for any other
+            // item, so id alone identifies it. Do not re-guard on the range
+            // — that would silently drop the link (leaving `embedded_code:
+            // true` with `dynamic_boundary: None`, an invariant break) if a
+            // future HIR change emitted the boundary with its own sub-range.
+            if let Some(owner) = self.nodes.iter_mut().find(|node| node.id == owner_id) {
+                owner.dynamic_boundary = Some(id);
+            } else {
+                debug_assert!(false, "pending_regex_boundary_owner pointed at a missing node");
             }
         }
         id
