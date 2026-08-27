@@ -151,6 +151,7 @@ Useful command choices:
 | Full local merge gate | `just ci-gate` |
 | Agent compile/test/lint | `just agent-check`, `just agent-test`, `just agent-clippy` |
 | Multi-worktree shared build cache | `just cached <cargo args>` — see [Multi-Worktree Build Caching](docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md) |
+| Build disk grew / stale target trees | `just target-gc` (dry-run report), then `just target-gc --apply` |
 | Parser or generated status changed | `just status-update` then `just status-check` |
 | Public API documentation changed | `just ci-docs-check` and `just docs-verify` |
 | Release/version surfaces changed | `just version-check` then `just release-check` |
