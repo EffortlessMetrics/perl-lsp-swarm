@@ -46,11 +46,15 @@ export function parseMigrationVersion(value: unknown): MigrationVersion | null {
   if (typeof value !== 'string') return null;
   const match = SEMVER.exec(value);
   if (!match) return null;
+  const major = match[1];
+  const minor = match[2];
+  const patch = match[3];
+  if (major === undefined || minor === undefined || patch === undefined) return null;
   const prerelease = match[4]?.split('.') ?? [];
   if (prerelease.some((part) => /^\d+$/.test(part) && part.length > 1 && part.startsWith('0'))) {
     return null;
   }
-  return { major: match[1], minor: match[2], patch: match[3], prerelease };
+  return { major, minor, patch, prerelease };
 }
 
 /** Keep JSON-loaded or future registry variants from becoming runtime policy by accident. */
