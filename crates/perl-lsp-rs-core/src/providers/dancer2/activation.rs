@@ -294,13 +294,11 @@ mod tests {
     use perl_semantic_facts::framework_adapters::dancer2::{
         Dancer2KeywordState, DslSelection, parse_dancer2_import_args,
     };
+    use perl_test_must::{must_some_with, must_with};
 
     fn parse(source: &str) -> Node {
         let mut parser = Parser::new(source);
-        match parser.parse() {
-            Ok(ast) => ast,
-            Err(error) => panic!("fixture must parse: {error}"),
-        }
+        must_with(parser.parse(), "fixture must parse")
     }
 
     const VERSIONED_MODULE: &str = "package Dancer2;\nour $VERSION = '1.1.1';\n1;\n";
@@ -349,7 +347,7 @@ mod tests {
         let activations =
             file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("gen-test"));
         assert!(activations.has_exact());
-        let facts = &activations.for_package("main").expect("main activation").facts;
+        let facts = &must_some_with(activations.for_package("main"), "main activation").facts;
         assert_eq!(facts.dsl, DslSelection::Default);
         assert!(
             facts
@@ -366,10 +364,10 @@ mod tests {
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
         let activations =
             file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("gen-test"));
-        let facts = &activations.for_package("main").expect("main activation").facts;
-        let get = facts.keywords.iter().find(|k| k.keyword == "get").expect("get fact");
+        let facts = &must_some_with(activations.for_package("main"), "main activation").facts;
+        let get = must_some_with(facts.keywords.iter().find(|k| k.keyword == "get"), "get fact");
         assert_eq!(get.state, Dancer2KeywordState::Excluded);
-        let post = facts.keywords.iter().find(|k| k.keyword == "post").expect("post fact");
+        let post = must_some_with(facts.keywords.iter().find(|k| k.keyword == "post"), "post fact");
         assert_eq!(post.state, Dancer2KeywordState::Imported);
     }
 
@@ -397,10 +395,7 @@ mod tests {
         let source = "use Dancer2 dsl => 'My::DSL';
 ";
         let mut parser = Parser::new(source);
-        let ast = match parser.parse() {
-            Ok(ast) => ast,
-            Err(error) => panic!("fixture must parse: {error}"),
-        };
+        let ast = must_with(parser.parse(), "fixture must parse");
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
         let activations =
             file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("gen-test"));
@@ -408,7 +403,7 @@ mod tests {
             !activations.has_exact(),
             "custom DSL with version evidence must not become an exact activation"
         );
-        let facts = &activations.for_package("main").expect("main activation").facts;
+        let facts = &must_some_with(activations.for_package("main"), "main activation").facts;
         assert!(facts.keywords.is_empty(), "default keyword facts are not inherited");
         assert!(
             matches!(
@@ -424,7 +419,7 @@ mod tests {
         let source = "use Dancer2;\n";
         let ast = parse(source);
         let without_module = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g"));
-        let facts = &without_module.for_package("main").expect("main").facts;
+        let facts = &must_some_with(without_module.for_package("main"), "main").facts;
         let reason = activation_state_reason(facts, false);
         assert!(reason.contains("not resolved with version evidence"), "{reason}");
     }
