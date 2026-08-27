@@ -47,15 +47,15 @@ use tasks::{
     incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
     install_surface_check, integration_proof, intent_diff_gate, issue_plan, layer_check,
     lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate,
-    metrics, module_train, module_train_live, native_critic, native_format, native_product_surface,
-    native_tooling, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust,
-    parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee,
-    populate_book, pre_push_plan, prep_crates_io_launch, product_health_rail_contract,
-    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
-    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
-    quality_baseline, quality_gate, queue_health, queue_snapshot, receipts, release,
-    release_artifact_check, release_evidence, release_notes, release_turnkey, repo_hygiene,
-    ripr_evidence, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    metrics, module_train, module_train_live, native_critic, native_format, native_neovim_train,
+    native_product_surface, native_tooling, oracle_fixture_manifest, oracle_receipt_schema,
+    oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet,
+    perl_core_harness, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
+    product_health_rail_contract, protocol_type_substrate_matrix, provider_confidence_matrix,
+    provider_promotion_ledger, publication_facts, publish, publish_closure, publish_manifest_check,
+    publish_receipts, quality_baseline, quality_gate, queue_health, queue_snapshot, receipts,
+    release, release_artifact_check, release_evidence, release_notes, release_turnkey,
+    repo_hygiene, ripr_evidence, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
     semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
     shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
     swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
@@ -154,6 +154,13 @@ enum Commands {
     /// (train_edge_contract.v1), its programme-neutral fixtures, and the
     /// declared adaptations of the landed programme train manifests.
     CheckTrainEdgeContract,
+
+    /// Validate the stable native Neovim implementation train manifest
+    /// (native_neovim_train.v1, #11392): the closed schema, graph shift-left
+    /// rejection law with named diagnostics, the shuffled determinism
+    /// control, and every discriminating invalid fixture.
+    #[command(name = "check-native-neovim-train")]
+    CheckNativeNeovimTrain,
 
     /// Validate the dependency-neutral product-health rail/adapter registry contract.
     #[command(name = "check-product-health-rail-contract")]
@@ -4655,6 +4662,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
+        Commands::CheckNativeNeovimTrain => native_neovim_train::run(),
         Commands::CheckProductHealthRailContract => product_health_rail_contract::run(),
         Commands::CheckAgentImplementationPacket { update_golden } => {
             agent_implementation_packet::run(update_golden)

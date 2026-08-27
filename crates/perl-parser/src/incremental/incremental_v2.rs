@@ -289,17 +289,16 @@ impl IncrementalParserV2 {
         self.materialized_reuse_nodes = 0;
 
         // Try incremental parsing if we have a previous tree and edits
-        if let Some(ref last_tree) = self.last_tree {
-            if !self.pending_edits.is_empty() {
-                let last_tree_clone = last_tree.clone();
-                // Check if we can do incremental parsing
-                if let Some(new_tree) = self.try_incremental_parse(source, &last_tree_clone) {
-                    self.used_incremental_path = true;
-                    self.last_tree =
-                        Some(IncrementalTree::new(new_tree.clone(), source.to_string()));
-                    self.pending_edits = EditSet::new();
-                    return Ok(new_tree);
-                }
+        if let Some(ref last_tree) = self.last_tree
+            && !self.pending_edits.is_empty()
+        {
+            let last_tree_clone = last_tree.clone();
+            // Check if we can do incremental parsing
+            if let Some(new_tree) = self.try_incremental_parse(source, &last_tree_clone) {
+                self.used_incremental_path = true;
+                self.last_tree = Some(IncrementalTree::new(new_tree.clone(), source.to_string()));
+                self.pending_edits = EditSet::new();
+                return Ok(new_tree);
             }
         }
 
@@ -825,10 +824,10 @@ impl IncrementalParserV2 {
                 if !self.validate_node_tree_consistency(variable, source, depth + 1, max_depth) {
                     return false;
                 }
-                if let Some(init) = initializer {
-                    if !self.validate_node_tree_consistency(init, source, depth + 1, max_depth) {
-                        return false;
-                    }
+                if let Some(init) = initializer
+                    && !self.validate_node_tree_consistency(init, source, depth + 1, max_depth)
+                {
+                    return false;
                 }
             }
             NodeKind::Binary { left, right, .. } => {
@@ -1443,7 +1442,7 @@ mod tests {
 
     #[test]
     fn advanced_reuse_selects_only_exact_old_subtrees() {
-        let mut parser = IncrementalParserV2::new();
+        let parser = IncrementalParserV2::new();
         let location = |start, end| SourceLocation { start, end };
         let old_tree = Node::new(
             NodeKind::Program {
@@ -1617,14 +1616,12 @@ mod tests {
         );
 
         // Verify the tree is correct
-        if let NodeKind::Program { statements } = &tree2.kind {
-            if let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
+        if let NodeKind::Program { statements } = &tree2.kind
+            && let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
                 &statements[0].kind
-            {
-                if let NodeKind::Number { value } = &init.kind {
-                    assert_eq!(value, "4242");
-                }
-            }
+            && let NodeKind::Number { value } = &init.kind
+        {
+            assert_eq!(value, "4242");
         }
 
         Ok(())
@@ -1704,17 +1701,15 @@ mod tests {
         if let NodeKind::Program { statements } = &tree.kind {
             if let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
                 &statements[0].kind
+                && let NodeKind::Number { value } = &init.kind
             {
-                if let NodeKind::Number { value } = &init.kind {
-                    assert_eq!(value, "100");
-                }
+                assert_eq!(value, "100");
             }
             if let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
                 &statements[1].kind
+                && let NodeKind::Number { value } = &init.kind
             {
-                if let NodeKind::Number { value } = &init.kind {
-                    assert_eq!(value, "200");
-                }
+                assert_eq!(value, "200");
             }
         }
 
@@ -1784,14 +1779,12 @@ mod tests {
         // Note: reused_nodes may be > 0 due to advanced reuse algorithms
 
         // Tree should still be correct
-        if let NodeKind::Program { statements } = &tree.kind {
-            if let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
+        if let NodeKind::Program { statements } = &tree.kind
+            && let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
                 &statements[0].kind
-            {
-                if let NodeKind::Number { value } = &init.kind {
-                    assert_eq!(value, "123");
-                }
-            }
+            && let NodeKind::Number { value } = &init.kind
+        {
+            assert_eq!(value, "123");
         }
 
         Ok(())
@@ -1827,14 +1820,12 @@ mod tests {
         assert_eq!(parser.reparsed_nodes, 1); // Only String
 
         // Verify the string was updated
-        if let NodeKind::Program { statements } = &tree.kind {
-            if let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
+        if let NodeKind::Program { statements } = &tree.kind
+            && let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
                 &statements[0].kind
-            {
-                if let NodeKind::String { value, .. } = &init.kind {
-                    assert_eq!(value, "\"world\"");
-                }
-            }
+            && let NodeKind::String { value, .. } = &init.kind
+        {
+            assert_eq!(value, "\"world\"");
         }
 
         Ok(())

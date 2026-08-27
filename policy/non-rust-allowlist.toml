@@ -1798,6 +1798,19 @@ created = "2026-08-16"
 review_after = "2026-11-16"
 
 [[allow]]
+id = "non-rust-native-neovim-train-schema"
+path = "schemas/native_neovim_train.v1.schema.json"
+kind = "release_metadata"
+language = "json"
+surface = "tooling"
+classification = "documentation"
+owner = "neovim-train"
+reason = "Closed JSON Schema for the stable native Neovim implementation train manifest (#11392); applied by cargo xtask check-native-neovim-train."
+covered_by = ["cargo xtask check-native-neovim-train"]
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
 id = "non-rust-install-identity-verification-schema"
 path = "schemas/install_identity_verification.v1.schema.json"
 kind = "release_metadata"
@@ -3231,6 +3244,22 @@ created = "2026-08-24"
 review_after = "2026-11-24"
 
 [[allow]]
+id = "non-rust-import-cleanup-train-schema"
+path = "schemas/import_cleanup_train.v1.schema.json"
+kind = "train_contract"
+language = "json"
+surface = "tooling"
+classification = "config"
+owner = "tooling/train-graph"
+reason = "JSON Schema pinning the closed import_cleanup_train.v1 cleanup-train contract (#11084); closed vocabularies are derived from the pinned manifest revision and cross-checked by the focused xtask proof."
+covered_by = [
+  "cargo test -p xtask --locked import_cleanup_train_manifest",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
 id = "non-rust-agent-implementation-packet-schema"
 path = "schemas/agent_implementation_packet.v1.schema.json"
 kind = "agent_contract"
@@ -3635,3 +3664,130 @@ covered_by = [
 ]
 created = "2026-08-26"
 review_after = "2026-11-26"
+
+# Inventory row G: parser scaffolding templates, co-located refactor design
+# docs, legacy pest grammar, perltidy fixture config, disabled artifacts, and
+# example scripts (#1996).
+# =============================================================================
+
+[[allow]]
+id = "non-rust-perl-parser-templates"
+glob = "crates/perl-parser/templates/*.template"
+kind = "scaffolding_template"
+language = "perl"
+surface = "fixtures"
+classification = "documentation"
+owner = "parser/lsp-fixtures"
+reason = "Perl scaffolding examples (module/script/test shapes) shipped with the parser crate. No build or test consumer exists today; they are documentation-by-example kept on the policy ledger so the non-Rust inventory stays honest about them instead of silently absorbing new sibling templates."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-26"
+review_after = "2027-02-22"
+
+[[allow]]
+id = "non-rust-refactor-design-docs"
+path = "crates/perl-parser/src/refactor/import_optimizer.rst"
+kind = "archived_source"
+language = "rust"
+surface = "archive"
+classification = "documentation"
+owner = "parser/legacy"
+reason = "Mis-suffixed archived source: the file carries .rst but its content is obsolete Rust (imports, structs, impl blocks of a superseded import-optimizer implementation). Receipted exactly so history stays visible without letting future mis-suffixed Rust be absorbed as prose."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-26"
+review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-pest-grammar"
+path = "crates/perl-parser-pest/src/grammar.pest"
+kind = "parser_grammar"
+language = "pest"
+surface = "parser"
+classification = "production"
+owner = "parser/legacy-pest"
+reason = "PEG grammar compiled into perl-parser-pest at build time via pest_derive `#[grammar = \"grammar.pest\"]`; it is real parser source for the legacy v2 compatibility layer, not stray text, so it is receipted as production surface rather than dropped from the inventory."
+covered_by = [
+  "cargo test -p perl-parser-pest",
+]
+created = "2026-08-26"
+review_after = "2027-02-22"
+
+[[allow]]
+id = "non-rust-perltidy-fixture-config"
+path = "crates/perl-parser/tests/fixtures/.perltidyrc"
+kind = "test_fixture_config"
+language = "perltidy"
+surface = "fixtures"
+classification = "config"
+owner = "parser/lsp-fixtures"
+reason = "Deterministic perltidy settings pinned so formatter runs stay platform-stable. No automated test reads this exact file today, so honest coverage is the file-policy gate itself plus a review-after date forcing a use-or-delete decision."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-26"
+review_after = "2027-02-22"
+
+[[allow]]
+id = "non-rust-disabled-artifacts"
+glob = "crates/perl-parser/**/*.disabled"
+kind = "archived_source"
+language = "mixed"
+surface = "archive"
+classification = "documentation"
+owner = "parser/legacy"
+reason = "Files renamed with a `.disabled` suffix keep history while opting out of build/test execution until a delete-or-restore decision is made. Scoped to the owning crate so archive/ keeps its own attribution and no other crate silently inherits parser/legacy ownership."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+broad_glob_reason = "Parked sources may sit under src/, tests/, or examples/ anywhere inside the owning crate."
+created = "2026-08-26"
+review_after = "2026-11-24"
+expires = "2027-02-22"
+
+[[allow]]
+id = "non-rust-parser-simple-lsp-test-wrapper"
+path = "crates/perl-parser/examples/simple_lsp_test.sh"
+kind = "ci_smoke_wrapper"
+language = "shell"
+surface = "ci"
+classification = "tooling"
+owner = "release/ci"
+reason = "Mode-100755 wrapper whose sole behavior is exec-ing the perl-ci-hygiene `simple-lsp-test` LSP smoke runner (POSIX pipeline, unsupported on Windows hosts); receipted as live tooling with behavioral coverage rather than documentation-by-example."
+covered_by = [
+  "cargo run -p perl-ci-hygiene -- simple-lsp-test",
+]
+created = "2026-08-26"
+review_after = "2027-02-22"
+
+[[allow]]
+id = "non-rust-parser-example-scripts-sh"
+glob = "crates/perl-parser/examples/*.sh"
+kind = "example_script"
+language = "shell"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "Hand-run demonstration script printing canned LSP exchanges against a local server; documentation-by-example that no CI lane executes, receipted so new sibling demo scripts cannot appear unclassified."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-26"
+review_after = "2027-02-22"
+
+[[allow]]
+id = "non-rust-parser-example-scripts-py"
+glob = "crates/perl-parser/examples/*.py"
+kind = "example_script"
+language = "python"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "Python demonstration clients for the parser LSP used when exploring wire behavior by hand; documentation-by-example kept on the policy ledger rather than left unclassified in an examples tree."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-26"
+review_after = "2027-02-22"
