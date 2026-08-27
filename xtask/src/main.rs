@@ -55,12 +55,12 @@ use tasks::{
     provider_promotion_ledger, publication_facts, publish, publish_closure, publish_manifest_check,
     publish_receipts, quality_baseline, quality_gate, queue_health, queue_snapshot, receipts,
     release, release_artifact_check, release_evidence, release_notes, release_turnkey,
-    repo_hygiene, ripr_evidence, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
-    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
-    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
-    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
-    validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
+    repo_hygiene, ripr_evidence, rust_small_proof, seam_diff, semantic_inline_next_edit,
+    semantic_inline_receipts, semantic_scorecard, semantic_shadow_compare, semantic_token_classes,
+    session_receipt, shadow_parity, srp_microcrates, supported_editor_inline_smoke,
+    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
+    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
+    ux_scorecard, validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
@@ -2131,6 +2131,18 @@ enum Commands {
         #[arg(long)]
         ratchet_check: bool,
     },
+
+    /// Run the canonical Rust Small proof lane in one repository command (#8407).
+    ///
+    /// Executes locked fetch, workspace check, parser smokes, LSP smoke,
+    /// references scorecard census + replay, and diff hygiene with pinned argv,
+    /// failing closed on any omitted or failing step. Every routed Rust Small
+    /// job in `.github/workflows/em-ci-routed-rust.yml` invokes this single
+    /// definition, so the aggregate required check means one proof on all
+    /// routes; the yml keeps only runner instrumentation and the #12320
+    /// pinned `cargo fmt` literal. Typed step receipts remain issue #8408.
+    #[command(name = "rust-small-proof")]
+    RustSmallProof,
 
     /// Publish/check 0.13.2 semantic scorecard artifacts from deterministic fixtures.
     SemanticScorecard {
@@ -6126,6 +6138,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::SemanticScorecard { manifest, output, status_md, check } => {
             semantic_scorecard::run(manifest, output, status_md, check)
         }
+        Commands::RustSmallProof => rust_small_proof::run(),
         Commands::SemanticShadowCompare { output, status_md, check } => {
             semantic_shadow_compare::run(output, status_md, check)
         }
