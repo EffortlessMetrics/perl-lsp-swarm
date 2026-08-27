@@ -84,6 +84,37 @@ fn append_dep(value: &mut Value, from: &str, target: &str, class: &str) -> Resul
 // Malformed falsifiers first (the issue's shift-left review map).
 // ---------------------------------------------------------------------------
 
+// The three coherence arms below are written as guarded match arms
+// (`collapsible_match` is denied workspace-wide). The committed manifest only
+// ever exercises their guard-false path, so a broken guard would leave the
+// rest of this suite green. Pin the FIRING branch of each.
+
+#[test]
+fn import_cleanup_train_manifest_completion_wire_outside_its_context_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    // Give an internal-plan row a CompletionItem wire. Re-pointing the
+    // governed completion adapter itself trips the "exactly one governed
+    // completion_adapter" invariant before wire coherence is ever consulted.
+    set_node_string(&mut value, "ASM10757", "wire_kind", "completion_item")?;
+    assert_rejected(&value, "CompletionItem payload requires the completion_item context")
+}
+
+#[test]
+fn import_cleanup_train_manifest_workspace_edit_outside_its_contexts_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    set_node_string(&mut value, "ADPT10667", "product_context", "internal_plan")?;
+    assert_rejected(&value, "WorkspaceEdit payload outside a compatible context")
+}
+
+#[test]
+fn import_cleanup_train_manifest_internal_plan_spine_collapse_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    // DEC8948 and ADM11169 are both active add_missing internal_plan rows;
+    // giving them the same role collapses the stage-separated spine.
+    set_node_string(&mut value, "DEC8948", "role", "product_admission")?;
+    assert_rejected(&value, "add_missing context collapse")
+}
+
 #[test]
 fn import_cleanup_train_manifest_controller_as_leaf_is_rejected() -> Result<()> {
     let mut value = real_value()?;

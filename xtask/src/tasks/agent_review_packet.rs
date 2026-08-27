@@ -3038,6 +3038,7 @@ pub fn run(update_golden: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::eyre;
 
     type TestResult<T = ()> = Result<T>;
 
@@ -3053,8 +3054,69 @@ mod tests {
         validate_document(doc).iter().any(|violation| violation.code == code)
     }
 
+    /// Drop `key` from the first `review_state.roles` entry in `state`.
+    fn strip_role_key(doc: &mut Value, state: &str, key: &str) -> TestResult {
+        let roles = doc
+            .get_mut("review_state")
+            .and_then(|review_state| review_state.get_mut("roles"))
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| eyre!("closure fixture must carry review_state.roles"))?;
+        for role in roles.iter_mut() {
+            if role.get("state").and_then(Value::as_str) == Some(state) {
+                role.as_object_mut()
+                    .ok_or_else(|| eyre!("role entry must be an object"))?
+                    .remove(key);
+                return Ok(());
+            }
+        }
+        bail!("no role with state {state:?} in the fixture")
+    }
+
     fn valid(doc: &Value) -> bool {
         validate_document(doc).is_empty()
+    }
+
+    /// Three validator arms are written as guarded match arms
+    /// (`collapsible_match` is denied workspace-wide). The valid fixtures only
+    /// ever exercise the guard-false path, so neutralising any of these
+    /// guards left the whole xtask suite green. Pin the FIRING branch — and
+    /// the fall-through beside it — so the guard cannot silently stop
+    /// failing closed.
+    #[test]
+    fn collapsed_validator_guards_still_raise_their_violations() -> TestResult {
+        // review_state.roles: a terminal role must reference its review.
+        let mut doc = fixture("closure_service_marker_eligible.v1.json")?;
+        assert!(
+            !has(&doc, "missing_role_reference"),
+            "baseline fixture must not already carry the violation"
+        );
+        strip_role_key(&mut doc, "terminal", "reference")?;
+        assert!(
+            has(&doc, "missing_role_reference"),
+            "a terminal role without a reference must fail closed"
+        );
+
+        // review_state.roles: a skipped role must justify itself.
+        let mut doc = fixture("closure_service_marker_eligible.v1.json")?;
+        assert!(!has(&doc, "role_not_applicable_unjustified"));
+        strip_role_key(&mut doc, "not_applicable", "reason")?;
+        assert!(
+            has(&doc, "role_not_applicable_unjustified"),
+            "a not_applicable role without a reason must fail closed"
+        );
+
+        // old_paths: a still-live independent seam needs an owner, and an
+        // owned one must fall through to no violation.
+        let mut doc = invalid_fixture("compatibility_projection_unowned.json")?;
+        assert!(!has(&doc, "still_live_unowned"));
+        doc["old_paths"][0]["disposition"] = Value::from("still_live_independent");
+        assert!(has(&doc, "still_live_unowned"), "an unowned still-live seam must fail closed");
+        doc["old_paths"][0]["owner"] = Value::from("#12902");
+        assert!(
+            !has(&doc, "still_live_unowned"),
+            "an owned still-live seam must fall through cleanly"
+        );
+        Ok(())
     }
 
     #[test]
