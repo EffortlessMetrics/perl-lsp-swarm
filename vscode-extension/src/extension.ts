@@ -398,6 +398,18 @@ export function _setExtensionContextForTest(context: vscode.ExtensionContext): v
 }
 
 /**
+ * Test helper — inject (or clear) the live lifecycle controller so unit tests
+ * can drive `restartServer` through real start/stop transitions with fake
+ * clients. Pass `undefined` to restore the no-controller fallback harness.
+ * @internal
+ */
+export function _setLanguageClientLifecycleForTest(
+  lifecycle: ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent> | undefined,
+): void {
+  languageClientLifecycle = lifecycle;
+}
+
+/**
  * Test helper — deliver a watchdog-sourced failure observation through the
  * same production arbiter entry point the watchdog interval calls (#7845).
  * The optional generation mirrors the probe-binding the interval captures.
@@ -1745,6 +1757,13 @@ function createLanguageClientLifecycle(
       languageClientStartupMetrics.setLifecycleState(snapshot.state);
       syncLifecycleProjection();
       healthWidget?.onStateChange(clientStateForLifecycle(snapshot.state));
+      if (snapshot.state === 'running') {
+        // A language client can emit Running before onStarted finishes. The
+        // lifecycle's running transition is the authoritative post-finalization
+        // signal, so only it may start the stable-run grace window and reset
+        // the automatic-restart budget after a genuinely healthy replacement.
+        crashRecoveryArbiter.markRunning(snapshot.generation, Date.now());
+      }
       // Only `resolving` needs an explicit projection: onStateChange maps it to
       // generic Starting, and every other lifecycle state is already owned by
       // onStateChange (including active indexing tokens and client_stopped detail).
@@ -1752,19 +1771,7 @@ function createLanguageClientLifecycle(
         healthWidget?.setWorkspaceLifecycleState(projectWorkspaceLifecycle(snapshot.state));
       }
     },
-    onClientStateChange: (_activeClient, event) => {
-      if (event.newState === LanguageClientState.Starting) {
-        languageClientStartupMetrics.markMilestone('process_started');
-        languageClientStartupMetrics.finishServerStart('ok');
-      }
-      if (event.newState === LanguageClientState.Running) {
-        // Record when the server last reached Running so the recovery
-        // arbiter (#7845) can decide whether the prior run was stable long
-        // enough to reset the automatic-restart attempt budget.
-        crashRecoveryArbiter.markRunning(currentCrashGeneration(), Date.now());
-      }
-      handleClientStateChange(event);
-    },
+    onClientStateChange: (_activeClient, event) => handleLifecycleClientStateChange(event),
     onCallbackError: (error, phase) => {
       const message = error instanceof Error ? error.message : String(error);
       outputChannel.error(`[lifecycle] ${phase} callback failed: ${message}`);
@@ -2419,10 +2426,20 @@ async function restartServer(_context: vscode.ExtensionContext) {
     return;
   }
 
-  if (!client && !currentServerPath && !lifecycle.hasPendingServerPathOverride) {
-    // A dormant server has nothing to restart. An explicit restart request is
-    // itself a server-dependent entry point (#8180), so honour it by starting
-    // the server rather than reporting the extension as "not initialized".
+  // A dormant server has nothing to restart: only a lifecycle that never
+  // left its initial stopped state is dormant. A `failed` lifecycle owns a
+  // half-built generation that `restart()` must stop before starting (#12724),
+  // so it must fall through to the restart path even when the compatibility
+  // projections are stale. An explicit restart request is itself a
+  // server-dependent entry point (#8180), so a dormant request is honoured by
+  // starting the server rather than reporting the extension as "not
+  // initialized".
+  if (
+    !client &&
+    !currentServerPath &&
+    !lifecycle.hasPendingServerPathOverride &&
+    lifecycle.snapshot.state === 'stopped'
+  ) {
     if (!serverDemand) {
       vscode.window.showWarningMessage('Perl Language Server is not initialized yet.');
       return;
@@ -2435,7 +2452,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
       // Staying silent here would be worse than the old "not initialized"
       // warning: the user asked for a server and would get no answer at all.
       const message = describeDemandError(demand.error);
-      outputChannel.error(`Failed to start perl-lsp: ${message}`);
+      outputChannel?.error(`Failed to start perl-lsp: ${message}`);
       vscode.window
         .showErrorMessage(`Failed to start Perl Language Server: ${message}`, 'Show Output')
         .then((selection) => {
@@ -2483,7 +2500,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
       });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    outputChannel.error(`Failed to restart perl-lsp: ${message}`);
+    outputChannel?.error(`Failed to restart perl-lsp: ${message}`);
     // A rejected restart() means the running generation was stopped and its
     // replacement failed: the server is stopped. Tell the demand owner,
     // otherwise its stale `running`/in-flight belief suppresses all later
@@ -2779,6 +2796,25 @@ export function handleClientStateChange(event: StateChangeEvent): void {
 }
 
 /**
+ * Testable adapter for the raw language-client state callback. A raw Running
+ * event is presentation/process evidence only; lifecycle stability is not
+ * recorded until startup finalization publishes the lifecycle `running`
+ * transition (#12724).
+ * @internal
+ */
+export function _handleLifecycleClientStateChangeForTest(event: StateChangeEvent): void {
+  handleLifecycleClientStateChange(event);
+}
+
+function handleLifecycleClientStateChange(event: StateChangeEvent): void {
+  if (event.newState === LanguageClientState.Starting) {
+    languageClientStartupMetrics.markMilestone('process_started');
+    languageClientStartupMetrics.finishServerStart('ok');
+  }
+  handleClientStateChange(event);
+}
+
+/**
  * Capture the mid-session failure diagnosis, invalidate the failed
  * generation's demand state, and surface the failure on the health widget.
  * Shared by every non-deduped arbiter decision (#7845). Returns the captured
@@ -2916,11 +2952,25 @@ async function recoverFromObservedCrash(
   const replacementSnapshot = languageClientLifecycle.snapshot;
   if (replacementSnapshot.state === 'running') {
     await settleRecoveryEpisode(decision, 'recovered', replacementSnapshot.generation);
-  } else {
-    await settleRecoveryEpisode(decision, 'recovery_failed', null);
-    outputChannel?.error(
-      `[lifecycle] Auto-restart attempt ${attempt} did not reach the running state (state: ${replacementSnapshot.state}).`,
-    );
+    return;
+  }
+  outputChannel?.error(
+    `[lifecycle] Auto-restart attempt ${attempt} did not reach the running state (state: ${replacementSnapshot.state}).`,
+  );
+  await settleRecoveryEpisode(decision, 'recovery_failed', null);
+  // A replacement that failed during STARTUP (#12724) can never be observed
+  // again by the existing failure surfaces: it never reached Running, so no
+  // Running→Stopped crash event fires, and the watchdog only arms while
+  // running. Settling `recovery_failed` here would therefore deadlock
+  // convergence — readiness stays cleared and no later restart ever happens
+  // even though automatic budget remains. Re-arm instead: arbitrate the
+  // failed replacement generation's own recorded failure through this same
+  // entry point, so the arbiter keeps sole ownership of dedupe, budget, and
+  // exhaustion (fail-closed: genuinely repeated failures still end at the
+  // exhaustion dialog). An explicit recovery that superseded the failed
+  // generation meanwhile is handled by the stale-generation guard above.
+  if (replacementSnapshot.state === 'failed') {
+    await recoverFromObservedCrash('startup_failure', replacementSnapshot.generation);
   }
 }
 
