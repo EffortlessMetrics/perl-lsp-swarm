@@ -271,6 +271,18 @@ def main() -> None:
             )
         finally:
             MODULE.EXPECTED_REJECT_IDENTITIES[table_path] = authored
+        table_order = write_manifest(root / "table-order")
+        order_path = "crates/perl-lsp-rs/src/runtime/language/formatting_policy/tests.rs"
+        ordered = MODULE.EXPECTED_REJECT_IDENTITIES[order_path]
+        MODULE.EXPECTED_REJECT_IDENTITIES[order_path] = (ordered[1], ordered[0], *ordered[2:])
+        try:
+            expect_rejection(
+                table_order,
+                root / "table-order" / "evidence",
+                "exactly match the authored per-file table",
+            )
+        finally:
+            MODULE.EXPECTED_REJECT_IDENTITIES[order_path] = ordered
         expect_rejection(
             write_manifest(root / "omission", mutation="omission"),
             root / "omission" / "evidence",
@@ -283,13 +295,19 @@ def main() -> None:
         )
         extra = root / "extra"
         extra_evidence = extra / "evidence"
+        extra_manifest = write_manifest(extra, extra_artifact=True)
         expect_rejection(
-            write_manifest(extra, extra_artifact=True),
+            extra_manifest,
             extra_evidence,
             "canonical artifact scope mismatch",
         )
         if not (extra_evidence / "unlisted.rej").exists():
             raise RuntimeError("unaccounted reject artifact was not retained")
+        expect_rejection(
+            extra_manifest,
+            extra_evidence,
+            "canonical artifact scope mismatch",
+        )
     print("11983 reject-identity fixtures passed")
 
 

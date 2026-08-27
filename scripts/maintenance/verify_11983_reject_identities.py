@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import re
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -177,6 +176,14 @@ def _scoped_reject(path: Path, reject_scope: Path) -> Path:
     return resolved
 
 
+def _is_under(path: Path, directory: Path) -> bool:
+    try:
+        path.relative_to(directory)
+    except ValueError:
+        return False
+    return True
+
+
 def validate_manifest(
     manifest_path: Path,
     evidence_dir: Path,
@@ -197,10 +204,15 @@ def validate_manifest(
         raise ValueError(f"reject table coverage mismatch: missing={missing}, extra={extra}")
 
     scope = reject_scope.resolve()
+    evidence_root = evidence_dir.resolve()
     manifest_rejects = [_scoped_reject(Path(entry[3]), scope) for entry in entries]
     if len(set(manifest_rejects)) != len(manifest_rejects):
         raise ValueError("reject manifest contains duplicate artifact identities")
-    discovered_rejects = {candidate.resolve() for candidate in scope.rglob("*.rej")}
+    discovered_rejects = {
+        candidate.resolve()
+        for candidate in scope.rglob("*.rej")
+        if not _is_under(candidate.resolve(), evidence_root)
+    }
     manifest_reject_set = set(manifest_rejects)
     if discovered_rejects != manifest_reject_set:
         missing = sorted(str(path) for path in manifest_reject_set - discovered_rejects)
@@ -282,7 +294,7 @@ def validate_manifest(
                     f"hunk identity omitted or reused: {identity.hunk}",
                 )
             actual.append(matches[0])
-        if Counter(actual) != Counter(expected):
+        if actual != list(expected):
             _retain(
                 reject,
                 scope,
