@@ -4,11 +4,11 @@
 //! no fact extraction, no call graph, no composition.
 
 use super::*;
-use perl_test_must::{must, must_err};
 use crate::{
     BoundaryDisposition, BoundaryKind, Confidence, LifecyclePhase, Provenance,
     SemanticFactEnvelope, SemanticFactKind, SemanticFreshness, SemanticProducer,
 };
+use perl_test_must::{must, must_err};
 
 fn entity(n: u64) -> EntityId {
     EntityId(n)
@@ -159,8 +159,7 @@ fn falsifier_phase_collapse_composition_policies_stay_distinct() {
         CompositionPolicy::RecursiveBounded,
         CompositionPolicy::ConsumerPolicy,
     ];
-    let serialized: Vec<String> =
-        policies.iter().map(|p| must(serde_json::to_string(p))).collect();
+    let serialized: Vec<String> = policies.iter().map(|p| must(serde_json::to_string(p))).collect();
     for (i, a) in serialized.iter().enumerate() {
         for (j, b) in serialized.iter().enumerate() {
             assert_eq!(i == j, a == b, "policies {i} and {j} collapsed");
