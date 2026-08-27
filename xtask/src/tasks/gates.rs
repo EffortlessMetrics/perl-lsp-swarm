@@ -5061,6 +5061,41 @@ gates:
         Ok(())
     }
 
+    /// Retried cargo-test gates retain reach evidence for every attempt, not only
+    /// the final attempt whose log survives truncation (#11914).
+    #[test]
+    #[cfg(unix)]
+    fn retried_cargo_test_gate_retains_each_attempt_reach_result()
+    -> color_eyre::eyre::Result<()> {
+        static MARKER_SEQ: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let seq = MARKER_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let marker =
+            std::env::temp_dir().join(format!("gate-retry-reach-{}-{seq}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let marker_display = marker.display().to_string();
+        let command = format!(
+            "if [ -f {marker_display} ]; then printf 'running 2 tests\\n'; exit 0;              else touch {marker_display}; sleep 3; fi; exit 0; true && cargo test --lib --locked"
+        );
+        let mut gate = pr_gate("synthetic_retry_reach_gate", GatePlanningRole::AlwaysOn, &command);
+        gate.tags.push("test".to_string());
+        gate.timeout_seconds = 1;
+        gate.retry_count = 1;
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+
+        let result = run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+        let _ = std::fs::remove_file(&marker);
+
+        let metrics = result
+            .metrics
+            .as_ref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("cargo test gate should populate metrics"))?;
+        assert_eq!(metrics.test_execution_reached, Some(true));
+        assert_eq!(metrics.test_execution_reached_attempts, vec![false, true]);
+        Ok(())
+    }
+
     /// #10023 race family: a gate whose attempt hits the watchdog must retry
     /// when policy declares retry_count, and the final log must record the
     /// attempt history. The family gates' budgets are dominated by cold-cache
