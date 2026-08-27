@@ -6,14 +6,15 @@ use color_eyre::eyre::{Result, bail, eyre};
 use std::collections::BTreeMap;
 use toml::Value;
 
-const REQUIRED_DISPOSITIONS: &[&str] = &[
-    "rust::const_item_interior_mutations",
-    "rust::function_casts_as_integer",
-    "clippy::same_length_and_capacity",
-    "clippy::disallowed_fields",
-    "clippy::manual_checked_ops",
-    "clippy::manual_take",
-    "clippy::manual_pop_if",
+const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>)] = &[
+    ("rust::const_item_interior_mutations", None),
+    ("rust::function_casts_as_integer", None),
+    ("clippy::same_length_and_capacity", None),
+    ("clippy::disallowed_fields", None),
+    ("clippy::manual_checked_ops", None),
+    ("clippy::manual_ilog2", Some("deny")),
+    ("clippy::manual_take", None),
+    ("clippy::manual_pop_if", None),
 ];
 
 pub(crate) fn validate_workspace_lints(
@@ -109,10 +110,37 @@ pub(crate) fn validate_required_dispositions(ledger: &LintLedger) -> Result<()> 
         *counts.entry(name).or_default() += 1;
     }
 
-    for required in REQUIRED_DISPOSITIONS {
+    for (required, expected_level) in REQUIRED_DISPOSITIONS {
         if counts.get(required).copied().unwrap_or_default() != 1 {
             bail!(
                 "required lint identity {required} must appear exactly once across the merged disposition model"
+            );
+        }
+        let entry_level = ledger
+            .lint
+            .iter()
+            .find(|lint| lint.name == *required)
+            .map(|lint| lint.level.as_str())
+            .or_else(|| {
+                ledger
+                    .planned
+                    .iter()
+                    .find(|lint| lint.name == *required)
+                    .map(|lint| lint.level.as_str())
+            })
+            .or_else(|| {
+                ledger
+                    .deferred_due
+                    .iter()
+                    .find(|lint| lint.name == *required)
+                    .map(|lint| lint.level.as_str())
+            });
+        if let Some(expected_level) = expected_level
+            && entry_level != Some(*expected_level)
+        {
+            bail!(
+                "required lint {required} must remain at level {expected_level}, but ledger has {}",
+                entry_level.unwrap_or("missing")
             );
         }
     }
