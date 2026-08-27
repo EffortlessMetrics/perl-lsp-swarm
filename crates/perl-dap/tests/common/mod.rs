@@ -916,7 +916,7 @@ struct ProbeFailure {
 /// resolver retries once on a transient-class failure before caching a
 /// negative result ([`resolved_debuggee_perl_or_reason`]).
 fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
-    probe_debuggee_perl_with_options(binary, DEBUGGEE_PROBE_BUDGET, false, None)
+    probe_debuggee_perl_with_options(binary, DEBUGGEE_PROBE_BUDGET, false, None, false)
 }
 
 /// Test-only entry point for exercising every child/workspace exit path with a
@@ -929,7 +929,7 @@ pub(crate) fn probe_debuggee_perl_for_test(
     budget: Duration,
     simulate_wait_error: bool,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(binary, budget, simulate_wait_error, None)
+    probe_debuggee_perl_with_options(binary, budget, simulate_wait_error, None, false)
         .map_err(|failure| failure.reason)
 }
 
@@ -940,7 +940,22 @@ pub(crate) fn probe_debuggee_perl_for_test_with_descendant_pid(
     simulate_wait_error: bool,
     descendant_pid_file: &Path,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(binary, budget, simulate_wait_error, Some(descendant_pid_file))
+    probe_debuggee_perl_with_options(
+        binary,
+        budget,
+        simulate_wait_error,
+        Some(descendant_pid_file),
+        false,
+    )
+    .map_err(|failure| failure.reason)
+}
+
+#[cfg(test)]
+pub(crate) fn probe_debuggee_perl_for_test_with_cleanup_failure(
+    binary: &Path,
+    budget: Duration,
+) -> Result<DebuggeePerl, String> {
+    probe_debuggee_perl_with_options(binary, budget, false, None, true)
         .map_err(|failure| failure.reason)
 }
 
@@ -1007,6 +1022,7 @@ fn probe_debuggee_perl_with_options(
     probe_budget: Duration,
     mut simulate_wait_error: bool,
     descendant_pid_file: Option<&Path>,
+    force_cleanup_failure: bool,
 ) -> Result<DebuggeePerl, ProbeFailure> {
     let fail = |reason: String| ProbeFailure { reason, transient: false };
     // RAII workspace under the system temp directory: dropped — recursively
@@ -1057,11 +1073,11 @@ fn probe_debuggee_perl_with_options(
     LAST_PROBE_PID.store(child.id(), Ordering::Release);
 
     let Some(stdout_pipe) = child.stdout.take() else {
-        terminate_probe_process_tree(&mut child, descendant_pid_file);
+        terminate_probe_process_tree(&mut child, descendant_pid_file, force_cleanup_failure);
         return Err(fail("stdout pipe unavailable".to_string()));
     };
     let Some(stderr_pipe) = child.stderr.take() else {
-        terminate_probe_process_tree(&mut child, descendant_pid_file);
+        terminate_probe_process_tree(&mut child, descendant_pid_file, force_cleanup_failure);
         return Err(fail("stderr pipe unavailable".to_string()));
     };
 
@@ -1100,14 +1116,24 @@ fn probe_debuggee_perl_with_options(
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    terminate_probe_process_tree(&mut child, descendant_pid_file);
+                    let tree_terminated = terminate_probe_process_tree(
+                        &mut child,
+                        descendant_pid_file,
+                        force_cleanup_failure,
+                    );
                     let _ = writer.join();
-                    join_pipe_reader(stdout_chunks);
-                    join_pipe_reader(stderr_chunks);
+                    let stdout_joined = join_pipe_reader(stdout_chunks, force_cleanup_failure);
+                    let stderr_joined = join_pipe_reader(stderr_chunks, force_cleanup_failure);
                     return Err(ProbeFailure {
                         reason: format!(
-                            "no exit within {}s — perl5db cannot bootstrap over piped stdio",
-                            probe_budget.as_secs()
+                            "no exit within {}s — perl5db cannot bootstrap over piped stdio{}{}",
+                            probe_budget.as_secs(),
+                            if tree_terminated { "" } else { "; process-tree cleanup failed" },
+                            if stdout_joined && stderr_joined {
+                                String::new()
+                            } else {
+                                "; pipe reader cleanup did not complete within 2s".to_string()
+                            }
                         ),
                         transient: true,
                     });
@@ -1120,11 +1146,24 @@ fn probe_debuggee_perl_with_options(
                 // process, and join the small stdin writer after the child
                 // closes the pipe. The TempDir guard then removes the script
                 // workspace on this path as well.
-                terminate_probe_process_tree(&mut child, descendant_pid_file);
+                let tree_terminated = terminate_probe_process_tree(
+                    &mut child,
+                    descendant_pid_file,
+                    force_cleanup_failure,
+                );
                 let _ = writer.join();
-                join_pipe_reader(stdout_chunks);
-                join_pipe_reader(stderr_chunks);
-                return Err(fail(format!("probe wait failed: {e}")));
+                let stdout_joined = join_pipe_reader(stdout_chunks, force_cleanup_failure);
+                let stderr_joined = join_pipe_reader(stderr_chunks, force_cleanup_failure);
+                let cleanup_suffix = if tree_terminated && stdout_joined && stderr_joined {
+                    String::new()
+                } else {
+                    format!(
+                        "; cleanup failed{}{}",
+                        if tree_terminated { "" } else { " (process tree)" },
+                        if stdout_joined && stderr_joined { "" } else { " (pipe readers)" }
+                    )
+                };
+                return Err(fail(format!("probe wait failed: {e}{cleanup_suffix}")));
             }
         }
     };
@@ -1136,14 +1175,33 @@ fn probe_debuggee_perl_with_options(
     // pipe write ends. Close the probe's complete process-tree ownership
     // boundary before joining readers; otherwise a descendant can make the
     // reader join unbounded even though the direct child exited successfully.
-    terminate_probe_process_tree(&mut child, descendant_pid_file);
+    let tree_terminated =
+        terminate_probe_process_tree(&mut child, descendant_pid_file, force_cleanup_failure);
+    #[cfg(windows)]
+    drop(_probe_job);
+    if !tree_terminated {
+        let stdout_joined = join_pipe_reader(stdout_chunks, force_cleanup_failure);
+        let stderr_joined = join_pipe_reader(stderr_chunks, force_cleanup_failure);
+        return Err(fail(format!(
+            "probe process-tree cleanup failed{}",
+            if stdout_joined && stderr_joined { "" } else { "; pipe reader cleanup failed" }
+        )));
+    }
 
     // The child has exited, so its pipe write ends are closing and the reader
     // threads reach EOF almost immediately; the bounded collector exists only
     // so a grandchild inheriting the write end cannot extend the probe past
     // its budget.
-    let stdout = collect_pipe_output(stdout_chunks);
-    let stderr = collect_pipe_output(stderr_chunks);
+    let stdout = collect_pipe_output(stdout_chunks, force_cleanup_failure);
+    let stderr = collect_pipe_output(stderr_chunks, force_cleanup_failure);
+    let (stdout, stderr) = match (stdout, stderr) {
+        (Ok(stdout), Ok(stderr)) => (stdout, stderr),
+        (stdout, stderr) => {
+            return Err(fail(format!(
+                "pipe reader cleanup failed (stdout={stdout:?}, stderr={stderr:?})"
+            )));
+        }
+    };
 
     // Either signal proves a live debugger session ran over pipes: the perl5db
     // banner (stderr) or the fixture program's own output (stdout, `15`).
@@ -1224,7 +1282,7 @@ where
 }
 
 /// Collect drained chunks into a string, bounded well inside the probe budget.
-fn collect_pipe_output(drain: PipeDrain) -> String {
+fn collect_pipe_output(drain: PipeDrain, force_failure: bool) -> Result<String, String> {
     let mut bytes = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(2);
     while let Ok(chunk) =
@@ -1232,8 +1290,11 @@ fn collect_pipe_output(drain: PipeDrain) -> String {
     {
         bytes.extend_from_slice(&chunk);
     }
-    let _ = join_pipe_reader(drain);
-    String::from_utf8_lossy(&bytes).into_owned()
+    if join_pipe_reader(drain, force_failure) {
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    } else {
+        Err("reader thread did not stop within 2s".to_string())
+    }
 }
 
 /// Stop and join a pipe reader within a fixed budget. Windows anonymous pipes
@@ -1241,7 +1302,7 @@ fn collect_pipe_output(drain: PipeDrain) -> String {
 /// inherited descendant has kept the write end open. Process-tree termination
 /// happens before this helper is called; the cancellation budget is the final
 /// guard against an unbounded reader join.
-fn join_pipe_reader(drain: PipeDrain) -> bool {
+fn join_pipe_reader(drain: PipeDrain, force_failure: bool) -> bool {
     drop(drain.receiver);
     drain.cancel.store(true, Ordering::Release);
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -1250,13 +1311,25 @@ fn join_pipe_reader(drain: PipeDrain) -> bool {
     }
     if drain.thread.is_finished() {
         let _ = drain.thread.join();
-        true
+        !force_failure
     } else {
         false
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn probe_pipe_has_data<T>(pipe: &T) -> Option<bool>
+where
+    T: std::os::fd::AsRawFd,
+{
+    use std::os::fd::AsRawFd;
+
+    let mut descriptor = libc::pollfd { fd: pipe.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+    let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
+    if result < 0 { None } else { Some(result > 0) }
+}
+
+#[cfg(all(not(unix), not(windows)))]
 fn probe_pipe_has_data<T>(_pipe: &T) -> Option<bool> {
     Some(true)
 }
@@ -1287,7 +1360,11 @@ where
 /// stdout/stderr handle and keep a reader blocked after the parent exits. The
 /// probe owns the tree, so timeout and wait-error cleanup must close that whole
 /// ownership boundary before joining either reader.
-fn terminate_probe_process_tree(child: &mut Child, descendant_pid_file: Option<&Path>) {
+fn terminate_probe_process_tree(
+    child: &mut Child,
+    descendant_pid_file: Option<&Path>,
+    force_failure: bool,
+) -> bool {
     let pid = child.id();
     #[cfg(windows)]
     {
@@ -1329,6 +1406,7 @@ fn terminate_probe_process_tree(child: &mut Child, descendant_pid_file: Option<&
     }
     let _ = child.kill();
     let _ = child.wait();
+    !force_failure
 }
 
 /// Diagnostic identity from the probe's own output — the perl5db banner line

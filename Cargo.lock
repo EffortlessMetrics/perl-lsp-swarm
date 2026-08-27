@@ -1747,6 +1747,7 @@ dependencies = [
  "clap",
  "criterion",
  "getrandom 0.4.3",
+ "libc",
  "nix",
  "perl-ast",
  "perl-lexer",

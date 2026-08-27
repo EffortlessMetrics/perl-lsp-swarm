@@ -244,6 +244,22 @@ fn main() {
         );
     }
 
+    let forced_cleanup =
+        common::probe_debuggee_perl_for_test_with_cleanup_failure(&success, Duration::from_secs(2));
+    let forced_cleanup_error = match forced_cleanup {
+        Ok(_) => {
+            return Err(io::Error::other(
+                "injected process-tree/reader cleanup failure did not fail closed",
+            ));
+        }
+        Err(error) => error,
+    };
+    assert!(
+        forced_cleanup_error.contains("process-tree cleanup failed")
+            && forced_cleanup_error.contains("pipe reader cleanup failed"),
+        "cleanup failure must remain explicit: {forced_cleanup_error}"
+    );
+
     {
         struct Guard(Option<std::ffi::OsString>);
         impl Drop for Guard {
