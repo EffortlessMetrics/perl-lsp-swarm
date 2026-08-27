@@ -343,10 +343,13 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
         match ch {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
-            ')' | ']' | '}' => {
-                if stack.pop().is_none() {
-                    return idx.saturating_sub(start);
-                }
+            // An unbalanced closer ends the rejected value. `stack.pop()`
+            // runs in the guard so the balanced case still consumes the
+            // opener and falls through, matching the nested form this
+            // replaced (`collapsible_match`, denied workspace-wide since
+            // #2723).
+            ')' | ']' | '}' if stack.pop().is_none() => {
+                return idx.saturating_sub(start);
             }
             ',' | ';' if stack.is_empty() => return idx.saturating_sub(start),
             _ => {}
@@ -733,6 +736,50 @@ mod tests {
     use super::*;
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    /// `rejected_value_len` must treat a closer as terminating ONLY when it
+    /// is unbalanced; a closer that matches an opener on the stack has to be
+    /// consumed and scanning continues. Both branches are pinned because the
+    /// arm now performs its `stack.pop()` inside a match guard, where a
+    /// mistake would silently either double-pop or stop the scan early.
+    #[test]
+    fn rejected_value_len_stops_only_at_an_unbalanced_closer() {
+        // Balanced parens: the inner ')' is consumed, and the scan stops at
+        // the top-level ',' that follows.
+        assert_eq!(
+            rejected_value_len("(a),tail", 0),
+            3,
+            "a balanced closer must not terminate the rejected span"
+        );
+
+        // The ',' inside the group is nested, so it must not terminate.
+        assert_eq!(
+            rejected_value_len("(a,b),tail", 0),
+            5,
+            "a nested separator must not terminate the rejected span"
+        );
+
+        // First character is an unbalanced closer: stop immediately.
+        assert_eq!(
+            rejected_value_len(")rest", 0),
+            0,
+            "an unbalanced closer must terminate the rejected span at once"
+        );
+
+        // Unbalanced closer after content: stop exactly at it.
+        assert_eq!(
+            rejected_value_len("ab)rest", 0),
+            2,
+            "scanning must stop at the first unbalanced closer"
+        );
+
+        // Mixed bracket kinds still balance by count.
+        assert_eq!(
+            rejected_value_len("[a{b}c]}tail", 0),
+            7,
+            "balanced mixed brackets must be consumed before the unbalanced closer"
+        );
+    }
 
     /// Fresh temporary workspace root accepting optional build scripts.
     struct HintRoot {
