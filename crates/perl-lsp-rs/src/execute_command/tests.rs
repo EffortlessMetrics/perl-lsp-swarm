@@ -405,6 +405,177 @@ fn test_explain_provider_decision_rejects_non_object_request_receipt()
 }
 
 #[test]
+fn test_explain_provider_decision_rejects_oversized_receipt_id()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+    let result = provider.execute_command(
+        "perl.explainProviderDecision",
+        vec![json!({
+            "provider": "rename",
+            "receipt_id": "a".repeat(65_536)
+        })],
+    );
+
+    let error = match result {
+        Ok(value) => {
+            return Err(format!("oversized receipt_id should reject the request: {value}").into());
+        }
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("receipt_id") && error.contains("too long"),
+        "error should name receipt_id and the length bound, got: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_rejects_oversized_scenario()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+    let result = provider.execute_command(
+        "perl.explainProviderDecision",
+        vec![json!({
+            "provider": "rename",
+            "scenario": "s".repeat(65_536)
+        })],
+    );
+
+    let error = match result {
+        Ok(value) => {
+            return Err(format!("oversized scenario should reject the request: {value}").into());
+        }
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("scenario") && error.contains("too long"),
+        "error should name scenario and the length bound, got: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_rejects_non_canonical_identifier_vocabulary()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+
+    // A space never appears in any tracked receipt or scenario label; control,
+    // markup, and non-ASCII characters are likewise outside the canonical
+    // identifier vocabulary (#2758).
+    for (field, hostile_value) in [
+        ("receipt_id", "semantic shadow compare"),
+        ("receipt_id", "receipt<script>alert(1)</script>"),
+        ("receipt_id", ""),
+        ("scenario", "mojolicious\u{7f}safe-delete"),
+        ("scenario", "résumé-navigation"),
+    ] {
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!(hostile_value);
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request]);
+        let error = match result {
+            Ok(value) => {
+                return Err(format!(
+                    "non-canonical {field} {hostile_value:?} should reject the request: {value}"
+                )
+                .into());
+            }
+            Err(error) => error,
+        };
+        assert!(
+            error.contains(field),
+            "error should name the offending field {field}, got: {error}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_preserves_tracked_identifier_shapes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+
+    // Every shape below is harvested from tracked receipts, snapshots, UX
+    // scenarios, or documented defaults: lower-case hyphenated ids, underscored
+    // UX scenarios, `.rs` file labels, and markdown-anchor document receipts.
+    // The intake law must accept each unchanged (#2758).
+    for (receipt_id, scenario) in [
+        ("semantic-shadow-compare", Some("mojolicious-safe-delete")),
+        ("runtime-request", Some("realbaseline-rename-fallback-noise")),
+        (
+            "docs/project/status/provider_confidence_matrix.md#goto-definition",
+            Some("dynamic-boundary-navigation"),
+        ),
+        (
+            "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
+            Some("ux_scenario_30_mojolicious_navigation_quality"),
+        ),
+        ("safe-delete-runtime", Some("ux_scenario_01_simple_file.rs")),
+    ] {
+        let result = provider.execute_command(
+            "perl.explainProviderDecision",
+            vec![json!({
+                "provider": "rename",
+                "receipt_id": receipt_id,
+                "scenario": scenario,
+            })],
+        )?;
+        assert_eq!(
+            result.get("receipt_id").and_then(Value::as_str),
+            Some(receipt_id),
+            "legitimate receipt_id must round-trip unchanged"
+        );
+        assert_eq!(
+            result.get("scenario").and_then(Value::as_str),
+            scenario,
+            "legitimate scenario must round-trip unchanged"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_accepts_identifier_bound_at_limit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+
+    // A label of exactly MAX_EXPLANATION_LABEL_LENGTH bytes is canonical;
+    // one more byte fails closed with the named-field diagnostic (#2758).
+    let at_limit = "a".repeat(1024);
+    let result = provider.execute_command(
+        "perl.explainProviderDecision",
+        vec![json!({
+            "provider": "rename",
+            "receipt_id": at_limit,
+        })],
+    )?;
+    assert_eq!(
+        result.get("receipt_id").and_then(Value::as_str).map(str::len),
+        Some(1024),
+        "identifier at the intake bound must round-trip unchanged"
+    );
+
+    let over_limit = "a".repeat(1025);
+    let result = provider.execute_command(
+        "perl.explainProviderDecision",
+        vec![json!({
+            "provider": "rename",
+            "receipt_id": over_limit,
+        })],
+    );
+    let error = match result {
+        Ok(value) => {
+            return Err(format!("receipt_id over the bound should reject: {value}").into());
+        }
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("receipt_id") && error.contains("too long"),
+        "error should name receipt_id and the length bound, got: {error}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_explain_provider_decision_defaults_to_live_provider_receipt()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = ExecuteCommandProvider::new();

@@ -152,6 +152,50 @@ struct ExplainProviderDecisionRequest {
     request_position: Option<ProviderDecisionRequestPosition>,
 }
 
+/// Maximum accepted length of one client-supplied identifier echo field
+/// (`receipt_id`, `scenario`) in `perl.explainProviderDecision` (#2758).
+///
+/// The longest tracked legitimate shape is a markdown-anchor document receipt
+/// (well under 128 bytes), so 1024 leaves an order-of-magnitude headroom while
+/// bounding the allocation an untrusted client can force into the response
+/// message and copyable payload.
+const MAX_EXPLANATION_LABEL_LENGTH: usize = 1024;
+
+/// One byte of a canonically serialized identifier label (#2758): ASCII
+/// alphanumerics plus `-`, `_`, `.`, `/`, `#` — exactly the vocabulary tracked
+/// receipts, snapshot labels, UX scenario names, and documented default
+/// document anchors contain.
+fn is_identifier_label_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/' | b'#')
+}
+
+/// Fail closed on a non-canonical spelling of a client-supplied identifier
+/// echo field, naming the offending field in the diagnostic (#2758). This
+/// mirrors the canonical digest intake law (#7725): there is no silent
+/// truncation or rewriting — an oversized or out-of-vocabulary value is an
+/// invalid shape the client must resend, not noise to clamp.
+fn validate_explanation_label(value: &str, field: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!(
+            "Invalid explain-provider-decision argument: {field} must not be empty"
+        ));
+    }
+    if value.len() > MAX_EXPLANATION_LABEL_LENGTH {
+        return Err(format!(
+            "Invalid explain-provider-decision argument: {field} too long ({}, max \
+             {MAX_EXPLANATION_LABEL_LENGTH})",
+            value.len()
+        ));
+    }
+    if !value.bytes().all(is_identifier_label_byte) {
+        return Err(format!(
+            "Invalid explain-provider-decision argument: {field} contains characters outside the \
+             canonical identifier vocabulary ([A-Za-z0-9._/#-])"
+        ));
+    }
+    Ok(())
+}
+
 impl Default for ExecuteCommandProvider {
     fn default() -> Self {
         Self::new()
@@ -338,9 +382,11 @@ impl ExecuteCommandProvider {
         let mut explanation = default_provider_decision_explanation(request.provider);
 
         if let Some(receipt_id) = request.receipt_id {
+            validate_explanation_label(&receipt_id, "receipt_id")?;
             explanation = explanation.with_receipt_id(receipt_id);
         }
         if let Some(scenario) = request.scenario {
+            validate_explanation_label(&scenario, "scenario")?;
             explanation = explanation.with_scenario(scenario);
         }
         if let Some(request_receipt) = request.request_receipt {
