@@ -88,7 +88,8 @@ shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}"#,
         r#"path: target/cpan-corpus-bounded
 key: cpan-corpus-bounded-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-50-distributions.txt') }}
 restore-keys: |
-  cpan-corpus-bounded-${{ runner.os }}-"#,
+  cpan-corpus-bounded-${{ runner.os }}-
+"#,
     ),
     (
         "Save CPAN corpus cache (bounded)",
@@ -322,9 +323,10 @@ fn ensure_bounded_top_50_is_safe_and_reachable(workflow: &Value) -> Result<()> {
             "bounded action step `{name}` execution identity drifted: expected `{expected_action}`, found {actual:?}"
         );
         let expected_inputs = serde_yaml_ng::from_str::<Value>(expected_inputs)?;
+        let actual_inputs = step.get("with");
         ensure!(
-            step.get("with") == Some(&expected_inputs),
-            "bounded action step `{name}` inputs drifted"
+            actual_inputs == Some(&expected_inputs),
+            "bounded action step `{name}` inputs drifted: expected {expected_inputs:?}, found {actual_inputs:?}"
         );
     }
     for (name, expected) in BOUNDED_RUN_STEPS {
