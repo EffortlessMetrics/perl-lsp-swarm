@@ -200,7 +200,11 @@ def upstream_subject(manifest: dict[str, Any]) -> dict[str, Any]:
         digest = str(table.get("sha256") or "")
         ref_ok = str(table.get("ref") or "") != "" if needs_ref else True
         return bool(
-            table.get("state") == "released" and version and ref_ok and digest.startswith("sha256:")
+            table.get("state") == "released"
+            and version
+            and ref_ok
+            and digest.startswith("sha256:")
+            and validation.get("package_versions_match_refs") is True
         )
 
     host_release = bool(
@@ -413,7 +417,11 @@ def _validate_pass(
             raise ReceiptError(f"gate {cell!r} has an invalid state")
     for cell in GATE_CELLS:
         if cell == "exact_source_lite_xl_receipt":
-            if gates[cell] == "current" and not exact_source_receipt_current(receipts_dir):
+            # A public pass cannot outrun an absent or stale entry gate: the
+            # #9008-family exact-source prerequisite must itself be current.
+            if gates[cell] != "current":
+                raise ReceiptError(f"gate {cell!r} cannot outrun an absent or stale entry gate")
+            if not exact_source_receipt_current(receipts_dir):
                 raise ReceiptError(
                     "gate 'exact_source_lite_xl_receipt' claims a pass but no committed "
                     "fixture records one"
@@ -467,7 +475,7 @@ def _validate_pass(
         )
     process_path = _nonempty(server.get("process_path"), "server.process_path")
     installed_path = _nonempty(server.get("installed_path"), "server.installed_path")
-    if not process_path.endswith(installed_path.split("/")[-1]):
+    if not process_path.endswith(installed_path):
         raise ReceiptError(
             "server.process_path is not the managed public artifact resolved by the host"
         )
