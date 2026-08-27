@@ -719,6 +719,10 @@ fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String>
             surface_seen = true;
         } else if (line.starts_with("- Remaining work is operational: finish `v")
             && line.contains(" prep verification, then publish and record final channel receipts"))
+            || (line.starts_with("- Remaining work is operational: finish `v")
+                && line.contains(
+                    " prep verification; #12876 product-policy closure and #12230 publication projection remain blocked, and #4343 release controller retains NO-GO authority until explicit human approval is recorded.",
+                ))
             || (line.starts_with("- Remaining work is operational: verify the existing `v")
                 && line.contains(" release receipt and close the remaining channel receipts"))
         {
@@ -1006,6 +1010,20 @@ This closeout remains historical.\n";
         ] {
             if !synced.contains(boundary) {
                 bail!("preparation sync omitted authority boundary: {boundary}");
+            }
+        }
+        let second = sync_release_notes(&synced, &preparation_release_surface())?;
+        if second != synced {
+            bail!("blocker-safe preparation sync was not idempotent");
+        }
+        for boundary in [
+            "#12876 product-policy closure",
+            "#12230 publication projection",
+            "#4343 release controller retains NO-GO authority",
+            "explicit human approval is recorded",
+        ] {
+            if !second.contains(boundary) {
+                bail!("second preparation sync omitted authority boundary: {boundary}");
             }
         }
         Ok(())
