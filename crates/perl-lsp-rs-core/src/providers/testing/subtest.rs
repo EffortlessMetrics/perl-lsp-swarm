@@ -70,6 +70,131 @@ pub fn subtest_document_symbols(subtests: &[DiscoveredSubtest]) -> Vec<DocumentS
     subtests.iter().map(to_document_symbol).collect()
 }
 
+/// Merge discovered subtests into an existing document-symbol outline, nesting
+/// each root subtest under its closest enclosing outline scope (#1792).
+///
+/// Placement follows only what the outline already proves about scopes, with
+/// the same conventions [`super::super::document_symbols`] uses to assemble
+/// parents and children:
+///
+/// - a subtest declared inside a named `sub` becomes a child of that sub's
+///   symbol (strict range containment);
+/// - a subtest inside a package/module's member region becomes a child of that
+///   package symbol, exactly like every other member — those symbols display
+///   only their declaration line but own the members that follow (scope-
+///   anchored assembly), so their region runs until the next same-family
+///   start rather than ending at the printed range;
+/// - the closest such owner wins (largest start, then latest in outline
+///   order), mirroring lexical file scope;
+/// - a subtest with no enclosing scope stays at its outline level instead of
+///   being floated to the root.
+///
+/// Name, kind, detail, and selection-range conventions are exactly those of
+/// [`subtest_document_symbols`]; sibling order follows source position.
+pub fn nest_subtest_symbols_in_outline(
+    outline: &mut Vec<DocumentSymbol>,
+    subtests: &[DiscoveredSubtest],
+) {
+    for symbol in subtest_document_symbols(subtests) {
+        let Some(path) = find_owner_path(outline, &symbol.range) else {
+            insert_by_source_position(outline, symbol);
+            continue;
+        };
+        let mut cursor: &mut Vec<DocumentSymbol> = &mut *outline;
+        for index in path {
+            cursor = &mut cursor[index].children;
+        }
+        insert_by_source_position(cursor, symbol);
+    }
+}
+
+/// Outline node kinds that can lexically own a subtest: packages/classes and
+/// their module/namespace aliases (these display only their declaration line
+/// while owning trailing members), plus subroutine-shaped scopes.
+const OWNER_KIND_MODULE_FAMILY: [u32; 4] = [2, 3, 4, 5];
+const OWNER_KIND_CALLABLE: [u32; 2] = [12, 6];
+
+/// Depth-first selection of the closest owner of `target`, mirroring how the
+/// assembler scopes children:
+///
+/// 1. subroutine-shaped symbols strictly containing `target` win, tightest
+///    source position then deepest traversal order;
+/// 2. otherwise the module-family symbol owning the surrounding member region
+///    wins — the latest-starting one whose region is not interrupted by an
+///    equal-or-later-starting sibling module before `target` begins (these
+///    symbols display only their declaration line but own trailing members);
+/// 3. otherwise there is no owner and the subtest stays at its level.
+///
+/// Returns the child-index path to the winning node.
+fn find_owner_path(nodes: &[DocumentSymbol], target: &WireRange) -> Option<Vec<usize>> {
+    struct Hits {
+        strict: Option<((u32, u32), usize, Vec<usize>)>,
+        modules: Vec<((u32, u32), Vec<usize>)>,
+    }
+
+    fn visit(
+        nodes: &[DocumentSymbol],
+        target: &WireRange,
+        prefix: &mut Vec<usize>,
+        hits: &mut Hits,
+    ) {
+        for (index, node) in nodes.iter().enumerate() {
+            prefix.push(index);
+            let depth = prefix.len();
+            let start_key = (node.range.start.line, node.range.start.character);
+            if OWNER_KIND_CALLABLE.contains(&node.kind)
+                && (start_key <= (target.start.line, target.start.character))
+                && ((target.end.line, target.end.character)
+                    <= (node.range.end.line, node.range.end.character))
+            {
+                let dominates = match &hits.strict {
+                    None => true,
+                    Some(((best_line, best_char), best_depth, _)) => {
+                        (*best_line, *best_char) < start_key
+                            || ((*best_line, *best_char) == start_key && *best_depth < depth)
+                    }
+                };
+                if dominates {
+                    hits.strict = Some((start_key, depth, prefix.clone()));
+                }
+            }
+            if OWNER_KIND_MODULE_FAMILY.contains(&node.kind)
+                && start_key <= (target.start.line, target.start.character)
+            {
+                hits.modules.push((start_key, prefix.clone()));
+            }
+            visit(&node.children, target, prefix, hits);
+            prefix.pop();
+        }
+    }
+
+    let mut prefix = Vec::new();
+    let mut hits = Hits { strict: None, modules: Vec::new() };
+    visit(nodes, target, &mut prefix, &mut hits);
+
+    if let Some((_, _, path)) = hits.strict {
+        return Some(path);
+    }
+
+    // Module-family regions run from the owner's start until the next
+    // same-family start; every collected module starts at or before the
+    // target, so the largest start owns the surrounding member region.
+    hits.modules.sort_by_key(|(start_key, _)| *start_key);
+    let (_, path) = hits.modules.last()?;
+    Some(path.clone())
+}
+
+/// Insert keeping existing siblings in place and positioning the new symbol
+/// after same-start entries but before anything that starts later in source
+/// order.
+fn insert_by_source_position(children: &mut Vec<DocumentSymbol>, symbol: DocumentSymbol) {
+    let start_key = (symbol.range.start.line, symbol.range.start.character);
+    let position = children.partition_point(|child| {
+        (child.range.start.line, child.range.start.character) <= start_key
+    });
+    children.insert(position, symbol);
+}
+
 /// Find the innermost subtest whose range contains the 0-based `line`.
 ///
 /// Used by "run/debug nearest subtest": given the cursor line, resolve which

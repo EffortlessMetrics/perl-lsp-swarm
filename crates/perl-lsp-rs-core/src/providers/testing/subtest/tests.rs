@@ -143,3 +143,101 @@ fn buffered_and_streamed_variants_are_discovered() {
     assert_eq!(subtests[0].name, SubtestName::Named("buf".to_string()));
     assert_eq!(subtests[1].name, SubtestName::Named("str".to_string()));
 }
+
+/// Compose the source-backed outline with subtest discovery the way the
+/// runtime document-symbol path does, then nest.
+fn nested_outline(source: &str) -> Vec<DocumentSymbol> {
+    let mut parser = perl_parser::Parser::new(source);
+    let ast = parser.parse().expect("source parses");
+    let core_result =
+        crate::providers::document_symbols::source_backed_document_symbols_from_ast(&ast, source);
+    let mut outline = core_result.symbols;
+    let subtests = discover_subtests(&ast, source);
+    if !subtests.is_empty() {
+        nest_subtest_symbols_in_outline(&mut outline, &subtests);
+    }
+    outline
+}
+
+fn find_named<'a>(symbols: &'a [DocumentSymbol], name: &str) -> Option<&'a DocumentSymbol> {
+    symbols.iter().find(|s| s.name == name)
+}
+
+/// Depth-first symbol lookup: outline members may sit below a package symbol
+/// even at file top level.
+fn find_named_deep<'a>(symbols: &'a [DocumentSymbol], name: &str) -> Option<&'a DocumentSymbol> {
+    for symbol in symbols {
+        if symbol.name == name {
+            return Some(symbol);
+        }
+        if let Some(found) = find_named_deep(&symbol.children, name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+#[test]
+fn lexically_scoped_subtest_nests_under_its_enclosing_sub() {
+    // Lines (0-based): 0=package, 1=use, 2=sub helper containing the subtest,
+    // 3..5=subtest call, 6=closing brace.
+    let source = "package t;\n\
+        use Test2::V0;\n\
+        sub helper {\n\
+            subtest 'inside helper' => sub {\n\
+                ok(1);\n\
+            };\n\
+        }\n";
+    let outline = nested_outline(source);
+
+    assert!(
+        find_named(&outline, "inside helper").is_none(),
+        "subtest inside a named sub must not float to the outline root; got: {outline:?}"
+    );
+    let helper =
+        find_named_deep(&outline, "helper").expect("helper subroutine symbol missing from outline");
+    let nested =
+        find_named(&helper.children, "inside helper").expect("subtest not nested under helper");
+    assert_eq!(nested.detail, "subtest");
+    // Same kind as other outline callables (LSP Function).
+    assert_eq!(nested.kind, 12);
+    // Selection range points at the name argument, inside both spans.
+    let nested_start = nested.selection_range.start.to_byte_offset(source);
+    let nested_range_end = nested.range.end.to_byte_offset(source);
+    let helper_start = helper.range.start.to_byte_offset(source);
+    let helper_end = helper.range.end.to_byte_offset(source);
+    assert!(nested_start >= nested.range.start.to_byte_offset(source));
+    assert!(nested_start >= helper_start && nested_range_end <= helper_end);
+}
+
+#[test]
+fn file_scope_subtest_without_containing_package_stays_top_level() {
+    let source = "use Test2::V0;\n\
+        subtest 'user lookup' => sub {\n\
+            ok(1);\n\
+        };\n\
+        done_testing;\n";
+    let outline = nested_outline(source);
+    let top_names: Vec<&str> = outline.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        top_names.contains(&"user lookup"),
+        "root-level subtest stays at the outline root; got: {top_names:?}"
+    );
+    // And it keeps the established conventions.
+    let subtest = find_named(&outline, "user lookup").expect("subtest present");
+    assert_eq!(subtest.detail, "subtest");
+    assert_eq!(subtest.kind, 12);
+}
+
+#[test]
+fn two_sibling_subtests_keep_source_order_inside_their_sub() {
+    // Lines (0-based): 0=sub both, 1..2='alpha' subtest, 3..4='beta' subtest.
+    let source = "sub both {\n\
+        subtest 'alpha' => sub { ok(1); };\n\
+        subtest 'beta' => sub { ok(2); };\n\
+        }\n";
+    let outline = nested_outline(source);
+    let both = find_named(&outline, "both").expect("both symbol missing");
+    let names: Vec<&str> = both.children.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["alpha", "beta"]);
+}
