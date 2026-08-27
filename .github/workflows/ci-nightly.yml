@@ -867,6 +867,18 @@ jobs:
         with:
           toolchain: 1.95.0
 
+      # cargo-public-api builds rustdoc JSON and requires a nightly toolchain;
+      # without one the generation fails and (pre-#12861) the recipe silently
+      # diffed the empty surface as phantom API removals. The channel floats
+      # deliberately: the printing semantics live in the pinned cargo-public-api
+      # 0.50.1 (identical output verified across nightly 2026-07-20 and
+      # 2026-08-26), the recipe fails closed on instrument errors, and it now
+      # records rustc +nightly --version as run provenance. A hard pin would
+      # need rustup sysroot symlinks (official names are not linkable), which
+      # is more fragile than the slow drift risk it addresses (#12870 review).
+      - name: Install nightly toolchain (cargo-public-api rustdoc JSON)
+        run: rustup toolchain install nightly --profile minimal
+
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:

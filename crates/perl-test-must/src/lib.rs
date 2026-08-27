@@ -44,6 +44,7 @@
 //! so a failure points to the test invocation rather than this crate's internals.
 //! Fully qualified type-name spelling is diagnostic evidence, not a stable ABI
 //! or portable string contract.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::any::type_name;
 use std::fmt::{self, Debug, Display};

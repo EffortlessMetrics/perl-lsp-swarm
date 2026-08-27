@@ -330,14 +330,10 @@ pub struct VimHostRunInputs {
 }
 
 /// A reused output directory silently concatenates driver event streams and
-/// inherits stale receipts, so the runner refuses instead of cleaning.
+/// inherits stale receipts, so the runner refuses instead of cleaning. The
+/// stale-receipt law is owned by `crate::editor_host`.
 pub fn ensure_fresh_output_root(out_root: &Path) -> Result<()> {
-    ensure!(
-        !out_root.exists(),
-        "output root already exists; use a fresh directory for each host run: {}",
-        out_root.display()
-    );
-    Ok(())
+    crate::editor_host::FreshReceiptTarget::refuse_existing(out_root, "output root")
 }
 
 /// The typed outcome of one host run. The receipt is written for every run
@@ -394,18 +390,29 @@ pub fn host_run_from_cli(
     )
 }
 
-/// Execute one hermetic actual-Vim host run and write its canonical receipt.
-///
-/// Every identity is bound before launch: the pinned vim-lsp subject is
-/// verified against the #11369 manifest (commit, clean worktree, tree
-/// digest, entry-file blob digests), the registration shape is consumed from
-/// the #11369 configuration manifest, the root markers are consumed from the
-/// #7762 activation-root manifest, and the candidate `perllsp` is digest- and
-/// identity-packet-bound. Ambient PATH can never select another `perllsp`:
-/// the registration uses the exact absolute executable this plan verified.
-pub fn host_run(repo_root: &Path, run: &VimHostRunInputs) -> Result<HostRunOutcome> {
-    ensure_fresh_output_root(&run.out_root)?;
+/// A fully identity-bound run plan plus the consumed authority values the
+/// launch stage needs. Produced only by [`bind_host_run_plan`]; shared by the
+/// #10944 minimal journey and the #10946 bootstrap/diagnostics scenario so
+/// identity binding stays one implementation.
+pub struct BoundHostPlan {
+    pub plan: VimHostRunPlan,
+    pub server_name: String,
+    pub root_markers: Vec<String>,
+}
 
+/// Bind every exact identity for one hermetic host run before anything is
+/// launched: authority manifests (#11369 subject/configuration, #7762
+/// activation root), the pinned checkout verification, and the candidate/
+/// Vim identity probes. The caller owns the journey: driver script,
+/// materialized fixture, journey selector, and fixture id.
+pub fn bind_host_run_plan(
+    repo_root: &Path,
+    run: &VimHostRunInputs,
+    driver: &Path,
+    fixture_root: &Path,
+    journey_selector: &str,
+    fixture_id: &str,
+) -> Result<BoundHostPlan> {
     // Authority manifests first: the run consumes the governed bytes or
     // refuses, never re-derives them.
     let subject_manifest_path = repo_root.join(".ci/editor-clients/vim-vim-lsp-subject.v1.json");
@@ -435,14 +442,8 @@ pub fn host_run(repo_root: &Path, run: &VimHostRunInputs) -> Result<HostRunOutco
     ensure!(!vim_version.is_empty(), "Vim identity probe produced no version line");
     verify_vim_features(&vim_version_output)?;
 
-    fs::create_dir_all(&run.out_root)
-        .with_context(|| format!("creating output root {}", run.out_root.display()))?;
-
-    let driver = repo_root.join("scripts/test/vim-host-driver.vim");
     let adapter = repo_root.join("scripts/test/vim-clients/vim-lsp-adapter.vim");
-    let fixture_root = materialize_harness_fixture(&run.out_root.join("fixture"))?;
     let layout = HermeticVimLayout::prepare(&run.out_root.join("hermetic"))?;
-
     let plan = VimHostRunPlan {
         identity: VimHostRunIdentity {
             schema_version: vim_host_runner::RUN_PLAN_SCHEMA_VERSION.to_string(),
@@ -455,7 +456,7 @@ pub fn host_run(repo_root: &Path, run: &VimHostRunInputs) -> Result<HostRunOutco
             vim_lsp_commit: checkout_identity.pinned_commit.clone(),
             vim_lsp_tree_digest: checkout_identity.tree_digest.clone(),
             vim_lsp_plugin_entry_sha256: checkout_identity.plugin_entry_sha256.clone(),
-            driver_sha256: file_sha256(&driver)?,
+            driver_sha256: file_sha256(driver)?,
             adapter_sha256: file_sha256(&adapter)?,
             configuration_sha256,
             activation_root_sha256,
@@ -465,12 +466,12 @@ pub fn host_run(repo_root: &Path, run: &VimHostRunInputs) -> Result<HostRunOutco
             candidate_artifact_sha256: file_sha256(&run.candidate_executable)?,
             candidate_identity_packet_sha256: bytes_sha256(identity_packet.as_bytes())?,
             fixture: WorkspaceFixtureIdentity {
-                id: FIXTURE_ID.to_string(),
-                digest: fixture_digest(&fixture_root)?,
+                id: fixture_id.to_string(),
+                digest: fixture_digest(fixture_root)?,
                 expectation_set_id: CANONICAL_EXPECTATION_SET_ID.to_string(),
                 expectation_set_digest: canonical_expectation_set_digest()?,
             },
-            journey_selector: JOURNEY_SELECTOR.to_string(),
+            journey_selector: journey_selector.to_string(),
             platform: current_platform()?,
             registration_state: RegistrationState::ManualClientRegistration,
             timeout_ms: if run.timeout_ms == 0 { DEFAULT_TIMEOUT_MS } else { run.timeout_ms },
@@ -478,16 +479,37 @@ pub fn host_run(repo_root: &Path, run: &VimHostRunInputs) -> Result<HostRunOutco
         paths: VimHostPaths {
             vim_executable: run.vim_executable.clone(),
             vim_lsp_checkout: run.vim_lsp_checkout.clone(),
-            driver,
+            driver: driver.to_path_buf(),
             adapter,
             candidate_executable: run.candidate_executable.clone(),
-            fixture_root,
+            fixture_root: fixture_root.to_path_buf(),
             artifact_root: layout.artifact_directory.clone(),
         },
     };
+    Ok(BoundHostPlan { plan, server_name: configuration.registration.server_name, root_markers })
+}
 
-    let mut command =
-        build_vim_command(&plan, &layout, &configuration.registration.server_name, &root_markers)?;
+/// Execute one hermetic actual-Vim host run and write its canonical receipt.
+///
+/// Every identity is bound before launch: the pinned vim-lsp subject is
+/// verified against the #11369 manifest (commit, clean worktree, tree
+/// digest, entry-file blob digests), the registration shape is consumed from
+/// the #11369 configuration manifest, the root markers are consumed from the
+/// #7762 activation-root manifest, and the candidate `perllsp` is digest- and
+/// identity-packet-bound. Ambient PATH can never select another `perllsp`:
+/// the registration uses the exact absolute executable this plan verified.
+pub fn host_run(repo_root: &Path, run: &VimHostRunInputs) -> Result<HostRunOutcome> {
+    ensure_fresh_output_root(&run.out_root)?;
+
+    fs::create_dir_all(&run.out_root)
+        .with_context(|| format!("creating output root {}", run.out_root.display()))?;
+    let driver = repo_root.join("scripts/test/vim-host-driver.vim");
+    let fixture_root = materialize_harness_fixture(&run.out_root.join("fixture"))?;
+    let bound =
+        bind_host_run_plan(repo_root, run, &driver, &fixture_root, JOURNEY_SELECTOR, FIXTURE_ID)?;
+    let plan = bound.plan;
+    let layout = HermeticVimLayout::prepare(&run.out_root.join("hermetic"))?;
+    let mut command = build_vim_command(&plan, &layout, &bound.server_name, &bound.root_markers)?;
     let mut observation = run_owned_process(&mut command, &plan, &layout)?;
 
     // Mine the client log for the wire evidence the canonical receipt's
@@ -587,9 +609,22 @@ pub fn host_run(repo_root: &Path, run: &VimHostRunInputs) -> Result<HostRunOutco
             "#10944 {JOURNEY_SELECTOR}: hermetic actual-host substrate proof, no support claim"
         ),
     );
+    // Fresh-receipt law (#10894): the receipt is reserved by this run's
+    // identity composite, refuses any pre-existing file, and its write refuses
+    // to overwrite — a stale prior receipt can never satisfy this run.
     let receipt_path = run.out_root.join("receipt.json");
-    fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt)?)
-        .with_context(|| format!("writing receipt {}", receipt_path.display()))?;
+    let subject_digest = crate::editor_host::sha256_bytes(
+        format!(
+            "{}\n{}\n{}\n",
+            plan.identity.candidate_sha,
+            plan.identity.candidate_artifact_sha256,
+            plan.identity.driver_sha256
+        )
+        .as_bytes(),
+    )?;
+    let receipt_target =
+        crate::editor_host::FreshReceiptTarget::reserve(receipt_path.clone(), subject_digest)?;
+    receipt_target.write(&serde_json::to_vec_pretty(&receipt)?)?;
     validate_receipt_binding(&receipt, &plan)
         .context("the emitted receipt failed its own freshness binding")?;
     Ok(HostRunOutcome {

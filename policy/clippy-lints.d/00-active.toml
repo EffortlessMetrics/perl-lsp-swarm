@@ -71,11 +71,18 @@ class = "async"
 reason = "Primitive mutex candidates remain visible while #9884 classifies compound invariants and memory-order requirements before any atomic conversion."
 
 [[lint]]
-name = "clippy::collapsible_match"
-level = "allow"
+name = "clippy::collapsible_if"
+level = "deny"
 status = "active"
 class = "style"
-reason = "The temporary workspace allow remains current until #6113 remeasures the Rust 1.97.1 denominator and performs the behavior-preserving deny ratchet."
+reason = "Activated by #6305 after the 293-site burn-down (#6375-#6380), a warn-forced zero-finding all-targets remeasurement, and 38 fresh test-target fixes; historical blanket allows still mask 257 force-warn-measured sites owned by #12730-#12736."
+
+[[lint]]
+name = "clippy::collapsible_match"
+level = "deny"
+status = "active"
+class = "style"
+reason = "Activated by #6113 after the behavior-preserving collapse of all measured sites and removal of the workspace allow plus six crate-root and one test-target masks."
 
 [[lint]]
 name = "clippy::decimal_bitwise_operands"
@@ -146,3 +153,10 @@ level = "deny"
 status = "active"
 class = "architecture"
 reason = "The mechanism is active; clippy.toml deliberately carries an empty protected-field set until #6114 completes the governed Phase 1 contract."
+
+[[lint]]
+name = "clippy::ptr_arg"
+level = "deny"
+status = "active"
+class = "api"
+reason = "Activated by #2313 after a zero-site force-warn all-targets measurement on current main; public APIs must prefer &str, &[T], and &Path over &String, &Vec<T>, and &PathBuf parameters."

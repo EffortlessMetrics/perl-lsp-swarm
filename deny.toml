@@ -27,6 +27,9 @@ ignore = [
 [licenses]
 allow = [
     "MIT",
+    # MIT-0 (MIT No Attribution): OSI-approved, strictly more permissive than
+    # MIT; required by jsonschema's borrow-or-share transitive dep (#12156).
+    "MIT-0",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
@@ -101,6 +104,13 @@ skip = [
     # syn: 2.x vs 3.x split (ecosystem transition).
     # 2.0.117 — most crates use syn 2.x. 3.0.2 — clap_derive (via criterion) pulls syn 3.x.
     { crate = "syn@2.0.117", reason = "most crates use syn 2.x; clap_derive (criterion) pulls 3.x" },
+
+    # similar: 2.7.0 is selected by insta; xtask directly selects 3.x
+    # (similar = "3.1" in xtask/Cargo.toml, currently resolving to 3.2.0) for
+    # policy/output tooling. This is a test/tooling-only split, not product
+    # runtime weight. Owner: dependency hygiene. Revisit when insta adopts
+    # similar 3.x or xtask no longer needs its direct 3.x API.
+    { crate = "similar@2.7.0", reason = "insta selects similar 2.7.0; xtask directly selects similar 3.x for tooling" },
 ]
 
 # Windows platform crate duplicates: windows-sys 0.52 (ring 0.17 tree) pulls in

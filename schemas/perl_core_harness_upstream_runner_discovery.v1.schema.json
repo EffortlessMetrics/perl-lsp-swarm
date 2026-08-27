@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/schemas/perl_core_harness_upstream_runner_discovery.v1.schema.json",
+  "title": "Perl core harness upstream runner discovery receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "evidence_class", "payload_digest", "payload"],
+  "properties": {
+    "schema_version": {"const": "perl_core_harness.upstream_runner_discovery.v1"},
+    "evidence_class": {"const": "observed_upstream"},
+    "payload_digest": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+    "payload": {"$ref": "#/$defs/payload"}
+  },
+  "$defs": {
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "invocation", "discovery_frame", "terminal", "stdout", "stderr", "stdout_decode", "rows", "state", "work", "limitations", "claim_boundary"],
+      "properties": {
+        "subject": {"$ref": "#/$defs/subject"},
+        "invocation": {"$ref": "#/$defs/invocation"},
+        "discovery_frame": {"$ref": "#/$defs/discovery_frame"},
+        "terminal": {"$ref": "#/$defs/terminal"},
+        "stdout": {"$ref": "#/$defs/raw_stream_envelope"},
+        "stderr": {"$ref": "#/$defs/raw_stream_envelope"},
+        "stdout_decode": {"$ref": "#/$defs/stream_decode_outcome"},
+        "rows": {"type": "array", "items": {"$ref": "#/$defs/row"}},
+        "state": {"enum": ["observed_complete", "observed_partial", "runner_failed", "cancelled", "timed_out", "output_truncated", "malformed_output", "instrument_failed", "subject_mismatch", "stale", "not_proven"]},
+        "work": {"$ref": "#/$defs/work"},
+        "limitations": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "claim_boundary": {"type": "string", "minLength": 1}
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository_commit", "perl_ref", "prepared_tree_identity", "host_perl_identity", "matrix_fingerprint", "target_id", "target_contract_digest", "variant_target_id", "instrumentation_id"],
+      "properties": {
+        "repository_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "perl_ref": {"type": "string", "minLength": 1, "maxLength": 128},
+        "prepared_tree_identity": {"type": "string", "minLength": 1, "maxLength": 128},
+        "host_perl_identity": {"type": "string", "minLength": 1, "maxLength": 128},
+        "matrix_fingerprint": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "target_id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+        "target_contract_digest": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "variant_target_id": {"type": ["string", "null"], "pattern": "^[a-z0-9_]+$"},
+        "instrumentation_id": {"type": ["string", "null"], "minLength": 1}
+      }
+    },
+    "invocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runner", "runner_artifact", "argv", "working_directory", "environment"],
+      "properties": {
+        "runner": {"enum": ["test", "harness"]},
+        "runner_artifact": {"$ref": "#/$defs/artifact"},
+        "argv": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "working_directory": {"type": "string", "minLength": 1},
+        "environment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["variables", "sha256"],
+          "properties": {
+            "variables": {"type": "object", "additionalProperties": {"type": "string"}},
+            "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}
+          }
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonical_path", "content_sha256"],
+      "properties": {
+        "canonical_path": {"type": "string", "minLength": 1},
+        "content_sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}
+      }
+    },
+    "discovery_frame": {"enum": ["runner_t_directory_relative", "repository_root_relative", "canonical_repository_path"]},
+    "terminal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["process_nonce", "completion"],
+      "properties": {
+        "process_nonce": {"type": "string", "minLength": 1, "maxLength": 128},
+        "completion": {"$ref": "#/$defs/completion"}
+      }
+    },
+    "completion": {
+      "oneOf": [
+        {"type": "string", "enum": ["cancelled", "instrument_failed", "unknown"]},
+        {"type": "object", "additionalProperties": false, "required": ["exit_status"], "properties": {"exit_status": {"type": "object", "additionalProperties": false, "required": ["code"], "properties": {"code": {"type": "integer"}}}}},
+        {"type": "object", "additionalProperties": false, "required": ["signalled"], "properties": {"signalled": {"type": "object", "additionalProperties": false, "required": ["signal"], "properties": {"signal": {"type": "integer", "minimum": 0}}}}},
+        {"type": "object", "additionalProperties": false, "required": ["timed_out"], "properties": {"timed_out": {"type": "object", "additionalProperties": false, "required": ["deadline_millis"], "properties": {"deadline_millis": {"type": "integer", "minimum": 0}}}}}
+      ]
+    },
+    "raw_stream_envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["process_nonce", "bytes_hex", "truncated"],
+      "properties": {
+        "process_nonce": {"type": "string", "minLength": 1, "maxLength": 128},
+        "bytes_hex": {"type": "string", "pattern": "^([0-9a-f]{2})*$"},
+        "truncated": {"type": "boolean"}
+      }
+    },
+    "stream_decode_outcome": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["outcome"], "properties": {"outcome": {"const": "complete"}}},
+        {"type": "object", "additionalProperties": false, "required": ["outcome", "reason"], "properties": {"outcome": {"const": "malformed"}, "reason": {"type": "string", "minLength": 1}}}
+      ]
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ordinal", "raw_text", "framing", "discovery_frame", "disposition", "normalized"],
+      "properties": {
+        "ordinal": {"type": "integer", "minimum": 0},
+        "raw_text": {"type": "string"},
+        "framing": {"enum": ["lf", "crlf", "eof"]},
+        "discovery_frame": {"$ref": "#/$defs/discovery_frame"},
+        "disposition": {"$ref": "#/$defs/disposition"},
+        "normalized": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/source_item"}]}
+      }
+    },
+    "disposition": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "accepted"}}},
+        {"type": "object", "additionalProperties": false, "required": ["kind", "detail"], "properties": {"kind": {"const": "duplicate_of_canonical"}, "detail": {"type": "object", "additionalProperties": false, "required": ["canonical_path"], "properties": {"canonical_path": {"type": "string", "minLength": 1}}}}},
+        {"type": "object", "additionalProperties": false, "required": ["kind", "detail"], "properties": {"kind": {"const": "conflicting_canonical"}, "detail": {"type": "object", "additionalProperties": false, "required": ["canonical_path"], "properties": {"canonical_path": {"type": "string", "minLength": 1}}}}},
+        {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "outside_target_selection"}}},
+        {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "unsupported_source_form"}}},
+        {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "malformed_row"}}}
+      ]
+    },
+    "source_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["raw_path", "discovery_frame", "canonical_path", "source_form", "path_class", "invocation_context"],
+      "properties": {
+        "raw_path": {"type": "string", "minLength": 1},
+        "discovery_frame": {"$ref": "#/$defs/discovery_frame"},
+        "canonical_path": {"type": "string", "minLength": 1},
+        "source_form": {"enum": ["dot_t", "test_pl"]},
+        "path_class": {"enum": ["local_t", "root_lib", "dist", "ext", "cpan"]},
+        "invocation_context": {"enum": ["base_comp_run", "local_test_init", "root_lib_u1", "distribution_u2_t"]}
+      }
+    },
+    "work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["raw_stdout_bytes", "raw_stderr_bytes", "decoded_rows", "accepted_rows", "malformed_rows", "duplicate_rows", "conflicting_rows", "out_of_target_rows", "unsupported_source_form_rows", "normalization_operations", "terminal_subject_validations", "filesystem_discovery_operations", "direct_probe_rows_consumed"],
+      "properties": {
+        "raw_stdout_bytes": {"type": "integer", "minimum": 0},
+        "raw_stderr_bytes": {"type": "integer", "minimum": 0},
+        "decoded_rows": {"type": "integer", "minimum": 0},
+        "accepted_rows": {"type": "integer", "minimum": 0},
+        "malformed_rows": {"type": "integer", "minimum": 0},
+        "duplicate_rows": {"type": "integer", "minimum": 0},
+        "conflicting_rows": {"type": "integer", "minimum": 0},
+        "out_of_target_rows": {"type": "integer", "minimum": 0},
+        "unsupported_source_form_rows": {"type": "integer", "minimum": 0},
+        "normalization_operations": {"type": "integer", "minimum": 0},
+        "terminal_subject_validations": {"type": "integer", "minimum": 0},
+        "filesystem_discovery_operations": {"const": 0},
+        "direct_probe_rows_consumed": {"const": 0}
+      }
+    }
+  }
+}
