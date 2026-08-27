@@ -47,6 +47,7 @@ import {
   _watchdogFailureForTest,
   _spawnReplacementCrashGenerationForTest,
   _setLanguageClientLifecycleForTest,
+  _handleLifecycleClientStateChangeForTest,
 } from '../extension';
 
 // vscode-languageclient State numeric values (Stopped=1, Running=2, Starting=3).
@@ -102,12 +103,25 @@ interface FakeLifecycleEvent {
 
 class FakeLifecycleClient {
   private readonly listeners = new Set<(event: FakeLifecycleEvent) => void>();
-  constructor(private readonly startOutcome: Promise<void>) {}
-  start(): Promise<void> {
-    return this.startOutcome;
+  constructor(
+    private readonly startOutcome: Promise<void>,
+    readonly id = 0,
+    private readonly trace?: string[],
+    private readonly emitRunningOnStart = false,
+  ) {}
+  async start(): Promise<void> {
+    this.trace?.push(`start:${this.id}`);
+    await this.startOutcome;
+    if (this.emitRunningOnStart) {
+      this.emit({ oldState: 3, newState: STATE_RUNNING });
+    }
   }
-  async stop(): Promise<void> {}
-  dispose(): void | Promise<void> {}
+  async stop(): Promise<void> {
+    this.trace?.push(`stop:${this.id}`);
+  }
+  dispose(): void | Promise<void> {
+    this.trace?.push(`dispose:${this.id}`);
+  }
   onDidChangeState(listener: (event: FakeLifecycleEvent) => void): LifecycleDisposable {
     this.listeners.add(listener);
     return {
@@ -115,6 +129,11 @@ class FakeLifecycleClient {
         this.listeners.delete(listener);
       },
     };
+  }
+  private emit(event: FakeLifecycleEvent): void {
+    for (const listener of this.listeners) {
+      listener(event);
+    }
   }
 }
 
@@ -144,6 +163,49 @@ function makeStartupFailingLifecycle(failuresBeforeSuccess: number): {
   };
 }
 
+function makeFinalizationFailingLifecycle(finalizationDelayMs: number): {
+  lifecycle: ExtensionLanguageClientLifecycle<FakeLifecycleClient, FakeLifecycleEvent>;
+  trace: string[];
+  states: Array<{ generation: number; state: string }>;
+} {
+  let created = 0;
+  const trace: string[] = [];
+  const states: Array<{ generation: number; state: string }> = [];
+  const hooks: LifecycleHooks<FakeLifecycleClient, FakeLifecycleEvent> = {
+    resolveServerPath: async () => '/server/perllsp',
+    createClient: () => {
+      created += 1;
+      trace.push(`create:${created}`);
+      return new FakeLifecycleClient(Promise.resolve(), created, trace, created > 1);
+    },
+    onStateChange: (snapshot) => {
+      states.push({ generation: snapshot.generation, state: snapshot.state });
+    },
+    onClientStateChange: (_client, event) => {
+      _handleLifecycleClientStateChangeForTest(event as unknown as StateChangeEvent);
+    },
+    onStarted: async (startedClient) => {
+      if (startedClient.id === 1) {
+        return;
+      }
+      if (finalizationDelayMs === 0) {
+        throw new Error('simulated startup finalization failure');
+      }
+      await new Promise<void>((_, reject) => {
+        setTimeout(
+          () => reject(new Error('simulated slow startup finalization failure')),
+          finalizationDelayMs,
+        );
+      });
+    },
+  };
+  return {
+    lifecycle: new ExtensionLanguageClientLifecycle(hooks),
+    trace,
+    states,
+  };
+}
+
 function injectedLifecycle(
   lifecycle: ExtensionLanguageClientLifecycle<FakeLifecycleClient, FakeLifecycleEvent>,
 ): ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent> {
@@ -154,6 +216,12 @@ function injectedLifecycle(
 async function drain(rounds = 40): Promise<void> {
   for (let round = 0; round < rounds; round += 1) {
     await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+async function drainMicrotasks(rounds = 80): Promise<void> {
+  for (let round = 0; round < rounds; round += 1) {
+    await Promise.resolve();
   }
 }
 
@@ -422,5 +490,64 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     expect(exhaustedToasts).toHaveLength(1);
     // The exhaustion dialog is terminal: it never offers an automatic retry.
     expect(String(exhaustedToasts[0][0])).not.toMatch(/restarting automatically/i);
+  });
+
+  test('raw Running cannot reset retry budget before slow startup finalization rejects (#12724)', async () => {
+    jest.useFakeTimers();
+    try {
+      const finalizationDelayMs = 31_000;
+      const { lifecycle, states } = makeFinalizationFailingLifecycle(finalizationDelayMs);
+      _setLanguageClientLifecycleForTest(injectedLifecycle(lifecycle));
+      await lifecycle.start();
+
+      handleClientStateChange(crashEvent() as never);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await jest.advanceTimersByTimeAsync(finalizationDelayMs);
+      }
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(_autoRestartAttemptsForTest()).toBe(3);
+      const restartToasts = showErrorMessage.mock.calls.filter((call) =>
+        /restarting automatically/i.test(String(call[0])),
+      );
+      expect(restartToasts).toHaveLength(3);
+      expect(restartToasts.map((call) => String(call[0]))).toEqual([
+        expect.stringMatching(/attempt 1\/3/),
+        expect.stringMatching(/attempt 2\/3/),
+        expect.stringMatching(/attempt 3\/3/),
+      ]);
+      const exhaustedToasts = showErrorMessage.mock.calls.filter((call) =>
+        /could not be restarted automatically/i.test(String(call[0])),
+      );
+      expect(exhaustedToasts).toHaveLength(1);
+      expect(
+        states.filter(({ generation, state }) => generation > 1 && state === 'running'),
+      ).toEqual([]);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  test('failed-start client is stopped and disposed before the next generation is created (#12724)', async () => {
+    jest.useFakeTimers();
+    try {
+      const { lifecycle, trace } = makeFinalizationFailingLifecycle(0);
+      _setLanguageClientLifecycleForTest(injectedLifecycle(lifecycle));
+      await lifecycle.start();
+
+      handleClientStateChange(crashEvent() as never);
+      await drainMicrotasks();
+
+      const stopped = trace.indexOf('stop:2');
+      const disposed = trace.indexOf('dispose:2');
+      const nextCreated = trace.indexOf('create:3');
+      expect(stopped).toBeGreaterThan(-1);
+      expect(disposed).toBeGreaterThan(stopped);
+      expect(nextCreated).toBeGreaterThan(disposed);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
   });
 });

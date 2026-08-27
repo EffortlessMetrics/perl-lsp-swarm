@@ -1771,13 +1771,7 @@ function createLanguageClientLifecycle(
         healthWidget?.setWorkspaceLifecycleState(projectWorkspaceLifecycle(snapshot.state));
       }
     },
-    onClientStateChange: (_activeClient, event) => {
-      if (event.newState === LanguageClientState.Starting) {
-        languageClientStartupMetrics.markMilestone('process_started');
-        languageClientStartupMetrics.finishServerStart('ok');
-      }
-      handleClientStateChange(event);
-    },
+    onClientStateChange: (_activeClient, event) => handleLifecycleClientStateChange(event),
     onCallbackError: (error, phase) => {
       const message = error instanceof Error ? error.message : String(error);
       outputChannel.error(`[lifecycle] ${phase} callback failed: ${message}`);
@@ -2799,6 +2793,25 @@ export function handleClientStateChange(event: StateChangeEvent): void {
   // so a late duplicate callback for the same failed generation cannot start
   // a second recovery.
   void recoverFromObservedCrash('process_exit');
+}
+
+/**
+ * Testable adapter for the raw language-client state callback. A raw Running
+ * event is presentation/process evidence only; lifecycle stability is not
+ * recorded until startup finalization publishes the lifecycle `running`
+ * transition (#12724).
+ * @internal
+ */
+export function _handleLifecycleClientStateChangeForTest(event: StateChangeEvent): void {
+  handleLifecycleClientStateChange(event);
+}
+
+function handleLifecycleClientStateChange(event: StateChangeEvent): void {
+  if (event.newState === LanguageClientState.Starting) {
+    languageClientStartupMetrics.markMilestone('process_started');
+    languageClientStartupMetrics.finishServerStart('ok');
+  }
+  handleClientStateChange(event);
 }
 
 /**
