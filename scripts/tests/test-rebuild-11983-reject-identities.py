@@ -200,6 +200,12 @@ def main() -> None:
         raise RuntimeError("empty cherry-pick helper does not capture combined output")
     if "previous[[:space:]]+cherry-pick[[:space:]]+is[[:space:]]+now[[:space:]]+empty" not in rebuild_script:
         raise RuntimeError("empty cherry-pick helper lacks the expected diagnostic matcher")
+    if 'run_cherry_pick_or_skip_empty "first cherry-pick" git cherry-pick "$first_commit"' not in rebuild_script:
+        raise RuntimeError("initial cherry-pick bypasses the guarded helper")
+    if "-- provider-confidence-matrix" in rebuild_script:
+        raise RuntimeError("rebuild invokes the obsolete provider-confidence command")
+    if "check-provider-confidence-matrix" not in rebuild_script:
+        raise RuntimeError("rebuild omits the current provider-confidence command")
     with tempfile.TemporaryDirectory(prefix="rebuild-11983-imports-") as directory:
         path = Path(directory) / "text_sync.rs"
         old = "old import\n"

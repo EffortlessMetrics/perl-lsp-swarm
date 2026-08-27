@@ -77,8 +77,12 @@ git merge --no-edit origin/main
 git cat-file -e "${first_commit}^{commit}"
 git cat-file -e "${second_commit}^{commit}"
 
-if ! git cherry-pick "$first_commit"; then
+if ! run_cherry_pick_or_skip_empty "first cherry-pick" git cherry-pick "$first_commit"; then
   mapfile -t conflicts < <(git diff --name-only --diff-filter=U | sort)
+  if [ "${#conflicts[@]}" -eq 0 ]; then
+    echo "first cherry-pick failed without an expected conflict set; refusing recovery." >&2
+    exit 1
+  fi
   expected=(
     crates/perl-dap/features_sot.toml
     crates/perl-lsp-rs-core/features_sot.toml
@@ -355,7 +359,7 @@ cargo test -p perl-lsp-rs --test lsp_batteries_e2e_workflow_test --locked
 cargo test -p perl-lsp-rs --test lsp_3_17_formatting_tests --locked
 cargo test -p perl-lsp-rs --test lsp_capabilities_snapshot --locked
 
-cargo run -q -p xtask -- provider-confidence-matrix > /dev/null
+cargo run -q -p xtask -- check-provider-confidence-matrix > /dev/null
 cargo xtask check-support-claims
 cargo xtask check-test-wiring
 cargo xtask check-architecture
