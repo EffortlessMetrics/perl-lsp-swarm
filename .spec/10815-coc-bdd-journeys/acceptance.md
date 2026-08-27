@@ -149,24 +149,21 @@ reporting_failed    projection/report stage failed after upstream truth existed
 cleanup_failed      terminal session ended without required cleanup truth
 ```
 
-Provenance of each term against current main (review honesty):
+Vocabulary presence is not Coc provenance (emission, validation, or adapter
+ownership). The current repository evidence is deliberately separated here:
 
-- `editor_client_compat.v1` journeyCell `result` carries
-  `pass | fail | partial | not_proven | unsupported`, with process cleanup
-  facts limited to `pass | fail | not_proven` (#7777 schema; #10527 bounds).
-- `limited` and `client_not_exposed` exist today as editor-cell ladders in the
-  shipped cell catalogs and editor docs (e.g. the vim-lsp cell catalog and the
-  IntelliJ DAP/IDEA cell result ladders: proven / limited /
-  client_not_exposed / not_proven).
-- `instrument_failed` exists in shipped host-compat/receipt schemas (the zed
-  v1 receipt family result enums).
-- `reporting_failed` and `cleanup_failed` are issue-named design vocabulary
-  from #10815's outcome list with **no current repository surface**: this
-  packet records them as design-level terminal dispositions only. Any machine
-  cell may emit them only after their owning receipt-schema revision lands;
-  until then the emitting leaf uses the nearest schema value (`not_proven`)
-  plus its limitation text, never silently dropping the distinction.
-- Registry tiers add `configuration_documented` / `not_proven_unsupported`.
+| Term or set | Generic repository presence | Coc journey ownership/emission/validation/adapter provenance in this packet |
+| --- | --- | --- |
+| `pass \| fail \| partial \| not_proven \| unsupported` | Allowed by the `editor_client_compat.v1` journeyCell `result` enum; process-cleanup facts are bounded to `pass \| fail \| not_proven` (#7777 schema; #10527 bounds). | These are the only result values this Coc packet may claim as schema-compatible; a Coc owner must still provide the exact receipt cell and source/link evidence. |
+| `limited`, `client_not_exposed` | Present in shipped editor-cell ladders and editor documentation (including the vim-lsp catalog and IntelliJ DAP/IDEA ladders). | Generic vocabulary only. No Coc-owned emitter, validator, or adapter is established here. Coc leaves record an allowed schema value plus limitation text until an owner proves the mapping. |
+| `instrument_failed` | Present in shipped host-compat/receipt schemas, including the Zed v1 receipt family. | Generic vocabulary only. No Coc-owned emitter, validator, or adapter is established here. |
+| `reporting_failed` | Issue-named design vocabulary from #10815; no current Coc-owned receipt-schema enum or emitter is identified. | Design-level terminal disposition only. A future owner must prove the projection/report source and link it before a Coc machine cell may emit it. |
+| `cleanup_failed` | Current non-Coc surfaces exist in `.spec/11178-lite-xl-bdd-journeys/` and `xtask/src/bin/ci-route-plan.rs`. | No current Coc-owned receipt-schema enum or emitter is identified. Until a Coc owner lands and proves that schema/emitter, Coc leaves use the nearest allowed value (`not_proven`) plus limitation text; they never silently promote a cleanup failure. |
+
+Registry tiers add `configuration_documented` / `not_proven_unsupported`.
+The structural checker below verifies vocabulary text and packet shape only; it
+does not validate Coc provenance, source links, emitters, validators, adapters,
+or generated projections.
 
 Every non-pass termination is owned by the stage that terminates it, always
 with a recorded limitation — never relabeled into a pass downstream.
@@ -315,5 +312,7 @@ upstream surfaces.
   issue's generated BDD/status projections or full acceptance, because current
   main provides no authoritative generator for them. It proves no Coc behavior,
   host execution, fixture correctness, receipt, support tier, public artifact,
-  or upstream state. All 42 scenarios remain `not_proven` as behavior until
+  upstream state, or Coc provenance for generic vocabulary terms. The checker
+  does not validate source/link reachability or emitter/validator/adapter
+  ownership. All 42 scenarios remain `not_proven` as behavior until
   their executable exact-host chains pass under their owning leaves.
