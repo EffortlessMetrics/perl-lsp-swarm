@@ -18,7 +18,8 @@ reconstruction_tree_is_clean() {
 
 run_cherry_pick_or_skip_empty() {
   local label="$1"
-  shift
+  local expected_commit="$2"
+  shift 2
   local capture_file
   local status
   cherry_pick_noop=false
@@ -40,11 +41,33 @@ run_cherry_pick_or_skip_empty() {
     return 1
   fi
   rm -f "$capture_file"
-  if ! git rev-parse --verify CHERRY_PICK_HEAD >/dev/null 2>&1 || \
-    ! reconstruction_tree_is_clean; then
+  local cherry_pick_head
+  cherry_pick_head="$(git rev-parse --verify CHERRY_PICK_HEAD 2>/dev/null || true)"
+  if [ "$cherry_pick_head" != "$expected_commit" ]; then
+    rm -f "$capture_file"
+    echo "$label reported empty for $cherry_pick_head, expected $expected_commit; refusing no-op skip." >&2
+    return 1
+  fi
+  if ! reconstruction_tree_is_clean; then
     echo "$label reported empty but left staged, unresolved, or working-tree state; refusing no-op skip." >&2
     return 1
   fi
+  local current_head
+  local evidence_suffix
+  current_head="$(git rev-parse HEAD)"
+  evidence_suffix="$(printf '%s' "$label" | tr '[:space:]' '_' | tr -cd '[:alnum:]_.-')"
+  {
+    printf 'classification: already-current-empty-cherry-pick\n'
+    printf 'command: %s\n' "$label"
+    printf 'exit-status: %s\n' "$status"
+    printf 'expected-commit: %s\n' "$expected_commit"
+    printf 'cherry-pick-head: %s\n' "$cherry_pick_head"
+    printf 'current-head: %s\n' "$current_head"
+    printf 'tree-status: clean\n'
+    printf 'command-output:\n'
+    cat "$capture_file"
+  } > "$evidence_dir/empty-cherry-pick-$evidence_suffix.txt"
+  rm -f "$capture_file"
   git cherry-pick --skip
   cherry_pick_noop=true
   return 0
@@ -220,13 +243,13 @@ PY
   fi
 
   git add -- "${conflicts[@]}"
-  run_cherry_pick_or_skip_empty "first cherry-pick --continue" git cherry-pick --continue
+  run_cherry_pick_or_skip_empty "first cherry-pick --continue" "$first_commit" git cherry-pick --continue
   if [ "$cherry_pick_noop" = true ]; then
     first_commit_noop=true
   fi
 fi
 
-run_cherry_pick_or_skip_empty "second cherry-pick" git cherry-pick "$second_commit"
+run_cherry_pick_or_skip_empty "second cherry-pick" "$second_commit" git cherry-pick "$second_commit"
 if [ "$cherry_pick_noop" = true ]; then
   second_commit_noop=true
 fi

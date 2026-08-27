@@ -184,6 +184,20 @@ def _is_under(path: Path, directory: Path) -> bool:
     return True
 
 
+def _verify_patch_path(path: str, patch_file: Path) -> None:
+    lines = patch_file.read_text(encoding="utf-8").splitlines()
+    expected_header = f"diff --git a/{path} b/{path}"
+    expected_old = f"--- a/{path}"
+    expected_new = f"+++ b/{path}"
+    if (
+        not lines
+        or lines[0] != expected_header
+        or expected_old not in lines[:4]
+        or expected_new not in lines[:4]
+    ):
+        raise ValueError(f"{path}: patch artifact path mismatch")
+
+
 def validate_manifest(
     manifest_path: Path,
     evidence_dir: Path,
@@ -248,7 +262,12 @@ def validate_manifest(
                 f"apply recorded rejected hunks {rejected_hunks} but no reject file exists",
             )
 
-        patch_segments = hunk_segments(Path(patch_file).read_text(encoding="utf-8"))
+        patch_path = Path(patch_file)
+        try:
+            _verify_patch_path(path, patch_path)
+        except ValueError as error:
+            _retain(reject, scope, evidence_dir, str(error))
+        patch_segments = hunk_segments(patch_path.read_text(encoding="utf-8"))
         reject_segments = hunk_segments(reject.read_text(encoding="utf-8"))
         if len(reject_segments) != len(rejected_hunks):
             _retain(

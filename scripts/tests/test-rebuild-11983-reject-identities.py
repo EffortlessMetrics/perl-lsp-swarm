@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -29,6 +31,119 @@ def load_rebuild_import_helper():
     namespace = {"Path": Path}
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(ROOT), "exec"), namespace)
     return namespace["replace_stale_import"]
+
+
+def exercise_empty_cherry_pick_guard(
+    *,
+    cherry_pick_head: str,
+    expected_commit: str,
+    cherry_pick_status: int,
+    dirty_tree: bool,
+    expect_skip: bool,
+) -> None:
+    script = (ROOT / "scripts/maintenance/rebuild_11983_current_main.sh").read_text(encoding="utf-8")
+    start = script.index("reconstruction_tree_is_clean() {\n")
+    end = script.index("\n# Identity gate", start)
+    helper = script[start:end]
+    required_fragments = (
+        "capture_file=\"$(mktemp)\"",
+        "if \"$@\" >\"$capture_file\" 2>&1; then",
+        "else\n    status=$?\n  fi",
+        "previous[[:space:]]+cherry-pick[[:space:]]+is[[:space:]]+now[[:space:]]+empty",
+        "cherry_pick_head=\"$(git rev-parse --verify CHERRY_PICK_HEAD",
+        "tree-status: clean",
+    )
+    if any(fragment not in script for fragment in required_fragments):
+        raise RuntimeError("empty cherry-pick guard lost its status, identity, or tree checks")
+    if os.name == "nt":
+        return
+    with tempfile.TemporaryDirectory(prefix="rebuild-11983-empty-guard-") as directory:
+        root = Path(directory)
+        evidence = root / "evidence"
+        skipped = root / "skipped"
+        fake_git = root / "git"
+        fake_git.write_text(
+            """#!/usr/bin/env bash
+case "$*" in
+  "cherry-pick --continue")
+    printf '%s\\n' 'The previous cherry-pick is now empty, possibly due to conflict resolution.' >&2
+    exit "${CHERRY_PICK_STATUS}"
+    ;;
+  "rev-parse --verify CHERRY_PICK_HEAD")
+    printf '%s\\n' "${FAKE_CHERRY_PICK_HEAD}"
+    ;;
+  "rev-parse HEAD")
+    printf '%s\\n' 'current-tree-head'
+    ;;
+  "diff --cached --name-only"|"diff --name-only --diff-filter=U")
+    exit 0
+    ;;
+  "diff --quiet")
+    exit "${DIRTY_TREE}"
+    ;;
+  "ls-files --others --exclude-standard")
+    exit 0
+    ;;
+  "cherry-pick --skip")
+    : > "${SKIPPED}"
+    ;;
+  *)
+    printf 'unexpected fake git call: %s\\n' "$*" >&2
+    exit 97
+    ;;
+esac
+""",
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        harness = f"""\
+set -u
+evidence_dir={root.as_posix()}/evidence
+mkdir -p "$evidence_dir"
+export PATH="{root.as_posix()}:$PATH"
+{helper}
+if run_cherry_pick_or_skip_empty 'first cherry-pick --continue' "$EXPECTED_COMMIT" git cherry-pick --continue; then
+  result=0
+else
+  result=$?
+fi
+test "$result" -eq {0 if expect_skip else 1}
+"""
+        result = subprocess.run(
+            ["bash", "-c", harness],
+            cwd=ROOT,
+            env={
+                **os.environ,
+                "EXPECTED_COMMIT": expected_commit,
+                "FAKE_CHERRY_PICK_HEAD": cherry_pick_head,
+                "CHERRY_PICK_STATUS": str(cherry_pick_status),
+                "DIRTY_TREE": str(int(dirty_tree)),
+                "SKIPPED": f"{root.as_posix()}/skipped",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            raise RuntimeError(
+                "empty cherry-pick guard fixture failed: "
+                f"status={result.returncode}; stdout={result.stdout!r}; stderr={result.stderr!r}"
+            )
+        if expect_skip:
+            receipt = evidence / "empty-cherry-pick-first_cherry-pick_--continue.txt"
+            if not skipped.is_file() or not receipt.is_file():
+                raise RuntimeError("verified empty cherry-pick did not skip with a receipt")
+            receipt_text = receipt.read_text(encoding="utf-8")
+            for line in (
+                f"expected-commit: {expected_commit}",
+                f"cherry-pick-head: {cherry_pick_head}",
+                "current-head: current-tree-head",
+                "tree-status: clean",
+            ):
+                if line not in receipt_text:
+                    raise RuntimeError(f"empty cherry-pick receipt omitted {line!r}")
+        elif skipped.exists():
+            raise RuntimeError("unverified empty cherry-pick was incorrectly skipped")
 
 
 # Independent oracle for the artifacts reproduced from d174ec1e9 on current
@@ -151,7 +266,14 @@ def write_manifest(
         elif mutation == "duplicate" and index == 0:
             reject_segments.append(reject_segments[0])
 
-        patch.write_text("\n".join(patch_segments), encoding="utf-8")
+        patch_path = "foreign/path" if mutation == "patch_path" and index == 0 else path
+        patch.write_text(
+            f"diff --git a/{patch_path} b/{patch_path}\n"
+            f"--- a/{patch_path}\n"
+            f"+++ b/{patch_path}\n"
+            + "\n".join(patch_segments),
+            encoding="utf-8",
+        )
         reject.write_text("\n".join(reject_segments), encoding="utf-8")
         log_count = len(reject_segments) if mutation == "duplicate" else len(patch_segments)
         log_numbers = list(range(1, log_count + 1))
@@ -191,6 +313,35 @@ def main() -> None:
         raise RuntimeError("independent fixture file count drifted")
     if actual_hunk_count != EXPECTED_HUNK_COUNT:
         raise RuntimeError("independent fixture hunk count drifted")
+
+    exercise_empty_cherry_pick_guard(
+        cherry_pick_head="d174ec1e9845056b8e1a193001ce88a2ea9eaebe",
+        expected_commit="d174ec1e9845056b8e1a193001ce88a2ea9eaebe",
+        cherry_pick_status=1,
+        dirty_tree=False,
+        expect_skip=True,
+    )
+    exercise_empty_cherry_pick_guard(
+        cherry_pick_head="0f6a4334eb5a53df54a5ed40103659a63578b6f5",
+        expected_commit="d174ec1e9845056b8e1a193001ce88a2ea9eaebe",
+        cherry_pick_status=1,
+        dirty_tree=False,
+        expect_skip=False,
+    )
+    exercise_empty_cherry_pick_guard(
+        cherry_pick_head="d174ec1e9845056b8e1a193001ce88a2ea9eaebe",
+        expected_commit="d174ec1e9845056b8e1a193001ce88a2ea9eaebe",
+        cherry_pick_status=1,
+        dirty_tree=True,
+        expect_skip=False,
+    )
+    exercise_empty_cherry_pick_guard(
+        cherry_pick_head="d174ec1e9845056b8e1a193001ce88a2ea9eaebe",
+        expected_commit="d174ec1e9845056b8e1a193001ce88a2ea9eaebe",
+        cherry_pick_status=2,
+        dirty_tree=False,
+        expect_skip=False,
+    )
 
     replace_stale_import = load_rebuild_import_helper()
     rebuild_script = (ROOT / "scripts/maintenance/rebuild_11983_current_main.sh").read_text(encoding="utf-8")
@@ -292,6 +443,12 @@ def main() -> None:
             write_manifest(root / "duplicate", mutation="duplicate"),
             root / "duplicate" / "evidence",
             "absent from or ambiguous",
+        )
+        expect_rejection(
+            write_manifest(root / "patch-path", mutation="patch_path"),
+            root / "patch-path" / "evidence",
+            "patch artifact path mismatch",
+            Path("reject-0.rej"),
         )
         extra = root / "extra"
         extra_evidence = extra / "evidence"
