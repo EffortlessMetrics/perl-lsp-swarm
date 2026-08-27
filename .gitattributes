@@ -83,3 +83,14 @@ archive/legacy-crates/perl-parser-pest/src/lib/*.js linguist-vendored
 *.eot    binary
 *.woff   binary
 *.woff2  binary
+
+# Fuzz corpus crash-artifact seeds are byte-exact inputs captured from nightly
+# fuzzer artifacts, not editable text. Byte-exactness is the point: some contain
+# lone non-UTF-8 bytes (no NUL byte), so git's content heuristic treats them as
+# text and inlines raw bytes into textual diffs. That breaks UTF-8 diff
+# consumers such as ripr's `pr.diff` reader (PR #12827 New Gap Gate,
+# run 33031807356 failed with "stream did not contain valid UTF-8").
+# Mark newly committed crash artifacts `binary`; keep curated textual seeds
+# elsewhere under fuzz/corpus diffable.
+fuzz/corpus/**/*.bin binary
+fuzz/corpus/semantic_model/char_boundary_method_window.pl binary
