@@ -6,7 +6,6 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 TMPDIR_BASE="$(mktemp -d)"
 FIXTURE_ROOT="${TMPDIR_BASE}/fixture"
 FAKE_BIN="${TMPDIR_BASE}/bin"
-FAKE_LOG="${TMPDIR_BASE}/cargo-safe.log"
 
 cleanup() {
   rm -rf "${TMPDIR_BASE}"
@@ -43,6 +42,37 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local label="$1"
+  local needle="$2"
+  local haystack="$3"
+  if grep -Fq -- "${needle}" "${haystack}"; then
+    fail "${label} (unexpected '${needle}')"
+  else
+    pass "${label}"
+  fi
+}
+
+assert_exact_invocations() {
+  local label="$1"
+  local log_path="$2"
+  local expected_path="$3"
+  local mode="$4"
+  shift 4
+
+  : > "${expected_path}"
+  for crate in "$@"; do
+    printf '%s\tpublic-api -p %s --simplified\n' "${mode}" "${crate}" >> "${expected_path}"
+  done
+
+  if cmp -s "${expected_path}" "${log_path}"; then
+    pass "${label}"
+  else
+    diff -u "${expected_path}" "${log_path}" >&2 || true
+    fail "${label} (unexpected generator invocations)"
+  fi
+}
+
 assert_same_file() {
   local label="$1"
   local expected="$2"
@@ -65,10 +95,17 @@ if [[ "${1:-}" != "public-api" ]]; then
   exit 2
 fi
 
-printf '%s\n' "${FAKE_PUBLIC_API_MODE:-unset}" >> "${FAKE_PUBLIC_API_LOG}"
+printf '%s\t%s\n' "${FAKE_PUBLIC_API_MODE:-unset}" "$*" >> "${FAKE_PUBLIC_API_LOG}"
 case "${FAKE_PUBLIC_API_MODE:-}" in
   empty)
     exit 0
+    ;;
+  failure)
+    printf 'simulated generator failure\n' >&2
+    exit 42
+    ;;
+  mismatch)
+    printf 'pub struct DifferentSurface;\n'
     ;;
   nonempty)
     printf 'pub struct GeneratedSurface;\n'
@@ -90,13 +127,16 @@ run_recipe() {
   local mode="$1"
   local recipe="$2"
   local output_path="$3"
+  local log_path="$4"
   local code=0
+
+  : > "${log_path}"
 
   (
     cd "${FIXTURE_ROOT}"
     PATH="${FAKE_BIN}:${PATH}" \
       FAKE_PUBLIC_API_MODE="${mode}" \
-      FAKE_PUBLIC_API_LOG="${FAKE_LOG}" \
+      FAKE_PUBLIC_API_LOG="${log_path}" \
       just --justfile "${FIXTURE_ROOT}/justfile" "${recipe}"
   ) > "${output_path}" 2>&1 || code=$?
   return "${code}"
@@ -114,7 +154,9 @@ for crate in perl-lsp-rs perl-parser perl-uri perl-dap perllsp; do
 done
 
 CHECK_EMPTY_OUTPUT="${TMPDIR_BASE}/check-empty.txt"
-if run_recipe empty public-api-check "${CHECK_EMPTY_OUTPUT}"; then
+CHECK_EMPTY_LOG="${TMPDIR_BASE}/check-empty.log"
+CHECK_EMPTY_EXPECTED="${TMPDIR_BASE}/check-empty.expected"
+if run_recipe empty public-api-check "${CHECK_EMPTY_OUTPUT}" "${CHECK_EMPTY_LOG}"; then
   check_empty_code=0
 else
   check_empty_code=$?
@@ -122,11 +164,35 @@ fi
 assert_exit_nonzero "successful empty generation fails public-api-check closed" "${check_empty_code}"
 assert_contains "check classifies empty generation as instrument failure" \
   "generated API surface is empty" "${CHECK_EMPTY_OUTPUT}"
+assert_not_contains "empty generation is not classified as an API diff" \
+  "FAIL Public API changed" "${CHECK_EMPTY_OUTPUT}"
+assert_exact_invocations "empty check invokes the generator once per facade with exact arguments" \
+  "${CHECK_EMPTY_LOG}" "${CHECK_EMPTY_EXPECTED}" empty \
+  perl-lsp-rs perl-parser perl-uri perl-dap perllsp
 
 BASELINE_BEFORE="${TMPDIR_BASE}/perl-lsp-rs-before.txt"
 cp "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-lsp-rs.txt" "${BASELINE_BEFORE}"
+
+UPDATE_FAILURE_OUTPUT="${TMPDIR_BASE}/update-failure.txt"
+UPDATE_FAILURE_LOG="${TMPDIR_BASE}/update-failure.log"
+UPDATE_FAILURE_EXPECTED="${TMPDIR_BASE}/update-failure.expected"
+if run_recipe failure public-api-update "${UPDATE_FAILURE_OUTPUT}" "${UPDATE_FAILURE_LOG}"; then
+  update_failure_code=0
+else
+  update_failure_code=$?
+fi
+assert_exit_nonzero "generator command failure refuses baseline update" "${update_failure_code}"
+assert_contains "generator failure reports baseline preservation refusal" \
+  "cargo public-api failed; refusing to overwrite the baseline" "${UPDATE_FAILURE_OUTPUT}"
+assert_same_file "generator failure preserves the existing baseline" \
+  "${BASELINE_BEFORE}" "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-lsp-rs.txt"
+assert_exact_invocations "failed update invokes only the first facade with exact arguments" \
+  "${UPDATE_FAILURE_LOG}" "${UPDATE_FAILURE_EXPECTED}" failure perl-lsp-rs
+
 UPDATE_EMPTY_OUTPUT="${TMPDIR_BASE}/update-empty.txt"
-if run_recipe empty public-api-update "${UPDATE_EMPTY_OUTPUT}"; then
+UPDATE_EMPTY_LOG="${TMPDIR_BASE}/update-empty.log"
+UPDATE_EMPTY_EXPECTED="${TMPDIR_BASE}/update-empty.expected"
+if run_recipe empty public-api-update "${UPDATE_EMPTY_OUTPUT}" "${UPDATE_EMPTY_LOG}"; then
   update_empty_code=0
 else
   update_empty_code=$?
@@ -136,11 +202,30 @@ assert_contains "update reports baseline preservation refusal" \
   "refusing to overwrite the baseline" "${UPDATE_EMPTY_OUTPUT}"
 assert_same_file "empty generation preserves the existing baseline" \
   "${BASELINE_BEFORE}" "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-lsp-rs.txt"
-assert_contains "fixture records the successful empty generator control" \
-  "empty" "${FAKE_LOG}"
+assert_exact_invocations "empty update invokes only the first facade with exact arguments" \
+  "${UPDATE_EMPTY_LOG}" "${UPDATE_EMPTY_EXPECTED}" empty perl-lsp-rs
+
+CHECK_MISMATCH_OUTPUT="${TMPDIR_BASE}/check-mismatch.txt"
+CHECK_MISMATCH_LOG="${TMPDIR_BASE}/check-mismatch.log"
+CHECK_MISMATCH_EXPECTED="${TMPDIR_BASE}/check-mismatch.expected"
+if run_recipe mismatch public-api-check "${CHECK_MISMATCH_OUTPUT}" "${CHECK_MISMATCH_LOG}"; then
+  check_mismatch_code=0
+else
+  check_mismatch_code=$?
+fi
+assert_exit_nonzero "mismatched non-empty generation fails public-api-check" "${check_mismatch_code}"
+assert_contains "mismatched non-empty generation is classified as an API diff" \
+  "FAIL Public API changed in perl-lsp-rs" "${CHECK_MISMATCH_OUTPUT}"
+assert_not_contains "mismatched non-empty generation is not an instrument failure" \
+  "INSTRUMENT-FAIL" "${CHECK_MISMATCH_OUTPUT}"
+assert_exact_invocations "mismatch check invokes the generator once per facade with exact arguments" \
+  "${CHECK_MISMATCH_LOG}" "${CHECK_MISMATCH_EXPECTED}" mismatch \
+  perl-lsp-rs perl-parser perl-uri perl-dap perllsp
 
 UPDATE_NONEMPTY_OUTPUT="${TMPDIR_BASE}/update-nonempty.txt"
-if run_recipe nonempty public-api-update "${UPDATE_NONEMPTY_OUTPUT}"; then
+UPDATE_NONEMPTY_LOG="${TMPDIR_BASE}/update-nonempty.log"
+UPDATE_NONEMPTY_EXPECTED="${TMPDIR_BASE}/update-nonempty.expected"
+if run_recipe nonempty public-api-update "${UPDATE_NONEMPTY_OUTPUT}" "${UPDATE_NONEMPTY_LOG}"; then
   update_nonempty_code=0
 else
   update_nonempty_code=$?
@@ -150,9 +235,14 @@ if [[ "${update_nonempty_code}" -eq 0 ]]; then
 else
   fail "non-empty generation unexpectedly failed (exit ${update_nonempty_code})"
 fi
+assert_exact_invocations "non-empty update invokes the generator once per facade with exact arguments" \
+  "${UPDATE_NONEMPTY_LOG}" "${UPDATE_NONEMPTY_EXPECTED}" nonempty \
+  perl-lsp-rs perl-parser perl-uri perl-dap perllsp
 
 CHECK_NONEMPTY_OUTPUT="${TMPDIR_BASE}/check-nonempty.txt"
-if run_recipe nonempty public-api-check "${CHECK_NONEMPTY_OUTPUT}"; then
+CHECK_NONEMPTY_LOG="${TMPDIR_BASE}/check-nonempty.log"
+CHECK_NONEMPTY_EXPECTED="${TMPDIR_BASE}/check-nonempty.expected"
+if run_recipe nonempty public-api-check "${CHECK_NONEMPTY_OUTPUT}" "${CHECK_NONEMPTY_LOG}"; then
   check_nonempty_code=0
 else
   check_nonempty_code=$?
@@ -164,5 +254,8 @@ else
 fi
 assert_contains "normal comparison reports the expected crate" \
   "OK perl-lsp-rs" "${CHECK_NONEMPTY_OUTPUT}"
+assert_exact_invocations "non-empty check invokes the generator once per facade with exact arguments" \
+  "${CHECK_NONEMPTY_LOG}" "${CHECK_NONEMPTY_EXPECTED}" nonempty \
+  perl-lsp-rs perl-parser perl-uri perl-dap perllsp
 
 echo "=== public-api ratchet regression fixture passed ==="
