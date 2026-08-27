@@ -966,6 +966,7 @@ mod tests {
     /// activation observations in artifact order, then shutdown.
     fn canonical_stream() -> Vec<DriverEvent> {
         let mut sequence = 0_u64;
+        let candidate_digest = format!("sha256:{}", "a".repeat(64));
         let mut stream = vec![
             event(
                 DriverEventKind::HostStarted,
@@ -989,7 +990,7 @@ mod tests {
                     sequence += 1;
                     sequence
                 },
-                &[("cmd", "perllsp--stdio"), ("candidate_sha256", "a".repeat(64).as_str())],
+                &[("cmd", "perllsp--stdio"), ("candidate_sha256", candidate_digest.as_str())],
             ),
             event(
                 DriverEventKind::FixtureOpened,
@@ -1442,16 +1443,85 @@ mod tests {
         assert_eq!(cell(&judgment, "pl", "native_filetype"), ObservationResult::Fail);
     }
 
-    #[test]
-    fn tmp_debug_parse_artifact_stream() {
-        if let Ok(path) = std::env::var("DEBUG_EV_FILE") {
-            let bytes = fs::read(&path).expect("read stream");
-            match vim_host_runner::parse_driver_events(&bytes, false) {
-                Ok(events) => println!("PARSED OK n={}", events.len()),
-                Err(error) => println!("PARSE ERR: {error:#}"),
-            }
-            panic!("debug probe done");
+    /// One serialized driver-event stream ready for the substrate validator:
+    /// the exact bytes a run hand back to `parse_driver_events`.
+    fn stream_bytes(stream: &[DriverEvent]) -> Result<Vec<u8>> {
+        let mut lines = Vec::new();
+        for item in stream {
+            let text = serde_json::to_string(item)
+                .with_context(|| format!("serializing {:?} event", item.kind))?;
+            lines.push(text);
         }
+        Ok(lines.join("\n").into_bytes())
+    }
+
+    /// Set one detail on the nth event of a kind, counted from the end when
+    /// `from_end` (a search fails closed: a lost kind is an authoring bug in
+    /// this test, never a pass).
+    fn reindex(
+        stream: &mut [DriverEvent],
+        kind: DriverEventKind,
+        nth: usize,
+        key: &str,
+        value: &str,
+    ) -> Result<()> {
+        let positions: Vec<usize> = stream
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.kind == kind)
+            .map(|(p, _)| p)
+            .collect();
+        let position = positions.get(nth).copied().context("kind occurrence absent from stream")?;
+        stream[position].details.insert(key.to_string(), value.to_string());
+        Ok(())
+    }
+
+    /// The row law binds one convention everywhere: repeating activation
+    /// kinds carry zero-based #7762 denominator order and must advance
+    /// strictly forward per kind — repeats and regressions are transport
+    /// faults — while skipping rows a subset kind does not apply to stays
+    /// legal because which rows a kind must fire for is the scenario
+    /// judgment's denominator obligation, not a transport law. This test
+    /// locks that split together: the honest canonical stream validates end
+    /// to end through the substrate validator, and a regressed or repeated
+    /// row index is rejected with its typed reason.
+    #[test]
+    fn activation_row_law_is_strictly_advancing_and_judgment_bound() -> Result<()> {
+        let parsed =
+            vim_host_runner::parse_driver_events(&stream_bytes(&canonical_stream())?, false)
+                .context("the honest canonical activation stream failed its own validator")?;
+        let natives =
+            parsed.iter().filter(|item| item.kind == DriverEventKind::ActivationNativeObserved);
+        ensure!(
+            natives.count() == ACTIVATION_DENOMINATOR.len(),
+            "canonical stream lost denominator rows under validation"
+        );
+
+        // Regression probe: the second native observation of the same kind
+        // walks backwards below the first.
+        let mut regressed = canonical_stream();
+        reindex(&mut regressed, DriverEventKind::ActivationNativeObserved, 1, "row_index", "0")?;
+        let error = vim_host_runner::parse_driver_events(&stream_bytes(&regressed)?, false)
+            .err()
+            .context("a regressing same-kind row index must reject")?;
+        ensure!(
+            format!("{error:#}").contains("does not advance past"),
+            "wrong rejection for a regressing row stream: {error:#}"
+        );
+
+        // Repeat probe: the first reset replays the second reset's row, so
+        // the stream never advances past that row for the kind.
+        let mut repeated = canonical_stream();
+        reindex(&mut repeated, DriverEventKind::ActivationRowReset, 0, "row_index", "1")
+            .context("reset kind occurrences absent")?;
+        let error = vim_host_runner::parse_driver_events(&stream_bytes(&repeated)?, false)
+            .err()
+            .context("a repeated same-kind row index must reject")?;
+        ensure!(
+            format!("{error:#}").contains("does not advance past"),
+            "wrong rejection for a repeated row stream: {error:#}"
+        );
+        Ok(())
     }
 
     #[test]

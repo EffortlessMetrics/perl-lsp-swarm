@@ -814,12 +814,16 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
     let mut freshness_hold_index = 0_u32;
     let mut freshness_materialization_index = 0_u32;
     let mut freshness_generation_index = 0_u32;
-    // Monotone last-seen indexes for the #11403 repeating activation kinds.
-    let mut activation_native_index = 0_u32;
-    let mut activation_override_index = 0_u32;
-    let mut activation_attachment_index = 0_u32;
-    let mut activation_semantic_index = 0_u32;
-    let mut activation_reset_index = 0_u32;
+    // Monotone last-seen row indexes for the #11403 repeating activation
+    // kinds. `row_index` is zero-based #7762 denominator order — the
+    // bootstrap row is exactly 0, matching the scenario judgment's
+    // index-to-slug binding — so a kind starts unseen (`None`) and its first
+    // observation must name row 0.
+    let mut activation_native_index: Option<u32> = None;
+    let mut activation_override_index: Option<u32> = None;
+    let mut activation_attachment_index: Option<u32> = None;
+    let mut activation_semantic_index: Option<u32> = None;
+    let mut activation_reset_index: Option<u32> = None;
 
     for (index, event) in events.iter().enumerate() {
         ensure!(event.schema_version == DRIVER_SCHEMA_VERSION, "unexpected driver event schema");
@@ -1254,32 +1258,35 @@ fn validate_repeating_freshness_event(
 }
 
 /// Validate one repeating #11403 activation event: its `row_index` detail is
-/// numeric, exactly one greater than the last seen index for its kind
-/// (monotone, gap-free), and within the kind's cap. The row slug rides beside
-/// the index; the scenario judgment binds index to slug against the finite
-/// #7762 denominator.
+/// numeric, advances strictly forward in the zero-based #7762 denominator
+/// order for its kind (no repeat, no regression — subset kinds such as the
+/// bounded override legally skip rows they do not apply to), and stays within
+/// the kind's cap. Which rows a kind must appear for, and in which tier
+/// order, are denominator obligations the scenario judgment owns against the
+/// finite #7762 table — not transport laws.
 fn validate_repeating_activation_event(
     event: &DriverEvent,
     cap: u32,
-    last_index: &mut u32,
+    last_index: &mut Option<u32>,
 ) -> Result<()> {
     let index = event
         .details
         .get("row_index")
         .and_then(|value| value.parse::<u32>().ok())
         .context("activation event omitted a numeric row_index")?;
-    ensure!(
-        index == *last_index + 1,
-        "activation event row_index {} is not exactly one greater than the last seen {}",
-        index,
-        *last_index
-    );
+    if let Some(last) = *last_index {
+        ensure!(
+            index > last,
+            "activation event row_index {index} does not advance past the last seen {last} \
+             for this kind"
+        );
+    }
     ensure!(index <= cap, "activation event row_index {index} exceeds the journey cap {cap}");
     ensure!(
         event.details.get("row").is_some_and(|value| is_reason_token(value)),
         "activation event must carry a reason-token row slug"
     );
-    *last_index = index;
+    *last_index = Some(index);
     Ok(())
 }
 

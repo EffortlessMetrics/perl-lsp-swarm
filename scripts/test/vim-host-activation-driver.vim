@@ -273,6 +273,10 @@ if s:governed_ok && s:phase !=# 'preset_filetype_claimed'
     if s:observed_root0 !=# s:expected_root_rel
       call s:Fail('root_mismatch')
     endif
+  else
+    " An unthrowing observation that lands outside the governed fixture is
+    " still an obligation, never a silent pass-through.
+    call s:Fail('root_outside_fixture')
   endif
 
   if VimLspHostWaitForWireMarkerCount(
