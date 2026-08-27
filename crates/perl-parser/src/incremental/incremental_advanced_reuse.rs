@@ -1315,6 +1315,36 @@ mod tests {
         assert_eq!(reuse_map.len(), 2);
     }
     #[test]
+    fn tree_analysis_exposes_sorted_match_order() {
+        let mut analysis = TreeAnalysis::new();
+        let node = |start| {
+            Node::new(
+                NodeKind::Number { value: "10".to_string() },
+                SourceLocation { start, end: start + 2 },
+            )
+        };
+
+        for start in [30, 10, 20] {
+            analysis.add_node_info(
+                start,
+                NodeAnalysisInfo {
+                    node: node(start),
+                    structural_hash: 0,
+                    content_hash: 0,
+                    depth: 0,
+                    children_count: 0,
+                },
+            );
+        }
+
+        assert_eq!(
+            analysis.node_info.keys().copied().collect::<Vec<_>>(),
+            vec![10, 20, 30],
+            "greedy matching must traverse byte positions in stable order"
+        );
+    }
+
+    #[test]
     fn matching_reservation_is_stable_for_duplicate_nodes() {
         let old_tree = Node::new(
             NodeKind::Program {
