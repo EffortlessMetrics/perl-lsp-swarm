@@ -364,7 +364,15 @@ log "Version bump PR: ${PR_URL}"
 
 if [[ "$AUTO_MERGE" == "true" ]]; then
   log "Merging PR #${PR_NUMBER} with squash"
-  gh pr merge "$PR_NUMBER" --squash --delete-branch
+  # No --delete-branch: an open PR that names ${BUMP_BRANCH} as its base is a
+  # live dependency on it, and deleting the base auto-closes that child (#12885
+  # — PRs #7810/#7819 were lost this way on August 15). Parent merge and
+  # parent-branch deletion are separate decisions; branch cleanup runs
+  # afterwards, against a freshly re-read graph, through
+  # `cargo run -p xtask --bin branch-deletion-admission -- admit`, which only
+  # yields a deletion command for SAFE_TO_DELETE.
+  gh pr merge "$PR_NUMBER" --squash
+  log "Left ${BUMP_BRANCH} in place; cleanup requires a SAFE_TO_DELETE admission (#12885)"
 else
   warn "AUTO_MERGE disabled. Merge PR manually before running this script with --base-branch=$REPO_BRANCH"
 fi
