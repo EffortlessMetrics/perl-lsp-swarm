@@ -27,12 +27,14 @@ regression.
   definition (:262; one `format_range_typed` call at :273) per native LSP
   request. Provider single-invocation proof lives in
   `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs`, driving
-  public `format_document_decision` / `format_range_decision` with shared
-  counters so a duplicate private typed call is observable; a perltidy-only
+  public `format_document_decision` / `format_range_decision` with one
+  request-local collector handle so a duplicate private typed call is
+  observable; a perltidy-only
   test cannot establish adapter call count. Vector order is always
   `(pipeline_invocations, source_parse_gate_invocations,
-  formatted_output_parse_gate_invocations)`: Off `0/0/0`; invalid range and typed literal-preserve
-  refusal `1/0/0`; source-parse refusal `1/1/0`; successful/no-change document
+  formatted_output_parse_gate_invocations)`: Off and public invalid range
+  `0/0/0`; typed literal-preserve refusal `1/0/0`; source-parse refusal
+  `1/1/0`; successful/no-change document
   and complete-range `1/1/1`. The formatted-output-refusal branch at
   `implementation.rs:235-249` is currently unreachable, so its disposition
   and counters remain `NOT_PROVEN` rather than receiving synthetic proof.
@@ -79,24 +81,36 @@ evidence:
    canaries.** Additive, zero-cost when unset: `NativeFormatter` gains an
    optional operation-scoped collector/builder. `FormattingProvider` gains an
    optional collector field/builder and forwards the same handle through each
-   private `NativeFormatter::new()` call. The typed call path
+   private `NativeFormatter::new()` call. Every dedicated receipt pass creates
+   a fresh provider/formatter and collector keyed to one run + subject,
+   snapshots before reuse, and never shares it across concurrent requests;
+   default live providers carry no collector. The typed call path
    (`format_document_typed` / `format_range_typed`) records the pipeline invocation
    plus distinctly attributed source and formatted-output parse-gate
    invocations, tokens/nodes observed by each gate, lines processed,
    delimited groups fitted, edits derived, output/replacement bytes, peak
-   depth, and total elapsed under a named clock tag — extending
+   depth, and elapsed fields under monotonic `NativePipelineClock`. Its
+   production adapter uses `Instant`; tests use a deterministic fake clock.
+   Owning source-parse, render, formatted-parse, edit-derivation,
+   classification, and total seams record `source_parse_elapsed_ns`,
+   `render_elapsed_ns`, `formatted_parse_elapsed_ns`,
+   `edit_derivation_elapsed_ns`, `classification_elapsed_ns`, and
+   `total_elapsed_ns` independently. Successful/no-change full-path rows
+   require positive independently attributed fields; skipped refusal stages
+   use explicit `not_executed`. Fake-clock fixtures and mutants reject absent,
+   zeroed, copied, or collapsed values. Timing remains advisory — extending
    `FormatChangeSummary`'s precedent rather than inventing a parallel
    formatter. In the fixed `(pipeline_invocations,
    source_parse_gate_invocations, formatted_output_parse_gate_invocations)`
-   order, reachable provider-seam vectors are Off
-   `0/0/0`, invalid range and typed literal-preserve `1/0/0`, source refusal
+   order, reachable provider-seam vectors are Off and invalid range
+   `0/0/0`, typed literal-preserve `1/0/0`, source refusal
    `1/1/0`, and successful/no-change document and complete-range `1/1/1`;
    canaries reject a duplicated private typed call, a skipped successful gate,
    or a collapsed refusal table. Formatted-output refusal remains
    `NOT_PROVEN` because its defensive branch is currently unreachable.
    Provider tests live in
    `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs` and
-   drive the public decision methods with shared counters; the perltidy
+   drive the public decision methods with a request-local collector; the perltidy
    canaries own only pipeline-internal attribution. Benches live in
    `crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs`
    over a checked-in authoritative registry keyed by canonical Criterion ID.
@@ -142,6 +156,14 @@ The serialized `BENCH_TARGETS` entry is
 `perl-lsp-perltidy:native_pipeline_benchmark`, and the trailing delimiter
 exists solely to encode an empty required-feature field.
 
+Hosted wiring creates and exports exactly one `NATIVE_PIPELINE_RUN_ID` before
+the `BENCH_TARGETS` loop, so the formatter benchmark and later extractor share
+one run identity. Hosted strict extraction supplies the authoritative subject
+registry, runtime measurement sidecar, matching `--expect-run-id`, and
+formatter `--expect-id "native_pipeline/document_small"`. Structural pins
+cover creation order, export/benchmark visibility, and every strict argument;
+moving creation after the loop or dropping/diverging an argument fails.
+
 Per-subject receipt identity is not present today: `extract-criterion.py`
 keeps Criterion timing plus global Git SHA/dirty state, OS, and Rust version,
 and `format-results.py` does not recover fixture digest, config fingerprint,
@@ -149,15 +171,20 @@ or engine. NPC-008 is therefore `NOT_PROVEN`. The selected implementation has
 two distinct artifacts keyed by canonical Criterion ID: a checked-in
 authoritative `native_pipeline_subjects.v1.json` registry, and a runtime-
 generated `target/criterion/native-pipeline-measurements.v1.json` sidecar.
-The sidecar carries schema/run and observed identity, stage/work/edit/depth/
+The sidecar carries schema/run and observed identity, work/edit/depth/
 invocation counters, allocation measurements and supported-platform state,
-and receipt-pass stage plus total timing. It has exactly one row per registry
+and named source-parse/render/formatted-parse/edit-derivation/classification/
+total elapsed fields. It has exactly one row per registry
 subject, produced by a dedicated serialized receipt pass outside Criterion's
 repeated timing iterations; Criterion timing stays separate and joins by
 canonical ID. Strict extraction takes both paths and an expected run ID,
 requires a 1:1 Criterion/registry/sidecar join, and fails missing,
 duplicate, stale, unmatched, or schema-mismatched rows before the formatter-
-results path preserves every field.
+results path preserves every field. After strict extraction,
+`format-results.py latest.json --receipt` writes a receipt file and the planned
+`validate-formatter-receipt.py` checks receipt + registry + sidecar + expected
+run/ID fail-closed, requiring every formatter row to retain identity,
+counters, allocation/status, and all stage/total timing fields.
 
 Allocation uses a separate durable seam inside the benchmark executable:
 `crates/perl-lsp-perltidy/benches/support/allocation_tracker.rs`, adapting the
@@ -171,12 +198,14 @@ sidecar records `allocation_count`, `allocated_bytes`, and `peak_delta_bytes`
 with a supported-platform tag. Unsupported/unavailable measurement stays
 `NOT_PROVEN`. Because the benchmark allocator requires `unsafe impl
 GlobalAlloc`, unsafe trait methods, and forwarding blocks, the implementation
-must place `SAFETY:` comments at each site and add narrow owned cargo-allow
-receipts in family `formatter-native-bench-global-allocator-v1`: exact
-benchmark allocator file glob with one AST selector for each of `unsafe_impl`,
-`unsafe_fn`, and `unsafe_block`; owner `formatter/performance`; reason limited
-to forwarding the GlobalAlloc contract to `System`; allocator-test and mutant
-evidence; created `2026-08-27`; review-after `2026-11-27`.
+must place `SAFETY:` comments at each site and add three distinct cargo-allow
+entries: IDs `formatter-native-bench-global-allocator-v1-{impl,fn,block}`.
+Each has `kind = "unsafe"`; `family` and `selector` both set to the matching
+`unsafe_impl`, `unsafe_fn`, or `unsafe_block` value; exact allocator-file glob;
+`classification = "reviewed_exception"`; owner `formatter/performance`;
+reason limited to forwarding the GlobalAlloc contract to `System`;
+allocator-test and mutant evidence; `created = "2026-08-27"`;
+`review_after = "2026-11-27"`; `expires = "2027-02-27"`.
 `cargo-allow check --mode no-new` is required proof. The controlled mutant
 `allocation_oracle_rejects_extra_temporary_copy` keeps one extra temporary
 allocation/copy live inside that window and must turn the allocation canary
@@ -190,7 +219,10 @@ work, never by relaxing bounds.
 
 ## Claim boundary
 
-Measurement-only claim: no formatter algorithm rewrite, no production
+This PR is a docs-only contract repair. #10302 remains open/blocked; none of
+the planned benchmark, counter, allocator, receipt, or hosted-workflow runtime
+surfaces is delivered or proven here. The future implementation is a
+measurement-only claim: no formatter algorithm rewrite, no production
 telemetry, no execution of Perl, no release/publication surface. Counters
 are operation-scoped additive hooks on the native formatter and provider;
 behavior when the optional collector is unset (all current callers, tests,
