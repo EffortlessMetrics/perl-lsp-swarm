@@ -1,7 +1,7 @@
 {
   "schema": "train_edge_contract.adaptations.v1",
   "schema_version": 1,
-  "description": "Declared class-to-kind adaptations binding landed programme train manifests to the shared train_edge_contract.v1 vocabulary. Programme manifests keep their own bytes; this table binds their local dependency classes to the shared semantic kinds without rewriting them. A manifest class with no declared adaptation row fails closed.",
+  "description": "Declared class-to-kind adaptations binding landed programme train manifests to the shared train_edge_contract.v1 vocabulary. Programme manifests keep their own bytes; this table binds their local dependency classes to the shared semantic kinds without rewriting them. A manifest class with no declared adaptation row fails closed. Binding scope per bundle is the declared dependency table only: programme-local release_gates/fan_in compositions are owned and fail-closed-validated by each programme's own named-diagnostics gate (native Neovim: check-native-neovim-train), never silently mirrored here.",
   "adaptations": [
     {
       "programme_schema": "emacs_train.v1",

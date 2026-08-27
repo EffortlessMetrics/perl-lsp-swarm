@@ -207,9 +207,25 @@ fn node_role_family_problems(doc: &Value, violations: &mut Vec<Violation>) {
         }
     }
 
+    let mut seen_profile_ids: BTreeSet<&str> = BTreeSet::new();
     for profile in profiles.iter().filter_map(Value::as_object) {
         let Some(profile_id) = str_field(profile, "id") else { continue };
+        if !seen_profile_ids.insert(profile_id) {
+            violations.push(Violation::new(
+                "DUPLICATE_PROFILE_IDENTITY",
+                format!("claim profile {profile_id}: duplicate profile identity"),
+            ));
+        }
+        // Only the closeout profile is universal; no other profile may claim
+        // exemption from behavioral family membership even though the closed
+        // schema permits the policy field syntactically.
         if profile_id == UNIVERSAL_PROFILE_ID || profile.get("universal_member_policy").is_some() {
+            if profile_id != UNIVERSAL_PROFILE_ID {
+                violations.push(Violation::new(
+                    "PROFILE_FAMILY_MISMATCH",
+                    format!("claim profile {profile_id}: universal_member_policy is reserved for {UNIVERSAL_PROFILE_ID}"),
+                ));
+            }
             continue;
         }
         let allowed = PROFILE_ALLOWED_FAMILIES
@@ -409,6 +425,10 @@ fn edge_problems(doc: &Value, violations: &mut Vec<Violation>) {
             externals.insert(id);
         }
     }
+    // Namespace law: external-checkpoint classes target declared external
+    // authorities; every other class targets manifest nodes.
+    let external_classes: &[&str] =
+        &["external_submission", "external_acceptance", "released_public"];
     let external_stage_by_class: &[(&str, &str)] = &[
         ("external_submission", "external_submission"),
         ("external_acceptance", "external_acceptance"),
@@ -434,6 +454,20 @@ fn edge_problems(doc: &Value, violations: &mut Vec<Violation>) {
                 violations.push(Violation::new(
                     "UNKNOWN_EDGE_TARGET",
                     format!("node {source}: dependency target {target} resolves to no node or external authority"),
+                ));
+                continue;
+            }
+            let class_is_external = external_classes.contains(&class);
+            if class_is_external && !externals.contains(target) {
+                violations.push(Violation::new(
+                    "EXTERNAL_TARGET_NAMESPACE",
+                    format!("node {source}: external checkpoint class {class} must target a declared external authority, not node {target}"),
+                ));
+            }
+            if !class_is_external && !ids.contains(target) {
+                violations.push(Violation::new(
+                    "INTERNAL_TARGET_NAMESPACE",
+                    format!("node {source}: dependency class {class} must target a manifest node, not external authority {target}"),
                 ));
             }
 

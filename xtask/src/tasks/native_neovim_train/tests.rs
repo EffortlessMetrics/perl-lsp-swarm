@@ -154,3 +154,34 @@ fn duplicate_primary_issue_anchor_fails() {
     });
     assert!(codes(&doc).contains(&"DUPLICATE_PRIMARY_ISSUE".to_string()));
 }
+
+#[test]
+fn duplicate_claim_profile_identity_fails() {
+    let doc = mutate_base(|doc| {
+        let profiles =
+            doc.get_mut("claim_profiles").and_then(Value::as_array_mut).expect("profiles array");
+        let clone = profiles.first().cloned().expect("at least one profile");
+        profiles.push(clone);
+    });
+    assert!(codes(&doc).contains(&"DUPLICATE_PROFILE_IDENTITY".to_string()));
+}
+
+#[test]
+fn internal_class_targeting_an_external_authority_fails() {
+    let doc = mutate_base(|doc| {
+        let deps = find_node(doc, "nv_core_slice_attach_root_effects")
+            .get_mut("dependencies")
+            .and_then(Value::as_array_mut)
+            .expect("deps present");
+        deps[0]["target"] = Value::String("ext_mason_registry".to_string());
+    });
+    assert!(codes(&doc).contains(&"INTERNAL_TARGET_NAMESPACE".to_string()));
+}
+
+/// The gate command itself applies the JSON Schema plus graph semantics end
+/// to end; this keeps the automated surface equivalent to `run()`, not merely
+/// the in-process semantic layer.
+#[test]
+fn gate_command_run_is_green_on_the_landed_tree() {
+    super::run().expect("check-native-neovim-train must stay green on the landed tree");
+}

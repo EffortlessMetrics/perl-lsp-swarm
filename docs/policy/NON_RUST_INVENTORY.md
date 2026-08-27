@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12098 |
-| Rust-family files | 3697 |
-| Non-Rust files | 8401 |
-| Allowlisted | 6155 |
+| Total tracked files | 12139 |
+| Rust-family files | 3713 |
+| Non-Rust files | 8426 |
+| Allowlisted | 6180 |
 | Unclassified | 2246 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 442 |
-| documentation | 2744 |
+| config | 443 |
+| documentation | 2748 |
 | generated | 2 |
 | production | 328 |
-| test | 2025 |
-| tooling | 614 |
+| test | 2026 |
+| tooling | 633 |
 | unclassified | 2246 |
 
 ## Unclassified files
@@ -2284,6 +2284,7 @@
 | `.agents/skills/address-review-comments/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/build-candidate/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/build-from-proof/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.agents/skills/ci-failure-triage/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/compile-spec/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/deliver-goal/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/deliver-pr/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -2344,6 +2345,7 @@
 | `.changes/unreleased/product-12641-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12765-Changed-154500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12806-Added-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2754,6 +2756,7 @@
 | `.claude/skills/address-review-comments/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/build-candidate/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/build-from-proof/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.claude/skills/ci-failure-triage/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/compile-spec/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/deliver-goal/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/deliver-pr/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3088,6 +3091,24 @@
 | `.spec/11371-vim-bdd-journeys/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11371-vim-bdd-journeys/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11371-vim-bdd-journeys/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11392-native-neovim-train-graph/invalid/actual_host_without_shared_execution.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/channel_satisfaction_transfer.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/contradicting_release_branches.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/controller_emitted_as_work.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/deep_cell_in_core_profile.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/duplicate_node_identity.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/embedded_live_state.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/expected_errors.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/hard_implementation_cycle.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/host_provisioning_as_behavior.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/missing_contract_fields.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/overlapping_conflict_keys.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/sibling_satisfaction.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/sidecar_in_core_profile.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/sidecar_in_core_spine.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/unknown_edge_target.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/shuffled/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11625-module-train-graph/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3859,6 +3880,7 @@
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__printf_mismatch_too_few_args.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__printf_mismatch_too_many_args.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__script_happy_path.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
+| `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__security_sql_injection.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__security_string_eval.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__suspicious_regex_and_tainted_system_call.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__syntax_error_with_follow_on_statement.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
@@ -6227,6 +6249,7 @@
 | `policy/review-surfaces.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ripr-suppressions.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/semantic-token-classes.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/skill-provider-parity.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/standalone-archive-safety.v1.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/trust-lanes.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ub-review.toml` | config | `non-rust-policy-ledgers` | release/ci |
@@ -6244,6 +6267,7 @@
 | `schemas/compiler_lexical_cutline_cases.v1.schema.json` | config | `non-rust-compiler-lexical-cutline-schema` | compiler |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
 | `schemas/loaded_module_reload_family.v1.schema.json` | config | `non-rust-loaded-module-reload-family-schema` | identity |
+| `schemas/native_neovim_train.v1.schema.json` | documentation | `non-rust-native-neovim-train-schema` | neovim-train |
 | `schemas/perl_builtin_semantics.v1.schema.json` | config | `non-rust-compiler-builtin-semantics-schema` | compiler |
 | `schemas/perl_compiler_concept_proof.v1.schema.json` | config | `non-rust-compiler-concept-proof-schema` | compiler |
 | `schemas/perl_compiler_concepts.v1.schema.json` | config | `non-rust-compiler-concepts-schema` | compiler |
@@ -6581,6 +6605,7 @@
 | `scripts/swarm-clean` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/swarm-doctor` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/swarm-summary.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/target-gc.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test-agent-preflight.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test-capped.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test-control-plane-lock.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
