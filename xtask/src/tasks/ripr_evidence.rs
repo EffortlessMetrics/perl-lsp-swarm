@@ -3316,8 +3316,18 @@ fn merge_base_failure_guidance(base: &str, head: &str, shallow: bool) -> String 
 
 fn write_pr_diff(repo: &Path, receipt: &CommittedDiffReceipt) -> Result<()> {
     let range = format!("{}...{}", receipt.base, receipt.head);
-    let diff = run_git_output(repo, &["diff", "--binary", "--no-ext-diff", range.as_str()])?;
-    write_text(&repo.join(PR_DIFF), &diff)?;
+    // A patch can legitimately contain raw non-UTF-8 payload bytes: an added
+    // file with lone high bytes (no NUL in the sniff window) is diffed as text
+    // by git, so `--binary` output still carries them verbatim. The patch must
+    // land on disk byte-exact for the downstream ripr `--diff` consumer, so it
+    // is written from raw git output instead of forcing a UTF-8 round-trip.
+    let diff = run_git_bytes(repo, &["diff", "--binary", "--no-ext-diff", range.as_str()])?;
+    let diff_path = repo.join(PR_DIFF);
+    if let Some(parent) = diff_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&diff_path, &diff).with_context(|| format!("failed to write {PR_DIFF}"))?;
     let receipt_json = format_json(&serde_json::to_value(receipt)?)?;
     write_text(&repo.join(PR_DIFF_RECEIPT), &receipt_json)
 }
