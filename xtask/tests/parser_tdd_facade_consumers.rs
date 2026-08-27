@@ -917,10 +917,7 @@ let runner = tr::TestRunner::default();
     let hits = forbidden_facade_references(&code_without_comments(source));
     assert_eq!(
         hits,
-        vec![
-            "perl_parser::TestRunner".to_string(),
-            "perl_parser::test_runner".to_string(),
-        ]
+        vec!["perl_parser::TestRunner".to_string(), "perl_parser::test_runner".to_string(),]
     );
 }
 
