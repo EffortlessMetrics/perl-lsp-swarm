@@ -32,12 +32,12 @@
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 // The shared host-runner substrate is included exactly once per crate (in
@@ -562,7 +562,10 @@ fn runtime_tree_sha256(runtime_root: &Path) -> Result<String> {
             .replace('\\', "/");
         let kind = entry.file_type();
         anyhow::ensure!(!kind.is_symlink(), "extracted runtime contains a symlink: {relative}");
-        anyhow::ensure!(kind.is_dir() || kind.is_file(), "extracted runtime contains unsupported entry: {relative}");
+        anyhow::ensure!(
+            kind.is_dir() || kind.is_file(),
+            "extracted runtime contains unsupported entry: {relative}"
+        );
         entries.push((relative, kind.is_dir(), entry.into_path()));
     }
     entries.sort_by(|left, right| left.0.cmp(&right.0));
@@ -581,9 +584,9 @@ fn runtime_tree_sha256(runtime_root: &Path) -> Result<String> {
                 .with_context(|| format!("opening extracted runtime file {}", path.display()))?;
             let mut buffer = [0u8; 64 * 1024];
             loop {
-                let read = file
-                    .read(&mut buffer)
-                    .with_context(|| format!("reading extracted runtime file {}", path.display()))?;
+                let read = file.read(&mut buffer).with_context(|| {
+                    format!("reading extracted runtime file {}", path.display())
+                })?;
                 if read == 0 {
                     break;
                 }
@@ -591,7 +594,9 @@ fn runtime_tree_sha256(runtime_root: &Path) -> Result<String> {
             }
         }
     }
-    Ok(format!("sha256:{:x}", hasher.finalize()))
+    let digest = hasher.finalize();
+    let hex = digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    Ok(format!("sha256:{hex}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1353,11 +1358,9 @@ fn build_fresh_entry(
 
     let executable_digest = file_sha256(&vim_executable)
         .map_err(|error| unresolved(format!("hashing the pinned executable: {error:#}")))?;
-    let runtime_tree_digest = runtime_tree_sha256(
-        vim_executable
-            .parent()
-            .ok_or_else(|| unresolved("provisioned Vim executable has no runtime parent".to_string()))?,
-    )
+    let runtime_tree_digest = runtime_tree_sha256(vim_executable.parent().ok_or_else(|| {
+        unresolved("provisioned Vim executable has no runtime parent".to_string())
+    })?)
     .map_err(|error| unresolved(format!("hashing the provisioned Vim runtime: {error:#}")))?;
     let version_summary = version_text.lines().next().unwrap_or_default().trim().to_string();
     let manifest = ToolchainManifest {
