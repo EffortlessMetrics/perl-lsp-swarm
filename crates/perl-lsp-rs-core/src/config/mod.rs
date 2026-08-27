@@ -5201,7 +5201,9 @@ profile = "recommended"
             ..WorkspaceConfig::default()
         };
 
+        let probe_started = Instant::now();
         let cached = config.get_system_inc_probe_outcome();
+        let probe_elapsed = probe_started.elapsed();
         match &cached {
             SystemIncProbeOutcome::Paths(paths) => {
                 assert!(
@@ -5210,9 +5212,27 @@ profile = "recommended"
                      sentinel out of stdout, got {paths:?}",
                 );
             }
-            // Transient host-spawn weather, not a contract failure (#12902).
-            // The cached value still discriminates against a relaunch below.
-            SystemIncProbeOutcome::TimedOut => {}
+            // Transient host-spawn weather, not a contract failure (#12902) —
+            // but only when the probe genuinely spent its budget. A TimedOut
+            // that returns early means `output_with_timeout` abandoned the
+            // poll loop before the deadline, which would let a broken bound
+            // masquerade as a loaded host here. Note this floor scales with
+            // the constant, so it deliberately does NOT police the constant's
+            // own value: `system_inc_probe_budget_stays_above_interpreter_startup`
+            // owns that, and a persistently timing-out probe is caught by
+            // `live_system_inc_probe_runs_perl_args_and_returns_paths`. The
+            // 10% slack covers timer granularity; `output_with_timeout` starts
+            // its clock after spawn, so a real stall only pushes elapsed higher.
+            SystemIncProbeOutcome::TimedOut => {
+                let floor = SYSTEM_INC_PROBE_TIMEOUT.mul_f64(0.9);
+                assert!(
+                    probe_elapsed >= floor,
+                    "a TimedOut probe must have spent the SYSTEM_INC_PROBE_TIMEOUT \
+                     budget ({SYSTEM_INC_PROBE_TIMEOUT:?}); returning after \
+                     {probe_elapsed:?} means the budget shrank, not that the host \
+                     stalled",
+                );
+            }
             other => {
                 return Err(format!(
                     "expected the sentinel probe to produce Paths (or a transient \
@@ -5230,6 +5250,97 @@ profile = "recommended"
         assert_eq!(reused, cached, "second lookup must reuse the cached outcome");
         assert_eq!(config.get_system_inc().to_vec(), cached_paths);
         Ok(())
+    }
+
+    /// The probe budget must stay large enough for a real interpreter start.
+    ///
+    /// `get_system_inc_reuses_cached_probe_without_relaunching` tolerates a
+    /// transient `TimedOut`, and the elapsed floor it applies is expressed as a
+    /// fraction of `SYSTEM_INC_PROBE_TIMEOUT` — so it cannot notice the
+    /// constant itself shrinking (#12902 review). Pin the floor directly. 1 s
+    /// is the reviewed value; anything under half a second cannot cover a cold
+    /// `CreateProcess`/`fork` plus perl startup, and would turn healthy hosts
+    /// into permanently cached `TimedOut` for the whole session.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn system_inc_probe_budget_stays_above_interpreter_startup() {
+        assert!(
+            SYSTEM_INC_PROBE_TIMEOUT >= Duration::from_millis(500),
+            "SYSTEM_INC_PROBE_TIMEOUT shrank to {SYSTEM_INC_PROBE_TIMEOUT:?}; a budget \
+             below ~500ms cannot cover interpreter startup",
+        );
+    }
+
+    /// A healthy live probe must actually run `perl_args` and turn the
+    /// interpreter's stdout into `Paths`.
+    ///
+    /// Split out of `get_system_inc_reuses_cached_probe_without_relaunching`
+    /// (#12902 review): that test owns the *memoization* law and deliberately
+    /// tolerates a transient `TimedOut`, because a cached timeout
+    /// discriminates against a relaunch just as well as cached paths do. On
+    /// its own that tolerance would let a **persistent** regression — a probe
+    /// command that newly hangs, so every run times out — pass unnoticed while
+    /// users get an empty system `@INC`. This test owns that claim instead and
+    /// fails loudly when every attempt times out.
+    ///
+    /// Retrying on a *fresh* config is the established idiom for the 1 s
+    /// budget (cf. `append_system_inc_paths_skips_dot_and_dedupes_normalized_variants`
+    /// in `perl-lsp-rs`): the cache would short-circuit a retry on the same
+    /// config, and only a persistent condition survives every attempt. Host
+    /// weather that fails 6 runs in 10 — the worst rate observed in #12902 —
+    /// survives all 10 attempts about six times in a million.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn live_system_inc_probe_runs_perl_args_and_returns_paths() -> TestResult {
+        let perl_path = match resolve_perl_path_with_toolchain() {
+            Ok(path) => path,
+            Err(_) => return Ok(()),
+        };
+
+        const ATTEMPTS: u8 = 10;
+        for _attempt in 1..=ATTEMPTS {
+            let mut config = WorkspaceConfig {
+                use_system_inc: true,
+                perl_path: Some(perl_path.to_string_lossy().into_owned()),
+                perl_args: vec!["-e".into(), "print(qq(cache-sentinel).chr(10));".into()],
+                ..WorkspaceConfig::default()
+            };
+
+            match config.get_system_inc_probe_outcome() {
+                SystemIncProbeOutcome::Paths(paths) => {
+                    assert!(
+                        paths.iter().any(|path| path == Path::new("cache-sentinel")),
+                        "the probe must run perl_args through to the interpreter; \
+                         expected the sentinel in {paths:?}",
+                    );
+                    assert!(
+                        paths.iter().any(|path| path != Path::new("cache-sentinel")),
+                        "the probe must also return real startup @INC entries, not \
+                         only the sentinel: {paths:?}",
+                    );
+                    assert_eq!(
+                        config.get_system_inc(),
+                        paths.as_slice(),
+                        "the fail-closed accessor must serve exactly the probed paths",
+                    );
+                    return Ok(());
+                }
+                // A single timeout is host weather; every attempt timing out is not.
+                SystemIncProbeOutcome::TimedOut => {}
+                other => {
+                    return Err(format!(
+                        "live @INC probe failed with a non-retryable outcome: {other:?}"
+                    )
+                    .into());
+                }
+            }
+        }
+
+        Err(format!(
+            "live @INC probe timed out on all {ATTEMPTS} attempts; a persistent timeout \
+             is a regression in the probe command or its budget, not host weather"
+        )
+        .into())
     }
 
     /// The same reuse law, proven with no subprocess at all.
