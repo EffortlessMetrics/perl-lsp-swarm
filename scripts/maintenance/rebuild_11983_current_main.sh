@@ -19,19 +19,27 @@ reconstruction_tree_is_clean() {
 run_cherry_pick_or_skip_empty() {
   local label="$1"
   shift
-  local output
+  local capture_file
   local status
   cherry_pick_noop=false
-  if output="$("$@" 2>&1)"; then
-    printf '%s\n' "$output"
+  capture_file="$(mktemp)"
+  if "$@" >"$capture_file" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  if [ "$status" -eq 0 ]; then
+    cat "$capture_file"
+    rm -f "$capture_file"
     return 0
   fi
-  status=$?
-  printf '%s\n' "$output" >&2
-  if [ "$status" -ne 1 ] || ! grep -Eqi "cherry-pick .*empty|empty .*cherry-pick" <<<"$output"; then
+  cat "$capture_file" >&2
+  if [ "$status" -ne 1 ] || ! grep -Eqi 'previous[[:space:]]+cherry-pick[[:space:]]+is[[:space:]]+now[[:space:]]+empty' "$capture_file"; then
+    rm -f "$capture_file"
     echo "$label failed for a non-empty-cherry-pick reason; refusing no-op skip." >&2
     return 1
   fi
+  rm -f "$capture_file"
   if ! git rev-parse --verify CHERRY_PICK_HEAD >/dev/null 2>&1 || \
     ! reconstruction_tree_is_clean; then
     echo "$label reported empty but left staged, unresolved, or working-tree state; refusing no-op skip." >&2

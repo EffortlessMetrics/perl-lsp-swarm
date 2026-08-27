@@ -196,6 +196,10 @@ def main() -> None:
     rebuild_script = (ROOT / "scripts/maintenance/rebuild_11983_current_main.sh").read_text(encoding="utf-8")
     if "git ls-files --others --exclude-standard" not in rebuild_script:
         raise RuntimeError("empty cherry-pick guard does not reject untracked files")
+    if '"$@" >"$capture_file" 2>&1' not in rebuild_script:
+        raise RuntimeError("empty cherry-pick helper does not capture combined output")
+    if "previous[[:space:]]+cherry-pick[[:space:]]+is[[:space:]]+now[[:space:]]+empty" not in rebuild_script:
+        raise RuntimeError("empty cherry-pick helper lacks the expected diagnostic matcher")
     with tempfile.TemporaryDirectory(prefix="rebuild-11983-imports-") as directory:
         path = Path(directory) / "text_sync.rs"
         old = "old import\n"
