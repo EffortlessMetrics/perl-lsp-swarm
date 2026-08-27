@@ -182,12 +182,13 @@ jobs:
           key: cpan-corpus-part-${{ matrix.partition }}-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-1000-distributions.txt') }}
 
       - name: Upload CPAN corpus partition
-        if: always()
+        if: success()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cpan-corpus-part-${{ matrix.partition }}-${{ github.run_id }}
           path: target/cpan-corpus-part-${{ matrix.partition }}/lib/perl5
           retention-days: 2
+          overwrite: true
           if-no-files-found: error
   corpus-ratchet-full:
     name: CPAN corpus ratchet (full — 1000 distributions)

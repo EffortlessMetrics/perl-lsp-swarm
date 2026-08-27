@@ -309,6 +309,12 @@ pub fn install(config: &CpanCorpusConfig) -> Result<()> {
         let output = run_command_with_timeout(cmd, CPANM_BATCH_TIMEOUT)?;
         let stderr = String::from_utf8_lossy(&output.output.stderr);
         if output.timed_out {
+            if config.partition.is_some() {
+                return Err(color_eyre::eyre::eyre!(
+                    "cpanm batch {batch_num} timed out after {}s; retry the bounded corpus partition",
+                    CPANM_BATCH_TIMEOUT.as_secs()
+                ));
+            }
             println!(
                 "cpanm batch {batch_num} timed out after {}s; retrying distributions individually",
                 CPANM_BATCH_TIMEOUT.as_secs()
