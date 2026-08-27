@@ -482,10 +482,12 @@ jobs:
 
       - name: Check published parser-stack crates against baseline
         if: needs.draft-pr-check.outputs.api_scope == 'true' && steps.baseline.outputs.baseline != 'none'
+        env:
+          SEMVER_BASELINE: ${{ steps.baseline.outputs.baseline }}
         run: |
           for crate in perl-parser perl-lexer perl-parser-core perl-lsp-rs perllsp; do
             if cargo semver-checks check-release -p "${crate}" \
-              --baseline-rev "${{ steps.baseline.outputs.baseline }}"; then
+              --baseline-rev "${SEMVER_BASELINE}"; then
               echo "semver: ${crate} compatible"
             else
               echo "::warning::Breaking changes detected in ${crate}"
