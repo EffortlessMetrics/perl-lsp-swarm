@@ -123,7 +123,11 @@ evidence:
   `tests/formatter_property_harness_tests.proptest-regressions`. Every persisted
   counterexample is paired with a readable named Rust regression test; the
   replay identity binds its minimized input, generator schema, seed, source and
-  configuration digests, target, invariant, and focused-test name.
+  configuration digests, target, invariant, and focused-test name. The ordered
+  admitted-family exemplars plus checked-in minimized entries form the
+  canonical corpus. Every profile receipt binds a corpus schema/version and
+  digest, so corpus addition, removal, or reordering cannot masquerade as a
+  replay of the same input set.
 - Focused runs every-family exemplars plus 64 generated cases with at most
   1,024 shrink iterations. Scheduled runs 16 fixed seeds × 256 cases with at
   most 4,096 shrink iterations. Release runs 64 fixed seeds × 256 cases with

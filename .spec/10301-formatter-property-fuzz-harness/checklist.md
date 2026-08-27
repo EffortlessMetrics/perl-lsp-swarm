@@ -55,7 +55,9 @@ Planned surface:
       if Cargo changes the existing locked graph
 - [ ] `tests/formatter_property_harness_tests.proptest-regressions`: checked-in
       minimized persistence entries; every discovered entry is paired with a
-      readable named Rust regression test and normalized receipt identity
+      readable named Rust regression test and normalized receipt identity. The
+      ordered admitted-family exemplars plus these entries are the canonical
+      corpus; its schema/version and digest are present in every profile receipt
 - [ ] Three profiles are DATA in the harness: focused = every-family exemplar +
       64 generated cases/1,024 shrink iterations; scheduled = 16 fixed seeds ×
       256 cases/4,096 shrink iterations; release = 64 fixed seeds × 256 cases/
@@ -64,8 +66,9 @@ Planned surface:
       stale-schema, or instrument failure is `NOT_PROVEN`
 - [ ] Normalized schema `formatter_property_harness.v1` writes atomically to
       `target/formatter-property-harness/<profile>/receipt.json`, with stable
-      row order and no timestamps/absolute paths. Release rows require the
-      caller-supplied exact candidate; consumers validate that binding
+      row order, canonical corpus schema/digest, and no timestamps/absolute
+      paths. Release rows require the caller-supplied exact candidate;
+      consumers validate that binding
 - [ ] Ordinary PR routing selects only focused proof for formatter/harness
       changes. Scheduled/release consumers own their later workflow wiring and
       normalized artifact upload; before enabling either, record a measured LEM
