@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12139 |
+| Total tracked files | 12122 |
 | Rust-family files | 3713 |
-| Non-Rust files | 8426 |
-| Allowlisted | 6180 |
-| Unclassified | 2246 |
+| Non-Rust files | 8409 |
+| Allowlisted | 6175 |
+| Unclassified | 2234 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 443 |
-| documentation | 2748 |
+| config | 444 |
+| documentation | 2758 |
 | generated | 2 |
-| production | 328 |
+| production | 329 |
 | test | 2026 |
-| tooling | 633 |
-| unclassified | 2246 |
+| tooling | 616 |
+| unclassified | 2234 |
 
 ## Unclassified files
 
@@ -110,18 +110,6 @@
 | `crates/perl-lsp-ux-tests/fixtures/editor_ux_scorecard_measurements.json` | `json` |
 | `crates/perl-lsp-ux-tests/fixtures/golden_editor_workload.json` | `json` |
 | `crates/perl-parser-core/libcheck_unwrap.rlib` | `rlib` |
-| `crates/perl-parser-pest/src/grammar.pest` | `pest` |
-| `crates/perl-parser/examples/lsp_demo.sh` | `sh` |
-| `crates/perl-parser/examples/lsp_server.rs.disabled` | `disabled` |
-| `crates/perl-parser/examples/simple_lsp_test.sh` | `sh` |
-| `crates/perl-parser/examples/test_lsp.py` | `py` |
-| `crates/perl-parser/examples/test_lsp_minimal.py` | `py` |
-| `crates/perl-parser/src/refactor/import_optimizer.rst` | `rst` |
-| `crates/perl-parser/templates/module.pl.template` | `template` |
-| `crates/perl-parser/templates/script.pl.template` | `template` |
-| `crates/perl-parser/templates/test.pl.template` | `template` |
-| `crates/perl-parser/tests/fixtures/.perltidyrc` | `` |
-| `crates/perl-parser/tests/run_all_e2e_tests.rs.disabled` | `disabled` |
 | `crates/perl-parser/tests/test_with_override.sh` | `sh` |
 | `crates/perl-workspace/tests/fixtures/semantic_scorecard/manifest.json` | `json` |
 | `distribution/build-packages.sh` | `sh` |
@@ -2343,6 +2331,7 @@
 | `.changes/unreleased/product-12573-Changed-194700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12639-Fixed-235500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12641-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12648-Fixed-203303.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12765-Changed-154500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12806-Added-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3091,24 +3080,6 @@
 | `.spec/11371-vim-bdd-journeys/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11371-vim-bdd-journeys/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11371-vim-bdd-journeys/context.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `.spec/11392-native-neovim-train-graph/invalid/actual_host_without_shared_execution.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/invalid/channel_satisfaction_transfer.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/invalid/contradicting_release_branches.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/invalid/controller_emitted_as_work.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/invalid/deep_cell_in_core_profile.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/invalid/duplicate_node_identity.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/invalid/embedded_live_state.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/invalid/expected_errors.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/invalid/hard_implementation_cycle.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/invalid/host_provisioning_as_behavior.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/invalid/missing_contract_fields.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/invalid/overlapping_conflict_keys.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/invalid/sibling_satisfaction.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/invalid/sidecar_in_core_profile.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/invalid/sidecar_in_core_spine.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/invalid/unknown_edge_target.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/shuffled/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11392-native-neovim-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11625-module-train-graph/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3981,6 +3952,7 @@
 | `crates/perl-parser-pest/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-parser-pest/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser-pest/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-parser-pest/src/grammar.pest` | production | `non-rust-pest-grammar` | parser/legacy-pest |
 | `crates/perl-parser-pest/tests/fixtures/manifest.toml` | test | `non-rust-parser-pest-fixture-manifest` | parser/pest-fixtures |
 | `crates/perl-parser-pest/tests/fixtures/sources/assignment-exponentiation/chained-assign.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-parser-pest/tests/fixtures/sources/assignment-exponentiation/power.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -4009,11 +3981,20 @@
 | `crates/perl-parser/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/examples/lsp_demo.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-parser/examples/lsp_demo.sh` | documentation | `non-rust-parser-example-scripts-sh` | docs |
+| `crates/perl-parser/examples/lsp_server.rs.disabled` | documentation | `non-rust-disabled-artifacts` | parser/legacy |
+| `crates/perl-parser/examples/simple_lsp_test.sh` | tooling | `non-rust-parser-simple-lsp-test-wrapper` | release/ci |
+| `crates/perl-parser/examples/test_lsp.py` | documentation | `non-rust-parser-example-scripts-py` | docs |
+| `crates/perl-parser/examples/test_lsp_minimal.py` | documentation | `non-rust-parser-example-scripts-py` | docs |
 | `crates/perl-parser/features_sot.toml` | config | `non-rust-crate-features-sot` | lsp/features |
 | `crates/perl-parser/incremental_authority.json` | tooling | `non-rust-incremental-authority-contract` | parser/incremental |
 | `crates/perl-parser/src/README_checkpoint.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/src/README_error_recovery.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser/src/README_trivia.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-parser/src/refactor/import_optimizer.rst` | documentation | `non-rust-refactor-design-docs` | parser/legacy |
+| `crates/perl-parser/templates/module.pl.template` | documentation | `non-rust-perl-parser-templates` | parser/lsp-fixtures |
+| `crates/perl-parser/templates/script.pl.template` | documentation | `non-rust-perl-parser-templates` | parser/lsp-fixtures |
+| `crates/perl-parser/templates/test.pl.template` | documentation | `non-rust-perl-parser-templates` | parser/lsp-fixtures |
 | `crates/perl-parser/test_anon_sub.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-parser/test_bare_builtins.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-parser/test_format_simple.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -4040,6 +4021,7 @@
 | `crates/perl-parser/tests/data/features_disabled_test.toml` | test | `non-rust-parser-test-data-toml` | parser/lsp-fixtures |
 | `crates/perl-parser/tests/data/features_minimal.toml` | test | `non-rust-parser-test-data-toml` | parser/lsp-fixtures |
 | `crates/perl-parser/tests/documentation_validation_mutation_hardening.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
+| `crates/perl-parser/tests/fixtures/.perltidyrc` | config | `non-rust-perltidy-fixture-config` | parser/lsp-fixtures |
 | `crates/perl-parser/tests/fixtures/completion_test.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-parser/tests/fixtures/diagnostics_test.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-parser/tests/fixtures/hover_test.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -4052,6 +4034,7 @@
 | `crates/perl-parser/tests/prop_invariants.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-parser/tests/prop_quote_like.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-parser/tests/prop_whitespace_idempotence.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
+| `crates/perl-parser/tests/run_all_e2e_tests.rs.disabled` | documentation | `non-rust-disabled-artifacts` | parser/legacy |
 | `crates/perl-parser/tests/snapshots/ast_snap__ast_anonymous_sub.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__ast_array_operations.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__ast_attributes_and_prototype_sub.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
@@ -4703,6 +4686,7 @@
 | `docs/devex/ripr-dogfood/devex-golden-outputs-20260507.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/devex/ripr-dogfood/devex-receipt-contract-20260507.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/devex/ripr-dogfood/devex-test-gap-20260507.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/distribution/INSTALL_CLAIM_SURFACES.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/examples/github-actions/setup-perl-lsp-consumer.yml` | documentation | `non-rust-docs-tree` | docs |
 | `docs/examples/helix/languages.toml` | documentation | `non-rust-docs-tree` | docs |
 | `docs/examples/intellij/README.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6267,7 +6251,6 @@
 | `schemas/compiler_lexical_cutline_cases.v1.schema.json` | config | `non-rust-compiler-lexical-cutline-schema` | compiler |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
 | `schemas/loaded_module_reload_family.v1.schema.json` | config | `non-rust-loaded-module-reload-family-schema` | identity |
-| `schemas/native_neovim_train.v1.schema.json` | documentation | `non-rust-native-neovim-train-schema` | neovim-train |
 | `schemas/perl_builtin_semantics.v1.schema.json` | config | `non-rust-compiler-builtin-semantics-schema` | compiler |
 | `schemas/perl_compiler_concept_proof.v1.schema.json` | config | `non-rust-compiler-concept-proof-schema` | compiler |
 | `schemas/perl_compiler_concepts.v1.schema.json` | config | `non-rust-compiler-concepts-schema` | compiler |
