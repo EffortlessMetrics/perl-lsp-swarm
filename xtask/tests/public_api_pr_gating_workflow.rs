@@ -137,6 +137,27 @@ fn public_api_job_runs(section: &str, event: &str, labels: &[&str]) -> bool {
     }
 }
 
+fn pull_request_labeled_trigger_is_configured(workflow: &str) -> bool {
+    let Some(on) = workflow.split_once("\non:").map(|(_, rest)| rest) else {
+        return false;
+    };
+    let Some((pull_request, _)) = on.split_once("\n  schedule:") else {
+        return false;
+    };
+    pull_request.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with("types:") && trimmed.contains("labeled")
+    })
+}
+
+fn workflow_policy_covers_public_api_inputs(workflow: &str) -> bool {
+    workflow.matches("  pull_request:").count() == 1
+        && workflow.matches("  push:").count() == 1
+        && workflow.matches("      - 'justfile'").count() == 2
+        && workflow.matches("      - 'docs/ci/labels.md'").count() == 2
+        && workflow.matches("      - 'scripts/tests/test-public-api-ratchet.sh'").count() == 2
+}
+
 #[test]
 fn pull_request_label_gate_ignores_commented_examples() {
     let section = r#"
@@ -371,6 +392,15 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
 {
     let root = project_root()?;
     let nightly = read(&root, ".github/workflows/ci-nightly.yml")?;
+    assert!(
+        pull_request_labeled_trigger_is_configured(&nightly),
+        "label application must dispatch the pull-request workflow"
+    );
+    let without_labeled = nightly.replace(", labeled", "");
+    assert!(
+        !pull_request_labeled_trigger_is_configured(&without_labeled),
+        "removing labeled activity must fail the dispatch contract"
+    );
     let public_api = job_section(&nightly, "public-api-check")
         .ok_or("ci-nightly.yml must define the public-api-check job")?;
     let label = pull_request_label_gate(public_api)
@@ -400,18 +430,22 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
     );
 
     let config = read(&root, ".github/ci-config.yml")?;
-    let description = config
-        .lines()
-        .find_map(|line| {
-            line.trim()
-                .strip_prefix(&format!("{label}: '"))
-                .and_then(|value| value.strip_suffix('\''))
-                .map(str::to_owned)
-        })
+    let metadata = config
+        .split_once(&format!("  {label}:\n"))
+        .and_then(|(_, rest)| rest.split_once("\n  # "))
+        .map(|(value, _)| value)
         .ok_or_else(|| format!("{label} must have canonical metadata in .github/ci-config.yml"))?;
+    let color = metadata
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("color: '")?.strip_suffix('\''))
+        .ok_or_else(|| format!("{label} must have a canonical color"))?;
+    let description = metadata
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("description: '")?.strip_suffix('\''))
+        .ok_or_else(|| format!("{label} must have a canonical description"))?;
 
     let provisioning = read(&root, "scripts/gh/ensure-labels.sh")?;
-    let expected = format!("ensure_reconciled \"{label}\" \"0052cc\" \"{description}\"");
+    let expected = format!("ensure_reconciled \"{label}\" \"{color}\" \"{description}\"");
     assert!(
         provisioning.lines().any(|line| line.trim() == expected),
         "the provisioning metadata must join the canonical ci-config value"
@@ -419,6 +453,14 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
     assert!(
         provisioning.contains("gh label edit \"$name\""),
         "existing public API labels must be reconciled, not merely skipped"
+    );
+
+    let policy = read(&root, ".github/workflows/workflow-policy.yml")?;
+    assert!(workflow_policy_covers_public_api_inputs(&policy));
+    let without_justfile = policy.replace("      - 'justfile'\n", "");
+    assert!(
+        !workflow_policy_covers_public_api_inputs(&without_justfile),
+        "removing justfile coverage must fail the recurrence contract"
     );
 
     Ok(())
