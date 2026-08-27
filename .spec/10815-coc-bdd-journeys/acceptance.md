@@ -149,11 +149,26 @@ reporting_failed    projection/report stage failed after upstream truth existed
 cleanup_failed      terminal session ended without required cleanup truth
 ```
 
-Equivalences: `editor_client_compat.v1` journeyCell results carry
-`pass | fail | partial | not_proven | unsupported`; registry tiers add
-`configuration_documented` / `not_proven_unsupported`; limited,
-client_not_exposed, instrument_failed, reporting_failed, and cleanup_failed
-are terminal dispositions owned by the stage that terminates them, always
+Provenance of each term against current main (review honesty):
+
+- `editor_client_compat.v1` journeyCell `result` carries
+  `pass | fail | partial | not_proven | unsupported`, with process cleanup
+  facts limited to `pass | fail | not_proven` (#7777 schema; #10527 bounds).
+- `limited` and `client_not_exposed` exist today as editor-cell ladders in the
+  shipped cell catalogs and editor docs (e.g. the vim-lsp cell catalog and the
+  IntelliJ DAP/IDEA cell result ladders: proven / limited /
+  client_not_exposed / not_proven).
+- `instrument_failed` exists in shipped host-compat/receipt schemas (the zed
+  v1 receipt family result enums).
+- `reporting_failed` and `cleanup_failed` are issue-named design vocabulary
+  from #10815's outcome list with **no current repository surface**: this
+  packet records them as design-level terminal dispositions only. Any machine
+  cell may emit them only after their owning receipt-schema revision lands;
+  until then the emitting leaf uses the nearest schema value (`not_proven`)
+  plus its limitation text, never silently dropping the distinction.
+- Registry tiers add `configuration_documented` / `not_proven_unsupported`.
+
+Every non-pass termination is owned by the stage that terminates it, always
 with a recorded limitation — never relabeled into a pass downstream.
 
 ## §Hazards
