@@ -296,7 +296,7 @@ fn validate_trace_session_id(session: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_artifact(artifact: &RunnerArtifactIdentity) -> Result<(), String> {
+pub(crate) fn validate_artifact(artifact: &RunnerArtifactIdentity) -> Result<(), String> {
     let path = &artifact.canonical_path;
     if path.is_empty() || path.len() > 1024 {
         return Err("runner artifact path must be nonempty and at most 1024 characters".to_string());
@@ -304,11 +304,9 @@ fn validate_artifact(artifact: &RunnerArtifactIdentity) -> Result<(), String> {
     if path.starts_with('/') || path.starts_with('\\') || path.contains("..") {
         return Err(format!("runner artifact path {path} must stay simple and checkout-relative"));
     }
-    if artifact.content_sha256.len() != 64
-        || !artifact.content_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
+    if !crate::is_canonical_sha256_hex(&artifact.content_sha256) {
         return Err(format!(
-            "runner artifact digest must be 64 hexadecimal characters: {}",
+            "runner artifact digest must be 64 hexadecimal characters ([0-9a-f] lower-case): {}",
             artifact.content_sha256
         ));
     }
@@ -345,7 +343,7 @@ fn validate_reference(
         return Err(format!("{label} must be {min_len}-{max_len} characters"));
     }
     if lowercase_hex {
-        if !value.bytes().all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')) {
+        if !value.bytes().all(crate::is_lower_case_hex_byte) {
             return Err(format!("{label} must be lower-case hexadecimal"));
         }
         return Ok(());
@@ -368,8 +366,10 @@ fn validate_target_id(target_id: &str) -> Result<(), String> {
 }
 
 fn validate_sha256_field(value: &str, label: &str) -> Result<(), String> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!("{label} must be a 64-character hexadecimal digest: {value}"));
+    if !crate::is_canonical_sha256_hex(value) {
+        return Err(format!(
+            "{label} must be a 64-character hexadecimal digest ([0-9a-f] lower-case): {value}"
+        ));
     }
     Ok(())
 }
@@ -382,8 +382,8 @@ mod contract_tests {
     //! even when the public surface only reports the first rejection.
 
     use super::{
-        required_limitations, validate_reference, validate_sha256_field, validate_target_id,
-        validate_trace_session_id,
+        RunnerArtifactIdentity, required_limitations, validate_artifact, validate_reference,
+        validate_sha256_field, validate_target_id, validate_trace_session_id,
     };
     use crate::invocation_trace::model::SUBJECT_VALIDATIONS_PER_CONSTRUCTION;
 
@@ -453,5 +453,32 @@ mod contract_tests {
         expected.sort_unstable();
         assert_eq!(required_limitations(), expected);
         assert_eq!(SUBJECT_VALIDATIONS_PER_CONSTRUCTION, 4);
+    }
+
+    /// #7725: trace-bound identities must be spelled with the one canonical
+    /// serialized form, lower-case hexadecimal.
+    #[test]
+    fn trace_identities_accept_only_canonical_lower_case_hex() {
+        assert!(validate_sha256_field(&"ab".repeat(32), "matrix fingerprint").is_ok());
+        assert!(rejected_as(
+            validate_sha256_field(&"AB".repeat(32), "matrix fingerprint"),
+            "matrix fingerprint"
+        ));
+        assert!(rejected_as(
+            validate_sha256_field(&"aB".repeat(32), "matrix fingerprint"),
+            "matrix fingerprint"
+        ));
+
+        let artifact = RunnerArtifactIdentity {
+            canonical_path: "t/TEST".to_string(),
+            content_sha256: "aB".repeat(32),
+        };
+        let message = validate_artifact(&artifact).expect_err("mixed case must reject");
+        assert!(message.contains("runner artifact digest"), "{message}");
+        let lower_artifact = RunnerArtifactIdentity {
+            canonical_path: "t/TEST".to_string(),
+            content_sha256: "ab".repeat(32),
+        };
+        assert!(validate_artifact(&lower_artifact).is_ok());
     }
 }
