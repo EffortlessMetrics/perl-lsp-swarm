@@ -23,7 +23,8 @@ describe('public-beta configuration migration registry', () => {
         automatic_read_compatibility: false,
         explicit_write_allowed: false,
         security_trust_class: 'process_execution',
-        expiry_version_or_issue: '#7119',
+        compatibility_window: { kind: 'no_expiry' },
+        expiry_owner_issue: 7119,
         installed_proof_requirement: '#7841',
       }),
     ]);
@@ -43,7 +44,8 @@ describe('public-beta configuration migration registry', () => {
       old_scope: 'resource',
       automatic_read_compatibility: true,
       old_plus_new_conflict_policy: 'current_wins',
-      expiry_version_or_issue: '#9999',
+      compatibility_window: { kind: 'no_expiry' },
+      expiry_owner_issue: 9999,
       installed_proof_requirement: '#9998',
     });
 

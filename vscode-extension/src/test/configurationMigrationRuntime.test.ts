@@ -12,7 +12,7 @@ import {
 
 function compatibleRegistry(): ConfigurationMigrationRegistry {
   return {
-    schema_version: 'vscode_configuration_migration.v1',
+    schema_version: 'vscode_configuration_migration.v2',
     source_public_release: '0.17.0',
     target_release: '0.18.0',
     rows: [
@@ -31,7 +31,8 @@ function compatibleRegistry(): ConfigurationMigrationRegistry {
         old_plus_new_conflict_policy: 'current_wins',
         security_trust_class: 'ordinary',
         warning_reason_code: 'legacy_setting_renamed',
-        expiry_version_or_issue: '#9000',
+        compatibility_window: { kind: 'no_expiry' },
+        expiry_owner_issue: 9000,
         installed_proof_requirement: '#9001',
       },
     ],
@@ -49,7 +50,79 @@ function registryWithConflictPolicy(
   return { ...base, rows: [{ ...row, old_plus_new_conflict_policy: policy }] };
 }
 
+function expiringRegistry(
+  window: ConfigurationMigrationRow['compatibility_window'],
+): ConfigurationMigrationRegistry {
+  const base = compatibleRegistry();
+  const row = base.rows[0]!;
+  return {
+    ...base,
+    rows: [{ ...row, compatibility_window: window, expiry_owner_issue: 7838 }],
+  };
+}
+
 describe('configuration migration runtime', () => {
+  test.each([
+    ['0.18.0-rc.1', 'compatible_legacy'],
+    ['0.18.0', 'expired'],
+    ['0.18.1', 'expired'],
+  ] as const)('applies a versioned expiry threshold at %s', (extensionVersion, status) => {
+    const result = interpretLegacyConfiguration(
+      expiringRegistry({
+        kind: 'through_extension_version',
+        version: '0.18.0',
+        post_expiry_disposition: 'action_required',
+      }),
+      {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'legacy',
+        current_value_present: false,
+        current_value: null,
+        extension_version: extensionVersion,
+      },
+    );
+
+    expect(result.status).toBe(status);
+    if (status === 'expired') {
+      expect(result.canonical_value_present).toBe(false);
+      expect(result.post_expiry_disposition).toBe('action_required');
+    }
+  });
+
+  test('current configuration remains authoritative after compatibility expiry', () => {
+    const result = interpretLegacyConfiguration(
+      expiringRegistry({
+        kind: 'through_extension_version',
+        version: '0.18.0',
+        post_expiry_disposition: 'action_required',
+      }),
+      {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'legacy',
+        current_value_present: true,
+        current_value: 'current',
+        extension_version: '0.18.0',
+      },
+    );
+
+    expect(result).toMatchObject({ status: 'expired', canonical_value_present: false });
+  });
+
+  test('malformed expiry thresholds invalidate the registry', () => {
+    const registry = expiringRegistry({
+      kind: 'through_extension_version',
+      version: 'not-a-version',
+      post_expiry_disposition: 'action_required',
+    });
+    expect(validateMigrationRegistry(registry)).toContain(
+      'migration expiry version is not valid SemVer: legacy_rename',
+    );
+  });
+
   test('keeps removed MCP process-execution settings inert without carrying their value', () => {
     const secretLegacyValue = [
       { label: 'private', command: '/private/tool', env: { TOKEN: 'secret' } },

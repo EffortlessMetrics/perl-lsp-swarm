@@ -1,6 +1,7 @@
 import type {
   ConfigurationMigrationRegistry,
   ConfigurationMigrationRow,
+  CompatibilityWindow,
   MigrationScope,
 } from './configurationMigrationRegistry';
 import { findMigrationRows } from './configurationMigrationRegistry';
@@ -11,6 +12,7 @@ export type MigrationRuntimeStatus =
   | 'compatible_current_wins'
   | 'action_required'
   | 'inert'
+  | 'expired'
   | 'invalid';
 
 export interface MigrationRuntimeInput {
@@ -20,6 +22,8 @@ export interface MigrationRuntimeInput {
   legacy_value: unknown;
   current_value_present: boolean;
   current_value: unknown;
+  /** Required by callers for expiry-bearing rows; missing input fails closed. */
+  extension_version?: string;
 }
 
 export interface MigrationRuntimeResult {
@@ -34,6 +38,8 @@ export interface MigrationRuntimeResult {
   reason_code: string | null;
   notice_required: boolean;
   disk_write_allowed: boolean;
+  compatibility_window: CompatibilityWindow;
+  post_expiry_disposition: 'action_required' | 'invalid' | 'inert' | null;
 }
 
 export interface SafeMigrationRuntimeSnapshot {
@@ -44,6 +50,7 @@ export interface SafeMigrationRuntimeSnapshot {
   canonical_key_or_authority: string | null;
   reason_code: string | null;
   notice_required: boolean;
+  post_expiry_disposition: 'action_required' | 'invalid' | 'inert' | null;
 }
 
 const MISSING_VALUE = Symbol('configuration-migration-missing');
@@ -88,7 +95,50 @@ function result(
     reason_code: reasonCode,
     notice_required: noticeRequired,
     disk_write_allowed: row?.explicit_write_allowed ?? false,
+    compatibility_window: row?.compatibility_window ?? { kind: 'no_expiry' },
+    post_expiry_disposition:
+      row?.compatibility_window.kind === 'no_expiry'
+        ? null
+        : (row?.compatibility_window.post_expiry_disposition ?? null),
   };
+}
+
+type ParsedVersion = { major: number; minor: number; patch: number; prerelease: string[] };
+const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+
+function parseVersion(value: string): ParsedVersion | null {
+  const match = SEMVER.exec(value);
+  if (!match) return null;
+  const prerelease = match[4]?.split('.') ?? [];
+  if (prerelease.some((part) => /^\d+$/.test(part) && part.length > 1 && part.startsWith('0'))) return null;
+  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), prerelease };
+}
+
+function compareVersion(left: ParsedVersion, right: ParsedVersion): number {
+  for (const [a, b] of [[left.major, right.major], [left.minor, right.minor], [left.patch, right.patch]]) {
+    if (a !== b) return a < b ? -1 : 1;
+  }
+  if (left.prerelease.length === 0 || right.prerelease.length === 0) {
+    return left.prerelease.length === right.prerelease.length ? 0 : left.prerelease.length === 0 ? 1 : -1;
+  }
+  for (let index = 0; index < Math.max(left.prerelease.length, right.prerelease.length); index += 1) {
+    const a = left.prerelease[index];
+    const b = right.prerelease[index];
+    if (a === undefined || b === undefined) return a === undefined ? -1 : 1;
+    const an = /^\d+$/.test(a);
+    const bn = /^\d+$/.test(b);
+    if (an && bn && a.length !== b.length) return a.length < b.length ? -1 : 1;
+    if (an !== bn) return an ? -1 : 1;
+    if (a !== b) return a < b ? -1 : 1;
+  }
+  return 0;
+}
+
+function isExpired(row: ConfigurationMigrationRow, extensionVersion: string): boolean {
+  if (row.compatibility_window.kind === 'no_expiry') return false;
+  const current = parseVersion(extensionVersion);
+  const threshold = parseVersion(row.compatibility_window.version);
+  return !current || !threshold || compareVersion(current, threshold) >= 0;
 }
 
 type RowSelection =
@@ -98,7 +148,7 @@ type RowSelection =
 /**
  * The registry deliberately allows several rows per `old_key` — its uniqueness key spans
  * the version window and value shape, so one setting can carry a row per historical era.
- * This interpreter has no version input and therefore cannot choose between eras, so an
+ * This interpreter has no historical-era input and therefore cannot choose between eras, so an
  * ambiguous match is reported as such rather than silently resolved to whichever row
  * happens to sort first.
  */
@@ -143,6 +193,12 @@ export function interpretLegacyConfiguration(
   }
 
   const row = selection.row;
+  if (
+    row.compatibility_window.kind !== 'no_expiry' &&
+    isExpired(row, input.extension_version ?? '')
+  ) {
+    return result(input, row, 'expired', MISSING_VALUE, true);
+  }
   switch (row.migration_disposition) {
     case 'unchanged':
     case 'renamed_compatible':

@@ -18,6 +18,19 @@ export type MigrationScope =
 
 export type MigrationSecurityClass = 'ordinary' | 'machine_sensitive' | 'process_execution';
 
+export type CompatibilityWindow =
+  | { kind: 'no_expiry' }
+  | {
+      kind: 'through_extension_version';
+      version: string;
+      post_expiry_disposition: 'action_required' | 'invalid' | 'inert';
+    }
+  | {
+      kind: 'removed_in_extension_version';
+      version: string;
+      post_expiry_disposition: 'action_required' | 'invalid' | 'inert';
+    };
+
 export interface ConfigurationMigrationRow {
   migration_id: string;
   old_key: string;
@@ -37,12 +50,13 @@ export interface ConfigurationMigrationRow {
     | 'not_applicable';
   security_trust_class: MigrationSecurityClass;
   warning_reason_code: string;
-  expiry_version_or_issue: string;
+  compatibility_window: CompatibilityWindow;
+  expiry_owner_issue: number | null;
   installed_proof_requirement: string;
 }
 
 export interface ConfigurationMigrationRegistry {
-  schema_version: 'vscode_configuration_migration.v1';
+  schema_version: 'vscode_configuration_migration.v2';
   target_release: string;
   source_public_release: string;
   rows: ConfigurationMigrationRow[];
@@ -65,7 +79,7 @@ const SCOPE_RANK: Record<MigrationScope, number> = {
 };
 
 export const V018_CONFIGURATION_MIGRATIONS: ConfigurationMigrationRegistry = {
-  schema_version: 'vscode_configuration_migration.v1',
+  schema_version: 'vscode_configuration_migration.v2',
   target_release: '0.18.0',
   source_public_release: '0.17.0',
   rows: [
@@ -84,7 +98,8 @@ export const V018_CONFIGURATION_MIGRATIONS: ConfigurationMigrationRegistry = {
       old_plus_new_conflict_policy: 'not_applicable',
       security_trust_class: 'process_execution',
       warning_reason_code: 'legacy_mcp_passthrough_removed',
-      expiry_version_or_issue: '#7119',
+      compatibility_window: { kind: 'no_expiry' },
+      expiry_owner_issue: 7119,
       installed_proof_requirement: '#7841',
     },
   ],
@@ -172,8 +187,19 @@ export function validateMigrationRegistry(registry: ConfigurationMigrationRegist
     if (row.warning_reason_code.length === 0) {
       errors.push(`migration must define warning_reason_code: ${row.migration_id}`);
     }
-    if (row.expiry_version_or_issue.length === 0) {
-      errors.push(`migration must define expiry owner: ${row.migration_id}`);
+    if (
+      row.expiry_owner_issue !== null &&
+      (!Number.isSafeInteger(row.expiry_owner_issue) || row.expiry_owner_issue <= 0)
+    ) {
+      errors.push(`migration expiry owner must be a positive issue number: ${row.migration_id}`);
+    }
+    if (
+      row.compatibility_window.kind !== 'no_expiry' &&
+      !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(
+        row.compatibility_window.version,
+      )
+    ) {
+      errors.push(`migration expiry version is not valid SemVer: ${row.migration_id}`);
     }
     if (row.installed_proof_requirement.length === 0) {
       errors.push(`migration must define installed proof requirement: ${row.migration_id}`);
