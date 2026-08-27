@@ -13,7 +13,7 @@
 //! - [`ast`] -- The primary AST used by the current recursive-descent parser.
 //! - [`invariant_policy`] -- Exhaustive range, child, payload, and recovery policy.
 //! - [`invariants`] -- Bounded structural validation shared by parser paths.
-//! - [`kind_schema`] -- Structural `NodeKind` registry: production FieldId membership and field-aware traversal.
+//! - [`kind_schema`] -- Structural `NodeKind` registry, field-aware traversal, schema identity, and NodeKind inventory.
 //! - [`v2`] -- Experimental second-generation AST re-exported from `perl-ast-v2`
 //!   for incremental parsing.
 //!
@@ -77,12 +77,14 @@ pub mod classification;
 pub mod invariant_policy;
 /// Bounded structural validation for parser-produced ASTs.
 pub mod invariants;
-/// Shadow `NodeKind` structural registry and check-mode parity checker.
+/// Structural `NodeKind` registry, field-aware traversal, schema identity, and
+/// freshness-gated NodeKind inventory.
 ///
 /// Production FieldId membership and field-aware child traversal are derived
 /// from this module. Native debug S-expression rendering consumes the visit
-/// table for child order but keeps payload disposition renderer-local. This
-/// module does not own generated status or schema fingerprint.
+/// table for child order but keeps payload disposition renderer-local. Schema
+/// identity and generated NodeKind status are derived from the same registry
+/// and do not change parser or AST structure.
 pub mod kind_schema;
 
 /// Incremental parsing AST types extracted into a dedicated microcrate.

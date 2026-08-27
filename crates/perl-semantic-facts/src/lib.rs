@@ -21,6 +21,9 @@ pub mod framework_adapters;
 pub mod handler;
 /// Canonical framework hook fact family (#8924).
 pub mod hook;
+/// Dependency-neutral versioned contracts for interprocedural composition
+/// (#12672).
+pub mod interprocedural;
 /// Transport-neutral reachability operation, work-budget, and
 /// terminal-outcome contract (#11553).
 pub mod reachability_operation;

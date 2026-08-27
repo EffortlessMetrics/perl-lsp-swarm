@@ -1,0 +1,5 @@
+component: "Developer experience"
+kind: Fixed
+body: "Windows reparse-point tests now perform visible typed skips without symlink privilege instead of failing with os error 1314 (#12567)."
+time: 
+20:33:03
