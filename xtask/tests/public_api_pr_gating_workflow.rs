@@ -48,8 +48,51 @@ fn job_section<'a>(workflow: &'a str, job_id: &str) -> Option<&'a str> {
 
 fn pull_request_label_gate(section: &str) -> Option<&str> {
     let anchor = "contains(github.event.pull_request.labels.*.name, '";
-    let rest = section.split_once(anchor)?.1;
-    Some(rest.split_once('\'')?.0)
+    let job_indent = section.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        (!trimmed.is_empty() && !trimmed.starts_with('#')).then_some(line.len() - trimmed.len())
+    })?;
+    let field_indent = job_indent.saturating_add(2);
+    let mut lines = section.lines();
+    let if_line = lines.find(|line| {
+        let trimmed = line.trim_start();
+        line.len() - trimmed.len() == field_indent && trimmed.starts_with("if:")
+    })?;
+    let mut is_header = true;
+
+    for line in std::iter::once(if_line).chain(lines) {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        if !is_header && !trimmed.is_empty() && indent <= field_indent {
+            break;
+        }
+        is_header = false;
+        if trimmed.starts_with('#') {
+            continue;
+        }
+
+        let expression = trimmed.strip_prefix("if:").map_or(trimmed, str::trim);
+        let active_expression = expression.split_once('#').map_or(expression, |(active, _)| active);
+        if let Some((_, rest)) = active_expression.split_once(anchor) {
+            return Some(rest.split_once('\'')?.0);
+        }
+    }
+
+    None
+}
+
+#[test]
+fn pull_request_label_gate_ignores_commented_examples() {
+    let section = r#"
+  public-api-check:
+    # Legacy example: contains(github.event.pull_request.labels.*.name, 'ci:public-api')
+    if: |
+      github.event_name == 'pull_request' &&
+      contains(github.event.pull_request.labels.*.name, 'ci:nonexistent')
+    steps: []
+"#;
+
+    assert_eq!(pull_request_label_gate(section), Some("ci:nonexistent"));
 }
 
 #[test]
