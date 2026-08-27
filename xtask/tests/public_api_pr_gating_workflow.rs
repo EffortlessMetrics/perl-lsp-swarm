@@ -129,6 +129,14 @@ fn scope_selection_is_job_level_and_never_label_gated() -> Result<(), Box<dyn st
         workflow.contains("api_scope=true") && workflow.contains("api_scope=false"),
         "draft-pr-check must emit both scope verdicts explicitly"
     );
+    assert!(
+        workflow.contains("/pulls/{pr_number}/files"),
+        "scope must derive from the pull request's own file set, not the two-dot base diff"
+    );
+    assert!(
+        workflow.contains("using changed-file fallback"),
+        "API probing must fall back to the local diff scan instead of failing open"
+    );
 
     Ok(())
 }

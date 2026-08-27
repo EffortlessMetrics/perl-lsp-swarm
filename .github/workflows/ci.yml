@@ -86,25 +86,84 @@ jobs:
               exit 0
             fi
 
-            # #2266: auto-select the public-API/semver compatibility rails when
-            # the diff touches any published facade surface or its committed
-            # baseline set. Scope stays job-level (ci.yml deliberately excludes
-            # `labeled`, and workflow-level paths filters would leave required
-            # contexts unreported); manual label widening remains available on
-            # ci-nightly.yml pull_request(labeled).
-            api_scope=false
-            for path in "${changed_files[@]}"; do
-              case "$path" in
-                crates/perl-parser/*|crates/perl-lexer/*|crates/perl-parser-core/*) api_scope=true ;;
-                crates/perl-lsp-rs/*|crates/perl-uri/*|crates/perl-dap/*) api_scope=true ;;
-                crates/perllsp/*|.ci/public-api-baselines/*) api_scope=true ;;
-              esac
-            done
+            # #2266: auto-select the public-API/semver compatibility rails from
+            # the pull request's own changed-file set, read through the REST
+            # files endpoint. A two-dot git diff against the base tip silently
+            # inherits facade commits other lanes already merged while this
+            # branch sat open (observed on #12850), and a merge-base three-dot
+            # diff needs history a depth=1 fetch deliberately lacks — so the
+            # exact PR file list is both truthful and cheap here. Scope stays
+            # job-level (ci.yml excludes `labeled`; workflow-level paths
+            # filters leave required contexts unreported), manual label
+            # widening remains on ci-nightly.yml pull_request(labeled).
+            api_scope="$(PR_NUMBER="${pr_number}" REPOSITORY="${GITHUB_REPOSITORY}" \
+            python3 - "${changed_files[@]}" <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          repo = os.environ["REPOSITORY"]
+          pr_number = os.environ["PR_NUMBER"]
+          prefixes = (
+              "crates/perl-parser/",
+              "crates/perl-lexer/",
+              "crates/perl-parser-core/",
+              "crates/perl-lsp-rs/",
+              "crates/perl-uri/",
+              "crates/perl-dap/",
+              "crates/perllsp/",
+              ".ci/public-api-baselines/",
+          )
+
+
+          def emit(value):
+              print(value)
+              raise SystemExit(0)
+
+
+          def matches(path):
+              return any(
+                  path.startswith(prefix) or prefix.rstrip("/") == path for prefix in prefixes
+              )
+
+
+          page = 1
+          try:
+              while True:
+                  url = (
+                      f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files"
+                      f"?per_page=100&page={page}"
+                  )
+                  request = urllib.request.Request(
+                      url,
+                      headers={"Accept": "application/vnd.github+json"},
+                  )
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      batch = json.load(response)
+                  if not isinstance(batch, list):
+                      raise ValueError("unexpected files payload")
+                  for entry in batch:
+                      if matches(entry.get("filename") or ""):
+                          emit("true")
+                  if len(batch) < 100:
+                      break
+                  page += 1
+          except Exception as exc:
+              # No-token API probe can be rate limited on shared runner egress. Fall
+              # back to the local two-dot diff scan; that over-approximates scope right
+              # after base-tip movement but never under-reports an affected PR.
+              print(f"::warning::Could not list PR files ({exc}); using changed-file fallback")
+              emit("true" if any(matches(arg) for arg in sys.argv[1:]) else "false")
+
+          emit("false")
+          PY
+            )"
             echo "api_scope=${api_scope}" >> "$GITHUB_OUTPUT"
             if [ "${api_scope}" = "true" ]; then
-              echo "::notice::API-surface change detected — public-api-pr / semver-pr rails will run"
+            echo "::notice::API-surface change detected — public-api-pr / semver-pr rails will run"
             else
-              echo "::notice::No API-surface change — API rails report green scoped-noop (#2266)"
+            echo "::notice::No API-surface change — API rails report green scoped-noop (#2266)"
             fi
 
             docs_only=true
