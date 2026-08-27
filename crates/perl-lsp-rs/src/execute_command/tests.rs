@@ -455,6 +455,32 @@ fn test_explain_provider_decision_rejects_oversized_scenario()
 }
 
 #[test]
+fn test_explain_provider_decision_bounds_echo_fields_not_transport_input()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+
+    // This is deliberately a negative control for the claim: an unrelated
+    // unknown member of the same size is still materialized and ignored by
+    // this handler. The guard protects the fields that enter the explanation
+    // and response, not the generic JSON frame or every request allocation.
+    let result = provider.execute_command(
+        "perl.explainProviderDecision",
+        vec![json!({
+            "provider": "rename",
+            "receipt_id": "safe-receipt",
+            "ignored_large_member": "x".repeat(65_536),
+        })],
+    )?;
+    assert_eq!(
+        result.get("receipt_id").and_then(Value::as_str),
+        Some("safe-receipt"),
+        "a valid echo field remains available when an unrelated large member is ignored"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_explain_provider_decision_rejects_non_canonical_identifier_vocabulary()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = ExecuteCommandProvider::new();
@@ -497,7 +523,7 @@ fn test_explain_provider_decision_preserves_tracked_identifier_shapes()
     // Every shape below is harvested from tracked receipts, snapshots, UX
     // scenarios, or documented defaults: lower-case hyphenated ids, underscored
     // UX scenarios, `.rs` file labels, and markdown-anchor document receipts.
-    // The intake law must accept each unchanged (#2758).
+    // The explanation-field law must accept each unchanged (#2758).
     for (receipt_id, scenario) in [
         ("semantic-shadow-compare", Some("mojolicious-safe-delete")),
         ("runtime-request", Some("realbaseline-rename-fallback-noise")),
@@ -551,7 +577,7 @@ fn test_explain_provider_decision_accepts_identifier_bound_at_limit()
     assert_eq!(
         result.get("receipt_id").and_then(Value::as_str).map(str::len),
         Some(1024),
-        "identifier at the intake bound must round-trip unchanged"
+        "identifier at the explanation-field bound must round-trip unchanged"
     );
 
     let over_limit = "a".repeat(1025);
