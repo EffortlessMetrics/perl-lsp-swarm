@@ -92,24 +92,31 @@ impl LspServer {
         // Cheap in-memory gate first: a document with no `use Dancer2`
         // activation site pays no filesystem module resolution at all —
         // the resolution walk is I/O and must not run on every request
-        // for Dancer2-free files.
-        if !perl_lsp_rs_core::providers::dancer2::has_activation_site(ast) {
+        // for Dancer2-free files. The same walk yields the first activation
+        // site's byte offset, which anchors the position-aware resolution.
+        let Some(activation_offset) =
+            perl_lsp_rs_core::providers::dancer2::first_activation_site_offset(ast)
+        else {
             return Dancer2RequestContext {
                 activations: Dancer2FileActivations::default(),
                 facts: CanonicalDancer2FileFacts::default(),
             };
-        }
+        };
         let generation = SourceGeneration::known(format!("lsp-doc:{content_hash:016x}"));
         let file_id = FileId(content_hash & 0xFFFF_FFFF);
-        // Whole-file `@INC` state: position-aware activation-site anchoring
-        // was tried and reverted — the per-folder relative-root semantics
-        // it requires (resolving `use lib 'lib'` against the owning
-        // workspace folder rather than the server root) are not provided by
-        // the shared resolution layer today and broke multi-root
-        // workspaces. Recorded as the boundary; revisit with folder-scoped
-        // @INC resolution.
+        // Activation-site anchoring with folder-scoped roots (#12776): the
+        // effective `@INC` is evaluated at the first activation site (a
+        // later `use lib` cannot retroactively exact an earlier import; a
+        // preceding `no lib` cancels configured roots), and every relative
+        // root binds to the document's owning workspace folder instead of
+        // fanning out across all registered folders (multi-root same-name
+        // isolation, ux scenario 69). This is the provider-side consumer
+        // seam only: general per-folder relative-root semantics stay owned
+        // by the module-resolution train (#4240; #10575, #8112, #10569);
+        // other consumers of `resolve_module_to_path_*` keep their
+        // shared-layer behavior.
         let module = self
-            .resolve_module_to_path_with_doc_at_offset("Dancer2", Some(text), Some(uri), None)
+            .resolve_dancer2_module_at_activation(uri, text, activation_offset)
             .as_deref()
             .and_then(observe_dancer2_module);
         let activations = file_activations(ast, file_id, module.as_ref(), &generation);
@@ -342,7 +349,7 @@ mod activation_anchoring_tests {
         let ws = temp.path().join("ws");
         let lib = ws.join("lib_ok");
         std::fs::create_dir_all(&lib)?;
-        std::fs::write(lib.join("Dancer2.pm"), stub_module("7.7.7"))?;
+        std::fs::write(lib.join("Dancer2.pm"), stub_module("1.777.7"))?;
 
         let mut config = isolated_workspace_config();
         config.include_paths = vec!["lib_ok".to_string()];
@@ -374,8 +381,8 @@ mod activation_anchoring_tests {
     #[test]
     fn relative_lexical_root_resolves_against_owning_folder_only() -> TestResult {
         let temp = tempfile::tempdir()?;
-        let svc_a = make_app_folder(temp.path(), "svc-a", "0.0.1");
-        let svc_b = make_app_folder(temp.path(), "svc-b", "0.0.2");
+        let svc_a = make_app_folder(temp.path(), "svc-a", "1.101.001");
+        let svc_b = make_app_folder(temp.path(), "svc-b", "1.102.002");
 
         // Registration order matters: the owning folder must NOT be first.
         let server = server_with_folders(&[(&svc_a, None), (&svc_b, None)]);
@@ -389,13 +396,20 @@ mod activation_anchoring_tests {
             .module
             .as_ref()
             .ok_or("expected an owning-folder module resolution")?;
-        assert_eq!(module.declared_version, "0.0.2", "the owning folder's stub wins");
+        assert_eq!(module.declared_version, "1.102.002", "the owning folder's stub wins");
         assert_eq!(
             normalized(&module.resolved_path),
             normalized(svc_b.join("lib").join("Dancer2.pm").to_string_lossy().as_ref()),
             "relative lexical roots bind to the owning workspace folder, not folder order"
         );
-        assert!(context.activations.has_exact());
+        assert!(
+            context.activations.has_exact(),
+            "owning-folder resolution must be exact: {:?}",
+            context
+                .activations
+                .for_package("main")
+                .map(|package| package.facts.state.clone())
+        );
         Ok(())
     }
 
@@ -404,8 +418,8 @@ mod activation_anchoring_tests {
     #[test]
     fn multi_root_apps_each_resolve_within_their_own_folder() -> TestResult {
         let temp = tempfile::tempdir()?;
-        let svc_a = make_app_folder(temp.path(), "svc-a", "0.0.1");
-        let svc_b = make_app_folder(temp.path(), "svc-b", "0.0.2");
+        let svc_a = make_app_folder(temp.path(), "svc-a", "1.101.001");
+        let svc_b = make_app_folder(temp.path(), "svc-b", "1.102.002");
 
         let server = server_with_folders(&[(&svc_a, None), (&svc_b, None)]);
         let doc_a = svc_a.join("bin").join("app.pl");
@@ -425,8 +439,8 @@ mod activation_anchoring_tests {
             normalized(&module_b.resolved_path),
             "same-name modules must stay isolated per root"
         );
-        assert_eq!(module_a.declared_version, "0.0.1");
-        assert_eq!(module_b.declared_version, "0.0.2");
+        assert_eq!(module_a.declared_version, "1.101.001");
+        assert_eq!(module_b.declared_version, "1.102.002");
         Ok(())
     }
 }
