@@ -46,6 +46,12 @@ fn job_section<'a>(workflow: &'a str, job_id: &str) -> Option<&'a str> {
     Some(&workflow[start..body_start + end])
 }
 
+fn pull_request_label_gate(section: &str) -> Option<&str> {
+    let anchor = "contains(github.event.pull_request.labels.*.name, '";
+    let rest = section.split_once(anchor)?.1;
+    Some(rest.split_once('\'')?.0)
+}
+
 #[test]
 fn ci_yml_runs_both_compatibility_rails_on_pull_requests() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -187,8 +193,8 @@ fn registry_records_the_new_advisory_contexts() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-fn nightly_label_gates_and_baseline_ratchet_survive_unchanged()
--> Result<(), Box<dyn std::error::Error>> {
+fn nightly_label_gates_and_baseline_ratchet_survive_unchanged(
+) -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let nightly = read(&root, ".github/workflows/ci-nightly.yml")?;
     assert!(
@@ -200,6 +206,38 @@ fn nightly_label_gates_and_baseline_ratchet_survive_unchanged()
     assert!(
         justfile.contains("public-api-check:"),
         "canonical public API baseline recipe must stay registered in the justfile"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = project_root()?;
+    let nightly = read(&root, ".github/workflows/ci-nightly.yml")?;
+    let public_api = job_section(&nightly, "public-api-check")
+        .ok_or("ci-nightly.yml must define the public-api-check job")?;
+    let label = pull_request_label_gate(public_api)
+        .ok_or("public-api-check must expose its pull-request label gate")?;
+
+    assert_eq!(label, "ci:public-api", "the public API lane owns one stable trigger label");
+
+    let docs = read(&root, "docs/ci/labels.md")?;
+    let governed_row = docs
+        .lines()
+        .find(|line| line.contains(&format!("`{label}`")))
+        .ok_or_else(|| format!("{label} must be present in docs/ci/labels.md"))?;
+    assert!(
+        governed_row.contains("20-minute") && governed_row.contains("fail-closed"),
+        "the governed row must state the lane cost cap and proof intent"
+    );
+
+    let provisioning = read(&root, "scripts/gh/ensure-labels.sh")?;
+    let expected = format!("ensure \"{label}\" \"0052cc\" \"Run public API surface validation\"");
+    assert!(
+        provisioning.lines().any(|line| line.trim() == expected),
+        "the workflow label must use the governed provisioning metadata"
     );
 
     Ok(())

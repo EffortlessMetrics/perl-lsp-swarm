@@ -59,5 +59,9 @@ ensure "area:lexer"   "d4edda" "Lexer and tokenization"
 ensure "area:semantic" "c2e0c6" "Semantic analysis"
 
 echo ""
+echo "=== Lane Trigger Labels ==="
+ensure "ci:public-api" "0052cc" "Run public API surface validation"
+
+echo ""
 echo "=== Done ==="
 echo "Label taxonomy is ready. Your automated workflows (gate:*, review:*, fix:*) remain intact."
