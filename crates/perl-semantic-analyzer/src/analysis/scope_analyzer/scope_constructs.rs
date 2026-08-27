@@ -232,40 +232,39 @@ fn process_callable_scope<'a>(
     ancestors.pop();
 
     // Check for unused parameters
-    if let Some(sig) = signature {
-        if let NodeKind::Signature { parameters } = &sig.kind {
-            for param in parameters {
-                let extracted = analyzer.extract_variable_name(param);
-                if !extracted.is_empty() {
-                    let (sigil, name) = extracted.parts();
-                    let full_name = extracted.as_string();
+    if let Some(sig) = signature
+        && let NodeKind::Signature { parameters } = &sig.kind
+    {
+        for param in parameters {
+            let extracted = analyzer.extract_variable_name(param);
+            if !extracted.is_empty() {
+                let (sigil, name) = extracted.parts();
+                let full_name = extracted.as_string();
 
-                    // Skip parameters starting with underscore (intentionally unused)
-                    if name.starts_with('_') {
-                        continue;
-                    }
+                // Skip parameters starting with underscore (intentionally unused)
+                if name.starts_with('_') {
+                    continue;
+                }
 
-                    // Optimization: Access variable directly from current scope to avoid Rc clone
-                    let idx = sigil_to_index(sigil);
-                    let vars = sub_scope.variables.borrow();
-                    if let Some(map) = vars[idx].as_ref() {
-                        if let Some(var) = map.get(name) {
-                            if !*var.is_used.borrow() {
-                                issues.push(ScopeIssue {
-                                    kind: IssueKind::UnusedParameter,
-                                    variable_name: full_name.clone(),
-                                    line: context.get_line(param.location.start),
-                                    range: (param.location.start, param.location.end),
-                                    description: format!(
-                                        "Parameter '{}' is declared but never used",
-                                        full_name
-                                    ),
-                                });
-                                // Mark as used to prevent double reporting
-                                *var.is_used.borrow_mut() = true;
-                            }
-                        }
-                    }
+                // Optimization: Access variable directly from current scope to avoid Rc clone
+                let idx = sigil_to_index(sigil);
+                let vars = sub_scope.variables.borrow();
+                if let Some(map) = vars[idx].as_ref()
+                    && let Some(var) = map.get(name)
+                    && !*var.is_used.borrow()
+                {
+                    issues.push(ScopeIssue {
+                        kind: IssueKind::UnusedParameter,
+                        variable_name: full_name.clone(),
+                        line: context.get_line(param.location.start),
+                        range: (param.location.start, param.location.end),
+                        description: format!(
+                            "Parameter '{}' is declared but never used",
+                            full_name
+                        ),
+                    });
+                    // Mark as used to prevent double reporting
+                    *var.is_used.borrow_mut() = true;
                 }
             }
         }
@@ -355,27 +354,28 @@ pub(super) fn handle_try<'a>(
             // it via a fragile backward substring scan.
             let catch_var_range = (var_loc.start, var_loc.end);
             let (sigil, name) = split_variable_name(full_name);
-            if !sigil.is_empty() && !name.is_empty() && !name.contains("::") {
-                if let Some(issue_kind) =
+            if !sigil.is_empty()
+                && !name.is_empty()
+                && !name.contains("::")
+                && let Some(issue_kind) =
                     catch_scope.declare_variable_parts(sigil, name, catch_var_range.0, false, true)
-                {
-                    let description = match issue_kind {
-                        IssueKind::VariableShadowing => {
-                            format!("Variable '{}' shadows a variable in outer scope", full_name)
-                        }
-                        IssueKind::VariableRedeclaration => {
-                            format!("Variable '{}' is already declared in this scope", full_name)
-                        }
-                        _ => String::new(),
-                    };
-                    issues.push(ScopeIssue {
-                        kind: issue_kind,
-                        variable_name: full_name.to_string(),
-                        line: context.get_line(catch_var_range.0),
-                        range: catch_var_range,
-                        description,
-                    });
-                }
+            {
+                let description = match issue_kind {
+                    IssueKind::VariableShadowing => {
+                        format!("Variable '{}' shadows a variable in outer scope", full_name)
+                    }
+                    IssueKind::VariableRedeclaration => {
+                        format!("Variable '{}' is already declared in this scope", full_name)
+                    }
+                    _ => String::new(),
+                };
+                issues.push(ScopeIssue {
+                    kind: issue_kind,
+                    variable_name: full_name.to_string(),
+                    line: context.get_line(catch_var_range.0),
+                    range: catch_var_range,
+                    description,
+                });
             }
         }
 
