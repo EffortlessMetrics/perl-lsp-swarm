@@ -5277,6 +5277,40 @@ profile = "recommended"
             SYSTEM_INC_PROBE_TIMEOUT,
             "dropping the guards must restore the production bound",
         );
+
+        // The accessor agreeing is not enough: the budget the probe actually
+        // runs with is the one `PerlOracleEnv` captured, so assert the seam
+        // reaches that consumer in both directions.
+        let Ok(perl_path) = resolve_perl_path_with_toolchain() else {
+            return;
+        };
+        let config = WorkspaceConfig {
+            use_system_inc: true,
+            perl_path: Some(perl_path.to_string_lossy().into_owned()),
+            ..WorkspaceConfig::default()
+        };
+        let oracle_timeout = |config: &WorkspaceConfig| {
+            PerlOracleEnv::for_module_resolution(config).map(|oracle| oracle.timeout)
+        };
+
+        assert_eq!(
+            oracle_timeout(&config),
+            Some(SYSTEM_INC_PROBE_TIMEOUT),
+            "the oracle must carry the production bound with no guard live",
+        );
+        {
+            let _widened = SystemIncProbeTimeoutOverride::widen_to(Duration::from_secs(60));
+            assert_eq!(
+                oracle_timeout(&config),
+                Some(Duration::from_secs(60)),
+                "a live guard must reach the oracle the probe runs with",
+            );
+        }
+        assert_eq!(
+            oracle_timeout(&config),
+            Some(SYSTEM_INC_PROBE_TIMEOUT),
+            "the oracle must return to the production bound on drop",
+        );
     }
 
     /// A widened budget must not leak into concurrently running tests: every

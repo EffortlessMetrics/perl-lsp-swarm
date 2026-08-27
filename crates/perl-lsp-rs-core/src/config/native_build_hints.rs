@@ -756,6 +756,22 @@ mod tests {
             "join(q(,), @libs)".len(),
             "the first closer without an opener must end the value",
         );
+
+        // The skip length decides where the outer scan resumes, so pin the
+        // boundary outcomes too: an off-by-one here silently re-scans or
+        // swallows the next assignment.
+        assert_eq!(rejected_value_len(") rest", 0), 0, "a leading closer yields an empty span");
+        assert_eq!(rejected_value_len("(a", 0), 2, "an unterminated value runs to end of input");
+        assert_eq!(
+            rejected_value_len("'a, b', tail", 0),
+            6,
+            "separators inside quotes must not end the value",
+        );
+        assert_eq!(
+            rejected_value_len("skip me: a, tail", 9),
+            1,
+            "the span is measured from `start`, not from index 0",
+        );
     }
 
     /// Fresh temporary workspace root accepting optional build scripts.
