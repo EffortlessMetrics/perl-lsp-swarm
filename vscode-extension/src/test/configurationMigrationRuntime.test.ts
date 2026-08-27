@@ -177,6 +177,32 @@ describe('configuration migration runtime', () => {
         extension_version: '0.18.0',
       }),
     ).toMatchObject({ status: 'expired', post_expiry_disposition: 'inert' });
+
+    const unsupported: ConfigurationMigrationRegistry = {
+      ...inert,
+      rows: [
+        {
+          ...inert.rows[0]!,
+          migration_disposition: 'unsupported_legacy_value',
+          compatibility_window: {
+            kind: 'removed_in_extension_version',
+            version: '0.18.0',
+            post_expiry_disposition: 'invalid',
+          },
+        },
+      ],
+    };
+    expect(
+      interpretLegacyConfiguration(unsupported, {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'legacy',
+        current_value_present: false,
+        current_value: null,
+        extension_version: '0.18.0',
+      }),
+    ).toMatchObject({ status: 'expired', post_expiry_disposition: 'invalid' });
   });
 
   test('keeps removed MCP process-execution settings inert without carrying their value', () => {
