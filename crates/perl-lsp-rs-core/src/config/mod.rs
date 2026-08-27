@@ -5200,7 +5200,7 @@ profile = "recommended"
             ..WorkspaceConfig::default()
         };
 
-        let cached = with_system_inc_probe_timeout(Duration::from_secs(10), || {
+        let cached = with_system_inc_probe_timeout(Duration::from_secs(30), || {
             config.get_system_inc_probe_outcome()
         });
         let cached_paths = match &cached {
