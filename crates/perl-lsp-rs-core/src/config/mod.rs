@@ -5277,40 +5277,6 @@ profile = "recommended"
             SYSTEM_INC_PROBE_TIMEOUT,
             "dropping the guards must restore the production bound",
         );
-
-        // The accessor agreeing is not enough: the budget the probe actually
-        // runs with is the one `PerlOracleEnv` captured, so assert the seam
-        // reaches that consumer in both directions.
-        let Ok(perl_path) = resolve_perl_path_with_toolchain() else {
-            return;
-        };
-        let config = WorkspaceConfig {
-            use_system_inc: true,
-            perl_path: Some(perl_path.to_string_lossy().into_owned()),
-            ..WorkspaceConfig::default()
-        };
-        let oracle_timeout = |config: &WorkspaceConfig| {
-            PerlOracleEnv::for_module_resolution(config).map(|oracle| oracle.timeout)
-        };
-
-        assert_eq!(
-            oracle_timeout(&config),
-            Some(SYSTEM_INC_PROBE_TIMEOUT),
-            "the oracle must carry the production bound with no guard live",
-        );
-        {
-            let _widened = SystemIncProbeTimeoutOverride::widen_to(Duration::from_secs(60));
-            assert_eq!(
-                oracle_timeout(&config),
-                Some(Duration::from_secs(60)),
-                "a live guard must reach the oracle the probe runs with",
-            );
-        }
-        assert_eq!(
-            oracle_timeout(&config),
-            Some(SYSTEM_INC_PROBE_TIMEOUT),
-            "the oracle must return to the production bound on drop",
-        );
     }
 
     /// A widened budget must not leak into concurrently running tests: every
@@ -5329,6 +5295,48 @@ profile = "recommended"
             "a sibling thread must keep the production bound",
         );
         Ok(())
+    }
+
+    /// The widening must reach the *constructed oracle*, not merely
+    /// `effective_system_inc_probe_timeout`. `fetch_perl_inc` runs the probe
+    /// with `PerlOracleEnv::timeout`, so a constructor that forgets to consume
+    /// the seam leaves #12902 in place with the whole suite green — verified by
+    /// reverting `for_startup_inc_probe` to the constant, which fails only this
+    /// test.
+    ///
+    /// Hermetic: `PerlToolchainProfile::resolve` takes `perl_path` verbatim
+    /// without stat'ing it and only `timeout` is read, so no interpreter is
+    /// spawned and the test does not skip on a host without Perl.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn widened_probe_budget_reaches_the_constructed_oracle() {
+        let config = WorkspaceConfig {
+            use_system_inc: true,
+            perl_path: Some("/nonexistent/perl-for-probe-budget-seam".to_string()),
+            ..WorkspaceConfig::default()
+        };
+        // `for_module_resolution` delegates to `for_startup_inc_probe`, so this
+        // covers both probe entry points.
+        let budget = || PerlOracleEnv::for_module_resolution(&config).map(|oracle| oracle.timeout);
+
+        assert_eq!(
+            budget(),
+            Some(SYSTEM_INC_PROBE_TIMEOUT),
+            "the oracle must carry the production bound with no guard live",
+        );
+        {
+            let _widened = SystemIncProbeTimeoutOverride::widen_to(Duration::from_secs(60));
+            assert_eq!(
+                budget(),
+                Some(Duration::from_secs(60)),
+                "for_startup_inc_probe must consume the widening that fetch_perl_inc reads",
+            );
+        }
+        assert_eq!(
+            budget(),
+            Some(SYSTEM_INC_PROBE_TIMEOUT),
+            "dropping the guard must restore the production bound at the oracle",
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
