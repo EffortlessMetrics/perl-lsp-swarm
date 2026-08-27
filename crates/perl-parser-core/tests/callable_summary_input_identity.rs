@@ -16,6 +16,9 @@ use perl_parser_core::Parser;
 use perl_parser_core::hir::{HirBodyId, HirFile, lower_ast};
 use perl_parser_core::pir::{PirNode, lower_single_body};
 
+mod cpan_test_helpers;
+use cpan_test_helpers::assert_clean_parse;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 const SOURCE: &str = "sub f { a(); b(); my $x = 1; $x += 2; return $x; } sub g { return; }";
@@ -23,26 +26,34 @@ const SOURCE: &str = "sub f { a(); b(); my $x = 1; $x += 2; return $x; } sub g {
 fn parse_and_lower(source: &str) -> HirFile {
     let mut parser = Parser::new(source);
     let output = parser.parse_with_recovery();
+    // A parse regression must not pass this proof on a recovered tree:
+    // assert the parse is clean before lowering (the helper re-parses the
+    // same source and fails on any Error/Missing node).
+    assert_clean_parse(source);
     lower_ast(&output.ast)
 }
 
 /// One body's lowered operation sequence as a comparable shape: operation
-/// family, node id, anchor range, and context per node, in lowering order.
-fn body_shape(file: &HirFile, body_idx: usize) -> Vec<(String, u32, Option<(usize, usize)>)> {
-    let body = match file.bodies.get(body_idx) {
-        Some(body) => body,
-        None => return Vec::new(),
-    };
-    lower_single_body(body, HirBodyId(body_idx as u32), file)
-        .iter()
-        .map(|node: &PirNode| {
-            (
-                format!("{:?}", node.operation),
-                node.id.index(),
-                node.source_anchor.range.map(|range| (range.start, range.end)),
-            )
-        })
-        .collect()
+/// payload, node id, and anchor range per node, in lowering order. Returns
+/// `None` when the body index does not exist — a missing body is an
+/// explicit test failure at the call site, never a vacuous empty-vec pass.
+fn body_shape(
+    file: &HirFile,
+    body_idx: usize,
+) -> Option<Vec<(String, u32, Option<(usize, usize)>)>> {
+    let body = file.bodies.get(body_idx)?;
+    Some(
+        lower_single_body(body, HirBodyId(body_idx as u32), file)
+            .iter()
+            .map(|node: &PirNode| {
+                (
+                    format!("{:?}", node.operation),
+                    node.id.index(),
+                    node.source_anchor.range.map(|range| (range.start, range.end)),
+                )
+            })
+            .collect(),
+    )
 }
 
 #[test]
@@ -60,10 +71,11 @@ fn callable_summary_input_identity_is_deterministic() -> TestResult {
         return Err(format!("expected program root + 2 callables, got {first_owners:?}").into());
     }
 
-    // Same item identities: kinds, ranges, and scope contexts in order.
+    // Same item identities: full kind payloads, ranges, and scope contexts
+    // in order — a HirKind payload change must be detected, not just a
+    // variant-tag change.
     let item_shape = |item: &perl_parser_core::hir::HirItem| {
-        let kind = std::mem::discriminant(&item.kind);
-        format!("{:?}{kind:?}{:?}{:?}", item.id, item.range, item.scope_context)
+        format!("{:?}{:?}{:?}{:?}", item.id, item.kind, item.range, item.scope_context)
     };
     let first_items: Vec<String> = first.items.iter().map(&item_shape).collect();
     let second_items: Vec<String> = second.items.iter().map(&item_shape).collect();
@@ -71,16 +83,19 @@ fn callable_summary_input_identity_is_deterministic() -> TestResult {
 
     // Same per-body PIR identities: ids, anchors, and op sequences.
     for body_idx in 0..first.bodies.len() {
+        let first_shape =
+            body_shape(&first, body_idx).ok_or("first lowering must have every body")?;
+        let second_shape =
+            body_shape(&second, body_idx).ok_or("second lowering must have every body")?;
         assert_eq!(
-            body_shape(&first, body_idx),
-            body_shape(&second, body_idx),
+            first_shape, second_shape,
             "PIR identity sequence for body {body_idx} must be stable across lowerings"
         );
     }
 
     // The callable bodies actually lower to operations (the assembler's
     // work law has something to count).
-    let f_shape = body_shape(&first, 1);
+    let f_shape = body_shape(&first, 1).ok_or("sub f body must exist")?;
     assert!(!f_shape.is_empty(), "sub f must lower to a non-empty op sequence");
     Ok(())
 }
@@ -90,8 +105,8 @@ fn callable_summary_input_identity_is_deterministic() -> TestResult {
 #[test]
 fn callable_summary_input_identity_preserves_body_boundaries() -> TestResult {
     let file = parse_and_lower(SOURCE);
-    let f_shape = body_shape(&file, 1);
-    let g_shape = body_shape(&file, 2);
+    let f_shape = body_shape(&file, 1).ok_or("sub f body must exist")?;
+    let g_shape = body_shape(&file, 2).ok_or("sub g body must exist")?;
 
     // PIR ids restart at zero per body lowering — the id is only meaningful
     // together with the body index.

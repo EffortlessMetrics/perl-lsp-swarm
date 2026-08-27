@@ -152,6 +152,11 @@ fn compiler_interprocedural_summary_falsifier_coverage() -> Result<(), Box<dyn s
         "poison_pairing",
         "boundary_sites",
         "content_sensitive",
+        "unmodeled_evidence",
+        "payloads",
+        "maximal_range",
+        "false_precision",
+        "blocker_not_a_summary",
     ] {
         assert!(analyzer_tests.contains(class), "missing assembler falsifier class: {class}");
     }

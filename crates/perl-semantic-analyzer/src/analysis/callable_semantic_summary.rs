@@ -165,44 +165,66 @@ pub fn assemble_callable_summaries(
         // range is enclosed in the declaration's range. A declaration whose
         // body was never lowered (e.g. a signature-default anonymous sub)
         // finds zero candidates — it blocks honestly without shifting any
-        // other declaration's pairing.
+        // other declaration's pairing. When nested declarations enclose
+        // several matching bodies, the declaration's direct body is the
+        // MAXIMAL one (it encloses every nested candidate); only a tie
+        // between distinct maximal candidates is genuinely ambiguous.
         let decl_range = normalize_range(decl.item.range);
-        let mut candidates: Vec<(usize, &HirBody)> = callable_bodies
+        let candidates: Vec<(usize, &HirBody, usize, usize)> = callable_bodies
             .iter()
-            .filter(|(_, body)| {
-                owner_matches(body, decl.is_method, &decl.name)
-                    && body
-                        .source_map
-                        .block_range(body.root_block)
-                        .map(normalize_range)
-                        .is_some_and(|root| {
-                            decl_range.start <= root.start && root.end <= decl_range.end
-                        })
+            .filter_map(|(body_idx, body)| {
+                if !owner_matches(body, decl.is_method, &decl.name) {
+                    return None;
+                }
+                let root = body.source_map.block_range(body.root_block).map(normalize_range)?;
+                (decl_range.start <= root.start && root.end <= decl_range.end)
+                    .then_some((*body_idx, *body, root.start, root.end))
             })
-            .map(|(body_idx, body)| (*body_idx, *body))
             .collect();
-        match candidates.len() {
-            1 => {
-                let (body_idx, body) = candidates.remove(0);
+        let pairing = select_direct_body(candidates);
+        match pairing {
+            Ok((body_idx, body)) => {
                 assemble_one(file, ctx, decl, decl_range, body_idx, body, &mut assembly);
             }
-            0 => assembly.blockers.push(AssemblyBlocker {
+            Err(0) => assembly.blockers.push(AssemblyBlocker {
                 callable_name: decl.name.clone(),
                 body_idx: usize::MAX,
                 reason: "declaration has no lowerable body enclosed in its range".to_string(),
             }),
-            n => assembly.blockers.push(AssemblyBlocker {
+            Err(n) => assembly.blockers.push(AssemblyBlocker {
                 callable_name: decl.name.clone(),
                 body_idx: usize::MAX,
                 reason: format!(
-                    "ambiguous declaration/body pairing: {n} candidate bodies enclosed in the \
-                     declaration range (fail closed, never guess)"
+                    "ambiguous declaration/body pairing: {n} maximal candidate bodies tie inside \
+                     the declaration range (fail closed, never guess)"
                 ),
             }),
         }
     }
     assembly.files_processed = 1;
     assembly
+}
+
+/// Select a declaration's direct body from its enclosed matching candidates
+/// (`body_idx`, `body`, root `start`, root `end`): the unique maximal-range
+/// candidate. The direct body encloses every nested candidate, so it always
+/// has the strictly largest span; `Err(0)` means no candidate, `Err(n)`
+/// means an n-way maximal tie (genuinely ambiguous, fail closed).
+fn select_direct_body(
+    candidates: Vec<(usize, &HirBody, usize, usize)>,
+) -> Result<(usize, &HirBody), usize> {
+    let Some(max_span) =
+        candidates.iter().map(|(_, _, start, end)| end.saturating_sub(*start)).max()
+    else {
+        return Err(0);
+    };
+    let mut maximal =
+        candidates.into_iter().filter(|(_, _, start, end)| end.saturating_sub(*start) == max_span);
+    let Some((body_idx, body, _, _)) = maximal.next() else {
+        return Err(0);
+    };
+    let tie_count = maximal.count();
+    if tie_count == 0 { Ok((body_idx, body)) } else { Err(tie_count + 1) }
 }
 
 /// Parse `source`, lower it to HIR, and assemble callable summaries.
@@ -257,7 +279,7 @@ fn collect_callable_bodies(file: &HirFile) -> Vec<(usize, &HirBody)> {
 fn owner_matches(body: &HirBody, is_method: bool, name: &Option<String>) -> bool {
     match (&body.owner, is_method) {
         (BodyOwnerKind::Subroutine { name: owner }, false) => owner == name,
-        (BodyOwnerKind::Method { name: owner }, true) => &Some(owner.clone()) == name,
+        (BodyOwnerKind::Method { name: owner }, true) => name.as_ref() == Some(owner),
         _ => false,
     }
 }
@@ -265,9 +287,19 @@ fn owner_matches(body: &HirBody, is_method: bool, name: &Option<String>) -> bool
 /// The innermost callable (`Subroutine`/`Method`) scope enclosing `start`,
 /// walked through the canonical scope graph. Attribution by scope identity
 /// keeps a nested callable's items out of its parent's packet.
+///
+/// Depth cap: a cyclic scope graph produced by recovery parsing must not
+/// loop forever — past the cap the chain is untrustworthy, so no owner is
+/// reported (fail closed).
 fn owning_callable_scope(file: &HirFile, start: HirScopeId) -> Option<HirScopeId> {
+    const MAX_SCOPE_WALK_DEPTH: usize = 1024;
     let mut current = Some(start);
+    let mut remaining = MAX_SCOPE_WALK_DEPTH;
     while let Some(id) = current {
+        if remaining == 0 {
+            return None;
+        }
+        remaining -= 1;
         let frame = file.scope_graph.scopes.iter().find(|scope| scope.id == id)?;
         if matches!(frame.kind, ScopeKind::Subroutine | ScopeKind::Method) {
             return Some(id);
@@ -319,6 +351,16 @@ fn assemble_one(
     }
 
     let packet = build_packet(ctx, decl, decl_range, body_idx, body, &nodes, outbound, unmodeled);
+    // Fail closed: an assembled packet that fails its own contract
+    // validation is a blocker naming the violations, never an invalid
+    // summary reported as success.
+    if let Err(violations) = packet.validate() {
+        block(&format!(
+            "assembled packet failed contract validation (fail closed): {}",
+            violations.join("; ")
+        ));
+        return;
+    }
     assembly.summaries.push(packet);
 }
 
@@ -450,7 +492,10 @@ fn body_identity(
             .unwrap_or_else(|| "none".to_string())
     };
     for node in nodes {
-        fingerprint = fingerprint.field("op", node.operation.name()).field(
+        // Full operation payload (Debug covers names/operators/kinds — never
+        // source text): two equal-length but different operations are
+        // different bodies.
+        fingerprint = fingerprint.field("op", &format!("{:?}", node.operation)).field(
             "op-anchor",
             &node
                 .source_anchor
@@ -478,17 +523,22 @@ fn body_identity(
     BodyIdentity::Exact(fingerprint.finish())
 }
 
-/// Record one method-call-shaped outbound dependency. A bareword/identifier
-/// receiver (`Foo->bar`) is the static class-call shape; any other receiver
-/// makes dispatch receiver-dependent — a dynamic boundary site that also
-/// blocks Control. An unresolved call is never "non-throwing": Exception is
-/// always blocked.
+/// Record one method-call-shaped outbound dependency. The HIR
+/// `MethodCallExpr`/`IndirectCallExpr` payload carries NO receiver name —
+/// only the method name, argument count, and the receiver's AST kind — so
+/// the class identity (`Foo` in `Foo->run()`) is unavailable at this seam.
+/// Emitting `Named(method)` would be false precision (two classes' `run`
+/// would share one callee identity), so every Identifier-receiver call is
+/// [`OutboundCallee::Unknown`]; the method name is dropped because the
+/// contract's `Unknown` variant carries no payload. Honest imprecision
+/// beats wrong precision; I03/I04 must resolve method targets from the
+/// call-site anchor. A non-Identifier receiver additionally blocks Control
+/// (receiver-dependent dispatch).
 fn push_method_call(
     outbound_calls: &mut Vec<OutboundCallDependency>,
     boundary_sites: &mut Vec<BoundarySiteRef>,
     reference: CallableFactRef,
     anchor: Option<SourceAnchor>,
-    method: &str,
     object_kind: &str,
     dynamic_link: &BoundaryLink,
 ) {
@@ -496,7 +546,7 @@ fn push_method_call(
         outbound_calls.push(OutboundCallDependency::new(
             reference,
             anchor,
-            OutboundCallee::Named(method.to_string()),
+            OutboundCallee::Unknown,
             vec![SummaryFacetKind::Result, SummaryFacetKind::Effect, SummaryFacetKind::Exception],
             CallResolution::UnresolvedTransitive,
         ));
@@ -614,7 +664,6 @@ fn collect_outbound(
                     &mut boundary_sites,
                     reference,
                     anchor,
-                    &call.method,
                     call.object_kind,
                     &dynamic_link,
                 );
@@ -626,7 +675,6 @@ fn collect_outbound(
                     &mut boundary_sites,
                     reference,
                     anchor,
-                    &call.method,
                     call.object_kind,
                     &dynamic_link,
                 );
@@ -816,12 +864,15 @@ fn build_packet(
     let limited = SummaryFacetStatus::Limited;
     let complete = SummaryFacetStatus::Complete;
 
-    let result_status =
-        if blocking(SummaryFacetKind::Result) == 0 && !has_boundary && bare_detection_gaps == 0 {
-            complete
-        } else {
-            limited
-        };
+    let result_status = if blocking(SummaryFacetKind::Result) == 0
+        && !has_boundary
+        && bare_detection_gaps == 0
+        && unmodeled == 0
+    {
+        complete
+    } else {
+        limited
+    };
     let parameter_status = if decl.has_signature || decl.has_prototype {
         // A signature/prototype exists, but PIR v0 does not lower parameter
         // detail — declared, not silently zero.
@@ -967,12 +1018,13 @@ fn build_packet(
     ];
 
     // ── Envelope and packet ──────────────────────────────────────────────
-    // Work accounting: planned operations are the body's statement and
-    // expression arena nodes plus the attributed flat items (everything the
-    // lowering set out to model); visited operations are the PIR nodes
-    // emitted, the flat items joined, and the unmodeled expressions walked
-    // and declared missing. Dropped expressions show up as visited <
-    // planned — planned is never fabricated equal to visited.
+    // Work accounting: planned operations are the evidence units offered to
+    // the walk (body statement/expression arena nodes plus attributed flat
+    // items); visited operations are the PIR nodes emitted, the flat items
+    // joined, and the unmodeled expressions walked and declared missing.
+    // The lowering may model one expression as several operations, so
+    // visited can honestly exceed planned — the counts are independent
+    // accountings, never a fabricated equality.
     let planned_ops = (body.exprs.len() as u32)
         .saturating_add(body.stmts.len() as u32)
         .saturating_add(items_visited);

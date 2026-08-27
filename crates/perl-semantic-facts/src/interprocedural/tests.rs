@@ -674,7 +674,15 @@ fn falsifier_missing_as_empty_summary() {
     packet.facets[2].status = SummaryFacetStatus::Complete;
     packet.facets[2].missing = 1;
     let violations = must_err(packet.validate());
-    assert!(violations.iter().any(|v| v.contains("missing/blocked evidence")));
+    assert!(violations.iter().any(|v| v.contains("can never be Complete")));
+
+    // Unsupported evidence precludes Complete just as hard (the status doc
+    // says so; validation enforces it).
+    let mut packet = summary_packet();
+    packet.facets[2].status = SummaryFacetStatus::Complete;
+    packet.facets[2].unsupported = 1;
+    let violations = must_err(packet.validate());
+    assert!(violations.iter().any(|v| v.contains("unsupported=1")));
 
     // The honest form — NotProven with the unsupported count declared —
     // passes: AliasEscape is never Complete-with-zero.
@@ -717,9 +725,11 @@ fn falsifier_zero_work_summary() {
     let violations = must_err(packet.validate());
     assert!(violations.iter().any(|v| v.contains("work law")));
 
+    // visited beyond planned is honest, never a violation: one offered
+    // expression can lower to several operations.
     let mut packet = summary_packet();
-    packet.work.visited_ops = 6; // beyond planned
-    assert!(packet.validate().is_err());
+    packet.work.visited_ops = 6; // beyond planned_ops = 5
+    assert!(packet.validate().is_ok());
 
     let mut packet = summary_packet();
     packet.work.visited_callables = 0;

@@ -545,3 +545,96 @@ fn callable_semantic_summary_body_identity_is_content_sensitive() -> TestResult 
     assert_eq!(g, g_again);
     Ok(())
 }
+
+/// Unmodeled evidence limits Result too: an unmodeled expression may feed a
+/// return, so `return <STDIN>;` must not report Result Complete (R1).
+#[test]
+fn callable_semantic_summary_result_limits_on_unmodeled_evidence() -> TestResult {
+    let assembly = assemble("sub f { return <STDIN>; }", "gen-1")?;
+    let packet = only_summary(&assembly)?;
+    packet.validate().map_err(|v| format!("packet must validate: {v:?}"))?;
+    assert_ne!(
+        facet_status(packet, SummaryFacetKind::Result)?,
+        SummaryFacetStatus::Complete,
+        "an unmodeled readline may feed the return value — Result must limit"
+    );
+    Ok(())
+}
+
+/// Equal-length payload edits change the body identity even when the caller
+/// supplies no file body identity (R2).
+#[test]
+fn callable_semantic_summary_body_identity_reads_operation_payloads() -> TestResult {
+    let mut context = ctx("gen-1");
+    context.body = BodyIdentity::Unknown;
+    let left = assemble_from_source("sub f { $x = 1; }", &context)?;
+    let right = assemble_from_source("sub f { $y = 2; }", &context)?;
+    let left_body = only_summary(&left)?.body.clone();
+    let right_body = only_summary(&right)?.body.clone();
+    assert_ne!(
+        left_body, right_body,
+        "equal-length but different operations ($x = 1 vs $y = 2) are different bodies"
+    );
+    Ok(())
+}
+
+/// Nested anonymous subs nest by containment: the outer declaration's
+/// direct body is the maximal enclosed candidate, so both get summaries
+/// with no false ambiguity blocker (R3).
+#[test]
+fn callable_semantic_summary_nested_anonymous_subs_pair_by_maximal_range() -> TestResult {
+    let assembly = assemble("my $a = sub { my $b = sub { 1 }; 2 };", "gen-1")?;
+    assert_eq!(
+        assembly.summaries.len(),
+        2,
+        "both nested anonymous subs must be summarized: {assembly:?}"
+    );
+    assert!(
+        assembly.blockers.is_empty(),
+        "no false ambiguity blocker for nested anons: {:?}",
+        assembly.blockers
+    );
+    for packet in &assembly.summaries {
+        packet.validate().map_err(|v| format!("packet must validate: {v:?}"))?;
+        assert_eq!(packet.callable_name, None);
+    }
+    // Distinct bodies, distinct identities.
+    assert_ne!(assembly.summaries[0].body, assembly.summaries[1].body);
+    Ok(())
+}
+
+/// A static-receiver method call is honest about the unavailable class
+/// identity: `Foo->run()` is Unknown, never the false precision of
+/// Named("run") shared with `Bar->run()` (R4).
+#[test]
+fn callable_semantic_summary_method_call_class_is_unknown_not_false_precision() -> TestResult {
+    let assembly = assemble("sub f { Foo->run(); }", "gen-1")?;
+    let packet = only_summary(&assembly)?;
+    packet.validate().map_err(|v| format!("packet must validate: {v:?}"))?;
+    if packet.outbound_calls.len() != 1 {
+        return Err(format!("expected one outbound dependency, got {packet:?}").into());
+    }
+    assert_eq!(
+        packet.outbound_calls[0].callee,
+        OutboundCallee::Unknown,
+        "the HIR carries no receiver name — Named(\"run\") would be false precision"
+    );
+    Ok(())
+}
+
+/// A packet that fails its own contract validation becomes a blocker naming
+/// the violations — never an invalid summary reported as success (R6).
+#[test]
+fn callable_semantic_summary_invalid_packet_is_a_blocker_not_a_summary() -> TestResult {
+    let mut context = ctx("gen-1");
+    context.work_budget = WorkBudget::new(0); // the envelope requires >= 1 unit
+    let assembly = assemble_from_source("sub f { my $x = 1; }", &context)?;
+    assert!(assembly.summaries.is_empty(), "an invalid packet must not be reported as a summary");
+    assert_eq!(assembly.blockers.len(), 1);
+    assert!(
+        assembly.blockers[0].reason.contains("validation"),
+        "the blocker names the validation failure: {}",
+        assembly.blockers[0].reason
+    );
+    Ok(())
+}

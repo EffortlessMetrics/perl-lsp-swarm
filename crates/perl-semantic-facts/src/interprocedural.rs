@@ -1167,7 +1167,11 @@ pub struct SummaryWorkLedger {
     pub planned_callables: u32,
     /// Callables actually visited (per-packet: 1).
     pub visited_callables: u32,
-    /// Operations the assembly planned to visit.
+    /// Evidence units offered to the walk (body expressions + statements +
+    /// attributed flat items). The lowering may model one expression as
+    /// several operations, so `visited_ops` can honestly exceed
+    /// `planned_ops`; the two counts are independent accountings, not a
+    /// ceiling relation.
     pub planned_ops: u32,
     /// Operations actually visited. Must be positive: an empty walk never
     /// satisfies a required summary.
@@ -1381,16 +1385,16 @@ impl CallableSemanticSummary {
                 break;
             }
         }
-        // Completeness is facet-specific and honest: missing evidence or
-        // blocking dependencies always limit the facet they touch.
+        // Completeness is facet-specific and honest: missing, unsupported,
+        // or blocking evidence always limits the facet it touches.
         for entry in &self.facets {
             if entry.status == SummaryFacetStatus::Complete
-                && (entry.missing > 0 || entry.outbound_dependencies > 0)
+                && (entry.missing > 0 || entry.unsupported > 0 || entry.outbound_dependencies > 0)
             {
                 violations.push(format!(
-                    "facet {:?} is Complete with missing={} and outbound_dependencies={} \
-                     (missing/blocked evidence can never be Complete)",
-                    entry.facet, entry.missing, entry.outbound_dependencies
+                    "facet {:?} is Complete with missing={} unsupported={} outbound_dependencies={} \
+                     (missing/unsupported/blocked evidence can never be Complete)",
+                    entry.facet, entry.missing, entry.unsupported, entry.outbound_dependencies
                 ));
             }
         }
@@ -1472,9 +1476,6 @@ impl CallableSemanticSummary {
                 "visited_callables must be at least one and never exceed planned_callables"
                     .to_string(),
             );
-        }
-        if self.work.visited_ops > self.work.planned_ops {
-            violations.push("visited_ops must never exceed planned_ops".to_string());
         }
         // Claim-ceiling join: Exact claims require every facet Complete —
         // one limited facet limits the whole claim ceiling, never the
