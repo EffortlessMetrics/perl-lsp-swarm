@@ -129,4 +129,6 @@ if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
 
+python3 "${REPO_ROOT}/scripts/tests/test-generate-badges.py"
+
 exit 0
