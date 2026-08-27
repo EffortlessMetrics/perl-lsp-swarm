@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12151 |
-| Rust-family files | 3720 |
-| Non-Rust files | 8431 |
-| Allowlisted | 6197 |
+| Total tracked files | 12156 |
+| Rust-family files | 3722 |
+| Non-Rust files | 8434 |
+| Allowlisted | 6200 |
 | Unclassified | 2234 |
 
 ## Non-Rust files by category
@@ -21,7 +21,7 @@
 | generated | 2 |
 | production | 329 |
 | test | 2026 |
-| tooling | 636 |
+| tooling | 639 |
 | unclassified | 2234 |
 
 ## Unclassified files
@@ -6343,6 +6343,7 @@
 | `scripts/ci/check_security_reconciliation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_source_commit_api.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/ci_classify.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/classify-ripr-lane-termination` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_common.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_docs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_production.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6647,6 +6648,7 @@
 | `scripts/tests/test-check-rust-toolchain-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-ci-audit-workflows-shim.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-ci-cost-monitor-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-classify-ripr-lane-termination.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-clean-tmp-targets.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-cleanup-completed-worktrees.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-cleanup-worktrees-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
