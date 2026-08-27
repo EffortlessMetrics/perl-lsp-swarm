@@ -286,8 +286,9 @@ pub fn normalize_path(path: &std::path::Path) -> PathBuf {
             && let Some(after_mnt) = path_str.strip_prefix("/mnt/")
             && let Some(drive) = after_mnt.chars().next()
             && drive.is_ascii_alphabetic()
+            && let Some(rest) = after_mnt.strip_prefix(drive)
+            && rest.starts_with('/')
         {
-            let rest = &after_mnt[drive.len_utf8()..];
             let windows_path =
                 format!("{}:{}", drive.to_ascii_uppercase(), rest.replace('/', "\\"));
             return PathBuf::from(windows_path);

@@ -93,13 +93,15 @@ fn normalize_path_does_not_convert_non_wsl_mnt_path() -> Result<(), anyhow::Erro
 #[cfg(target_os = "linux")]
 #[test]
 fn normalize_path_wsl_short_mnt_path_no_conversion() -> Result<(), anyhow::Error> {
-    // "/mnt/" is only 5 chars, plus 1 for drive letter = 6; path_str.len() > 6 check
-    // means "/mnt/c" (len 6) should NOT trigger conversion
+    // A bare mount name has no separator after the drive letter, so it is incomplete
+    // and must not become the drive-relative Windows path `C:`.
     let input = PathBuf::from("/mnt/c");
     let normalized = normalize_path(&input);
-    let s = normalized.to_string_lossy().to_string();
-    // The path is exactly 6 chars, so the > 6 check means it won't convert
-    assert!(!s.contains(':'), "path of exactly 6 chars should not be converted, got: {s}");
+    anyhow::ensure!(
+        normalized == input,
+        "bare WSL mount should remain untranslated, got: {}",
+        normalized.display()
+    );
     Ok(())
 }
 
