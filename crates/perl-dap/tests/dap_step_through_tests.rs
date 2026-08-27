@@ -10,7 +10,7 @@
 //! - cancel signal during step operations
 //! - goto with unknown target id
 //! - restartFrame and terminateThreads unsupported paths
-//! - Variable inspection request during a stepping sequence
+//! - Variable and scope inspection after rejected stepping requests
 //! - Sequence monotonicity across stepping operations
 //!
 //! Run with: cargo test -p perl-dap --test dap_step_through_tests
@@ -340,7 +340,7 @@ fn test_step_in_targets_with_real_perl_function_calls() -> Result<(), Box<dyn st
 }
 
 // ---------------------------------------------------------------------------
-// 4. Variable inspection during a stepping sequence
+// 4. Variable and scope inspection after rejected stepping requests
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -376,9 +376,9 @@ fn test_variables_request_after_rejected_stepping_without_session_is_empty()
 
 #[test]
 // AC:3535
-fn test_scopes_request_after_stepping_without_session_is_empty()
+fn test_scopes_request_after_rejected_next_without_session_is_empty()
 -> Result<(), Box<dyn std::error::Error>> {
-    // Without an active session, next must not fabricate stopped-frame authority.
+    // Without an active session, a rejected next must not fabricate stopped-frame authority.
     let mut adapter = make_adapter();
 
     let next_response = adapter.handle_request(1, "next", Some(json!({"threadId": 1})));
