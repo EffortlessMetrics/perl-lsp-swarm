@@ -145,6 +145,9 @@ def write_manifest(
             )
         elif mutation == "omission" and index == 4:
             reject_segments.pop()
+        elif mutation == "hunk_header" and index == 0:
+            patch_segments[0] = patch_segments[0].replace("@@ -103,27", "@@ -104,27")
+            reject_segments[0] = patch_segments[0]
         elif mutation == "duplicate" and index == 0:
             reject_segments.append(reject_segments[0])
 
@@ -162,12 +165,19 @@ def write_manifest(
     return manifest
 
 
-def expect_rejection(manifest: Path, evidence: Path, phrase: str) -> None:
+def expect_rejection(
+    manifest: Path,
+    evidence: Path,
+    phrase: str,
+    retained: Path | None = None,
+) -> None:
     try:
         MODULE.validate_manifest(manifest, evidence, reject_scope=manifest.parent)
     except ValueError as error:
         if phrase not in str(error):
             raise RuntimeError(f"unexpected rejection: {error}") from error
+        if retained is not None and not (evidence / retained).is_file():
+            raise RuntimeError(f"rejected artifact was not retained: {evidence / retained}")
     else:
         raise RuntimeError(f"fixture unexpectedly passed: {phrase}")
 
@@ -224,6 +234,13 @@ def main() -> None:
             write_manifest(root / "mismatch", mutation="mismatch"),
             root / "mismatch" / "evidence",
             "absent from or ambiguous",
+            Path("reject-0.rej"),
+        )
+        expect_rejection(
+            write_manifest(root / "hunk-header", mutation="hunk_header"),
+            root / "hunk-header" / "evidence",
+            "hunk identity omitted or reused",
+            Path("reject-0.rej"),
         )
         table_mismatch = write_manifest(root / "table-mismatch")
         table_path = "crates/perl-dap/features_sot.toml"

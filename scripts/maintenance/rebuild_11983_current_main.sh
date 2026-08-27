@@ -7,6 +7,35 @@ first_commit="d174ec1e9845056b8e1a193001ce88a2ea9eaebe"
 first_parent="470277161c18cd5cfa00e31ea6545e2e7baee461"
 second_commit="0f6a4334eb5a53df54a5ed40103659a63578b6f5"
 first_commit_noop=false
+second_commit_noop=false
+
+run_cherry_pick_or_skip_empty() {
+  local label="$1"
+  shift
+  local output
+  local status
+  cherry_pick_noop=false
+  if output="$("$@" 2>&1)"; then
+    printf '%s\n' "$output"
+    return 0
+  fi
+  status=$?
+  printf '%s\n' "$output" >&2
+  if [ "$status" -ne 1 ] || ! grep -Eqi "cherry-pick .*empty|empty .*cherry-pick" <<<"$output"; then
+    echo "$label failed for a non-empty-cherry-pick reason; refusing no-op skip." >&2
+    return 1
+  fi
+  if ! git rev-parse --verify CHERRY_PICK_HEAD >/dev/null 2>&1 || \
+    [ -n "$(git diff --cached --name-only)" ] || \
+    [ -n "$(git diff --name-only --diff-filter=U)" ] || \
+    ! git diff --quiet; then
+    echo "$label reported empty but left staged, unresolved, or working-tree state; refusing no-op skip." >&2
+    return 1
+  fi
+  git cherry-pick --skip
+  cherry_pick_noop=true
+  return 0
+}
 
 # Identity gate (#12045 review): prove this lane executed exactly the triggering
 # pull-request revision before any local reconstruction mutates the workspace.
@@ -178,26 +207,16 @@ PY
   fi
 
   git add -- "${conflicts[@]}"
-  continue_output=""
-  if continue_output="$(git cherry-pick --continue 2>&1)"; then
-    printf '%s\n' "$continue_output"
-  else
-    continue_status=$?
-    printf '%s\n' "$continue_output" >&2
-    if [ "$continue_status" -ne 1 ] || ! grep -Eqi "cherry-pick .*empty|empty .*cherry-pick" <<<"$continue_output"; then
-      echo "cherry-pick --continue failed for a non-empty-cherry-pick reason; refusing no-op skip." >&2
-      exit 1
-    fi
-    if [ -n "$(git diff --cached --name-only)" ] || [ -n "$(git diff --name-only --diff-filter=U)" ] || ! git diff --quiet; then
-      echo "cherry-pick became non-empty or left unresolved state; refusing no-op skip." >&2
-      exit 1
-    fi
-    git cherry-pick --skip
+  run_cherry_pick_or_skip_empty "first cherry-pick --continue" git cherry-pick --continue
+  if [ "$cherry_pick_noop" = true ]; then
     first_commit_noop=true
   fi
 fi
 
-git cherry-pick "$second_commit"
+run_cherry_pick_or_skip_empty "second cherry-pick" git cherry-pick "$second_commit"
+if [ "$cherry_pick_noop" = true ]; then
+  second_commit_noop=true
+fi
 
 # Strengthen the containment proof: refusal must leave accepted document source,
 # client version, and generation unchanged, not merely return no edits.
@@ -346,6 +365,9 @@ worktree_status="$(git status --porcelain=v1)"
   echo "reconstructed-head: $(git rev-parse HEAD)"
   if [ "$first_commit_noop" = true ]; then
     echo "first-commit: already-current-empty-cherry-pick-skipped"
+  fi
+  if [ "$second_commit_noop" = true ]; then
+    echo "second-commit: already-current-empty-cherry-pick-skipped"
   fi
   printf '%s\n' "$worktree_status"
 } > "$evidence_dir/reconstruction-summary.txt"
