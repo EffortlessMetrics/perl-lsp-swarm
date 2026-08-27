@@ -114,16 +114,9 @@ pub(super) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
 }
 
 fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
-    let marker = line.find("<<")?;
+    let marker = unquoted_heredoc_marker(line)?;
     let before = &line[..marker];
     if before.ends_with('<') {
-        return None;
-    }
-    // Guard against `<<` appearing inside a line comment (#5456). A `#` in the
-    // prefix that is not inside a simple quote pair means the rest of the line
-    // (including the `<<`) is a comment, not a heredoc opener. Without this,
-    // `# see <<EOF docs` would swallow the rest of the file as a heredoc body.
-    if prefix_has_unquoted_comment(before) {
         return None;
     }
     let mut rest = &line[marker + 2..];
@@ -165,6 +158,75 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
 /// Whether `rest` starts an unquoted heredoc label, i.e. a Perl identifier.
 fn starts_heredoc_label(rest: &str) -> bool {
     rest.starts_with(|character: char| character.is_alphabetic() || character == '_')
+}
+
+/// Byte offset of the first `<<` on `line` that is real code: outside any
+/// single- or double-quoted string literal, and before any unquoted `#`
+/// line-comment marker.
+///
+/// Both exclusions are #5456. A `<<` inside a comment (`# see <<EOF docs`) or
+/// inside a literal (`my $s = "a << EOF";`) is text, not an opener. Taking one
+/// makes the collector scan to EOF and reclassify every following statement as
+/// `Heredoc`, because `Heredoc` outranks `Code` in `region_precedence`.
+///
+/// The scan *skips* an excluded `<<` rather than abandoning the line, so a real
+/// opener that follows a quoted lookalike (`my $x = "a << b" . <<EOF;`) is
+/// still found. Stopping at the first `<<` there yields the label `b`, which
+/// never closes.
+///
+/// The state machine is deliberately small — `'`/`"` pairs plus backslash
+/// escapes inside them. `q{}`/`qq{}`/`qw{}`, regex delimiters, and the
+/// deprecated `$pkg'var` separator are not modelled, so a construct like
+/// `qr/it's fine/` leaves an odd `'` behind and would hide a real opener later
+/// on the same line. Rather than trade one wrong answer for another, an
+/// unterminated quote at end of line marks the tracking untrustworthy for this
+/// line and defers to [`legacy_heredoc_marker`]. Lines whose quotes close
+/// cleanly — the case #5456 reports — get the guard; every other line keeps
+/// exactly the behaviour it had before, so the change is one-directional.
+fn unquoted_heredoc_marker(line: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'\\' && (in_single || in_double) {
+            index += 2; // skip escaped char
+            continue;
+        }
+        match byte {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            // Reached with every quote closed, so the tracking above is sound
+            // here: the rest of the line is a comment and owns no opener.
+            b'#' if !in_single && !in_double => return None,
+            b'<' if !in_single && !in_double && bytes.get(index + 1) == Some(&b'<') => {
+                return Some(index);
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+
+    if in_single || in_double {
+        return legacy_heredoc_marker(line);
+    }
+    None
+}
+
+/// The pre-#5456 marker rule: the first `<<` on the line, unless an unquoted
+/// `#` precedes it.
+///
+/// Reachable only when [`unquoted_heredoc_marker`] ends the line inside a
+/// quote. It is retained verbatim so such a line — a genuine multi-line string,
+/// or a construct the simple machine cannot read — keeps its previous
+/// classification instead of acquiring a new failure mode.
+fn legacy_heredoc_marker(line: &str) -> Option<usize> {
+    let marker = line.find("<<")?;
+    if prefix_has_unquoted_comment(&line[..marker]) {
+        return None;
+    }
+    Some(marker)
 }
 
 /// Whether `prefix` (the text before a candidate `<<` heredoc opener) contains
@@ -1580,6 +1642,68 @@ mod tests {
             super::heredoc_opener_on_line("my $x = <<EOF;"),
             Some(("EOF".to_string(), false)),
             "real heredoc opener must still be found"
+        );
+    }
+
+    #[test]
+    fn heredoc_opener_ignored_inside_a_string_literal() {
+        // #5456 (quote half): `<<` inside a string literal is text, not an
+        // opener. Without the guard the collector treats the rest of the file
+        // as a heredoc body, and `Heredoc` outranks `Code` in
+        // `region_precedence`, so every following statement is reclassified.
+        assert_eq!(
+            super::heredoc_opener_on_line("my $s = \"a << EOF b\";"),
+            None,
+            "`<<` inside a double-quoted string is not a heredoc opener"
+        );
+        assert_eq!(
+            super::heredoc_opener_on_line("print '<<END';"),
+            None,
+            "`<<` inside a single-quoted string is not a heredoc opener"
+        );
+    }
+
+    #[test]
+    fn heredoc_opener_found_after_a_quoted_shift_lookalike() {
+        // The scan must skip the quoted `<<` and keep looking, not stop at the
+        // first one and not give up on the line entirely. Taking the quoted
+        // marker yields the bogus label `b`, which never closes.
+        assert_eq!(
+            super::heredoc_opener_on_line("my $x = \"a << b\" . <<EOF;"),
+            Some(("EOF".to_string(), false)),
+            "the first *unquoted* `<<` owns the opener"
+        );
+    }
+
+    #[test]
+    fn quoted_shift_lookalike_opens_no_heredoc_region() {
+        // Region-level consequence of the same defect.
+        let source = "my $s = \"a << EOF\";\ncode();\n";
+        assert!(
+            scan_heredoc_regions(source).is_empty(),
+            "a quoted `<<` must not open a heredoc region: {:?}",
+            scan_heredoc_regions(source)
+        );
+    }
+
+    #[test]
+    fn unbalanced_quote_line_keeps_its_previous_marker_behavior() {
+        // The simple machine does not model `qr//`, so `it's` leaves an odd
+        // `'` behind. Deferring to the legacy rule keeps the real opener
+        // reachable instead of trading #5456 for a new miss.
+        assert_eq!(
+            super::heredoc_opener_on_line("my $r = qr/it's fine/; print <<EOF;"),
+            Some(("EOF".to_string(), false)),
+            "an unmodelled construct must not hide a real opener"
+        );
+        // The other side of the same fallback: a line that ends inside a
+        // genuine multi-line string keeps its previous (unfixed) answer rather
+        // than acquiring a new one. Pinned so the boundary is reviewed, not
+        // accidental.
+        assert_eq!(
+            super::heredoc_opener_on_line("my $s = \"start << EOF"),
+            Some(("EOF".to_string(), false)),
+            "an unterminated string keeps pre-#5456 behavior"
         );
     }
 
