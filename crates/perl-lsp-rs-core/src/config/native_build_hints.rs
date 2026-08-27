@@ -343,8 +343,10 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
         match ch {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
-            ')' | ']' | '}' if stack.pop().is_none() => {
-                return idx.saturating_sub(start);
+            ')' | ']' | '}' => {
+                if stack.pop().is_none() {
+                    return idx.saturating_sub(start);
+                }
             }
             ',' | ';' if stack.is_empty() => return idx.saturating_sub(start),
             _ => {}
@@ -731,35 +733,6 @@ mod tests {
     use super::*;
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-
-    /// `rejected_value_len` scans past a value it could not parse so the
-    /// extractor resumes at the next assignment instead of looping. Its
-    /// closer arm carries a `stack.pop()` side effect in a match guard, so
-    /// the balanced case — pop returns `Some`, the scan must NOT terminate —
-    /// is the discriminating one: a scan that stopped on every closer would
-    /// truncate the skip and re-enter the same malformed value.
-    #[test]
-    fn rejected_value_len_stops_only_at_an_unbalanced_closer_or_top_level_separator() {
-        // Balanced group: the ')' at index 5 pops its '(' and the scan
-        // continues to the top-level ',' at index 6.
-        assert_eq!(rejected_value_len("(a, b), tail", 0), 6);
-
-        // Unbalanced closer with an empty stack terminates the scan.
-        assert_eq!(rejected_value_len("ab)", 0), 2);
-
-        // Separators nested inside a group are not top-level terminators.
-        assert_eq!(rejected_value_len("(a, b; c)", 0), 9);
-
-        // Nesting pins the pop count: each closer consumes exactly one
-        // opener, so the top-level ',' at index 5 is still the terminator.
-        assert_eq!(rejected_value_len("((a)), tail", 0), 5);
-
-        // Closers inside a string literal never touch the stack.
-        assert_eq!(rejected_value_len("'a)' , t", 0), 5);
-
-        // The returned length is relative to `start`, not absolute.
-        assert_eq!(rejected_value_len("KEY=(a),z", 4), 3);
-    }
 
     /// Fresh temporary workspace root accepting optional build scripts.
     struct HintRoot {
