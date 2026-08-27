@@ -1151,15 +1151,39 @@ jobs:
           if [ -n "$lane_name" ] && [ "$lane_result" != "success" ]; then
             lane_job_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
               --jq ".jobs[] | select(.name == \"${lane_name}\") | .id" | head -1 || true)
-            if [ -n "$lane_job_id" ] && \
-               gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${lane_job_id}/logs" 2>/dev/null \
-                 | grep -qE "The runner has received a shutdown signal|Process completed with exit code 143|The operation was canceled"; then
-              lane_class="infra-no-proof"
+            if [ -n "$lane_job_id" ]; then
+              # grep -c reads the whole stream before exiting; `grep -q` exits
+              # on the first match and its SIGPIPE then trips pipefail, making
+              # every eviction classify as ripr-failure (#6807 follow-up).
+              # Fetch first and count only on a complete successful read: a
+              # partial log carrying a signature after a failed fetch must
+              # never become infra-no-proof; retrieval failure stays
+              # ripr-failure.
+              lane_log=$(mktemp)
+              if gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${lane_job_id}/logs" > "$lane_log" 2>/dev/null; then
+                eviction_matches=$(grep -cE "The runner has received a shutdown signal|Process completed with exit code 143|The operation was canceled" "$lane_log" || true)
+                if [ "${eviction_matches:-0}" -gt 0 ]; then
+                  lane_class="infra-no-proof"
+                fi
+              fi
+              rm -f "$lane_log"
             fi
           fi
           report_lane_failure() {
             if [ "$lane_class" = "infra-no-proof" ]; then
               echo "::error::ripr lane \`${lane_name}\` was killed by the runner (infra-no-proof: shutdown signal / SIGTERM / API cancellation), NOT by a ripr source gap. No proof exists for ${GITHUB_SHA}. Safe same-head recovery: \`gh run rerun ${GITHUB_RUN_ID} --failed\` — the evaluated tree is unchanged by an infra kill, so a rerun re-runs this exact head (#6807, #12563)."
+              # #6807 slice 2: hand the verdict to the bounded auto-retry
+              # (ripr-infra-retry.yml) as data so there is exactly one
+              # eviction classifier. The consumer greps fields; it must
+              # never source this file.
+              {
+                echo "classification=infra-no-proof"
+                echo "lane_name=${lane_name}"
+                echo "lane_job_id=${lane_job_id:-unknown}"
+                echo "head_sha=${GITHUB_SHA}"
+                echo "router_target=${ROUTER_TARGET:-unknown}"
+                echo "run_id=${GITHUB_RUN_ID}"
+              } > ripr-gate-classification.env
               {
                 echo "- classification: \`infra-no-proof (runner eviction)\`"
                 echo "- lane: \`${lane_name}\` (job \`${lane_job_id:-unknown}\`)"
@@ -1207,3 +1231,18 @@ jobs:
           esac
 
           echo "ripr+ New Gap Gate: success (runner: ${ROUTER_TARGET:-unknown}, reason: ${ROUTER_REASON:-unknown})"
+
+      # #6807 slice 2: on an infra-no-proof failure the evaluate step leaves
+      # ripr-gate-classification.env for the bounded auto-retry workflow
+      # (ripr-infra-retry.yml). Genuine ripr failures produce no file, which
+      # is why a missing file is not an error here.
+      - name: Upload gate classification
+        if: failure()
+        # New pin uses must carry the reviewed v7.0.1 projection; v7.0.0 is
+        # recorded legacy debt and strict mode rejects it on changed lines.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ripr-gate-classification
+          path: ripr-gate-classification.env
+          retention-days: 1
+          if-no-files-found: ignore

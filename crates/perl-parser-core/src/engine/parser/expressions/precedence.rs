@@ -328,14 +328,13 @@ impl<'a> Parser<'a> {
             if was_fat_arrow {
                 saw_fat_arrow = true;
                 // Auto-quote the last element (the key before =>)
-                if let Some(last) = elements.last_mut() {
-                    if let NodeKind::Identifier { ref name } = last.kind {
+                if let Some(last) = elements.last_mut()
+                    && let NodeKind::Identifier { ref name } = last.kind {
                         *last = Node::new(
                             NodeKind::String { value: name.clone(), interpolated: false },
                             last.location,
                         );
                     }
-                }
             }
 
             // Stop before parsing the value if we hit a terminator.

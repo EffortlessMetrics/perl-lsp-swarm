@@ -207,21 +207,21 @@ impl Lowerer {
                     Some(sub_scope),
                 );
                 if let Some(name) = name {
-                    if let Some(prototype) = prototype {
-                        if let NodeKind::Prototype { content } = &prototype.kind {
-                            self.prototype_table.facts.push(PrototypeFact {
-                                sub_name: name.clone(),
-                                package_context: self.package_context.clone(),
-                                content: content.clone(),
-                                range: prototype.location,
-                                declaration_range: node.location,
-                                declaration_item: item_id,
-                                scope_id: Some(sub_scope),
-                                anchor_id: AnchorId(prototype.location.start as u64),
-                                provenance: CompileProvenance::ExactAst,
-                                confidence: CompileConfidence::High,
-                            });
-                        }
+                    if let Some(prototype) = prototype
+                        && let NodeKind::Prototype { content } = &prototype.kind
+                    {
+                        self.prototype_table.facts.push(PrototypeFact {
+                            sub_name: name.clone(),
+                            package_context: self.package_context.clone(),
+                            content: content.clone(),
+                            range: prototype.location,
+                            declaration_range: node.location,
+                            declaration_item: item_id,
+                            scope_id: Some(sub_scope),
+                            anchor_id: AnchorId(prototype.location.start as u64),
+                            provenance: CompileProvenance::ExactAst,
+                            confidence: CompileConfidence::High,
+                        });
                     }
                     let source = if has_empty_prototype(prototype.as_deref()) {
                         GlobSlotSource::ConstantDeclaration
@@ -2204,8 +2204,7 @@ impl Lowerer {
         if !qualified
             && let Some(binding_id) =
                 self.resolve_visible_binding(self.current_scope(), "@", &symbol)
-        {
-            if self
+            && self
                 .scope_graph
                 .bindings
                 .iter()
@@ -2213,9 +2212,8 @@ impl Lowerer {
                 .is_some_and(|binding| {
                     matches!(binding.storage, StorageClass::LexicalMy | StorageClass::LexicalState)
                 })
-            {
-                return;
-            }
+        {
+            return;
         }
         for argument in args.iter().skip(1) {
             for parent in static_package_names_from_node(argument) {

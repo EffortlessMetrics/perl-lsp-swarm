@@ -18,7 +18,7 @@ impl<'a> Parser<'a> {
                 // the terminal cause at this exact branch so the Ok path of
                 // `parse_with_recovery` cannot report a clean completion for
                 // an AST whose remainder is explicitly unparsed.
-                self.ok_path_stop_cause = Some(ParseStopCause::LexerBudgetExhausted);
+                self.operation.record_terminal(ParseStopCause::LexerBudgetExhausted);
                 break; // Stop parsing but preserve earlier nodes
             }
 
@@ -565,11 +565,9 @@ impl<'a> Parser<'a> {
             if self.pending_heredocs.is_empty()
                 && !Self::contains_heredoc(stmt)
                 && Self::can_arm_heredoc_recovery(stmt)
-            {
-                if let Some(tag) = self.statement_span_heredoc_tag(stmt) {
+                && let Some(tag) = self.statement_span_heredoc_tag(stmt) {
                     self.heredoc_recovery_tag = Some(tag);
                 }
-            }
             let semi_token = self.consume_token()?;
             // Track cursor after semicolon for heredoc content collection
             if self.pending_heredocs.is_empty() {
@@ -631,12 +629,10 @@ impl<'a> Parser<'a> {
         if self.pending_heredocs.is_empty()
             && !Self::contains_heredoc(stmt)
             && Self::can_arm_heredoc_recovery(stmt)
-        {
-            if let Some(tag) = self.statement_span_heredoc_tag(stmt) {
+            && let Some(tag) = self.statement_span_heredoc_tag(stmt) {
                 self.heredoc_recovery_tag = Some(tag);
                 return Ok(());
             }
-        }
 
         // An unrecognised heredoc may leak its body and terminator into the
         // token stream. Exempt only the exact delimiter line, not every lone
@@ -1141,16 +1137,14 @@ impl<'a> Parser<'a> {
         let start = self.current_position();
 
         // Check for special blocks like AUTOLOAD and DESTROY
-        if let Ok(token) = self.tokens.peek() {
-            if matches!(token.text.as_ref(), "AUTOLOAD" | "DESTROY" | "CLONE" | "CLONE_SKIP") {
+        if let Ok(token) = self.tokens.peek()
+            && matches!(token.text.as_ref(), "AUTOLOAD" | "DESTROY" | "CLONE" | "CLONE_SKIP") {
                 // Check if next token is a block
-                if let Ok(second) = self.tokens.peek_second() {
-                    if second.kind() == TokenKind::LeftBrace {
+                if let Ok(second) = self.tokens.peek_second()
+                    && second.kind() == TokenKind::LeftBrace {
                         return self.parse_special_block();
                     }
-                }
             }
-        }
 
         // First, try to parse the initial part as a simple statement
         let mut expr = self.parse_simple_statement()?;
@@ -1839,11 +1833,10 @@ impl<'a> Parser<'a> {
 
         // Check the 3rd token (token after the colon)
         // If it can't start a statement, this is not a label
-        if let Ok(third_token) = self.tokens.peek_third() {
-            if Self::third_token_cannot_start_statement(third_token.kind()) {
+        if let Ok(third_token) = self.tokens.peek_third()
+            && Self::third_token_cannot_start_statement(third_token.kind()) {
                 return false;
             }
-        }
 
         // Single colon (`:`, not `::`) unambiguously indicates a label in Perl.
         // Qualified identifiers use `::` which tokenizes as DoubleColon, so

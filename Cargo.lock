@@ -1657,6 +1657,7 @@ dependencies = [
  "perl-ast-v2",
  "perl-position-tracking",
  "perl-token",
+ "sha2",
  "strum",
 ]
 
@@ -2054,8 +2055,12 @@ dependencies = [
  "pest_derive",
  "regex",
  "serde",
+ "serde_json",
+ "sha2",
  "stacker",
+ "tempfile",
  "thiserror",
+ "toml",
 ]
 
 [[package]]

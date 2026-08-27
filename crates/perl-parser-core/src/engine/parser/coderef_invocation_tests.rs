@@ -278,23 +278,15 @@ mod tests {
         // Drill into the AST to find the FunctionCall with name "->()"
         let ast = parse_program(code);
         let mut found = false;
-        if let NodeKind::Program { ref statements } = ast.kind {
-            if let Some(stmt) = statements.first() {
-                if let NodeKind::VariableDeclaration { initializer: Some(ref init), .. } = stmt.kind
-                {
-                    if let NodeKind::FunctionCall { ref name, ref args } = init.kind {
-                        assert_eq!(name, "->()");
-                        // callee ($callback) + arg (42)
-                        assert_eq!(
-                            args.len(),
-                            2,
-                            "Expected callee + 1 arg, got {} args",
-                            args.len()
-                        );
-                        found = true;
-                    }
-                }
-            }
+        if let NodeKind::Program { ref statements } = ast.kind
+            && let Some(stmt) = statements.first()
+            && let NodeKind::VariableDeclaration { initializer: Some(ref init), .. } = stmt.kind
+            && let NodeKind::FunctionCall { ref name, ref args } = init.kind
+        {
+            assert_eq!(name, "->()");
+            // callee ($callback) + arg (42)
+            assert_eq!(args.len(), 2, "Expected callee + 1 arg, got {} args", args.len());
+            found = true;
         }
         assert!(
             found,

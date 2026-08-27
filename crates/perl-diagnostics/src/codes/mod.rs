@@ -147,6 +147,9 @@ pub enum DiagnosticCode {
     SecurityPipeOpen,
     /// `readpipe()` function call executes shell commands (equivalent to qx//)
     SecurityReadpipe,
+    /// Interpolated or concatenated variables form the SQL text passed to a
+    /// DBI statement-taking method (`prepare`/`prepare_cached`/`do`) (#5035)
+    SecuritySqlInjection,
 
     // Import (PL700-PL799)
     /// Module appears to be unused

@@ -1,6 +1,6 @@
 use std::{ops::Range, sync::Arc};
 
-use crate::span::{allows_empty_span, validate_non_empty_span};
+use crate::span::{allows_empty_span, validate_non_empty_span, validate_text_span_width};
 use crate::{TokenKind, TokenSpan, TokenSpanError};
 
 /// Borrowed view over token data for allocation-sensitive paths.
@@ -15,7 +15,8 @@ use crate::{TokenKind, TokenSpan, TokenSpanError};
 /// kind.
 ///
 /// This struct is `#[non_exhaustive]`: additional fields may be added later.
-/// Downstream crates cannot use struct literals.
+/// Downstream crates cannot use struct literals. That marker is the #2898
+/// evolution disposition for [`TokenRef`].
 ///
 /// ```compile_fail
 /// use perl_token::{TokenKind, TokenRef};
@@ -55,6 +56,7 @@ impl<'src> TokenRef<'src> {
     /// Rules:
     /// - `start <= end`
     /// - zero-length spans are accepted for EOF and explicit synthetic unknown tokens
+    /// - `text.len()` must equal `end - start`
     ///
     /// [`TokenRef::try_new`] is an alias of this constructor.
     pub fn new_checked(
@@ -65,6 +67,7 @@ impl<'src> TokenRef<'src> {
     ) -> Result<Self, TokenSpanError> {
         let span = TokenSpan::try_new(start, end)?;
         validate_non_empty_span(kind, span.start(), span.is_empty())?;
+        validate_text_span_width(text.len(), span)?;
         Ok(Self { kind, text, start: span.start(), end: span.end() })
     }
 
@@ -139,7 +142,8 @@ impl<'src> TokenRef<'src> {
 /// [`Token::with_kind`] to change kind.
 ///
 /// This struct is `#[non_exhaustive]`: additional fields may be added later.
-/// Downstream crates cannot use struct literals.
+/// Downstream crates cannot use struct literals. That marker is the #2898
+/// evolution disposition for [`Token`].
 ///
 /// # Examples
 ///
@@ -202,6 +206,7 @@ impl Token {
     /// Rules:
     /// - `start <= end`
     /// - zero-length spans are accepted for EOF and explicit synthetic unknown tokens
+    /// - `text.len()` must equal `end - start`
     ///
     /// [`Token::try_new`] is an alias of this constructor.
     pub fn new_checked(
@@ -212,7 +217,9 @@ impl Token {
     ) -> Result<Self, TokenSpanError> {
         let span = TokenSpan::try_new(start, end)?;
         validate_non_empty_span(kind, span.start(), span.is_empty())?;
-        Ok(Self::from_valid_parts(kind, text.into(), span.start(), span.end()))
+        let text = text.into();
+        validate_text_span_width(text.as_ref().len(), span)?;
+        Ok(Self::from_valid_parts(kind, text, span.start(), span.end()))
     }
 
     /// Create a token with checked span invariants.
@@ -238,7 +245,15 @@ impl Token {
 
     /// Module-private constructor used only after span invariants are proven.
     ///
-    /// This is not part of the public or crate-external API.
+    /// This is the residual E02 unchecked path after public constructors were
+    /// sealed. It is not part of the public or crate-external API. Workspace-wide
+    /// constructor migration remains #8660.
+    ///
+    /// ```compile_fail
+    /// use perl_token::{Token, TokenKind};
+    /// use std::sync::Arc;
+    /// let _ = Token::from_valid_parts(TokenKind::Identifier, Arc::from("x"), 0, 1);
+    /// ```
     pub(crate) fn from_valid_parts(
         kind: TokenKind,
         text: Arc<str>,
@@ -247,6 +262,7 @@ impl Token {
     ) -> Self {
         debug_assert!(end >= start);
         debug_assert!(end > start || allows_empty_span(kind));
+        debug_assert!(text.as_ref().len() == end.saturating_sub(start));
         Self { kind, text, start, end }
     }
 
@@ -257,8 +273,8 @@ impl Token {
 
     /// Create an unknown (synthetic) token at `start..end`.
     ///
-    /// Empty unknown tokens are allowed. Reversed spans are rejected rather
-    /// than silently clamped.
+    /// Empty unknown tokens are allowed and must still have empty text. Reversed
+    /// spans are rejected rather than silently clamped.
     pub fn unknown_at(
         text: impl Into<Arc<str>>,
         start: usize,

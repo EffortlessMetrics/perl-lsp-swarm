@@ -1,4 +1,5 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use perl_token::{Token, TokenKind, TokenRef, TokenSpan, TokenSpanError};
 use std::error::Error;
 use std::sync::Arc;
@@ -112,8 +113,9 @@ fn token_ref_new_checked_rejects_empty_non_eof() -> TestResult {
 
 #[test]
 fn token_ref_new_checked_allows_empty_unknown() -> TestResult {
-    let token = TokenRef::new_checked(TokenKind::Unknown, "<synthetic>", 21, 21)?;
+    let token = TokenRef::new_checked(TokenKind::Unknown, "", 21, 21)?;
     assert_eq!(token.kind(), TokenKind::Unknown);
+    assert_eq!(token.text, "");
     assert_eq!(token.span(), ordered_span(21, 21));
     assert!(token.is_empty());
     Ok(())

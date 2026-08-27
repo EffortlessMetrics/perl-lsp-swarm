@@ -371,6 +371,10 @@ insta = "1.47.2"
 # Profile for development - slightly optimized for better performance
 [profile.dev]
 opt-level = 1
+# line-tables-only keeps backtraces symbolized (fn/file/line — .cargo/config.toml
+# sets RUST_BACKTRACE=1) while dropping variable/type debuginfo, which dominates
+# dev target/ size under parallel multi-worktree dev (#12791).
+debug = "line-tables-only"
 
 # Profile for agent builds - optimized for lower artifact footprint
 [profile.agent]
@@ -432,6 +436,9 @@ print_stderr = "deny"
 print_stdout = "deny"
 # same_length_and_capacity: protects raw-parts reconstruction from length/capacity identity errors (#1804).
 same_length_and_capacity = "deny"
+# ptr_arg: zero-copy signature discipline — public APIs prefer &str/&[T]/&Path over
+# &String/&Vec<T>/&PathBuf (#2313); activated after a zero-site pierced measurement.
+ptr_arg = "deny"
 # disallowed_fields: architectural seam protection (#6114).
 # The actual field denylist lives in clippy.toml `disallowed-fields = []`.
 disallowed_fields = "deny"

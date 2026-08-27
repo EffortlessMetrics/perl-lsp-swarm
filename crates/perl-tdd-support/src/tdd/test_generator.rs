@@ -161,10 +161,10 @@ impl TestGenerator {
             }
 
             // Generate data-driven tests if enabled
-            if self.options.data_driven {
-                if let Some(test) = self.generate_data_driven_test(&sub, source) {
-                    tests.push(test);
-                }
+            if self.options.data_driven
+                && let Some(test) = self.generate_data_driven_test(&sub, source)
+            {
+                tests.push(test);
             }
 
             // Generate performance test if enabled
@@ -996,22 +996,22 @@ impl RefactoringSuggester {
         match &node.kind {
             NodeKind::Subroutine { name, signature, .. } => {
                 let params = self.extract_parameters(signature.as_deref());
-                if let Some(params) = &params {
-                    if params.len() > 5 {
-                        self.suggestions.push(RefactoringSuggestion {
-                            title: format!(
-                                "Too many parameters in {}",
-                                name.as_ref().unwrap_or(&"anonymous".to_string())
-                            ),
-                            description: format!(
-                                "Function has {} parameters. Consider using a hash or object.",
-                                params.len()
-                            ),
-                            priority: Priority::Medium,
-                            category: RefactoringCategory::TooManyParameters,
-                            code_action: Some("introduce_parameter_object".to_string()),
-                        });
-                    }
+                if let Some(params) = &params
+                    && params.len() > 5
+                {
+                    self.suggestions.push(RefactoringSuggestion {
+                        title: format!(
+                            "Too many parameters in {}",
+                            name.as_ref().unwrap_or(&"anonymous".to_string())
+                        ),
+                        description: format!(
+                            "Function has {} parameters. Consider using a hash or object.",
+                            params.len()
+                        ),
+                        priority: Priority::Medium,
+                        category: RefactoringCategory::TooManyParameters,
+                        code_action: Some("introduce_parameter_object".to_string()),
+                    });
                 }
             }
             _ => {
@@ -1040,8 +1040,25 @@ impl RefactoringSuggester {
                 }
             }
             NodeKind::VariableDeclaration { variable, .. } => {
-                if let NodeKind::Variable { name, .. } = &variable.kind {
-                    if !self.is_good_variable_name(name) {
+                if let NodeKind::Variable { name, .. } = &variable.kind
+                    && !self.is_good_variable_name(name)
+                {
+                    self.suggestions.push(RefactoringSuggestion {
+                        title: format!("Poor variable name: {}", name),
+                        description:
+                            "Single letter variables should only be used for loop counters"
+                                .to_string(),
+                        priority: Priority::Low,
+                        category: RefactoringCategory::Naming,
+                        code_action: Some("rename".to_string()),
+                    });
+                }
+            }
+            NodeKind::VariableListDeclaration { variables, .. } => {
+                for var_node in variables {
+                    if let NodeKind::Variable { name, .. } = &var_node.kind
+                        && !self.is_good_variable_name(name)
+                    {
                         self.suggestions.push(RefactoringSuggestion {
                             title: format!("Poor variable name: {}", name),
                             description:
@@ -1051,23 +1068,6 @@ impl RefactoringSuggester {
                             category: RefactoringCategory::Naming,
                             code_action: Some("rename".to_string()),
                         });
-                    }
-                }
-            }
-            NodeKind::VariableListDeclaration { variables, .. } => {
-                for var_node in variables {
-                    if let NodeKind::Variable { name, .. } = &var_node.kind {
-                        if !self.is_good_variable_name(name) {
-                            self.suggestions.push(RefactoringSuggestion {
-                                title: format!("Poor variable name: {}", name),
-                                description:
-                                    "Single letter variables should only be used for loop counters"
-                                        .to_string(),
-                                priority: Priority::Low,
-                                category: RefactoringCategory::Naming,
-                                code_action: Some("rename".to_string()),
-                            });
-                        }
                     }
                 }
             }

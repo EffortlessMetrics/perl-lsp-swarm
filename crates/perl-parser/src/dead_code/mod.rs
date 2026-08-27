@@ -172,10 +172,10 @@ impl DeadCodeDetector {
         // Per-file unreachable code
         for doc in &docs {
             total_lines += doc.text().lines().count();
-            if let Some(path) = uri_to_fs_path(&doc.uri) {
-                if let Ok(mut file_dead) = self.analyze_file(&path) {
-                    dead_code.append(&mut file_dead);
-                }
+            if let Some(path) = uri_to_fs_path(&doc.uri)
+                && let Ok(mut file_dead) = self.analyze_file(&path)
+            {
+                dead_code.append(&mut file_dead);
             }
         }
 
