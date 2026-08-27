@@ -1259,6 +1259,24 @@ mod tests {
         .expect("valid source identity")
     }
 
+    fn try_draft(
+        scope: ObservationScope,
+        provenance: ConfigurationProvenanceClass,
+        transport: ObservationTransport,
+    ) -> anyhow::Result<ConfigurationObservationDraft> {
+        let observation_subject =
+            ConfigurationObservationSubject::new("obs-fixture", scope, 1, 1, 1)
+                .map_err(|error| anyhow::anyhow!("constructing observation subject: {error:?}"))?;
+        let source_identity = ConfigurationSourceIdentity::new(
+            "perl-lsp-rs-core/test",
+            OBSERVATION_SCHEMA_GENERATION,
+            provenance,
+            transport,
+        )
+        .map_err(|error| anyhow::anyhow!("constructing source identity: {error:?}"))?;
+        Ok(ConfigurationObservationDraft::new(observation_subject, source_identity))
+    }
+
     fn finish(
         provenance: ConfigurationProvenanceClass,
         transport: ObservationTransport,
@@ -2243,6 +2261,29 @@ mod tests {
         ceiling.expect("boundary value within range records");
     }
 
+    /// Interactive validation remains outside this mechanically decidable
+    /// layer: an authority-compatible empty KnownEnum value records here so
+    /// the generation/runtime pipeline can validate its spelling (#7057).
+    #[test]
+    fn mechanical_validation_does_not_claim_interactive_rules() -> anyhow::Result<()> {
+        let mut draft = try_draft(
+            ObservationScope::Global,
+            ConfigurationProvenanceClass::TrustedUserOrMachineAdapter,
+            ObservationTransport::OperatorInvocation,
+        )?;
+
+        draft
+            .record_present(
+                ObservedFieldIdentity::canonical("ai.provider"),
+                NormalizedValue::Text(String::new()),
+                None,
+            )
+            .map_err(|error| {
+                anyhow::anyhow!("KnownEnum validation must remain interactive: {error:?}")
+            })?;
+        Ok(())
+    }
+
     /// Falsifier #19: unmodeled external markers cannot occupy declared
     /// canonical denominator slots, in either recording path.
     #[test]
@@ -2318,25 +2359,26 @@ mod tests {
     /// OptionalNonEmptyString rejects empty text and StringList rejects empty
     /// list items, both as typed malformed outcomes.
     #[test]
-    fn optional_and_list_validation_arms_execute() {
-        let mut project = ConfigurationObservationDraft::new(
-            subject(ObservationScope::Root { root_identity: "root-a".to_string() }),
-            source(
-                ConfigurationProvenanceClass::ProjectFile,
-                ObservationTransport::ProjectFileRead {
-                    path_digest: "digest:.perl-lsp.toml".to_string(),
-                },
-            ),
-        );
+    fn optional_and_list_validation_arms_execute() -> anyhow::Result<()> {
+        let mut project = try_draft(
+            ObservationScope::Root { root_identity: "root-a".to_string() },
+            ConfigurationProvenanceClass::ProjectFile,
+            ObservationTransport::ProjectFileRead {
+                path_digest: "digest:.perl-lsp.toml".to_string(),
+            },
+        )?;
         let empty_optional = project.record_present(
             ObservedFieldIdentity::canonical("critic.legacy_profile"),
             NormalizedValue::Text(String::new()),
             None,
         );
-        assert!(matches!(
-            empty_optional,
-            Err(ObservationError::MalformedValue { reason: MalformedReason::WrongShape, .. })
-        ));
+        anyhow::ensure!(
+            matches!(
+                empty_optional,
+                Err(ObservationError::MalformedValue { reason: MalformedReason::WrongShape, .. })
+            ),
+            "empty OptionalNonEmptyString must be rejected as WrongShape"
+        );
         // Presence of an actual value is unaffected; absence travels through
         // the Absent disposition instead of an empty string.
         project
@@ -2345,24 +2387,33 @@ mod tests {
                 NormalizedValue::Text("legacy".to_string()),
                 None,
             )
-            .expect("non-empty optional records");
+            .map_err(|error| anyhow::anyhow!("recording non-empty optional text: {error:?}"))?;
 
-        let mut folder = ConfigurationObservationDraft::new(
-            subject(ObservationScope::Global),
-            source(
-                ConfigurationProvenanceClass::CompiledDefault,
-                ObservationTransport::CompiledDefaultsEmitted,
-            ),
-        );
+        let mut folder = try_draft(
+            ObservationScope::Global,
+            ConfigurationProvenanceClass::CompiledDefault,
+            ObservationTransport::CompiledDefaultsEmitted,
+        )?;
         let empty_item = folder.record_present(
             ObservedFieldIdentity::canonical("critic.exclude"),
             NormalizedValue::TextList(vec!["benchi".to_string(), String::new()]),
             None,
         );
-        assert!(matches!(
-            empty_item,
-            Err(ObservationError::MalformedValue { reason: MalformedReason::WrongShape, .. })
-        ));
+        anyhow::ensure!(
+            matches!(
+                empty_item,
+                Err(ObservationError::MalformedValue { reason: MalformedReason::WrongShape, .. })
+            ),
+            "StringList with an empty item must be rejected as WrongShape"
+        );
+        folder
+            .record_present(
+                ObservedFieldIdentity::canonical("critic.exclude"),
+                NormalizedValue::TextList(vec!["benchi".to_string(), "tidy".to_string()]),
+                None,
+            )
+            .map_err(|error| anyhow::anyhow!("recording non-empty StringList: {error:?}"))?;
+        Ok(())
     }
 
     /// Falsifier #22: the landed project-metadata channel maps to its own
