@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::atomic::Ordering;
 
 use super::super::LspServer;
 
@@ -148,8 +149,17 @@ impl LspServer {
         text: &str,
         activation_offset: usize,
     ) -> Option<String> {
-        let context =
-            self.effective_inc_context_for_doc(Some(uri), Some(text), Some(activation_offset))?;
+        let context = match self.effective_inc_context_for_doc(
+            Some(uri),
+            Some(text),
+            Some(activation_offset),
+        ) {
+            Some(context) => context,
+            None => {
+                self.warn_missing_workspace_root();
+                return None;
+            }
+        };
         // Document-scoped resolution requires explicit ownership. The shared
         // context retains a compatibility root for other consumers, but an
         // unowned document must not turn that root into an all-folder module
@@ -174,6 +184,19 @@ impl LspServer {
         ) {
             perl_module::ModuleUriResolution::Resolved(resolved_uri) => Some(resolved_uri),
             _ => None,
+        }
+    }
+
+    /// Preserve the shared module-resolution diagnostic when a Dancer2
+    /// document has no detectable workspace root.
+    fn warn_missing_workspace_root(&self) {
+        if !self.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
+            self.show_message_or_log(
+                crate::runtime::window::MessageType::Warning,
+                "Perl LSP: workspace root not detected — module resolution disabled. \
+                 To enable: open the project folder in your editor (File > Open Folder) \
+                 rather than individual files. This warning appears once per server session.",
+            );
         }
     }
 
@@ -458,6 +481,23 @@ mod activation_anchoring_tests {
             !context.activations.has_exact(),
             "unowned document resolution must remain bounded rather than inherit a folder"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn missing_workspace_root_preserves_resolution_warning_state() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let server = LspServer::new();
+        let doc = temp.path().join("app.pl");
+
+        let context = request_context(&server, &doc, "use Dancer2;\n")?;
+
+        if context.activations.module.is_some() {
+            return Err("a document without a workspace root must not resolve a module".into());
+        }
+        if !server.root_undetected_shown.load(Ordering::SeqCst) {
+            return Err("missing workspace root must preserve the actionable warning state".into());
+        }
         Ok(())
     }
 
