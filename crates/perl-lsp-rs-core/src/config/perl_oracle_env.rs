@@ -41,6 +41,41 @@ use std::time::Duration;
 use super::SYSTEM_INC_PROBE_TIMEOUT;
 use super::WorkspaceConfig;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use std::cell::Cell;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    static TEST_STARTUP_INC_PROBE_TIMEOUT: Cell<Option<Duration>> = const { Cell::new(None) };
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn with_test_startup_inc_probe_timeout<T>(timeout: Duration, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Duration>);
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_STARTUP_INC_PROBE_TIMEOUT.with(|slot| {
+                slot.set(self.0.take());
+            });
+        }
+    }
+
+    let previous = TEST_STARTUP_INC_PROBE_TIMEOUT.with(|slot| slot.replace(Some(timeout)));
+    let _restore = Restore(previous);
+    f()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn effective_startup_inc_probe_timeout() -> Duration {
+    #[cfg(test)]
+    if let Some(timeout) = TEST_STARTUP_INC_PROBE_TIMEOUT.with(Cell::get) {
+        return timeout;
+    }
+
+    SYSTEM_INC_PROBE_TIMEOUT
+}
+
 #[cfg(all(not(target_arch = "wasm32"), windows))]
 const PERLDOC_EXECUTABLE_CANDIDATES: &[&str] =
     &["perldoc.bat", "perldoc.cmd", "perldoc.exe", "perldoc"];
@@ -232,7 +267,7 @@ impl PerlOracleEnv {
         Some(Self {
             perl_binary,
             cwd,
-            timeout: SYSTEM_INC_PROBE_TIMEOUT,
+            timeout: effective_startup_inc_probe_timeout(),
             allow_perl5lib: config.use_perl5lib,
             allow_perl5opt: false,
             allow_local_lib: false,
