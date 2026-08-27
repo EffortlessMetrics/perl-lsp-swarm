@@ -153,7 +153,9 @@ pub fn run(config: CiSubjectConfig) -> Result<()> {
         let input = input_from_config(&config)?;
         let local_repository = repository_identity(&root)?;
         ensure_repository(&input.repository, &local_repository)?;
-        resolve_input(&root, input)
+        let subject = resolve_input(&root, input)?;
+        ensure_checkout_head(&root, &subject.receipt.head_sha)?;
+        Ok(subject)
     })();
     match resolution {
         Ok(subject) => {

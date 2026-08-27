@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use color_eyre::eyre::{Context, ContextCompat, Result, bail, ensure};
@@ -89,6 +89,22 @@ fn run_event_subject(
     event_name: &str,
     github_sha: Option<&str>,
 ) -> Result<()> {
+    let output = run_event_subject_output(repo, event, receipt, event_name, github_sha)?;
+    ensure!(
+        output.status.success(),
+        "ci-subject failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+fn run_event_subject_output(
+    repo: &Path,
+    event: &Path,
+    receipt: &Path,
+    event_name: &str,
+    github_sha: Option<&str>,
+) -> Result<Output> {
     let mut command = cargo_bin_cmd!("xtask");
     command
         .args(["ci-subject", "--event-name", event_name, "--event-path"])
@@ -100,13 +116,7 @@ fn run_event_subject(
     if let Some(github_sha) = github_sha {
         command.args(["--github-sha", github_sha]);
     }
-    let output = command.output()?;
-    ensure!(
-        output.status.success(),
-        "ci-subject failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(())
+    Ok(command.output()?)
 }
 
 #[test]
@@ -212,6 +222,26 @@ fn captured_pr_subject_survives_base_branch_movement_and_drives_real_ci_scope() 
     );
     ensure!(scope["platform_overrides"]["windows_runner"] == true);
     ensure!(scope["platform_overrides"]["windows_test_crates"] == json!(["demo"]));
+    let windows_test_crates = scope["platform_overrides"]["windows_test_crates"]
+        .as_array()
+        .context("ci-scope must emit a Windows crate projection")?;
+    ensure!(!windows_test_crates.is_empty(), "Windows crate projection must not be empty");
+    let crate_names = windows_test_crates
+        .iter()
+        .map(|crate_name| {
+            crate_name.as_str().context("Windows crate projection must contain crate names")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let package_args = crate_names
+        .iter()
+        .map(|crate_name| format!("-p {crate_name}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    ensure!(
+        package_args.split_whitespace().collect::<Vec<_>>()
+            == crate_names.iter().flat_map(|crate_name| ["-p", *crate_name]).collect::<Vec<_>>(),
+        "cache-key package arguments must be derived from the subject crate projection"
+    );
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -220,7 +250,7 @@ fn captured_pr_subject_survives_base_branch_movement_and_drives_real_ci_scope() 
     let python = if cfg!(windows) { "python" } else { "python3" };
     let cache_key = Command::new(python)
         .arg(root.join("scripts/ci/scope_cache_key.py"))
-        .args(["--require-non-empty", "--package-args", "-p demo"])
+        .args(["--require-non-empty", "--package-args", &package_args])
         .output()?;
     ensure!(
         cache_key.status.success(),
@@ -231,6 +261,29 @@ fn captured_pr_subject_survives_base_branch_movement_and_drives_real_ci_scope() 
         String::from_utf8(cache_key.stdout)?.trim() == "2a97516c354b6884",
         "captured subject produced an unexpected Windows cache identity"
     );
+    Ok(())
+}
+
+#[test]
+fn producer_refuses_successful_receipt_when_checkout_head_differs() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let repo = tmp.path().join("repo");
+    fs::create_dir_all(&repo)?;
+    let (base, head) = init_fixture(&repo)?;
+    let event = tmp.path().join("event.json");
+    let receipt = tmp.path().join("failure.json");
+    write_pr_event(&event, &base, &head)?;
+
+    git(&repo, &["checkout", "main"])?;
+    let output = run_event_subject_output(&repo, &event, &receipt, "pull_request", None)?;
+    ensure!(!output.status.success(), "producer must reject a stale checkout HEAD");
+    ensure!(
+        !String::from_utf8(output.stdout)?.contains("ci subject: RESOLVED"),
+        "producer must not announce a successful receipt on checkout mismatch"
+    );
+    let failure: Value = serde_json::from_slice(&fs::read(receipt)?)?;
+    ensure!(failure["status"] == "NOT_PROVEN");
+    ensure!(failure["error_code"] == "CHECKOUT_MISMATCH");
     Ok(())
 }
 
