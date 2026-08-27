@@ -739,6 +739,17 @@ mod tests {
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+    fn ensure_eq<T>(actual: T, expected: T, context: &str) -> TestResult
+    where
+        T: std::fmt::Debug + PartialEq,
+    {
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(format!("{context}: expected {expected:?}, got {actual:?}").into())
+        }
+    }
+
     /// Fresh temporary workspace root accepting optional build scripts.
     struct HintRoot {
         tempdir: tempfile::TempDir,
@@ -1185,9 +1196,9 @@ Module::Build->new(
     /// An unbalanced closer at depth zero ends the value at its own offset.
     #[test]
     fn rejected_value_len_stops_at_an_unmatched_closer() -> TestResult {
-        assert_eq!(rejected_value_len(")rest", 0), 0);
-        assert_eq!(rejected_value_len("ab]rest", 0), 2);
-        assert_eq!(rejected_value_len("ab}rest", 0), 2);
+        ensure_eq(rejected_value_len(")rest", 0), 0, "parenthesis closer offset")?;
+        ensure_eq(rejected_value_len("ab]rest", 0), 2, "bracket closer offset")?;
+        ensure_eq(rejected_value_len("ab}rest", 0), 2, "brace closer offset")?;
         Ok(())
     }
 
@@ -1197,17 +1208,17 @@ Module::Build->new(
     /// separator is never seen at depth zero, and the walk runs to the end.
     #[test]
     fn rejected_value_len_drains_balanced_groups_before_the_separator() -> TestResult {
-        assert_eq!(rejected_value_len("(a), b", 0), 3);
-        assert_eq!(rejected_value_len("[a]; b", 0), 3);
-        assert_eq!(rejected_value_len("{[()]}, b", 0), 6);
+        ensure_eq(rejected_value_len("(a), b", 0), 3, "parenthesis group length")?;
+        ensure_eq(rejected_value_len("[a]; b", 0), 3, "bracket group length")?;
+        ensure_eq(rejected_value_len("{[()]}, b", 0), 6, "nested group length")?;
         Ok(())
     }
 
     /// Separators nested inside a group do not end the value.
     #[test]
     fn rejected_value_len_ignores_separators_inside_groups() -> TestResult {
-        assert_eq!(rejected_value_len("(a, b); tail", 0), 6);
-        assert_eq!(rejected_value_len("[a; b], tail", 0), 6);
+        ensure_eq(rejected_value_len("(a, b); tail", 0), 6, "nested comma length")?;
+        ensure_eq(rejected_value_len("[a; b], tail", 0), 6, "nested semicolon length")?;
         Ok(())
     }
 
@@ -1217,7 +1228,7 @@ Module::Build->new(
     fn rejected_value_len_ends_only_on_the_extra_closer() -> TestResult {
         // Two openers, three closers: the walk survives the first two and
         // stops exactly at the third.
-        assert_eq!(rejected_value_len("([a])) tail", 0), 5);
+        ensure_eq(rejected_value_len("([a])) tail", 0), 5, "extra closer offset")?;
         Ok(())
     }
 
@@ -1225,18 +1236,18 @@ Module::Build->new(
     /// escapes the closing quote.
     #[test]
     fn rejected_value_len_treats_quoted_delimiters_as_inert() -> TestResult {
-        assert_eq!(rejected_value_len("')', x", 0), 3);
-        assert_eq!(rejected_value_len("\"a,b\", tail", 0), 5);
-        assert_eq!(rejected_value_len("'a\\'b)', tail", 0), 7);
+        ensure_eq(rejected_value_len("')', x", 0), 3, "quoted closer length")?;
+        ensure_eq(rejected_value_len("\"a,b\", tail", 0), 5, "quoted comma length")?;
+        ensure_eq(rejected_value_len("'a\\'b)', tail", 0), 7, "escaped quote length")?;
         Ok(())
     }
 
     /// With no closer and no separator the walk consumes the remainder.
     #[test]
     fn rejected_value_len_consumes_the_remainder_when_unterminated() -> TestResult {
-        assert_eq!(rejected_value_len("abc", 0), 3);
-        assert_eq!(rejected_value_len("(a, b", 0), 5);
-        assert_eq!(rejected_value_len("'unclosed", 0), 9);
+        ensure_eq(rejected_value_len("abc", 0), 3, "plain remainder length")?;
+        ensure_eq(rejected_value_len("(a, b", 0), 5, "unclosed group length")?;
+        ensure_eq(rejected_value_len("'unclosed", 0), 9, "unclosed quote length")?;
         Ok(())
     }
 
@@ -1245,8 +1256,8 @@ Module::Build->new(
     fn rejected_value_len_is_relative_to_the_start_offset() -> TestResult {
         //            0123456789
         let source = "KEY => a, b";
-        assert_eq!(rejected_value_len(source, 7), 1);
-        assert_eq!(rejected_value_len(source, 0), 8);
+        ensure_eq(rejected_value_len(source, 7), 1, "relative value length")?;
+        ensure_eq(rejected_value_len(source, 0), 8, "full-prefix value length")?;
         Ok(())
     }
 }
