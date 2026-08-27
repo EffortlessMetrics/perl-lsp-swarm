@@ -114,18 +114,7 @@ impl DapWorkflowSession {
     /// item 6b). The pinned binary is passed as `perlPath`, which the adapter
     /// honors verbatim.
     pub fn launch_pinned(&mut self, perl_binary: &Path, script_path: &str) -> Result<(), String> {
-        let args = json!({
-            "program": script_path,
-            "args": [],
-            "stopOnEntry": false,
-            "perlPath": perl_binary.to_string_lossy(),
-            "env": {
-                "PERL_PERTURB_KEYS": "0",
-                "PERL_HASH_SEED": "0",
-                "LC_ALL": "C",
-                "TZ": "UTC"
-            }
-        });
+        let args = launch_arguments(script_path, None, false, Some(perl_binary));
         let resp = self.request("launch", Some(args));
         self.expect_success(&resp, "launch")?;
         Ok(())
@@ -142,17 +131,11 @@ impl DapWorkflowSession {
         script_path: &str,
         stop_on_entry: bool,
     ) -> Result<(), String> {
-        let args = json!({
-            "program": script_path,
-            "args": [],
-            "stopOnEntry": stop_on_entry,
-            "env": {
-                "PERL_PERTURB_KEYS": "0",
-                "PERL_HASH_SEED": "0",
-                "LC_ALL": "C",
-                "TZ": "UTC"
-            }
-        });
+        // Gated callers use this helper after `perl_available()`. Resolve the
+        // same pinned identity here as well so a valid pin controls the live
+        // process, even when the caller uses the legacy convenience method.
+        let perl_binary = resolve_debuggee_perl().map(|perl| perl.binary.clone());
+        let args = launch_arguments(script_path, None, stop_on_entry, perl_binary.as_deref());
         let resp = self.request("launch", Some(args));
         self.expect_success(&resp, "launch")?;
         Ok(())
@@ -163,18 +146,10 @@ impl DapWorkflowSession {
     /// The script will run in the specified `cwd` directory, not in the directory
     /// where the script file is located.
     pub fn launch_with_cwd(&mut self, script_path: &str, cwd: &str) -> Result<(), String> {
-        let args = json!({
-            "program": script_path,
-            "cwd": cwd,
-            "args": [],
-            "stopOnEntry": false,
-            "env": {
-                "PERL_PERTURB_KEYS": "0",
-                "PERL_HASH_SEED": "0",
-                "LC_ALL": "C",
-                "TZ": "UTC"
-            }
-        });
+        // Keep the explicit cwd path under the same pin-propagating contract
+        // as `launch`; this is a gated live-session consumer too.
+        let perl_binary = resolve_debuggee_perl().map(|perl| perl.binary.clone());
+        let args = launch_arguments(script_path, Some(cwd), false, perl_binary.as_deref());
         let resp = self.request("launch", Some(args));
         self.expect_success(&resp, "launch")?;
         Ok(())
@@ -593,6 +568,37 @@ impl DapWorkflowSession {
     }
 }
 
+/// Build the common launch request while keeping interpreter identity explicit.
+///
+/// A configured debuggee pin is passed by every convenience launch helper. With
+/// no pin, `perl_binary` remains `None`, preserving the adapter's ambient PATH
+/// semantics for unpinned callers.
+fn launch_arguments(
+    script_path: &str,
+    cwd: Option<&str>,
+    stop_on_entry: bool,
+    perl_binary: Option<&Path>,
+) -> Value {
+    let mut args = json!({
+        "program": script_path,
+        "args": [],
+        "stopOnEntry": stop_on_entry,
+        "env": {
+            "PERL_PERTURB_KEYS": "0",
+            "PERL_HASH_SEED": "0",
+            "LC_ALL": "C",
+            "TZ": "UTC"
+        }
+    });
+    if let Some(cwd) = cwd {
+        args["cwd"] = Value::String(cwd.to_string());
+    }
+    if let Some(perl_binary) = perl_binary {
+        args["perlPath"] = Value::String(perl_binary.to_string_lossy().into_owned());
+    }
+    args
+}
+
 const RECENT_EVENT_LIMIT: usize = 8;
 const DIAGNOSTIC_ATOM_LIMIT: usize = 64;
 
@@ -882,6 +888,7 @@ fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
+                    let _ = writer.join();
                     return Err(ProbeFailure {
                         reason: format!(
                             "no exit within {}s — perl5db cannot bootstrap over piped stdio",
@@ -892,7 +899,17 @@ fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
-            Err(e) => return Err(fail(format!("probe wait failed: {e}"))),
+            Err(e) => {
+                // A wait error leaves ownership with this function. Reap the
+                // child before returning so the probe cannot leak a live
+                // process, and join the small stdin writer after the child
+                // closes the pipe. The TempDir guard then removes the script
+                // workspace on this path as well.
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = writer.join();
+                return Err(fail(format!("probe wait failed: {e}")));
+            }
         }
     };
     let _ = writer.join();

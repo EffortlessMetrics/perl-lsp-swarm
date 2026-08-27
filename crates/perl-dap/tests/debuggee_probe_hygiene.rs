@@ -23,6 +23,8 @@ mod common;
 
 use common::{DEBUGGEE_PERL_OVERRIDE_ENV, resolve_debuggee_perl};
 use std::fs;
+use std::io;
+use std::path::PathBuf;
 
 const PROBE_PREFIX: &str = "perl-lsp-dap-debuggee-probe-";
 
@@ -30,36 +32,33 @@ const PROBE_PREFIX: &str = "perl-lsp-dap-debuggee-probe-";
 /// pid token — i.e., workspaces materialized by THIS binary. Matches both
 /// the legacy layout (`…-probe-<pid>`, no separator) and the repaired
 /// randomized layout (`…-probe-<pid>-<random>`).
-fn current_process_probe_artifacts() -> Vec<std::path::PathBuf> {
+fn current_process_probe_artifacts() -> io::Result<Vec<PathBuf>> {
     let pid_token = std::process::id().to_string();
-    fs::read_dir(std::env::temp_dir())
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-                .filter(|path| {
-                    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                        return false;
-                    };
-                    let Some(tail) = name.strip_prefix(PROBE_PREFIX) else {
-                        return false;
-                    };
-                    let Some(after_pid) = tail.strip_prefix(pid_token.as_str()) else {
-                        return false;
-                    };
-                    // pid 123 must not claim sibling-process workspace
-                    // `…-probe-1234-…`; require a delimiter (or end) right
-                    // after our pid digits.
-                    after_pid.is_empty() || after_pid.starts_with('-') || after_pid.starts_with('.')
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    let mut artifacts = Vec::new();
+    for entry in fs::read_dir(std::env::temp_dir())? {
+        let path = entry?.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(tail) = name.strip_prefix(PROBE_PREFIX) else {
+            continue;
+        };
+        let Some(after_pid) = tail.strip_prefix(pid_token.as_str()) else {
+            continue;
+        };
+        // pid 123 must not claim sibling-process workspace
+        // `…-probe-1234-…`; require a delimiter (or end) right
+        // after our pid digits.
+        if after_pid.is_empty() || after_pid.starts_with('-') || after_pid.starts_with('.') {
+            artifacts.push(path);
+        }
+    }
+    Ok(artifacts)
 }
 
 #[test]
-fn no_probe_workspace_survives_resolution_sweeps() {
-    let before = current_process_probe_artifacts();
+fn no_probe_workspace_survives_resolution_sweeps() -> io::Result<()> {
+    let before = current_process_probe_artifacts()?;
 
     // One guaranteed failed sweep: a nonexistent pin fails at spawn after its
     // workspace has been created, exercising cleanup on the error path that
@@ -87,19 +86,16 @@ fn no_probe_workspace_survives_resolution_sweeps() {
         );
     }
 
-    let after = current_process_probe_artifacts();
-    assert!(
-        after.is_empty(),
-        "probe workspaces must be cleaned up deterministically; leaked \
-         artifacts from this run: {after:?}"
-    );
+    let after = current_process_probe_artifacts()?;
+    let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
 
     // The scan itself only means something if the baseline wasn't already
     // contaminated by a prior same-pid run (practically impossible across
     // processes since pids are not reused within a boot cycle, but assert the
     // invariant we actually care about: OUR sweep added none).
     assert!(
-        !after.iter().any(|leaked| !before.contains(leaked)),
-        "this resolution sweep added surviving probe artifacts: {after:?}"
+        new_artifacts.is_empty(),
+        "this resolution sweep added surviving probe artifacts: {new_artifacts:?}"
     );
+    Ok(())
 }

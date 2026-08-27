@@ -32,7 +32,10 @@
 mod common;
 
 use common::{DEBUGGEE_PERL_OVERRIDE_ENV, REQUIRE_PERL_ENV, perl_available};
+use std::error::Error;
+use std::fs;
 use std::panic;
+use std::process::Command;
 
 /// Nonexistent interpreter path — probing it fails deterministically on every
 /// platform (spawn error), so assertions never depend on which perls a host
@@ -59,6 +62,10 @@ impl EnvGuard {
     fn set(key: &str, value: &str) {
         unsafe { std::env::set_var(key, value) };
     }
+
+    fn set_os(key: &str, value: &std::ffi::OsStr) {
+        unsafe { std::env::set_var(key, value) };
+    }
 }
 
 impl Drop for EnvGuard {
@@ -74,8 +81,31 @@ impl Drop for EnvGuard {
 
 const GUARDED_KEYS: &[&str] = &[DEBUGGEE_PERL_OVERRIDE_ENV, REQUIRE_PERL_ENV, "PATH"];
 
+fn fake_path_perl() -> Result<tempfile::TempDir, Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("fake_perl.rs");
+    let binary = directory.path().join(if cfg!(windows) { "perl.exe" } else { "perl" });
+    fs::write(&source, "fn main() { println!(\"This is perl 5, fake PATH oracle\"); }\n")?;
+    let compile = Command::new("rustc")
+        .args(["--edition", "2024"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()?;
+    if !compile.status.success() {
+        return Err(format!(
+            "failed to compile fake PATH perl: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        )
+        .into());
+    }
+    Ok(directory)
+}
+
 #[test]
-fn debuggee_pin_is_the_single_availability_source_of_truth() {
+fn debuggee_pin_is_the_single_availability_source_of_truth() -> Result<(), Box<dyn Error>> {
+    let fake_path_perl = fake_path_perl()?;
+
     // ── Scenario A: pin set ⇒ PATH oracle is never the answer ──────────────
     //
     // Pre-repair discrimination: with `perl` on PATH, `perl_available()`
@@ -86,6 +116,7 @@ fn debuggee_pin_is_the_single_availability_source_of_truth() {
     // probed exclusively and its rejection makes availability `false`.
     {
         let _guard = EnvGuard::capture(GUARDED_KEYS);
+        EnvGuard::set_os("PATH", fake_path_perl.path().as_os_str());
         EnvGuard::set(DEBUGGEE_PERL_OVERRIDE_ENV, BOGUS_PIN);
         assert!(
             !perl_available(),
@@ -153,14 +184,16 @@ fn debuggee_pin_is_the_single_availability_source_of_truth() {
         EnvGuard::remove(DEBUGGEE_PERL_OVERRIDE_ENV);
         EnvGuard::remove(REQUIRE_PERL_ENV);
 
-        // Scrub PATH deterministically, independently of what this host
-        // ships; without a pin, availability must follow the (now empty)
-        // PATH oracle.
-        EnvGuard::set("PATH", "");
+        // Replace PATH with a deterministic native helper, independently of
+        // what Perl this host ships; without a pin, availability must follow
+        // this positive PATH oracle.
+        EnvGuard::set_os("PATH", fake_path_perl.path().as_os_str());
         assert!(
-            !perl_available(),
-            "without a pin, availability must follow the PATH oracle and an \
-             empty PATH resolves nothing"
+            perl_available(),
+            "without a pin, availability must follow the deterministic positive \
+             PATH oracle control"
         );
     }
+
+    Ok(())
 }
