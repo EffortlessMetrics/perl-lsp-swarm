@@ -53,47 +53,111 @@ impl ReadOnlyCommands for SystemCommands {
     }
 }
 
-/// A remote's full identity: the host as well as `owner/name`.
+/// A remote's full identity: the network endpoint as well as `owner/name`.
 ///
-/// Host matters. `github.com/Owner/Repo` and `evil.example.com/Owner/Repo`
-/// share an `owner/name`, so comparing only that would accept a remote
-/// pointing at an entirely different server as if it were the admitted
-/// repository.
+/// The endpoint is scheme + host + port, not host alone.
+/// `github.com/Owner/Repo` and `evil.example.com/Owner/Repo` share an
+/// `owner/name`; `github.com/O/R` and `github.com:8443/O/R` share a host; and
+/// `https://github.com/O/R` and `git://github.com/O/R` share both host and
+/// port-less appearance while speaking to different services over different
+/// transports. Any of those differences is a different endpoint, so a deletion
+/// leased against one must not be redeemed against another.
+///
+/// Both sides of a comparison are produced by parsing the output of
+/// `git remote get-url <remote>` at collection and again at verification, so
+/// strict equality is exactly the intended check: it detects the remote being
+/// repointed in between.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteIdentity {
+    pub scheme: String,
     pub host: String,
+    /// Effective port: explicit when the URL carries one, otherwise the
+    /// scheme's default. `None` only for a scheme with no known default and no
+    /// explicit port, where identical inputs still compare equal.
+    pub port: Option<u16>,
     pub repository: RepositoryId,
 }
 
 impl RemoteIdentity {
-    /// Canonical `host/owner/name`, compared exactly.
+    /// Canonical `scheme://host[:port]/owner/name`, compared exactly.
     pub fn render(&self) -> String {
-        format!("{}/{}", self.host, self.repository.render())
+        match self.port {
+            Some(port) => {
+                format!("{}://{}:{}/{}", self.scheme, self.host, port, self.repository.render())
+            }
+            None => format!("{}://{}/{}", self.scheme, self.host, self.repository.render()),
+        }
     }
 }
 
-/// Parse a git remote URL into host and `owner/name`.
+/// The default port for a git-capable scheme, so an explicit `:443` and an
+/// implicit HTTPS compare equal instead of reading as two endpoints.
+fn default_port(scheme: &str) -> Option<u16> {
+    match scheme {
+        "https" => Some(443),
+        "http" => Some(80),
+        "ssh" => Some(22),
+        "git" => Some(9418),
+        "ftps" => Some(990),
+        "ftp" => Some(21),
+        _ => None,
+    }
+}
+
+/// Parse a git remote URL into its endpoint and `owner/name`.
 ///
-/// Handles the `scheme://[user@]host[:port]/owner/name(.git)` and
-/// `[user@]host:owner/name(.git)` forms. Anything else is unparseable and must
-/// not be guessed at.
+/// Handles the `scheme://[user@]host[:port]/owner/name(.git)` and the scp-like
+/// `[user@]host:owner/name(.git)` forms. The scp-like form has no scheme or
+/// port of its own — git speaks SSH over it — so it normalizes to `ssh` on 22.
+/// Anything else is unparseable and must not be guessed at.
 pub fn parse_remote_identity(url: &str) -> Option<RemoteIdentity> {
     let trimmed = url.trim().trim_end_matches('/');
     let without_suffix = trimmed.strip_suffix(".git").unwrap_or(trimmed);
-    let (host, path) = match without_suffix.split_once("://") {
-        Some((_scheme, rest)) => rest.split_once('/')?,
-        None => without_suffix.split_once(':')?,
+
+    let (scheme, authority, path) = match without_suffix.split_once("://") {
+        Some((scheme, rest)) => {
+            let (authority, path) = rest.split_once('/')?;
+            (scheme.to_ascii_lowercase(), authority, path)
+        }
+        // scp-like: the text after ':' is a path, never a port. `host:1234/x`
+        // is the path `1234/x`, which is how git itself reads it.
+        None => {
+            let (authority, path) = without_suffix.split_once(':')?;
+            ("ssh".to_string(), authority, path)
+        }
     };
-    // Drop any `user@` prefix and any `:port` suffix; compare hosts
+    if scheme.is_empty() {
+        return None;
+    }
+
+    // Drop any `user@` prefix; credentials are not identity. Compare hosts
     // case-insensitively, as DNS does.
-    let host = host.rsplit('@').next().unwrap_or(host);
-    let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    let (host, explicit_port) = match authority.rsplit_once(':') {
+        Some((host, port_text)) => {
+            // A non-numeric tail is not a port; treat the whole thing as host
+            // rather than silently discarding it.
+            match port_text.parse::<u16>() {
+                Ok(port) => (host, Some(port)),
+                Err(_) => (authority, None),
+            }
+        }
+        None => (authority, None),
+    };
+    let host = host.to_ascii_lowercase();
+
     let (owner, name) = path.rsplit_once('/')?;
     let owner = owner.rsplit('/').next().unwrap_or(owner);
     if host.is_empty() || owner.is_empty() || name.is_empty() {
         return None;
     }
-    Some(RemoteIdentity { host, repository: RepositoryId::new(owner, name) })
+
+    Some(RemoteIdentity {
+        port: explicit_port.or_else(|| default_port(&scheme)),
+        scheme,
+        host,
+        repository: RepositoryId::new(owner, name),
+    })
 }
 
 /// Parse just `owner/name` out of a git remote URL.

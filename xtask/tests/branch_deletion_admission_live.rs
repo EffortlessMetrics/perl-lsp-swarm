@@ -182,7 +182,9 @@ fn remote_identity_is_verified_not_merely_named() {
 /// meaningless rather than merely failing.
 fn unreachable_identity() -> RemoteIdentity {
     RemoteIdentity {
+        scheme: "fixture-url-failed-to-parse".to_string(),
         host: "fixture-url-failed-to-parse".to_string(),
+        port: None,
         repository: xtask::branch_deletion_admission::RepositoryId::new("invalid", "invalid"),
     }
 }
@@ -205,6 +207,60 @@ fn remote_identity_keeps_the_host_and_normalises_it() {
     for url in ["", "not-a-url", "https://github.com/onlyowner", "https:///O/R"] {
         assert!(parse_remote_identity(url).is_none(), "{url:?} must not parse");
     }
+}
+
+/// The endpoint is scheme + host + port, not host alone.
+///
+/// A deletion leased against one endpoint must not be redeemable against
+/// another that merely shares `owner/name` and a hostname. Each negative
+/// control below differs from the reference in exactly one component.
+#[test]
+fn remote_identity_distinguishes_the_whole_endpoint() {
+    let reference =
+        parse_remote_identity("https://github.com/O/R.git").unwrap_or_else(unreachable_identity);
+
+    // An explicit default port is the same endpoint, not a second one —
+    // otherwise the check would fire on cosmetic URL differences.
+    let explicit_default =
+        parse_remote_identity("https://github.com:443/O/R").unwrap_or_else(unreachable_identity);
+    assert_eq!(reference, explicit_default, "an explicit default port is the same endpoint");
+
+    // Negative control: alternate port.
+    let alternate_port =
+        parse_remote_identity("https://github.com:8443/O/R").unwrap_or_else(unreachable_identity);
+    assert_eq!(alternate_port.host, reference.host, "the host alone cannot separate these");
+    assert_eq!(
+        alternate_port.repository.render(),
+        reference.repository.render(),
+        "owner/name alone cannot separate these",
+    );
+    assert_ne!(alternate_port, reference, "an alternate port must be a different endpoint");
+    assert_ne!(alternate_port.render(), reference.render(), "the rendering must differ too");
+
+    // Negative control: different scheme, same host, both port-less in text.
+    // `git://` is unauthenticated and unencrypted; accepting it as HTTPS would
+    // be a transport downgrade.
+    let other_scheme =
+        parse_remote_identity("git://github.com/O/R").unwrap_or_else(unreachable_identity);
+    assert_eq!(other_scheme.host, reference.host, "the host alone cannot separate these");
+    assert_ne!(other_scheme, reference, "a different scheme must be a different endpoint");
+
+    // The scp-like form is SSH on 22, and is therefore not the HTTPS endpoint.
+    let scp = parse_remote_identity("git@github.com:O/R.git").unwrap_or_else(unreachable_identity);
+    assert_eq!(scp.scheme, "ssh", "the scp-like form speaks ssh");
+    assert_eq!(scp.port, Some(22), "the scp-like form has no port of its own; ssh defaults to 22");
+    assert_ne!(scp, reference, "ssh and https are different endpoints");
+    // ...and it is the same endpoint as the explicit ssh URL it is shorthand for.
+    let ssh_explicit = parse_remote_identity("ssh://git@GitHub.com:22/O/R.git")
+        .unwrap_or_else(unreachable_identity);
+    assert_eq!(scp, ssh_explicit, "scp-like shorthand and its explicit ssh URL are one endpoint");
+
+    // A non-numeric tail after ':' is not a port and must not be discarded.
+    assert!(
+        parse_remote_identity("https://github.com:notaport/O/R")
+            .is_some_and(|identity| identity.host.contains("notaport")),
+        "a non-numeric port tail must stay part of the host, not vanish",
+    );
 }
 
 /// An unreadable or unparseable child listing must retain. "The listing
