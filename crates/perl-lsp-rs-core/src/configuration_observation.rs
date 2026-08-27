@@ -971,13 +971,13 @@ impl ConfigurationObservationDraft {
             // require the generation/runtime pipeline and stay owned by the
             // landed runtime slices (#7057).
             match policy.validation {
-                ConfigValidation::NonEmptyString | ConfigValidation::OptionalNonEmptyString => {
-                    if value.raw_text_parts().iter().any(|part| part.is_empty()) {
-                        return Err(ObservationError::MalformedValue {
-                            field: key.clone(),
-                            reason: MalformedReason::WrongShape,
-                        });
-                    }
+                ConfigValidation::NonEmptyString | ConfigValidation::OptionalNonEmptyString
+                    if value.raw_text_parts().iter().any(|part| part.is_empty()) =>
+                {
+                    return Err(ObservationError::MalformedValue {
+                        field: key.clone(),
+                        reason: MalformedReason::WrongShape,
+                    });
                 }
                 ConfigValidation::StringList => {
                     if let NormalizedValue::TextList(items) = &value
