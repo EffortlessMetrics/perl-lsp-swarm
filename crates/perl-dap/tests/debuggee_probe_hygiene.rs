@@ -301,10 +301,10 @@ fn process_exists(pid: u32) -> io::Result<bool> {
 fn wait_for_pid_file(path: &Path, timeout: Duration) -> io::Result<u32> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        if let Ok(contents) = fs::read_to_string(path) {
-            if let Ok(pid) = contents.trim().parse::<u32>() {
-                return Ok(pid);
-            }
+        if let Ok(contents) = fs::read_to_string(path)
+            && let Ok(pid) = contents.trim().parse::<u32>()
+        {
+            return Ok(pid);
         }
         if std::time::Instant::now() >= deadline {
             return Err(io::Error::new(
