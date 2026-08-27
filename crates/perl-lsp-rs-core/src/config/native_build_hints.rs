@@ -343,12 +343,12 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
         match ch {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
-            // The guard is where the pop happens, exactly as the collapsed
-            // `if` did: a guard runs only after its pattern matches, and only
-            // once, so a balanced closer still pops and falls through to the
-            // wildcard arm.
-            ')' | ']' | '}' if stack.pop().is_none() => return idx.saturating_sub(start),
-            ')' | ']' | '}' => {}
+            ')' | ']' | '}' => {
+                let opener = stack.pop();
+                if opener.is_none() {
+                    return idx.saturating_sub(start);
+                }
+            }
             ',' | ';' if stack.is_empty() => return idx.saturating_sub(start),
             _ => {}
         }
@@ -1057,6 +1057,30 @@ Module::Build->new(
     }
 
     #[test]
+    fn malformed_nested_assignment_does_not_hide_following_define() -> TestResult {
+        let root = HintRoot::new()?;
+        root.write_makefile(
+            "WriteMakefile(\n\
+                LIBS => ['-lreal', OTHER => '-lignored'],\n\
+                DEFINE => '-DREAL',\n\
+            );\n",
+        )?;
+
+        let hints = root.hints();
+
+        assert_eq!(hints.define_flags, vec!["-DREAL".to_string()]);
+        assert_eq!(
+            hints.diagnostics,
+            vec![diagnostic(
+                NativeBuildScript::MakefilePl,
+                "LIBS",
+                NativeBuildHintParseReason::MalformedArrayLiteral,
+            )]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn single_quoted_windows_paths_preserve_backslashes() -> TestResult {
         let root = HintRoot::new()?;
         root.write_makefile("WriteMakefile(MYEXTLIB => 'C:\\\\vendor\\\\foo.lib');")?;
@@ -1168,9 +1192,8 @@ Module::Build->new(
 
     /// `rejected_value_len` decides how far the scanner skips past a value it
     /// could not parse, so an off-by-one here silently re-scans or swallows the
-    /// next assignment. The closer arm carries a side-effecting `stack.pop()`;
-    /// these cases pin each of its outcomes so a future restructuring of that
-    /// arm cannot change the span it reports.
+    /// next assignment. These cases pin each closer outcome so a future
+    /// restructuring of that arm cannot change the span it reports.
     #[test]
     fn rejected_value_len_bounds_the_skip_at_each_closer_outcome() {
         // Unbalanced closer at index 0: the span is empty, and the caller's
