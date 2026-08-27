@@ -12,10 +12,19 @@ const FRAME_ID_MODULUS: i32 = 100_000;
 
 #[derive(Clone)]
 struct StoppedFrameAuthority {
-    generation: u64,
+    adapter_generation: u64,
+    stopped_generation: u64,
     top: StackFrame,
 }
 
+enum FramedStackQuery {
+    Sent { begin: String, end: String },
+    Failed,
+    Unavailable,
+    Rejected,
+}
+
+#[cfg(test)]
 fn clear_rejected_framed_snapshot(session: &mut Option<super::DebugSession>) {
     if let Some(session) = session {
         session.stack_frames.clear();
@@ -26,6 +35,7 @@ fn clear_rejected_framed_snapshot(session: &mut Option<super::DebugSession>) {
 impl DebugAdapter {
     fn stopped_frame_authority(
         session: &Option<super::DebugSession>,
+        adapter_generation: u64,
     ) -> Option<StoppedFrameAuthority> {
         let session = session.as_ref()?;
         if session.state != crate::debug_adapter::DebugState::Stopped {
@@ -39,26 +49,91 @@ impl DebugAdapter {
         if top.id != expected_id as i32 {
             return None;
         }
-        Some(StoppedFrameAuthority { generation: session.stopped_generation, top })
+        Some(StoppedFrameAuthority {
+            adapter_generation,
+            stopped_generation: session.stopped_generation,
+            top,
+        })
     }
 
     fn stopped_frame_authority_is_current(
         session: &Option<super::DebugSession>,
+        adapter_generation: u64,
         authority: &StoppedFrameAuthority,
     ) -> bool {
         session.as_ref().is_some_and(|session| {
-            session.state == crate::debug_adapter::DebugState::Stopped
-                && session.stopped_generation == authority.generation
+            adapter_generation == authority.adapter_generation
+                && session.state == crate::debug_adapter::DebugState::Stopped
+                && session.stopped_generation == authority.stopped_generation
         })
     }
 
-    fn clear_rejected_framed_snapshot_if_current(
-        session: &mut Option<super::DebugSession>,
+    fn capture_stopped_frame_authority(&self) -> (bool, Option<StoppedFrameAuthority>) {
+        // Keep the adapter generation stable while pairing it with the process
+        // session. Replacement paths advance this gate before swapping sessions.
+        let generation =
+            lock_or_recover(&self.termination_state, "debug_adapter.termination_state");
+        let session = lock_or_recover(&self.session, "debug_adapter.session");
+        (session.is_some(), Self::stopped_frame_authority(&session, generation.generation))
+    }
+
+    fn with_current_stopped_session<R>(
+        &self,
         authority: &StoppedFrameAuthority,
-    ) {
-        if Self::stopped_frame_authority_is_current(session, authority) {
-            clear_rejected_framed_snapshot(session);
+        apply: impl FnOnce(&mut super::DebugSession) -> R,
+    ) -> Option<R> {
+        // Lock in the same generation-first order used by replacement paths.
+        // Holding both guards makes the final currentness check and mutation one
+        // atomic admission with respect to resume/replacement state changes.
+        let generation =
+            lock_or_recover(&self.termination_state, "debug_adapter.termination_state");
+        let mut session = lock_or_recover(&self.session, "debug_adapter.session");
+        if !Self::stopped_frame_authority_is_current(&session, generation.generation, authority) {
+            return None;
         }
+        session.as_mut().map(apply)
+    }
+
+    fn send_current_framed_stack_query(
+        &self,
+        authority: &StoppedFrameAuthority,
+    ) -> FramedStackQuery {
+        self.with_current_stopped_session(authority, |session| {
+            let Some(stdin) = session.process.stdin.as_mut() else {
+                return FramedStackQuery::Unavailable;
+            };
+            let commands = vec!["T".to_string()];
+            match self.send_framed_debugger_commands(stdin, &commands) {
+                Ok((begin, end)) => FramedStackQuery::Sent { begin, end },
+                Err(error) => {
+                    tracing::warn!(%error, "Failed to send framed stackTrace command, falling back");
+                    let _ = stdin.write_all(b"T\n");
+                    let _ = stdin.flush();
+                    FramedStackQuery::Failed
+                }
+            }
+        })
+        .unwrap_or(FramedStackQuery::Rejected)
+    }
+
+    fn promote_framed_stack_if_current(
+        &self,
+        authority: &StoppedFrameAuthority,
+        frames: &[StackFrame],
+        arguments: &HashMap<i32, Vec<String>>,
+    ) -> bool {
+        self.with_current_stopped_session(authority, |session| {
+            session.stack_frame_arguments = arguments.clone();
+            session.stack_frames = frames.to_vec();
+        })
+        .is_some()
+    }
+
+    fn clear_rejected_framed_snapshot_if_current(&self, authority: &StoppedFrameAuthority) {
+        let _ = self.with_current_stopped_session(authority, |session| {
+            session.stack_frames.clear();
+            session.stack_frame_arguments.clear();
+        });
     }
 
     fn reconcile_framed_stack(
@@ -160,43 +235,35 @@ impl DebugAdapter {
         let levels = args.as_ref().and_then(|value| value.levels).unwrap_or(0);
         let requested_count = if levels <= 0 { None } else { Some(levels as usize) };
         let mut framed_output_lines = None;
-        let (session_was_present, authority) = {
-            let session = lock_or_recover(&self.session, "debug_adapter.session");
-            (session.is_some(), Self::stopped_frame_authority(&session))
-        };
+        let (session_was_present, authority) = self.capture_stopped_frame_authority();
+        let mut promotion_rejected = session_was_present && authority.is_none();
 
         // Ask the debugger for an explicit stack snapshot only when a current
         // stopped-frame authority was captured for this request.
-        if authority.is_some()
-            && let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
-            && let Some(stdin) = session.process.stdin.as_mut()
-        {
-            let commands = vec!["T".to_string()];
-            match self.send_framed_debugger_commands(stdin, &commands) {
-                Ok((begin, end)) => {
+        if let Some(authority) = authority.as_ref() {
+            match self.send_current_framed_stack_query(authority) {
+                FramedStackQuery::Sent { begin, end } => {
                     framed_output_lines = self.capture_framed_debugger_output(
                         &begin,
                         &end,
                         DEBUGGER_QUERY_WAIT_MS * 8,
                     );
                 }
-                Err(error) => {
-                    tracing::warn!(%error, "Failed to send framed stackTrace command, falling back");
-                    let _ = stdin.write_all(b"T\n");
-                    let _ = stdin.flush();
+                FramedStackQuery::Failed => {
                     Self::wait_for_debugger_output_window(DEBUGGER_QUERY_WAIT_MS as u32);
                 }
+                FramedStackQuery::Unavailable => {}
+                FramedStackQuery::Rejected => promotion_rejected = true,
             }
         }
 
-        let mut promotion_rejected = session_was_present && authority.is_none();
         let parsed_frames = if let (Some(lines), Some(authority)) =
             (framed_output_lines.as_ref(), authority.as_ref())
         {
             let output = lines.join("\n");
             let identity = ParseIdentity::new()
                 .with_operation_id_from_i64(request_seq)
-                .with_suspension_generation(authority.generation);
+                .with_suspension_generation(authority.stopped_generation);
             let input = OriginatedParseInput::new(
                 DebuggerOutputOrigin::DebuggerControlPayload,
                 identity,
@@ -212,8 +279,7 @@ impl DebugAdapter {
                 // authorities only when this request still owns the current
                 // suspension. A later suspension must not be cleared by an
                 // older framed query that completed after it.
-                let mut session = lock_or_recover(&self.session, "debug_adapter.session");
-                Self::clear_rejected_framed_snapshot_if_current(&mut session, authority);
+                self.clear_rejected_framed_snapshot_if_current(authority);
                 return DapMessage::Response {
                     seq,
                     request_seq,
@@ -240,17 +306,15 @@ impl DebugAdapter {
                 // causes the caller to fall through to that authoritative source.
                 Vec::new()
             } else {
-                let mut session = lock_or_recover(&self.session, "debug_adapter.session");
-                if !Self::stopped_frame_authority_is_current(&session, authority) {
+                if !self.promote_framed_stack_if_current(
+                    authority,
+                    &framed_frames,
+                    &frame_arguments,
+                ) {
                     promotion_rejected = true;
                     Vec::new()
-                } else if let Some(ref mut session) = *session {
-                    session.stack_frame_arguments = frame_arguments;
-                    session.stack_frames = framed_frames.clone();
-                    framed_frames
                 } else {
-                    promotion_rejected = true;
-                    Vec::new()
+                    framed_frames
                 }
             }
         } else {
@@ -268,12 +332,10 @@ impl DebugAdapter {
         } else if !parsed_frames.is_empty() {
             parsed_frames
         } else if let Some(authority) = authority.as_ref() {
-            let session = lock_or_recover(&self.session, "debug_adapter.session");
-            if Self::stopped_frame_authority_is_current(&session, authority) {
+            self.with_current_stopped_session(authority, |_| {
                 Self::filter_user_visible_frames(vec![authority.top.clone()])
-            } else {
-                Vec::new()
-            }
+            })
+            .unwrap_or_default()
         } else if !session_was_present
             && let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
         {
@@ -560,7 +622,10 @@ mod pagination_tests {
             let mut guard = lock_or_recover(&adapter.session, "test.seed_generation");
             let session = guard.as_mut().ok_or("test session was not seeded")?;
             session.stopped_generation = 7;
-            DebugAdapter::stopped_frame_authority(&guard)
+            drop(guard);
+            adapter
+                .capture_stopped_frame_authority()
+                .1
                 .ok_or("stopped authority was not captured")?
         };
 
@@ -569,13 +634,11 @@ mod pagination_tests {
             let session = session.as_mut().ok_or("test session was not seeded")?;
             session.state = DebugState::Running;
         }
-        let session = lock_or_recover(&adapter.session, "test.running_generation_check");
         require_eq(
-            &DebugAdapter::stopped_frame_authority_is_current(&session, &authority),
+            &adapter.with_current_stopped_session(&authority, |_| ()).is_some(),
             &false,
             "running session accepted framed promotion",
         )?;
-        drop(session);
 
         {
             let mut session = lock_or_recover(&adapter.session, "test.changed_generation");
@@ -584,24 +647,117 @@ mod pagination_tests {
             session.stopped_generation = 8;
             session.stack_frames = vec![make_frame(8, "main::inner")];
         }
-        let session = lock_or_recover(&adapter.session, "test.changed_generation_check");
         require_eq(
-            &DebugAdapter::stopped_frame_authority_is_current(&session, &authority),
+            &adapter.with_current_stopped_session(&authority, |_| ()).is_some(),
             &false,
             "later suspension accepted prior framed promotion",
         )?;
-        drop(session);
 
         {
             let mut session = lock_or_recover(&adapter.session, "test.terminated_generation");
             let session = session.as_mut().ok_or("test session was not seeded")?;
             session.state = DebugState::Terminated;
         }
-        let session = lock_or_recover(&adapter.session, "test.terminated_generation_check");
         require_eq(
-            &DebugAdapter::stopped_frame_authority_is_current(&session, &authority),
+            &adapter.with_current_stopped_session(&authority, |_| ()).is_some(),
             &false,
             "terminated session accepted framed promotion",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn running_stack_trace_sends_no_framed_query() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(1, "main::inner")]);
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.running_stack_trace");
+            let session = guard.as_mut().ok_or("test session was not seeded")?;
+            session.state = DebugState::Running;
+        }
+
+        let before_queries = adapter.debugger_query_count_for_test();
+        let response = adapter.handle_stack_trace(1, 1, None);
+        require_eq(
+            &adapter.debugger_query_count_for_test(),
+            &before_queries,
+            "running stackTrace wrote a debugger query",
+        )?;
+        let DapMessage::Response { body: Some(body), .. } = response else {
+            return Err("running stackTrace response omitted its body".into());
+        };
+        require_eq(
+            &body.get("stackFrames"),
+            &Some(&json!([])),
+            "running stackTrace exposed stopped frames",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn replacement_session_with_equal_stop_generation_rejects_prior_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        let top = make_frame(7, "main::inner");
+        adapter.seed_stopped_session_with_frames_for_test(vec![top.clone()]);
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.prior_session");
+            let session = guard.as_mut().ok_or("prior test session was not seeded")?;
+            session.stopped_generation = 7;
+        }
+        let prior_authority = adapter
+            .capture_stopped_frame_authority()
+            .1
+            .ok_or("prior stopped authority was not captured")?;
+
+        adapter.begin_session_generation();
+        adapter.seed_stopped_session_with_frames_for_test(vec![top.clone()]);
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.replacement_session");
+            let session = guard.as_mut().ok_or("replacement test session was not seeded")?;
+            session.stopped_generation = 7;
+            session.stack_frame_arguments.insert(7, vec!["replacement".to_string()]);
+        }
+
+        let before_queries = adapter.debugger_query_count_for_test();
+        require_eq(
+            &matches!(
+                adapter.send_current_framed_stack_query(&prior_authority),
+                FramedStackQuery::Rejected
+            ),
+            &true,
+            "prior authority queried a replacement session",
+        )?;
+        require_eq(
+            &adapter.debugger_query_count_for_test(),
+            &before_queries,
+            "rejected replacement query wrote to the debugger",
+        )?;
+
+        let stale_frames = vec![make_frame(7, "main::stale")];
+        let stale_arguments = HashMap::from([(7, vec!["stale".to_string()])]);
+        require_eq(
+            &adapter.promote_framed_stack_if_current(
+                &prior_authority,
+                &stale_frames,
+                &stale_arguments,
+            ),
+            &false,
+            "prior authority promoted into a replacement session",
+        )?;
+        adapter.clear_rejected_framed_snapshot_if_current(&prior_authority);
+
+        let guard = lock_or_recover(&adapter.session, "test.replacement_session_check");
+        let session = guard.as_ref().ok_or("replacement test session was cleared")?;
+        require_eq(
+            &session.stack_frames,
+            &vec![top],
+            "prior authority changed replacement frames",
+        )?;
+        require_eq(
+            &session.stack_frame_arguments.get(&7),
+            &Some(&vec!["replacement".to_string()]),
+            "prior authority changed replacement arguments",
         )?;
         Ok(())
     }
@@ -617,9 +773,10 @@ mod pagination_tests {
             session.stopped_generation = 7;
             session.stack_frames = vec![make_frame(8, "main::inner")];
         }
+        let adapter_generation = adapter.current_session_generation();
         let session = lock_or_recover(&adapter.session, "test.malformed_generation_check");
         require_eq(
-            &DebugAdapter::stopped_frame_authority(&session).is_none(),
+            &DebugAdapter::stopped_frame_authority(&session, adapter_generation).is_none(),
             &true,
             "mismatched generation-derived frame id was admitted",
         )?;
@@ -631,9 +788,10 @@ mod pagination_tests {
             session.stopped_generation = FRAME_ID_MODULUS as u64;
             session.stack_frames = vec![make_frame(i32::MAX, "main::inner")];
         }
+        let adapter_generation = adapter.current_session_generation();
         let session = lock_or_recover(&adapter.session, "test.exhausted_generation_check");
         require_eq(
-            &DebugAdapter::stopped_frame_authority(&session).is_none(),
+            &DebugAdapter::stopped_frame_authority(&session, adapter_generation).is_none(),
             &true,
             "exhausted generation was admitted",
         )?;
@@ -649,7 +807,10 @@ mod pagination_tests {
             let mut guard = lock_or_recover(&adapter.session, "test.prior_authority");
             let session = guard.as_mut().ok_or("test session was not seeded")?;
             session.stopped_generation = 7;
-            DebugAdapter::stopped_frame_authority(&guard)
+            drop(guard);
+            adapter
+                .capture_stopped_frame_authority()
+                .1
                 .ok_or("prior stopped authority was not captured")?
         };
 
@@ -659,8 +820,8 @@ mod pagination_tests {
             session.stopped_generation = 8;
             session.stack_frames = vec![make_frame(8, "main::inner")];
             session.stack_frame_arguments.insert(8, vec!["later_arg".to_string()]);
-            DebugAdapter::clear_rejected_framed_snapshot_if_current(&mut guard, &prior_authority);
         }
+        adapter.clear_rejected_framed_snapshot_if_current(&prior_authority);
 
         let guard = lock_or_recover(&adapter.session, "test.later_suspension_check");
         let session = guard.as_ref().ok_or("test session was cleared unexpectedly")?;
