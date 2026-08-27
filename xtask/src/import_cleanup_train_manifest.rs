@@ -789,13 +789,18 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
         match node.product_context.as_str() {
             "completion_item" => completion_rows += 1,
             "code_action" => action_rows += 1,
-            "internal_plan"
-                if !spine_seen.insert((node.product_context.as_str(), node.role.as_str())) =>
-            {
-                bail!(
-                    "add_missing context collapse: two internal-plan rows share role {} and collapse stages",
-                    node.role
-                );
+            "internal_plan" => {
+                // Bind the insert before testing it (#12910): the row must be
+                // recorded on its first sighting whether or not this arm bails,
+                // and a mutating call reads as a pure condition in a guard.
+                let first_sighting =
+                    spine_seen.insert((node.product_context.as_str(), node.role.as_str()));
+                if !first_sighting {
+                    bail!(
+                        "add_missing context collapse: two internal-plan rows share role {} and collapse stages",
+                        node.role
+                    );
+                }
             }
             _ => {}
         }

@@ -1641,8 +1641,11 @@ fn walk_wire_value(
                             evidence.publish_diagnostics_batches.push(batch);
                         }
                     }
-                    "textDocument/didChange" if evidence.did_change_line.is_none() => {
-                        evidence.did_change_line = Some(line_index);
+                    // Set-once latch on the FIRST didChange line: `get_or_insert`
+                    // is the shape #12910 asks for here, and states the
+                    // keep-the-earliest intent the nested `if` only implied.
+                    "textDocument/didChange" => {
+                        evidence.did_change_line.get_or_insert(line_index);
                     }
                     _ => {}
                 }

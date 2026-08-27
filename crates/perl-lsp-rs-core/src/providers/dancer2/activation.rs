@@ -138,13 +138,27 @@ impl Dancer2FileActivations {
     }
 }
 
+/// Byte offset of the document's first exact `use Dancer2` activation site.
+///
+/// The anchoring point for position-aware effective-`@INC` evaluation
+/// (#12776): only `use lib` / `no lib` operations active at or before this
+/// offset may contribute to the request's include roots. Returns `None`
+/// when the AST has no activation site, which keeps the cheap in-memory
+/// gate (`has_activation_site`) the sole discriminator for skipping all
+/// filesystem module resolution on Dancer2-free documents.
+#[must_use]
+pub fn first_activation_site_offset(ast: &Node) -> Option<usize> {
+    let sites = extract_dancer2_activation_sites(ast, FileId(0));
+    sites.into_iter().map(|site| site.span_start_byte as usize).min()
+}
+
 /// Whether the AST contains any exact `use Dancer2` activation site.
 ///
 /// Cheap in-memory gate: documents without an activation site skip the
 /// filesystem module resolution entirely on the provider paths.
 #[must_use]
 pub fn has_activation_site(ast: &Node) -> bool {
-    !extract_dancer2_activation_sites(ast, FileId(0)).is_empty()
+    first_activation_site_offset(ast).is_some()
 }
 
 /// Bounded human reason for the current activation state of a package.
