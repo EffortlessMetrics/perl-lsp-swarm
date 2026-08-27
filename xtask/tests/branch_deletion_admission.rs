@@ -651,7 +651,12 @@ fn no_executable_path_merges_with_delete_branch() -> Result<(), Box<dyn std::err
                 if line.trim_start().starts_with('#') || line.trim_start().starts_with("//") {
                     continue;
                 }
-                if (line.contains("gh pr merge") && line.contains("--delete-branch"))
+                // Any literal occurrence, not only one on the same logical
+                // line as `gh pr merge`. A flag assembled into a variable, or
+                // passed through a wrapper, deletes exactly as effectively as
+                // an inline one, and pattern-matching only the shape this PR
+                // happened to repair would leave those forms unguarded.
+                if line.contains("--delete-branch")
                     || (line.contains("delete-branch:") && line.contains("true"))
                 {
                     offenders.push(format!(
@@ -696,6 +701,19 @@ fn the_recurrence_scan_detects_a_planted_violation() {
         .iter()
         .any(|line| line.contains("gh pr merge") && line.contains("--delete-branch"));
     assert!(found, "the scan must join line continuations before matching");
+
+    // Variable-built and wrapper forms: the flag never appears next to
+    // `gh pr merge`, but reaches it just the same.
+    for indirect in [
+        "FLAGS=\"--delete-branch\"\ngh pr merge \"$PR\" --squash $FLAGS\n",
+        "merge_pr() { gh pr merge \"$1\" --squash \"${@:2}\"; }\nmerge_pr 42 --delete-branch\n",
+        "gh pr merge $PR --squash --delete-branch\n",
+    ] {
+        let found = logical_lines(indirect)
+            .iter()
+            .any(|line| !line.trim_start().starts_with('#') && line.contains("--delete-branch"));
+        assert!(found, "the scan must detect an indirect deletion flag in:\n{indirect}");
+    }
 
     // The action-input form: `delete-branch: true` handed to
     // peter-evans/create-pull-request deletes the generated head branch and is

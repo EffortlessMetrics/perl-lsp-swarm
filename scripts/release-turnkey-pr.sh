@@ -364,15 +364,19 @@ log "Version bump PR: ${PR_URL}"
 
 if [[ "$AUTO_MERGE" == "true" ]]; then
   log "Merging PR #${PR_NUMBER} with squash"
+  # Compare-and-swap on the exact reviewed head (PLSP-SPEC-0006): if the PR
+  # advanced between review and here, the merge must fail rather than land a
+  # different subject.
+  PR_HEAD_SHA="$(gh pr view "$PR_NUMBER" --json headRefOid -q .headRefOid)"
+  if [[ -z "$PR_HEAD_SHA" ]]; then
+    die "could not read the head SHA of PR #${PR_NUMBER}; refusing to merge without head CAS"
+  fi
   # No --delete-branch: an open PR that names ${BUMP_BRANCH} as its base is a
   # live dependency on it, and deleting the base auto-closes that child (#12885
   # — PRs #7810/#7819 were lost this way on August 15). Parent merge and
-  # parent-branch deletion are separate decisions; branch cleanup runs
-  # afterwards, against a freshly re-read graph, through
-  # `cargo run -p xtask --bin branch-deletion-admission -- admit`, which only
-  # yields a deletion command for SAFE_TO_DELETE.
-  gh pr merge "$PR_NUMBER" --squash
-  log "Left ${BUMP_BRANCH} in place; cleanup requires a SAFE_TO_DELETE admission (#12885)"
+  # parent-branch deletion are separate decisions, and the cleanup below
+  # re-reads the live graph rather than inheriting this moment's answer.
+  gh pr merge "$PR_NUMBER" --squash --match-head-commit "$PR_HEAD_SHA"
 else
   warn "AUTO_MERGE disabled. Merge PR manually before running this script with --base-branch=$REPO_BRANCH"
 fi
@@ -382,6 +386,38 @@ if [[ "$WAIT_PR_MERGE" == "true" ]]; then
     die "PR #${PR_NUMBER} did not merge within timeout"
   fi
   log "PR #${PR_NUMBER} merged"
+fi
+
+# ── Admitted branch cleanup (#12885) ─────────────────────────────────────────
+# The parent merged; that alone does not make its branch deletable. Re-read the
+# live graph now and delete only on SAFE_TO_DELETE. The planner is read-only and
+# exits 3 when it retains, so the deletion runs only when every subject was
+# actually read and none of them objected.
+if [[ "$AUTO_MERGE" == "true" ]]; then
+  log "Checking branch-deletion admission for ${BUMP_BRANCH}"
+  admission_code=0
+  admission_plan="$(cargo run --quiet -p xtask --bin branch-deletion-admission -- \
+    plan --pr "$PR_NUMBER" --remote origin 2>&1)" || admission_code=$?
+  printf '%s\n' "$admission_plan"
+  case "$admission_code" in
+    0)
+      deletion_command="$(printf '%s\n' "$admission_plan" | sed -n 's/^  run: //p')"
+      if [[ -z "$deletion_command" ]]; then
+        warn "admission passed but emitted no deletion command; retaining ${BUMP_BRANCH}"
+      else
+        log "Deleting ${BUMP_BRANCH} under the admitted lease"
+        # The command carries --force-with-lease on the admitted tip, so a
+        # branch that moved since the admission fails closed here.
+        eval "$deletion_command" || warn "leased deletion refused; ${BUMP_BRANCH} retained"
+      fi
+      ;;
+    3)
+      log "Retaining ${BUMP_BRANCH}: deletion was not admitted (see the disposition above)"
+      ;;
+    *)
+      warn "branch-deletion admission could not be evaluated (exit ${admission_code}); retaining ${BUMP_BRANCH}"
+      ;;
+  esac
 fi
 
 git fetch origin "$REPO_BRANCH" --prune

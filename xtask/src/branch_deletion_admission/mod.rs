@@ -10,10 +10,15 @@
 //! nothing: callers feed it a graph snapshot and route the typed outcome.
 
 mod evaluate;
+mod live;
 mod model;
 mod route;
 
 pub use evaluate::evaluate;
+pub use live::{
+    ReadOnlyCommands, SystemCommands, collect_request, repository_from_remote_url,
+    verify_remote_identity,
+};
 pub use model::{
     AdmissionOutcome, AdmissionRequest, BRANCH_DELETION_ADMISSION_POLICY_VERSION,
     BRANCH_DELETION_ADMISSION_SCHEMA_VERSION, BranchSubject, DeletionAdmission, GraphCompleteness,
@@ -44,6 +49,27 @@ struct Args {
 
 #[derive(Debug, Subcommand)]
 enum BranchDeletionAdmissionCommand {
+    /// Collect live subjects for a merged pull request, evaluate them, and
+    /// report the typed outcome.
+    ///
+    /// Read-only: it issues `git ls-remote`, `git remote get-url`,
+    /// `git worktree list` and `gh` reads, and mutates nothing. Exits
+    /// `RETAIN_EXIT_CODE` unless deletion is admitted, so a shell caller can
+    /// gate cleanup on the exit status alone.
+    Plan {
+        /// The merged parent pull request whose head branch is the subject.
+        #[arg(long)]
+        pr: u64,
+
+        /// Git remote the deletion would target.
+        #[arg(long, default_value = "origin")]
+        remote: String,
+
+        /// Emit the complete typed outcome as JSON instead of one human line.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Evaluate one admission request and report the typed outcome.
     Admit {
         /// Path to the JSON admission request, or `-` to read stdin.
@@ -64,39 +90,62 @@ pub fn run_from_env() -> Result<()> {
 
 fn run(args: Args) -> Result<()> {
     match args.command {
+        BranchDeletionAdmissionCommand::Plan { pr, remote, json } => {
+            let commands = SystemCommands;
+            let request = collect_request(&commands, pr, &remote)?;
+            let outcome = evaluate(&request);
+
+            // The verification command is not merely named here: for an
+            // admitted outcome it is actually run, so a caller pointed at a
+            // different repository fails before any deletion is emitted.
+            if outcome.admission.admits_deletion() {
+                verify_remote_identity(&commands, &remote, &outcome.repository)?;
+            }
+
+            emit(&outcome, json)?;
+            if !outcome.admission.admits_deletion() {
+                std::process::exit(RETAIN_EXIT_CODE);
+            }
+            Ok(())
+        }
         BranchDeletionAdmissionCommand::Admit { request, json } => {
             let raw = read_request(&request)?;
             let parsed: AdmissionRequest = serde_json::from_str(&raw)
                 .wrap_err("parsing the branch-deletion admission request")?;
             let outcome = evaluate(&parsed);
 
-            let rendered = if json {
-                // Envelope so a JSON consumer gets the leased command too,
-                // rather than composing an unleased deletion of its own.
-                let envelope = serde_json::json!({
-                    "outcome": &outcome,
-                    "deletion_command": branch_deletion_command(&outcome),
-                });
-                format!(
-                    "{}\n",
-                    serde_json::to_string_pretty(&envelope)
-                        .wrap_err("serializing the admission outcome")?
-                )
-            } else {
-                format!("{}\n", render_disposition(&outcome))
-            };
-
-            let stdout = io::stdout();
-            let mut handle = stdout.lock();
-            handle.write_all(rendered.as_bytes()).wrap_err("writing the admission outcome")?;
-            handle.flush().wrap_err("flushing the admission outcome")?;
-
+            emit(&outcome, json)?;
             if !outcome.admission.admits_deletion() {
                 std::process::exit(RETAIN_EXIT_CODE);
             }
             Ok(())
         }
     }
+}
+
+/// Render an outcome to stdout in the caller's chosen shape.
+fn emit(outcome: &AdmissionOutcome, json: bool) -> Result<()> {
+    let rendered = if json {
+        // Envelope so a JSON consumer gets the leased command too, rather
+        // than composing an unleased deletion of its own.
+        let envelope = serde_json::json!({
+            "outcome": outcome,
+            "deletion_command": branch_deletion_command(outcome),
+        });
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&envelope)
+                .wrap_err("serializing the admission outcome")?
+        )
+    } else {
+        format!("{}\n", render_disposition(outcome))
+    };
+
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    handle.write_all(rendered.as_bytes()).wrap_err("writing the admission outcome")?;
+    handle.flush().wrap_err("flushing the admission outcome")?;
+    Ok(())
 }
 
 fn read_request(path: &PathBuf) -> Result<String> {
