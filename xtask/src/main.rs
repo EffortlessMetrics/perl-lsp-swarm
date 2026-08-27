@@ -39,25 +39,25 @@ use tasks::{
     check_tautology, check_test_wiring, check_toolchain, check_version_sync, ci,
     ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics,
     ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure, command_evidence,
-    compare, compat_inventory, compiler_lexical_cutline, corpus_audit, count_ratchet, cpan_corpus,
-    critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
-    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs,
-    features, finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts,
-    gates, generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
-    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
-    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
-    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
-    native_format, native_neovim_train, native_product_surface, native_tooling,
-    oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
-    parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
-    perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
-    product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
-    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
-    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, receipts, release, release_artifact_check, release_evidence,
-    release_notes, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
-    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    compare, compat_inventory, compiler_lexical_cutline, compiler_upstream_status, corpus_audit,
+    count_ratchet, cpan_corpus, critic_rule_proof, dead_code, debt_report, dependency_hygiene,
+    dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
+    emacs_train_context, emacs_train_specs, features, finalize_check, fix_forward, fmt,
+    forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files, github,
+    github_preflight, github_review, goals, hardening, hook_checks, ignored_tests, incremental_proof,
+    inject_sha_assets, inline_completion_quality, inline_completion_smoke, install_surface_check,
+    integration_proof, intent_diff_gate, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix,
+    lsp_ux_smoke, memory_trends, merge_ready, methodology_gate, metrics, module_train,
+    module_train_live, native_critic, native_format, native_neovim_train, native_product_surface,
+    native_tooling, oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema,
+    oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
+    perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch, product_health_rail_contract,
+    product_health_status, protocol_type_substrate_matrix, provider_confidence_matrix,
+    provider_promotion_ledger, publication_facts, publish, publish_closure, publish_manifest_check,
+    publish_receipts, quality_baseline, quality_gate, queue_health, queue_snapshot, receipts,
+    release, release_artifact_check, release_evidence, release_notes, release_turnkey, repo_hygiene,
+    repository_topology, ripr_evidence, rust_small_proof, seam_diff, semantic_inline_next_edit,
+    semantic_inline_receipts,
     semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
     shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
     swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
@@ -2224,6 +2224,13 @@ enum Commands {
         command: CompilerProfileCommand,
     },
 
+    /// Upstream-derived semantic conformance surfaces (#12532).
+    #[command(name = "compiler")]
+    Compiler {
+        #[command(subcommand)]
+        command: CompilerUpstreamCommand,
+    },
+
     /// Publish structured editor UX scorecard artifact/status from harness fixtures.
     UxScorecard {
         /// Output format for stdout.
@@ -3992,6 +3999,26 @@ enum CompilerProfileCommand {
     List,
     /// Validate one profile document and print its stable identity.
     Check { path: PathBuf },
+}
+
+#[derive(Subcommand)]
+enum CompilerUpstreamCommand {
+    /// Upstream-derived conformance operations (#12532).
+    #[command(name = "upstream")]
+    Upstream {
+        #[command(subcommand)]
+        command: CompilerUpstreamStatusGroup,
+    },
+}
+
+#[derive(Subcommand)]
+enum CompilerUpstreamStatusGroup {
+    /// Exact upstream-derived conformance status packets (#12532).
+    #[command(name = "status")]
+    Status {
+        #[command(subcommand)]
+        command: tasks::compiler_upstream_status::CompilerUpstreamStatusSubcommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -6296,6 +6323,13 @@ fn run_cli(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Commands::Compiler { command } => match command {
+            CompilerUpstreamCommand::Upstream { command } => match command {
+                CompilerUpstreamStatusGroup::Status { command } => {
+                    compiler_upstream_status::run(command)
+                }
+            },
+        },
         Commands::Metrics { command } => match command {
             MetricsCommand::ParserStats { input, json } => metrics::parser_stats::run(input, json),
             MetricsCommand::ParserAccuracy {

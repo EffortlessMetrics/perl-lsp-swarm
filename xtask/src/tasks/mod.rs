@@ -50,6 +50,7 @@ pub mod compare;
 pub mod compare_parsers;
 pub mod compat_inventory;
 pub mod compiler_lexical_cutline;
+pub mod compiler_upstream_status;
 pub mod compiler_oracle;
 pub mod compiler_profile;
 #[cfg(feature = "legacy")]
