@@ -38,8 +38,11 @@ impl<'a> Parser<'a> {
         self.with_recursion_guard(|s| s.parse_hash_or_block_inner(expect_block))
     }
 
-    fn parse_hash_or_block_inner(&mut self, _expect_block: bool) -> ParseResult<Node> {
-        self.check_recursion()?;
+    fn parse_hash_or_block_inner(&mut self, expect_block: bool) -> ParseResult<Node> {
+        self.with_depth(|s| s.parse_hash_or_block_contents(expect_block))
+    }
+
+    fn parse_hash_or_block_contents(&mut self, _expect_block: bool) -> ParseResult<Node> {
         let start_token = self.tokens.next()?; // consume {
         let start = start_token.start();
 
@@ -55,7 +58,6 @@ impl<'a> Parser<'a> {
 
             // For empty braces, default to hash (correct for most functions)
             // Functions like sort/map/grep have special handling that creates blocks
-            self.exit_recursion();
             return Ok(Node::new(
                 NodeKind::HashLiteral { pairs: Vec::new() },
                 SourceLocation { start, end },
@@ -93,7 +95,6 @@ impl<'a> Parser<'a> {
                 {
                     self.expect_closing_delimiter(TokenKind::RightBrace)?;
                     let end = self.previous_position();
-                    self.exit_recursion();
                     // Emit a recovery marker so the AST reflects the incomplete brace
                     // content instead of a silently-empty block. Without this, an
                     // incomplete construct like `{ host => "localhost", port =>` parsed
@@ -119,7 +120,6 @@ impl<'a> Parser<'a> {
                 self.expect(TokenKind::RightBrace)?;
                 let end = self.previous_position();
 
-                self.exit_recursion();
                 return Ok(Node::new(
                     NodeKind::Block { statements },
                     SourceLocation { start, end },
@@ -153,7 +153,6 @@ impl<'a> Parser<'a> {
                         }
                     }
 
-                    self.exit_recursion();
                     return Ok(Node::new(
                         NodeKind::HashLiteral { pairs },
                         SourceLocation { start, end },
@@ -163,14 +162,12 @@ impl<'a> Parser<'a> {
                 // Already a HashLiteral — return it directly
                 // This happens when parse_comma creates a HashLiteral from key => value pairs
                 kind @ NodeKind::HashLiteral { .. } => {
-                    self.exit_recursion();
                     return Ok(Node::new(kind, first_loc));
                 }
 
                 // Otherwise it's a block with a single expression
                 other_kind => {
                     let expr_node = Node::new(other_kind, first_loc);
-                    self.exit_recursion();
                     return Ok(Node::new(
                         NodeKind::Block { statements: vec![expr_node] },
                         SourceLocation { start, end },
@@ -277,7 +274,6 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
 
-            self.exit_recursion();
             Ok(Node::new(NodeKind::HashLiteral { pairs }, SourceLocation { start, end }))
         } else {
             // Not a hash - parse as block
@@ -286,7 +282,6 @@ impl<'a> Parser<'a> {
                 self.tokens.next()?; // consume }
                 let end = self.previous_position();
 
-                self.exit_recursion();
                 return Ok(Node::new(
                     NodeKind::Block { statements: vec![first_expr] },
                     SourceLocation { start, end },
@@ -318,7 +313,6 @@ impl<'a> Parser<'a> {
             if unclosed_hash || unclosed_after_inner_error {
                 self.expect_closing_delimiter(TokenKind::RightBrace)?;
                 let end = self.previous_position();
-                self.exit_recursion();
                 return Ok(Node::new(
                     NodeKind::Block { statements: vec![first_expr] },
                     SourceLocation { start, end },
@@ -340,7 +334,6 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
 
-            self.exit_recursion();
             Ok(Node::new(NodeKind::Block { statements }, SourceLocation { start, end }))
         }
     }

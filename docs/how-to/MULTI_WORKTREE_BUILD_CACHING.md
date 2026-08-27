@@ -112,20 +112,21 @@ strangely across a version move, clean the shared root once:
 cargo clean --target-dir "$DEVPLANE/target"
 ```
 
-Between full cleans, reclaim the slower-growing cruft — superseded
-metadata-hash artifacts, abandoned incremental state, artifacts from work that
-moved elsewhere — with the mtime-based sweep:
+Between full cleans, reap trees nothing has touched recently — whole stale
+`target/` directories, not files inside active ones — with `scripts/target-gc.sh`:
 
 ```bash
-just target-gc            # dry-run: shows roots and what is reclaimable
-just target-gc --apply    # delete candidates (default window: idle > 14 days)
+just target-gc              # dry-run: reports which targets are stale (default 30d)
+just target-gc --apply      # delete the stale candidates
+bash scripts/target-gc.sh --self-test   # built-in discrimination test
 ```
 
-`scripts/target-gc` never touches lockfiles or the cargo registry, refuses to
-run while the devplane build flock is held, and everything a fresh build just
-touched is immune by construction. Artifacts idle longer than the threshold are
-removed even if still referenced; the next build needing them pays a one-time
-rebuild.
+The tool never touches lockfiles or the cargo registry, refuses to run while
+the devplane build flock is held, and keeps any tree in which even one file was
+modified inside the window — so a fresh build's output is immune by
+construction. A tree that stays continuously hot accumulates internal orphaned
+hash-versioned artifacts that this whole-tree rule will not reclaim; pruning
+those would need per-file mtime semantics and remains future work.
 
 ### Lock serialization
 
