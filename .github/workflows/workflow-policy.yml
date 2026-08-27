@@ -12,7 +12,9 @@ on:
       - 'xtask/tests/public_api_pr_gating_workflow.rs'
       - '.github/ci-config.yml'
       - 'scripts/gh/ensure-labels.sh'
+      - 'scripts/tests/test-public-api-ratchet.sh'
       - 'scripts/tests/test-public-api-label.sh'
+      - 'docs/ci/labels.md'
       - '.ci/receipts/schemas/workflow-policy.schema.json'
       - 'xtask/tests/fixtures/workflow-policy/**'
   push:
@@ -27,7 +29,9 @@ on:
       - 'xtask/tests/public_api_pr_gating_workflow.rs'
       - '.github/ci-config.yml'
       - 'scripts/gh/ensure-labels.sh'
+      - 'scripts/tests/test-public-api-ratchet.sh'
       - 'scripts/tests/test-public-api-label.sh'
+      - 'docs/ci/labels.md'
       - '.ci/receipts/schemas/workflow-policy.schema.json'
       - 'xtask/tests/fixtures/workflow-policy/**'
   workflow_dispatch:

@@ -81,18 +81,58 @@ fn pull_request_label_gate(section: &str) -> Option<&str> {
     None
 }
 
+fn active_if_expression(section: &str) -> Option<String> {
+    let job_indent = section.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        (!trimmed.is_empty() && !trimmed.starts_with('#')).then_some(line.len() - trimmed.len())
+    })?;
+    let field_indent = job_indent.saturating_add(2);
+    let mut in_if = false;
+    let mut parts = Vec::new();
+
+    for line in section.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        if !in_if {
+            if indent == field_indent && trimmed.starts_with("if:") {
+                in_if = true;
+            } else {
+                continue;
+            }
+        } else if !trimmed.is_empty() && indent <= field_indent {
+            break;
+        }
+
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        let expression = trimmed.strip_prefix("if:").map_or(trimmed, str::trim);
+        let active = expression.split_once('#').map_or(expression, |(value, _)| value).trim();
+        if !active.is_empty() && active != "|" {
+            parts.push(active);
+        }
+    }
+
+    in_if.then(|| parts.join(" ").split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
 fn public_api_job_runs(section: &str, event: &str, labels: &[&str]) -> bool {
     let Some(label) = pull_request_label_gate(section) else {
         return false;
     };
+    let Some(expression) = active_if_expression(section) else {
+        return false;
+    };
+    let expected = format!(
+        "github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, '{label}'))"
+    );
+    if expression != expected {
+        return false;
+    }
 
     match event {
-        "workflow_dispatch" => section.contains("github.event_name == 'workflow_dispatch'"),
-        "schedule" => section.contains("github.event_name == 'schedule'"),
-        "pull_request" => {
-            section.contains("github.event_name == 'pull_request' &&")
-                && labels.iter().any(|candidate| *candidate == label)
-        }
+        "workflow_dispatch" | "schedule" => true,
+        "pull_request" => labels.iter().any(|candidate| *candidate == label),
         _ => false,
     }
 }
@@ -146,6 +186,24 @@ fn pull_request_public_api_gate_is_default_deny_with_named_bypasses() {
         pull_request_label_gate(&commented_only),
         None,
         "a commented label example must not satisfy the active PR gate"
+    );
+
+    let extra_pr_label = section.replace(
+        "    steps: []",
+        "       || (github.event_name == 'pull_request' &&\n       contains(github.event.pull_request.labels.*.name, 'ci:other'))\n    steps: []",
+    );
+    assert!(
+        !public_api_job_runs(&extra_pr_label, "pull_request", &["ci:other"]),
+        "an extra active PR label disjunct must not pass the canonical gate"
+    );
+
+    let extra_bypass = section.replace(
+        "github.event_name == 'schedule' ||",
+        "github.event_name == 'schedule' || github.event_name == 'push' ||",
+    );
+    assert!(
+        !public_api_job_runs(&extra_bypass, "push", &["ci:public-api"]),
+        "an extra active event bypass must not pass the canonical gate"
     );
 }
 
