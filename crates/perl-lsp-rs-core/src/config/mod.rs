@@ -5318,10 +5318,10 @@ profile = "recommended"
     }
 
     /// End-to-end wiring proof: the override must actually reach the live
-    /// probe subprocess, not merely the accessor. Narrowing the budget below
-    /// any achievable interpreter startup must turn a probe that otherwise
-    /// yields `Paths` into `TimedOut`. An unwired seam fails this test, which
-    /// is what makes the widening in
+    /// probe subprocess, not merely the accessor. Against a child that stays
+    /// alive for 2 s, a 100 ms budget must turn a probe that otherwise yields
+    /// `Paths` into `TimedOut`. An unwired seam fails this test, which is what
+    /// makes the widening in
     /// `get_system_inc_reuses_cached_probe_without_relaunching` trustworthy.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
@@ -5330,9 +5330,21 @@ profile = "recommended"
             Ok(path) => path,
             Err(_) => return Ok(()),
         };
+        // The child must still be running when the parent first polls it.
+        // `output_with_timeout` calls `try_wait` BEFORE comparing elapsed time,
+        // so a child that has already exited yields its output no matter how
+        // narrow the budget was. A bare probe can lose that race whenever the
+        // OS deschedules the parent between `spawn` and the first poll — the
+        // very host weather this suite is trying to stop depending on. Sleeping
+        // in the child makes it outlive the narrow deadline by ~20x while still
+        // finishing far inside the generous baseline. The trailing semicolon is
+        // load-bearing: `fetch_perl_inc` appends its own `-e` block and perl
+        // concatenates -e programs into ONE script, so without it the
+        // concatenation is a syntax error.
         let build_config = || WorkspaceConfig {
             use_system_inc: true,
             perl_path: Some(perl_path.to_string_lossy().into_owned()),
+            perl_args: vec!["-e".into(), "sleep 2;".into()],
             ..WorkspaceConfig::default()
         };
 
@@ -5342,20 +5354,36 @@ profile = "recommended"
             let _budget = SystemIncProbeTimeoutGuard::install(Duration::from_secs(60));
             build_config().get_system_inc_probe_outcome()
         };
-        if !matches!(baseline, SystemIncProbeOutcome::Paths(_)) {
-            // A host whose perl reports no startup @INC cannot discriminate
-            // this claim; skip rather than assert something unrelated.
-            return Ok(());
+        match baseline {
+            SystemIncProbeOutcome::Paths(_) => {}
+            // A host whose perl genuinely reports no usable startup `@INC`, or
+            // resolves no oracle, cannot discriminate this claim. Skip rather
+            // than assert something unrelated.
+            SystemIncProbeOutcome::SuccessfulEmpty | SystemIncProbeOutcome::Unavailable => {
+                return Ok(());
+            }
+            // Every other class is a real failure and must NOT be skipped. A
+            // `TimedOut` baseline in particular means the 60 s widening never
+            // reached the subprocess — precisely the wiring defect this test
+            // exists to catch — so swallowing it would make the whole proof
+            // vacuous rather than merely inapplicable.
+            other => {
+                return Err(format!(
+                    "baseline probe under a 60 s budget must succeed; got {other:?}. \
+                     A TimedOut here means the override never reached the probe subprocess."
+                )
+                .into());
+            }
         }
 
         let narrowed = {
-            let _budget = SystemIncProbeTimeoutGuard::install(Duration::from_nanos(1));
+            let _budget = SystemIncProbeTimeoutGuard::install(Duration::from_millis(100));
             build_config().get_system_inc_probe_outcome()
         };
         assert_eq!(
             narrowed,
             SystemIncProbeOutcome::TimedOut,
-            "a 1 ns budget must reach the probe subprocess and time it out",
+            "a 100 ms budget must reach the probe subprocess and time out a 2 s child",
         );
         Ok(())
     }
