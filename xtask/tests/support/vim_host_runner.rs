@@ -1642,9 +1642,9 @@ fn walk_wire_value(
                         }
                     }
                     "textDocument/didChange" => {
-                        if evidence.did_change_line.is_none() {
-                            evidence.did_change_line = Some(line_index);
-                        }
+                        // First didChange wins; later ones leave the recorded
+                        // line untouched, exactly as the `is_none()` test did.
+                        evidence.did_change_line.get_or_insert(line_index);
                     }
                     _ => {}
                 }

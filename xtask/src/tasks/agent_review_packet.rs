@@ -1005,25 +1005,26 @@ fn validate_packet_old_paths(root: &Map<String, Value>, violations: &mut Vec<Vio
         let disposition = string_field(entry, "disposition");
         match disposition {
             Some(value) if OLD_PATH_DISPOSITIONS.contains(&value) => match value {
-                "compatibility_projection" => {
+                // Pure lookups over `entry`, so the guards select exactly the
+                // dispositions the nested `if`s used to flag; a disposition
+                // whose guard does not hold falls through to the wildcard arm
+                // and records no violation, as before.
+                "compatibility_projection"
                     if string_field(entry, "owner").is_none()
-                        || string_field(entry, "exit").is_none()
-                    {
-                        violations.push(Violation::new(
-                            "compatibility_projection_unowned",
-                            format!("old_paths: compatibility projection for {seam:?} needs an owner and an exit"),
-                        ));
-                    }
+                        || string_field(entry, "exit").is_none() =>
+                {
+                    violations.push(Violation::new(
+                        "compatibility_projection_unowned",
+                        format!(
+                            "old_paths: compatibility projection for {seam:?} needs an owner and an exit"
+                        ),
+                    ));
                 }
-                "still_live_independent" => {
-                    if string_field(entry, "owner").is_none() {
-                        violations.push(Violation::new(
-                            "still_live_unowned",
-                            format!(
-                                "old_paths: still-live independent seam {seam:?} needs an owner"
-                            ),
-                        ));
-                    }
+                "still_live_independent" if string_field(entry, "owner").is_none() => {
+                    violations.push(Violation::new(
+                        "still_live_unowned",
+                        format!("old_paths: still-live independent seam {seam:?} needs an owner"),
+                    ));
                 }
                 _ => {}
             },
@@ -1573,25 +1574,22 @@ fn validate_closure(root: &Map<String, Value>, doc: &Value, violations: &mut Vec
             );
             match string_field(entry, "state") {
                 Some(state) if ROLE_STATES.contains(&state) => match state {
-                    "terminal" => {
-                        if string_field(entry, "reference").is_none() {
-                            violations.push(Violation::new(
-                                "missing_role_reference",
-                                format!(
-                                    "review_state.roles: terminal role {role:?} must reference its individual review"
-                                ),
-                            ));
-                        }
+                    // Pure lookups over `entry`: a state whose guard does not
+                    // hold falls through to the wildcard arm and records no
+                    // violation, exactly as the nested `if`s did.
+                    "terminal" if string_field(entry, "reference").is_none() => {
+                        violations.push(Violation::new(
+                            "missing_role_reference",
+                            format!(
+                                "review_state.roles: terminal role {role:?} must reference its individual review"
+                            ),
+                        ));
                     }
-                    "not_applicable" => {
-                        if string_field(entry, "reason").is_none() {
-                            violations.push(Violation::new(
-                                "role_not_applicable_unjustified",
-                                format!(
-                                    "review_state.roles: role {role:?} skipped without a reason"
-                                ),
-                            ));
-                        }
+                    "not_applicable" if string_field(entry, "reason").is_none() => {
+                        violations.push(Violation::new(
+                            "role_not_applicable_unjustified",
+                            format!("review_state.roles: role {role:?} skipped without a reason"),
+                        ));
                     }
                     _ => {}
                 },
@@ -3458,5 +3456,71 @@ mod tests {
     #[test]
     fn run_passes_on_current_tree() -> TestResult {
         run(false)
+    }
+
+    // #12914 guard-conversion pins. The old-path disposition and role-state
+    // checks were nested `if`s inside their match arms until the #6113
+    // `collapsible_match` deny made that shape illegal; they are match guards
+    // now. Only `compatibility_projection_unowned` had a fixture, so a
+    // conversion that flagged every disposition, or stopped flagging one,
+    // would have passed. These pin both directions: the guard holding raises
+    // exactly its own code, and the guard not holding falls through to the
+    // wildcard arm and raises nothing.
+    #[test]
+    fn old_path_disposition_guards_flag_only_their_own_shape() -> TestResult {
+        let mut doc = invalid_fixture("compatibility_projection_unowned.json")?;
+        let old_path = doc
+            .get_mut("old_paths")
+            .and_then(Value::as_array_mut)
+            .and_then(|paths| paths.first_mut())
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture lost its old_paths entry"))?;
+
+        // A still-live independent seam without an owner is the sibling arm.
+        old_path
+            .insert("disposition".to_string(), Value::String("still_live_independent".to_string()));
+        assert!(has(&doc, "still_live_unowned"));
+        assert!(!has(&doc, "compatibility_projection_unowned"));
+
+        // Naming the owner satisfies the guard, so neither code applies.
+        let old_path = doc
+            .get_mut("old_paths")
+            .and_then(Value::as_array_mut)
+            .and_then(|paths| paths.first_mut())
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture lost its old_paths entry"))?;
+        old_path.insert("owner".to_string(), Value::String("#12914".to_string()));
+        assert!(!has(&doc, "still_live_unowned"));
+        assert!(!has(&doc, "compatibility_projection_unowned"));
+        Ok(())
+    }
+
+    #[test]
+    fn role_state_guards_flag_only_their_own_shape() -> TestResult {
+        let doc = invalid_fixture("required_role_skipped.json")?;
+        // The fixture's roles are well formed for these two laws, which is the
+        // fall-through control.
+        assert!(!has(&doc, "missing_role_reference"));
+        assert!(!has(&doc, "role_not_applicable_unjustified"));
+
+        let strip = |field: &str, state: &str| -> TestResult<Value> {
+            let mut doc = invalid_fixture("required_role_skipped.json")?;
+            let roles = doc
+                .get_mut("review_state")
+                .and_then(Value::as_object_mut)
+                .and_then(|review_state| review_state.get_mut("roles"))
+                .and_then(Value::as_array_mut)
+                .ok_or_else(|| color_eyre::eyre::eyre!("fixture lost review_state.roles"))?;
+            for role in roles.iter_mut().filter_map(Value::as_object_mut) {
+                if role.get("state").and_then(Value::as_str) == Some(state) {
+                    role.remove(field);
+                }
+            }
+            Ok(doc)
+        };
+
+        assert!(has(&strip("reference", "terminal")?, "missing_role_reference"));
+        assert!(has(&strip("reason", "not_applicable")?, "role_not_applicable_unjustified"));
+        Ok(())
     }
 }

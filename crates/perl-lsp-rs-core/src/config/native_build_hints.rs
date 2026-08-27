@@ -344,7 +344,12 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
             ')' | ']' | '}' => {
-                if stack.pop().is_none() {
+                // Bound before the test rather than folded into a match guard:
+                // `pop` mutates `stack`, and a balanced closer must consume its
+                // opener whether or not the span ends here. A guard would hide
+                // that write inside pattern selection.
+                let closed_an_opener = stack.pop().is_some();
+                if !closed_an_opener {
                     return idx.saturating_sub(start);
                 }
             }
@@ -1163,5 +1168,28 @@ Module::Build->new(
         assert_eq!(hints.libs_alternatives, vec![vec!["-lreal".to_string()]]);
         assert!(hints.diagnostics.is_empty());
         Ok(())
+    }
+    /// `rejected_value_len` decides how far the scanner skips past a value it
+    /// could not parse, and the closer arm carries the only mutation in that
+    /// loop — `stack.pop()`. Nothing in this module observed that arm before
+    /// (#12914 rewrote it for the `collapsible_match` deny), so pin both of its
+    /// outcomes: a balanced closer consumes its opener and keeps scanning, and
+    /// an unbalanced one ends the span exactly where it appears.
+    #[test]
+    fn rejected_value_len_pins_both_closer_outcomes() {
+        // Unbalanced closer at the start: the span is empty.
+        assert_eq!(rejected_value_len(") rest", 0), 0);
+        // Balanced closer: the opener is consumed, so the following top-level
+        // separator — not the closer — ends the span.
+        assert_eq!(rejected_value_len("(a, b), tail", 0), 6);
+        // The separator inside the brackets is invisible while the stack is
+        // non-empty, which is only true if the closer actually popped.
+        assert_eq!(rejected_value_len("[a, b; c] ; tail", 0), 10);
+        // One closer too many ends the span at that closer.
+        assert_eq!(rejected_value_len("(a)) tail", 0), 3);
+        // No terminator at all: the span runs to end of input.
+        assert_eq!(rejected_value_len("(a", 0), 2);
+        // The span is measured from `start`, not from index 0.
+        assert_eq!(rejected_value_len("skip me: a, tail", 9), 1);
     }
 }

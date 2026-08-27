@@ -489,3 +489,42 @@ fn import_cleanup_train_manifest_unknown_claim_cap_is_rejected() -> Result<()> {
     }
     assert_rejected(&value, "invents max_claim")
 }
+
+// --- Guard-conversion pins (#12914) -------------------------------------
+//
+// `wire_coherence` and the add_missing spine check both used to read as a
+// match arm wrapping a lone `if`; the #6113 `collapsible_match` deny made
+// those shapes illegal, so the arms were rewritten as match guards and a
+// bound condition. Neither law had a mutation of its own, which meant a
+// rewrite that silently accepted a payload outside its context, or stopped
+// recording spine rows, would have gone unnoticed. These pin the rejections.
+
+#[test]
+fn import_cleanup_train_manifest_workspace_edit_outside_its_context_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    // ASM11138 is an internal planning row: a WorkspaceEdit payload there is
+    // a product edit escaping into plan-only space.
+    set_node_string(&mut value, "ASM11138", "wire_kind", "workspace_edit")?;
+    assert_rejected(&value, "WorkspaceEdit payload outside a compatible context")
+}
+
+#[test]
+fn import_cleanup_train_manifest_completion_payload_outside_its_context_is_rejected() -> Result<()>
+{
+    let mut value = real_value()?;
+    // ADM11169 admits product rows; it does not sit in the completion context,
+    // so it may not carry a CompletionItem payload.
+    set_node_string(&mut value, "ADM11169", "wire_kind", "completion_item")?;
+    assert_rejected(&value, "CompletionItem payload requires the completion_item context")
+}
+
+#[test]
+fn import_cleanup_train_manifest_duplicate_add_missing_spine_role_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    // PLAN11090 and PLAN11173 are both active shared_plan rows on the
+    // internal_plan context; pulling the first onto add_missing gives that
+    // operation two spine rows in the same role, which is the collapse the
+    // membership set exists to catch.
+    set_node_string(&mut value, "PLAN11090", "operation_family", "add_missing")?;
+    assert_rejected(&value, "two internal-plan rows share role")
+}

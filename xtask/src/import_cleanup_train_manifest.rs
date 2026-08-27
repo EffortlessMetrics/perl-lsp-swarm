@@ -790,7 +790,13 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
             "completion_item" => completion_rows += 1,
             "code_action" => action_rows += 1,
             "internal_plan" => {
-                if !spine_seen.insert((node.product_context.as_str(), node.role.as_str())) {
+                // Bound before the test rather than folded into a match guard:
+                // `insert` mutates `spine_seen`, and a guard runs during pattern
+                // selection, which is the wrong place to hide the only write
+                // that makes this check stateful.
+                let first_row_for_role =
+                    spine_seen.insert((node.product_context.as_str(), node.role.as_str()));
+                if !first_row_for_role {
                     bail!(
                         "add_missing context collapse: two internal-plan rows share role {} and collapse stages",
                         node.role
@@ -1159,27 +1165,28 @@ fn application_cap_for_role(role: &str) -> &'static str {
 }
 
 fn wire_coherence(node: &TrainNode) -> Result<()> {
+    // Both guards are pure predicates over `node`, so folding them into the
+    // patterns is exactly the original nested `if`: a wire kind whose guard
+    // does not hold falls through to the wildcard arm and stays accepted.
     match node.wire_kind.as_str() {
-        "workspace_edit" => {
+        "workspace_edit"
             if !matches!(
                 node.product_context.as_str(),
                 "code_action" | "all_contexts" | "external_compatibility"
-            ) {
-                bail!(
-                    "WorkspaceEdit payload outside a compatible context at {} ({})",
-                    node.node_id,
-                    node.product_context
-                );
-            }
+            ) =>
+        {
+            bail!(
+                "WorkspaceEdit payload outside a compatible context at {} ({})",
+                node.node_id,
+                node.product_context
+            );
         }
-        "completion_item" => {
-            if node.product_context != "completion_item" {
-                bail!(
-                    "CompletionItem payload requires the completion_item context at {} ({})",
-                    node.node_id,
-                    node.product_context
-                );
-            }
+        "completion_item" if node.product_context != "completion_item" => {
+            bail!(
+                "CompletionItem payload requires the completion_item context at {} ({})",
+                node.node_id,
+                node.product_context
+            );
         }
         _ => {}
     }
