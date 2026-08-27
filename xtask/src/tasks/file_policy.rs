@@ -26,7 +26,7 @@
 //!
 //! Refs: #8174, #8566.
 
-use color_eyre::eyre::{Context, Result, bail, eyre};
+use color_eyre::eyre::{Context, Result, bail, ensure, eyre};
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -2562,7 +2562,7 @@ mod tests {
         let error = non_rust_inventory_check(temp.path())
             .err()
             .ok_or_else(|| eyre!("valid but stale inventory documentation must fail"))?;
-        assert!(
+        ensure!(
             error.to_string().contains("inventory documentation is stale"),
             "unexpected stale-inventory error: {error}"
         );
