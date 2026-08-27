@@ -24,10 +24,12 @@ Vim + coc.nvim
 Neovim + coc.nvim
 ```
 
-No scenario may imply both hosts pass because one examples table row passes.
-A test script is not the product spec; a Gherkin sentence is not an executable
-semantic oracle. Each consumes the other through the stable scenario IDs
-defined below.
+A third subject is explicitly outside this ledger: native Neovim LSP (the
+built-in client) is neither rail, and its evidence can never satisfy a
+`coc.neovim.bdd.*` row. No scenario may imply both hosts pass because one
+examples-table row passes. A test script is not the product spec; a Gherkin
+sentence is not an executable semantic oracle. Each consumes the other through
+the stable scenario IDs defined below.
 
 ## Why this approach (ledger-format evolution record)
 
@@ -92,7 +94,11 @@ coc.vim.bdd.<family>.<nn>       Vim + coc.nvim rail
 coc.neovim.bdd.<family>.<nn>    Neovim + coc.nvim rail
 ```
 
-Families, in fixed order:
+Sibling packets establish the `<client-prefix>.bdd.<family>.<nn>` convention
+(`vim.bdd.*`, `lite_xl.bdd.*`). For Coc the plugin is shared across two hosts,
+so the host segment inside the prefix is load-bearing: it is what makes
+cross-host relabeling structurally impossible to express. Families, in fixed
+order:
 
 ```text
 attach      Coc attaches to the intended Perl project
@@ -171,10 +177,12 @@ coc_configuration_documented   substrate only: the registered coc_nvim tier
                                proves no behavior
 coc_actual_client_core         exactly the 42 baseline scenarios above,
                                addressable per host rail
-first_class_coc_host           core plus applicable specialized cells owned by the
-                               #11102-lineage extension joining as
-                               consumes_if_available inputs (named upstream);
-                               claimable only once those cells land and pass
+first_class_coc_host           the core plus an optional join point for
+                               #11102-lineage specialized cells joining as
+                               consumes_if_available (named upstream); while no
+                               joined cell has landed it reduces exactly to the
+                               core, and is claimable once its joined cells land
+                               and pass — never gated on absent optionals
 coc_programme_closeout         programme-completion fan-in over independently terminal
                                child propositions, including explicit
                                unsupported / not_proven terminal dispositions
@@ -196,27 +204,36 @@ Profile laws:
 6. Host capability asymmetry terminates explicitly (`unsupported` or
    `not_proven`) inside the owning leaf; it is never resolved by borrowing the
    other host's pass.
+7. Subject separation is total: Vim+Coc, Neovim+Coc, and native Neovim LSP
+   are three different identities; no pair may fill the other's rows.
 
 ## Evidence boundaries and chain
 
-Each host rail binds its own chain; each arrow is a different owner, and no
-owner may widen the proposition it receives:
+Each host rail binds its own chain following the issue's canonical stage
+mapping; each arrow is a different owner, and no owner may widen the
+proposition it receives:
 
 ```text
 coc.vim.bdd.<id>
-→ #10674 governed fixture/oracle cell(s)
-→ #10685-lineage raw Vim + coc.nvim observation(s) converging under #8962
-→ generic editor_client_compat.v1 cell(s) projected via #10680 within #10527 receipt bounds
-→ #8992 exact-subject composition
-→ #7122/#8992 support projection
+→ #10674 governed fixture/expectation cell(s)
+→ #10678 deterministic action/observation operation(s)
+→ #10685-lineage focused Vim + coc.nvim host-leaf observation(s)
+→ #10680 editor_client_compat.v1 cell(s) within #10527/#7777 receipt bounds
+→ #8967 actual_client_core receipt fan-in
+→ #8992/#7122 support projection
 
 coc.neovim.bdd.<id>
-→ #10674 governed fixture/oracle cell(s)
-→ #10704-lineage raw Neovim + coc.nvim observation(s) converging under #8978
-→ generic editor_client_compat.v1 cell(s) projected via #10680 within #10527 receipt bounds
-→ #8992 exact-subject composition
-→ #7122/#8992 support projection
+→ #10674 governed fixture/expectation cell(s)
+→ #10678 deterministic action/observation operation(s)
+→ #10704-lineage focused Neovim + coc.nvim host-leaf observation(s)
+→ #10680 editor_client_compat.v1 cell(s) within #10527/#7777 receipt bounds
+→ #10717 actual_client_core receipt fan-in
+→ #8992/#7122 support projection
 ```
+
+The per-host convergence programs #8962 (Vim rail) and #8978 (Neovim rail)
+consume these chains as their host-proof input; the flagged save-cohort
+proofs #11125/#11127 emit host-qualified cells against these IDs.
 
 Machine-visible distinction tags reuse existing ledger vocabularies rather
 than inventing a second tag language:
@@ -225,17 +242,21 @@ than inventing a second tag language:
 | --- | --- |
 | configuration documented | `policy/lsp-client-support.toml` tier `configuration_documented`, client id `coc_nvim` |
 | actual host required | `requires_actual_client_receipt = true`; evidence kind `actual_client` |
-| subject = Vim + coc.nvim | integration_mode `coc_language_server`; host rail `vim_coc` |
-| subject = Neovim + coc.nvim | integration_mode `coc_language_server`; host rail `neovim_coc` |
-| exact-source evidence | actual-client observation cells on each rail (#8962/#8978 convergence) |
+| subject = Vim + coc.nvim | integration_mode `coc_language_server`; host segment of the ID namespace (`coc.vim.*`) |
+| subject = Neovim + coc.nvim | integration_mode `coc_language_server`; host segment of the ID namespace (`coc.neovim.*`) |
+| exact-source evidence | actual-client observation cells on each rail (#10685/#10678/#10704 lineage) |
 | public-artifact evidence where separately replayed | separate direct public replay stage feeding #8992 composition; local evidence never relabels upward |
 | security-sensitive configuration | this packet's security boundary; #4998 authority |
 | optional feature | #10858 `consumes_if_available` edge class |
-| not-proven/unsupported allowed disposition | registry vocabulary `not_proven_unsupported`; #11102 ladder `pass | limited | unsupported | not_proven | instrument_failed` |
+| not-proven/unsupported allowed disposition | schema enum `editor_client_compat.v1` journeyCell `result ∈ {pass, fail, partial, not_proven, unsupported}`; registry vocabulary `not_proven_unsupported`; #11102 ladder extends with limited/instrument-stage terminations |
 
-An `editor_client_compat.v1` schema (`.ci/schemas/editor-client-compat.v1.schema.json`,
-#7777) is the single receipt surface referenced here; no second schema or tag
-ontology exists anywhere in this packet.
+The host segments `coc.vim.*` / `coc.neovim.*` and the four profile IDs are
+newly defined semantic terms of this packet (declared in §API-Shape of
+`acceptance.md`); every other distinction above consumes an existing
+registry/schema vocabulary. An `editor_client_compat.v1` schema
+(`.ci/schemas/editor-client-compat.v1.schema.json`, #7777) is the single
+receipt surface referenced here; no second schema or tag ontology exists
+anywhere in this packet.
 
 ## Security boundary
 
@@ -250,22 +271,24 @@ configuration is never treated as trusted machine provenance.
 
 Consumed, never cloned: #8949/#10658 (product/train controllers), #8956
 (subject/config/root pin authority, open), #7762/#7743 (activation/root
-authorities), #4998 (include-path security), #10894 (shared host execution
-primitive), #10858 (typed edge/profile vocabulary), #10527/#7777 (generic
-durable receipt semantics and bounds), #3983 +
+authorities), #6736 (configuration transactionality), #4998 (include-path
+security), #10894 (shared host execution primitive), #10858 (typed
+edge/profile vocabulary), #10527/#7777 (generic durable receipt semantics and
+bounds), #3983 +
 [`SPEC_TEMPLATE.md`](../../docs/reference/SPEC_TEMPLATE.md) (spec method),
 `policy/lsp-client-support.toml` via #6739 (registered tiers).
 
 Owned downstream, named here as boundaries only:
 
 ```text
-#10674 (+#11107 freshness fixtures)   fixture/oracle cells binding each scenario ID
-#10678 / #11112                       shared deterministic driver operations
+#10674 (+#11107 freshness fixtures)   fixture/expectation cells binding each scenario ID
+#10678 / #11112                       deterministic shared driver action/observation operations
 #10685 / #10704                       foundational vim/neovim Coc adapter leaves
 #11125 / #11127                       flagged save-cohort Vim/Neovim actual-host proofs
 #11302/#11307/#11314                  optional read/display/topology cells, Vim rail
 #11303/#11309/#11317                  optional read/display/topology cells, Neovim rail
 #10680                                editor_client_compat.v1 projection for Coc baseline observations
+#8967 / #10717                        per-rail actual_client_core promotable-receipt fan-in
 #8962 / #8978                         per-host actual-evidence convergence programs
 #8992 / #7122                         support projection (registry authority)
 #11102                                specialized journey extension owning future scenario families
@@ -273,7 +296,7 @@ Owned downstream, named here as boundaries only:
 
 This bundle creates no fixtures, provisions no editor, launches no coc Node or
 perllsp process, implements no server/client behavior, produces no receipts,
-awards no support, changes no registered tier, and submits anything upstream.
+awards no support, changes no registered tier, and submits nothing upstream.
 
 ## Stable versus mutable information
 
@@ -303,12 +326,18 @@ readiness never enter these files.
   loudly there, once.
 - **Make the specialized #11102 journeys part of this baseline:** rejected;
   unimplemented breadth must not block the bounded core (#10858 laws).
+- **Reuse sibling namespaces (`vim.bdd.*`) for a Coc rail:** rejected;
+  `vim.bdd.*` belongs to the Vim + vim-lsp programme; conflating plugin-
+  distinct clients under one prefix would blur exactly the subject boundary
+  this packet exists to enforce.
 
 ## Prior art / duplicates
 
 - `.spec/11371-vim-bdd-journeys/` (closed #11371) — same journey-ledger
   discipline for Vim + vim-lsp; different plugin/subject, deliberately kept
   distinct so host-rail tags cannot blur clients. Referenced, not duplicated.
+- `.spec/11178-lite-xl-bdd-journeys/` — Lite XL journey ledger; established
+  the `<client-prefix>.bdd.<family>` namespace convention consumed here.
 - `.spec/11717-emacs-train-specs/specs.ledger.json` — Emacs spec-ledger
   lineage; same checked-discipline projection pattern.
 - `docs/EDITORS/COC_NEOVIM_SETUP.md` — setup prose consumed as documentation
@@ -322,11 +351,11 @@ duplicates an existing authority.
 ## Links
 
 - Issue: [#10815](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10815)
-- Family brief: [#10658](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10658) decomposition comment [DECOMP:BRIEF:coc-receipt-cells]
+- Family brief: [#10658](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10658) decomposition comment `[DECOMP:BRIEF:coc-receipt-cells]`
 - Controllers: #8949 / #10658; subject/config/root pin authority: #8956
 - Fixture consumer: #10674; specialized extension: #11102
-- Host programs: #8962 (Vim rail) / #8978 (Neovim rail); flagged proofs #11125/#11127
-- Receipts/support/prose surfaces: #10527/#7777, #10680, #8992/#7122
+- Host leaves: #10685 (Vim rail) / #10704 (Neovim rail); ops #10678/#11112
+- Receipts/fan-in/support surfaces: #10680, #8967/#10717, #10527/#7777, #8992/#7122
 - Shared profile vocabulary: #10858; spec method: #3983 and `docs/reference/SPEC_TEMPLATE.md`
 
 ## Scope boundary

@@ -10,11 +10,11 @@ without building or executing any editor/host process.
 - **File:** `.spec/10815-coc-bdd-journeys/context.md`
 - **Change:** record the problem, ledger-format evolution record, consumed
   substrate (#8956 pin authority consumed by reference; registered coc_nvim
-  tier), host rail split, stable host-qualified scenario-ID namespace,
-  journey inventory (42 baseline rows across two rails), claim profiles and
-  laws, per-rail evidence chains and tag mapping, security boundary,
-  authority split, stable-vs-mutable rule, alternatives rejected, prior art,
-  links, scope.
+  tier), host rail split (including the native-Neovim-LSP exclusion),
+  stable host-qualified scenario-ID namespace, journey inventory (42 baseline
+  rows across two rails), claim profiles and laws, per-rail evidence chains
+  and tag mapping, outcome vocabulary, security boundary, authority split,
+  stable-vs-mutable rule, alternatives rejected, prior art, links, scope.
 - **Verify:** checker below enforces authority identities, profile names,
   chain owners, and vocabulary terms; `git diff --check`.
 
@@ -24,8 +24,8 @@ without building or executing any editor/host process.
 - **Change:** include all canonical `SPEC_TEMPLATE.md` sections; §Behavior
   carries both host-rail scenario ledgers (stable IDs, user-visible wording,
   profile/evidence-tag membership, per-row owner chains), the extension-boundary
-  table, and profile membership/laws; §Test-Grid carries all thirteen
-  falsifiers in fixed order.
+  table, profile membership/laws, and the allowed non-pass outcome vocabulary;
+  §Test-Grid carries all twenty-two normative falsifiers in fixed order.
 - **Depends on:** Step 1.
 - **Verify:** structural heading, scenario-ID-set, profile-vocabulary, and
   falsifier-table checks below; `git diff --check`.
@@ -47,14 +47,14 @@ feature-status generator on current main (recorded as the ledger evolution in
 passed. From the candidate worktree, run the following PowerShell check twice
 after the files are complete. It enforces: the exact three files; required
 canonical headings; required contract terms (authority identities, registry
-vocabulary, profile names, evidence-chain owners, schema/schema-path terms);
-the exact forty-two host-qualified scenario IDs bound to their §Behavior
-ledger rows in fixed family order (Vim rail, then Neovim rail); and all
-thirteen falsifiers with exact scenario/kind/verdict text in fixed order.
-Exact-string comparisons are deliberately case-sensitive (`-cmatch`, `-cne`,
-`-CaseSensitive`). Its changed-path assertion unions the candidate patch with
-unstaged/staged/untracked paths fail-closed and requires that union to equal
-the exact three-file set.
+vocabulary, profile names, evidence-chain owners, schema/schema-path terms,
+outcome ladder terms); the exact forty-two host-qualified scenario IDs bound
+to their §Behavior ledger rows in fixed family order (Vim rail, then Neovim
+rail); and all twenty-two falsifiers with exact scenario/kind/verdict text in
+fixed order. Exact-string comparisons are deliberately case-sensitive
+(`-cmatch`, `-cne`, `-CaseSensitive`). Its changed-path assertion unions the
+candidate patch with unstaged/staged/untracked paths fail-closed and requires
+that union to equal the exact three-file set.
 
 ```powershell
 function Get-SpecStatusPaths {
@@ -64,7 +64,7 @@ function Get-SpecStatusPaths {
     if ($LASTEXITCODE -ne 0) { throw 'git status porcelain failed' }
     $bytes = [IO.File]::ReadAllBytes($statusFile)
     while ($bytes.Length -ge 1 -and ($bytes[$bytes.Length - 1] -eq 0x0A -or $bytes[$bytes.Length - 1] -eq 0x0D)) {
-      $bytes = $bytes[0..($bytes.Length - 2)]
+      if ($bytes.Length -gt 1) { $bytes = $bytes[0..($bytes.Length - 2)] } else { $bytes = [byte[]]::new(0) }
     }
     $raw = [Text.Encoding]::UTF8.GetString($bytes)
   } finally {
@@ -88,16 +88,19 @@ function Invoke-Spec10815Check {
 $root = '.spec/10815-coc-bdd-journeys'
 $paths = @("$root/context.md", "$root/acceptance.md", "$root/checklist.md")
 $required = @(
-  '#8949', '#10658', '#8956', '#10674', '#8962', '#8978', '#8992', '#7122',
-  '#11102', '#11107', '#11125', '#11127', '#10685', '#10704', '#10678', '#11112',
-  '#10680', '#10527', '#7777', '#10858', '#10894', '#3983', '#4998',
+  '#8949', '#10658', '#8956', '#10674', '#8962', '#8978', '#8967', '#10717',
+  '#8992', '#7122', '#11102', '#11107', '#11125', '#11127',
+  '#10685', '#10704', '#10678', '#11112', '#10680', '#10527', '#7777',
+  '#10858', '#10894', '#3983', '#4998', '#6736',
   '#7762', '#7743', '#7938', '#8092', '#10019', '#6739',
   '#11302', '#11303', '#11307', '#11309', '#11314', '#11317',
   'perllsp --stdio', 'coc_nvim', 'coc_language_server', 'configuration_documented',
   'requires_actual_client_receipt', 'synthetic_profile',
   'docs/EDITORS/COC_NEOVIM_SETUP.md', 'policy/lsp-client-support.toml',
   'docs/reference/SPEC_TEMPLATE.md', '.ci/schemas/editor-client-compat.v1.schema.json',
-  'editor_client_compat.v1', 'not_proven_unsupported', 'vim_coc', 'neovim_coc'
+  'editor_client_compat.v1', 'not_proven_unsupported',
+  'native Neovim LSP', 'client_not_exposed', 'instrument_failed',
+  'reporting_failed', 'cleanup_failed'
 )
 $headings = @('§Behavior', '§Hazards', '§Contracts', '§API-Shape', '§Test-Grid', '§Blast-Radius', '§Coverage-Map')
 $text = @($paths | ForEach-Object { Get-Content -Raw $_ })
@@ -116,7 +119,12 @@ foreach ($heading in $headings) {
 foreach ($term in @('coc_configuration_documented', 'coc_actual_client_core', 'first_class_coc_host', 'coc_programme_closeout', 'consumes_if_available')) {
   if (-not ($acceptanceText -cmatch [regex]::Escape($term))) { throw "missing acceptance profile term: $term" }
 }
-foreach ($term in @('security-sensitive configuration', 'A stronger profile never erases')) {
+# The per-rail fan-in owners must appear inside acceptance owner chains, not
+# merely anywhere in the bundle.
+foreach ($term in @('#10678 operation', '#8967 actual_client_core fan-in', '#10717 actual_client_core fan-in')) {
+  if (-not ($acceptanceText -cmatch [regex]::Escape($term))) { throw "missing acceptance chain term: $term" }
+}
+foreach ($term in @('security-sensitive configuration', 'A stronger profile never erases', 'native Neovim LSP')) {
   if (-not ($contextText -cmatch [regex]::Escape($term)) -and -not ($acceptanceText -cmatch [regex]::Escape($term))) { throw "missing boundary term: $term" }
 }
 
@@ -138,27 +146,37 @@ if ($ids.Count -ne 42) { throw "expected exactly forty-two scenario ledger rows,
 if (($ids | Sort-Object -Unique).Count -ne 42) { throw 'scenario IDs are not unique' }
 if (($ids -join ',') -cne ($expectedIds -join ',')) { throw "scenario ledger rows do not match the stable ID set in fixed order: found $($ids -join ',')" }
 
-# Thirteen falsifiers: fixed order, exact semantics, non-empty verdicts.
+# Twenty-two falsifiers: fixed order (F1-F6 family brief, F7-F22 issue list),
+# exact semantics, non-empty verdicts.
 $grid = [regex]::Match($acceptanceText, '(?ms)^## §Test-Grid\s*(?<body>.*?)(?=^## |\z)').Groups['body'].Value
 $rows = [regex]::Matches($grid, '(?m)^\|\s*(?<id>\d+)\s*\|\s*(?<scenario>[^|]+?)\s*\|\s*(?<kind>[^|]+?)\s*\|\s*(?<verdict>[^|]+?)\s*\|')
-if ($rows.Count -ne 13) { throw "expected exactly thirteen falsifier rows, found $($rows.Count)" }
+if ($rows.Count -ne 22) { throw "expected exactly twenty-two falsifier rows, found $($rows.Count)" }
 $rowIds = @($rows | ForEach-Object { [int]$_.Groups['id'].Value })
 if (($rowIds | Sort-Object -Unique).Count -ne $rowIds.Count) { throw 'falsifier IDs are not unique' }
-if (($rowIds -join ',') -cne ((1..13) -join ',')) { throw 'falsifier IDs are not in fixed order' }
+if (($rowIds -join ',') -cne ((1..22) -join ',')) { throw 'falsifier IDs are not in fixed order' }
 $expectedRows = @(
   @{ id = 1; scenario = 'A core row silently widens into a first_class_coc_host prerequisite'; kind = 'negative'; verdict = 'reject; the core stays bounded and specialized cells join only as consumes_if_available inputs (#10858)' }
   @{ id = 2; scenario = 'Manual textDocument/formatting success is offered as proof of save-triggered behavior'; kind = 'negative'; verdict = 'reject; save-triggered propositions belong to #11102/#8092 and manual formatting never satisfies them' }
-  @{ id = 3; scenario = 'A host capability asymmetry passes without an explicit unsupported/not_proven disposition'; kind = 'negative'; verdict = 'reject; asymmetry terminates explicitly inside the owning leaf' }
-  @{ id = 4; scenario = 'A Vim + coc.nvim row is satisfied by a Neovim + coc.nvim observation, or the reverse'; kind = 'negative'; verdict = 'reject; host identity is load-bearing and rows never cross hosts' }
-  @{ id = 5; scenario = 'A scenario ID drifts from the published form or drops its host qualification'; kind = 'negative'; verdict = 'reject; published IDs must remain exactly of the form coc.<host>.bdd.<family>.<nn>' }
-  @{ id = 6; scenario = 'A registration event or server log line is presented as the user-visible result'; kind = 'negative'; verdict = 'reject; the observable editor-side result is the proposition' }
-  @{ id = 7; scenario = 'Wrong sibling/outer root returns the same symbol spelling and passes as root-correct'; kind = 'negative'; verdict = 'reject; root-sensitive answers require the governed root contract (#8956)' }
-  @{ id = 8; scenario = 'A substitute coc.nvim build/copy or service mutation satisfies attachment'; kind = 'negative'; verdict = 'reject; only the exact governed subject/service launch (#8956) satisfies attach rows' }
-  @{ id = 9; scenario = 'Completion/action response exists but Coc did not apply it, or literal snippet placeholders survive'; kind = 'negative'; verdict = 'reject; client application through coc.nvim is the proposition (nav rows)' }
-  @{ id = 10; scenario = 'Rename applies fewer or more occurrences/files than intended'; kind = 'negative'; verdict = 'reject; complete-intended-edit-only is the proposition (edit rows)' }
-  @{ id = 11; scenario = 'Formatting diverges from canonical output or a second pass changes bytes again'; kind = 'negative'; verdict = 'reject; canonical idempotent result is the proposition (edit rows)' }
-  @{ id = 12; scenario = 'A post-edit answer reflects pre-edit state, or wire edit shape is inferred instead of observed'; kind = 'negative'; verdict = 'reject; accepted-generation currentness and observed wire shape are propositions (lifecycle rows)' }
-  @{ id = 13; scenario = 'A non-BMP operation lands on an adjacent range'; kind = 'negative'; verdict = 'reject; intended-target resolution is the proposition (lifecycle rows)' }
+  @{ id = 3; scenario = 'A host capability asymmetry passes without an explicit unsupported/not_proven disposition'; kind = 'negative'; verdict = 'reject; asymmetry terminates explicitly inside the owning leaf and is never borrowed from the other rail' }
+  @{ id = 4; scenario = 'A Vim + coc.nvim row is satisfied by a Neovim + coc.nvim observation, or the reverse'; kind = 'negative'; verdict = 'reject; host identity is load-bearing and rows never cross rails' }
+  @{ id = 5; scenario = 'A scenario ID drifts from the published form or drops its host qualification'; kind = 'negative'; verdict = 'reject; published IDs remain exactly coc.vim.bdd.<family>.<nn> or coc.neovim.bdd.<family>.<nn>' }
+  @{ id = 6; scenario = 'A registration event, launch log line, or settings echo stands in for the user-visible result'; kind = 'negative'; verdict = 'reject; the observable editor-side semantic result is the proposition (attach/nav/edit rows)' }
+  @{ id = 7; scenario = 'An ambient or wrong perllsp, coc.nvim, Node, or editor subject satisfies an attachment row'; kind = 'negative'; verdict = 'reject; only the exact governed subject/service launch (#8956) satisfies attach rows' }
+  @{ id = 8; scenario = 'Native filetype detection is manufactured or asserted without being observed before any override'; kind = 'negative'; verdict = 'reject; observed-before-override is the proposition (attach.01)' }
+  @{ id = 9; scenario = 'The outer CWD or a same-named sibling root returns the same symbol spelling and passes as root-correct'; kind = 'negative'; verdict = 'reject; root-sensitive answers require the governed root contract (#8956)' }
+  @{ id = 10; scenario = 'Any non-empty diagnostic list is accepted while the expected diagnostic is absent'; kind = 'negative'; verdict = 'reject; the expected diagnostic itself must appear (attach.06)' }
+  @{ id = 11; scenario = 'Raw completion succeeds plus an independent snippet insertion, bypassing Coc application'; kind = 'negative'; verdict = 'reject; consumption through coc.nvim is the proposition (nav.01–nav.02)' }
+  @{ id = 12; scenario = 'A completion item with only the same label but different kind/text-edit is accepted as applied'; kind = 'negative'; verdict = 'reject; the intended server item identity is the proposition (nav.01)' }
+  @{ id = 13; scenario = 'Hover/definition/references return plausible-but-wrong entities, including wrong-project symbols or decoy sites'; kind = 'negative'; verdict = 'reject; entity/site identity is the proposition (nav.03–nav.05)' }
+  @{ id = 14; scenario = 'Code action, rename, or format request succeeds while buffer/file state does not reach the exact resulting state'; kind = 'negative'; verdict = 'reject; applied exact state is the proposition (edit.01–edit.03)' }
+  @{ id = 15; scenario = 'Configuration presence or log lines are accepted without root-specific semantic effect'; kind = 'negative'; verdict = 'reject; independent semantic effect within the governed root is the proposition (edit.04)' }
+  @{ id = 16; scenario = 'An absolute/traversal client include path is used to make a fixture pass as ordinary behavior'; kind = 'negative'; verdict = 'reject; unsafe paths stay governed/rejected per #4998 (edit.05)' }
+  @{ id = 17; scenario = 'A Unicode operation targets bytes or lands on the wrong side of an astral character'; kind = 'negative'; verdict = 'reject; character-aligned intended-target resolution (lifecycle.01)' }
+  @{ id = 18; scenario = 'Zero captured didChange traffic is interpreted as a synchronization claim'; kind = 'negative'; verdict = 'reject; observed wire edit shape is the proposition (lifecycle.03)' }
+  @{ id = 19; scenario = 'A stale generation/result survives an accepted edit and is served as current'; kind = 'negative'; verdict = 'reject; accepted-generation currentness (lifecycle.02)' }
+  @{ id = 20; scenario = 'Built-in native Neovim LSP or another service supplies a Neovim + coc.nvim cell'; kind = 'negative'; verdict = 'reject; native Neovim LSP is a distinct subject and never satisfies coc.neovim.bdd rows' }
+  @{ id = 21; scenario = 'A host/client shutdown event substitutes for OS process evidence of cleanup'; kind = 'negative'; verdict = 'reject; shutdown leaves no bound child process, observed independently (lifecycle.04)' }
+  @{ id = 22; scenario = 'A stale receipt, timeout, missing instrument, or unknown cleanup becomes pass'; kind = 'negative'; verdict = 'reject; instrument/cleanup failure stays an explicit terminal disposition, never silent pass' }
 )
 for ($i = 0; $i -lt $expectedRows.Count; $i++) {
   $row = $rows[$i]
@@ -225,10 +243,10 @@ $tmp2 = Join-Path $tmpDir 'run2.out'
 try {
   $tree1 = @(Get-SpecStatusPaths) -join "`n"
   $fpBefore = @(Get-SpecFingerprints) -join "`n"
-  Invoke-Spec10815Check | Set-Content -LiteralPath $tmp1 -Encoding utf8NoBOM -ErrorAction Stop
+  [IO.File]::WriteAllLines($tmp1, @(Invoke-Spec10815Check), [Text.UTF8Encoding]::new($false))
   $tree2 = @(Get-SpecStatusPaths) -join "`n"
   $fpBetween = @(Get-SpecFingerprints) -join "`n"
-  Invoke-Spec10815Check | Set-Content -LiteralPath $tmp2 -Encoding utf8NoBOM -ErrorAction Stop
+  [IO.File]::WriteAllLines($tmp2, @(Invoke-Spec10815Check), [Text.UTF8Encoding]::new($false))
   $tree3 = @(Get-SpecStatusPaths) -join "`n"
   $fpAfter = @(Get-SpecFingerprints) -join "`n"
   if ($tree1 -cne $tree2 -or $tree2 -cne $tree3 -or $fpBefore -cne $fpBetween -or $fpBetween -cne $fpAfter) { throw 'checker changed the spec tree or file contents' }
@@ -264,14 +282,23 @@ copied output; each invocation rereads the files and revalidates every table.
 - [ ] Exactly `context.md`, `acceptance.md`, and `checklist.md` are changed.
 - [ ] All 42 baseline scenarios carry host-qualified stable IDs, user-visible
       wording, profile/evidence tags, and named downstream owner chains; Vim
-      rail and Neovim rail stay independently addressable.
+      rail and Neovim rail stay independently addressable through their own
+      #8967/#10717 fan-in owners.
 - [ ] No subject digest is recorded; #8956 is consumed by reference as the
       open pin/root authority.
 - [ ] Specialized journeys stay outside the core: extension boundary table,
       `consumes_if_available` relation only, no `opt.` IDs minted here.
-- [ ] All thirteen falsifiers present, fixed order, exact verdict semantics,
-      including profile conflation, save identity collapse, terminal
-      dispositions, cross-host relabeling, ID stability, and log-line theater.
+- [ ] All twenty-two falsifiers present in fixed order (family brief F1–F6,
+      issue false-green enumeration F7–F22) with exact verdict semantics:
+      profile conflation, save identity collapse, terminal dispositions,
+      cross-host relabeling, ID stability, log-line theater, wrong subject,
+      manufactured activation, wrong root, non-empty diagnostics, bypassed
+      application, same-label item, wrong entity, request-without-state,
+      configuration theater, unsafe include path, astral misalignment,
+      unobserved wire shape, stale generation, native Neovim substitution,
+      shutdown-event substitution, and stale-instrument pass.
+- [ ] Allowed non-pass outcomes enumerated against existing vocabularies;
+      no Coc-only scalar verdict minted.
 - [ ] Security boundary keeps absolute/traversal include paths out of
       positive behavior (#4998).
 - [ ] No fixture bytes, host execution, receipt, support-tier change, docs
@@ -282,11 +309,12 @@ copied output; each invocation rereads the files and revalidates every table.
 
 - #11102 becomes spawn-ready against these baseline IDs; new families mint
   under the namespace law through its own revision.
-- #10674 binds fixture/oracle cells to these scenario IDs (+#11107 freshness).
-- #10678/#11112 driver operations bind against named scenarios downstream.
-- #10685/#10704 bind raw observations to IDs; #8962/#8978 converge per-host
-  evidence; #11125/#11127 emit host-qualified cells.
-- #10680 producers project `editor_client_compat.v1` cells citing these IDs;
+- #10674 binds fixture/expectation cells to these scenario IDs (+#11107
+  freshness); #10678/#11112 driver operations bind against named scenarios.
+- #10685/#10704 bind raw host-leaf observations to IDs per rail.
+- #10680 producers project `editor_client_compat.v1` cells citing these IDs.
+- #8967/#10717 compose the per-rail promotable receipts; #8962/#8978 converge
+  per-host evidence programs; #11125/#11127 emit host-qualified cells;
   #8992/#7122 support projection cites IDs downstream.
 
 ## Flags for builder
@@ -300,7 +328,8 @@ copied output; each invocation rereads the files and revalidates every table.
 - Deviation note: the controlling issue sketched Gherkin feature files plus
   generated status commands; neither exists on current main, so the journeys
   project into the shipped `.spec` ledger per the evolution record in
-  `context.md`.
+  `context.md`, and the canonical generated projections reduce to the
+  two-run no-diff structural proof below.
 
 ## Scope boundary
 
@@ -322,7 +351,8 @@ output, two-run hash comparison, and `git diff --check` result. Independent
 review must challenge whether every behavioral statement traces to a named
 authority above (including open #8956 as pure reference), whether evidence
 boundaries name real owning issues without duplication, whether host rails
-stay independently addressable, and whether any row smuggles implementation
-trivia into specification. A clean review proves no Coc behavior; executable
-truth belongs to the downstream leaves, and every scenario remains
-`not_proven` as behavior until its exact-host chain passes.
+stay independently addressable including the native Neovim LSP exclusion, and
+whether any row smuggles implementation trivia into specification. A clean
+review proves no Coc behavior; executable truth belongs to the downstream
+leaves, and every scenario remains `not_proven` as behavior until its
+exact-host chain passes.
