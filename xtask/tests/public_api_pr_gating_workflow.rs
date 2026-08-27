@@ -112,12 +112,13 @@ fn pull_request_public_api_gate_is_default_deny_with_named_bypasses() {
     assert!(section.contains("github.event_name == 'schedule'"));
     assert!(section.contains("github.event_name == 'pull_request' &&"));
 
+    let labels = ["ci:public-api"];
+    assert!(labels.contains(&"ci:public-api"));
+    assert!(!labels.contains(&"ci:not-public-api"));
+    assert!(!labels.contains(&"ci:public-api-extra"));
+
     let wrong_label = section.replace("ci:public-api", "ci:not-public-api");
-    assert_ne!(
-        pull_request_label_gate(&wrong_label),
-        Some("ci:public-api"),
-        "a different label must not activate the public API PR route"
-    );
+    assert_ne!(pull_request_label_gate(&wrong_label), Some("ci:public-api"));
 
     let commented_only = section
         .replace(
@@ -316,8 +317,14 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
     let provisioning = read(&root, "scripts/gh/ensure-labels.sh")?;
     let expected = format!("ensure \"{label}\" \"0052cc\" \"Run public API surface validation\"");
     assert!(
-        provisioning.lines().any(|line| line.trim() == expected),
+        provisioning
+            .lines()
+            .any(|line| { line.trim() == expected.replace("ensure ", "ensure_reconciled ") }),
         "the workflow label must use the governed provisioning metadata"
+    );
+    assert!(
+        provisioning.contains("gh label edit \"$name\""),
+        "existing public API labels must be reconciled, not merely skipped"
     );
 
     Ok(())
