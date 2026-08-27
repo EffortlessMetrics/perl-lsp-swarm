@@ -18,6 +18,11 @@
 - [#12876](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/12876) is the current product-policy blocker: the prepared subject retains a selectable external Perl::Critic runtime path, so it cannot feed release actions. An accepted repair requires a new freeze and preparation identity.
 - Publication-context projection remains blocked and unproduced under [#12230](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/12230); preparation alone does not establish a qualified or publishable candidate.
 - The [release controller #4343](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4343) remains `NO-GO`. No `v0.18` tag, artifact, installed behavior, public-channel publication, or release approval is claimed here.
+
+## Shipped v0.17.0 Closeout
+
+This closeout applies only to the already-shipped `v0.17.0` train; it is not the `v0.18` readiness call.
+
 - Remaining work is operational: verify the existing `v0.17.0` release receipt and close the remaining channel receipts; do not dispatch release orchestration for an already-shipped train.
 
 ## 0.15.2 Hotfix Receipts (2026-05-26)
