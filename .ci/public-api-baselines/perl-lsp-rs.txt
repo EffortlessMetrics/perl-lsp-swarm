@@ -345,15 +345,11 @@ pub mod perl_lsp::features::linked_editing
 pub use perl_lsp::features::linked_editing::<<perl_lsp_rs_core::providers::lsp_compat::linked_editing::*>>
 pub mod perl_lsp::features::lsp_document_link
 pub fn perl_lsp::features::lsp_document_link::collect_document_links(text: &str, uri: &url::Url) -> core::result::Result<alloc::vec::Vec<lsp_types::document_link::DocumentLink>, alloc::string::String>
-pub mod perl_lsp::features::lsp_on_type_formatting
-pub fn perl_lsp::features::lsp_on_type_formatting::format_on_type(text: &str, _uri: lsp_types::uri::Uri, ch: alloc::string::String, position: lsp_types::Position, tab_size: usize, insert_spaces: bool) -> alloc::vec::Vec<lsp_types::TextEdit>
 pub mod perl_lsp::features::lsp_selection_range
 pub use perl_lsp::features::lsp_selection_range::<<perl_lsp_rs_core::providers::selection_range::*>>
 pub mod perl_lsp::features::map
 pub use perl_lsp::features::map::caps_from_feature_ids
 pub use perl_lsp::features::map::feature_ids_from_caps
-pub mod perl_lsp::features::on_type_formatting
-pub use perl_lsp::features::on_type_formatting::<<perl_lsp_rs_core::providers::lsp_compat::on_type_formatting::*>>
 pub mod perl_lsp::features::references
 pub use perl_lsp::features::references::<<perl_lsp_rs_core::providers::navigation::*>>
 pub mod perl_lsp::features::rename
