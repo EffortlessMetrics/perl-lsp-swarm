@@ -60,6 +60,12 @@ set -euo pipefail
 
 printf 'git %s\n' "$*" >> "${MOCK_STATE}/git.log"
 
+# Logged verbatim above so assertions can see it, then stripped so dispatch below
+# stays keyed on the subcommand.
+if [[ "${1:-}" == "--no-optional-locks" ]]; then
+  shift
+fi
+
 handle_rev_parse() {
   if [[ "$*" == *"--path-format=absolute --git-common-dir"* ]]; then
     printf '%s/.git\n' "${MOCK_REPO_ROOT}"
@@ -369,6 +375,26 @@ assert_no_mutating_git_commands() {
   fi
 }
 
+# `git status` is read-shaped but not read-only: it opportunistically refreshes
+# the index and rewrites .git/worktrees/<id>/index when a tracked file's cached
+# stat data is stale. `--no-optional-locks` suppresses that, so every observation
+# must carry it — a plain `git status` on the inspection path is a metadata write
+# the mutating-command patterns above cannot detect.
+assert_reads_are_lock_free() {
+  local label="$1"
+  local case_dir="$2"
+  local offenders
+
+  offenders="$(grep -E '^git (status|-C [^ ]+ status)' "${case_dir}/git.log" 2>/dev/null || true)"
+
+  if [[ -n "$offenders" ]]; then
+    fail "$label"
+    printf 'observation ran without --no-optional-locks:\n%s\n' "$offenders"
+  else
+    pass "$label"
+  fi
+}
+
 assert_git_log_contains() {
   local label="$1"
   local case_dir="$2"
@@ -542,6 +568,7 @@ test_dry_run_performs_no_mutating_git_commands() {
   assert_contains "dry-run still classifies the landed worktree" "$output" "landed"
   assert_no_mutating_git_commands "dry-run runs no fetch, prune, remove, or branch delete" "$case_dir"
   assert_no_destructive_commands "dry-run destructive log stays empty" "$case_dir"
+  assert_reads_are_lock_free "dry-run observations decline optional index locks" "$case_dir"
 }
 
 # Negative control for the assertion above: it must fail on a mutating run, or it
@@ -569,7 +596,11 @@ test_dry_run_reports_stale_refs_without_refreshing_them() {
   output="$(run_cleanup_dry_run "$case_dir")"
 
   assert_contains "dry-run names the remote-ref state" "$output" "Remote refs: stale"
-  assert_contains "dry-run explains the conservative bound" "$output" "may over-KEEP"
+  # Stale refs are not monotonic — a forced update or a deleted branch can move a
+  # remote-tracking ref backward — so the header must not promise conservatism.
+  assert_contains "dry-run calls stale-ref verdicts provisional" "$output" "provisional"
+  assert_contains "dry-run says the sweep re-fetches before acting" "$output" "re-fetches before it acts"
+  assert_not_contains "dry-run does not claim stale refs only over-KEEP" "$output" "over-KEEP"
   # Containment in an already-observed origin ref still proves the remote holds
   # the commits, so a REMOVE verdict survives the missing fetch.
   assert_contains "stale refs still prove a fully pushed branch" "$output" "pushed"
@@ -659,6 +690,69 @@ test_successful_sweeps_exit_zero() {
   fi
 }
 
+# --- real-repository non-mutation proof ------------------------------------
+#
+# Everything above proves command *shape* against a fake git. Shape spying is
+# blind to a read-shaped command that writes: `git status` refreshes the index
+# and rewrites `.git/worktrees/<id>/index` when a tracked file's cached stat data
+# is stale. Only a real repository can prove no file under .git/worktrees/**
+# changed, so that claim is proven here rather than asserted.
+
+real_git_snapshot() {
+  local repo="$1"
+  (
+    cd "$repo" || exit 1
+    find .git/worktrees -type f -exec sha256sum {} \; 2>/dev/null | sort
+    # --no-optional-locks so taking the snapshot cannot perturb its own subject.
+    git --no-optional-locks worktree list --porcelain
+    git --no-optional-locks for-each-ref --format='%(refname) %(objectname)'
+  )
+}
+
+test_real_repository_dry_run_writes_nothing() {
+  local label="real-repository dry run leaves .git metadata and refs byte-identical"
+  local root before after
+  root="${TMPDIR_BASE}/real-git"
+
+  if ! command -v git >/dev/null 2>&1; then
+    printf 'SKIP %s (git not installed)\n' "$label"
+    return 0
+  fi
+
+  mkdir -p "$root"
+  (
+    set -e
+    cd "$root"
+    git init -q -b main repo
+    cd repo
+    git config user.email cleanup-test@example.invalid
+    git config user.name "cleanup test"
+    mkdir -p sub
+    printf 'content\n' > sub/file.txt
+    git add .
+    git commit -qm init
+    git worktree add -q ../wt-live -b live
+    # A past mtime, not `touch`: a just-touched file is "racily clean" and git
+    # deliberately declines to cache its stat data, so the write never fires and
+    # the fixture would silently prove nothing.
+    touch -d '2020-01-01 00:00:00' ../wt-live/sub/file.txt
+  ) >/dev/null 2>&1 || {
+    printf 'SKIP %s (fixture repository could not be built)\n' "$label"
+    return 0
+  }
+
+  before="$(real_git_snapshot "${root}/repo")"
+  ( cd "${root}/repo" && CLEANUP_BASE_BRANCH=main bash "$IMPL" --dry-run ) >/dev/null 2>&1 || true
+  after="$(real_git_snapshot "${root}/repo")"
+
+  if [[ "$before" == "$after" ]]; then
+    pass "$label"
+  else
+    fail "$label"
+    diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") || true
+  fi
+}
+
 test_json_projection_carries_the_inspection_axes() {
   local case_dir output
   if ! command -v jq >/dev/null 2>&1; then
@@ -706,6 +800,7 @@ test_unreachable_native_path_is_preserved_for_review
 test_dry_run_message_claims_only_what_it_proves
 test_successful_sweeps_exit_zero
 test_json_projection_carries_the_inspection_axes
+test_real_repository_dry_run_writes_nothing
 
 TOTAL=$((PASS + FAIL))
 echo ""

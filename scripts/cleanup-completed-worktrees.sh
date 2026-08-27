@@ -33,12 +33,19 @@
 # from the current OS view (a Windows-registered worktree seen from WSL), which
 # both destroys the registration and makes the row vanish from this report.
 #
+# Read-only is not the same as read-shaped. `git status` opportunistically
+# refreshes the index and rewrites `.git/worktrees/<id>/index` whenever a tracked
+# file's cached stat data is stale, so an apparently innocent query writes to Git
+# metadata. Every observation runs through `git_read`, which passes
+# `--no-optional-locks` to suppress exactly that class of incidental write.
+#
 # Because --dry-run does not fetch, it judges against the remote-tracking refs as
-# they already stand. Those refs only ever advance on fetch, so a stale ref is at
-# or behind the true remote. Containment in a stale `origin/X` therefore still
-# proves the remote holds those commits (REMOVE verdicts stay sound), while
-# non-containment may be spurious (the run can only over-KEEP). Dry-run is a
-# conservative preview, never a permissive one.
+# they already stand. Those refs usually only lag the remote, so verdicts usually
+# err toward KEEP — but they are not monotonic: a forced update can move
+# `origin/X` backward and a deleted branch can remove it, so a stale ref may still
+# contain commits the remote has since dropped. A dry-run REMOVE is therefore a
+# proposal, never proof. Nothing is removed on that evidence: the mutating sweep
+# fetches first and re-classifies against fresh refs before it acts.
 #
 # Usage:
 #   bash scripts/cleanup-completed-worktrees.sh [--dry-run] [--json]
@@ -59,9 +66,18 @@ for arg in "$@"; do
 done
 
 BASE="${CLEANUP_BASE_BRANCH:-main}"
-REPO_ROOT="$(git rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||')"
-MAIN_WT="$(git -C "$REPO_ROOT" rev-parse --show-toplevel)"
-CURRENT_WT="$(git rev-parse --show-toplevel)"
+
+# Every observation goes through here. `--no-optional-locks` stops git from
+# taking the index lock for opportunistic work — without it `git status` rewrites
+# a worktree's index whenever cached stat data is stale, which is a metadata
+# write on a path that promises none.
+git_read() {
+    git --no-optional-locks "$@"
+}
+
+REPO_ROOT="$(git_read rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||')"
+MAIN_WT="$(git_read -C "$REPO_ROOT" rev-parse --show-toplevel)"
+CURRENT_WT="$(git_read rev-parse --show-toplevel)"
 STATE_FILE="$REPO_ROOT/.ops-perl-lsp/worktree-manager/state.json"
 
 # When emitting JSON, git stdout/stderr must not pollute the stream.
@@ -143,7 +159,7 @@ branch_landed_via_pr() {
 # mutation authority:
 #
 #   fresh   refs refreshed from the remote this run
-#   stale   --dry-run; refs used as they already stand (conservative, see above)
+#   stale   --dry-run; refs used as they already stand, so verdicts are proposals
 #   failed  fetch attempted and failed; remote-dependent verdicts are NOT_PROVEN
 FETCH_OK=true
 REMOTE_STATE=fresh
@@ -154,7 +170,7 @@ else
         { FETCH_OK=false; REMOTE_STATE=failed; }
 fi
 BASE_REF="origin/$BASE"
-git -C "$REPO_ROOT" rev-parse --verify --quiet "$BASE_REF" >/dev/null || BASE_REF="$BASE"
+git_read -C "$REPO_ROOT" rev-parse --verify --quiet "$BASE_REF" >/dev/null || BASE_REF="$BASE"
 
 REMOVED=0; KEPT=0; SKIPPED=0; REVIEWED=0; TOTAL=0
 ROWS=()
@@ -166,7 +182,8 @@ if ! $JSON; then
     echo "Dry run:     $DRY_RUN"
     echo "Remote refs: $REMOTE_STATE"
     case "$REMOTE_STATE" in
-        stale)  echo "NOTE:        read-only inspection; refs not refreshed, verdicts may over-KEEP" ;;
+        stale)  echo "NOTE:        read-only inspection; refs not refreshed, so verdicts are"
+                echo "             provisional — the sweep re-fetches before it acts" ;;
         failed) echo "WARNING:     fetch failed; 'unpushed' verdicts are NOT_PROVEN" ;;
     esac
     echo ""
@@ -232,17 +249,17 @@ process_worktree() {
     fi
 
     # Uncommitted work is unique by definition. Check it first and never remove.
-    if [[ -n "$(git -C "$path" status --porcelain 2>/dev/null || echo dirty)" ]]; then
+    if [[ -n "$(git_read -C "$path" status --porcelain 2>/dev/null || echo dirty)" ]]; then
         emit "$name" "${branch:-(detached)}" "dirty" "KEEP"; KEPT=$((KEPT + 1)); return 0
     fi
 
     local head landed
-    head="$(git -C "$path" rev-parse HEAD 2>/dev/null || echo "")"
+    head="$(git_read -C "$path" rev-parse HEAD 2>/dev/null || echo "")"
     if [[ -z "$head" ]]; then
         emit "$name" "${branch:-(detached)}" "unreadable" "KEEP"; KEPT=$((KEPT + 1)); return 0
     fi
     landed=false
-    git -C "$REPO_ROOT" merge-base --is-ancestor "$head" "$BASE_REF" 2>/dev/null && landed=true
+    git_read -C "$REPO_ROOT" merge-base --is-ancestor "$head" "$BASE_REF" 2>/dev/null && landed=true
     if ! $landed && [[ "$detached" != "true" && -n "${branch:-}" ]]; then
         branch_landed_via_pr "$branch" && landed=true
     fi
@@ -274,7 +291,7 @@ process_worktree() {
     fi
 
     # Not landed: is every commit already on the remote?
-    if ! git -C "$REPO_ROOT" rev-parse --verify --quiet "origin/$branch" >/dev/null; then
+    if ! git_read -C "$REPO_ROOT" rev-parse --verify --quiet "origin/$branch" >/dev/null; then
         emit "$name" "$branch" "no-remote" "KEEP"; KEPT=$((KEPT + 1)); return 0
     fi
     if ! $FETCH_OK; then
@@ -282,7 +299,7 @@ process_worktree() {
     fi
 
     local ahead
-    ahead="$(git -C "$REPO_ROOT" rev-list --count "origin/$branch..$head" 2>/dev/null || echo 1)"
+    ahead="$(git_read -C "$REPO_ROOT" rev-list --count "origin/$branch..$head" 2>/dev/null || echo 1)"
     if [[ "$ahead" -gt 0 ]]; then
         emit "$name" "$branch" "unpushed:$ahead" "KEEP"; KEPT=$((KEPT + 1)); return 0
     fi
@@ -306,7 +323,7 @@ while IFS= read -r line; do
         detached)    WT_DETACHED=true ;;
         locked*)     WT_LOCKED=true ;;
     esac
-done < <(git -C "$REPO_ROOT" worktree list --porcelain)
+done < <(git_read -C "$REPO_ROOT" worktree list --porcelain)
 process_worktree "$WT_PATH" "$WT_BRANCH" "$WT_LOCKED" "$WT_DETACHED"
 
 prune_worktrees
