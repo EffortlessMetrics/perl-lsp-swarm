@@ -1641,10 +1641,12 @@ fn walk_wire_value(
                             evidence.publish_diagnostics_batches.push(batch);
                         }
                     }
-                    "textDocument/didChange" => {
-                        if evidence.did_change_line.is_none() {
-                            evidence.did_change_line = Some(line_index);
-                        }
+                    // First-wins: only the first didChange on the wire is
+                    // recorded. Later ones fall through to `_ => {}` exactly as
+                    // the previous nested `if` did, and the guard satisfies the
+                    // workspace `collapsible_match` deny armed by #6113.
+                    "textDocument/didChange" if evidence.did_change_line.is_none() => {
+                        evidence.did_change_line = Some(line_index);
                     }
                     _ => {}
                 }

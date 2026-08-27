@@ -343,10 +343,14 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
         match ch {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
-            ')' | ']' | '}' => {
-                if stack.pop().is_none() {
-                    return idx.saturating_sub(start);
-                }
+            // The `stack.pop()` in the guard is the arm's whole effect: every
+            // closer consumes one opener, and an unmatched closer ends the
+            // value. Popping in the guard keeps that single side effect on
+            // both outcomes (a `Some` pop falls through to `_ => {}`, exactly
+            // as the previous nested `if` did) while satisfying the workspace
+            // `collapsible_match` deny armed by #6113.
+            ')' | ']' | '}' if stack.pop().is_none() => {
+                return idx.saturating_sub(start);
             }
             ',' | ';' if stack.is_empty() => return idx.saturating_sub(start),
             _ => {}
@@ -1163,5 +1167,33 @@ Module::Build->new(
         assert_eq!(hints.libs_alternatives, vec![vec!["-lreal".to_string()]]);
         assert!(hints.diagnostics.is_empty());
         Ok(())
+    }
+
+    /// `rejected_value_len` must stop at the first *unmatched* closer, and a
+    /// *matched* closer must consume its opener so a later top-level `,` still
+    /// terminates the value.
+    ///
+    /// This pins the side effect of the `stack.pop()` that lives in the
+    /// `')' | ']' | '}'` arm's guard: if the pop stopped happening on the
+    /// `Some` path, the second case below would run to the end of the input
+    /// (6) instead of stopping at the top-level comma (4).
+    #[test]
+    fn rejected_value_len_ends_at_unmatched_closer_and_consumes_matched_ones() {
+        assert_eq!(rejected_value_len("a)b", 0), 1, "an unmatched closer ends the value");
+        assert_eq!(
+            rejected_value_len("(,)x,y", 0),
+            4,
+            "a matched closer pops its opener, so the later top-level comma still ends the value"
+        );
+        assert_eq!(
+            rejected_value_len("f(x))y", 0),
+            4,
+            "the balanced pair is absorbed and the surplus closer ends the value"
+        );
+        assert_eq!(
+            rejected_value_len("'a,b'c,d", 0),
+            6,
+            "separators inside a quoted run do not end the value"
+        );
     }
 }
