@@ -858,6 +858,8 @@ static DEBUGGEE_PERL: OnceLock<DebuggeePerlResolution> = OnceLock::new();
 static LAST_PROBE_PID: AtomicU32 = AtomicU32::new(0);
 #[cfg(test)]
 static ACTIVE_PROBE_READERS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(all(test, unix))]
+static LAST_PROBE_USED_SIGKILL: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 static DEFERRED_PROBE_READERS: OnceLock<Mutex<Vec<JoinHandle<Result<(), String>>>>> =
     OnceLock::new();
@@ -987,6 +989,16 @@ pub(crate) fn probe_debuggee_perl_for_test_with_termination_failure(
 pub(crate) fn active_probe_reader_count() -> usize {
     reap_deferred_probe_readers();
     ACTIVE_PROBE_READERS.load(Ordering::Acquire)
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn reset_sigkill_escalation_observation() {
+    LAST_PROBE_USED_SIGKILL.store(false, Ordering::Release);
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn sigkill_escalation_was_observed() -> bool {
+    LAST_PROBE_USED_SIGKILL.load(Ordering::Acquire)
 }
 
 #[cfg(test)]
@@ -1570,6 +1582,14 @@ fn terminate_probe_process_tree(
             let deadline = Instant::now() + Duration::from_millis(500);
             while !matches!(child.try_wait(), Ok(Some(_))) && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
+            }
+            let survived_term = Command::new("kill")
+                .args(["-0", "--", &process_group])
+                .status()
+                .is_ok_and(|status| status.success());
+            #[cfg(test)]
+            if survived_term {
+                LAST_PROBE_USED_SIGKILL.store(true, Ordering::Release);
             }
             let kill = Command::new("kill").args(["-KILL", "--", &process_group]).status();
             let group_remains = Command::new("kill")

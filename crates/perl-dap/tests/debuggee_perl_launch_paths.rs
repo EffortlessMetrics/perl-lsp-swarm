@@ -8,7 +8,9 @@
 
 mod common;
 
-use common::{DapWorkflowSession, probe_debuggee_perl_for_test, workflow_timeout};
+use common::{
+    DEBUGGEE_PERL_OVERRIDE_ENV, DapWorkflowSession, probe_debuggee_perl_for_test, workflow_timeout,
+};
 use serial_test::serial;
 use std::env;
 use std::error::Error;
@@ -133,5 +135,22 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
             "{launch_path} evaluated $^X from the wrong interpreter: {reported}"
         );
     }
+
+    let _pin_guard = EnvGuard::set(DEBUGGEE_PERL_OVERRIDE_ENV, pinned.as_os_str());
+    let mut configured_session = DapWorkflowSession::new(workflow_timeout())?;
+    configured_session.launch(&script_text)?;
+    configured_session.set_breakpoints_checked(&script_text, &[4])?;
+    configured_session.configuration_done()?;
+    let stopped = configured_session.wait_stopped_with_frame()?;
+    let (configured_identity, _) = configured_session
+        .evaluate_expression("$^X", stopped.frame_id)
+        .map_err(|error| format!("configured-pin convenience launch failed: {error}"))?;
+    let configured_identity_lower = configured_identity.to_ascii_lowercase();
+    assert!(
+        configured_identity_lower.contains("pinned-perl")
+            && !configured_identity_lower.contains("\\perl.exe")
+            && !configured_identity_lower.contains("/perl\n"),
+        "configured pin was dropped by DapWorkflowSession::new: {configured_identity}"
+    );
     Ok(())
 }

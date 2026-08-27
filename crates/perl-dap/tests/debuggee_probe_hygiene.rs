@@ -17,6 +17,9 @@
 
 mod common;
 
+#[cfg(unix)]
+use common::{reset_sigkill_escalation_observation, sigkill_escalation_was_observed};
+
 use common::{
     DEBUGGEE_PERL_OVERRIDE_ENV, probe_debuggee_perl_for_test_with_descendant_pid,
     resolve_debuggee_perl,
@@ -242,6 +245,8 @@ fn main() {
 
     {
         let before = current_process_probe_artifacts()?;
+        #[cfg(unix)]
+        reset_sigkill_escalation_observation();
         let pid_file = controls.path().join("success-descendant.pid");
         let probe = std::thread::spawn({
             let binary = success_with_descendant.clone();
@@ -277,6 +282,11 @@ fn main() {
             common::active_probe_reader_count(),
             0,
             "successful-parent probe left an active reader thread"
+        );
+        #[cfg(unix)]
+        assert!(
+            sigkill_escalation_was_observed(),
+            "SIGTERM-resistant successful-parent descendant did not require SIGKILL escalation"
         );
     }
 
