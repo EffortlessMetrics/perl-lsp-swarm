@@ -209,8 +209,8 @@ fn starts_heredoc_label(rest: &str) -> bool {
 }
 
 /// Byte offset of the first `<<` on `line` that is real code: outside any
-/// single- or double-quoted string literal, and before any unquoted `#`
-/// line-comment marker.
+/// single-, double-, or backtick-quoted string literal — including one opened
+/// on an earlier line — and before any unquoted `#` line-comment marker.
 ///
 /// Both exclusions are #5456. A `<<` inside a comment (`# see <<EOF docs`) or
 /// inside a literal (`my $s = "a << EOF";`) is text, not an opener. Taking one
@@ -1967,6 +1967,28 @@ mod tests {
         assert!(
             regions[0].end < source.len(),
             "the body must close at REAL, not run to EOF: {regions:?}"
+        );
+    }
+
+    /// Region-level counterpart to the line-level closure assertion below:
+    /// the carry must hand control back to code *mid-line* and let a real
+    /// opener on that same line be seen through `scan_heredoc_regions`, not
+    /// just through the line helper. Verified against perl: the fixture is
+    /// `syntax OK` and prints the heredoc body followed by the tail.
+    #[test]
+    fn opener_on_the_line_that_closes_a_multiline_string_is_found() {
+        let source = "my $s = \"start\nend\"; print <<EOF;\nbody\nEOF\ntail();\n";
+        let regions = scan_heredoc_regions(source);
+        assert_eq!(regions.len(), 1, "one heredoc body expected: {regions:?}");
+        let body_start = offset_of(source, "body").ok_or("fixture must contain a body");
+        assert_eq!(
+            Ok(regions[0].start),
+            body_start,
+            "the body starts after the line that both closes the string and opens the heredoc"
+        );
+        assert!(
+            regions[0].end < source.len(),
+            "the body must close at EOF's terminator, not run to end of source: {regions:?}"
         );
     }
 
