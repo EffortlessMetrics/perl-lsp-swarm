@@ -193,10 +193,12 @@ jobs:
             --report target/receipts/workflow-security-candidate-baseline.json
 
       - name: Upload authoritative ratchet receipts
-        # Receipts only exist on scan paths (SCOPED_NOOP unset or false), so
-        # this keeps always()-style failure coverage for scans while avoiding
-        # an empty placeholder artifact on scoped-noop runs.
-        if: env.SCOPED_NOOP != 'true'
+        # Receipts only exist on scan paths, so skip scoped-noop runs without
+        # empty placeholder artifacts. The explicit status function is
+        # load-bearing: a bare non-status condition would get an implicit
+        # `success()` prefix and silently drop receipts on scan failures
+        # (.github/workflows/ci.yml idiom).
+        if: ${{ !cancelled() && env.SCOPED_NOOP != 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: workflow-security-ratchet-${{ github.event.pull_request.head.sha }}

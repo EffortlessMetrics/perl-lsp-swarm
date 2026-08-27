@@ -139,11 +139,16 @@ TRUSTED_BASE_DRAFT_ROW = {
     "policy_role": "required",
     "applicability": "always-or-scoped-noop",
     "enforcement": "github-ruleset",
+    # Single intentional deviation from proposal comment 5431630603: the
+    # reason is phrased as post-A2 rather than asserting current live
+    # enforcement, which does not exist until the owner registers the
+    # context on ruleset 16664791. Every classification-relevant field is
+    # verbatim; this validator ignores `reason` wording.
     "reason": (
-        "Live main ruleset (id 16664791) requires the trusted-base workflow "
-        "security ratchet before merge, closing the #10536 gap: "
-        "workflow-touching dependency PRs cannot land while pin rotation "
-        "creates new baseline findings."
+        "Main ruleset (id 16664791) will require the trusted-base workflow "
+        "security ratchet before merge once registration A2 executes (#10536), "
+        "closing the gap where workflow-touching dependency PRs cannot land "
+        "while pin rotation creates new baseline findings."
     ),
 }
 
@@ -164,14 +169,15 @@ EXPECTED_JOB_STEPS = (
     BASELINE_VALIDATE_STEP,
     RECEIPT_UPLOAD_STEP,
 )
+# Scan-path steps only execute while the run is still healthy.
 GUARDED_STEPS = (
     CHECKOUT_STEP,
     IMPORT_STEP,
     EVALUATOR_PROOF_STEP,
     RATCHET_CHECK_STEP,
     BASELINE_VALIDATE_STEP,
-    RECEIPT_UPLOAD_STEP,
 )
+UPLOAD_GUARD = "${{ !cancelled() && env.SCOPED_NOOP != 'true' }}"
 
 
 def _repo_text(relative: str) -> str:
@@ -295,6 +301,19 @@ class TrustedBaseRatchetRequiredShapeTests(unittest.TestCase):
                 steps[name],
                 f"step {name!r} lost its scoped guard",
             )
+
+    def test_receipt_upload_survives_scan_failure(self) -> None:
+        """A bare non-status `if` gets an implicit `success()` prefix.
+
+        The receipt upload must keep an explicit status function so failing
+        validation steps still upload their diagnostic receipts; this also
+        keeps the scoped-noop skip for runs that never scanned.
+        """
+        chunks = _split_steps(self.job_block)
+        self.assertIn(
+            f"if: {UPLOAD_GUARD}",
+            chunks[RECEIPT_UPLOAD_STEP],
+        )
 
     def test_scope_resolver_delegates_non_pr_events_via_env_indirection(self) -> None:
         steps = _split_steps(self.job_block)
