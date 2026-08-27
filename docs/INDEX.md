@@ -28,6 +28,7 @@ Choose the path that matches what you are trying to do:
 | Install the language server | [Installation Guide](how-to/INSTALLATION.md) |
 | Integrate perl-lsp into GitHub Actions | [GitHub Actions Integration](how-to/GITHUB_ACTIONS.md) |
 | Upgrade an existing installation | [Upgrading](how-to/UPGRADING.md) |
+| Promote a prepared swarm release into `perl-lsp` without losing history | [History-Preserving Publication Sync](how-to/PUBLICATION_SYNC.md) |
 | Get a working editor setup quickly | [Getting Started](tutorials/GETTING_STARTED.md) |
 | Set up continuous testing and watch loops | [Continuous Testing](how-to/CONTINUOUS_TESTING.md) |
 | Configure editor or workspace settings | [Configuration Reference](reference/CONFIG.md) |
@@ -69,6 +70,7 @@ Task-focused instructions for common workflows (goal-oriented).
 - [Installation Guide](how-to/INSTALLATION.md)
 - [GitHub Actions Integration](how-to/GITHUB_ACTIONS.md)
 - [Upgrading](how-to/UPGRADING.md)
+- [History-Preserving Publication Sync](how-to/PUBLICATION_SYNC.md)
 - [Editor Setup](how-to/EDITOR_SETUP.md)
 - [Native Tooling Migration](how-to/NATIVE_TOOLING_MIGRATION.md)
 - [Troubleshooting](how-to/TROUBLESHOOTING.md)
