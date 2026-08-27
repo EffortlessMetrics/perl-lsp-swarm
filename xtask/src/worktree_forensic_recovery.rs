@@ -299,6 +299,15 @@ struct MetadataFingerprint {
     file_identity: Option<(u64, u64)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DirectoryFingerprint {
+    modified_nanos: Option<u128>,
+    #[cfg(windows)]
+    file_identity: crate::file_identity::WindowsFileIdentity,
+    #[cfg(not(windows))]
+    file_identity: (u64, u64),
+}
+
 pub fn inspect(repository: &Path, candidate: &Path) -> Result<RecoveryPlan> {
     inspect_with_limits_and_probe(
         repository,
@@ -1020,6 +1029,17 @@ fn collect_manifest_inner(
         state.details.insert(format!("maximum directories {} exceeded", limits.max_directories));
         return;
     }
+    let before = match directory_fingerprint(current) {
+        Ok(value) => value,
+        Err(error) => {
+            state.complete = false;
+            state.details.insert(format!(
+                "directory identity unavailable for {}: {error}",
+                current.display()
+            ));
+            return;
+        }
+    };
     let mut entries = match read_bounded_entries(current, limits.max_entries_per_directory) {
         Ok((entries, truncated)) => {
             if truncated {
@@ -1037,6 +1057,9 @@ fn collect_manifest_inner(
             return;
         }
     };
+    if !directory_still_matches(current, before, state) {
+        return;
+    }
     entries.sort_by(|left, right| os_str_order(&left.file_name(), &right.file_name()));
     for entry in entries {
         if state.files.len() >= limits.max_files {
@@ -1110,6 +1133,33 @@ fn collect_manifest_inner(
                 state.complete = false;
                 state.details.insert(detail);
             }
+        }
+    }
+    let _ = directory_still_matches(current, before, state);
+}
+
+fn directory_still_matches(
+    path: &Path,
+    expected: DirectoryFingerprint,
+    state: &mut ManifestState,
+) -> bool {
+    match directory_fingerprint(path) {
+        Ok(actual) if actual == expected => true,
+        Ok(_) => {
+            state.complete = false;
+            state.details.insert(format!(
+                "RACE_DETECTED directory identity changed during observation: {}",
+                path.display()
+            ));
+            false
+        }
+        Err(error) => {
+            state.complete = false;
+            state.details.insert(format!(
+                "RACE_DETECTED directory identity unavailable after observation {}: {error}",
+                path.display()
+            ));
+            false
         }
     }
 }
@@ -1198,6 +1248,22 @@ fn metadata_fingerprint(path: &Path) -> io::Result<MetadataFingerprint> {
         .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|duration| duration.as_nanos());
     Ok(MetadataFingerprint { length: metadata.len(), modified_nanos, file_identity })
+}
+
+fn directory_fingerprint(path: &Path) -> io::Result<DirectoryFingerprint> {
+    let metadata = fs::symlink_metadata(path)?;
+    if is_link_or_reparse(&metadata) || !metadata.is_dir() {
+        return Err(io::Error::other("path is not a regular non-reparse directory"));
+    }
+    let file_identity = file_identity(path, &metadata)?.ok_or_else(|| {
+        io::Error::other("stable directory identity is unavailable on this platform")
+    })?;
+    let modified_nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos());
+    Ok(DirectoryFingerprint { modified_nanos, file_identity })
 }
 
 #[cfg(unix)]
@@ -1991,6 +2057,48 @@ mod tests {
         ensure!(
             !manifest.complete,
             "per-directory entry bound did not make the manifest incomplete"
+        );
+        Ok(())
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn directory_replacement_during_manifest_read_is_rejected() -> Result<()> {
+        struct ReplacingReader {
+            root: PathBuf,
+            replacement: PathBuf,
+            replaced: Cell<bool>,
+        }
+
+        impl StableFileReader for ReplacingReader {
+            fn read_twice(&self, path: &Path, _max_bytes: u64) -> io::Result<(Vec<u8>, Vec<u8>)> {
+                if !self.replaced.replace(true) {
+                    let backup = self.root.with_extension("old");
+                    fs::rename(&self.root, &backup)?;
+                    fs::rename(&self.replacement, &self.root)?;
+                }
+                let bytes = fs::read(path)?;
+                Ok((bytes.clone(), bytes))
+            }
+        }
+
+        let temporary = tempdir()?;
+        let root = temporary.path().join("candidate");
+        let replacement = temporary.path().join("candidate-replacement");
+        fs::create_dir_all(root.join("nested"))?;
+        fs::create_dir_all(replacement.join("nested"))?;
+        fs::write(root.join("nested/source.pl"), "old\n")?;
+        fs::write(replacement.join("nested/source.pl"), "new\n")?;
+
+        let manifest = collect_manifest(
+            &root,
+            TraversalLimits::default(),
+            &ReplacingReader { root: root.clone(), replacement, replaced: Cell::new(false) },
+        );
+        ensure!(!manifest.complete, "directory replacement was accepted as a complete manifest");
+        ensure!(
+            manifest.detail.contains("RACE_DETECTED directory identity"),
+            "directory replacement lacked an identity race diagnostic: {manifest:?}"
         );
         Ok(())
     }

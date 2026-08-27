@@ -13,6 +13,13 @@ instrument is available. Adapter or filesystem identity failure remains
 `CLEAN_RECONSTRUCTABLE` or race detection. A Windows `Unavailable` result is
 therefore an instrument limitation, not evidence that the candidate is clean.
 
+Recursive manifest observation also fingerprints every directory before reading
+its entries and revalidates that identity after enumeration and descent. A
+directory replacement, reparse transition, or unavailable directory identity
+marks the manifest incomplete and prevents a clean classification. This is a
+fail-closed sampled-interval guarantee; it does not claim that a replacement
+after the final revalidation is impossible.
+
 Git output is bounded to 4 MiB of retained stdout/stderr and a 10-second
 producer interval. A child that exceeds either bound is terminated and the
 observation fails closed. Ignored source-like files are detected through the
