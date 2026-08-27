@@ -131,6 +131,7 @@ struct SubjectIdentity {
     binary_path: String,
     binary_len: u64,
     binary_sha256: String,
+    requested_perl_path: String,
     perl_path: String,
     perl_version: String,
     /// Digest of the interpreter binary when its self-reported path is
@@ -154,7 +155,15 @@ impl SubjectIdentity {
             )
             .into());
         }
-        let _reported_perl_path = String::from_utf8_lossy(&perl_path_out.stdout).trim().to_string();
+        let reported_perl_path = String::from_utf8_lossy(&perl_path_out.stdout).trim().to_string();
+        if reported_perl_path.is_empty() {
+            return Err(format!(
+                "{} reported an empty $^X while binding subject identity",
+                perl_path.display()
+            )
+            .into());
+        }
+        let reported_perl_path_buf = PathBuf::from(&reported_perl_path);
 
         let perl_version_out = Command::new(perl_path).arg("-e").arg("print $^V").output()?;
         if !perl_version_out.status.success() {
@@ -166,7 +175,7 @@ impl SubjectIdentity {
         }
         let perl_version = String::from_utf8_lossy(&perl_version_out.stdout).trim().to_string();
 
-        let perl_sha256 = match fs::read(perl_path) {
+        let perl_sha256 = match fs::read(&reported_perl_path_buf) {
             Ok(bytes) => digest_bytes(&bytes),
             Err(error) => format!("unavailable:{error}"),
         };
@@ -175,8 +184,9 @@ impl SubjectIdentity {
             binary_len: fs::metadata(&binary_path)?.len(),
             binary_sha256: sha256_file(&binary_path)?,
             binary_path: binary_path.to_string_lossy().to_string(),
+            requested_perl_path: perl_path.to_string_lossy().to_string(),
             perl_sha256,
-            perl_path: perl_path.to_string_lossy().to_string(),
+            perl_path: reported_perl_path,
             perl_version,
             fixture_len: fs::metadata(fixture)?.len(),
             fixture_sha256: sha256_file(fixture)?,
@@ -782,6 +792,7 @@ fn write_receipt_to(
             },
             "perl": {
                 "path": identity.perl_path,
+                "requested_path": identity.requested_perl_path,
                 "version": identity.perl_version,
                 "sha256": identity.perl_sha256,
             },
@@ -1405,6 +1416,7 @@ fn receipt_binds_subject_identity_and_row_verdicts() -> ProofResult<()> {
         binary_path: binary.to_string_lossy().to_string(),
         binary_len: 16,
         binary_sha256: digest_bytes(b"fake-binary-bytes"),
+        requested_perl_path: "C:\\perl\\bin\\wrapper.exe".to_string(),
         perl_path: "C:\\perl\\bin\\perl.exe".to_string(),
         perl_version: "v5.42.2".to_string(),
         perl_sha256: digest_bytes(b"perl"),
@@ -1426,6 +1438,13 @@ fn receipt_binds_subject_identity_and_row_verdicts() -> ProofResult<()> {
         != Some(&Value::String(digest_bytes(b"fake-binary-bytes")))
     {
         return Err("receipt must bind the exact binary digest".into());
+    }
+    if receipt.pointer("/subject/perl/path")
+        != Some(&Value::String("C:\\perl\\bin\\perl.exe".to_string()))
+        || receipt.pointer("/subject/perl/requested_path")
+            != Some(&Value::String("C:\\perl\\bin\\wrapper.exe".to_string()))
+    {
+        return Err("receipt must distinguish observed and requested Perl paths".into());
     }
     if receipt.pointer("/subject/capabilities/supportsValueFormattingOptions")
         != Some(&Value::Bool(true))

@@ -634,8 +634,8 @@ impl DapWorkflowSession {
 /// Build the common launch request while keeping interpreter identity explicit.
 ///
 /// A configured debuggee pin is passed by every convenience launch helper. With
-/// no pin, `perl_binary` remains `None`, preserving the adapter's ambient PATH
-/// semantics for unpinned callers.
+/// no pin, the resolved pipe-capable interpreter is passed when available;
+/// launch cannot silently fall back to an unprobed PATH interpreter.
 fn launch_arguments(
     script_path: &str,
     cwd: Option<&str>,
@@ -705,22 +705,21 @@ pub(crate) fn resolved_launch_arguments_for_test(
 /// An explicit debuggee pin is an identity constraint, not a preference. If
 /// its pipe-conformance probe fails, return the diagnostic instead of omitting
 /// `perlPath` and allowing the adapter to fall back to PATH/profile resolution.
-/// With no pin, retain the existing ambient fallback for callers that use these
-/// low-level helpers without the normal availability gate.
+/// With no pin, the selected candidate must still pass the same pipe-conformance
+/// probe; a PATH hit that cannot run the real debugger is not a valid launch
+/// fallback.
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn resolve_launch_perl_path() -> Result<Option<PathBuf>, String> {
-    if std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some() {
-        return resolved_debuggee_perl_or_reason().map(|perl| Some(perl.binary.clone())).map_err(
-            |reason| {
-                format!(
-                    "{DEBUGGEE_PERL_OVERRIDE_ENV} is set but its pinned interpreter \
+    resolved_debuggee_perl_or_reason().map(|perl| Some(perl.binary.clone())).map_err(|reason| {
+        if std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some() {
+            format!(
+                "{DEBUGGEE_PERL_OVERRIDE_ENV} is set but its pinned interpreter \
                      cannot be used for a DAP launch: {reason}"
-                )
-            },
-        );
-    }
-
-    Ok(resolve_debuggee_perl().map(|perl| perl.binary.clone()))
+            )
+        } else {
+            format!("no pipe-capable Perl interpreter can be used for a DAP launch: {reason}")
+        }
+    })
 }
 
 /// Normalize an explicit interpreter pin before probing or placing it in a
@@ -1073,8 +1072,17 @@ enum CleanupFault {
     None,
     TerminationOperations,
     WorkspaceRemoval,
+    ThreadSpawn(ProbeThreadSpawnFailure),
     #[cfg(windows)]
     JobAssignment,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProbeThreadSpawnFailure {
+    Writer,
+    StdoutReader,
+    StderrReader,
 }
 
 impl CleanupFault {
@@ -1089,6 +1097,11 @@ impl CleanupFault {
     #[cfg(windows)]
     fn assignment_failed(self) -> bool {
         matches!(self, Self::JobAssignment)
+    }
+
+    #[cfg(test)]
+    fn thread_spawn_failed(self, stage: ProbeThreadSpawnFailure) -> bool {
+        matches!(self, Self::ThreadSpawn(actual) if actual == stage)
     }
 }
 
@@ -1149,6 +1162,23 @@ pub(crate) fn probe_debuggee_perl_for_test_with_workspace_cleanup_failure(
 }
 
 #[cfg(test)]
+pub(crate) fn probe_debuggee_perl_for_test_with_thread_spawn_failure(
+    binary: &Path,
+    budget: Duration,
+    descendant_pid_file: &Path,
+    stage: ProbeThreadSpawnFailure,
+) -> Result<DebuggeePerl, String> {
+    probe_debuggee_perl_with_options(
+        binary,
+        budget,
+        false,
+        Some(descendant_pid_file),
+        CleanupFault::ThreadSpawn(stage),
+    )
+    .map_err(|failure| failure.reason)
+}
+
+#[cfg(test)]
 pub(crate) fn active_probe_reader_count() -> usize {
     reap_deferred_probe_readers();
     ACTIVE_PROBE_READERS.load(Ordering::Acquire)
@@ -1204,6 +1234,9 @@ struct ProbeJob {
 }
 
 #[cfg(windows)]
+const CREATE_SUSPENDED_FLAG: u32 = 0x0000_0004;
+
+#[cfg(windows)]
 impl ProbeJob {
     fn assign(child: &Child) -> io::Result<Self> {
         use std::os::windows::io::AsRawHandle;
@@ -1246,6 +1279,69 @@ impl Drop for ProbeJob {
     fn drop(&mut self) {
         unsafe { winapi::um::handleapi::CloseHandle(self.handle) };
     }
+}
+
+#[cfg(windows)]
+fn resume_suspended_probe_process(child: &Child) -> io::Result<()> {
+    use winapi::shared::minwindef::MAXDWORD;
+    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+    use winapi::um::processthreadsapi::{OpenThread, ResumeThread};
+    use winapi::um::tlhelp32::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use winapi::um::winnt::THREAD_SUSPEND_RESUME;
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let result = (|| {
+        let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut has_thread = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+        while has_thread {
+            if entry.th32OwnerProcessID == child.id() {
+                let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                if thread.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                let previous_count = unsafe { ResumeThread(thread) };
+                let resume_error = if previous_count == MAXDWORD {
+                    Some(io::Error::last_os_error())
+                } else {
+                    None
+                };
+                let close_result = unsafe { CloseHandle(thread) };
+                if let Some(error) = resume_error {
+                    return Err(error);
+                }
+                if close_result == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                return Ok(());
+            }
+            has_thread = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+        }
+        Err(io::Error::other("suspended probe process has no discoverable thread"))
+    })();
+    unsafe { CloseHandle(snapshot) };
+    result
+}
+
+#[cfg(test)]
+fn wait_for_spawn_failure_control(descendant_pid_file: &Path) -> Result<(), String> {
+    let ready_file = descendant_pid_file.with_extension("pid.ready");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !ready_file.is_file() {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "descendant ready marker was not written: {}",
+                ready_file.display()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1313,7 +1409,19 @@ fn probe_debuggee_perl_with_options(
         // are the production-owned process-tree boundaries for the probe.
         #[cfg(unix)]
         command.process_group(0);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+
+            // Start suspended so no child code can create a pipe-inheriting
+            // descendant before the process is inside the kill-on-close Job.
+            command.creation_flags(CREATE_SUSPENDED_FLAG);
+        }
         let mut child = command.spawn().map_err(|e| fail(format!("cannot spawn: {e}")))?;
+        #[cfg(test)]
+        // Record before Windows job assignment so the assignment-failure
+        // control can observe and verify cleanup of the suspended child.
+        LAST_PROBE_PID.store(child.id(), Ordering::Release);
         #[cfg(windows)]
         let _probe_job = if cleanup_fault.termination_failed() {
             // Leave the owned process tree live for the termination-failure
@@ -1364,8 +1472,38 @@ fn probe_debuggee_perl_with_options(
                 },
             )
         };
+        #[cfg(windows)]
+        if let Err(error) = resume_suspended_probe_process(&child) {
+            let cleanup =
+                terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
+            return Err(fail(format!(
+                "cannot resume probe process after assigning its ownership boundary: {error}{}",
+                cleanup
+                    .err()
+                    .map_or_else(String::new, |error| format!("; cleanup failed: {error}"))
+            )));
+        }
         #[cfg(test)]
-        LAST_PROBE_PID.store(child.id(), Ordering::Release);
+        if cleanup_fault.thread_spawn_failed(ProbeThreadSpawnFailure::Writer)
+            || cleanup_fault.thread_spawn_failed(ProbeThreadSpawnFailure::StdoutReader)
+            || cleanup_fault.thread_spawn_failed(ProbeThreadSpawnFailure::StderrReader)
+        {
+            if let Some(descendant_pid_file) = descendant_pid_file {
+                if let Err(error) = wait_for_spawn_failure_control(descendant_pid_file) {
+                    let cleanup = terminate_probe_process_tree(
+                        &mut child,
+                        descendant_pid_file,
+                        cleanup_fault,
+                    );
+                    return Err(fail(format!(
+                        "spawn-failure control did not start its descendant: {error}{}",
+                        cleanup
+                            .err()
+                            .map_or_else(String::new, |error| format!("; cleanup failed: {error}"))
+                    )));
+                }
+            }
+        }
 
         let Some(stdout_pipe) = child.stdout.take() else {
             let cleanup =
@@ -1393,14 +1531,16 @@ fn probe_debuggee_perl_with_options(
         // dropping `stdin` afterwards delivers EOF exactly like an editor closing
         // its side of the session.
         let stdin_pipe = child.stdin.take();
-        let writer = match std::thread::Builder::new()
-            .name("perl-dap-probe-stdin".to_string())
-            .spawn(move || {
+        let writer = match if cleanup_fault.thread_spawn_failed(ProbeThreadSpawnFailure::Writer) {
+            Err(io::Error::other("injected probe stdin writer spawn failure"))
+        } else {
+            std::thread::Builder::new().name("perl-dap-probe-stdin".to_string()).spawn(move || {
                 if let Some(mut stdin) = stdin_pipe {
                     let _ = stdin.write_all(b"c\nq\n");
                     let _ = stdin.flush();
                 }
-            }) {
+            })
+        } {
             Ok(writer) => writer,
             Err(error) => {
                 let cleanup =
@@ -1414,7 +1554,10 @@ fn probe_debuggee_perl_with_options(
             }
         };
 
-        let stdout_chunks = match drain_pipe(stdout_pipe) {
+        let stdout_chunks = match drain_pipe(
+            stdout_pipe,
+            cleanup_fault.thread_spawn_failed(ProbeThreadSpawnFailure::StdoutReader),
+        ) {
             Ok(stdout_chunks) => stdout_chunks,
             Err(error) => {
                 let cleanup =
@@ -1427,7 +1570,10 @@ fn probe_debuggee_perl_with_options(
                 )));
             }
         };
-        let stderr_chunks = match drain_pipe(stderr_pipe) {
+        let stderr_chunks = match drain_pipe(
+            stderr_pipe,
+            cleanup_fault.thread_spawn_failed(ProbeThreadSpawnFailure::StderrReader),
+        ) {
             Ok(stderr_chunks) => stderr_chunks,
             Err(error) => {
                 let cleanup =
@@ -1819,7 +1965,7 @@ impl ProbePipe for ChildStderr {
 /// Drain `pipe` to EOF on a background thread, forwarding chunks to the
 /// returned receiver. The join handle remains owned by the probe so cleanup
 /// cannot silently return while a detached reader is still blocked on a pipe.
-fn drain_pipe<R>(pipe: R) -> Result<PipeDrain, String>
+fn drain_pipe<R>(pipe: R, inject_spawn_failure: bool) -> Result<PipeDrain, String>
 where
     R: ProbePipe,
 {
@@ -1828,43 +1974,48 @@ where
     let thread_cancel = Arc::clone(&cancel);
     #[cfg(test)]
     ACTIVE_PROBE_READERS.fetch_add(1, Ordering::AcqRel);
-    let thread = match std::thread::Builder::new().name("perl-dap-probe-pipe".to_string()).spawn(
-        move || -> Result<(), String> {
-            #[cfg(test)]
-            struct ReaderActivity;
-            #[cfg(test)]
-            impl Drop for ReaderActivity {
-                fn drop(&mut self) {
-                    ACTIVE_PROBE_READERS.fetch_sub(1, Ordering::AcqRel);
-                }
-            }
-            #[cfg(test)]
-            let _activity = ReaderActivity;
-            let mut pipe = pipe;
-            let mut buf = [0u8; 4096];
-            loop {
-                if thread_cancel.load(Ordering::Acquire) {
-                    return Ok(());
-                }
-                match pipe.has_data() {
-                    Some(true) => match pipe.read(&mut buf) {
-                        Ok(0) => return Ok(()),
-                        Err(error) => return Err(format!("pipe read failed: {error}")),
-                        Ok(n) => {
-                            if tx.send(buf[..n].to_vec()).is_err() {
-                                return Ok(());
-                            }
-                        }
-                    },
-                    Some(false) => {
-                        std::thread::sleep(Duration::from_millis(10));
-                        continue;
+    let thread = if inject_spawn_failure {
+        Err(io::Error::other("injected probe pipe reader spawn failure"))
+    } else {
+        std::thread::Builder::new().name("perl-dap-probe-pipe".to_string()).spawn(
+            move || -> Result<(), String> {
+                #[cfg(test)]
+                struct ReaderActivity;
+                #[cfg(test)]
+                impl Drop for ReaderActivity {
+                    fn drop(&mut self) {
+                        ACTIVE_PROBE_READERS.fetch_sub(1, Ordering::AcqRel);
                     }
-                    None => return Err("pipe readiness probe failed".to_string()),
                 }
-            }
-        },
-    ) {
+                #[cfg(test)]
+                let _activity = ReaderActivity;
+                let mut pipe = pipe;
+                let mut buf = [0u8; 4096];
+                loop {
+                    if thread_cancel.load(Ordering::Acquire) {
+                        return Ok(());
+                    }
+                    match pipe.has_data() {
+                        Some(true) => match pipe.read(&mut buf) {
+                            Ok(0) => return Ok(()),
+                            Err(error) => return Err(format!("pipe read failed: {error}")),
+                            Ok(n) => {
+                                if tx.send(buf[..n].to_vec()).is_err() {
+                                    return Ok(());
+                                }
+                            }
+                        },
+                        Some(false) => {
+                            std::thread::sleep(Duration::from_millis(10));
+                            continue;
+                        }
+                        None => return Err("pipe readiness probe failed".to_string()),
+                    }
+                }
+            },
+        )
+    };
+    let thread = match thread {
         Ok(thread) => thread,
         Err(error) => {
             #[cfg(test)]

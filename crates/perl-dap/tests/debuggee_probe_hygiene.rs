@@ -21,8 +21,9 @@ mod common;
 use common::{reset_sigkill_escalation_observation, sigkill_escalation_was_observed};
 
 use common::{
-    DEBUGGEE_PERL_OVERRIDE_ENV, probe_debuggee_perl_for_test_with_descendant_pid,
-    resolve_debuggee_perl,
+    DEBUGGEE_PERL_OVERRIDE_ENV, ProbeThreadSpawnFailure,
+    probe_debuggee_perl_for_test_with_descendant_pid,
+    probe_debuggee_perl_for_test_with_thread_spawn_failure, resolve_debuggee_perl,
 };
 use std::fs;
 use std::io;
@@ -386,18 +387,16 @@ fn main() {
     #[cfg(windows)]
     {
         let before = current_process_probe_artifacts()?;
-        let pid_file = controls.path().join("assignment-failure.pid");
-        let assignment_pid_file = pid_file.clone();
+        let descendant_pid_file = controls.path().join("assignment-failure.pid");
         let assignment_binary = hanging.clone();
         let probe = std::thread::spawn(move || {
             common::probe_debuggee_perl_for_test_with_job_assignment_failure(
                 &assignment_binary,
                 Duration::from_secs(2),
-                &assignment_pid_file,
+                &descendant_pid_file,
             )
         });
-        let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(5))?;
-        wait_for_process_start(descendant_pid, Duration::from_secs(5))?;
+        let child_pid = wait_for_probe_pid(Duration::from_secs(5))?;
         let assignment_failure =
             probe.join().map_err(|_| io::Error::other("job assignment probe thread panicked"))?;
         let assignment_error = match assignment_failure {
@@ -408,7 +407,7 @@ fn main() {
             assignment_error.contains("job assignment"),
             "job assignment fallback must be explicit: {assignment_error}"
         );
-        wait_for_process_exit("job-assignment", descendant_pid, Duration::from_secs(5))?;
+        wait_for_process_exit("job-assignment-child", child_pid, Duration::from_secs(5))?;
         let after = current_process_probe_artifacts()?;
         let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
         assert!(
@@ -419,6 +418,50 @@ fn main() {
             common::active_probe_reader_count(),
             0,
             "job assignment fallback left an active reader thread"
+        );
+    }
+
+    for (label, stage) in [
+        ("writer-spawn", ProbeThreadSpawnFailure::Writer),
+        ("stdout-reader-spawn", ProbeThreadSpawnFailure::StdoutReader),
+        ("stderr-reader-spawn", ProbeThreadSpawnFailure::StderrReader),
+    ] {
+        let before = current_process_probe_artifacts()?;
+        let descendant_pid_file = controls.path().join(format!("{label}.pid"));
+        let failure_binary = hanging.clone();
+        let failure_pid_file = descendant_pid_file.clone();
+        let probe = std::thread::spawn(move || {
+            probe_debuggee_perl_for_test_with_thread_spawn_failure(
+                &failure_binary,
+                Duration::from_secs(2),
+                &failure_pid_file,
+                stage,
+            )
+        });
+        let descendant_pid = wait_for_pid_file(&descendant_pid_file, Duration::from_secs(5))?;
+        wait_for_marker_file(
+            &descendant_pid_file.with_extension("pid.ready"),
+            Duration::from_secs(5),
+        )?;
+        wait_for_process_start(descendant_pid, Duration::from_secs(5))?;
+        let failure =
+            probe.join().map_err(|_| io::Error::other(format!("{label} probe thread panicked")))?;
+        let error = match failure {
+            Ok(_) => return Err(io::Error::other(format!("{label} failure was accepted"))),
+            Err(error) => error,
+        };
+        assert!(error.contains("injected probe"), "{label} failure must be explicit: {error}");
+        wait_for_process_exit(label, descendant_pid, Duration::from_secs(5))?;
+        let after = current_process_probe_artifacts()?;
+        let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
+        assert!(
+            new_artifacts.is_empty(),
+            "{label} failure left newly created workspaces: {new_artifacts:?}"
+        );
+        assert_eq!(
+            common::active_probe_reader_count(),
+            0,
+            "{label} failure left an active reader thread"
         );
     }
 
@@ -443,6 +486,25 @@ fn main() {
         );
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn wait_for_probe_pid(timeout: Duration) -> io::Result<u32> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(pid) = common::last_probe_pid_for_test()
+            && process_exists(pid)?
+        {
+            return Ok(pid);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "probe child PID was not observable",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn process_exists(pid: u32) -> io::Result<bool> {
