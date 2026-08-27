@@ -280,6 +280,29 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     expect(_autoRestartAttemptsForTest()).toBe(3);
   });
 
+  test('budget exhaustion retires the live client after exactly three replacements', async () => {
+    let created = 0;
+    const lifecycle = new ExtensionLanguageClientLifecycle<FakeLifecycleClient, FakeLifecycleEvent>({
+      resolveServerPath: async () => '/server/perllsp',
+      createClient: () => {
+        created += 1;
+        return new FakeLifecycleClient(Promise.resolve(), created);
+      },
+    });
+    _setLanguageClientLifecycleForTest(injectedLifecycle(lifecycle));
+    await lifecycle.start();
+
+    for (let crash = 0; crash < 4; crash += 1) {
+      handleClientStateChange(crashEvent() as never);
+      await drain();
+    }
+
+    expect(created).toBe(4); // initial client plus exactly three replacements
+    expect(_autoRestartAttemptsForTest()).toBe(3);
+    expect(lifecycle.snapshot.state).toBe('stopped');
+    expect(lifecycle.client).toBeUndefined();
+  });
+
   test('a user-initiated stop suppresses the crash toast and the counter', async () => {
     _setUserInitiatedStopPendingForTest(true);
     handleClientStateChange(crashEvent() as never);
