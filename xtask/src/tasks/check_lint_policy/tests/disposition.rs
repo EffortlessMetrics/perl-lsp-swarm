@@ -163,6 +163,23 @@ fn required_lint_identity_cannot_be_deleted_from_the_merged_model() -> Result<()
 }
 
 #[test]
+fn required_manual_ilog2_cannot_be_demoted_out_of_active_enforcement() -> Result<()> {
+    // Demotion keeps identity count at one and keeps level "deny" (planned rows
+    // carry deny too), so neither the identity nor the level pin can catch it.
+    // Only the pinned active status fails this closed.
+    let mut demoted = required_ledger();
+    demoted.lint.retain(|lint| lint.name != "clippy::manual_ilog2");
+    demoted.planned.push(planned_lint("clippy::manual_ilog2", "1.99"));
+
+    let Err(error) = validate_required_dispositions(&demoted) else {
+        bail!("demoting manual_ilog2 to a planned row should fail closed");
+    };
+    assert!(error.to_string().contains("clippy::manual_ilog2"));
+    assert!(error.to_string().contains("must remain an active ledger entry"));
+    Ok(())
+}
+
+#[test]
 fn required_manual_ilog2_level_and_identity_cannot_be_rolled_back() -> Result<()> {
     let mut rolled_back = required_ledger();
     rolled_back

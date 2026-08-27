@@ -6,15 +6,21 @@ use color_eyre::eyre::{Result, bail, eyre};
 use std::collections::BTreeMap;
 use toml::Value;
 
-const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>)] = &[
-    ("rust::const_item_interior_mutations", None),
-    ("rust::function_casts_as_integer", None),
-    ("clippy::same_length_and_capacity", None),
-    ("clippy::disallowed_fields", None),
-    ("clippy::manual_checked_ops", None),
-    ("clippy::manual_ilog2", Some("deny")),
-    ("clippy::manual_take", None),
-    ("clippy::manual_pop_if", None),
+/// Required lint identities, with optional pinned level and pinned ledger status.
+///
+/// A pinned level alone is not enough to hold a promotion: `[[planned]]` and
+/// `[[deferred_due]]` rows also carry `level = "deny"`, so a row demoted out of
+/// active enforcement still satisfies a level pin. Pinning the status as well is
+/// what makes a promotion non-reversible without an explicit policy change.
+const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>, Option<&str>)] = &[
+    ("rust::const_item_interior_mutations", None, None),
+    ("rust::function_casts_as_integer", None, None),
+    ("clippy::same_length_and_capacity", None, None),
+    ("clippy::disallowed_fields", None, None),
+    ("clippy::manual_checked_ops", None, None),
+    ("clippy::manual_ilog2", Some("deny"), Some("active")),
+    ("clippy::manual_take", None, None),
+    ("clippy::manual_pop_if", None, None),
 ];
 
 pub(crate) fn validate_workspace_lints(
@@ -110,7 +116,7 @@ pub(crate) fn validate_required_dispositions(ledger: &LintLedger) -> Result<()> 
         *counts.entry(name).or_default() += 1;
     }
 
-    for (required, expected_level) in REQUIRED_DISPOSITIONS {
+    for (required, expected_level, expected_status) in REQUIRED_DISPOSITIONS {
         if counts.get(required).copied().unwrap_or_default() != 1 {
             bail!(
                 "required lint identity {required} must appear exactly once across the merged disposition model"
@@ -142,6 +148,19 @@ pub(crate) fn validate_required_dispositions(ledger: &LintLedger) -> Result<()> 
                 "required lint {required} must remain at level {expected_level}, but ledger has {}",
                 entry_level.unwrap_or("missing")
             );
+        }
+        if let Some(expected_status) = expected_status {
+            let entry_status = ledger
+                .lint
+                .iter()
+                .find(|lint| lint.name == *required)
+                .map(|lint| lint.status.as_str());
+            if entry_status != Some(*expected_status) {
+                bail!(
+                    "required lint {required} must remain an active ledger entry at status {expected_status}, but ledger has {}",
+                    entry_status.unwrap_or("no active entry (demoted to planned or deferred_due)")
+                );
+            }
         }
     }
     Ok(())
