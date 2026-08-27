@@ -100,7 +100,7 @@ git merge --no-edit origin/main
 git cat-file -e "${first_commit}^{commit}"
 git cat-file -e "${second_commit}^{commit}"
 
-if ! run_cherry_pick_or_skip_empty "first cherry-pick" git cherry-pick "$first_commit"; then
+if ! run_cherry_pick_or_skip_empty "first cherry-pick" "$first_commit" git cherry-pick "$first_commit"; then
   mapfile -t conflicts < <(git diff --name-only --diff-filter=U | sort)
   if [ "${#conflicts[@]}" -eq 0 ]; then
     echo "first cherry-pick failed without an expected conflict set; refusing recovery." >&2
