@@ -197,6 +197,35 @@ fn captured_pr_subject_survives_base_branch_movement_and_drives_real_ci_scope() 
             == "36c8a973bc6b53f4abf35ed1b950f4f1f9d6695eba0fa4aee8d959983795d2c5",
         "changed-input digest must match the independently computed fixture oracle"
     );
+    let expected_receipt = format!(
+        "{{\n  \"schema_version\": \"ci-subject.v1\",\n  \"producer\": \"cargo-xtask-ci-subject\",\n  \"status\": \"RESOLVED\",\n  \"repository\": \"{REPOSITORY}\",\n  \"event_kind\": \"pull_request\",\n  \"resolution_source\": \"github_event\",\n  \"diff_mode\": \"merge_base\",\n  \"base_sha\": \"{base}\",\n  \"head_sha\": \"{head}\",\n  \"base_tree\": \"{}\",\n  \"head_tree\": \"{}\",\n  \"diff_base_sha\": \"{base}\",\n  \"diff_base_tree\": \"{}\",\n  \"changed_file_count\": 1,\n  \"changed_input_digest\": \"36c8a973bc6b53f4abf35ed1b950f4f1f9d6695eba0fa4aee8d959983795d2c5\",\n  \"subject_digest\": \"{}\",\n  \"error_code\": null\n}}\n",
+        receipt["base_tree"].as_str().context("receipt must contain a base tree")?,
+        receipt["head_tree"].as_str().context("receipt must contain a head tree")?,
+        receipt["diff_base_tree"].as_str().context("receipt must contain a diff base tree")?,
+        receipt["subject_digest"].as_str().context("receipt must contain a subject digest")?,
+    );
+    ensure!(
+        moved_bytes == expected_receipt.as_bytes(),
+        "receipt bytes must match the independent canonical fixture"
+    );
+
+    let tampered_receipt = tmp.path().join("subject-tampered.json");
+    let tampered =
+        expected_receipt.replace("\"changed_file_count\": 1", "\"changed_file_count\": 2");
+    ensure!(tampered != expected_receipt, "tamper control must change the receipt");
+    fs::write(&tampered_receipt, tampered)?;
+    let tampered_output = cargo_bin_cmd!("xtask")
+        .args(["ci-scope", "--subject"])
+        .arg(&tampered_receipt)
+        .arg("--root")
+        .arg(&repo)
+        .args(["--format", "json"])
+        .output()?;
+    ensure!(!tampered_output.status.success(), "tampered receipt must be rejected");
+    ensure!(
+        String::from_utf8_lossy(&tampered_output.stderr).contains("subject digest mismatch"),
+        "tampered receipt rejection must identify the invalid semantic digest"
+    );
 
     let output = cargo_bin_cmd!("xtask")
         .args(["ci-scope", "--subject"])
