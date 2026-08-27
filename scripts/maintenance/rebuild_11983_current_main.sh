@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+. "$(dirname -- "${BASH_SOURCE[0]}")/../lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
 first_commit="d174ec1e9845056b8e1a193001ce88a2ea9eaebe"
 first_parent="470277161c18cd5cfa00e31ea6545e2e7baee461"
 second_commit="0f6a4334eb5a53df54a5ed40103659a63578b6f5"
@@ -35,10 +37,18 @@ git cat-file -e "${second_commit}^{commit}"
 if ! git cherry-pick "$first_commit"; then
   mapfile -t conflicts < <(git diff --name-only --diff-filter=U | sort)
   expected=(
+    crates/perl-dap/features_sot.toml
+    crates/perl-lsp-rs-core/features_sot.toml
+    crates/perl-lsp-rs/features_sot.toml
+    crates/perl-parser/features_sot.toml
     crates/perl-lsp-rs/src/runtime/language/formatting_policy/tests.rs
     crates/perl-lsp-rs/src/runtime/text_sync.rs
     crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs
     crates/perl-lsp-rs/tests/lsp_batteries_e2e_workflow_test.rs
+    crates/perl-lsp-rs/tests/lsp_formatting_e2e.rs
+    docs/specs/lsp-318-conformance-matrix.md
+    features.toml
+    xtask/src/tasks/lsp_318_matrix.rs
   )
   mapfile -t expected_sorted < <(printf '%s\n' "${expected[@]}" | sort)
   if ! diff -u \
@@ -66,69 +76,25 @@ if ! git cherry-pick "$first_commit"; then
 
   python3 - <<'PY'
 import os
-import re
+import subprocess
 from pathlib import Path
-
-
-def hunk_segments(text: str) -> list[str]:
-    segments = []
-    current = None
-    for line in text.splitlines():
-        if line.startswith("@@ "):
-            if current is not None:
-                segments.append("\n".join(current))
-            current = [line]
-        elif current is not None:
-            current.append(line)
-    if current is not None:
-        segments.append("\n".join(current))
-    return segments
-
-
-def reject_evidence_dir() -> Path:
-    evidence = Path("target/receipts/rebuild-11983/rejected-hunks")
-    evidence.mkdir(parents=True, exist_ok=True)
-    return evidence
-
-
 manifest_path = os.environ.get("REBUILD_REJECT_MANIFEST")
 if not manifest_path:
     raise SystemExit("reject manifest environment variable is missing")
-
-verified_rejects: list[Path] = []
-for entry in Path(manifest_path).read_text(encoding="utf-8").splitlines():
-    path, patch_file, apply_log_file, reject_name = entry.split("\t")
-    log_text = Path(apply_log_file).read_text(encoding="utf-8")
-    rejected_hunks = [int(n) for n in re.findall(r"Rejected hunk #(\d+)\.", log_text)]
-    patch_segments = set(hunk_segments(Path(patch_file).read_text(encoding="utf-8")))
-    reject = Path(reject_name)
-
-    def retain(reason: str) -> None:
-        evidence_dir = reject_evidence_dir()
-        if reject.exists():
-            (evidence_dir / reject.name).write_text(
-                reject.read_text(encoding="utf-8"), encoding="utf-8"
-            )
-        raise SystemExit(
-            f"{path}: unverified rejected hunks retained under {evidence_dir}: {reason}"
-        )
-
-    if not rejected_hunks:
-        if reject.exists():
-            retain("apply reported no rejection but a reject artifact exists")
-        continue
-
-    if not reject.exists():
-        retain(f"apply recorded rejected hunks {rejected_hunks} but no reject file exists")
-    found_segments = sorted(set(hunk_segments(reject.read_text(encoding="utf-8"))))
-    foreign = [s for s in found_segments if s not in patch_segments]
-    if foreign:
-        retain(f"{len(foreign)} reject hunks do not come from the reviewed patch")
-    if len(found_segments) != len(rejected_hunks):
-        retain(
-            f"expected {len(rejected_hunks)} rejected hunks, found {len(found_segments)}"
-        )
-    verified_rejects.append(reject)
+verification = subprocess.run(
+    [
+        "python3",
+        "scripts/maintenance/verify_11983_reject_identities.py",
+        "--manifest",
+        manifest_path,
+        "--evidence-dir",
+        "target/receipts/rebuild-11983/rejected-hunks",
+        "--delete-verified",
+    ],
+    check=False,
+)
+if verification.returncode:
+    raise SystemExit(verification.returncode)
 
 
 def replace_exact(path: str, old: str, new: str) -> None:
@@ -169,19 +135,6 @@ if required not in e2e_text:
 if '"my $result = calculate(5, 3);\\n",\n            "\\n",' in e2e_text:
     raise SystemExit("stale extra-newline expectation returned")
 
-verified_names = {str(reject) for reject in verified_rejects}
-for expected_reject in [
-    Path(text_sync + ".rej"),
-    Path(lifecycle + ".rej"),
-    Path(str(e2e) + ".rej"),
-]:
-    if str(expected_reject) not in verified_names:
-        raise SystemExit(
-            f"reject evidence not verified against reviewed patch: {expected_reject}"
-        )
-for verified in verified_rejects:
-    if verified.exists():
-        verified.unlink()
 PY
 
   if find . -name '*.rej' -print -quit | grep -q .; then
