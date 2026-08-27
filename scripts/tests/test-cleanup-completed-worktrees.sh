@@ -295,7 +295,7 @@ run_cleanup_dry_run() {
   PATH="${case_dir}/bin:${PATH}" \
     MOCK_STATE="$case_dir" \
     MOCK_REPO_ROOT="${case_dir}/repo" \
-    bash "$IMPL" --dry-run 2>&1 || true
+    bash "$IMPL" --dry-run 2>&1
 }
 
 # The mutating front door. --dry-run is the read-only one; this exists so the
@@ -305,7 +305,7 @@ run_cleanup_real() {
   PATH="${case_dir}/bin:${PATH}" \
     MOCK_STATE="$case_dir" \
     MOCK_REPO_ROOT="${case_dir}/repo" \
-    bash "$IMPL" 2>&1 || true
+    bash "$IMPL" 2>&1
 }
 
 exit_status_of() {
@@ -470,7 +470,7 @@ run_cleanup_json() {
   PATH="${case_dir}/bin:${PATH}" \
     MOCK_STATE="$case_dir" \
     MOCK_REPO_ROOT="${case_dir}/repo" \
-    bash "$IMPL" --json 2>/dev/null || true
+    bash "$IMPL" --json 2>/dev/null
 }
 
 test_json_escapes_special_characters() {
@@ -669,7 +669,7 @@ test_json_projection_carries_the_inspection_axes() {
   write_unreachable_worktree_list "$case_dir" 'F:\code\Opencode\Rust\wt-pr11859'
 
   output="$(PATH="${case_dir}/bin:${PATH}" MOCK_STATE="$case_dir" \
-    MOCK_REPO_ROOT="${case_dir}/repo" bash "$IMPL" --json --dry-run 2>/dev/null || true)"
+    MOCK_REPO_ROOT="${case_dir}/repo" bash "$IMPL" --json --dry-run 2>/dev/null)"
 
   # Human and JSON projections must agree on the same semantic row.
   assert_contains "json reports the dry-run axis" "$output" '"dry_run":true'
