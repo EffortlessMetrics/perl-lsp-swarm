@@ -251,6 +251,44 @@ fn role_scope_owns_subtest_with_canonical_interface_kind() {
 }
 
 #[test]
+fn closed_package_block_does_not_own_following_subtest() {
+    let source = "package Outer;\n\
+        package Inner {\n\
+            sub inner {}\n\
+        }\n\
+        subtest 'after block' => sub { ok(1); };\n";
+    let outline = nested_outline(source);
+
+    let outer = find_named_deep(&outline, "Outer").expect("outer package missing");
+    let inner = find_named(&outer.children, "Inner").expect("inner package missing");
+    assert!(
+        find_named(&inner.children, "after block").is_none(),
+        "subtest after a closed package block must not remain under Inner"
+    );
+    assert!(
+        find_named(&outer.children, "after block").is_some(),
+        "subtest after Inner must return to the enclosing package"
+    );
+}
+
+#[test]
+fn subtest_insertion_preserves_priority_then_source_order() {
+    let source = "package P;\n\
+        my $early = 1;\n\
+        subtest 'middle' => sub {};\n\
+        sub later {}\n";
+    let outline = nested_outline(source);
+    let package = find_named_deep(&outline, "P").expect("package missing");
+    let names: Vec<&str> = package.children.iter().map(|symbol| symbol.name.as_str()).collect();
+
+    assert_eq!(
+        names,
+        vec!["middle", "later", "$early"],
+        "callable children stay source-ordered ahead of lower-priority variables"
+    );
+}
+
+#[test]
 fn two_sibling_subtests_keep_source_order_inside_their_sub() {
     // Lines (0-based): 0=sub both, 1..2='alpha' subtest, 3..4='beta' subtest.
     let source = "sub both {\n\

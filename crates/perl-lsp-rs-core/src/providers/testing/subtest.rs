@@ -237,8 +237,9 @@ fn module_region_contains(node: &DocumentSymbol, target: &WireRange, source: &st
 }
 
 /// Insert keeping existing siblings in place and positioning the new symbol
-/// after same-start entries but before anything that starts later in source
-/// order.
+/// inside the established priority group, then by source position. The source
+/// document-symbol assembler sorts children by semantic priority first; a
+/// source-only partition point is not valid for that vector.
 fn insert_by_source_position(children: &mut Vec<DocumentSymbol>, symbol: DocumentSymbol) {
     let sort_key = document_symbol_sort_key(&symbol);
     let position = children.partition_point(|child| document_symbol_sort_key(child) <= sort_key);
