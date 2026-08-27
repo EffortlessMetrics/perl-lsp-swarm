@@ -476,6 +476,13 @@ jobs:
         with:
           toolchain: 1.95.0
 
+      # cargo-public-api builds rustdoc JSON and requires a nightly toolchain;
+      # without one the generation fails and (pre-#12861) the recipe silently
+      # diffed the empty surface as phantom API removals.
+      - name: Install nightly toolchain (cargo-public-api rustdoc JSON)
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        run: rustup toolchain install nightly --profile minimal
+
       - name: Cache cargo dependencies
         if: needs.draft-pr-check.outputs.api_scope == 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2

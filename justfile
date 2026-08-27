@@ -2313,7 +2313,22 @@ public-api-check:
             FAILED=1
             continue
         fi
-        ./scripts/cargo-safe public-api -p "$crate" --simplified 2>/dev/null | grep "^pub " > "/tmp/${crate}-current.txt" || true
+        # Instrument failure must never become a semantic verdict: a failed
+        # or empty generation is INSTRUMENT-FAIL, not an API diff (#12861 —
+        # CI without a nightly toolchain produced empty surfaces that
+        # reported as ~6.6k phantom API removals).
+        if ! ./scripts/cargo-safe public-api -p "$crate" --simplified > "/tmp/${crate}-raw.txt" 2> "/tmp/${crate}-err.txt"; then
+            echo "INSTRUMENT-FAIL ${crate}: cargo public-api failed; stderr:"
+            cat "/tmp/${crate}-err.txt"
+            FAILED=1
+            continue
+        fi
+        grep "^pub " "/tmp/${crate}-raw.txt" > "/tmp/${crate}-current.txt"
+        if [ ! -s "/tmp/${crate}-current.txt" ]; then
+            echo "INSTRUMENT-FAIL ${crate}: generated API surface is empty (nightly toolchain missing?) — an empty surface is never a diff"
+            FAILED=1
+            continue
+        fi
         if ! diff -u "$BASELINE" "/tmp/${crate}-current.txt" > "/tmp/${crate}-diff.txt" 2>&1; then
             echo "FAIL Public API changed in ${crate}:"
             cat "/tmp/${crate}-diff.txt"
@@ -2332,8 +2347,20 @@ public-api-update:
     echo "Regenerating public API baselines..."
     mkdir -p .ci/public-api-baselines
     for crate in perl-lsp-rs perl-parser perl-uri perl-dap perllsp; do
-        ./scripts/cargo-safe public-api -p "$crate" --simplified 2>/dev/null | grep "^pub " \
-            > ".ci/public-api-baselines/${crate}.txt" || true
+        # Fail closed: never overwrite a baseline with a failed or empty
+        # generation — an empty baseline would make the ratchet vacuous
+        # (#12861).
+        if ! ./scripts/cargo-safe public-api -p "$crate" --simplified > "/tmp/${crate}-raw.txt" 2> "/tmp/${crate}-err.txt"; then
+            echo "INSTRUMENT-FAIL ${crate}: cargo public-api failed; refusing to overwrite the baseline:" >&2
+            cat "/tmp/${crate}-err.txt" >&2
+            exit 1
+        fi
+        grep "^pub " "/tmp/${crate}-raw.txt" > "/tmp/${crate}-new-baseline.txt"
+        if [ ! -s "/tmp/${crate}-new-baseline.txt" ]; then
+            echo "INSTRUMENT-FAIL ${crate}: generated API surface is empty; refusing to overwrite the baseline" >&2
+            exit 1
+        fi
+        mv "/tmp/${crate}-new-baseline.txt" ".ci/public-api-baselines/${crate}.txt"
         echo "Updated ${crate}: $(wc -l < .ci/public-api-baselines/${crate}.txt) lines"
     done
     echo "Commit .ci/public-api-baselines/ with your PR."
