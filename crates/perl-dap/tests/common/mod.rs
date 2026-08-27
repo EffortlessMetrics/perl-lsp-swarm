@@ -646,6 +646,7 @@ mod launch_argument_tests {
             args.get("perlPath"),
             Some(&Value::String(pinned.to_string_lossy().into_owned()))
         );
+        assert_eq!(args.get("cwd"), Some(&Value::String("C:/work".to_string())));
         assert_eq!(args.get("stopOnEntry"), Some(&Value::Bool(true)));
     }
 }
@@ -695,7 +696,7 @@ pub(crate) fn resolve_launch_perl_path() -> Result<Option<PathBuf>, String> {
 /// launch request. Relative paths must not be reinterpreted when a launch
 /// supplies a different `cwd`, and a path that cannot be represented by the
 /// DAP string field must fail closed instead of being lossy-converted.
-fn normalize_explicit_debuggee_pin(path: &Path) -> Result<PathBuf, String> {
+pub(crate) fn normalize_explicit_debuggee_pin(path: &Path) -> Result<PathBuf, String> {
     if path.to_str().is_none() {
         return Err("the pinned interpreter path is not valid UTF-8".to_string());
     }
@@ -736,25 +737,36 @@ fn normalize_windows_path_prefix(path: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod explicit_pin_tests {
     use super::normalize_explicit_debuggee_pin;
+    use std::fs;
     use std::path::Path;
 
     #[test]
     fn relative_pin_is_resolved_before_launch() -> Result<(), String> {
+        let expected = std::env::current_dir()
+            .map_err(|error| format!("the current directory should resolve: {error}"))?;
+        let expected = fs::canonicalize(expected).map_err(|error| error.to_string())?;
+        #[cfg(windows)]
+        let expected = super::normalize_windows_path_prefix(expected);
         let resolved = normalize_explicit_debuggee_pin(Path::new("."))
             .map_err(|error| format!("the current directory should canonicalize: {error}"))?;
-        assert!(resolved.is_absolute());
+        assert_eq!(resolved, expected);
         Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn non_utf8_pin_is_rejected_before_launch() {
+    fn non_utf8_pin_is_rejected_before_launch() -> Result<(), String> {
         use std::ffi::OsString;
         use std::os::unix::ffi::OsStringExt;
 
-        let path = Path::new(&OsString::from_vec(vec![b'/', b't', b'm', b'p', 0xff]));
-        let error = normalize_explicit_debuggee_pin(path).expect_err("non-UTF-8 pin must fail");
+        let path_value = OsString::from_vec(vec![b'/', b't', b'm', b'p', 0xff]);
+        let path = Path::new(&path_value);
+        let error = match normalize_explicit_debuggee_pin(path) {
+            Ok(_) => return Err("non-UTF-8 pin unexpectedly resolved".to_string()),
+            Err(error) => error,
+        };
         assert!(error.contains("not valid UTF-8"), "unexpected error: {error}");
+        Ok(())
     }
 }
 
@@ -1052,9 +1064,16 @@ pub(crate) fn probe_debuggee_perl_for_test_with_descendant_pid(
 pub(crate) fn probe_debuggee_perl_for_test_with_termination_failure(
     binary: &Path,
     budget: Duration,
+    descendant_pid_file: &Path,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(binary, budget, false, None, CleanupFault::TerminationCommand)
-        .map_err(|failure| failure.reason)
+    probe_debuggee_perl_with_options(
+        binary,
+        budget,
+        false,
+        Some(descendant_pid_file),
+        CleanupFault::TerminationCommand,
+    )
+    .map_err(|failure| failure.reason)
 }
 
 #[cfg(test)]
@@ -1719,15 +1738,7 @@ where
                     std::thread::sleep(Duration::from_millis(10));
                     continue;
                 }
-                None => match pipe.read(&mut buf) {
-                    Ok(0) => return Ok(()),
-                    Ok(n) => {
-                        if tx.send(buf[..n].to_vec()).is_err() {
-                            return Ok(());
-                        }
-                    }
-                    Err(error) => return Err(format!("pipe readiness probe failed: {error}")),
-                },
+                None => return Err("pipe readiness probe failed".to_string()),
             }
         }
     });
@@ -1814,7 +1825,12 @@ where
             null_mut(),
         )
     };
-    if result == 0 { None } else { Some(available > 0) }
+    if result == 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::BrokenPipe { Some(true) } else { None }
+    } else {
+        Some(available > 0)
+    }
 }
 
 /// Terminate the probe process tree within its production-owned boundary

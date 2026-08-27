@@ -95,6 +95,9 @@ fn valid_pin_selects_the_pinned_usable_identity() -> Result<(), Box<dyn Error>> 
     let pinned_probe = probe_debuggee_perl_for_test(&pinned, Duration::from_secs(2), false)
         .map_err(|reason| format!("pinned control was not probe-capable: {reason}"))?;
     assert_ne!(ambient_probe.identity, pinned_probe.identity);
+    let expected_pinned = common::normalize_explicit_debuggee_pin(&pinned)
+        .map_err(|reason| format!("pinned control did not canonicalize: {reason}"))?;
+    let expected_pinned_text = expected_pinned.to_string_lossy().into_owned();
 
     let _guard = EnvGuard::set(DEBUGGEE_PERL_OVERRIDE_ENV, pinned.as_os_str());
     let resolved = resolve_debuggee_perl().ok_or("valid pin did not resolve")?;
@@ -102,18 +105,18 @@ fn valid_pin_selects_the_pinned_usable_identity() -> Result<(), Box<dyn Error>> 
         .map_err(|reason| format!("valid pin could not resolve for launch: {reason}"))?;
     assert_eq!(
         launch_path,
-        Some(pinned.clone()),
+        Some(expected_pinned.clone()),
         "shared launch helpers must receive the exact pinned identity"
     );
     let launch_arguments = common::resolved_launch_arguments_for_test("fixture.pl", None, true)
         .map_err(|reason| format!("resolved launch request could not be built: {reason}"))?;
     assert_eq!(
         launch_arguments.get("perlPath").and_then(|value| value.as_str()),
-        Some(pinned.to_string_lossy().as_ref()),
+        Some(expected_pinned_text.as_str()),
         "the convenience launch request must carry the pinned identity"
     );
     assert_eq!(
-        resolved.binary, pinned,
+        resolved.binary, expected_pinned,
         "resolver must retain the exact usable pinned identity instead of selecting PATH perl"
     );
     assert!(

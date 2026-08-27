@@ -290,10 +290,27 @@ fn main() {
         );
     }
 
-    let termination_failure = common::probe_debuggee_perl_for_test_with_termination_failure(
-        &timeout,
-        Duration::from_millis(100),
-    );
+    let before = current_process_probe_artifacts()?;
+    let termination_pid_file = controls.path().join("termination-failure.pid");
+    let termination_pid_for_probe = termination_pid_file.clone();
+    let termination_binary = hanging.clone();
+    let termination_probe = std::thread::spawn(move || {
+        common::probe_debuggee_perl_for_test_with_termination_failure(
+            &termination_binary,
+            Duration::from_millis(100),
+            &termination_pid_for_probe,
+        )
+    });
+    let termination_descendant_pid =
+        wait_for_pid_file(&termination_pid_file, Duration::from_secs(5))?;
+    wait_for_marker_file(
+        &termination_pid_file.with_extension("pid.ready"),
+        Duration::from_secs(5),
+    )?;
+    wait_for_process_start(termination_descendant_pid, Duration::from_secs(5))?;
+    let termination_failure = termination_probe
+        .join()
+        .map_err(|_| io::Error::other("termination-failure probe thread panicked"))?;
     let termination_error = match termination_failure {
         Ok(_) => return Err(io::Error::other("termination-command failure was accepted")),
         Err(error) => error,
@@ -301,6 +318,22 @@ fn main() {
     assert!(
         termination_error.contains("termination command failed"),
         "termination command failure must be explicit: {termination_error}"
+    );
+    wait_for_process_exit(
+        "termination-failure",
+        termination_descendant_pid,
+        Duration::from_secs(5),
+    )?;
+    let after = current_process_probe_artifacts()?;
+    let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
+    assert!(
+        new_artifacts.is_empty(),
+        "termination-failure probe left newly created workspaces: {new_artifacts:?}"
+    );
+    assert_eq!(
+        common::active_probe_reader_count(),
+        0,
+        "termination-failure probe left an active reader thread"
     );
 
     let before = current_process_probe_artifacts()?;
@@ -322,6 +355,11 @@ fn main() {
     assert!(
         new_artifacts.is_empty(),
         "workspace cleanup failure control left newly created workspaces: {new_artifacts:?}"
+    );
+    assert_eq!(
+        common::active_probe_reader_count(),
+        0,
+        "workspace cleanup failure left an active reader thread"
     );
 
     #[cfg(windows)]
@@ -355,6 +393,11 @@ fn main() {
         assert!(
             new_artifacts.is_empty(),
             "job assignment fallback left artifacts: {new_artifacts:?}"
+        );
+        assert_eq!(
+            common::active_probe_reader_count(),
+            0,
+            "job assignment fallback left an active reader thread"
         );
     }
 
