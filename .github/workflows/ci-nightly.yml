@@ -897,6 +897,9 @@ jobs:
         # Uses cargo public-api --simplified to omit blanket-impl noise; baselines in .ci/public-api-baselines/
         run: just public-api-check
 
+      - name: Execute public API ratchet regression fixture
+        run: bash scripts/tests/test-public-api-ratchet.sh
+
   scorecard-ratchet-check:
     name: Scorecard Floor-Metric Ratchet Check
     runs-on: ubuntu-24.04
