@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12183 |
-| Rust-family files | 3730 |
-| Non-Rust files | 8453 |
-| Allowlisted | 6219 |
-| Unclassified | 2234 |
+| Total tracked files | 12258 |
+| Rust-family files | 3743 |
+| Non-Rust files | 8515 |
+| Allowlisted | 6262 |
+| Unclassified | 2253 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 448 |
-| documentation | 2763 |
+| config | 480 |
+| documentation | 2770 |
 | generated | 2 |
 | production | 331 |
 | test | 2032 |
-| tooling | 643 |
-| unclassified | 2234 |
+| tooling | 647 |
+| unclassified | 2253 |
 
 ## Unclassified files
 
@@ -124,6 +124,24 @@
 | `distribution/test-release.sh` | `sh` |
 | `distribution/windows/update-manifests.ps1` | `ps1` |
 | `distribution/winget/perl-lsp.yaml` | `yaml` |
+| `fixtures/agent_packet_dogfood_core/analysis_train_synthetic_transfer.v1.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/golden/agent_packet_dogfood_core.advisory.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/chain_of_thought_in_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/credential_in_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/dangling_intervention_ref.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/expected_errors.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/machine_local_path_in_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_model_identity.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_packet_digest.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_scope_ceiling.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_subject.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/oversized_event_excerpt.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/tampered_event_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/tampered_packet_envelope.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/unknown_disposition.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/unknown_root_field.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/unsorted_event_sequences.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/parser_p05_synthetic.v1.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A01-file-wide-suppression-carveout.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A02-dead-code-baseline-absorption.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A03-cfg-test-attr-general-carveout.json` | `json` |
@@ -2220,6 +2238,7 @@
 | `xtask/tests/fixtures/review-receipts/clean-with-observations.json` | `json` |
 | `xtask/tests/fixtures/review-receipts/clean-without-observations.json` | `json` |
 | `xtask/tests/fixtures/review-receipts/needs-builder-fix-with-clean-signoff-intent.json` | `json` |
+| `xtask/tests/fixtures/vim_host_toolchain/pinned_runtime_fixture.zip` | `zip` |
 | `xtask/tests/fixtures/workflow-policy/cx53_object_runs_on.yml` | `yml` |
 | `xtask/tests/fixtures/workflow-policy/inherited_job_write.yml` | `yml` |
 | `xtask/tests/fixtures/workflow-policy/inherited_job_write_scoped.yml` | `yml` |
@@ -2523,6 +2542,34 @@
 | `.changes/unreleased/vscode-8180-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.ci/GATE_REGISTRY.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/README-coverage.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/authority-transfer-programme/fixtures/invalid-artifact-owner-foreign.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-artifact-unowned.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-authority-input-unrelated.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-consumer-before-accepted-store.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-controller-buildable.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-controller-kind-mismatch.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-current-state-leak.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-duplicate-falsifier-reversed-order.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-duplicate-node-id.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-fanin-denominator-missing-consumer.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-fanin-denominator-split.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-hard-cycle.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-leaf-missing-ceiling.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-leaf-missing-falsifier.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-live-without-advisory.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-multi-owner-authority.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-optional-live-hardened.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-parallel-after-cycle.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-parallel-shared-catalog-writers.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-retirement-predecessor-unresolved.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-retirement-without-exit.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-unknown-edge-target.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-unknown-profile.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-unknown-schema-field.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/invalid-unowned-authority-input.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/fixtures/valid-mini-graph.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/generated/normalized-graph.v1.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/authority-transfer-programme/graph.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/benchmark-thresholds.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/blockers.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/close-proof-contract/corpus_manifest.json` | config | `non-rust-ci-config` | release/ci |
@@ -2693,6 +2740,7 @@
 | `.ci/release/evidence.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/risk-tags.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/agent-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/schemas/agent-packet-dogfood.core.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/ci-route-plan.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-ux.schema.json` | config | `non-rust-ci-config` | release/ci |
@@ -2831,6 +2879,7 @@
 | `.github/workflows/agent-capability-gate.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/agent-flow-control-plane.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/aggregate-ci-lane-history.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/authority-transfer-graph.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/badge-endpoints.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/brew-bump.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/changelog-advisory.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -2873,6 +2922,7 @@
 | `.github/workflows/post-merge-status.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/post-publish-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/pr-candidate-set.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/pr-plan-head-name-guard.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/pr-plan.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/pr-title-check.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/publish-crates.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3052,6 +3102,9 @@
 | `.spec/10794-workspace-symbol-query-profile-substrate/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10794-workspace-symbol-query-profile-substrate/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10794-workspace-symbol-query-profile-substrate/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10815-coc-bdd-journeys/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10815-coc-bdd-journeys/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10815-coc-bdd-journeys/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10817-client-configuration-observations/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10817-client-configuration-observations/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10817-client-configuration-observations/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -4918,6 +4971,7 @@
 | `docs/how-to/PERL_SETUP_TROUBLESHOOTING.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/PORTABLE_CONTRACT_TOOLS.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/PRE_COMMIT.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/how-to/PUBLICATION_SYNC.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/ROPE_MIGRATION_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/SECURITY_DEVELOPMENT_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/how-to/SEMVER_WORKFLOW.md` | documentation | `non-rust-docs-tree` | docs |
@@ -5011,6 +5065,7 @@
 | `docs/learnings/2026-07-workflow-agent-background-wait-death.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/learnings/README.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/learnings/TEMPLATE.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/policy/AUTHORITY_TRANSFER_PROGRAMME_GRAPH.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/policy/FILE_POLICY.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/policy/NON_RUST_INVENTORY.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/policy/NON_RUST_LADDER.md` | documentation | `non-rust-docs-tree` | docs |
@@ -5986,6 +6041,7 @@
 | `docs/swarm/source-syncs/2026-08-26-post-4977-preliminary-receipt.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/swarm/source-syncs/2026-08-26-post-4977-preliminary-reconciliation.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/swarm/source-syncs/2026-08-26-post-4977-preliminary-reconciliation.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/swarm/source-syncs/README.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/swarm/sync-protocol.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/tutorials/AI_BUILD_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/tutorials/COMPREHENSIVE_TESTING_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6049,6 +6105,7 @@
 | `fixtures/agent_implementation_packet/invalid/unconditional_profile_with_decision.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/live_observed_candidate.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/shuffled/bounded_leaf_offline_shuffled.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_packet_dogfood_core/golden/agent_packet_dogfood_core.advisory.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `fixtures/agent_review_packet/challenger_service_marker.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/agent_review_packet/closure_open_finding.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/agent_review_packet/closure_service_marker_eligible.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
@@ -6325,6 +6382,7 @@
 | `scripts/bulk-label-issues.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/cargo-package-workspace-dry-run.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/cargo-safe` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/check-authority-transfer-graph.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/check-coverage-baseline.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/check-doc-claims.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/check-merge-gate-target.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6646,6 +6704,7 @@
 | `scripts/test/vim-host-diagnostics-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-freshness-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-host-save-format-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_iterative_parser.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6699,8 +6758,10 @@
 | `scripts/tests/test-lsp-cancellation-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-merge-gate-target.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-populate-book-roadmap-links.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-pr-plan-head-name-guard.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-pre-merge-check.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-preflight-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-public-api-ratchet.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-publish-dry-run-gate.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-publish-receipts-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-publish-topo.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -8488,6 +8549,7 @@
 | `xtask/tests/fixtures/native-critic/false-positive/test_more_subtests.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `xtask/tests/fixtures/native-critic/false-positive/test_more_usage.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `xtask/tests/fixtures/release-artifacts/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
+| `xtask/tests/fixtures/vim_host_toolchain/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 
 ## See also
 
