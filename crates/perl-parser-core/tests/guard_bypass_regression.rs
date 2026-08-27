@@ -30,6 +30,7 @@ fn parse_fails_with(code: &str, expected: fn(&ParseError) -> bool) -> bool {
 
 fn has_recursion_guard_diagnostic(output: &ParseOutput) -> bool {
     output.diagnostics.iter().any(is_recursion_guard_error)
+        && !output.diagnostics.iter().any(is_structural_nesting_error)
 }
 
 fn has_recursion_stop_cause(output: &ParseOutput) -> bool {
@@ -246,6 +247,7 @@ fn pathological_block_depth_still_hits_limit() {
 
 fn has_structural_nesting_error(output: &ParseOutput) -> bool {
     output.diagnostics.iter().any(is_structural_nesting_error)
+        && !output.diagnostics.iter().any(is_recursion_guard_error)
 }
 
 fn nested_eval_blocks(depth: usize) -> String {
