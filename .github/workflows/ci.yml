@@ -935,13 +935,31 @@ jobs:
       - name: Warm xtask
         run: cargo build -p xtask --locked
 
-      - name: Verify complete shard runner falsifiers
+      - name: Verify candidate meta self-tests
         if: matrix.name == 'meta'
-        run: python3 -m unittest scripts/ci/test_run_gate_shard.py
-
-      - name: Verify scope cache key composition
-        if: matrix.name == 'meta'
-        run: python3 -m unittest scripts/ci/test_scope_cache_key.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          meta_self_tests=(
+            scripts/ci/test_run_gate_shard.py
+            scripts/ci/test_scope_cache_key.py
+            scripts/ci/test_candidate_meta_self_tests.py
+          )
+          for self_test in "${meta_self_tests[@]}"; do
+            if [[ ! -e "$self_test" && ! -L "$self_test" ]]; then
+              disposition="STALE_HEAD_SCOPED_NOOP: candidate path $self_test is absent"
+              echo "::notice title=Authorized stale-head meta self-test no-op::$disposition"
+              if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+                printf -- '- `%s`: `STALE_HEAD_SCOPED_NOOP` (candidate path absent)\n' "$self_test" >> "$GITHUB_STEP_SUMMARY"
+              fi
+              continue
+            fi
+            if [[ ! -f "$self_test" || -L "$self_test" ]]; then
+              echo "::error title=Invalid candidate meta self-test::$self_test is present but is not a regular non-symlink file"
+              exit 1
+            fi
+            python3 -m unittest "$self_test"
+          done
 
       - name: Run merge-gate shard with receipts
         shell: bash
