@@ -456,19 +456,19 @@ review_after = "2026-06-07"
 expires = "2026-08-07"
 
 [[lane]]
-id = "ripr_bounded_retry"
-workflow = ".github/workflows/ripr-retry.yml"
-job = "bounded-retry"
+id = "ripr_infra_retry"
+workflow = ".github/workflows/ripr-infra-retry.yml"
+job = "retry-on-eviction"
 tier = "support"
 kind = "control"
 blocking = false
 default_pr = true
-runner = "ubuntu_24_04"
+runner = "ubuntu_latest"
 base_lem = 1
 owner = "testing"
-intent = "Arm at most one same-head retry when platform runner teardown evicts a ripr evidence lane (#6807, #12563)."
+intent = "Bounded automatic same-head retry when the gate classifies a ripr lane kill as infra-no-proof (#6807, #12563, #12771)."
 failure_mode = "A runner eviction otherwise false-reds the required ripr+ New Gap Gate with no terminal evidence for the SHA."
-proof_obligation = "Classify failed lane logs via scripts/ci/classify-ripr-lane-termination; rerun-failed-jobs only for positive teardown evidence on attempt 1."
+proof_obligation = "Consume the gate's ripr-gate-classification artifact strictly as data; rerun-failed-jobs exactly once while run_attempt == 1; attempt >= 2 surfaces NOT_PROVEN loudly."
 evidence = []
 allowed_triggers = ["workflow_run"]
 labels = ["ripr", "ci-reliability"]

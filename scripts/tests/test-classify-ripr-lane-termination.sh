@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Self-tests for the ripr lane-termination classifier and the bounded-retry
-# decision table (#12563, #6807).
+# Self-tests for the ripr lane-termination classifier (#12563, complementing
+# #12771's bounded auto-retry).
 #
 # Discriminating intent: a GENUINE ripr red ("quality gate failed; see
-# receipt") must keep redding the gate even when the runner was torn down
-# afterwards; ONLY positive runner-teardown evidence without such a receipt
-# may take the infra-no-verdict / single-retry path. Feeding known-bad inputs
-# that must NOT be classified as infra is the point of this suite.
+# receipt") must keep redding the required gate even when the runner was torn
+# down afterwards — it must never be classified infra-no-proof or auto-retried.
+# ONLY positive runner-teardown evidence without such a receipt may take the
+# infra-no-proof path.
 #
 # Run: bash scripts/tests/test-classify-ripr-lane-termination.sh
 
@@ -15,7 +15,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 CLASSIFIER="${REPO_ROOT}/scripts/ci/classify-ripr-lane-termination"
-DECIDER="${REPO_ROOT}/scripts/ci/ripr-bounded-retry"
 
 PASS=0
 FAIL=0
@@ -47,19 +46,9 @@ expect_eq() {
   fi
 }
 
-decide_action_for() {
-  # $1=lane_result $2=attempt $3=log file -> ACTION token
-  bash "$DECIDER" --decide "$1" "$2" "$3" | sed -n 's/^ACTION=//p' | head -1
-}
-
-decide_verdict_for() {
-  # $1=lane_result $2=attempt $3=log file -> RIPR_GATE_VERDICT token
-  bash "$DECIDER" --decide "$1" "$2" "$3" | sed -n 's/^RIPR_GATE_VERDICT=//p' | head -1
-}
-
-classify_verdict_for() {
-  # $1=log file -> classifier verdict token
-  bash "$CLASSIFIER" "$1" | sed -n 's/^verdict=//p' | head -1
+classify_field() {
+  # $1=log file $2=output field -> value
+  bash "$CLASSIFIER" "$1" | sed -n "s/^$2=//p" | head -1
 }
 
 WORK="$(mktemp -d)"
@@ -76,7 +65,7 @@ cat >"${EVICTED}" <<'EOF'
 2026-08-25T02:47:52.095Z Cleaning up orphan processes
 EOF
 
-# Fixture: alternate eviction rendering (exit 143 pair, no shutdown line).
+# Fixture: alternate eviction rendering (exit 143 pair / lone marker shapes).
 SIGTERM_EVICTED="${WORK}/sigterm-evicted.log"
 cat >"${SIGTERM_EVICTED}" <<'EOF'
 2026-08-24T23:35:10Z ##[error]The operation was canceled.
@@ -99,89 +88,76 @@ cat >"${PLAIN_FAILURE}" <<'EOF'
 2026-08-25T04:11:13Z ##[error]Process completed with exit code 101.
 EOF
 
-# Fixture: lone manual/API cancellation rendering (no teardown evidence).
-MANUAL_CANCEL="${WORK}/manual-cancel.log"
-cat >"${MANUAL_CANCEL}" <<'EOF'
-2026-08-26T01:02:03Z ##[error]The operation was canceled.
-2026-08-26T01:02:03Z Cleaning up orphan processes
+# Fixture: build progress only, then silence (unknown kill, no evidence).
+SILENT_KILL="${WORK}/silent-kill.log"
+cat >"${SILENT_KILL}" <<'EOF'
+2026-08-26T00:10:01Z info: analyzing 1480 changed files
+2026-08-26T00:12:30Z info: exposure pass 3/5
 EOF
 
-# Fixture: empty log (retrieval produced nothing).
+# Fixture: empty log (retrieval produced nothing usable).
 EMPTY_LOG="${WORK}/empty.log"
 : >"${EMPTY_LOG}"
 
 # --- Classifier verdicts ------------------------------------------------------
 
-expect_eq "eviction signature classifies as infra" \
-  "infra-eviction-shutdown-signal" "$(classify_verdict_for "${EVICTED}")"
+expect_eq "eviction signature classifies infra-no-proof" \
+  "infra-no-proof" "$(classify_field "${EVICTED}" classification)"
 
-expect_eq "exit-143+cancelled pair classifies as infra variant" \
-  "infra-eviction-sigterm-canceled" "$(classify_verdict_for "${SIGTERM_EVICTED}")"
+expect_eq "exit-143/cancelled rendering also classifies infra-no-proof" \
+  "infra-no-proof" "$(classify_field "${SIGTERM_EVICTED}" classification)"
 
-expect_eq "genuine gap receipt outranks later teardown marker" \
-  "source-gap-terminal" "$(classify_verdict_for "${REAL_FAILURE}")"
+expect_eq "DISCRIMINATOR: genuine gap receipt outranks later teardown marker" \
+  "ripr-failure" "$(classify_field "${REAL_FAILURE}" classification)"
 
-expect_eq "plain genuine failure is source-gap-terminal" \
-  "source-gap-terminal" "$(classify_verdict_for "${PLAIN_FAILURE}")"
+expect_eq "plain genuine failure is ripr-failure" \
+  "ripr-failure" "$(classify_field "${PLAIN_FAILURE}" classification)"
 
-expect_eq "lone operation-canceled is not teardown evidence" \
-  "no-terminal-receipt" "$(classify_verdict_for "${MANUAL_CANCEL}")"
+expect_eq "silence fails closed to ripr-failure" \
+  "ripr-failure" "$(classify_field "${SILENT_KILL}" classification)"
 
-expect_eq "empty log fails closed to no-terminal-receipt" \
-  "no-terminal-receipt" "$(classify_verdict_for "${EMPTY_LOG}")"
+expect_eq "empty log fails closed to ripr-failure" \
+  "ripr-failure" "$(classify_field "${EMPTY_LOG}" classification)"
 
 if bash "$CLASSIFIER" "${WORK}/does-not-exist.log" >/dev/null 2>&1; then
-  pass "missing log still exits cleanly"
+  pass "missing log still exits cleanly with ripr-failure"
 else
   fail "missing log should not hard-fail the classifier"
 fi
 
-# --- Decision table -----------------------------------------------------------
+expect_eq "missing log classifies ripr-failure" \
+  "ripr-failure" "$(bash "$CLASSIFIER" "${WORK}/does-not-exist.log" | sed -n 's/^classification=//p' | head -1)"
 
-expect_eq "attempt-1 eviction arms exactly-one retry" \
-  "ARM_RETRY" "$(decide_action_for failure 1 "${EVICTED}")"
+# Evidence counters make every application auditable.
+expect_eq "eviction fixture counts teardown markers" \
+  "1" "$(classify_field "${EVICTED}" shutdown_signal_matches)"
+expect_eq "gap receipt counter present on discriminator" \
+  "1" "$(classify_field "${REAL_FAILURE}" gap_receipt_matches)"
 
-expect_eq "attempt-1 eviction verdict token is machine-checkable" \
-  "infra-retry-requested" "$(decide_verdict_for failure 1 "${EVICTED}")"
-
-expect_eq "attempt-2 eviction exhausts retry budget to NOT_PROVEN" \
-  "NOT_PROVEN_INFRA" "$(decide_action_for failure 2 "${EVICTED}")"
-
-expect_eq "attempt-2 exhaustion uses loud verdict token" \
-  "not-proven-infra-retry-exhausted" "$(decide_verdict_for failure 2 "${EVICTED}")"
-
-expect_eq "DISCRIMINATOR: real failure never retried despite teardown marker" \
-  "RIPR_FAILURE" "$(decide_action_for failure 1 "${REAL_FAILURE}")"
-
-expect_eq "real failure carries plain ripr-failure verdict" \
-  "ripr-failure" "$(decide_verdict_for failure 1 "${REAL_FAILURE}")"
-
-expect_eq "plain failure fails closed to ripr-failure" \
-  "RIPR_FAILURE" "$(decide_action_for failure 1 "${PLAIN_FAILURE}")"
-
-expect_eq "empty-log failure fails closed" \
-  "FAIL_CLOSED" "$(decide_action_for failure 1 "${EMPTY_LOG}")"
-
-expect_eq "human cancellation stays blocking without retry" \
-  "CANCELLED_NO_VERDICT" "$(decide_action_for cancelled 1 "${MANUAL_CANCEL}")"
-
-expect_eq "human cancellation verdict token" \
-  "cancelled-no-verdict" "$(decide_verdict_for cancelled 1 "${MANUAL_CANCEL}")"
-
-expect_eq "cancelled WITH teardown evidence retries once" \
-  "ARM_RETRY" "$(decide_action_for cancelled 1 "${EVICTED}")"
-
-expect_eq "successful lanes are not applicable" \
-  "NOT_APPLICABLE" "$(decide_action_for success 1 "${EVICTED}")"
-
-expect_eq "skipped lanes are not applicable" \
-  "NOT_APPLICABLE" "$(decide_action_for skipped 3 "${EMPTY_LOG}")"
-
-# Boundary documentation must be present in every decision for auditability.
-if bash "$DECIDER" --decide failure 1 "${EVICTED}" | grep -q '^RIPR_GATE_DECISION boundary='; then
-  pass "decision block documents its boundary in run-log output"
+# Partial reads are flagged AND fail closed even when a teardown marker sits
+# in the scanned prefix: an unseen suffix could still hold a gap receipt
+# (#12563 review P2).
+PARTIAL="${WORK}/partial.log"
+cat >"${PARTIAL}" <<'EOF'
+padding line 1
+padding line 2
+The runner has received a shutdown signal.
+EOF
+OUT_PARTIAL=$(bash "$CLASSIFIER" "${PARTIAL}" 16)
+if [[ "$OUT_PARTIAL" == *"partial_read=true"* ]]; then
+  pass "truncated scan flags partial_read=true"
 else
-  fail "decision block must echo its boundary line"
+  fail "truncated scan must flag partial_read=true"
+fi
+expect_eq "P2 DISCRIMINATOR: capped scan fails closed despite prefix marker" \
+  "ripr-failure" "$(printf '%s\n' "$OUT_PARTIAL" | sed -n 's/^classification=//p' | head -1)"
+
+# Verdict alias and boundary documentation are part of the output contract.
+OUT_EVICT=$(bash "$CLASSIFIER" "${EVICTED}")
+if [[ "$OUT_EVICT" == *"decision_boundary="* ]]; then
+  pass "classifier documents its decision boundary in output"
+else
+  fail "classifier must emit its decision_boundary line"
 fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

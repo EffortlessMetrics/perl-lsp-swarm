@@ -1032,15 +1032,6 @@ fn content_hash_to_digest(hash: u64) -> String {
     format!("fnv64:{hash:016x}")
 }
 
-/// Strip a `file:///` prefix from a source URI and normalize to forward-slash.
-#[allow(dead_code)]
-fn uri_to_relative_path(uri: &str) -> String {
-    uri.strip_prefix("file:///")
-        .or_else(|| uri.strip_prefix("file://"))
-        .unwrap_or(uri)
-        .replace('\\', "/")
-}
-
 /// Determine file role from path extension.
 fn file_role_from_path(path: &str) -> &'static str {
     if path.ends_with(".t") {
@@ -2087,13 +2078,6 @@ mod tests {
         assert_eq!(content_hash_to_digest(0), "fnv64:0000000000000000");
         assert_eq!(content_hash_to_digest(255), "fnv64:00000000000000ff");
         assert_eq!(content_hash_to_digest(0xcbf29ce484222325), "fnv64:cbf29ce484222325");
-    }
-
-    #[test]
-    fn uri_to_relative_path_strips_file_prefix() {
-        assert_eq!(uri_to_relative_path("file:///lib/My/App.pm"), "lib/My/App.pm");
-        assert_eq!(uri_to_relative_path("lib/App.pm"), "lib/App.pm");
-        assert_eq!(uri_to_relative_path("file://C:/repo/lib/App.pm"), "C:/repo/lib/App.pm");
     }
 
     #[test]

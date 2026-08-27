@@ -62,14 +62,13 @@ on:
       - '.cargo/config.toml'
       - 'scripts/tests/test-target-isolation.sh'
       # ripr lane termination classification + bounded same-head retry
-      # (#6807/#12563): the gate's eviction classifier is itself a gate.
-      # These self-tests prove a genuine red still redding the required
+      # (#6807/#12563/#12771): the gate's eviction classifier is itself a
+      # gate. These self-tests prove a genuine red still redding the required
       # "ripr+ New Gap Gate" and only positive runner-teardown evidence
       # reaching the single-retry path.
       - '.github/workflows/ripr.yml'
-      - '.github/workflows/ripr-retry.yml'
+      - '.github/workflows/ripr-infra-retry.yml'
       - 'scripts/ci/classify-ripr-lane-termination'
-      - 'scripts/ci/ripr-bounded-retry'
       - 'scripts/tests/test-classify-ripr-lane-termination.sh'
       # Toolchain guard for bash entrypoints (issue #12593): the coverage
       # consistency test scans every cargo-invoking scripts/*.sh, so any
@@ -461,7 +460,7 @@ jobs:
           if [ "$JOB_STATUS" = "success" ]; then
             echo "## ripr lane-termination classifier self-test passed" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "The eviction classifier and bounded-retry decision table (#6807, #12563) keep the boundary that matters: a genuine gap receipt (\"quality gate failed\") always reds the required gate — with or without a later teardown marker — while only positive runner-teardown evidence arms the single same-head retry, manual cancellations stay blocking without retry, empty or unreadable logs fail closed, and attempt >= 2 surfaces NOT_PROVEN loudly." >> "$GITHUB_STEP_SUMMARY"
+            echo "The eviction classifier (#6807, #12563, #12771) keeps the boundary that matters: a genuine gap receipt (\"quality gate failed\") always classifies ripr-failure — with or without a later teardown marker, so real reds are never auto-retried — while only positive runner-teardown evidence yields infra-no-proof for the single same-head retry (ripr-infra-retry), silence or unreadable logs fail closed to ripr-failure, and attempt >= 2 surfaces NOT_PROVEN loudly." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "## ripr lane-termination classifier self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"

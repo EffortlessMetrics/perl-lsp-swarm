@@ -4,7 +4,6 @@
 //! Each test represents a complete user workflow, ensuring the LSP server delivers
 //! a professional IDE experience.
 
-#![allow(clippy::collapsible_if)]
 // Integration tests print diagnostic output for CI troubleshooting; this is
 // not the LSP server's stdio transport, so print_stdout doesn't apply the
 // way it does to production code.
@@ -1500,11 +1499,11 @@ foreach my $user (@$users) {
     );
 
     // Hover might not have docs for external modules
-    if let Some(h) = hover {
-        if !h.is_null() {
-            let obj = h.as_object().ok_or("hover should be object")?;
-            assert!(obj.contains_key("contents"), "Hover must have contents");
-        }
+    if let Some(h) = hover
+        && !h.is_null()
+    {
+        let obj = h.as_object().ok_or("hover should be object")?;
+        assert!(obj.contains_key("contents"), "Hover must have contents");
     }
 
     // Step 4: Developer finds all uses of $DEBUG

@@ -8,8 +8,8 @@
 
 The proof lane is in transition from measurement to enforcement:
 
-- GitHub branch protection requires the current proof-floor contexts:
-  `ripr+ New Gap Gate` and `Perl LSP Rust Small Result`
+- Main ruleset `16664791` (binding administrators) requires the current
+  proof-floor contexts: `ripr+ New Gap Gate` and `Perl LSP Rust Small Result`
 - `Perl LSP Rust Small Result` must pass before merge
 - `ripr+ New Gap Gate` blocks new RIPR gaps and stale or missing RIPR proof
   receipts
