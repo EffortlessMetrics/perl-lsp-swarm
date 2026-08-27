@@ -14,6 +14,8 @@
 
 #![allow(dead_code)]
 
+use serde::{Deserialize, Serialize};
+
 mod catalog;
 
 pub(crate) use catalog::CONFIGURATION_AUTHORITY;
@@ -38,7 +40,7 @@ pub(crate) enum ConfigScope {
 }
 
 /// Input authority, ordered from lowest to highest precedence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) enum ConfigSource {
     CompiledDefault,
     InitializationOptions,
@@ -81,7 +83,7 @@ pub(crate) enum ConfigValueKind {
 }
 
 /// Validation rule applied before an input can become authoritative.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ConfigValidation {
     Boolean,
     NonEmptyString,
@@ -117,7 +119,7 @@ pub(crate) enum InvalidValueFallback {
 }
 
 /// Sensitivity and trust class for configuration evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ConfigSensitivity {
     Ordinary,
     Path,
@@ -128,7 +130,7 @@ pub(crate) enum ConfigSensitivity {
 }
 
 /// How the value may appear in logs, receipts, and generated status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum EvidencePolicy {
     SafeValue,
     BoundedValue,
