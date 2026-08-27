@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12186 |
-| Rust-family files | 3736 |
-| Non-Rust files | 8450 |
-| Allowlisted | 6216 |
-| Unclassified | 2234 |
+| Total tracked files | 12202 |
+| Rust-family files | 3741 |
+| Non-Rust files | 8461 |
+| Allowlisted | 6226 |
+| Unclassified | 2235 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 446 |
+| config | 450 |
 | documentation | 2766 |
 | generated | 2 |
 | production | 331 |
 | test | 2032 |
-| tooling | 639 |
-| unclassified | 2234 |
+| tooling | 645 |
+| unclassified | 2235 |
 
 ## Unclassified files
 
@@ -2220,6 +2220,7 @@
 | `xtask/tests/fixtures/review-receipts/clean-with-observations.json` | `json` |
 | `xtask/tests/fixtures/review-receipts/clean-without-observations.json` | `json` |
 | `xtask/tests/fixtures/review-receipts/needs-builder-fix-with-clean-signoff-intent.json` | `json` |
+| `xtask/tests/fixtures/vim_host_toolchain/pinned_runtime_fixture.zip` | `zip` |
 | `xtask/tests/fixtures/workflow-policy/cx53_object_runs_on.yml` | `yml` |
 | `xtask/tests/fixtures/workflow-policy/inherited_job_write.yml` | `yml` |
 | `xtask/tests/fixtures/workflow-policy/inherited_job_write_scoped.yml` | `yml` |
@@ -2566,6 +2567,8 @@
 | `.ci/examples/receipt-partial-failure.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/examples/receipt-pr-fast.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fix-forward/playbooks.toml` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/lite-xl-perl-upstream/receipts/public-replay.v1.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/lite-xl-perl-upstream/upstream-acceptance.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/codex-train.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/convergence.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/default-order.v1.json` | config | `non-rust-ci-config` | release/ci |
@@ -2871,6 +2874,7 @@
 | `.github/workflows/post-merge-status.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/post-publish-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/pr-candidate-set.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/pr-plan-head-name-guard.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/pr-plan.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/pr-title-check.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/publish-crates.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -6577,6 +6581,11 @@
 | `scripts/install.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/lib/cargo-toolchain-guard.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/list-gates.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/lite_xl_public_replay.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/lite_xl_replay/__init__.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/lite_xl_replay/cli.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/lite_xl_replay/ledger.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/lite_xl_replay/public_replay.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/llvm.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/lsp-smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/marketing/check-demo-assets.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6696,6 +6705,7 @@
 | `scripts/tests/test-lsp-cancellation-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-merge-gate-target.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-populate-book-roadmap-links.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-pr-plan-head-name-guard.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-pre-merge-check.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-preflight-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-publish-dry-run-gate.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -8485,6 +8495,7 @@
 | `xtask/tests/fixtures/native-critic/false-positive/test_more_subtests.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `xtask/tests/fixtures/native-critic/false-positive/test_more_usage.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `xtask/tests/fixtures/release-artifacts/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
+| `xtask/tests/fixtures/vim_host_toolchain/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 
 ## See also
 

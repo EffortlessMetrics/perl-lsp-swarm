@@ -79,10 +79,10 @@ reason = "Activated by #6305 after the 293-site burn-down (#6375-#6380), a warn-
 
 [[lint]]
 name = "clippy::collapsible_match"
-level = "allow"
+level = "deny"
 status = "active"
 class = "style"
-reason = "The temporary workspace allow remains current until #6113 remeasures the Rust 1.97.1 denominator and performs the behavior-preserving deny ratchet."
+reason = "Activated by #6113 after the behavior-preserving collapse of all measured sites and removal of the workspace allow plus six crate-root and one test-target masks."
 
 [[lint]]
 name = "clippy::decimal_bitwise_operands"

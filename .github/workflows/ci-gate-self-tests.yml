@@ -84,6 +84,11 @@ on:
       - 'Cargo.toml'
       - '.github/workflows/publish-dry-run.yml'
       - '.github/workflows/ci-gate-self-tests.yml'
+      # PR Plan head-name sentinel guard (#6238): payload-only pull_request
+      # evaluator whose structural and classifier contract is proved by its
+      # scripts/tests fixture.
+      - '.github/workflows/pr-plan-head-name-guard.yml'
+      - 'scripts/tests/test-pr-plan-head-name-guard.sh'
   workflow_dispatch: {}
 
 concurrency:
@@ -465,4 +470,31 @@ jobs:
             echo "## ripr lane-termination classifier self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The classifier or decision table regressed — an infra kill could mask a genuine red, a retry could loop unboundedly, or absent evidence could pass. Check the step output above for which fixture misclassified." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  pr-plan-head-name-guard-self-test:
+    name: PR Plan head-name guard self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run PR Plan head-name guard self-test
+        run: bash scripts/tests/test-pr-plan-head-name-guard.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## PR Plan head-name guard self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The guard workflow (issue #6238) triggers solely via pull_request, holds per-PR concurrency with least privilege, reaches the payload only through env indirection (no checkout, no actions, no secrets), fails closed loud with rename-and-push guidance, classifies the exact regex extracted from its own run script at the 6/7/40/41-char hex boundaries, and stays attached to the inventory row and the pr-plan trigger-model documentation. Fixture-scope proof of the shipped artifact only — live suppression behavior remains tracked on the issue." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## PR Plan head-name guard self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The head-name sentinel contract regressed — it could again trigger via a suppressible event, execute or check out any ref, silently pass a SHA-like branch, or drift from its documented surface. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
           fi
