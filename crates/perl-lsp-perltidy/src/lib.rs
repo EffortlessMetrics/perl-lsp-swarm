@@ -457,10 +457,10 @@ fn apply_delimiter_events_with_state(
     for delimiter in significant_delimiters_with_state(line, state) {
         match delimiter {
             opening @ ('{' | '(' | '[') => delimiter_stack.push(opening),
-            closer @ ('}' | ')' | ']') => {
-                if delimiter_stack.last().copied().and_then(matching_closer) == Some(closer) {
-                    delimiter_stack.pop();
-                }
+            closer @ ('}' | ')' | ']')
+                if delimiter_stack.last().copied().and_then(matching_closer) == Some(closer) =>
+            {
+                delimiter_stack.pop();
             }
             _ => {}
         }
