@@ -8,6 +8,7 @@ on:
       - .github/workflows/discover-11983-current-main.yml
       - scripts/maintenance/rebuild_11983_current_main.sh
       - scripts/maintenance/verify_11983_reject_identities.py
+      - scripts/tests/test-rebuild-11983-reject-identities.py
 
 permissions:
   contents: read
