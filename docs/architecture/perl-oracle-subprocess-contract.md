@@ -57,7 +57,7 @@ behaviour.
 | **Spawn mechanism** | `Command::new(&self.perl_binary)` via `PerlOracleEnv::into_command()` |
 | **Current env** | Deny-all-ambient. `PERL5LIB` passes through only when `config.use_perl5lib=true`. `PERL5OPT` always stripped. `local::lib` variables always stripped. `PATH` preserved for binary resolution. |
 | **Desired contract** | Already meets the post-#8551 contract. Explicit allow: `PERL5LIB` (user-gated), `PATH`. Explicit deny: `PERL5OPT`, `PERL_MM_OPT`, `PERL_MB_OPT`, `PERL_LOCAL_LIB_ROOT`, perlbrew/plenv vars. |
-| **Timeout** | 1 000 ms (`SYSTEM_INC_PROBE_TIMEOUT` at `mod.rs:807`) |
+| **Timeout** | 1 000 ms (`SYSTEM_INC_PROBE_TIMEOUT`). Applied via `effective_system_inc_probe_timeout()`, which outside `cfg(test)` compiles to the constant with no runtime, environment, or configuration route to change it. Under `cfg(test)` a `SystemIncProbeTimeoutGuard` may widen it — never shrink it — on the calling thread only, so unit tests asserting non-latency probe claims are not bound to host spawn latency (#12902). |
 | **Cache key** | `(config.use_perl5lib, config.use_system_inc, config.perl_path, workspace_folder)` — invalidated when `use_perl5lib` toggles (see `mod.rs:669`) |
 | **Internalization path** | **Bridge** — replace with modeled config + workspace heuristics; tracked in #8551 roadmap |
 

@@ -37,9 +37,9 @@ use std::process::Command;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
-#[cfg(not(target_arch = "wasm32"))]
-use super::SYSTEM_INC_PROBE_TIMEOUT;
 use super::WorkspaceConfig;
+#[cfg(not(target_arch = "wasm32"))]
+use super::effective_system_inc_probe_timeout;
 
 #[cfg(all(not(target_arch = "wasm32"), windows))]
 const PERLDOC_EXECUTABLE_CANDIDATES: &[&str] =
@@ -214,7 +214,11 @@ impl PerlOracleEnv {
     ///   `@INC` probe contract).
     /// - `allow_local_lib`: always `false` for the startup probe; `local::lib`
     ///   activation is not part of the declared seam contract.
-    /// - `timeout`: defaults to 1 second (matches `SYSTEM_INC_PROBE_TIMEOUT`).
+    /// - `timeout`: `SYSTEM_INC_PROBE_TIMEOUT` (1 second). Outside `cfg(test)`
+    ///   that constant is the only source; under `cfg(test)` a
+    ///   `SystemIncProbeTimeoutGuard` may widen it on the calling thread so a
+    ///   test asserting a non-latency claim is not bound to host spawn
+    ///   weather (#12902).
     /// - `cwd`: current working directory of the LSP process (best-effort;
     ///   the startup probe does not depend on cwd).
     /// - `extra_env`: empty.
@@ -232,7 +236,7 @@ impl PerlOracleEnv {
         Some(Self {
             perl_binary,
             cwd,
-            timeout: SYSTEM_INC_PROBE_TIMEOUT,
+            timeout: effective_system_inc_probe_timeout(),
             allow_perl5lib: config.use_perl5lib,
             allow_perl5opt: false,
             allow_local_lib: false,
