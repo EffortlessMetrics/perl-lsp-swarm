@@ -119,21 +119,24 @@ fn debuggee_pin_is_the_single_availability_source_of_truth() -> Result<(), Box<d
         let _guard = EnvGuard::capture(GUARDED_KEYS);
         EnvGuard::set_os("PATH", fake_path_perl.path().as_os_str());
         EnvGuard::set(DEBUGGEE_PERL_OVERRIDE_ENV, BOGUS_PIN);
-        assert!(
-            !perl_available(),
-            "a rejected {DEBUGGEE_PERL_OVERRIDE_ENV} pin must make \
-             perl_available() false even when `perl` exists on PATH"
-        );
+        if perl_available() {
+            return Err(format!(
+                "a rejected {DEBUGGEE_PERL_OVERRIDE_ENV} pin must make \
+                 perl_available() false even when `perl` exists on PATH"
+            )
+            .into());
+        }
 
         // The scorecard consumption pattern is exactly
         // `if !perl_available() { SKIP } … else debuggee_perl_or_typed_skip()`;
         // availability and session resolution must agree on the rejected pin
         // so the two gates can never disagree about skipping.
-        assert!(
-            common::resolve_debuggee_perl().is_none(),
-            "availability gate and live-session resolution must agree: \
-             both must reject a failed pin"
-        );
+        if common::resolve_debuggee_perl().is_some() {
+            return Err(
+                "availability gate and live-session resolution must agree: both must reject a failed pin"
+                    .into(),
+            );
+        }
     }
 
     // ── Scenario B: strict mode rejects a broken pin by name ────────────────
@@ -161,26 +164,32 @@ fn debuggee_pin_is_the_single_availability_source_of_truth() -> Result<(), Box<d
                 .unwrap_or_else(|| "<non-string panic>".to_string()),
             None => "<no panic: strict mode accepted a rejected pin>".to_string(),
         };
-        assert!(
-            verdict.is_err(),
-            "{REQUIRE_PERL_ENV}=1 must hard-fail when the \
-             {DEBUGGEE_PERL_OVERRIDE_ENV} pin fails its probe; got silent acceptance"
-        );
+        if verdict.is_ok() {
+            return Err(format!(
+                "{REQUIRE_PERL_ENV}=1 must hard-fail when the \
+                 {DEBUGGEE_PERL_OVERRIDE_ENV} pin fails its probe; got silent acceptance"
+            )
+            .into());
+        }
         let launch_error = common::resolve_launch_perl_path()
             .err()
             .ok_or("a rejected pin must not fall back to ambient launch resolution")?;
-        assert!(
-            launch_error.contains(DEBUGGEE_PERL_OVERRIDE_ENV),
-            "launch failure must identify the rejected pin, got: {launch_error}"
-        );
+        if !launch_error.contains(DEBUGGEE_PERL_OVERRIDE_ENV) {
+            return Err(format!(
+                "launch failure must identify the rejected pin, got: {launch_error}"
+            )
+            .into());
+        }
         // The repaired diagnostic names the pinned interpreter and its probe
         // failure; blaming PATH would mean the early return never consulted
         // the pin.
-        assert!(
-            payload_text.contains(BOGUS_PIN),
-            "strict failure must diagnose the rejected pin path {BOGUS_PIN}, \
-             not PATH absence, got: {payload_text}"
-        );
+        if !payload_text.contains(BOGUS_PIN) {
+            return Err(format!(
+                "strict failure must diagnose the rejected pin path {BOGUS_PIN}, \
+                 not PATH absence, got: {payload_text}"
+            )
+            .into());
+        }
     }
 
     // ── Scenario C: no pin ⇒ unchanged PATH-only semantics ─────────────────
@@ -196,11 +205,12 @@ fn debuggee_pin_is_the_single_availability_source_of_truth() -> Result<(), Box<d
         // what Perl this host ships; without a pin, availability must follow
         // this positive PATH oracle.
         EnvGuard::set_os("PATH", fake_path_perl.path().as_os_str());
-        assert!(
-            perl_available(),
-            "without a pin, availability must follow the deterministic positive \
-             PATH oracle control"
-        );
+        if !perl_available() {
+            return Err(
+                "without a pin, availability must follow the deterministic positive PATH oracle control"
+                    .into(),
+            );
+        }
     }
 
     Ok(())
@@ -218,7 +228,9 @@ fn attach_does_not_resolve_launch_pin_during_initialization() -> Result<(), Box<
     let mut session = DapWorkflowSession::new(workflow_timeout())?;
     session.attach(std::process::id(), false)?;
     let stopped = session.wait_stopped()?;
-    assert_eq!(stopped.reason, "attach");
+    if stopped.reason != "attach" {
+        return Err(format!("attach must stop with reason=attach, got {}", stopped.reason).into());
+    }
     session.disconnect()?;
     Ok(())
 }

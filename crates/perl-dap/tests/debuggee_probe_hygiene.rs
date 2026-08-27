@@ -83,6 +83,14 @@ fn compile_probe_control(directory: &Path, label: &str, body: &str) -> io::Resul
 
 #[test]
 fn probe_workspace_cleanup_covers_each_child_exit_path() -> io::Result<()> {
+    macro_rules! require {
+        ($condition:expr, $($arg:tt)+) => {
+            if !($condition) {
+                return Err(io::Error::other(format!($($arg)+)));
+            }
+        };
+    }
+
     let controls = tempfile::tempdir()?;
     let success = compile_probe_control(
         controls.path(),
@@ -167,7 +175,7 @@ fn main() {
     let seeded_stale =
         tempfile::Builder::new().prefix(&stale_prefix).tempdir_in(std::env::temp_dir())?;
     let baseline = current_process_probe_artifacts()?;
-    assert!(
+    require!(
         baseline.contains(&seeded_stale.path().to_path_buf()),
         "seeded same-process stale artifact must be visible in the baseline"
     );
@@ -179,26 +187,25 @@ fn main() {
     ];
     for (label, binary, budget, simulate_wait_error, should_succeed) in cases {
         let before = current_process_probe_artifacts()?;
-        assert!(
+        require!(
             before.iter().any(|path| path == seeded_stale.path()),
             "{label} case lost the seeded stale baseline before probing"
         );
 
         let result = common::probe_debuggee_perl_for_test(binary, budget, simulate_wait_error);
-        assert_eq!(result.is_ok(), should_succeed, "unexpected {label} probe result: {result:?}");
+        require!(result.is_ok() == should_succeed, "unexpected {label} probe result: {result:?}");
         let after = current_process_probe_artifacts()?;
         let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
-        assert!(
+        require!(
             new_artifacts.is_empty(),
             "{label} probe left newly created workspaces: {new_artifacts:?}"
         );
-        assert!(
+        require!(
             after.iter().any(|path| path == seeded_stale.path()),
             "{label} probe must not delete the pre-existing stale control"
         );
-        assert_eq!(
-            common::active_probe_reader_count(),
-            0,
+        require!(
+            common::active_probe_reader_count() == 0,
             "{label} probe left an active reader thread"
         );
     }
@@ -224,22 +231,21 @@ fn main() {
         wait_for_process_start(descendant_pid, Duration::from_secs(5))?;
         let result =
             probe.join().map_err(|_| io::Error::other(format!("{label} probe thread panicked")))?;
-        assert!(result.is_err(), "{label} probe must fail through its cleanup path");
+        require!(result.is_err(), "{label} probe must fail through its cleanup path");
         wait_for_process_exit(label, descendant_pid, Duration::from_secs(5))?;
 
         let after = current_process_probe_artifacts()?;
         let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
-        assert!(
+        require!(
             new_artifacts.is_empty(),
             "{label} probe left newly created workspaces: {new_artifacts:?}"
         );
-        assert!(
+        require!(
             after.iter().any(|path| path == seeded_stale.path()),
             "{label} probe must not delete the pre-existing stale control"
         );
-        assert_eq!(
-            common::active_probe_reader_count(),
-            0,
+        require!(
+            common::active_probe_reader_count() == 0,
             "{label} probe left an active reader thread"
         );
     }
@@ -266,26 +272,25 @@ fn main() {
         let result = probe
             .join()
             .map_err(|_| io::Error::other("successful-parent probe thread panicked"))?;
-        assert!(result.is_ok(), "successful-parent probe must report success: {result:?}");
+        require!(result.is_ok(), "successful-parent probe must report success: {result:?}");
         wait_for_process_exit("success-descendant", descendant_pid, Duration::from_secs(5))?;
 
         let after = current_process_probe_artifacts()?;
         let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
-        assert!(
+        require!(
             new_artifacts.is_empty(),
             "successful-parent probe left newly created workspaces: {new_artifacts:?}"
         );
-        assert!(
+        require!(
             after.iter().any(|path| path == seeded_stale.path()),
             "successful-parent probe must not delete the pre-existing stale control"
         );
-        assert_eq!(
-            common::active_probe_reader_count(),
-            0,
+        require!(
+            common::active_probe_reader_count() == 0,
             "successful-parent probe left an active reader thread"
         );
         #[cfg(unix)]
-        assert!(
+        require!(
             sigkill_escalation_was_observed(),
             "SIGTERM-resistant successful-parent descendant did not require SIGKILL escalation"
         );
@@ -312,7 +317,7 @@ fn main() {
     let termination_probe_pid = common::last_probe_pid_for_test().ok_or_else(|| {
         io::Error::other("termination-failure probe did not record its child PID")
     })?;
-    assert!(
+    require!(
         process_exists(termination_probe_pid)?,
         "termination-failure probe child must be live before the injected cleanup failure"
     );
@@ -323,11 +328,11 @@ fn main() {
         Ok(_) => return Err(io::Error::other("termination-command failure was accepted")),
         Err(error) => error,
     };
-    assert!(
+    require!(
         termination_error.contains("owned process termination failure"),
         "owned termination failure must be explicit: {termination_error}"
     );
-    assert!(
+    require!(
         process_exists(termination_probe_pid)?,
         "the injected termination failure must return with the owned child retained"
     );
@@ -340,13 +345,12 @@ fn main() {
     )?;
     let after = current_process_probe_artifacts()?;
     let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
-    assert!(
+    require!(
         new_artifacts.is_empty(),
         "termination-failure probe left newly created workspaces: {new_artifacts:?}"
     );
-    assert_eq!(
-        common::active_probe_reader_count(),
-        0,
+    require!(
+        common::active_probe_reader_count() == 0,
         "termination-failure probe left an active reader thread"
     );
 
@@ -360,26 +364,25 @@ fn main() {
         Ok(_) => return Err(io::Error::other("workspace cleanup failure was accepted")),
         Err(error) => error,
     };
-    assert!(
+    require!(
         workspace_cleanup_error.contains("probe workspace cleanup failed"),
         "workspace cleanup failure must be explicit: {workspace_cleanup_error}"
     );
     let after = current_process_probe_artifacts()?;
     let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
-    assert!(
+    require!(
         !new_artifacts.is_empty(),
         "real TempDir::close failure must leave a displaced workspace for explicit cleanup"
     );
-    assert_eq!(
-        common::active_probe_reader_count(),
-        0,
+    require!(
+        common::active_probe_reader_count() == 0,
         "workspace cleanup failure left an active reader thread"
     );
     for artifact in &new_artifacts {
         fs::remove_dir_all(artifact)?;
     }
     let after_explicit_cleanup = current_process_probe_artifacts()?;
-    assert!(
+    require!(
         after_explicit_cleanup.iter().all(|path| before.contains(path)),
         "explicit cleanup must remove only the displaced workspace: {after_explicit_cleanup:?}"
     );
@@ -403,20 +406,19 @@ fn main() {
             Ok(_) => return Err(io::Error::other("job assignment failure was accepted")),
             Err(error) => error,
         };
-        assert!(
+        require!(
             assignment_error.contains("job assignment"),
             "job assignment fallback must be explicit: {assignment_error}"
         );
         wait_for_process_exit("job-assignment-child", child_pid, Duration::from_secs(5))?;
         let after = current_process_probe_artifacts()?;
         let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
-        assert!(
+        require!(
             new_artifacts.is_empty(),
             "job assignment fallback left artifacts: {new_artifacts:?}"
         );
-        assert_eq!(
-            common::active_probe_reader_count(),
-            0,
+        require!(
+            common::active_probe_reader_count() == 0,
             "job assignment fallback left an active reader thread"
         );
     }
@@ -450,17 +452,16 @@ fn main() {
             Ok(_) => return Err(io::Error::other(format!("{label} failure was accepted"))),
             Err(error) => error,
         };
-        assert!(error.contains("injected probe"), "{label} failure must be explicit: {error}");
+        require!(error.contains("injected probe"), "{label} failure must be explicit: {error}");
         wait_for_process_exit(label, descendant_pid, Duration::from_secs(5))?;
         let after = current_process_probe_artifacts()?;
         let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
-        assert!(
+        require!(
             new_artifacts.is_empty(),
             "{label} failure left newly created workspaces: {new_artifacts:?}"
         );
-        assert_eq!(
-            common::active_probe_reader_count(),
-            0,
+        require!(
+            common::active_probe_reader_count() == 0,
             "{label} failure left an active reader thread"
         );
     }
@@ -480,7 +481,7 @@ fn main() {
 
         // Drive RESOLUTION directly (not the availability gate): candidates
         // collapse to the bogus pin alone and resolution must report none.
-        assert!(
+        require!(
             resolve_debuggee_perl().is_none(),
             "a nonexistent pinned interpreter must fail resolution outright"
         );

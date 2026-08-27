@@ -672,16 +672,20 @@ mod launch_argument_tests {
     use std::path::Path;
 
     #[test]
-    fn launch_arguments_preserve_exact_pinned_interpreter() {
+    fn launch_arguments_preserve_exact_pinned_interpreter() -> Result<(), String> {
         let pinned = Path::new("C:/controls/pinned-perl.exe");
         let args = launch_arguments("fixture.pl", Some("C:/work"), true, Some(pinned));
 
-        assert_eq!(
-            args.get("perlPath"),
-            Some(&Value::String(pinned.to_string_lossy().into_owned()))
-        );
-        assert_eq!(args.get("cwd"), Some(&Value::String("C:/work".to_string())));
-        assert_eq!(args.get("stopOnEntry"), Some(&Value::Bool(true)));
+        if args.get("perlPath") != Some(&Value::String(pinned.to_string_lossy().into_owned())) {
+            return Err("launch arguments must preserve the pinned interpreter".to_string());
+        }
+        if args.get("cwd") != Some(&Value::String("C:/work".to_string())) {
+            return Err("launch arguments must preserve cwd".to_string());
+        }
+        if args.get("stopOnEntry") != Some(&Value::Bool(true)) {
+            return Err("launch arguments must preserve stopOnEntry".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -794,7 +798,11 @@ mod explicit_pin_tests {
         let expected = super::normalize_windows_path_prefix(expected);
         let resolved = normalize_explicit_debuggee_pin(relative)
             .map_err(|error| format!("the nested relative pin should canonicalize: {error}"))?;
-        assert_eq!(resolved, expected);
+        if resolved != expected {
+            return Err(format!(
+                "resolved pin differs from canonical path: {resolved:?} != {expected:?}"
+            ));
+        }
 
         let different_cwd = controls.path().join("different-launch-cwd");
         fs::create_dir(&different_cwd)
@@ -802,16 +810,16 @@ mod explicit_pin_tests {
         let different_cwd =
             different_cwd.to_str().ok_or("different launch cwd should be valid UTF-8")?;
         let launch = launch_arguments("fixture.pl", Some(different_cwd), false, Some(&resolved));
-        assert_eq!(
-            launch.get("perlPath").and_then(|value| value.as_str()),
-            Some(resolved.to_string_lossy().as_ref()),
-            "the launch must carry the canonical pin, not reinterpret it under cwd"
-        );
-        assert_eq!(
-            launch.get("cwd").and_then(|value| value.as_str()),
-            Some(different_cwd),
-            "the launch must retain its independent working directory"
-        );
+        if launch.get("perlPath").and_then(|value| value.as_str())
+            != Some(resolved.to_string_lossy().as_ref())
+        {
+            return Err(
+                "the launch must carry the canonical pin, not reinterpret it under cwd".to_string()
+            );
+        }
+        if launch.get("cwd").and_then(|value| value.as_str()) != Some(different_cwd) {
+            return Err("the launch must retain its independent working directory".to_string());
+        }
         Ok(())
     }
 
@@ -828,7 +836,9 @@ mod explicit_pin_tests {
             Ok(_) => return Err("non-UTF-8 pin unexpectedly resolved".to_string()),
             Err(error) => error,
         };
-        assert!(error.contains("not valid UTF-8"), "unexpected error: {error}");
+        if !error.contains("not valid UTF-8") {
+            return Err(format!("unexpected error: {error}"));
+        }
         Ok(())
     }
 }

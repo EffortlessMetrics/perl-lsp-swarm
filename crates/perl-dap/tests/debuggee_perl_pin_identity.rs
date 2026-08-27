@@ -94,7 +94,9 @@ fn valid_pin_selects_the_pinned_usable_identity() -> Result<(), Box<dyn Error>> 
             .map_err(|reason| format!("ambient control was not probe-capable: {reason}"))?;
     let pinned_probe = probe_debuggee_perl_for_test(&pinned, Duration::from_secs(2), false)
         .map_err(|reason| format!("pinned control was not probe-capable: {reason}"))?;
-    assert_ne!(ambient_probe.identity, pinned_probe.identity);
+    if ambient_probe.identity == pinned_probe.identity {
+        return Err("ambient and pinned controls must expose distinct identities".into());
+    }
     let expected_pinned = common::normalize_explicit_debuggee_pin(&pinned)
         .map_err(|reason| format!("pinned control did not canonicalize: {reason}"))?;
     let expected_pinned_text = expected_pinned.to_string_lossy().into_owned();
@@ -103,27 +105,32 @@ fn valid_pin_selects_the_pinned_usable_identity() -> Result<(), Box<dyn Error>> 
     let resolved = resolve_debuggee_perl().ok_or("valid pin did not resolve")?;
     let launch_path = common::resolve_launch_perl_path()
         .map_err(|reason| format!("valid pin could not resolve for launch: {reason}"))?;
-    assert_eq!(
-        launch_path,
-        Some(expected_pinned.clone()),
-        "shared launch helpers must receive the exact pinned identity"
-    );
+    if launch_path != Some(expected_pinned.clone()) {
+        return Err(format!(
+            "shared launch helpers must receive the exact pinned identity, got {launch_path:?}"
+        )
+        .into());
+    }
     let launch_arguments = common::resolved_launch_arguments_for_test("fixture.pl", None, true)
         .map_err(|reason| format!("resolved launch request could not be built: {reason}"))?;
-    assert_eq!(
-        launch_arguments.get("perlPath").and_then(|value| value.as_str()),
-        Some(expected_pinned_text.as_str()),
-        "the convenience launch request must carry the pinned identity"
-    );
-    assert_eq!(
-        resolved.binary, expected_pinned,
-        "resolver must retain the exact usable pinned identity instead of selecting PATH perl"
-    );
-    assert!(
-        resolved.identity.contains("pinned_perl") && !resolved.identity.contains("ambient_perl"),
-        "selected identity must come from the pinned control, got: {}",
-        resolved.identity
-    );
+    if launch_arguments.get("perlPath").and_then(|value| value.as_str())
+        != Some(expected_pinned_text.as_str())
+    {
+        return Err("the convenience launch request must carry the pinned identity".into());
+    }
+    if resolved.binary != expected_pinned {
+        return Err(
+            "resolver must retain the exact usable pinned identity instead of selecting PATH perl"
+                .into(),
+        );
+    }
+    if !(resolved.identity.contains("pinned_perl") && !resolved.identity.contains("ambient_perl")) {
+        return Err(format!(
+            "selected identity must come from the pinned control, got: {}",
+            resolved.identity
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -179,12 +186,15 @@ fn live_debug_adapter_executes_the_pinned_interpreter_identity() -> Result<(), B
     let (reported, _) =
         session.evaluate_expression("$^X", stopped.frame_id).map_err(|e| e.to_string())?;
     let reported_lower = reported.to_ascii_lowercase();
-    assert!(
-        reported_lower.contains("pinned-perl")
-            && !reported_lower.contains("\\perl.exe")
-            && !reported_lower.contains("/perl\n"),
-        "live DebugAdapter evaluated $^X from the wrong interpreter: {reported}"
-    );
+    if !(reported_lower.contains("pinned-perl")
+        && !reported_lower.contains("\\perl.exe")
+        && !reported_lower.contains("/perl\n"))
+    {
+        return Err(format!(
+            "live DebugAdapter evaluated $^X from the wrong interpreter: {reported}"
+        )
+        .into());
+    }
     Ok(())
 }
 

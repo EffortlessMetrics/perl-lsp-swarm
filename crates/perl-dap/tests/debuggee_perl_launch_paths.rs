@@ -166,12 +166,15 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
         let reported = observe_pin_for_path(launch_path, &pinned, &script_text, &cwd)
             .map_err(|error| format!("{launch_path} failed: {error}"))?;
         let reported_lower = reported.to_ascii_lowercase();
-        assert!(
-            reported_lower.contains("pinned-perl")
-                && !reported_lower.contains("\\perl.exe")
-                && !reported_lower.contains("/perl\n"),
-            "{launch_path} evaluated $^X from the wrong interpreter: {reported}"
-        );
+        if !(reported_lower.contains("pinned-perl")
+            && !reported_lower.contains("\\perl.exe")
+            && !reported_lower.contains("/perl\n"))
+        {
+            return Err(format!(
+                "{launch_path} evaluated $^X from the wrong interpreter: {reported}"
+            )
+            .into());
+        }
     }
 
     let _pin_guard = EnvGuard::set(DEBUGGEE_PERL_OVERRIDE_ENV, pinned.as_os_str());
@@ -179,13 +182,16 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
         let configured_identity = observe_configured_pin_for_path(launch_path, &script_text, &cwd)
             .map_err(|error| format!("configured {launch_path} failed: {error}"))?;
         let configured_identity_lower = configured_identity.to_ascii_lowercase();
-        assert!(
-            configured_identity_lower.contains("pinned-perl")
-                && !configured_identity_lower.contains("\\perl.exe")
-                && !configured_identity_lower.contains("/perl\n"),
-            "configured pin was dropped by DapWorkflowSession::new for {launch_path}: \
-             {configured_identity}"
-        );
+        if !(configured_identity_lower.contains("pinned-perl")
+            && !configured_identity_lower.contains("\\perl.exe")
+            && !configured_identity_lower.contains("/perl\n"))
+        {
+            return Err(format!(
+                "configured pin was dropped by DapWorkflowSession::new for {launch_path}: \
+                 {configured_identity}"
+            )
+            .into());
+        }
     }
     Ok(())
 }
