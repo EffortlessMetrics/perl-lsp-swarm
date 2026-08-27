@@ -2,8 +2,12 @@
 
 Each row binds one stable proposition to its discriminating executable proof.
 Proof lives in `crates/perl-lsp-perltidy/tests/formatter_property_harness_tests.rs`
-(+ shared `tests/support/formatter_property_harness/`) and
-`fuzz/fuzz_targets/perl_tidy_formatter.rs`.
+(generators and test-only orchestration) plus the feature-gated shared invariant
+core at `crates/perl-lsp-perltidy/src/formatter_property_harness/`, consumed by
+both the package tests and `fuzz/fuzz_targets/perl_tidy_formatter.rs`.
+The package tests and fuzz path both enable the named
+`formatter-property-harness` feature; the fuzz target is an adapter, not a
+second checker. No test-only `tests/support/` module is the sharing boundary.
 
 | Row | Proposition | Proof | Status |
 | --- | --- | --- | --- |
@@ -16,7 +20,7 @@ Proof lives in `crates/perl-lsp-perltidy/tests/formatter_property_harness_tests.
 | FPH-007 | Generation is bounded and receipted: case record carries generator schema/version, seed, source digest, target, profile fingerprint, admitted families; identical inputs produce an identical normalized receipt; no wall-clock assertion exists in the checker | `generated_case_receipt_is_deterministic_and_bounded` | offline |
 | FPH-008 | Dormant invariant slots fail closed: cancellation/budget interruption, structural preservation beyond parse success, and protected-region hash families exist as registered dispositions that report `not_proven` on today's tree instead of passing vacuously | `dormant_invariants_report_not_proven_until_dependencies_land` (flip: they turn into real assertions when #7140/#7101/#7104/#8146 mechanisms land) | offline |
 | FPH-009 | The harness never reuses production edit application or oracle substitution: it must not reference `PerlTidyFormatter`, subprocess adapters, or apply its expected bytes using the producer's own derivation path | `harness_module_does_not_reference_external_oracle` (source-text pin over the harness module, house policy-pin pattern) | offline |
-| FPH-010 | A cargo-fuzz target drives the same invariant core from structured byte mutations and is declared in `fuzz/Cargo.toml` (adding the missing `perl-lsp-perltidy` dependency); minimized crashes land as committed focused regressions under the crate's regression-file convention | manifest/source structural pins in `fph_policy_pins`; minimization demonstrated by one checked-in `.proptest-regressions` entry wire format compatible with `crates/perl-lexer/tests/lexer_robustness_tests.proptest-regressions` | offline |
+| FPH-010 | A cargo-fuzz target drives the same feature-gated invariant core from structured byte mutations and is declared in `fuzz/Cargo.toml` (adding the missing `perl-lsp-perltidy` path dependency with `formatter-property-harness` enabled); minimized crashes land as committed focused regressions under the crate's regression-file convention | manifest/source structural pins in `fph_policy_pins` require the shared `src/formatter_property_harness/` boundary, feature wiring in both consumers, and no duplicate checker; minimization is demonstrated by one checked-in `.proptest-regressions` entry wire format compatible with `crates/perl-lexer/tests/lexer_robustness_tests.proptest-regressions` | offline |
 
 ## Mutation controls (must stay red if reintroduced)
 

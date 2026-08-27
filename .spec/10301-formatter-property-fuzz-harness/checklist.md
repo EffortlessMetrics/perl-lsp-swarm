@@ -30,16 +30,21 @@ Red-first receipts-of-record (2026-08-27, pure reads on the base pin):
 
 Planned surface:
 
-- [ ] `crates/perl-lsp-perltidy/tests/support/formatter_property_harness/`:
-      generators/mutators over admitted safe-subset families, bounded case
-      construction, seed/schema/receipt types, invariant checker consuming
-      only `format_*_typed` + `apply_edits_exact`, dormant disposition
-      registry for gated invariants
+- [ ] `crates/perl-lsp-perltidy/src/formatter_property_harness/`:
+      feature-gated, shareable invariant core with seed/schema/receipt types,
+      checker consuming only `format_*_typed` + `apply_edits_exact`, and
+      dormant disposition registry for gated invariants; it is the single
+      checker imported by both package tests and the fuzz target
 - [ ] `crates/perl-lsp-perltidy/tests/formatter_property_harness_tests.rs`:
-      FPH-001..FPH-009 incl. mutation controls
-- [ ] `crates/perl-lsp-perltidy/Cargo.toml`: additive
-      `proptest.workspace = true` dev-dependency only
-- [ ] `fuzz/Cargo.toml`: add `perl-lsp-perltidy` path dep +
+      test-only generators/mutators over admitted safe-subset families,
+      bounded case construction, and FPH-001..FPH-009 incl. mutation controls;
+      invoke the shared core with the `formatter-property-harness` feature
+- [ ] `crates/perl-lsp-perltidy/Cargo.toml`: additive empty
+      `formatter-property-harness` feature plus `proptest.workspace = true`
+      dev-dependency only; the feature gates the shareable module and does not
+      add it to default production builds
+- [ ] `fuzz/Cargo.toml`: add `perl-lsp-perltidy` path dep with
+      `features = ["formatter-property-harness"]` +
       `[[bin]] name = "perl_tidy_formatter"`
 - [ ] `fuzz/fuzz_targets/perl_tidy_formatter.rs`: structured mutation front
       end calling the shared invariant core; never executes Perl
@@ -52,7 +57,9 @@ Proof commands:
 cargo fmt -p perl-lsp-perltidy -- --check
 cargo clippy -p perl-lsp-perltidy --all-targets --locked -- -D warnings
 cargo test -p perl-lsp-perltidy --all-targets --locked
-cargo test -p perl-lsp-perltidy --test formatter_property_harness_tests -- --test-threads=1
+cargo test -p perl-lsp-perltidy --features formatter-property-harness \
+  --test formatter_property_harness_tests -- --test-threads=1
+cargo check --manifest-path fuzz/Cargo.toml --bin perl_tidy_formatter
 ```
 
 Open residuals (owned by upstream issues, not silently dropped):

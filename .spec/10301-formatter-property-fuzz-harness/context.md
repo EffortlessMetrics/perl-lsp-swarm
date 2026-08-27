@@ -70,15 +70,17 @@ Honest capability boundary on today's tree (gates what this harness may claim):
 Ranked against the issue's generator-model requirements using only in-tree
 evidence:
 
-1. **Chosen — proptest-driven harness + shared invariant core + thin
-   cargo-fuzz target.** A checked-in harness module under
-   `tests/support/formatter_property_harness/` owns generators, seeds, schema
-   versioning, receipts, and the mandatory invariant checker;
-   `tests/formatter_property_harness_tests.rs` runs deterministic seeded
-   properties in ordinary package CI; one additive fuzz target
-   `fuzz/fuzz_targets/perl_tidy_formatter.rs` drives the same invariant core
-   from raw bytes mapped onto structured mutations (never executed as Perl).
-   The checker consumes only canonical production APIs
+1. **Chosen — proptest-driven harness + shareable feature-gated invariant core
+   + thin cargo-fuzz target.** The single checker lives under
+   `crates/perl-lsp-perltidy/src/formatter_property_harness/` behind the
+   additive `formatter-property-harness` feature. Package integration tests
+   enable that feature and keep generators/mutators and deterministic seeded
+   orchestration under `tests/formatter_property_harness_tests.rs`; the fuzz
+   package enables the same feature on its path dependency and
+   `fuzz/fuzz_targets/perl_tidy_formatter.rs` is only a thin adapter from raw
+   bytes to structured mutations (never executed as Perl). This library-module
+   boundary is required because a separate `fuzz/` Cargo package cannot import
+   an integration-test `tests/support/` module. The checker consumes only canonical production APIs
    (`format_*_typed`, `apply_edits_exact`) twice per case from fresh
    formatter contexts, and enforces: deterministic outcome, Applied ⇒ exact
    plan equality after independent application + ordered non-overlapping
@@ -111,15 +113,18 @@ assertions when their owning issues land their in-tree mechanisms.
 ## Composition
 
 Shares subject-fixture vocabulary with #10302 (.spec/10302-formatter-production-pipeline-bench)
-but disjoint surfaces: this claim touches `crates/perl-lsp-perltidy/tests/**`,
-its `Cargo.toml` dev-dependencies, and `fuzz/`; #10302 touches `benches/`,
+but disjoint surfaces: this claim touches the feature-gated
+`crates/perl-lsp-perltidy/src/formatter_property_harness/`, its test
+generators/tests, Cargo.toml feature/dev-dependency wiring, and `fuzz/`;
+#10302 touches `benches/`,
 additive counters in `src/native/`, and `.github/workflows/ci-nightly.yml`.
 Upstream chain issues (#7101/#7104/#8146/#10237/#10239/#7138/#7140/#9327) are
 consumers of this instrument, not modified by it.
 
 ## Rollback
 
-Single revert: delete the harness module + tests file + fuzz target entry and
-the two added dev-dependency lines; production code is untouched (family
-registry data may live entirely under `tests/`). No tracked-file
-regeneration, no baseline movement, no workflow change.
+Single revert: delete the feature-gated shared module + tests file + fuzz target
+entry, remove the feature/path wiring and the two added dev-dependency lines;
+the default production build remains untouched because the module is disabled
+unless the named feature is enabled. No tracked-file regeneration, no baseline
+movement, no workflow change.
