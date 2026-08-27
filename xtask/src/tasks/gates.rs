@@ -5077,14 +5077,16 @@ gates:
         let command = format!(
             "if [ -f {marker_display} ]; then printf 'running 2 tests\\n'; exit 0;              else touch {marker_display}; sleep 3; fi; exit 0; true && cargo test --lib --locked"
         );
-        let mut gate = pr_gate("synthetic_retry_reach_gate", GatePlanningRole::AlwaysOn, &command);
+        let mut gate =
+            pr_gate("synthetic_retry_reach_gate", GatePlanningRole::AlwaysOn, &command);
         gate.tags.push("test".to_string());
         gate.timeout_seconds = 1;
         gate.retry_count = 1;
         let policy = policy_with_gates(vec![gate.clone()]);
         let tmp = tempdir()?;
 
-        let result = run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
         let _ = std::fs::remove_file(&marker);
 
         let metrics = result
