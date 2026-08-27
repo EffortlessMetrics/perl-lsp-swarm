@@ -28,9 +28,10 @@ is a backend transport, not an editor transport.
 perl-dap --stdio
 ```
 
-Editor TCP (`--socket` / editor `--port`) is retired. Those flags remain only
-as a deprecated wrapper around `--external-peer` editor I/O (#10566). Do not
-start `perl-dap` as an ambient DAP listener for an editor.
+Editor TCP (`--socket` / editor `--port`) is retired. Those flags still parse
+and fail before bind with a `perl-dap --stdio` migration, including when
+combined with `--external-peer`. Do not start `perl-dap` as an ambient DAP
+listener for an editor.
 
 ## External dependencies
 

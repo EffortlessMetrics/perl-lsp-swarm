@@ -128,12 +128,12 @@ fn is_data_marker_token(word: &str) -> bool {
         }
         // Check if the word starts with the marker followed by a non-identifier
         // character (e.g. "__DATA__;junk" → marker + ";junk").
-        if let Some(rest) = word.strip_prefix(marker) {
-            if let Some(next_char) = rest.chars().next() {
-                if !next_char.is_ascii_alphanumeric() && next_char != '_' {
-                    return true;
-                }
-            }
+        if let Some(rest) = word.strip_prefix(marker)
+            && let Some(next_char) = rest.chars().next()
+            && !next_char.is_ascii_alphanumeric()
+            && next_char != '_'
+        {
+            return true;
         }
     }
     false

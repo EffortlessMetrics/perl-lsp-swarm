@@ -119,7 +119,7 @@ impl<'a> Parser<'a> {
                 {
                     let op_token = self.consume_token()?;
                     let start = expr.location.start;
-                    let end = op_token.end;
+                    let end = op_token.end();
 
                     record_postfix_layer()?;
                     expr = Node::new(
@@ -277,11 +277,11 @@ impl<'a> Parser<'a> {
                             // Check for ->$#* (postfix last-index dereference, Perl 5.20+).
                             // The lexer produces Identifier("$#") for `$#` when no array
                             // name follows, so we handle it here before the method-call path.
-                            if self.tokens.peek().is_ok_and(|t| t.text.as_ref() == "$#") {
-                                if self
+                            if self.tokens.peek().is_ok_and(|t| t.text.as_ref() == "$#")
+                                && self
                                     .tokens
                                     .peek_second()
-                                    .is_ok_and(|t| t.kind == TokenKind::Star)
+                                    .is_ok_and(|t| t.kind() == TokenKind::Star)
                                 {
                                     self.tokens.next()?; // consume $#
                                     self.tokens.next()?; // consume *
@@ -297,7 +297,6 @@ impl<'a> Parser<'a> {
                                     );
                                     continue;
                                 }
-                            }
 
                             // Method call
                             let method = self.consume_token()?.text.to_string();
@@ -408,8 +407,8 @@ impl<'a> Parser<'a> {
 
                 Some(TokenKind::LeftBracket) => {
                     // Builtin function identifiers treat [ as anonymous-arrayref argument.
-                    if let NodeKind::Identifier { name } = &expr.kind {
-                        if Self::is_builtin_function(name) || self.looks_like_bare_call(name) {
+                    if let NodeKind::Identifier { name } = &expr.kind
+                        && (Self::is_builtin_function(name) || self.looks_like_bare_call(name)) {
                             let name = name.clone();
                             let start = expr.location.start;
                             let mut args = vec![self.parse_ternary()?];
@@ -430,7 +429,6 @@ impl<'a> Parser<'a> {
                             );
                             continue;
                         }
-                    }
                     // Detect array slices: @arr[...] or @{$aref}[...]
                     let is_array_slice = matches!(&expr.kind, NodeKind::Variable { sigil, .. } if sigil == "@")
                         || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "@{}");
@@ -824,7 +822,7 @@ impl<'a> Parser<'a> {
                                     .tokens
                                     .peek_second()
                                     .ok()
-                                    .is_some_and(|t| t.kind == TokenKind::FatArrow)))
+                                    .is_some_and(|t| t.kind() == TokenKind::FatArrow)))
                         {
                             // Qualified call with string/number literal argument — issue #2750 Pattern B.
                             // e.g. `(Carp::croak "error")`, `(utf8::downgrade $$buf or Carp::croak "Wide char")`
@@ -1015,7 +1013,7 @@ impl<'a> Parser<'a> {
                                     && self.tokens.peek().ok().is_some_and(|t| {
                                         // Scalar-variable coderef: text starts with `$`
                                         // e.g. `sort $cmp @list`, `sort $keysort (keys %h)`
-                                        t.kind == TokenKind::Identifier && t.text.starts_with('$')
+                                        t.kind() == TokenKind::Identifier && t.text.starts_with('$')
                                     })
                                 {
                                     // sort $coderef LIST — `sort $cmp @list`, `sort $cmp (keys %h)`
@@ -1267,8 +1265,8 @@ impl<'a> Parser<'a> {
             return false;
         }
         self.tokens.peek().ok().is_some_and(|token| {
-            matches!(token.kind, TokenKind::Increment | TokenKind::Decrement)
-                && token.start > expr.location.end
+            matches!(token.kind(), TokenKind::Increment | TokenKind::Decrement)
+                && token.start() > expr.location.end
         })
     }
 
@@ -1332,7 +1330,7 @@ impl<'a> Parser<'a> {
                 // quote-op start (#2467).
                 return match self.tokens.peek_second() {
                     Ok(second) => matches!(
-                        second.kind,
+                        second.kind(),
                         TokenKind::RightBrace | TokenKind::Comma | TokenKind::Eof
                     ),
                     Err(_) => true,
@@ -1348,7 +1346,7 @@ impl<'a> Parser<'a> {
         let token = self.tokens.next()?;
         Ok(Node::new(
             NodeKind::String { value: token.text.to_string(), interpolated: false },
-            SourceLocation { start: token.start, end: token.end },
+            SourceLocation { start: token.start(), end: token.end() },
         ))
     }
 
@@ -1423,7 +1421,7 @@ impl<'a> Parser<'a> {
         };
 
         let is_keyword_key = matches!(
-            first.kind,
+            first.kind(),
             TokenKind::WordNot
                 | TokenKind::WordAnd
                 | TokenKind::WordOr
@@ -1443,14 +1441,14 @@ impl<'a> Parser<'a> {
         self.tokens
             .peek_second()
             .ok()
-            .is_some_and(|second| matches!(second.kind, TokenKind::RightBrace | TokenKind::Comma))
+            .is_some_and(|second| matches!(second.kind(), TokenKind::RightBrace | TokenKind::Comma))
     }
 
     fn consume_as_bareword_identifier(&mut self) -> ParseResult<Node> {
         let token = self.tokens.next()?;
         Ok(Node::new(
             NodeKind::Identifier { name: token.text.to_string() },
-            SourceLocation { start: token.start, end: token.end },
+            SourceLocation { start: token.start(), end: token.end() },
         ))
     }
 
