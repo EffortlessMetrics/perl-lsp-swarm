@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# This entrypoint invokes cargo (the branch-deletion admission planner), so it
+# must run the shared toolchain guard first — otherwise a cargo older than the
+# workspace rust-version surfaces as a manifest parse error instead of a typed
+# refusal (#12593).
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
 # Turnkey release orchestrator for the PR-driven release flow.
 #
 # 1) Trigger Version Bump & Changelog Generation workflow.
