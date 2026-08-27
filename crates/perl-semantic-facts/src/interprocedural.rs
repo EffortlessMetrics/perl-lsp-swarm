@@ -340,6 +340,26 @@ impl CallableSemanticSummaryRef {
                 "a stale summary must not present Exact claims (historical-as-current)".to_string(),
             );
         }
+        // Fresh currentness must name the summary's own known generation —
+        // Fresh(Unknown) or Fresh(other) hands consumers two contradictory
+        // freshness identities (#12672 review).
+        if let SummaryCurrentness::Fresh(fresh_generation) = &self.currentness {
+            match fresh_generation {
+                SourceGeneration::Known(fresh_value) => {
+                    if let SourceGeneration::Known(summary_value) = &self.source_generation
+                        && fresh_value != summary_value
+                    {
+                        violations.push(format!(
+                            "Fresh({fresh_value}) disagrees with the summary's source_generation \
+                             {summary_value} (one freshness identity)"
+                        ));
+                    }
+                }
+                SourceGeneration::Unknown => violations.push(
+                    "Fresh currentness must name a known generation, not Unknown".to_string(),
+                ),
+            }
+        }
         if self.work.max_units == 0 {
             violations.push("work budget must offer at least one unit".to_string());
         }
@@ -433,6 +453,38 @@ impl InterproceduralFactResult {
                             .to_string(),
                     );
                 }
+                // No strengthening of consumed evidence: every composed fact
+                // must classify Exact or Degraded under the canonical
+                // envelope classifier — a Refused or Stale fact stays at its
+                // own status (#12672 review).
+                for fact in &self.facts {
+                    match fact.status() {
+                        crate::SemanticFactStatus::Exact | crate::SemanticFactStatus::Degraded => {}
+                        other => violations.push(format!(
+                            "Composed must not promote a {other:?} fact (stale or refused \
+                             evidence stays at its own status)"
+                        )),
+                    }
+                }
+                // Confidence ceiling: the result's confidence is never
+                // stronger than the weakest consumed known evidence
+                // (Confidence is declared High < Medium < Low in Ord).
+                if let SemanticConfidence::Known(result_confidence) = self.confidence
+                    && let Some(weakest) = self
+                        .facts
+                        .iter()
+                        .filter_map(|fact| match fact.confidence {
+                            SemanticConfidence::Known(confidence) => Some(confidence),
+                            SemanticConfidence::Unknown => None,
+                        })
+                        .max()
+                    && result_confidence < weakest
+                {
+                    violations.push(format!(
+                        "result confidence {result_confidence:?} is stronger than the weakest \
+                         consumed evidence {weakest:?} (confidence ceiling)"
+                    ));
+                }
             }
             InterproceduralOutcome::Refused { .. } | InterproceduralOutcome::Invalid { .. } => {
                 if !self.facts.is_empty() {
@@ -443,7 +495,44 @@ impl InterproceduralFactResult {
                     );
                 }
             }
+            InterproceduralOutcome::ResourceExhausted { units_consumed } => {
+                // One authoritative unit count: the outcome's own accounting
+                // must agree with the top-level field before any ceiling is
+                // checked against it (#12672 review).
+                if *units_consumed != self.units_consumed {
+                    violations.push(format!(
+                        "ResourceExhausted.units_consumed {units_consumed} disagrees with the \
+                         top-level units_consumed {} (one authoritative count)",
+                        self.units_consumed
+                    ));
+                }
+            }
             _ => {}
+        }
+        // Identity binding: an exact-target call may consume only a summary
+        // of the exact callee; a dynamic-target call carries no summary at
+        // all — its boundary owns the outcome (#12672 review).
+        match &self.subject.callee {
+            CallTarget::Exact(callee) => {
+                if let Some(summary) = &self.summary_ref
+                    && summary.callable != *callee
+                {
+                    violations.push(format!(
+                        "summary_ref describes {:#?} but the exact callee is {:#?} (summary must \
+                         bind to the exact callee)",
+                        summary.callable, callee
+                    ));
+                }
+            }
+            CallTarget::DynamicBoundary(_) => {
+                if self.summary_ref.is_some() {
+                    violations.push(
+                        "a dynamic-target call must not carry a summary — the boundary owns the \
+                         outcome"
+                            .to_string(),
+                    );
+                }
+            }
         }
         if let Some(summary) = &self.summary_ref {
             let summary_violations = summary.validate();

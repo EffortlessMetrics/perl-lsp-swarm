@@ -225,6 +225,64 @@ fn falsifier_historical_as_current_composed_from_stale_summary_is_rejected() {
 }
 
 #[test]
+fn falsifier_summary_must_bind_to_the_exact_callee() {
+    // A valid summary for another callable must not validate against an
+    // exact-target subject (#12672 review).
+    let mut r = result();
+    if let Some(summary) = &mut r.summary_ref {
+        summary.callable = entity(999);
+    }
+    let violations = must_err(r.validate());
+    assert!(violations.iter().any(|v| v.contains("bind to the exact callee")));
+
+    // A dynamic-target call carries no summary at all.
+    let mut r = result();
+    r.subject.callee = CallTarget::DynamicBoundary(boundary());
+    let violations = must_err(r.validate());
+    assert!(violations.iter().any(|v| v.contains("dynamic-target")));
+}
+
+#[test]
+fn falsifier_composed_must_not_promote_stale_or_refused_facts() {
+    // A stale fact inside Composed is strengthening by promotion (#12672
+    // review).
+    let mut r = result();
+    r.facts[0].freshness = crate::SemanticFreshness::Stale;
+    let violations = must_err(r.validate());
+    assert!(violations.iter().any(|v| v.contains("promote")));
+}
+
+#[test]
+fn falsifier_confidence_never_stronger_than_weakest_evidence() {
+    let mut r = result();
+    r.confidence = SemanticConfidence::Known(Confidence::High);
+    r.facts[0].confidence = SemanticConfidence::Known(Confidence::Low);
+    let violations = must_err(r.validate());
+    assert!(violations.iter().any(|v| v.contains("confidence ceiling")));
+}
+
+#[test]
+fn falsifier_fresh_currentness_must_equal_the_summary_generation() {
+    let mut summary = summary();
+    summary.currentness = SummaryCurrentness::Fresh(SourceGeneration::known("gen-2"));
+    let violations = must_err(summary.validate());
+    assert!(violations.iter().any(|v| v.contains("one freshness identity")));
+
+    summary.currentness = SummaryCurrentness::Fresh(SourceGeneration::Unknown);
+    let violations = must_err(summary.validate());
+    assert!(violations.iter().any(|v| v.contains("known generation")));
+}
+
+#[test]
+fn falsifier_resource_exhausted_count_must_be_authoritative() {
+    let mut r = result();
+    r.facts = vec![];
+    r.outcome = InterproceduralOutcome::ResourceExhausted { units_consumed: 101 };
+    let violations = must_err(r.validate());
+    assert!(violations.iter().any(|v| v.contains("one authoritative count")));
+}
+
+#[test]
 fn falsifier_ordering_unsorted_references_are_rejected_and_construction_canonicalizes() {
     // The constructor canonicalizes.
     let canonical = summary();
