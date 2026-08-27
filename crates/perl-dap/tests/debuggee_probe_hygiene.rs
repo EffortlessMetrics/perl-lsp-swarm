@@ -100,9 +100,15 @@ use std::{env, fs, process::Command, thread, time::Duration};
 fn main() {
     if let Some(pid_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE") {
         #[cfg(unix)]
-        let descendant = Command::new("sh")
+        let descendant = Command::new("setsid")
+            .args(["sh", "-c", "trap '' TERM; while :; do sleep 1; done"])
+            .spawn();
+        #[cfg(unix)]
+        let descendant = descendant.or_else(|_| {
+            Command::new("sh")
             .args(["-c", "trap '' TERM; while :; do sleep 1; done"])
             .spawn();
+        });
         #[cfg(windows)]
         let descendant = {
             let Ok(executable) = env::current_exe() else { return };
@@ -172,6 +178,11 @@ fn main() {
             after.iter().any(|path| path == seeded_stale.path()),
             "{label} probe must not delete the pre-existing stale control"
         );
+        assert_eq!(
+            common::active_probe_reader_count(),
+            0,
+            "{label} probe left an active reader thread"
+        );
     }
 
     for (label, simulate_wait_error, budget) in [
@@ -207,6 +218,11 @@ fn main() {
             after.iter().any(|path| path == seeded_stale.path()),
             "{label} probe must not delete the pre-existing stale control"
         );
+        assert_eq!(
+            common::active_probe_reader_count(),
+            0,
+            "{label} probe left an active reader thread"
+        );
     }
 
     {
@@ -241,6 +257,11 @@ fn main() {
         assert!(
             after.iter().any(|path| path == seeded_stale.path()),
             "successful-parent probe must not delete the pre-existing stale control"
+        );
+        assert_eq!(
+            common::active_probe_reader_count(),
+            0,
+            "successful-parent probe left an active reader thread"
         );
     }
 
@@ -295,6 +316,24 @@ fn main() {
         reader_error.contains("pipe reader thread panicked"),
         "reader-thread failure must be explicit: {reader_error}"
     );
+    assert_eq!(common::active_probe_reader_count(), 0, "reader panic left an active reader thread");
+
+    #[cfg(windows)]
+    {
+        let assignment_failure = common::probe_debuggee_perl_for_test_with_job_assignment_failure(
+            &success,
+            Duration::from_secs(2),
+        );
+        let assignment_error = match assignment_failure {
+            Ok(_) => return Err(io::Error::other("job assignment failure was accepted")),
+            Err(error) => error,
+        };
+        assert!(
+            assignment_error.contains("job assignment")
+                && assignment_error.contains("taskkill process-tree fallback"),
+            "job assignment fallback must be explicit: {assignment_error}"
+        );
+    }
 
     {
         struct Guard(Option<std::ffi::OsString>);

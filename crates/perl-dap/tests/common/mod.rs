@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -856,6 +856,8 @@ struct DebuggeePerlResolution {
 static DEBUGGEE_PERL: OnceLock<DebuggeePerlResolution> = OnceLock::new();
 #[cfg(test)]
 static LAST_PROBE_PID: AtomicU32 = AtomicU32::new(0);
+#[cfg(test)]
+static ACTIVE_PROBE_READERS: AtomicUsize = AtomicUsize::new(0);
 
 fn debuggee_perl_candidates() -> Vec<PathBuf> {
     if let Some(pinned) = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV) {
@@ -925,6 +927,8 @@ enum CleanupFault {
     TerminationCommand,
     Reap,
     ReaderThreadPanic,
+    #[cfg(windows)]
+    JobAssignment,
     Combined,
 }
 
@@ -939,6 +943,11 @@ impl CleanupFault {
 
     fn reader_failed(self) -> bool {
         matches!(self, Self::ReaderThreadPanic | Self::Combined)
+    }
+
+    #[cfg(windows)]
+    fn assignment_failed(self) -> bool {
+        matches!(self, Self::JobAssignment)
     }
 }
 
@@ -1006,6 +1015,20 @@ pub(crate) fn probe_debuggee_perl_for_test_with_reader_panic(
     budget: Duration,
 ) -> Result<DebuggeePerl, String> {
     probe_debuggee_perl_with_options(binary, budget, false, None, CleanupFault::ReaderThreadPanic)
+        .map_err(|failure| failure.reason)
+}
+
+#[cfg(test)]
+pub(crate) fn active_probe_reader_count() -> usize {
+    ACTIVE_PROBE_READERS.load(Ordering::Acquire)
+}
+
+#[cfg(all(test, windows))]
+pub(crate) fn probe_debuggee_perl_for_test_with_job_assignment_failure(
+    binary: &Path,
+    budget: Duration,
+) -> Result<DebuggeePerl, String> {
+    probe_debuggee_perl_with_options(binary, budget, false, None, CleanupFault::JobAssignment)
         .map_err(|failure| failure.reason)
 }
 
@@ -1114,13 +1137,29 @@ fn probe_debuggee_perl_with_options(
     command.process_group(0);
     let mut child = command.spawn().map_err(|e| fail(format!("cannot spawn: {e}")))?;
     #[cfg(windows)]
-    let _probe_job = match ProbeJob::assign(&child) {
+    let _probe_job = match if cleanup_fault.assignment_failed() {
+        Err(io::Error::other("injected job assignment failure"))
+    } else {
+        ProbeJob::assign(&child)
+    } {
         Ok(job) => job,
         Err(error) => {
+            let tree_kill = Command::new("taskkill")
+                .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                .status();
             let kill = child.kill();
             let wait = child.wait();
             let mut cleanup =
                 vec![format!("cannot assign probe process tree to a kill-on-close job: {error}")];
+            if !tree_kill.as_ref().is_ok_and(|status| status.success()) {
+                cleanup.push(format!(
+                    "taskkill process-tree fallback failed: {}",
+                    tree_kill.err().map_or_else(
+                        || "non-success status".to_string(),
+                        |error| error.to_string()
+                    )
+                ));
+            }
             if let Err(error) = kill {
                 cleanup.push(format!("direct child kill failed: {error}"));
             }
@@ -1328,7 +1367,19 @@ where
     let (tx, rx) = channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let thread_cancel = Arc::clone(&cancel);
+    #[cfg(test)]
+    ACTIVE_PROBE_READERS.fetch_add(1, Ordering::AcqRel);
     let thread = std::thread::spawn(move || -> Result<(), String> {
+        #[cfg(test)]
+        struct ReaderActivity;
+        #[cfg(test)]
+        impl Drop for ReaderActivity {
+            fn drop(&mut self) {
+                ACTIVE_PROBE_READERS.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
+        #[cfg(test)]
+        let _activity = ReaderActivity;
         if panic_reader {
             std::panic::resume_unwind(Box::new("injected pipe reader panic"));
         }
@@ -1383,7 +1434,10 @@ fn collect_pipe_output(drain: PipeDrain, cleanup_fault: CleanupFault) -> Result<
 /// are polled with `PeekNamedPipe`, so cancellation is observable even when an
 /// inherited descendant has kept the write end open. Process-tree termination
 /// happens before this helper is called; the cancellation budget is the final
-/// guard against an unbounded reader join.
+/// guard against an unbounded reader join. Every production reader checks the
+/// cancellation flag before polling and before each read, so termination closes
+/// the pipe boundary before this bounded join can expire. Test instrumentation
+/// verifies that no reader remains active after each cleanup scenario.
 fn join_pipe_reader(drain: PipeDrain, cleanup_fault: CleanupFault) -> Result<(), String> {
     drop(drain.receiver);
     drain.cancel.store(true, Ordering::Release);
@@ -1547,6 +1601,38 @@ fn terminate_probe_process_tree(
             if !kill.as_ref().is_ok_and(|status| status.success()) && group_remains {
                 failures.push(format!(
                     "SIGKILL failed for probe process group {pid}: {}",
+                    kill.err().map_or_else(
+                        || "non-success status".to_string(),
+                        |error| error.to_string()
+                    )
+                ));
+            }
+        }
+        if let Some(descendant_pid_file) = descendant_pid_file
+            && let Ok(pid_text) = fs::read_to_string(descendant_pid_file)
+            && let Ok(descendant_pid) = pid_text.trim().parse::<u32>()
+            && process_id_is_alive(descendant_pid)
+        {
+            let term = Command::new("kill").args(["-TERM", &descendant_pid.to_string()]).status();
+            if !term.as_ref().is_ok_and(|status| status.success()) {
+                failures.push(format!(
+                    "SIGTERM failed for escaped descendant {descendant_pid}: {}",
+                    term.err().map_or_else(
+                        || "non-success status".to_string(),
+                        |error| error.to_string()
+                    )
+                ));
+            }
+            let deadline = Instant::now() + Duration::from_millis(500);
+            while process_id_is_alive(descendant_pid) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let kill = Command::new("kill").args(["-KILL", &descendant_pid.to_string()]).status();
+            if !kill.as_ref().is_ok_and(|status| status.success())
+                && process_id_is_alive(descendant_pid)
+            {
+                failures.push(format!(
+                    "SIGKILL failed for escaped descendant {descendant_pid}: {}",
                     kill.err().map_or_else(
                         || "non-success status".to_string(),
                         |error| error.to_string()
