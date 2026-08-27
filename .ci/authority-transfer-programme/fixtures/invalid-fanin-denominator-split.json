@@ -1,0 +1,379 @@
+{
+  "schema_version": "authority_transfer_programme_fixture.v1",
+  "description": "Shift-left defect: the declared consumer_cutover denominator is split across two exact-process fan-ins so no single fan-in covers it, while a stripped second fan-in evades ownership surfaces (#11697 static rejection case; ruling falsifier FF05).",
+  "expected_code": "FANIN_DENOMINATOR_INCOMPLETE",
+  "graph": {
+    "schema_version": "authority_transfer_programme_graph.v1",
+    "programme_issue": 11696,
+    "rails": [
+      "control_plane"
+    ],
+    "operation_profiles": [
+      "op.programme-controller.v1",
+      "op.static-contract.v1",
+      "op.consumer-cutover.v1",
+      "op.fanin-integration.v1",
+      "op.store-publication.v1",
+      "op.advisory-preflight.v1",
+      "op.live-promotion.v1",
+      "op.retirement.v1",
+      "op.source-adapter.v1",
+      "op.compiler-implementation.v1"
+    ],
+    "evidence_profiles": [
+      "ev.not-applicable.v1",
+      "ev.static-validator.v1",
+      "ev.consumer-denominator.v1",
+      "ev.exact-process-receipt.v1",
+      "ev.live-required-promotion.v1",
+      "ev.predecessor-retired.v1"
+    ],
+    "first_falsifiers": [
+      {
+        "id": "FF02",
+        "statement": "Governance becomes buildable."
+      },
+      {
+        "id": "FF05",
+        "statement": "Consumer denominator row lost."
+      },
+      {
+        "id": "FF07",
+        "statement": "Optional live edge hardened."
+      },
+      {
+        "id": "FF08",
+        "statement": "Unordered exclusive writers."
+      },
+      {
+        "id": "FF09",
+        "statement": "File-only serialization."
+      },
+      {
+        "id": "FF10",
+        "statement": "Retirement without exit."
+      },
+      {
+        "id": "FF12",
+        "statement": "Artifact without owner."
+      }
+    ],
+    "nodes": [
+      {
+        "node_id": "K0",
+        "issue": 900001,
+        "controller": null,
+        "rail": "control_plane",
+        "phase": "fixture",
+        "kind": "controller",
+        "buildable": false,
+        "observation_optional": false,
+        "edges": {
+          "hard": [],
+          "evidence": [],
+          "optional": [],
+          "parallel_after": [],
+          "fan_in": []
+        },
+        "operation_profile": "op.programme-controller.v1",
+        "evidence_profile": "ev.not-applicable.v1",
+        "authority_inputs": [],
+        "authority_outputs": [],
+        "conflicts": {
+          "exclusive": [],
+          "shared": []
+        },
+        "claim_ceiling": "One bounded proposition.",
+        "non_claims": [
+          "None beyond the claim ceiling."
+        ],
+        "first_falsifier": "FF02",
+        "artifacts": [],
+        "predecessor_exit": null,
+        "handoff": null,
+        "terminal_relation": "none"
+      },
+      {
+        "node_id": "AS",
+        "issue": 900002,
+        "controller": "K0",
+        "rail": "control_plane",
+        "phase": "fixture",
+        "kind": "accepted_store",
+        "buildable": true,
+        "observation_optional": false,
+        "edges": {
+          "hard": [],
+          "evidence": [],
+          "optional": [],
+          "parallel_after": [],
+          "fan_in": []
+        },
+        "operation_profile": "op.store-publication.v1",
+        "evidence_profile": "ev.exact-process-receipt.v1",
+        "authority_inputs": [],
+        "authority_outputs": [
+          {
+            "key": "m.store",
+            "mode": "exclusive"
+          }
+        ],
+        "conflicts": {
+          "exclusive": [
+            "m.store"
+          ],
+          "shared": []
+        },
+        "claim_ceiling": "One bounded proposition.",
+        "non_claims": [
+          "None beyond the claim ceiling."
+        ],
+        "first_falsifier": "FF02",
+        "artifacts": [
+          {
+            "id": "m.store.pub",
+            "owner": "AS"
+          }
+        ],
+        "predecessor_exit": null,
+        "handoff": "CUA",
+        "terminal_relation": "close_leaf"
+      },
+      {
+        "node_id": "CUA",
+        "issue": 900003,
+        "controller": "K0",
+        "rail": "control_plane",
+        "phase": "fixture",
+        "kind": "consumer_cutover",
+        "buildable": true,
+        "observation_optional": false,
+        "edges": {
+          "hard": [
+            "AS"
+          ],
+          "evidence": [],
+          "optional": [],
+          "parallel_after": [],
+          "fan_in": []
+        },
+        "operation_profile": "op.consumer-cutover.v1",
+        "evidence_profile": "ev.consumer-denominator.v1",
+        "authority_inputs": [
+          "m.store"
+        ],
+        "authority_outputs": [
+          {
+            "key": "m.consumer.one",
+            "mode": "exclusive"
+          }
+        ],
+        "conflicts": {
+          "exclusive": [
+            "m.consumer.one"
+          ],
+          "shared": [
+            "m.store.read"
+          ]
+        },
+        "claim_ceiling": "One bounded proposition.",
+        "non_claims": [
+          "None beyond the claim ceiling."
+        ],
+        "first_falsifier": "FF05",
+        "artifacts": [
+          {
+            "id": "m.consumer.one.cutover",
+            "owner": "CUA"
+          }
+        ],
+        "predecessor_exit": null,
+        "handoff": "FI1",
+        "terminal_relation": "close_leaf"
+      },
+      {
+        "node_id": "CUB",
+        "issue": 900004,
+        "controller": "K0",
+        "rail": "control_plane",
+        "phase": "fixture",
+        "kind": "consumer_cutover",
+        "buildable": true,
+        "observation_optional": false,
+        "edges": {
+          "hard": [
+            "AS"
+          ],
+          "evidence": [],
+          "optional": [],
+          "parallel_after": [],
+          "fan_in": []
+        },
+        "operation_profile": "op.consumer-cutover.v1",
+        "evidence_profile": "ev.consumer-denominator.v1",
+        "authority_inputs": [
+          "m.store"
+        ],
+        "authority_outputs": [
+          {
+            "key": "m.consumer.two",
+            "mode": "exclusive"
+          }
+        ],
+        "conflicts": {
+          "exclusive": [
+            "m.consumer.two"
+          ],
+          "shared": [
+            "m.store.read"
+          ]
+        },
+        "claim_ceiling": "One bounded proposition.",
+        "non_claims": [
+          "None beyond the claim ceiling."
+        ],
+        "first_falsifier": "FF05",
+        "artifacts": [
+          {
+            "id": "m.consumer.two.cutover",
+            "owner": "CUB"
+          }
+        ],
+        "predecessor_exit": null,
+        "handoff": "FI1",
+        "terminal_relation": "close_leaf"
+      },
+      {
+        "node_id": "CUC",
+        "issue": 900005,
+        "controller": "K0",
+        "rail": "control_plane",
+        "phase": "fixture",
+        "kind": "consumer_cutover",
+        "buildable": true,
+        "observation_optional": false,
+        "edges": {
+          "hard": [
+            "AS"
+          ],
+          "evidence": [],
+          "optional": [],
+          "parallel_after": [],
+          "fan_in": []
+        },
+        "operation_profile": "op.consumer-cutover.v1",
+        "evidence_profile": "ev.consumer-denominator.v1",
+        "authority_inputs": [
+          "m.store"
+        ],
+        "authority_outputs": [
+          {
+            "key": "m.consumer.three",
+            "mode": "exclusive"
+          }
+        ],
+        "conflicts": {
+          "exclusive": [
+            "m.consumer.three"
+          ],
+          "shared": [
+            "m.store.read"
+          ]
+        },
+        "claim_ceiling": "One bounded proposition.",
+        "non_claims": [
+          "None beyond the claim ceiling."
+        ],
+        "first_falsifier": "FF05",
+        "artifacts": [
+          {
+            "id": "m.consumer.three.cutover",
+            "owner": "CUC"
+          }
+        ],
+        "predecessor_exit": null,
+        "handoff": "FI2",
+        "terminal_relation": "close_leaf"
+      },
+      {
+        "node_id": "FI1",
+        "issue": 900006,
+        "controller": "K0",
+        "rail": "control_plane",
+        "phase": "fixture",
+        "kind": "exact_process_fanin",
+        "buildable": false,
+        "observation_optional": false,
+        "edges": {
+          "hard": [
+            "AS"
+          ],
+          "evidence": [],
+          "optional": [],
+          "parallel_after": [],
+          "fan_in": [
+            "CUA",
+            "CUB"
+          ]
+        },
+        "operation_profile": "op.fanin-integration.v1",
+        "evidence_profile": "ev.exact-process-receipt.v1",
+        "authority_inputs": [
+          "m.store"
+        ],
+        "authority_outputs": [],
+        "conflicts": {
+          "exclusive": [],
+          "shared": []
+        },
+        "claim_ceiling": "One bounded proposition.",
+        "non_claims": [
+          "None beyond the claim ceiling."
+        ],
+        "first_falsifier": "FF02",
+        "artifacts": [],
+        "predecessor_exit": null,
+        "handoff": null,
+        "terminal_relation": "close_leaf"
+      },
+      {
+        "node_id": "FI2",
+        "issue": 900007,
+        "controller": "K0",
+        "rail": "control_plane",
+        "phase": "fixture",
+        "kind": "exact_process_fanin",
+        "buildable": false,
+        "observation_optional": false,
+        "edges": {
+          "hard": [
+            "AS"
+          ],
+          "evidence": [],
+          "optional": [],
+          "parallel_after": [],
+          "fan_in": [
+            "CUC"
+          ]
+        },
+        "operation_profile": "op.fanin-integration.v1",
+        "evidence_profile": "ev.exact-process-receipt.v1",
+        "authority_inputs": [],
+        "authority_outputs": [],
+        "conflicts": {
+          "exclusive": [],
+          "shared": []
+        },
+        "claim_ceiling": "One bounded proposition.",
+        "non_claims": [
+          "None beyond the claim ceiling."
+        ],
+        "first_falsifier": "FF02",
+        "artifacts": [],
+        "predecessor_exit": null,
+        "handoff": null,
+        "terminal_relation": "close_leaf"
+      }
+    ]
+  }
+}

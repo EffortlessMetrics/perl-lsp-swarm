@@ -100,6 +100,8 @@ impl DiagnosticCode {
             Self::SecurityPipeOpen => "PL605",
             Self::SecurityReadpipe => "PL606",
             Self::SecuritySqlInjection => "PL607",
+            Self::SecuritySubstitutionEval => "PL608",
+            Self::SecurityEmbeddedRegexCode => "PL609",
             Self::UnusedImport => "PL700",
             Self::ModuleNotFound => "PL701",
             Self::SourceFilterModule => "PL702",
@@ -174,6 +176,8 @@ impl DiagnosticCode {
             // `documentation_url_format_consistency` carries this exception as
             // an explicit allowlist so the deviation stays reviewed.
             "PL607" => "https://owasp.org/www-community/attacks/SQL_Injection",
+            "PL608" => "https://docs.perl-lsp.org/errors/PL608",
+            "PL609" => "https://docs.perl-lsp.org/errors/PL609",
             "PL700" => "https://docs.perl-lsp.org/errors/PL700",
             "PL701" => "https://docs.perl-lsp.org/errors/PL701",
             "PL702" => "https://docs.perl-lsp.org/errors/PL702",
@@ -238,6 +242,8 @@ impl DiagnosticCode {
             | Self::SecurityPipeOpen
             | Self::SecurityReadpipe
             | Self::SecuritySqlInjection
+            | Self::SecuritySubstitutionEval
+            | Self::SecurityEmbeddedRegexCode
             | Self::ModuleNotFound
             | Self::SourceFilterModule
             | Self::VersionIncompatFeature
@@ -465,6 +471,16 @@ impl DiagnosticCode {
                 Keep the SQL literal static and pass values as bind values: \
                 `$dbh->prepare('... WHERE id = ?')->execute($user_id)`.",
             ),
+            Self::SecuritySubstitutionEval => Some(
+                "The `e`/`ee` modifier evaluates the substitution replacement as Perl code, \
+                like string `eval`. Compute the replacement without `/e`, or keep untrusted \
+                input out of the evaluated expression.",
+            ),
+            Self::SecurityEmbeddedRegexCode => Some(
+                "An embedded `(?{ ... })` or `(??{ ... })` block runs Perl code while \
+                the pattern is evaluated. Remove the code block from the regex or keep \
+                untrusted patterns away from it.",
+            ),
             Self::UnusedImport => Some(
                 "This module is imported but none of its exports appear to be used. \
                 Remove the `use` statement to reduce unnecessary dependencies.",
@@ -646,6 +662,8 @@ impl DiagnosticCode {
             "PL605" => Some(Self::SecurityPipeOpen),
             "PL606" => Some(Self::SecurityReadpipe),
             "PL607" => Some(Self::SecuritySqlInjection),
+            "PL608" => Some(Self::SecuritySubstitutionEval),
+            "PL609" => Some(Self::SecurityEmbeddedRegexCode),
             "PL700" => Some(Self::UnusedImport),
             "PL701" => Some(Self::ModuleNotFound),
             "PL702" => Some(Self::SourceFilterModule),
