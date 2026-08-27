@@ -48,6 +48,7 @@ import {
   _spawnReplacementCrashGenerationForTest,
   _setLanguageClientLifecycleForTest,
   _handleLifecycleClientStateChangeForTest,
+  _languageClientConnectionOptionsForTest,
 } from '../extension';
 
 // vscode-languageclient State numeric values (Stopped=1, Running=2, Starting=3).
@@ -237,6 +238,10 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     showWarningMessage.mockResolvedValue(undefined);
   });
 
+  test('delegates connection-close restart ownership exclusively to the lifecycle arbiter', () => {
+    expect(_languageClientConnectionOptionsForTest()).toEqual({ maxRestartCount: 0 });
+  });
+
   test('unexpected Running → Stopped shows an error toast and captures the diagnosis', async () => {
     handleClientStateChange(crashEvent() as never);
     await flush();
@@ -273,6 +278,60 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     expect(exhaustedMessage).toMatch(/could not be restarted automatically/i);
     // Counter must not exceed 3.
     expect(_autoRestartAttemptsForTest()).toBe(3);
+  });
+
+  test('budget exhaustion retires the live client after exactly three replacements', async () => {
+    let created = 0;
+    const lifecycle = new ExtensionLanguageClientLifecycle<FakeLifecycleClient, FakeLifecycleEvent>(
+      {
+        resolveServerPath: async () => '/server/perllsp',
+        createClient: () => {
+          created += 1;
+          return new FakeLifecycleClient(Promise.resolve(), created);
+        },
+      },
+    );
+    _setLanguageClientLifecycleForTest(injectedLifecycle(lifecycle));
+    await lifecycle.start();
+
+    for (let crash = 0; crash < 3; crash += 1) {
+      handleClientStateChange(crashEvent() as never);
+      await drain();
+    }
+
+    expect(created).toBe(4); // initial client plus exactly three replacements
+    expect(_autoRestartAttemptsForTest()).toBe(3);
+    showErrorMessage.mockResolvedValue('Restart Server');
+    handleClientStateChange(crashEvent() as never);
+    await drain();
+
+    expect(created).toBe(5); // explicit retry creates exactly one fresh client
+    expect(_autoRestartAttemptsForTest()).toBe(0);
+    expect(lifecycle.snapshot.state).toBe('running');
+    expect(lifecycle.client).toBeDefined();
+  });
+
+  test('budget exhaustion without explicit retry leaves the client unavailable', async () => {
+    let created = 0;
+    const lifecycle = new ExtensionLanguageClientLifecycle<FakeLifecycleClient, FakeLifecycleEvent>(
+      {
+        resolveServerPath: async () => '/server/perllsp',
+        createClient: () => {
+          created += 1;
+          return new FakeLifecycleClient(Promise.resolve(), created);
+        },
+      },
+    );
+    _setLanguageClientLifecycleForTest(injectedLifecycle(lifecycle));
+    await lifecycle.start();
+    for (let crash = 0; crash < 4; crash += 1) {
+      handleClientStateChange(crashEvent() as never);
+      await drain();
+    }
+
+    expect(created).toBe(4);
+    expect(lifecycle.snapshot.state).toBe('stopped');
+    expect(lifecycle.client).toBeUndefined();
   });
 
   test('a user-initiated stop suppresses the crash toast and the counter', async () => {
@@ -483,7 +542,7 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     await drain();
 
     expect(_autoRestartAttemptsForTest()).toBe(3);
-    expect(lifecycle.snapshot.state).toBe('failed');
+    expect(lifecycle.snapshot.state).toBe('stopped');
     const exhaustedToasts = showErrorMessage.mock.calls.filter((call) =>
       /could not be restarted automatically/i.test(String(call[0])),
     );
