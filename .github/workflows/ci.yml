@@ -183,7 +183,10 @@ jobs:
               # No-token API probe can be rate limited on shared runner egress. Fall
               # back to the local two-dot diff scan; that over-approximates scope right
               # after base-tip movement but never under-reports an affected PR.
-              print(f"::warning::Could not list PR files ({exc}); using changed-file fallback")
+              print(
+                  f"::warning::Could not list PR files ({exc}); using changed-file fallback",
+                  file=sys.stderr,
+              )
               emit("true" if any(matches(arg) for arg in sys.argv[1:]) else "false")
 
           emit("false")
