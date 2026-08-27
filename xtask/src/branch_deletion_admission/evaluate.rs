@@ -92,6 +92,23 @@ pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
         }
     }
 
+    // 1b. The branch this route would delete must be the parent's actual head
+    //     branch. For a cross-repository (fork) parent, `head_ref` names a
+    //     branch in the fork; a same-named branch here is a different branch,
+    //     and deleting it would destroy something the merge never touched.
+    if !parent.head_in_admitted_repository {
+        return outcome(
+            DeletionAdmission::RetainBranchMoved,
+            format!(
+                "pull request #{} merged from a fork: {} names a branch in the head repository, not in {}",
+                parent.number,
+                parent.head_ref,
+                parent.repository.render()
+            ),
+            Vec::new(),
+        );
+    }
+
     // 2. "No open children" is only a fact if the query actually finished.
     match &request.graph.completeness {
         GraphCompleteness::Complete => {}

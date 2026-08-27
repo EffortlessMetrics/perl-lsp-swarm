@@ -192,6 +192,9 @@ struct GhParent {
     head_ref_name: String,
     #[serde(rename = "headRefOid")]
     head_ref_oid: String,
+    /// True when the head branch lives in a fork rather than this repository.
+    #[serde(rename = "isCrossRepository", default)]
+    is_cross_repository: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -248,7 +251,7 @@ pub fn collect_request(
             "--repo",
             &repository.render(),
             "--json",
-            "number,state,merged,headRefName,headRefOid",
+            "number,state,merged,headRefName,headRefOid,isCrossRepository",
         ],
     )?;
     let parent: GhParent = serde_json::from_str(&parent_json)
@@ -260,6 +263,7 @@ pub fn collect_request(
         head_ref: parent.head_ref_name.clone(),
         reviewed_head_sha: parent.head_ref_oid.clone(),
         terminality: parent_terminality(&parent.state, parent.merged),
+        head_in_admitted_repository: !parent.is_cross_repository,
     };
 
     // Open children: every PR whose base is the parent's head branch, in this

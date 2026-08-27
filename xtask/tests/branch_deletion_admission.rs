@@ -31,6 +31,7 @@ fn admissible_request() -> AdmissionRequest {
             head_ref: PARENT_BRANCH.to_string(),
             reviewed_head_sha: REVIEWED_SHA.to_string(),
             terminality: ParentTerminality::Merged,
+            head_in_admitted_repository: true,
         },
         branch: BranchSubject { current_sha: Some(REVIEWED_SHA.to_string()) },
         graph: OpenChildGraph {
@@ -133,6 +134,27 @@ fn retaining_outcomes_carry_no_admitted_tip() {
     let mut moved = admissible_request();
     moved.branch.current_sha = Some(OTHER_SHA.to_string());
     assert_eq!(evaluate(&moved).admitted_sha, None);
+}
+
+/// A cross-repository (fork) parent retains: its `head_ref` names a branch in
+/// the fork, so a same-named branch here is a different branch and deleting it
+/// would destroy something the merge never touched.
+///
+/// This fails closed in most shapes anyway — the fork's branch usually does
+/// not exist here, so the tip read comes back empty — but not when this
+/// repository happens to hold the same name at the same SHA. That case is the
+/// one this gate exists for.
+#[test]
+fn a_fork_parent_retains_even_when_the_name_resolves_here() {
+    let mut request = admissible_request();
+    request.parent.head_in_admitted_repository = false;
+    // Deliberately everything else admissible: same name, same SHA, no
+    // children, clean ownership. Only the fork flag stands between this and
+    // SAFE_TO_DELETE.
+    let outcome = evaluate(&request);
+    assert_eq!(outcome.admission, DeletionAdmission::RetainBranchMoved, "{}", outcome.detail);
+    assert!(outcome.detail.contains("fork"), "the detail must name the reason: {}", outcome.detail,);
+    assert_eq!(branch_deletion_command(&outcome), None);
 }
 
 /// Falsifier 1 — parent with two open children: the generated merge command

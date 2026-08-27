@@ -125,6 +125,14 @@ pub struct ParentSubject {
     /// The head SHA of the subject that was actually reviewed and merged.
     pub reviewed_head_sha: String,
     pub terminality: ParentTerminality,
+    /// Whether the parent's head branch actually lives in `repository`.
+    ///
+    /// `false` for a cross-repository (fork) pull request, whose `head_ref`
+    /// names a branch in the *fork*. Deleting that name in this repository
+    /// would delete an unrelated branch that merely shares it, so a fork head
+    /// retains. Required rather than defaulted: a request that does not say
+    /// must not be read as saying yes.
+    pub head_in_admitted_repository: bool,
 }
 
 /// The branch as it exists right now on the remote.

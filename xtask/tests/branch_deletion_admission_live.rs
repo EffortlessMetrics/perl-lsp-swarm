@@ -81,7 +81,7 @@ impl ReadOnlyCommands for FakeCommands {
 
 fn merged_parent_json() -> String {
     format!(
-        r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
+        r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
     )
 }
 
@@ -464,5 +464,36 @@ fn the_deletion_path_reverifies_remote_identity() -> Result<(), Box<dyn std::err
     let result = execute_admitted_deletion(&moved_remote, &deleter, &outcome, &bound);
     assert!(result.is_err(), "a repository mismatch must refuse the deletion");
     assert!(deleter.invocations.borrow().is_empty(), "nothing may be executed once identity fails",);
+    Ok(())
+}
+
+/// A fork parent must retain even though every other subject reads clean.
+///
+/// `gh` reports `isCrossRepository` for such a pull request; the collector
+/// carries it, and the decision refuses. Without this the deletion would
+/// target a same-named branch in the admitted repository that the merge never
+/// touched.
+#[test]
+fn a_cross_repository_parent_retains() -> Result<(), Box<dyn std::error::Error>> {
+    let fork = healthy().on(
+        "gh pr view 7799",
+        &format!(
+            r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":true}}"#
+        ),
+    );
+    let collected = collect_request(&fork, 7799, "origin")?;
+    assert!(
+        !collected.request.parent.head_in_admitted_repository,
+        "the collector must carry the fork flag",
+    );
+
+    let outcome = evaluate(&collected.request);
+    assert_eq!(outcome.admission, DeletionAdmission::RetainBranchMoved, "{}", outcome.detail);
+    assert_eq!(branch_deletion_command(&outcome), None);
+
+    // And the control: the same shape with the flag false is admitted, so this
+    // test cannot pass because the fixture is broken.
+    let same_but_owned = evaluate(&collect_request(&healthy(), 7799, "origin")?.request);
+    assert_eq!(same_but_owned.admission, DeletionAdmission::SafeToDelete);
     Ok(())
 }
