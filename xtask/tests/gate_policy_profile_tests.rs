@@ -342,7 +342,7 @@ fn inline_completion_gates_are_split_scoped_ordered_and_budgeted()
             "every child must be selected by a change to either formerly governed package"
         );
         assert_eq!(gate.command, expected_command);
-        if *gate_name == "inline_completion_registration" {
+        if gate_name == "inline_completion_registration" {
             assert!(
                 gate.command.starts_with("cargo build -p perllsp --locked && "),
                 "server-spawning inline completion tests must use the prebuilt perllsp binary"
