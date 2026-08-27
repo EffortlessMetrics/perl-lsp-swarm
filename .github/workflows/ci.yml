@@ -38,6 +38,10 @@ jobs:
     timeout-minutes: 1
     outputs:
       run_ci: ${{ steps.guard.outputs.run_ci }}
+      # #2266: true when the PR diff touches a published facade crate surface
+      # or the committed public-API baseline set. Consumed by the
+      # public-api-pr / semver-pr compatibility rails below.
+      api_scope: ${{ steps.guard.outputs.api_scope }}
     steps:
       - name: Checkout for docs-only detection
         if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
@@ -50,9 +54,13 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" != "pull_request" ]; then
             echo "run_ci=true" >> "$GITHUB_OUTPUT"
+            # Off-PR events skip the API rails by their job-level event gate.
+            echo "api_scope=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Non-PR event detected — running full CI"
           elif [ "${{ github.event.pull_request.draft }}" = "true" ]; then
             echo "run_ci=false" >> "$GITHUB_OUTPUT"
+            # Drafts are excluded by run_ci; ready_for_review recomputes scope.
+            echo "api_scope=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Draft PR detected — skipping CI jobs until ready for review"
           else
             base_sha="${{ github.event.pull_request.base.sha }}"
@@ -61,6 +69,10 @@ jobs:
 
             if ! git fetch --no-tags --depth=1 origin "${base_sha}" "pull/${pr_number}/head:${pr_head_ref}"; then
               echo "run_ci=true" >> "$GITHUB_OUTPUT"
+              # Fail open like run_ci: an unknowable diff is treated as
+              # API-affecting so the compatibility rails never report a green
+              # scoped-noop over a surface they could not inspect.
+              echo "api_scope=true" >> "$GITHUB_OUTPUT"
               echo "::warning::Could not fetch PR diff refs; running full CI fail-safe"
               exit 0
             fi
@@ -68,8 +80,120 @@ jobs:
             mapfile -t changed_files < <(git diff --name-only "${base_sha}" "${pr_head_ref}")
             if [ "${#changed_files[@]}" -eq 0 ]; then
               echo "run_ci=true" >> "$GITHUB_OUTPUT"
+              # Empty diffs contain no API surface; scoped-noop is honest here.
+              echo "api_scope=false" >> "$GITHUB_OUTPUT"
               echo "::notice::No changed files detected — running full CI fail-safe"
               exit 0
+            fi
+
+            # #2266: auto-select the public-API/semver compatibility rails from
+            # the pull request's own changed-file set, read through the REST
+            # files endpoint. A two-dot git diff against the base tip silently
+            # inherits facade commits other lanes already merged while this
+            # branch sat open (observed on #12850), and a merge-base three-dot
+            # diff needs history a depth=1 fetch deliberately lacks — so the
+            # exact PR file list is both truthful and cheap here. Scope stays
+            # job-level (ci.yml excludes `labeled`; workflow-level paths
+            # filters leave required contexts unreported), manual label
+            # widening remains on ci-nightly.yml pull_request(labeled).
+            api_scope="$(PR_NUMBER="${pr_number}" REPOSITORY="${GITHUB_REPOSITORY}" \
+            python3 - "${changed_files[@]}" <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          import urllib.request
+
+          repo = os.environ["REPOSITORY"]
+          pr_number = os.environ["PR_NUMBER"]
+
+          # #2266 scope authority: the committed baselines themselves. Any crate whose
+          # public items flow into a facade baseline via re-export (perl-lsp-rs-core,
+          # perl-parser-core, perl-workspace, perl-ast, ...) derives its crates/<dir>/
+          # prefix from the perl_X:: tokens in .ci/public-api-baselines/*.txt, so the
+          # selector tracks the real re-export closure without maintaining a second
+          # hand-written list beside the baselines.
+          STATIC_PREFIXES = (
+              # Facade surfaces checked directly by just public-api-check and the
+              # nightly semver rail (includes crates with no re-export trail).
+              "crates/perl-lsp-rs/",
+              "crates/perl-parser/",
+              "crates/perl-lexer/",
+              "crates/perl-parser-core/",
+              "crates/perl-uri/",
+              "crates/perl-dap/",
+              "crates/perllsp/",
+              ".ci/public-api-baselines/",
+          )
+          TOKEN_RE = re.compile("(?<![A-Za-z0-9_])perl_[a-z0-9_]+(?=::)")
+
+
+          def derive_prefixes():
+              found = set(STATIC_PREFIXES)
+              baseline_dir = os.path.join(".ci", "public-api-baselines")
+              try:
+                  names = os.listdir(baseline_dir)
+              except OSError:
+                  return tuple(sorted(found))
+              for name in names:
+                  path = os.path.join(baseline_dir, name)
+                  try:
+                      content = open(path, encoding="utf-8").read()
+                  except OSError:
+                      continue
+                  for token in TOKEN_RE.findall(content):
+                      crate_dir = "crates/" + token.replace("_", "-") + "/"
+                      found.add(crate_dir)
+              return tuple(sorted(found))
+
+          def emit(value):
+              print(value)
+              raise SystemExit(0)
+
+
+          def matches(path):
+              return any(
+                  path.startswith(prefix) or prefix.rstrip("/") == path for prefix in prefixes
+              )
+
+
+          prefixes = derive_prefixes()
+          page = 1
+          try:
+              while True:
+                  url = (
+                      f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files"
+                      f"?per_page=100&page={page}"
+                  )
+                  request = urllib.request.Request(
+                      url,
+                      headers={"Accept": "application/vnd.github+json"},
+                  )
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      batch = json.load(response)
+                  if not isinstance(batch, list):
+                      raise ValueError("unexpected files payload")
+                  for entry in batch:
+                      if matches(entry.get("filename") or ""):
+                          emit("true")
+                  if len(batch) < 100:
+                      break
+                  page += 1
+          except Exception as exc:
+              # No-token API probe can be rate limited on shared runner egress. Fall
+              # back to the local two-dot diff scan; that over-approximates scope right
+              # after base-tip movement but never under-reports an affected PR.
+              print(f"::warning::Could not list PR files ({exc}); using changed-file fallback")
+              emit("true" if any(matches(arg) for arg in sys.argv[1:]) else "false")
+
+          emit("false")
+          PY
+            )"
+            echo "api_scope=${api_scope}" >> "$GITHUB_OUTPUT"
+            if [ "${api_scope}" = "true" ]; then
+              echo "::notice::API-surface change detected — public-api-pr / semver-pr rails will run"
+            else
+              echo "::notice::No API-surface change — API rails report green scoped-noop (#2266)"
             fi
 
             docs_only=true
@@ -303,6 +427,161 @@ jobs:
             exit 1
           fi
           echo "✅ No conflict markers found"
+
+  # ── Public-API compatibility rails (#2266) ───────────────────────────
+  # Auto-run the nightly public-api/semver machinery on PRs that actually
+  # touch a published facade surface or `.ci/public-api-baselines/`, closing
+  # the label-only gating gap (issue #2266): humans forget labels and bot
+  # authors cannot set them. Scope selection happens inside the draft-pr-check
+  # guard via job-level conditions so non-API PRs settle as green scoped-noops
+  # instead of an always-pending context (REQUIRED_STYLE_SELF_FILTERED /
+  # always-or-scoped-noop convention in .ci/policies/required-checks.toml);
+  # ci.yml deliberately excludes the `labeled` event, so manual widening keeps
+  # using the ci-nightly.yml pull_request(labeled) label gates.
+  # Cost: ~1 min of detection-only work when no facade path changes; full
+  # cargo-public-api / cargo-semver-checks runtime only where it matters.
+  public-api-pr:
+    name: Public API Surface (facade PR)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    needs: [draft-pr-check, preflight-latest-check]
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.draft-pr-check.outputs.run_ci == 'true' &&
+      needs.preflight-latest-check.outputs.is_latest == 'true'
+    permissions:
+      contents: read
+    steps:
+      - name: Scoped no-op summary
+        # A hard-failing ratchet must still settle green on out-of-scope diffs
+        # so a future ruleset promotion resolves cleanly (issue #2266).
+        if: needs.draft-pr-check.outputs.api_scope != 'true'
+        shell: bash
+        run: |
+          {
+            echo "### Public API Surface scope"
+            echo ""
+            echo "- api_scope: \`false\`"
+            echo "- verdict: scoped-noop — no facade crate or .ci/public-api-baselines change"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::public-api scoped-noop: no facade crate or baseline surface changed."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+
+      - name: Cache cargo dependencies
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          key: public-api-${{ hashFiles('Cargo.lock') }}
+          cache-on-failure: true
+
+      - name: Install cargo-public-api
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        run: cargo install cargo-public-api --locked --version 0.50.1
+
+      - name: Install just
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        with:
+          tool: just
+
+      - name: Check public API surface (perl-lsp-rs, perl-parser, perl-uri, perl-dap, perllsp)
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        # Uses cargo public-api --simplified to omit blanket-impl noise; baselines in .ci/public-api-baselines/
+        run: just public-api-check
+
+  semver-pr:
+    name: Semver Compatibility (facade PR)
+    # Advisory per #2266: cargo-semver-checks stays continue-on-error until
+    # baseline noise-confidence is established; promote to a blocking verdict
+    # with the same evidence window that hardens public-api-pr.
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    needs: [draft-pr-check, preflight-latest-check]
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.draft-pr-check.outputs.run_ci == 'true' &&
+      needs.preflight-latest-check.outputs.is_latest == 'true'
+    permissions:
+      contents: read
+    steps:
+      - name: Scoped no-op summary
+        if: needs.draft-pr-check.outputs.api_scope != 'true'
+        shell: bash
+        run: |
+          {
+            echo "### Semver Compatibility scope"
+            echo ""
+            echo "- api_scope: \`false\`"
+            echo "- verdict: scoped-noop — no facade crate or .ci/public-api-baselines change"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::semver scoped-noop: no facade crate or baseline surface changed."
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install Rust
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: stable
+
+      - name: Cache cargo dependencies
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          key: semver-${{ hashFiles('Cargo.lock') }}
+          cache-on-failure: true
+
+      - name: Install cargo-semver-checks
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        run: cargo install cargo-semver-checks --version 0.47.0 --locked
+
+      - name: Fetch release tags from canonical repo
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        # Release tags live on EffortlessMetrics/perl-lsp; swarm origin has none
+        # (same wiring as the meta shard).
+        run: |
+          git fetch --force --tags https://github.com/EffortlessMetrics/perl-lsp.git '+refs/tags/v*:refs/tags/v*'
+
+      - name: Determine baseline tag
+        id: baseline
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        run: |
+          BASELINE=$(git tag | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1) || true
+          if [ -z "${BASELINE:-}" ]; then
+            echo "::warning::No v*.*.* release tags on this checkout; skipping semver comparison"
+            echo "baseline=none" >> "$GITHUB_OUTPUT"
+          else
+            echo "baseline=${BASELINE}" >> "$GITHUB_OUTPUT"
+            echo "Using baseline: ${BASELINE}"
+          fi
+
+      - name: Check published parser-stack crates against baseline
+        if: needs.draft-pr-check.outputs.api_scope == 'true' && steps.baseline.outputs.baseline != 'none'
+        env:
+          SEMVER_BASELINE: ${{ steps.baseline.outputs.baseline }}
+        run: |
+          for crate in perl-parser perl-lexer perl-parser-core perl-lsp-rs perllsp; do
+            if cargo semver-checks check-release -p "${crate}" \
+              --baseline-rev "${SEMVER_BASELINE}"; then
+              echo "semver: ${crate} compatible"
+            else
+              echo "::warning::Breaking changes detected in ${crate}"
+            fi
+          done
 
   # ── PR Smoke: advisory fast feedback for every PR ────────────────────
   # ADVISORY (continue-on-error): this lane runs the `pr-fast` xtask tier, whose
