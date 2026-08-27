@@ -2078,10 +2078,135 @@ mod tests {
                 rebound.push_str("$dbh->do(\"DELETE FROM b WHERE id = $id\");\n");
             }
             assert_eq!(
-                pl607_count(&sql_diags(&rebound)),
+                pl607_count(&rebound),
                 sinks,
                 "only pre-rebinding sinks fire at {sinks} sinks"
             );
         }
+    }
+
+    // --- embedded regex code (#9818) ---
+
+    fn has_code(diags: &[Diagnostic], expected: &str) -> bool {
+        diags.iter().any(|d| d.code.as_deref() == Some(expected))
+    }
+
+    #[test]
+    fn e_modifier_substitution_is_flagged() {
+        let diags = security_diags(r#"$s =~ s/(\w+)/uc($1)/e;"#);
+        assert!(
+            has_code(&diags, "PL608"),
+            "s///e should publish the stable substitution-eval code PL608: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn ee_modifier_substitution_is_flagged() {
+        let diags = security_diags(r#"$t =~ s/\$(\w+)/$$1/ee;"#);
+        assert!(
+            has_code(&diags, "PL608"),
+            "s///ee should publish the stable substitution-eval code PL608: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn standalone_e_modifier_substitution_is_flagged() {
+        let diags = security_diags(r#"s/version (\d+)/$1 + 1/e;"#);
+        assert!(
+            has_code(&diags, "PL608"),
+            "bare s///e should publish PL608 even without a =~ binding: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_code_block_in_qr_is_flagged() {
+        let diags = security_diags(r#"my $r = qr/(?{ print "hi" })/;"#);
+        assert!(
+            has_code(&diags, "PL609"),
+            "qr/(?{{...}})/ should publish the stable embedded-code class PL609: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_code_block_in_explicit_match_is_flagged() {
+        let diags = security_diags(r#"$x =~ m/(?{ print "hi" })/;"#);
+        assert!(
+            has_code(&diags, "PL609"),
+            "m/(?{{...}})/ should publish the stable embedded-code class PL609: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_code_block_in_bare_match_is_flagged() {
+        let diags = security_diags(r#"$x =~ /(?{ print "hi" })/;"#);
+        assert!(
+            has_code(&diags, "PL609"),
+            "bare /(?{{...}})/ should publish the same embedded-code class PL609: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_code_block_in_substitution_pattern_is_flagged() {
+        let diags = security_diags(r#"$x =~ s/(?{ print "hi" })/ok/;"#);
+        assert!(
+            has_code(&diags, "PL609"),
+            "(?{{...}}) inside a substitution pattern without /e should publish PL609: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn plain_substitution_is_not_flagged() {
+        let diags = security_diags(r#"$s =~ s/a/b/;"#);
+        assert!(
+            !diags.iter().any(|d| d.code.as_deref().is_some_and(|c| c.starts_with("PL6"))),
+            "plain s/// must not publish a security diagnostic: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn qr_without_embedded_code_is_not_flagged() {
+        let diags = security_diags(r#"my $re = qr/hello/;"#);
+        assert!(
+            !diags.iter().any(|d| d.code.as_deref().is_some_and(|c| c.starts_with("PL6"))),
+            "plain qr// must not publish a security diagnostic: {diags:?}"
+        );
+    }
+
+    // --- bound-expression traversal (#9821) ---
+
+    #[test]
+    fn backtick_bound_to_match_is_still_flagged() {
+        let diags = security_diags("`ls` =~ /x/;");
+        assert!(
+            has_code(&diags, "PL601"),
+            "backtick under Match.expr must publish the same PL601 as elsewhere: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn backtick_bound_to_substitution_is_still_flagged() {
+        let diags = security_diags("`ls` =~ s/a/b/;");
+        assert!(
+            has_code(&diags, "PL601"),
+            "backtick under Substitution.expr must publish the same PL601: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn readpipe_bound_to_match_is_still_flagged() {
+        let diags = security_diags(r#"readpipe("ls") =~ /x/;"#);
+        assert!(
+            has_code(&diags, "PL606"),
+            "readpipe() under Match.expr must keep its own stable code PL606: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn variable_bound_to_match_is_not_flagged() {
+        let diags = security_diags("$s =~ /x/;");
+        assert!(
+            !diags.iter().any(|d| d.code.as_deref().is_some_and(|c| c.starts_with("PL6"))),
+            "ordinary variable binding under =~ must stay silent: {diags:?}"
+        );
     }
 }
