@@ -767,6 +767,15 @@ mod tests {
         CorpusTopology::from_paths(&CorpusPaths::from_root(root.to_path_buf()))
     }
 
+    fn canonical_expected_path(
+        root: &Path,
+        path: &Path,
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let relative = path.strip_prefix(root)?;
+        let canonical_root = strip_verbatim_prefix(fs::canonicalize(root)?);
+        Ok(canonical_root.join(relative))
+    }
+
     #[cfg(any(unix, windows))]
     fn create_file_symlink_for_test(original: &Path, link: &Path) -> Result<bool, std::io::Error> {
         #[cfg(unix)]
@@ -853,14 +862,18 @@ mod tests {
     }
 
     #[test]
-    fn discovery_requires_each_governed_layer_directory() {
+    fn discovery_requires_each_governed_layer_directory() -> Result<(), Box<dyn std::error::Error>>
+    {
         let both_missing = tempfile::tempdir().expect("both-missing temporary directory");
         let both_paths = CorpusPaths::from_root(both_missing.path().to_path_buf());
         assert_eq!(
             CorpusTopology::from_paths(&both_paths),
             Err(CorpusTopologyError::RequiredLayerMissing {
                 layer: CorpusAssetLayer::TestCorpus,
-                path: both_missing.path().join("test_corpus"),
+                path: canonical_expected_path(
+                    both_missing.path(),
+                    &both_missing.path().join("test_corpus"),
+                )?,
             })
         );
 
@@ -872,7 +885,10 @@ mod tests {
             CorpusTopology::from_paths(&fuzz_paths),
             Err(CorpusTopologyError::RequiredLayerMissing {
                 layer: CorpusAssetLayer::TestCorpus,
-                path: only_fuzz.path().join("test_corpus"),
+                path: canonical_expected_path(
+                    only_fuzz.path(),
+                    &only_fuzz.path().join("test_corpus"),
+                )?,
             })
         );
 
@@ -883,9 +899,13 @@ mod tests {
             CorpusTopology::from_paths(&test_paths),
             Err(CorpusTopologyError::RequiredLayerMissing {
                 layer: CorpusAssetLayer::Fuzz,
-                path: only_test.path().join("crates/perl-corpus/fuzz"),
+                path: canonical_expected_path(
+                    only_test.path(),
+                    &only_test.path().join("crates/perl-corpus/fuzz"),
+                )?,
             })
         );
+        Ok(())
     }
 
     #[test]
@@ -1086,7 +1106,7 @@ mod tests {
     }
 
     #[test]
-    fn required_assets_must_exist_after_rebinding() {
+    fn required_assets_must_exist_after_rebinding() -> Result<(), Box<dyn std::error::Error>> {
         let source_root = tempfile::tempdir().expect("source temporary directory");
         let empty_root = tempfile::tempdir().expect("empty temporary directory");
         write_fixture(&source_root.path().join("test_corpus/case.pl"), "1;");
@@ -1097,7 +1117,10 @@ mod tests {
             .with_root(empty_root.path())
             .expect("bind topology root");
         let required = rebound.assets.first().expect("required asset");
-        let expected_path = empty_root.path().join(&required.relative_path);
+        let expected_path = canonical_expected_path(
+            empty_root.path(),
+            &empty_root.path().join(&required.relative_path),
+        )?;
 
         assert_eq!(
             rebound.asset_path(required),
@@ -1106,10 +1129,11 @@ mod tests {
                 path: expected_path,
             })
         );
+        Ok(())
     }
 
     #[test]
-    fn optional_assets_may_be_absent_after_rebinding() {
+    fn optional_assets_may_be_absent_after_rebinding() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir().expect("temporary directory");
         let mut optional = asset("test_corpus/optional.pl");
         optional.requirement = AssetRequirement::Optional;
@@ -1117,7 +1141,13 @@ mod tests {
             .with_root(root.path())
             .expect("bind topology root");
 
-        assert_eq!(topology.asset_path(&optional), Ok(root.path().join("test_corpus/optional.pl")));
+        assert_eq!(
+            topology.asset_path(&optional),
+            Ok(
+                canonical_expected_path(root.path(), &root.path().join("test_corpus/optional.pl"),)?
+            )
+        );
+        Ok(())
     }
 
     #[test]
@@ -1161,7 +1191,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_rejects_directories_named_like_assets() {
+    fn discovery_rejects_directories_named_like_assets() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir().expect("temporary directory");
         fs::create_dir_all(root.path().join("test_corpus/sneaky.pl"))
             .expect("create directory named like a test asset");
@@ -1170,9 +1200,13 @@ mod tests {
         assert_eq!(
             CorpusTopology::from_paths(&CorpusPaths::from_root(root.path().to_path_buf())),
             Err(CorpusTopologyError::UnsupportedFileType {
-                path: root.path().join("test_corpus/sneaky.pl")
+                path: canonical_expected_path(
+                    root.path(),
+                    &root.path().join("test_corpus/sneaky.pl"),
+                )?
             })
         );
+        Ok(())
     }
 
     #[cfg(unix)]
@@ -1284,7 +1318,9 @@ mod tests {
 
         assert_eq!(
             topology_from_root(root.path()),
-            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+            Err(CorpusTopologyError::SymlinkUnsupported {
+                path: canonical_expected_path(root.path(), &link)?,
+            })
         );
         Ok(())
     }
@@ -1302,7 +1338,9 @@ mod tests {
 
         assert_eq!(
             topology_from_root(root.path()),
-            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+            Err(CorpusTopologyError::SymlinkUnsupported {
+                path: canonical_expected_path(root.path(), &link)?,
+            })
         );
         Ok(())
     }
@@ -1324,7 +1362,9 @@ mod tests {
 
         assert_eq!(
             topology_from_root(root.path()),
-            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+            Err(CorpusTopologyError::SymlinkUnsupported {
+                path: canonical_expected_path(root.path(), &link)?,
+            })
         );
         Ok(())
     }
@@ -1346,7 +1386,9 @@ mod tests {
 
         assert_eq!(
             topology_from_root(root.path()),
-            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+            Err(CorpusTopologyError::SymlinkUnsupported {
+                path: canonical_expected_path(root.path(), &link)?,
+            })
         );
         Ok(())
     }
@@ -1365,7 +1407,9 @@ mod tests {
 
         assert_eq!(
             topology_from_root(root.path()),
-            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+            Err(CorpusTopologyError::SymlinkUnsupported {
+                path: canonical_expected_path(root.path(), &link)?,
+            })
         );
         Ok(())
     }
@@ -1385,7 +1429,9 @@ mod tests {
 
         assert_eq!(
             topology_from_root(root.path()),
-            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+            Err(CorpusTopologyError::SymlinkUnsupported {
+                path: canonical_expected_path(root.path(), &link)?,
+            })
         );
         Ok(())
     }
@@ -1405,7 +1451,9 @@ mod tests {
 
         assert_eq!(
             topology_from_root(root.path()),
-            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+            Err(CorpusTopologyError::SymlinkUnsupported {
+                path: canonical_expected_path(root.path(), &link)?,
+            })
         );
         Ok(())
     }
