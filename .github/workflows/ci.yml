@@ -1147,18 +1147,14 @@ jobs:
           SHARD_NAME: ${{ matrix.name }}
 
   # ── CI Gate aggregate: roll up the deterministic shard + guard lanes ──
-  # NOTE ON NAME: this check is NOT a branch-protection required context. The
-  # required contexts are "Perl LSP Rust Small Result", "ripr+ New Gap Gate", and
-  # "Compile All Targets (bit-rot guard)" — the last of which is defined in this
-  # same workflow, below. `.ci/policies/required-checks.toml` is the inventory of
-  # record; keep it and this comment in step with the live ruleset.
-  #
-  # The previous name "CI Gate
-  # (Merge-Blocking)" was a misnomer — it never blocked merge — and it read as a
-  # scary hard-red on green PRs. Renamed to "CI Gate (Advisory Aggregate)" to stop
-  # misleading readers. `pr-smoke` is intentionally NOT in `needs` below: it is an
-  # advisory, flaky, redundant lane (see the pr-smoke job) and must not false-red
-  # this aggregate.
+  # This established context is hardened under #12911 but remains advisory.
+  # Candidate-controlled pull-request workflow results are not trusted required
+  # authority, so do not register this context in ruleset 16664791. The trusted
+  # organization-ruleset workflow is a separate follow-up. Keep the exact
+  # historical name for continuity with existing advisory consumers.
+  # `.ci/policies/required-checks.toml` records this advisory truth.
+  # `pr-smoke` remains intentionally outside `needs`: it is advisory, flaky, and
+  # redundant with the deterministic shard base (see the pr-smoke job).
   merge-gate:
     name: CI Gate (Advisory Aggregate)
     runs-on: ubuntu-24.04
@@ -1170,87 +1166,20 @@ jobs:
       - check-all-targets
       - ux-tests
       - merge-gate-shards
-    if: always() && needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
-    permissions:
-      statuses: write
+    # A required dependent job must always start: a skipped job is treated as
+    # successful by GitHub protection. The classifier emits explicit scoped
+    # no-ops for draft/superseded routes and fails closed otherwise.
+    if: always()
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
       - name: Gate summary
         shell: bash
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          needs = json.loads(os.environ["NEEDS_JSON"])
-          lines = ["### CI Gate aggregate", ""]
-          lines.append("| Dependency | Result |")
-          lines.append("| --- | --- |")
-          failed = []
-          for name, value in sorted(needs.items()):
-              result = value.get("result", "")
-              lines.append(f"| {name} | {result} |")
-              # "cancelled" means a GitHub concurrency-group kill on a superseded SHA —
-              # infra-noise, not a real failure.  "skipped" is an intentional gate bypass.
-              # Only genuine "failure" / "timed_out" / etc. block the merge gate.
-              # The agent-level classifier (green-ci-check, #351) remains the authoritative
-              # routing interpretation for per-PR check states.
-              if result not in ("success", "skipped", "cancelled"):
-                  failed.append(name)
-
-          if failed:
-              lines.extend(["", f"Blocking dependency failure(s): {', '.join(failed)}"])
-          else:
-              lines.extend(["", "All merge-gate dependencies passed."])
-
-          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-          if summary_path:
-              Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-          if failed:
-              raise SystemExit(1)
-          PY
-
-      - name: Set PR status (check)
-        if: always()
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
-        env:
-          NEEDS_JSON: ${{ toJson(needs) }}
-        with:
-          script: |
-            const needs = JSON.parse(process.env.NEEDS_JSON || '{}');
-            // Mirror the Gate summary classifier: cancelled (concurrency-group kill on
-            // superseded SHA) and skipped are non-blocking; only failure/timed_out/etc block.
-            const failed = Object.entries(needs)
-              .filter(([name, value]) => !['success', 'skipped', 'cancelled'].includes(value.result))
-              .map(([name]) => name);
-            const status = failed.length === 0 ? 'success' : 'failure';
-            const description = failed.length === 0
-              ? 'All merge-gate dependencies passed'
-              : `Failed dependency: ${failed.join(', ')}`;
-
-            console.log(`Setting PR status to: ${status}`);
-            console.log(`Description: ${description}`);
-
-            try {
-              await github.rest.repos.createCommitStatus({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                sha: context.sha,
-                state: status,
-                context: 'ci/merge-gate',
-                description,
-                target_url: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
-              });
-            } catch (error) {
-              if (error.status === 403) {
-                core.warning(`Could not create ci/merge-gate commit status from this workflow context: ${error.message}`);
-              } else {
-                throw error;
-              }
-            }
+          EVENT_NAME: ${{ github.event_name }}
+          PULL_REQUEST_DRAFT: ${{ github.event.pull_request.draft }}
+        run: python3 scripts/ci/evaluate_ci_gate.py
 
   # ── UX Tests: first-5-minutes scenario regression suite ──────────────
   ux-tests:
@@ -1535,6 +1464,12 @@ jobs:
       # goes back to certifying a version from a ref shape.
       - name: Publish-provenance contract (required merge surface)
         run: cargo test -p xtask --test post_publish_smoke_version_provenance --locked -- --nocapture
+
+      # Same reasoning as the contracts above: the #11382 TDD-facade
+      # recurrence guard otherwise only executes through diff-routed advisory
+      # lanes, so stale facade imports could merge without it ever running.
+      - name: TDD facade consumer contract (required merge surface)
+        run: cargo test -p xtask --test parser_tdd_facade_consumers --locked -- --nocapture
 
       # #12863/#12693: no gate row or other workflow executed the budget witness
       # below, so its pins could all fail while every required check stayed
