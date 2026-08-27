@@ -114,6 +114,7 @@ pub mod module_train;
 pub mod module_train_live;
 pub mod native_critic;
 pub mod native_format;
+pub mod native_neovim_train;
 pub mod native_product_surface;
 pub mod native_tooling;
 pub mod oracle_fixture_manifest;

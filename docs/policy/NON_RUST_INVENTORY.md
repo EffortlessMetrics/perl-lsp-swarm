@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12124 |
-| Rust-family files | 3714 |
-| Non-Rust files | 8410 |
-| Allowlisted | 6174 |
+| Total tracked files | 12169 |
+| Rust-family files | 3730 |
+| Non-Rust files | 8439 |
+| Allowlisted | 6203 |
 | Unclassified | 2236 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 444 |
-| documentation | 2757 |
+| config | 445 |
+| documentation | 2762 |
 | generated | 2 |
 | production | 329 |
 | test | 2026 |
-| tooling | 616 |
+| tooling | 639 |
 | unclassified | 2236 |
 
 ## Unclassified files
@@ -2333,6 +2333,7 @@
 | `.changes/unreleased/product-12573-Changed-194700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12639-Fixed-235500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12641-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12648-Fixed-203303.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12765-Changed-154500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12806-Added-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3068,6 +3069,10 @@
 | `.spec/11079-pl700-removal-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11084-import-cleanup-train-manifest/import_cleanup_train.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11178-lite-xl-bdd-journeys/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11178-lite-xl-bdd-journeys/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11178-lite-xl-bdd-journeys/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11246-clippy-map-err-ignore-boundaries/activation-plan.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11246-clippy-map-err-ignore-boundaries/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11246-clippy-map-err-ignore-boundaries/denominator.csv` | tooling | `non-rust-spec-tree` | developer-experience |
@@ -3081,6 +3086,25 @@
 | `.spec/11371-vim-bdd-journeys/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11371-vim-bdd-journeys/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11371-vim-bdd-journeys/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11392-native-neovim-train-graph/invalid/actual_host_without_shared_execution.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/channel_satisfaction_transfer.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/contradicting_release_branches.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/controller_emitted_as_work.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/deep_cell_in_core_profile.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/duplicate_node_identity.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/duplicate_profile_identity.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/embedded_live_state.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/expected_errors.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/hard_implementation_cycle.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/host_provisioning_as_behavior.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/missing_contract_fields.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/overlapping_conflict_keys.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/sibling_satisfaction.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/sidecar_in_core_profile.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/sidecar_in_core_spine.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/invalid/unknown_edge_target.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/shuffled/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11392-native-neovim-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11625-module-train-graph/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6250,8 +6274,10 @@
 | `schemas/agent_review_packet.v1.schema.json` | config | `non-rust-agent-review-packet-schema` | tooling/agent-review |
 | `schemas/binary_identity_protocol.v1.schema.json` | config | `non-rust-binary-identity-schema` | identity |
 | `schemas/compiler_lexical_cutline_cases.v1.schema.json` | config | `non-rust-compiler-lexical-cutline-schema` | compiler |
+| `schemas/import_cleanup_train.v1.schema.json` | config | `non-rust-import-cleanup-train-schema` | tooling/train-graph |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
 | `schemas/loaded_module_reload_family.v1.schema.json` | config | `non-rust-loaded-module-reload-family-schema` | identity |
+| `schemas/native_neovim_train.v1.schema.json` | documentation | `non-rust-native-neovim-train-schema` | neovim-train |
 | `schemas/perl_builtin_semantics.v1.schema.json` | config | `non-rust-compiler-builtin-semantics-schema` | compiler |
 | `schemas/perl_compiler_concept_proof.v1.schema.json` | config | `non-rust-compiler-concept-proof-schema` | compiler |
 | `schemas/perl_compiler_concepts.v1.schema.json` | config | `non-rust-compiler-concepts-schema` | compiler |
@@ -6322,6 +6348,7 @@
 | `scripts/ci/check_security_reconciliation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_source_commit_api.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/ci_classify.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/classify-ripr-lane-termination` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_common.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_docs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_production.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6625,6 +6652,7 @@
 | `scripts/tests/test-check-rust-toolchain-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-ci-audit-workflows-shim.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-ci-cost-monitor-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-classify-ripr-lane-termination.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-clean-tmp-targets.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-cleanup-completed-worktrees.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-cleanup-worktrees-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6726,6 +6754,7 @@
 | `scripts/validate-release-scope.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate-workspace-exclusions.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate_public_release_claims.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/validate_public_release_claims_v2.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate_swarm_findings.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/verify-docs-rs.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/verify-publication-facts.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
