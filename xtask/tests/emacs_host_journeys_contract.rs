@@ -32,9 +32,10 @@ fn compiled() -> Vec<JourneyCell> {
 }
 
 fn find<'a>(cells: &'a [JourneyCell], id: &str) -> Result<&'a JourneyCell> {
-    cells.iter().find(|cell| cell.cell_id == id).ok_or_else(|| {
-        anyhow::anyhow!("test bug: missing known published cell {id}")
-    })
+    cells
+        .iter()
+        .find(|cell| cell.cell_id == id)
+        .ok_or_else(|| anyhow::anyhow!("test bug: missing known published cell {id}"))
 }
 
 #[test]
@@ -59,7 +60,9 @@ fn compiled_registry_validates_and_is_second_run_clean() -> Result<()> {
 
 #[test]
 fn every_fixture_owner_resolves_to_the_landed_subject_authority() -> Result<()> {
-    let root = xtask::utils::project_root().map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("xtask must live below the repository root"))?;
     for cell in compiled() {
         for fixture in &cell.fixture_owners {
             let path = root.join(".ci/editor-clients").join(format!("{fixture}.json"));
@@ -77,16 +80,13 @@ fn every_fixture_owner_resolves_to_the_landed_subject_authority() -> Result<()> 
 #[test]
 fn pull_protocol_surfaces_reject_push_and_lsp_mode_cohorts() -> Result<()> {
     let mut cells = compiled();
-    let poll_cell_id =
-        "emacs.diagnostics_pull_protocol.poll_request_full_result_id";
+    let poll_cell_id = "emacs.diagnostics_pull_protocol.poll_request_full_result_id";
     let position = cells
         .iter()
         .position(|cell| cell.cell_id == poll_cell_id)
         .ok_or_else(|| anyhow::anyhow!("pull poll cell vanished from the registry"))?;
-    cells[position].cohorts = vec![
-        DiagnosticCohort::StandaloneEglotPull,
-        DiagnosticCohort::BundledEglotPush,
-    ];
+    cells[position].cohorts =
+        vec![DiagnosticCohort::StandaloneEglotPull, DiagnosticCohort::BundledEglotPush];
     let error = match emacs_host_journeys::validate_registry(&cells) {
         Err(error) => error.to_string(),
         Ok(_) => bail!("push cohort inherited a pull-protocol cell"),
@@ -198,9 +198,8 @@ fn optional_feature_depth_cannot_silently_become_core_required() -> Result<()> {
 #[test]
 fn root_references_stay_role_tokens_owned_by_11366() -> Result<()> {
     let mut cells = compiled();
-    cells[0].root_reference = Some(RootReference {
-        role_token: "../../fixtures/stock-project/root.toml".to_string(),
-    });
+    cells[0].root_reference =
+        Some(RootReference { role_token: "../../fixtures/stock-project/root.toml".to_string() });
     ensure!(
         emacs_host_journeys::validate_registry(&cells).is_err(),
         "root fixture material leaked into the manifest as a path"
@@ -303,7 +302,8 @@ fn stale_generation_and_partial_edit_controls_are_registered_on_their_classes() 
         "emacs.diagnostics_pull_protocol.final_clear",
     ];
     for id in pull_ids {
-        let cell = find(&compiled(), id)?;
+        let cells = compiled();
+        let cell = find(&cells, id)?;
         ensure!(
             cell.evidence_kind == EvidenceKind::ProtocolMembershipOnly,
             "{id} lost protocol-membership kind"
@@ -330,7 +330,8 @@ fn digests_cover_bindings_and_survive_row_ordering_only_changes() -> Result<()> 
     let mut edited = cells.clone();
     edited[0].positive_discriminator.insert_str(0, "altered ");
     ensure!(
-        emacs_host_journeys::cell_digest(&edited[0])? != emacs_host_journeys::cell_digest(&cells[0])?,
+        emacs_host_journeys::cell_digest(&edited[0])?
+            != emacs_host_journeys::cell_digest(&cells[0])?,
         "digest ignored a discriminator edit"
     );
 
@@ -346,10 +347,8 @@ fn digests_cover_bindings_and_survive_row_ordering_only_changes() -> Result<()> 
 #[test]
 fn lookup_resolves_cells_classes_and_rejects_unknown_subjects() -> Result<()> {
     let cells = compiled();
-    let (class, matched) = emacs_host_journeys::lookup(
-        &cells,
-        "emacs.mode_attachment.perl_mode_language_id",
-    )?;
+    let (class, matched) =
+        emacs_host_journeys::lookup(&cells, "emacs.mode_attachment.perl_mode_language_id")?;
     ensure!(class.as_deref() == Some("mode_attachment"));
     ensure!(matched.len() == 1);
 

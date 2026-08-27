@@ -373,9 +373,7 @@ struct CellSpec<'a> {
 impl<'a> CellSpec<'a> {
     fn build(self) -> JourneyCell {
         let limitations: &[&str] = match self.evidence_kind {
-            EvidenceKind::ProtocolMembershipOnly => {
-                &["protocol_membership_not_host_visible"]
-            }
+            EvidenceKind::ProtocolMembershipOnly => &["protocol_membership_not_host_visible"],
             EvidenceKind::HostVisibleObservation => &["capability_not_advertised"],
         };
         let ceiling = match self.depth {
@@ -895,7 +893,10 @@ pub fn registry() -> Vec<JourneyCell> {
             surfaces: &[InlayHintRequestRefresh],
             evidence_kind: HostVisible,
             discriminator: "inlay hints requested, rendered, and refreshed as documented",
-            controls: &["action_without_semantic_observation", "capability_not_advertised"],
+            controls: &[
+                "action_without_semantic_observation",
+                "wrong_semantic_entity_same_spelling",
+            ],
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
@@ -922,11 +923,7 @@ pub fn validate_registry(cells: &[JourneyCell]) -> Result<RegistrySummary> {
     let mut seen_ids = BTreeSet::new();
     for cell in cells {
         validate_cell(cell, &classes)?;
-        ensure!(
-            seen_ids.insert(cell.cell_id.as_str()),
-            "duplicate cell id: {}",
-            cell.cell_id
-        );
+        ensure!(seen_ids.insert(cell.cell_id.as_str()), "duplicate cell id: {}", cell.cell_id);
     }
 
     // Depth containment: a core-coverage cell can never sit in an optional
@@ -945,24 +942,25 @@ pub fn validate_registry(cells: &[JourneyCell]) -> Result<RegistrySummary> {
     // Baseline coverage: every baseline class owns at least one core cell,
     // and none arrives from an optional class.
     for class in BASELINE_CLASSES {
-        let covered = cells
-            .iter()
-            .any(|cell| cell.journey_class == *class && cell.depth == DepthClass::Core);
+        let covered =
+            cells.iter().any(|cell| cell.journey_class == *class && cell.depth == DepthClass::Core);
         ensure!(covered, "baseline class {class} is not covered by any core cell");
     }
 
     // Cohort independence made explicit: publish per-cohort membership counts
     // so a cohort can only ever earn what its own cells admit.
     let mut cohort_membership = BTreeMap::new();
-    for cohort in
-        [DiagnosticCohort::BundledEglotPush, DiagnosticCohort::StandaloneEglotPull, DiagnosticCohort::LspModeObserved]
-    {
+    for cohort in [
+        DiagnosticCohort::BundledEglotPush,
+        DiagnosticCohort::StandaloneEglotPull,
+        DiagnosticCohort::LspModeObserved,
+    ] {
         let count = cells.iter().filter(|cell| cell.cohorts.contains(&cohort)).count();
-        cohort_membership.insert(format!("{cohort:?}").to_lowercase(), count);
+        let spelling = wire(&cohort)?;
+        cohort_membership.insert(spelling, count);
     }
 
-    let core_cell_count =
-        cells.iter().filter(|cell| cell.depth == DepthClass::Core).count();
+    let core_cell_count = cells.iter().filter(|cell| cell.depth == DepthClass::Core).count();
     let optional_cell_count = cells.len() - core_cell_count;
     Ok(RegistrySummary {
         schema_version: MANIFEST_SCHEMA_VERSION,
@@ -1009,8 +1007,7 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
     for cohort in &cell.cohorts {
         ensure!(cohorts.insert(*cohort), "duplicate cohort {cohort:?} in cell {}", cell.cell_id);
     }
-    let pull_surface =
-        cell.host_surfaces.contains(&HostSurface::DiagnosticsPollProtocol);
+    let pull_surface = cell.host_surfaces.contains(&HostSurface::DiagnosticsPollProtocol);
     ensure!(
         !(pull_surface && cohorts != BTreeSet::from([DiagnosticCohort::StandaloneEglotPull])),
         "cell {} exposes a pull-protocol surface outside the standalone-Eglot-pull cohort",
@@ -1043,7 +1040,8 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
                 cell.cell_id
             );
             ensure!(
-                !cell.allowed_limitations
+                !cell
+                    .allowed_limitations
                     .iter()
                     .any(|l| l == "protocol_membership_not_host_visible"),
                 "host-visible cell {} must not admit the protocol-membership limitation",
@@ -1058,7 +1056,11 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
     );
     let mut surfaces = BTreeSet::new();
     for surface in &cell.host_surfaces {
-        ensure!(surfaces.insert(*surface), "duplicate host surface {surface:?} in cell {}", cell.cell_id);
+        ensure!(
+            surfaces.insert(*surface),
+            "duplicate host surface {surface:?} in cell {}",
+            cell.cell_id
+        );
     }
 
     // Fixtures: within the landed subject substrate.
@@ -1118,8 +1120,10 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
                 cell.cell_id
             );
         };
-        ensure!(!role.contains('/') && !role.contains('\\') && is_reason_token(role),
-            "root role token must be a stable reason token with no path structure: {role}");
+        ensure!(
+            !role.contains('/') && !role.contains('\\') && is_reason_token(role),
+            "root role token must be a stable reason token with no path structure: {role}"
+        );
     }
 
     // Dimensions, controls, coordinates: bounded vocabularies, non-empty.
@@ -1211,7 +1215,11 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
         "cell {} must record a positive discriminator",
         cell.cell_id
     );
-    ensure!(!cell.claim_ceiling.trim().is_empty(), "cell {} must record a claim ceiling", cell.cell_id);
+    ensure!(
+        !cell.claim_ceiling.trim().is_empty(),
+        "cell {} must record a claim ceiling",
+        cell.cell_id
+    );
     let Some(producer) = cell.producer_mapping.strip_prefix(PRODUCER_MAPPING_PREFIX) else {
         bail!(
             "cell {} producer mapping {} is outside the {PRODUCER_MAPPING_PREFIX}#11361 namespace",
@@ -1245,10 +1253,7 @@ pub fn lookup<'a>(
     if registered_classes().contains(&subject) {
         let matching: Vec<&JourneyCell> =
             cells.iter().filter(|cell| cell.journey_class == subject).collect();
-        ensure!(
-            !matching.is_empty(),
-            "journey class {subject} is registered but owns no cells"
-        );
+        ensure!(!matching.is_empty(), "journey class {subject} is registered but owns no cells");
         return Ok((Some(subject.to_string()), matching));
     }
     bail!("no journey class or cell matches {subject:?}")
@@ -1383,10 +1388,7 @@ mod tests {
         let forward = registry_digest(&registry())?;
         let mut reversed = registry();
         reversed.reverse();
-        ensure!(
-            forward == registry_digest(&reversed)?,
-            "registry digest depends on row order"
-        );
+        ensure!(forward == registry_digest(&reversed)?, "registry digest depends on row order");
         Ok(())
     }
 }
