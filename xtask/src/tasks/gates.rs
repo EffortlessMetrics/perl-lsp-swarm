@@ -616,6 +616,8 @@ pub struct GateRunnerConfig {
     pub gate_policy: Option<PathBuf>,
     pub gate_filter: Option<String>,
     pub base_ref: Option<String>,
+    /// Optional immutable CI subject receipt for scope-aware planning.
+    pub subject: Option<PathBuf>,
     pub output_format: OutputFormat,
     pub emit_receipt: bool,
     pub receipt_path: Option<PathBuf>,
@@ -647,6 +649,7 @@ impl Default for GateRunnerConfig {
             gate_policy: None,
             gate_filter: None,
             base_ref: None,
+            subject: None,
             output_format: OutputFormat::Human,
             emit_receipt: false,
             receipt_path: None,
@@ -918,7 +921,16 @@ fn resolve_staged_tree_oid(root: &Path, config: &GateRunnerConfig) -> Result<Opt
 }
 
 fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Result<GatePlan> {
-    let base = config.base_ref.clone().unwrap_or_else(|| select_scope_base(root));
+    let subject_scope = config
+        .subject
+        .as_deref()
+        .map(|path| ci_scope::scope_from_subject(root, path))
+        .transpose()?;
+    let base = subject_scope
+        .as_ref()
+        .map(|scope| scope.base.clone())
+        .or_else(|| config.base_ref.clone())
+        .unwrap_or_else(|| select_scope_base(root));
     let staged_tree_oid = resolve_staged_tree_oid(root, config)?;
 
     if config.gate_filter.is_some() {
@@ -938,7 +950,12 @@ fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Re
             staged_tree_oid,
         )),
         GateTier::PrFast => {
-            let mut plan = plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base)?;
+            let mut plan = plan_pr_fast_gates(
+                root,
+                gates_for_tier(policy, "pr_fast"),
+                base,
+                subject_scope.clone(),
+            )?;
             // `plan_pr_fast_gates` always returns `staged_tree_oid: None` (it
             // has no reason to know about `--staged` on its own) — every
             // arm here must re-thread it, otherwise `--tier nightly
@@ -948,21 +965,32 @@ fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Re
             Ok(plan)
         }
         GateTier::MergeGate => {
-            let mut plan = plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base)?;
+            let mut plan = plan_pr_fast_gates(
+                root,
+                gates_for_tier(policy, "pr_fast"),
+                base,
+                subject_scope.clone(),
+            )?;
             plan.tier = GateTier::MergeGate;
             extend_plan_with_static_tiers(&mut plan, policy, MERGE_GATE_EXTRA_TIERS);
             plan.staged_tree_oid = staged_tree_oid;
             Ok(plan)
         }
         GateTier::Nightly => {
-            let mut plan = plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base)?;
+            let mut plan = plan_pr_fast_gates(
+                root,
+                gates_for_tier(policy, "pr_fast"),
+                base,
+                subject_scope.clone(),
+            )?;
             plan.tier = GateTier::Nightly;
             extend_plan_with_static_tiers(&mut plan, policy, NIGHTLY_EXTRA_TIERS);
             plan.staged_tree_oid = staged_tree_oid;
             Ok(plan)
         }
         GateTier::All => {
-            let mut plan = plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base)?;
+            let mut plan =
+                plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base, subject_scope)?;
             plan.tier = GateTier::All;
             extend_plan_with_non_pr_fast_static_gates(&mut plan, policy);
             plan.staged_tree_oid = staged_tree_oid;
@@ -1028,8 +1056,17 @@ fn static_gate(gate: GateDefinition) -> PlannedGate {
 }
 
 /// Plan PR-fast from policy planning roles plus ci-scope output.
-fn plan_pr_fast_gates(root: &Path, gates: Vec<GateDefinition>, base: String) -> Result<GatePlan> {
-    let scope = match compute_scope_output(root, &base) {
+fn plan_pr_fast_gates(
+    root: &Path,
+    gates: Vec<GateDefinition>,
+    base: String,
+    subject_scope: Option<ScopeOutput>,
+) -> Result<GatePlan> {
+    let scope_result = match subject_scope {
+        Some(scope) => Ok(scope),
+        None => compute_scope_output(root, &base),
+    };
+    let scope = match scope_result {
         Ok(scope) => scope,
         Err(err) => {
             let reason =
