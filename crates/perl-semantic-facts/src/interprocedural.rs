@@ -696,26 +696,26 @@ impl InterproceduralFactResult {
                     ));
                 }
             }
-            InterproceduralOutcome::Refused { .. } | InterproceduralOutcome::Invalid { .. } => {
-                if !self.facts.is_empty() {
-                    violations.push(
-                        "a refused or invalid outcome must not carry facts (refusal-as-empty is \
-                         required, not optional)"
-                            .to_string(),
-                    );
-                }
+            InterproceduralOutcome::Refused { .. } | InterproceduralOutcome::Invalid { .. }
+                if !self.facts.is_empty() =>
+            {
+                violations.push(
+                    "a refused or invalid outcome must not carry facts (refusal-as-empty is \
+                     required, not optional)"
+                        .to_string(),
+                );
             }
-            InterproceduralOutcome::ResourceExhausted { units_consumed } => {
+            InterproceduralOutcome::ResourceExhausted { units_consumed }
+                if *units_consumed != self.units_consumed =>
+            {
                 // One authoritative unit count: the outcome's own accounting
                 // must agree with the top-level field before any ceiling is
                 // checked against it (#12672 review).
-                if *units_consumed != self.units_consumed {
-                    violations.push(format!(
-                        "ResourceExhausted.units_consumed {units_consumed} disagrees with the \
-                         top-level units_consumed {} (one authoritative count)",
-                        self.units_consumed
-                    ));
-                }
+                violations.push(format!(
+                    "ResourceExhausted.units_consumed {units_consumed} disagrees with the \
+                     top-level units_consumed {} (one authoritative count)",
+                    self.units_consumed
+                ));
             }
             _ => {}
         }
