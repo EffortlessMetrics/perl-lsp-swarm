@@ -734,7 +734,7 @@ fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String>
                 )
             } else {
                 format!(
-                    "- Remaining work is operational: finish `v{}` prep verification, then publish and record final channel receipts.",
+                    "- Remaining work is operational: finish `v{}` prep verification; #12876 product-policy closure and #12230 publication projection remain blocked, and #4343 release controller retains NO-GO authority until explicit human approval is recorded.",
                     surface.version
                 )
             });
@@ -983,6 +983,30 @@ This closeout remains historical.\n";
         }
         if closeout.1.contains("finish `v0.18.0` prep verification") {
             bail!("preparation wording leaked into the shipped closeout");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_release_notes_rejects_preparation_publication_authority_leak() -> Result<()> {
+        let input = "**Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta\n\
+**Workspace version line**: `v0.17.0`\n\
+**Published crate surface**: 34 crates\n\
+## Active Blockers\n\
+- Remaining work is operational: finish `v0.18.0` prep verification, then publish and record final channel receipts\n";
+        let synced = sync_release_notes(&input, &preparation_release_surface())?;
+        if synced.contains("then publish and record final channel receipts") {
+            bail!("preparation sync emitted unconditional publication authority");
+        }
+        for boundary in [
+            "#12876 product-policy closure",
+            "#12230 publication projection",
+            "#4343 release controller retains NO-GO authority",
+            "explicit human approval is recorded",
+        ] {
+            if !synced.contains(boundary) {
+                bail!("preparation sync omitted authority boundary: {boundary}");
+            }
         }
         Ok(())
     }
