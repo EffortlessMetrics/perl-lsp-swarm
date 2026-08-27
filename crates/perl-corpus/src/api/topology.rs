@@ -778,9 +778,6 @@ mod tests {
         }
         #[cfg(windows)]
         {
-            if perl_tdd_support::symlink_test_decision().skip_visibly() {
-                return Ok(false);
-            }
             perl_tdd_support::try_create_file_symlink(original, link)
                 .map(|created| created.is_some())
         }
@@ -800,9 +797,6 @@ mod tests {
         }
         #[cfg(windows)]
         {
-            if perl_tdd_support::symlink_test_decision().skip_visibly() {
-                return Ok(false);
-            }
             perl_tdd_support::try_create_dir_symlink(original, link)
                 .map(|created| created.is_some())
         }
