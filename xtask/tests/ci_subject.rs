@@ -166,10 +166,18 @@ fn public_push_and_merge_group_adapters_preserve_direct_exact_pair_semantics() -
 
 #[test]
 fn captured_pr_subject_survives_base_branch_movement_and_drives_real_ci_scope() -> Result<()> {
+    const EXPECTED_BASE_SHA: &str = "ada48a124469513961733ba4a2d2e06979d5f4d6";
+    const EXPECTED_HEAD_SHA: &str = "5e45f8ae9f693add2055dc3f877e2c3a18abc288";
+    const EXPECTED_BASE_TREE: &str = "a886ebee86252cc16c459dbe52830030ec354545";
+    const EXPECTED_HEAD_TREE: &str = "c742cf5cbf9aa88f4f8ad298e306cd3e455d7238";
+    const EXPECTED_SUBJECT_DIGEST: &str =
+        "33b499f4cf944e37a19ea2d2620c19317aa7acfb854438e552f614956b37eff7";
     let tmp = tempfile::tempdir()?;
     let repo = tmp.path().join("repo");
     fs::create_dir_all(&repo)?;
     let (base, head) = init_fixture(&repo)?;
+    ensure!(base == EXPECTED_BASE_SHA, "fixture base commit changed unexpectedly");
+    ensure!(head == EXPECTED_HEAD_SHA, "fixture head commit changed unexpectedly");
     let event = tmp.path().join("event.json");
     let first_receipt = tmp.path().join("subject-first.json");
     let moved_receipt = tmp.path().join("subject-moved.json");
@@ -191,6 +199,18 @@ fn captured_pr_subject_survives_base_branch_movement_and_drives_real_ci_scope() 
     let receipt: Value = serde_json::from_slice(&moved_bytes)?;
     ensure!(receipt["base_sha"] == base, "receipt lost captured PR base");
     ensure!(receipt["head_sha"] == head, "receipt lost captured PR head");
+    ensure!(receipt["base_sha"] == EXPECTED_BASE_SHA, "receipt changed the canonical base");
+    ensure!(receipt["head_sha"] == EXPECTED_HEAD_SHA, "receipt changed the canonical head");
+    ensure!(receipt["base_tree"] == EXPECTED_BASE_TREE, "receipt changed the canonical base tree");
+    ensure!(receipt["head_tree"] == EXPECTED_HEAD_TREE, "receipt changed the canonical head tree");
+    ensure!(
+        receipt["diff_base_tree"] == EXPECTED_BASE_TREE,
+        "receipt changed the canonical diff tree"
+    );
+    ensure!(
+        receipt["subject_digest"] == EXPECTED_SUBJECT_DIGEST,
+        "subject digest mismatched the independent fixture oracle"
+    );
     ensure!(receipt["changed_file_count"] == 1, "expected one changed input");
     ensure!(
         receipt["changed_input_digest"]
@@ -199,10 +219,7 @@ fn captured_pr_subject_survives_base_branch_movement_and_drives_real_ci_scope() 
     );
     let expected_receipt = format!(
         "{{\n  \"schema_version\": \"ci-subject.v1\",\n  \"producer\": \"cargo-xtask-ci-subject\",\n  \"status\": \"RESOLVED\",\n  \"repository\": \"{REPOSITORY}\",\n  \"event_kind\": \"pull_request\",\n  \"resolution_source\": \"github_event\",\n  \"diff_mode\": \"merge_base\",\n  \"base_sha\": \"{base}\",\n  \"head_sha\": \"{head}\",\n  \"base_tree\": \"{}\",\n  \"head_tree\": \"{}\",\n  \"diff_base_sha\": \"{base}\",\n  \"diff_base_tree\": \"{}\",\n  \"changed_file_count\": 1,\n  \"changed_input_digest\": \"36c8a973bc6b53f4abf35ed1b950f4f1f9d6695eba0fa4aee8d959983795d2c5\",\n  \"subject_digest\": \"{}\",\n  \"error_code\": null\n}}\n",
-        receipt["base_tree"].as_str().context("receipt must contain a base tree")?,
-        receipt["head_tree"].as_str().context("receipt must contain a head tree")?,
-        receipt["diff_base_tree"].as_str().context("receipt must contain a diff base tree")?,
-        receipt["subject_digest"].as_str().context("receipt must contain a subject digest")?,
+        EXPECTED_BASE_TREE, EXPECTED_HEAD_TREE, EXPECTED_BASE_TREE, EXPECTED_SUBJECT_DIGEST,
     );
     ensure!(
         moved_bytes == expected_receipt.as_bytes(),
