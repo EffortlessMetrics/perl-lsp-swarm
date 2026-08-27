@@ -467,12 +467,27 @@ pub fn surviving_processes(
     needle: &str,
 ) -> Vec<ProcessProbeLine> {
     let before_matching: std::collections::BTreeSet<&ProcessProbeLine> =
-        before.iter().filter(|line| line.args.contains(needle)).collect();
+        before.iter().filter(|line| matches_needle(&line.args, needle)).collect();
     after
         .iter()
-        .filter(|line| line.args.contains(needle) && !before_matching.contains(line))
+        .filter(|line| matches_needle(&line.args, needle) && !before_matching.contains(line))
         .cloned()
         .collect()
+}
+
+/// Whether one process description belongs to the candidate named by `needle`.
+/// Windows image names are case-insensitive end to end (`tasklist` reports
+/// each image in its own casing while a configured path may use another), so
+/// matching folds case on that platform; command-line probes elsewhere match
+/// exactly.
+fn matches_needle(args: &str, needle: &str) -> bool {
+    if cfg!(windows) {
+        let folded_args = args.to_lowercase();
+        let folded_needle = needle.to_lowercase();
+        folded_args.contains(&folded_needle)
+    } else {
+        args.contains(needle)
+    }
 }
 
 /// Judge OS-level cleanup from before/after process captures, composing the

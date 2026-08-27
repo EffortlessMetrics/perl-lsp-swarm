@@ -875,11 +875,11 @@ pub fn host_run(
     })
 }
 
-struct OutcomeJudgment {
-    result: ObservationResult,
-    failure_class: Option<FailureClass>,
-    runtime_digest_match: bool,
-    runtime_version_mismatch: Option<String>,
+pub struct OutcomeJudgment {
+    pub result: ObservationResult,
+    pub failure_class: Option<FailureClass>,
+    pub runtime_digest_match: bool,
+    pub runtime_version_mismatch: Option<String>,
 }
 
 /// Runtime version-evidence judgment for external client subjects
@@ -916,8 +916,9 @@ pub fn external_version_evidence_mismatch(
 /// Cross-check the adapter's runtime identity attestation (the loaded client
 /// library digest, and — for external Eglot subjects, where the version is a
 /// required identity field — the observed version header) against the run
-/// plan, then judge the run.
-fn evaluate_observation(
+/// plan, then judge the run. Public so the contract suite can pin the
+/// cleanup-facet law against the Vim evaluator's identical semantics.
+pub fn evaluate_observation(
     plan: &EmacsHostRunPlan,
     observation: &ProcessObservation,
 ) -> Result<OutcomeJudgment> {
@@ -948,6 +949,9 @@ fn evaluate_observation(
         .events
         .iter()
         .any(|event| event.kind == emacs_host_runner::DriverEventKind::DriverFailed);
+    // Even an orderly exit-0 run that leaked the candidate is a failure, not
+    // a not-proven — same law as the Vim evaluator (#10894 cleanup facet).
+    let leaked = observation.cleanup == CleanupResult::Fail;
     let result = if observation.passed_process_boundary()
         && runtime_digest_match
         && runtime_version_mismatch.is_none()
@@ -955,6 +959,7 @@ fn evaluate_observation(
         ObservationResult::Pass
     } else if driver_failed
         || observation.timed_out
+        || leaked
         || observation.status_code.is_some_and(|code| code != 0)
     {
         ObservationResult::Fail
@@ -964,6 +969,8 @@ fn evaluate_observation(
     let failure_class = if driver_failed {
         Some(FailureClass::HostClient)
     } else if observation.cleanup != CleanupResult::Pass {
+        // An observed leak (Fail) and an unobserved shutdown (NotProven) are
+        // both cleanup-classified; only Fail demotes the overall verdict.
         Some(FailureClass::Cleanup)
     } else if !runtime_digest_match || runtime_version_mismatch.is_some() {
         Some(FailureClass::Environment)

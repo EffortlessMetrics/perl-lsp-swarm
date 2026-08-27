@@ -1208,14 +1208,18 @@ pub fn run_owned_process(
     );
 
     // Retain both raw snapshots as run evidence even when the comparison
-    // itself could not be made.
+    // itself could not be made. Retention is deliberately best-effort: a
+    // locked or unwritable snapshot target must not abort the run before a
+    // receipt exists — every run that reaches the process stage emits one,
+    // and a post-launch retention failure stays distinguishable from a run
+    // that never launched.
     if let Some(before_text) = &judgment.before_snapshot {
-        fs::write(layout.process_snapshot_before(), before_text)?;
+        let _ = fs::write(layout.process_snapshot_before(), before_text);
     }
-    fs::write(
+    let _ = fs::write(
         layout.process_snapshot_after(),
         judgment.after_snapshot.clone().unwrap_or_default(),
-    )?;
+    );
 
     let event_bytes = fs::read(layout.event_file()).unwrap_or_default();
     let events = parse_driver_events(&event_bytes, false).unwrap_or_default();

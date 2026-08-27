@@ -187,12 +187,17 @@ fn deadline_fires_and_classifies_timeout_deterministically() -> anyhow::Result<(
 
 #[test]
 fn quick_success_subject_classifies_success() -> anyhow::Result<()> {
-    let mut command = Command::new("cmd");
-    if cfg!(windows) {
+    // Each platform gets its own real shell: `cmd` does not exist on Unix and
+    // `sh` does not exist on stock Windows.
+    let mut command = if cfg!(windows) {
+        let mut command = Command::new("cmd");
         command.args(["/C", "exit 0"]);
+        command
     } else {
+        let mut command = Command::new("sh");
         command.arg("-c").arg("true");
-    }
+        command
+    };
     let observation = xtask::editor_host::bounded_run(&mut command, 30_000, "contract-ok-subject")?;
     assert_eq!(observation.exit_class(), BoundedExitClass::Success);
     assert!(observation.orderly_success());
@@ -418,5 +423,24 @@ fn digests_use_canonical_sha256_spelling() -> anyhow::Result<()> {
     let digest = sha256_bytes(b"perl-lsp")?;
     assert!(digest.starts_with("sha256:"));
     assert_eq!(digest.len(), "sha256:".len() + 64);
+    Ok(())
+}
+
+/// Windows image names are case-insensitive end to end: a candidate path that
+/// spells `PERLLSP.EXE` differently from `tasklist`'s reported image must
+/// still be attributed to the run, or a surviving server reads as a clean
+/// process set (P1 review finding on #12794). Non-Windows matching stays
+/// exact-case, pinned by the pid test above.
+#[cfg(windows)]
+#[test]
+fn windows_image_name_case_variance_still_matches_needle() -> anyhow::Result<()> {
+    let before = vec![ProcessProbeLine { pid: 2, args: "perllsp.exe --stdio".into() }];
+    let after = vec![
+        ProcessProbeLine { pid: 2, args: "perllsp.exe --stdio".into() },
+        ProcessProbeLine { pid: 9, args: "PERLLSP.EXE --stdio".into() },
+    ];
+    let survivors = surviving_processes(&before, &after, "perllsp.exe");
+    assert_eq!(survivors.len(), 1, "case variance must not hide a survivor");
+    assert_eq!(survivors[0].pid, 9);
     Ok(())
 }
