@@ -890,9 +890,9 @@ use parser_facade::{tdd_workflow::TddWorkflow, test_runner::TestRunner};
     assert_eq!(
         hits,
         vec![
-            "perl_parser::TestRunner".to_string(),
             "perl_parser::tdd_basic".to_string(),
             "perl_parser::tdd_workflow".to_string(),
+            "perl_parser::test_runner".to_string(),
         ]
     );
 }
@@ -915,7 +915,13 @@ use pf::test_runner as tr;
 let runner = tr::TestRunner::default();
 ";
     let hits = forbidden_facade_references(&code_without_comments(source));
-    assert_eq!(hits, vec!["perl_parser::TestRunner".to_string()]);
+    assert_eq!(
+        hits,
+        vec![
+            "perl_parser::TestRunner".to_string(),
+            "perl_parser::test_runner".to_string(),
+        ]
+    );
 }
 
 #[test]
