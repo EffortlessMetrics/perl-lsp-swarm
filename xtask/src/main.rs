@@ -2781,7 +2781,8 @@ enum NonRustCommand {
     /// `docs/policy/NON_RUST_INVENTORY.md`.
     Inventory {
         /// Check classification and newly added files without rewriting outputs.
-        /// The generated Markdown snapshot may be stale during concurrent merges.
+        /// Require the generated Markdown snapshot to match the committed snapshot
+        /// after line-ending normalization.
         #[arg(long)]
         check: bool,
 
