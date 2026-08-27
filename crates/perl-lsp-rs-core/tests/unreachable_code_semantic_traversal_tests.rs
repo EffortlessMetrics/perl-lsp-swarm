@@ -109,7 +109,7 @@ fn every_kind_resolves_its_disposition_from_the_enum_token() {
         let expected_name = fixture.sample.kind.kind_name();
         let row = must_some_with(
             resolved,
-            format!("{expected_name} must resolve its PL406 disposition from the enum token"),
+            format_args!("{expected_name} must resolve its PL406 disposition from the enum token"),
         );
         assert_eq!(
             row.kind_name, expected_name,

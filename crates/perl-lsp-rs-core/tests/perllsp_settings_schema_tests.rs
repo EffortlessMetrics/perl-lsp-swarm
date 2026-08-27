@@ -401,7 +401,7 @@ fn generic_schema_excludes_security_sensitive_lsp_settings() -> Result<(), Box<d
     for activation_field in ["enabled", "provider", "model"] {
         let field = must_some_with(
             ai.get(activation_field),
-            format!("aiCompletion.{activation_field} must stay documented"),
+            format_args!("aiCompletion.{activation_field} must stay documented"),
         );
         assert_eq!(
             field["x-perllsp-transports"],
