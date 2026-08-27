@@ -8,10 +8,13 @@
 //! - semver-check covers all 5 facade crates
 //! - CONTRIBUTING.md documents the public API workflow
 //!
-//! Tests assert config state, not runtime behavior.
+//! Most tests assert config state; the Linux fixture test also executes the
+//! production recipes against controlled generator outcomes.
 
 use std::fs;
 use std::path::PathBuf;
+#[cfg(unix)]
+use std::process::Command;
 
 fn project_root() -> PathBuf {
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -280,6 +283,36 @@ fn public_api_check_script_has_correct_fail_semantics() -> Result<(), Box<dyn st
 
     assert!(check_body.contains("exit 1"), "public-api-check must exit 1 when FAILED > 0");
 
+    Ok(())
+}
+
+/// Test G2: execute the real recipes with controlled generator outcomes.
+///
+/// The fixture replaces only the generator command through PUBLIC_API_RUNNER;
+/// it keeps the repository justfile and nested install helper under test while
+/// using a temporary baseline directory. Windows skips this Linux-shell proof;
+/// the nightly workflow runs the same fixture explicitly on Ubuntu.
+#[cfg(unix)]
+#[test]
+fn public_api_ratchet_fixture_exercises_runtime_fail_closed_paths()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let script = root.join("scripts/ci/public-api-ratchet-fixture.sh");
+    let output = Command::new("bash").arg(&script).current_dir(&root).output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "public API ratchet fixture failed (status={}):\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("public API ratchet fixture passed"),
+        "fixture did not emit its success marker: {stdout}"
+    );
     Ok(())
 }
 

@@ -2304,6 +2304,7 @@ public-api-check:
     #!/usr/bin/env bash
     set -euo pipefail
     just _public-api-install
+    PUBLIC_API_RUNNER="${PUBLIC_API_RUNNER:-./scripts/cargo-safe}"
     echo "Checking public API surface for facade crates..."
     # Evidence: record the rustdoc-JSON toolchain the comparison runs under
     # (CI pins this channel; see the workflow install steps).
@@ -2320,7 +2321,7 @@ public-api-check:
         # or empty generation is INSTRUMENT-FAIL, not an API diff (#12861 —
         # CI without a nightly toolchain produced empty surfaces that
         # reported as ~6.6k phantom API removals).
-        if ! ./scripts/cargo-safe public-api -p "$crate" --simplified > "/tmp/${crate}-raw.txt" 2> "/tmp/${crate}-err.txt"; then
+        if ! "$PUBLIC_API_RUNNER" public-api -p "$crate" --simplified > "/tmp/${crate}-raw.txt" 2> "/tmp/${crate}-err.txt"; then
             echo "INSTRUMENT-FAIL ${crate}: cargo public-api failed; stderr:"
             cat "/tmp/${crate}-err.txt"
             FAILED=1
@@ -2349,13 +2350,14 @@ public-api-update:
     #!/usr/bin/env bash
     set -euo pipefail
     just _public-api-install
+    PUBLIC_API_RUNNER="${PUBLIC_API_RUNNER:-./scripts/cargo-safe}"
     echo "Regenerating public API baselines..."
     mkdir -p .ci/public-api-baselines
     for crate in perl-lsp-rs perl-parser perl-uri perl-dap perllsp; do
         # Fail closed: never overwrite a baseline with a failed or empty
         # generation — an empty baseline would make the ratchet vacuous
         # (#12861).
-        if ! ./scripts/cargo-safe public-api -p "$crate" --simplified > "/tmp/${crate}-raw.txt" 2> "/tmp/${crate}-err.txt"; then
+        if ! "$PUBLIC_API_RUNNER" public-api -p "$crate" --simplified > "/tmp/${crate}-raw.txt" 2> "/tmp/${crate}-err.txt"; then
             echo "INSTRUMENT-FAIL ${crate}: cargo public-api failed; refusing to overwrite the baseline:" >&2
             cat "/tmp/${crate}-err.txt" >&2
             exit 1
