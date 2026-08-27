@@ -100,22 +100,51 @@ jobs:
             python3 - "${changed_files[@]}" <<'PY'
           import json
           import os
+          import re
           import sys
           import urllib.request
 
           repo = os.environ["REPOSITORY"]
           pr_number = os.environ["PR_NUMBER"]
-          prefixes = (
+
+          # #2266 scope authority: the committed baselines themselves. Any crate whose
+          # public items flow into a facade baseline via re-export (perl-lsp-rs-core,
+          # perl-parser-core, perl-workspace, perl-ast, ...) derives its crates/<dir>/
+          # prefix from the perl_X:: tokens in .ci/public-api-baselines/*.txt, so the
+          # selector tracks the real re-export closure without maintaining a second
+          # hand-written list beside the baselines.
+          STATIC_PREFIXES = (
+              # Facade surfaces checked directly by just public-api-check and the
+              # nightly semver rail (includes crates with no re-export trail).
+              "crates/perl-lsp-rs/",
               "crates/perl-parser/",
               "crates/perl-lexer/",
               "crates/perl-parser-core/",
-              "crates/perl-lsp-rs/",
               "crates/perl-uri/",
               "crates/perl-dap/",
               "crates/perllsp/",
               ".ci/public-api-baselines/",
           )
+          TOKEN_RE = re.compile("(?<![A-Za-z0-9_])perl_[a-z0-9_]+(?=::)")
 
+
+          def derive_prefixes():
+              found = set(STATIC_PREFIXES)
+              baseline_dir = os.path.join(".ci", "public-api-baselines")
+              try:
+                  names = os.listdir(baseline_dir)
+              except OSError:
+                  return tuple(sorted(found))
+              for name in names:
+                  path = os.path.join(baseline_dir, name)
+                  try:
+                      content = open(path, encoding="utf-8").read()
+                  except OSError:
+                      continue
+                  for token in TOKEN_RE.findall(content):
+                      crate_dir = "crates/" + token.replace("_", "-") + "/"
+                      found.add(crate_dir)
+              return tuple(sorted(found))
 
           def emit(value):
               print(value)
@@ -128,6 +157,7 @@ jobs:
               )
 
 
+          prefixes = derive_prefixes()
           page = 1
           try:
               while True:

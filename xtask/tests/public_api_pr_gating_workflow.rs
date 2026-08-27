@@ -137,6 +137,14 @@ fn scope_selection_is_job_level_and_never_label_gated() -> Result<(), Box<dyn st
         workflow.contains("using changed-file fallback"),
         "API probing must fall back to the local diff scan instead of failing open"
     );
+    // Re-export closure (P2 on #12850): crates whose public items flow into a
+    // facade baseline via re-export must select the rails too, and the
+    // committed baselines are the derivation authority rather than a second
+    // hand-written path list.
+    assert!(
+        workflow.contains("derive_prefixes"),
+        "scope selector must derive re-export closure from the committed baselines"
+    );
 
     Ok(())
 }
