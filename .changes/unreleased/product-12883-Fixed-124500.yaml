@@ -1,0 +1,9 @@
+project: product
+component: "Developer experience"
+kind: Fixed
+body: "perl-corpus topology symlink-rejection proofs now run on Windows as typed-skip twins (#12567 family): ten reparse-point tests previously compiled out on Win32 hosts and execute in full wherever symlink privilege exists, skipping visibly with os error 1314 elsewhere."
+time: 2026-08-27T12:45:00Z
+custom:
+  PR: "12883"
+  Slug: corpus-winpath-typed-symlink-twins
+  Breaking: "no"
