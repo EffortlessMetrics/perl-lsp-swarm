@@ -28,6 +28,7 @@ cargo doc -p perl-parser-pest --open     # View docs
 | `pratt_parser` | `PrattParser` for Perl operator precedence (Pratt/TDOP algorithm) |
 | `sexp_formatter` | `SexpFormatter` and `SexpBuilder` for tree-sitter-compatible S-expression output |
 | `error` | `ParseError`, `ParseResult`, `ScannerError`, `UnicodeError` types |
+| `outcome` | Typed parse outcome / diagnostic / original-source range vocabulary (`#8427`). Substrate only; does not change `parse()` |
 
 ### Key Types (re-exported from `lib.rs`)
 
@@ -37,6 +38,7 @@ cargo doc -p perl-parser-pest --open     # View docs
 - `PrattParser` -- operator-precedence parser with `Precedence`, `Associativity`, `OpInfo`
 - `SexpFormatter` -- configurable formatter with `.with_positions()` and `.compact()` builder methods
 - `ParseError` / `ParseResult<T>` -- serializable error types with `thiserror` derives
+- `ParseOutcome` / `ParseAttempt` / `StrictParseError` / `ParserFailure` / `SourceRange` -- typed completeness, rejection, and instrument-failure vocabulary (`#8427`). Not consumed by `parse()` yet
 
 ### Dependencies
 
