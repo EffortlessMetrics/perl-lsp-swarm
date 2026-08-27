@@ -1836,11 +1836,21 @@ thread_local! {
 /// before the probe under test runs, and the test would silently go back to
 /// racing host spawn latency. `#[must_use]` turns the bare-statement form into
 /// a compile-time warning.
+///
+/// The guard is deliberately **not** `Send`. It owns a slot in *one* thread's
+/// TLS, so moving it across threads would restore the destination thread's
+/// slot on drop and leave the originating thread permanently widened — the
+/// precise silent relaxation this seam exists to prevent, and one that no
+/// runtime assertion on the origin thread could observe afterwards. The
+/// `PhantomData` marker makes creation and destruction provably co-located;
+/// `send_sync_contract` below fails to compile if it is ever removed.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[must_use = "bind the guard to a named variable (`let _guard = ...`, not `let _ = ...`); \
                dropping it immediately restores the production probe budget"]
 pub(crate) struct SystemIncProbeTimeoutGuard {
     previous: Option<Duration>,
+    /// Pins the guard to its creating thread; see the type docs.
+    _not_send: std::marker::PhantomData<*const ()>,
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -1848,8 +1858,20 @@ impl SystemIncProbeTimeoutGuard {
     /// Widen this thread's probe budget to `timeout` until the guard drops.
     pub(crate) fn widen_to(timeout: Duration) -> Self {
         let previous = SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(|slot| slot.replace(Some(timeout)));
-        Self { previous }
+        Self { previous, _not_send: std::marker::PhantomData }
     }
+}
+
+/// A `Send` guard could be created on one thread and dropped on another,
+/// restoring the wrong thread's probe budget and stranding the origin at the
+/// widened one. Pin the negative bound so a future refactor cannot silently
+/// reintroduce that.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod send_sync_contract {
+    use super::SystemIncProbeTimeoutGuard;
+    use static_assertions::assert_not_impl_any;
+
+    assert_not_impl_any!(SystemIncProbeTimeoutGuard: Send, Sync);
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

@@ -85,6 +85,7 @@ ai-provider = ["dep:ureq"]
 
 [dev-dependencies]
 perl-test-must.workspace = true
+static_assertions.workspace = true
 perl-tdd-support.workspace = true
 sha2.workspace = true
 serde_json.workspace = true
