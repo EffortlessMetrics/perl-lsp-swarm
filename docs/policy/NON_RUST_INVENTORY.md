@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12151 |
+| Total tracked files | 12161 |
 | Rust-family files | 3720 |
-| Non-Rust files | 8431 |
-| Allowlisted | 6197 |
+| Non-Rust files | 8441 |
+| Allowlisted | 6207 |
 | Unclassified | 2234 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 445 |
-| documentation | 2759 |
+| config | 446 |
+| documentation | 2760 |
 | generated | 2 |
-| production | 329 |
-| test | 2026 |
+| production | 331 |
+| test | 2032 |
 | tooling | 636 |
 | unclassified | 2234 |
 
@@ -6185,6 +6185,16 @@
 | `integrations/claude-code/plugins/perl-lsp-rs/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `integrations/claude-code/plugins/perl-lsp-rs/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `integrations/claude-code/plugins/perl-lsp-rs/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `integrations/lsp4ij/host-journey/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `integrations/lsp4ij/host-journey/declared-host.launch-spec.example.json` | config | `non-rust-lsp4ij-declared-host-example` | editor/lsp4ij |
+| `integrations/lsp4ij/host-journey/host-fixture/app.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `integrations/lsp4ij/host-journey/host-fixture/lib/Greeting.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `integrations/lsp4ij/host-journey/host-fixture/t/greeting.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `integrations/lsp4ij/host-journey/lsp4ij-host-receipt.v1.schema.json` | production | `non-rust-lsp4ij-host-receipt-schema` | editor/lsp4ij |
+| `integrations/lsp4ij/host-journey/lsp4ij-launch-spec.v1.schema.json` | production | `non-rust-lsp4ij-launch-spec-schema` | editor/lsp4ij |
+| `integrations/lsp4ij/host-journey/tests/test_lsp4ij_host_journey_contracts.py` | test | `non-rust-lsp4ij-host-journey-tests` | editor/lsp4ij |
+| `integrations/lsp4ij/host-journey/validate_lsp4ij_host_receipt.py` | test | `non-rust-lsp4ij-host-receipt-validator` | editor/lsp4ij |
+| `integrations/lsp4ij/host-journey/validate_lsp4ij_launch_spec.py` | test | `non-rust-lsp4ij-launch-spec-validator` | editor/lsp4ij |
 | `integrations/lsp4ij/installer-policy.json` | production | `non-rust-lsp4ij-installer-policy` | release/downstream-integrations |
 | `integrations/lsp4ij/perl-dap/installer.json` | production | `non-rust-lsp4ij-perl-dap-installer` | release/downstream-integrations |
 | `integrations/lsp4ij/perl-lsp/README.md` | documentation | `non-rust-root-governance-docs` | docs |
