@@ -86,11 +86,11 @@ security lineages                                #10653 project-config execution
 position/wire authorities                        #2298 / #7713 envelopes consumed by reference
 ```
 
-Amendment issues recorded on #11178 and honored here: #11186 (codec complexity
-budget), #11188 (completion resolve-before-apply), #11189 (duplicate completion
-labels, evidence-driven profile membership), #11194 (Unicode validity),
-#11197 (terminal JSON syntax errors), #11198 (duplicate document-symbol
-identities).
+Amendment issues recorded on #11178 and honored here: #11186 (codec
+complexity budget), #11188 (completion resolve-before-apply), #11189
+(duplicate completion labels, evidence-driven profile membership), #11194
+(Unicode validity), #11197 (terminal JSON syntax errors), and #11198
+(duplicate document-symbol identities).
 
 This bundle pins no upstream commit digest; when #10651/#8960 land subject
 pins, they bind these IDs without editing meaning here.
@@ -344,10 +344,11 @@ producer, #11103 via its merged harness/journey suites, #8960 (exact profile +
 fixture), #10653 (project-config security), #10845/#11136/#11143/#11147
 (config shape), #10657/#10785/#10833/#11151/#11155/#11186/#11194/#11197
 (protocol truth), #11124/#11128/#11108 (currentness), #10671/#10754/#8986
-(edit transaction), #8997/#9001/#10715 (activation/save identity), #10684/
-#11162/#11165/#10873/#2298/#7713 (wire/position), #10733/#9010/#10739/#9012/
-#10767 (distribution/public rails), #7122/#9016 (support registry), #10338/
-#10858/#11176 (typed train/profile substrate), #3983 +
+(edit transaction), #8997/#9001/#10715 (activation/save identity); wire/
+position: #10684, #11162, #11165, #10873, #2298, #7713; distribution and
+public rails: #10733, #9010, #10739, #9012, and #10767; support registry:
+#7122 and #9016; typed train/profile substrate: #10338, #10858, and
+#11176; spec method: #3983 +
 [`SPEC_TEMPLATE.md`](../../docs/reference/SPEC_TEMPLATE.md) (spec method).
 
 Owned downstream, named here as boundaries only:
@@ -430,11 +431,14 @@ duplicates an existing authority.
 ## Scope boundary
 
 In scope: exactly this directory's `context.md`, `acceptance.md`, and
-`checklist.md`, plus the regenerated machine-readable inventory projection
-(`docs/policy/NON_RUST_INVENTORY.md`) produced only by the sanctioned
-`cargo xtask non-rust inventory --write`.
+`checklist.md`. The machine-readable inventory projection
+(`docs/policy/NON_RUST_INVENTORY.md`) is deliberately not part of this
+bundle; it lists this directory through the sanctioned
+`cargo xtask non-rust inventory --write` in a later regeneration, and the
+`.spec/**` allowlist glob keeps the added files classified meanwhile.
 
-Out of scope: fixture sources/oracles (#11181), provisioning or launching Lite
+Out of scope: `docs/policy/NON_RUST_INVENTORY.md` (generated elsewhere),
+fixture sources/oracles (#11181), provisioning or launching Lite
 XL, Lua/Rust/shell implementation changes, candidate composition, host
 automation or receipts, support-registry mutation, docs prose beyond generated
 projections, CI workflow edits, external upstream submission, any new BDD

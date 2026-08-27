@@ -282,7 +282,7 @@ deterministically in that leaf's own negative controls.
 | Host lanes #10676../#10673 adapter | Observe against named scenarios | Bind IDs into observations |
 | #11170/#11172 producers / #7122/#9016 projections | Cite stable IDs downstream | Reference only |
 | `policy/lsp-client-support.toml` | No change in this PR | Future lite-xl rows flow via #7122/#9016 once chains pass |
-| Generated inventory surface | Regenerated listing gains this packet's three files | Produced only by `cargo xtask non-rust inventory --write` in this PR |
+| Generated inventory surface | Listing gains this packet's three files whenever the sanctioned writer next runs | Outside this bundle; allowlist glob `.spec/**` keeps the gate green meanwhile |
 | Product/runtime crates and Lua client | None | Must-not-touch |
 
 Must-not-touch: `crates/`, `xtask/src` beyond the sanctioned inventory writer's
@@ -302,13 +302,14 @@ surfaces.
 | Profiles collapsed ⇒ spec check fails | checker rejects missing/miscounted profile vocabulary and profile-blocked scenario IDs |
 | Stages collapsed, missing owner, weak oracle ⇒ spec check fails | rows demand named owners; required-term checks (schema name, lanes) fail closed when removed |
 | Cross-subject/platform/stale-state/returned-not-applied/unsafe-config/stale-generated ⇒ downstream controls exist | F1–F20 verdicts assigned to leaf negative controls |
-| Generated spec/status outputs current/deterministic | generator surfaces absent on main (recorded evolution); inventory projection regenerated via sanctioned writer; two-run structural proof below |
+| Generated spec/status outputs current/deterministic | generator surfaces absent on main (recorded evolution); generated inventory left to its sanctioned writer outside this bundle; two-run structural proof below |
 | No implementation/composition/host run/support promotion/release occurs | scope boundary + blast radius + claim boundary below |
 
 ## Scope, rollback, and proof claims
 
-- **In scope:** exactly the three files of `.spec/11178-lite-xl-bdd-journeys/`
-  plus the regenerated `docs/policy/NON_RUST_INVENTORY.md` projection.
+- **In scope:** exactly the three files of `.spec/11178-lite-xl-bdd-journeys/`.
+  The generated inventory projection is intentionally not part of this commit;
+  it lists the packet through the sanctioned writer in a later regeneration.
 - **Rollback:** revert this bundle's commit; issues retain full authority. Any
   downstream artifact already bound to these IDs reverts through its own owner,
   never by editing this bundle silently.

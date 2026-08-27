@@ -37,15 +37,15 @@ inventory projection). No step builds or executes any client/host process.
 - **Verify:** read-only checker runs twice with byte-identical output and no
   tree diff.
 
-### Step 4: Regenerate the machine-readable inventory projection
+### Step 4: Inventory projection boundary
 
-- **File:** `docs/policy/NON_RUST_INVENTORY.md`
-- **Change:** run the sanctioned writer so the projection lists this packet's
-  three new files. Never hand-edit the generated file.
-- **Command:** `cargo xtask non-rust inventory --write`
-- **Depends on:** Steps 1–3.
-- **Verify:** `cargo xtask non-rust inventory` reports the projection current;
-  second generation produces no diff.
+- **File:** `docs/policy/NON_RUST_INVENTORY.md` (not changed by this bundle)
+- **Rule:** the projection stays owned by the sanctioned writer
+  (`cargo xtask non-rust inventory --write`) executed outside this packet;
+  listing this directory lands through whichever leaf next regenerates it.
+  A newly added packet file is allowlist-classified by `.spec/**`, so the
+  gate stays green with the projection temporarily behind (warning-level),
+  never hand-edited.
 
 ## Deterministic structural proof
 
@@ -53,8 +53,7 @@ The repository has no executable `.spec` graph validator and no Gherkin/
 feature-status generator on current main (recorded as the ledger evolution in
 `context.md`). Do not invent a generated receipt or claim a missing tool
 passed. From the candidate worktree, run the following PowerShell 7 check twice
-after the files are complete. It enforces: the exact three packet files plus
-the regenerated inventory projection; required canonical headings; required
+after the files are complete. It enforces: the exact three packet files; required canonical headings; required
 contract terms (profile names, evidence-chain owners, vocabulary tokens,
 amendment authorities, substrate paths); the exact eighty-one scenario IDs
 bound to their §Behavior ledger rows in fixed family order; and all twenty
@@ -189,12 +188,18 @@ for ($i = 0; $i -lt $expectedRows.Count; $i++) {
   }
 }
 
-# Bind the proof to the explicit candidate range.
-$candidateBaseRef = 'origin/main'
-$candidateHeadRef = 'HEAD'
-$candidateBase = (& git rev-parse --verify "$candidateBaseRef^{commit}" 2>&1).Trim()
-$candidateHead = (& git rev-parse --verify "$candidateHeadRef^{commit}" 2>&1).Trim()
-if ($LASTEXITCODE -ne 0 -or -not $candidateBase -or -not $candidateHead) { throw 'candidate base/HEAD refs are not resolvable' }
+# Bind the proof to the explicit candidate range. The base is resolved ONCE
+# as the merge-base of origin/main and HEAD (or supplied by the two-run
+# wrapper via $script:CandidatePinnedBase), so unrelated main movement with a
+# conflict-free candidate never invalidates or re-triggers this proof.
+if (-not $script:CandidatePinnedBase) {
+  $script:CandidatePinnedBase = (& git merge-base 'origin/main' 'HEAD' 2>&1 | Select-Object -First 1)
+  if ($LASTEXITCODE -ne 0 -or -not $script:CandidatePinnedBase) { throw 'cannot resolve candidate base via git merge-base' }
+  $script:CandidatePinnedBase = "$script:CandidatePinnedBase".Trim()
+}
+$candidateBase = [string]$script:CandidatePinnedBase
+$candidateHead = (& git rev-parse --verify 'HEAD^{commit}' 2>&1).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $candidateHead) { throw 'candidate HEAD ref is not resolvable' }
 & git merge-base --is-ancestor $candidateBase $candidateHead 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "candidate range is not $candidateBase..$candidateHead" }
 $candidateRange = "$candidateBase..$candidateHead"
@@ -213,7 +218,6 @@ $expected = @(
   '.spec/11178-lite-xl-bdd-journeys/acceptance.md'
   '.spec/11178-lite-xl-bdd-journeys/checklist.md'
   '.spec/11178-lite-xl-bdd-journeys/context.md'
-  'docs/policy/NON_RUST_INVENTORY.md'
 )
 if ($changed.Count -ne $expected.Count -or (Compare-Object -CaseSensitive $changed $expected)) { throw 'unexpected changed paths' }
 'SPEC_11178_STRUCTURAL_CHECK=PASS'
@@ -229,7 +233,6 @@ function Get-SpecFingerprints {
     '.spec/11178-lite-xl-bdd-journeys/acceptance.md'
     '.spec/11178-lite-xl-bdd-journeys/checklist.md'
     '.spec/11178-lite-xl-bdd-journeys/context.md'
-    'docs/policy/NON_RUST_INVENTORY.md'
   )
   return @($expected | ForEach-Object {
     if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) { throw "missing spec file: $_" }
@@ -237,6 +240,9 @@ function Get-SpecFingerprints {
   })
 }
 $ErrorActionPreference = 'Stop'
+$script:CandidatePinnedBase = (& git merge-base 'origin/main' 'HEAD' 2>&1 | Select-Object -First 1)
+if ($LASTEXITCODE -ne 0 -or -not $script:CandidatePinnedBase) { throw 'wrapper cannot resolve candidate base via git merge-base' }
+$script:CandidatePinnedBase = "$script:CandidatePinnedBase".Trim()
 $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("spec-11178-check-" + [System.IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
 $tmp1 = Join-Path $tmpDir 'run1.out'
@@ -271,8 +277,16 @@ $expected = @(
   '.spec/11178-lite-xl-bdd-journeys/acceptance.md'
   '.spec/11178-lite-xl-bdd-journeys/checklist.md'
   '.spec/11178-lite-xl-bdd-journeys/context.md'
-  'docs/policy/NON_RUST_INVENTORY.md'
 )
+# Trailing-whitespace coverage independent of staging state, so newly created
+# packet files cannot escape the whitespace proof before being staged.
+foreach ($path in $expected) {
+  $resolved = (Resolve-Path -LiteralPath $path -ErrorAction Stop).Path
+  $lines = [IO.File]::ReadAllLines($resolved)
+  for ($li = 0; $li -lt $lines.Count; $li++) {
+    if ($lines[$li] -cmatch '[ 	]+$') { throw "trailing whitespace at ${path}:$($li + 1)" }
+  }
+}
 if ((Get-SpecStatusPaths | Where-Object { $_ -cnotin $expected })) { throw 'unexpected spec artifact' }
 ```
 
@@ -281,8 +295,7 @@ copied output; each invocation rereads the files and revalidates every table.
 
 ## Acceptance gates
 
-- [ ] Exactly the three packet files plus the regenerated inventory projection
-      are changed; nothing else.
+- [ ] Exactly the three packet files are changed; nothing else.
 - [ ] All 73 baseline scenarios carry stable IDs, user-visible wording,
       profile/evidence tags, and named downstream owner chains.
 - [ ] Optional/stronger rows stay `consumes_if_available`; core stays bounded.
@@ -296,8 +309,8 @@ copied output; each invocation rereads the files and revalidates every table.
 - [ ] No fixture bytes, Lua/Rust/shell behavior change, host execution,
       receipt, support-tier change, docs prose beyond this packet plus the
       generated projection, CI edit, or upstream action.
-- [ ] Inventory projection produced by `cargo xtask non-rust inventory
-      --write` only; regenerating twice produces no diff.
+- [ ] Inventory projection untouched here; owned by the sanctioned writer
+      outside this bundle (regenerating twice produces no diff).
 - [ ] Deterministic structural proof passes twice; second run byte-clean.
 
 ## Callers and consumers
@@ -332,15 +345,15 @@ Files IN scope:
 - `.spec/11178-lite-xl-bdd-journeys/checklist.md`
 - `docs/policy/NON_RUST_INVENTORY.md` (regenerated projection only)
 
-Files OUT of scope: fixtures, client/host harness code, provisioning, server/
-client behavior, receipts, support registry values, docs prose, CI workflows,
-external upstream surfaces, and any new BDD runner infrastructure.
+Files OUT of scope: `docs/policy/NON_RUST_INVENTORY.md` (generated elsewhere
+by its sanctioned writer), fixtures, client/host harness code, provisioning,
+server/client behavior, receipts, support registry values, docs prose, CI
+workflows, external upstream surfaces, and any new BDD runner infrastructure.
 
 ## Handoff and follow-ups
 
 The writer returns the exact commit SHA, changed-path list, structural-check
-output, two-run hash comparison, inventory regeneration receipt, and
-`git diff --check` result. Independent review must challenge whether every
+output, two-run hash comparison, and `git diff --check` result. Independent review must challenge whether every
 behavioral statement traces to merged mechanics or a named authority, whether
 evidence boundaries name real owning issues without duplication, whether the
 profile membership honors the controlling issue's initial IDs, and whether any
