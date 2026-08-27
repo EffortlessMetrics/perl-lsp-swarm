@@ -129,6 +129,12 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # TEMPORARY CONTAINMENT (#13004): the v1 full-corpus checkpoint format has no
+  # identity manifest, process-tree/quiescence boundary, atomic promotion, or
+  # lane-local retention cap. Keep every full consumer fail-closed until those
+  # controls and exact-source hosted proof land. The bounded top-50 job above
+  # remains available and does not consume these checkpoint keys.
+  #
   # Budgeted checkpoint lane (#12823). The scheduled runner envelope has been
   # observed killing jobs externally at ~24m29s of wall-clock while a cold
   # top-1000 install needs far longer, and the historical save gate required one
@@ -140,10 +146,11 @@ jobs:
   corpus-warm-full:
     name: CPAN corpus warm pass (full — 1000 distributions)
     if: |
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' &&
-       github.event.inputs.mode == 'full' &&
-       github.ref_name == github.event.repository.default_branch)
+      false &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' &&
+        github.event.inputs.mode == 'full' &&
+        github.ref_name == github.event.repository.default_branch))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -231,11 +238,12 @@ jobs:
     # convergence is still advancing the frontier, this leg skips neutrally
     # instead of false-reding from partial state or platform kills.
     if: |
-      (github.event_name == 'schedule' ||
-       (github.event_name == 'workflow_dispatch' &&
-        github.event.inputs.mode == 'full' &&
-        github.ref_name == github.event.repository.default_branch)) &&
-      needs.corpus-warm-full.outputs.complete == 'true'
+      false &&
+      ((github.event_name == 'schedule' ||
+        (github.event_name == 'workflow_dispatch' &&
+         github.event.inputs.mode == 'full' &&
+         github.ref_name == github.event.repository.default_branch)) &&
+       needs.corpus-warm-full.outputs.complete == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -380,8 +388,9 @@ jobs:
     # be statically unreachable from `pull_request` by reading this job alone,
     # without tracing the producer's guards.
     if: |
-      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
-      needs.corpus-ratchet-full.outputs.changed == 'true'
+      false &&
+      ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+       needs.corpus-ratchet-full.outputs.changed == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

@@ -106,23 +106,28 @@ fn step_id<'a>(step: &'a Value, steps: &'a [Value]) -> Result<&'a str> {
 }
 
 // ---------------------------------------------------------------------------
-// CRW-001 / CRW-007: trusted-event anchoring and completion gating
+// CRW-001 / CRW-007 / #13004: trusted-event anchoring and containment
 // ---------------------------------------------------------------------------
 
 #[test]
-fn warm_job_is_schedule_gated_and_never_pull_request() -> Result<()> {
+fn unsafe_full_checkpoint_chain_is_explicitly_disabled() -> Result<()> {
     let workflow = workflow()?;
-    let warm = job(&workflow, WARM_JOB)?;
+    for job_name in [WARM_JOB, RATCHET_JOB, PR_WRITER_JOB] {
+        let guard = condition(job(&workflow, job_name)?, job_name)?.ok_or_else(|| {
+            anyhow!("contained full-corpus job `{job_name}` must carry an `if:` guard")
+        })?;
+        assert!(
+            guard.trim_start().starts_with("false &&"),
+            "unsafe v1 full-corpus job `{job_name}` must remain fail-closed until #13004 adds identity, manifest, quiescence, atomicity, retention, and hosted proof; guard was: {guard}"
+        );
+    }
 
-    let warm_cond =
-        condition(warm, WARM_JOB)?.ok_or_else(|| anyhow!("warm job must carry an `if:` guard"))?;
+    let bounded_guard = condition(job(&workflow, BOUNDED_JOB)?, BOUNDED_JOB)?
+        .ok_or_else(|| anyhow!("bounded corpus job must carry an `if:` guard"))?;
     assert!(
-        warm_cond.contains("github.event_name == 'schedule'"),
-        "warm job must remain schedule-gated; guard was: {warm_cond}"
-    );
-    assert!(
-        !warm_cond.contains("pull_request"),
-        "warm job must never execute on pull_request events; guard was: {warm_cond}"
+        !bounded_guard.trim_start().starts_with("false &&")
+            && bounded_guard.contains("github.event_name == 'pull_request'"),
+        "containment must preserve the bounded top-50 PR proof lane; guard was: {bounded_guard}"
     );
 
     // The whole workflow keeps its narrow pull_request path triggers: only
