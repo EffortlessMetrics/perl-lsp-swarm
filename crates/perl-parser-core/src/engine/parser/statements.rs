@@ -562,6 +562,23 @@ impl<'a> Parser<'a> {
     /// nested blocks.
     fn finish_statement_terminator(&mut self, stmt: &Node) -> ParseResult<()> {
         if self.peek_kind() == Some(TokenKind::Semicolon) {
+            // A keyword-like heredoc delimiter (`<<print`) parses as a
+            // builtin statement and can absorb tokens from the following
+            // line, ending with a `;` — it reaches this path instead of the
+            // body-consumption path below. The heredoc body still ended at
+            // its first line, so the tag must clear here or every later
+            // missing terminator in the file is silently suppressed (#12852
+            // review).
+            if let Some(tag) = self.heredoc_recovery_tag.as_deref() {
+                let start = stmt.location.start.min(self.src_bytes.len());
+                let end = stmt.location.end.min(self.src_bytes.len());
+                let first_line_is_tag = std::str::from_utf8(&self.src_bytes[start..end])
+                    .map(|text| text.lines().next().map(str::trim) == Some(tag))
+                    .unwrap_or(false);
+                if first_line_is_tag {
+                    self.heredoc_recovery_tag = None;
+                }
+            }
             if self.pending_heredocs.is_empty()
                 && !Self::contains_heredoc(stmt)
                 && Self::can_arm_heredoc_recovery(stmt)
@@ -642,16 +659,30 @@ impl<'a> Parser<'a> {
         // missing `;` between two statements written without a heredoc
         // introducer (`foo` followed by `print`) still reports, because no
         // tag is armed there.
+        //
+        // A keyword-like delimiter (`<<print`) parses as a builtin statement
+        // and can absorb tokens from the following line, so the statement is
+        // more than the tag alone: the body still ended at its first line,
+        // the tag must clear, and the merged statement is real code that
+        // must be processed normally — otherwise every later missing
+        // terminator in the file is silently accepted (#12852 review).
         if let Some(tag) = self.heredoc_recovery_tag.as_deref() {
             let start = stmt.location.start.min(self.src_bytes.len());
             let end = stmt.location.end.min(self.src_bytes.len());
-            let is_delimiter = std::str::from_utf8(&self.src_bytes[start..end])
-                .map(|text| text.trim() == tag)
-                .unwrap_or(false);
-            if is_delimiter {
+            let source = std::str::from_utf8(&self.src_bytes[start..end]).unwrap_or("");
+            if source.trim() == tag {
+                // Pure delimiter line: the body ends here; skip it.
                 self.heredoc_recovery_tag = None;
+                return Ok(());
             }
-            return Ok(());
+            if source.lines().next().map(str::trim) == Some(tag) {
+                // Delimiter head with absorbed tokens: body ended, tag clears,
+                // and the statement continues through the normal path below.
+                self.heredoc_recovery_tag = None;
+            } else {
+                // Ordinary body line: skip it.
+                return Ok(());
+            }
         }
 
         // Only report when the leftover token begins a later line.
