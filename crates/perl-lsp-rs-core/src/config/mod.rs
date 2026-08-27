@@ -9,6 +9,8 @@
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use crate::platform::resolve_perl_path_with_toolchain;
 use perl_parser_core::path_security::{WorkspacePathError, validate_workspace_path};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 use std::process::{Command, Output, Stdio};
@@ -1802,6 +1804,40 @@ impl WorkspaceConfig {
 /// the LSP and long enough that healthy probes succeed reliably.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) const SYSTEM_INC_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    static SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE: Cell<Option<Duration>> = const { Cell::new(None) };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn effective_system_inc_probe_timeout() -> Duration {
+    #[cfg(test)]
+    if let Some(timeout) = SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(Cell::get) {
+        return timeout;
+    }
+
+    SYSTEM_INC_PROBE_TIMEOUT
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn with_system_inc_probe_timeout<T>(timeout: Duration, operation: impl FnOnce() -> T) -> T {
+    let previous = SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(|value| value.replace(Some(timeout)));
+    let _restore = ProbeTimeoutOverride { previous };
+    operation()
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+struct ProbeTimeoutOverride {
+    previous: Option<Duration>,
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl Drop for ProbeTimeoutOverride {
+    fn drop(&mut self) {
+        SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(|value| value.set(self.previous));
+    }
+}
 
 /// Run `command` with a wall-clock timeout, killing the child if it exceeds
 /// `timeout`. Returns `io::Error` with kind `TimedOut` on timeout. Used by
@@ -5164,7 +5200,9 @@ profile = "recommended"
             ..WorkspaceConfig::default()
         };
 
-        let cached = config.get_system_inc_probe_outcome();
+        let cached = with_system_inc_probe_timeout(Duration::from_secs(10), || {
+            config.get_system_inc_probe_outcome()
+        });
         let cached_paths = match &cached {
             SystemIncProbeOutcome::Paths(paths)
                 if paths.iter().any(|path| path == Path::new("cache-sentinel")) =>
