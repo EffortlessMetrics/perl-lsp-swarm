@@ -150,15 +150,12 @@ impl LspServer {
     ) -> Option<String> {
         let context =
             self.effective_inc_context_for_doc(Some(uri), Some(text), Some(activation_offset))?;
-        let scoped_folder_uris: Vec<String> = match context.folder_uri.as_ref() {
-            Some(owned_folder_uri) => vec![owned_folder_uri.clone()],
-            None => {
-                // No owning folder was detected: keep the shared all-folders
-                // view rather than silently dropping configured roots.
-                let folders = self.workspace_folders.lock().clone();
-                folders.iter().map(|folder| folder.uri.clone()).collect()
-            }
-        };
+        // Document-scoped resolution requires explicit ownership. The shared
+        // context retains a compatibility root for other consumers, but an
+        // unowned document must not turn that root into an all-folder module
+        // search (#4240, #8112).
+        let owned_folder_uri = context.folder_uri.as_ref()?;
+        let scoped_folder_uris = vec![owned_folder_uri.clone()];
         let open_document_uris: Vec<String> = {
             let documents = self.documents.lock();
             documents
@@ -253,8 +250,7 @@ mod activation_anchoring_tests {
         let server = LspServer::new();
         let mut states = Vec::new();
         for (path, config) in folders {
-            let mut state =
-                WorkspaceFolderState::new(path_uri(path)).with_path(path.to_path_buf());
+            let mut state = WorkspaceFolderState::new(path_uri(path)).with_path(path.to_path_buf());
             if let Some(config) = config {
                 state = state.with_effective_workspace_config(config.clone());
             }
@@ -278,11 +274,7 @@ mod activation_anchoring_tests {
         path.replace('\\', "/")
     }
 
-    fn request_context(
-        server: &LspServer,
-        doc_path: &Path,
-        source: &str,
-    ) -> Dancer2RequestContext {
+    fn request_context(server: &LspServer, doc_path: &Path, source: &str) -> Dancer2RequestContext {
         let content_hash = perl_lsp_rs_core::tooling::perl_critic::hash_content(source);
         let ast = parse_ast(source);
         server.dancer2_request_context(&path_uri(doc_path), source, content_hash, &ast)
@@ -405,10 +397,7 @@ mod activation_anchoring_tests {
         assert!(
             context.activations.has_exact(),
             "owning-folder resolution must be exact: {:?}",
-            context
-                .activations
-                .for_package("main")
-                .map(|package| package.facts.state.clone())
+            context.activations.for_package("main").map(|package| package.facts.state.clone())
         );
         Ok(())
     }
@@ -441,6 +430,54 @@ mod activation_anchoring_tests {
         );
         assert_eq!(module_a.declared_version, "1.101.001");
         assert_eq!(module_b.declared_version, "1.102.002");
+        Ok(())
+    }
+
+    #[test]
+    fn unowned_document_does_not_fan_out_across_workspace_folders() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let svc_a = make_app_folder(temp.path(), "svc-a", "1.101.001");
+        let svc_b = make_app_folder(temp.path(), "svc-b", "1.102.002");
+
+        let server = server_with_folders(&[(&svc_a, None), (&svc_b, None)]);
+        let detached_doc = temp.path().join("detached").join("app.pl");
+        let source = "use lib 'lib';\nuse Dancer2;\n";
+
+        let context = request_context(&server, &detached_doc, source);
+
+        assert!(
+            context.activations.module.is_none(),
+            "an outside-folder document must not resolve from either workspace folder"
+        );
+        assert!(
+            !context.activations.has_exact(),
+            "unowned document resolution must remain bounded rather than inherit a folder"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn first_activation_site_controls_multiple_activations() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let ws = temp.path().join("ws");
+        let vendor = ws.join("vendor");
+        std::fs::create_dir_all(&vendor)?;
+        std::fs::write(vendor.join("Dancer2.pm"), stub_module("1.300.0"))?;
+
+        let server = server_with_folders(&[(&ws, Some(isolated_workspace_config()))]);
+        let doc = ws.join("bin").join("app.pl");
+        let source = "use Dancer2;\nuse lib 'vendor';\nuse Dancer2;\n";
+
+        let context = request_context(&server, &doc, source);
+
+        assert!(
+            context.activations.module.is_none(),
+            "a later activation must not move the resolution anchor past a later use lib"
+        );
+        assert!(
+            !context.activations.has_exact(),
+            "all activation sites must use the first site's effective @INC state"
+        );
         Ok(())
     }
 }
