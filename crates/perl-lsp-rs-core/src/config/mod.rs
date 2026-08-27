@@ -1847,7 +1847,12 @@ pub(crate) fn effective_system_inc_probe_timeout() -> Duration {
 /// Restores the previous value on drop, so nested installs compose and a
 /// panicking test cannot leak a widened budget into the next test that the
 /// harness schedules on the same thread.
+///
+/// `#[must_use]`: the guard's whole purpose is the window it is held open for,
+/// so discarding it as a bare statement would drop it immediately and silently
+/// restore the previous budget before the probe ever runs.
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[must_use = "the probe budget is only overridden while this guard is held"]
 pub(crate) struct SystemIncProbeTimeoutGuard {
     previous: Option<Duration>,
 }

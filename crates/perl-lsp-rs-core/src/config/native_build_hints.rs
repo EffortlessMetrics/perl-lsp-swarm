@@ -343,11 +343,11 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
         match ch {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
-            ')' | ']' | '}' => {
-                if stack.pop().is_none() {
-                    return idx.saturating_sub(start);
-                }
-            }
+            // `stack.pop()` runs in the guard, so it still executes exactly once
+            // per closer, as it did when the test lived in the arm body. On a
+            // false guard control falls through to `_ => {}` — no later arm can
+            // match a closer — which is the same no-op the old `if` produced.
+            ')' | ']' | '}' if stack.pop().is_none() => return idx.saturating_sub(start),
             ',' | ';' if stack.is_empty() => return idx.saturating_sub(start),
             _ => {}
         }
@@ -733,6 +733,35 @@ mod tests {
     use super::*;
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    /// `rejected_value_len` decides how far the scanner skips past a rejected
+    /// literal, and its closer handling now lives in a match guard whose
+    /// `stack.pop()` runs for its side effect. Both directions of that guard
+    /// must stay pinned: a balanced group is spanned (the separator inside it
+    /// is not a terminator), and an unmatched closer ends the span.
+    ///
+    /// This is the discriminating control for the collapse — the pre-existing
+    /// suite passed with the guard inverted to `is_some()`, so without this the
+    /// rewrite would be unproven.
+    #[test]
+    fn rejected_value_len_spans_balanced_groups_and_stops_at_an_unmatched_closer() {
+        // The comma inside `(...)` is nested, so it must not terminate the span;
+        // the top-level comma that follows the balanced group must.
+        let source = "foo(a, b), rest";
+        assert_eq!(
+            rejected_value_len(source, 0),
+            "foo(a, b)".len(),
+            "a balanced group must be spanned up to the first top-level separator",
+        );
+
+        // An unmatched closer pops an empty stack and ends the span at its index.
+        let source = "abc) rest";
+        assert_eq!(
+            rejected_value_len(source, 0),
+            "abc".len(),
+            "an unmatched closer must end the span",
+        );
+    }
 
     /// Fresh temporary workspace root accepting optional build scripts.
     struct HintRoot {
