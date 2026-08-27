@@ -124,10 +124,8 @@ jobs:
 
       - name: Summary
         if: always()
-        env:
-          JOB_STATUS: ${{ job.status }}
         run: |
-          if [ "$JOB_STATUS" = "success" ]; then
+          if [ "${{ job.status }}" = "success" ]; then
             echo "## CI gate self-tests passed" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The publish dry-run gate correctly catches:" >> "$GITHUB_STEP_SUMMARY"
