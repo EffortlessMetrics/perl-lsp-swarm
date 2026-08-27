@@ -543,4 +543,3 @@ fn public_api_ratchet_fixture_executes_fail_closed_paths() -> Result<(), Box<dyn
     Ok(())
 }
 
-}
