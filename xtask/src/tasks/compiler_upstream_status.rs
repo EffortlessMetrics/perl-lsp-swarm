@@ -65,33 +65,37 @@ pub enum CompilerUpstreamStatusSubcommand {
     },
 }
 
-fn map_error(result: anyhow::Result<()>) -> Result<()> {
-    result.map_err(|error| eyre!("{error}"))
+fn map_summary(result: anyhow::Result<String>) -> Result<()> {
+    for line in result.map_err(|error| eyre!("{error}"))?.lines() {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+fn map_lines(result: anyhow::Result<Vec<String>>) -> Result<()> {
+    for line in result.map_err(|error| eyre!("{error}"))? {
+        println!("{line}");
+    }
+    Ok(())
 }
 
 pub fn run(command: CompilerUpstreamStatusSubcommand) -> Result<()> {
     match command {
         CompilerUpstreamStatusSubcommand::Build { inputs, output } => {
-            map_error(status::run_build(&inputs, &output))
+            map_summary(status::run_build(&inputs, &output))
         }
-        CompilerUpstreamStatusSubcommand::Check { path } => map_error(status::run_check(&path)),
-        CompilerUpstreamStatusSubcommand::Show {
-            path,
-            series,
-            concept,
-        } => map_error(status::run_show(
-            &path,
-            series.as_deref(),
-            concept.as_deref(),
-        )),
+        CompilerUpstreamStatusSubcommand::Check { path } => map_summary(status::run_check(&path)),
+        CompilerUpstreamStatusSubcommand::Show { path, series, concept } => {
+            map_lines(status::run_show(&path, series.as_deref(), concept.as_deref()))
+        }
         CompilerUpstreamStatusSubcommand::Diff { before, after } => {
-            map_error(status::run_diff(&before, &after))
+            map_summary(status::run_diff(&before, &after))
         }
         CompilerUpstreamStatusSubcommand::Docs { status: status_path, output } => {
-            map_error(status::run_docs(&status_path, &output))
+            map_summary(status::run_docs(&status_path, &output))
         }
         CompilerUpstreamStatusSubcommand::DocsCheck { status: status_path, path } => {
-            map_error(status::run_docs_check(&status_path, &path))
+            map_summary(status::run_docs_check(&status_path, &path))
         }
     }
 }

@@ -13,7 +13,7 @@
 //! or "mostly supports Perl" conclusion. Descriptive counts appear only with
 //! their exact named denominator visible, and can never override a row.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -55,16 +55,12 @@ impl TerminalState {
     pub fn as_str(self) -> &'static str {
         match self {
             TerminalState::AgreementCurrent => "agreement_current",
-            TerminalState::AgreementWithDeclaredLimitation => {
-                "agreement_with_declared_limitation"
-            }
+            TerminalState::AgreementWithDeclaredLimitation => "agreement_with_declared_limitation",
             TerminalState::CompilerFailed => "compiler_failed",
             TerminalState::NotProven => "not_proven",
             TerminalState::Stale => "stale",
             TerminalState::InvalidOrConflicting => "invalid_or_conflicting",
-            TerminalState::UnsupportedOrExternalBoundary => {
-                "unsupported_or_external_boundary"
-            }
+            TerminalState::UnsupportedOrExternalBoundary => "unsupported_or_external_boundary",
             TerminalState::PlatformOrConfigurationBound => "platform_or_configuration_bound",
             TerminalState::ClassificationPending => "classification_pending",
             TerminalState::WitnessPending => "witness_pending",
@@ -158,6 +154,15 @@ pub enum WitnessKind {
 pub enum WitnessInstallation {
     Installed,
     NotInstalled,
+}
+
+impl WitnessInstallation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WitnessInstallation::Installed => "installed",
+            WitnessInstallation::NotInstalled => "not_installed",
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +406,14 @@ pub struct ConformanceStatusPacket {
     pub descriptive_counts: DescriptiveCounts,
 }
 
+fn structural_constants() -> StructuralConstants {
+    StructuralConstants {
+        support_authorized: false,
+        release_authorized: false,
+        published_channels: Vec::new(),
+    }
+}
+
 /// Deterministic canonical serialization: stable field order from serde
 /// declaration order, sorted collections everywhere, LF newline terminator.
 pub fn canonical_bytes(packet: &ConformanceStatusPacket) -> Result<Vec<u8>> {
@@ -410,7 +423,13 @@ pub fn canonical_bytes(packet: &ConformanceStatusPacket) -> Result<Vec<u8>> {
 }
 
 pub fn packet_identity(packet: &ConformanceStatusPacket) -> Result<String> {
-    Ok(format!("sha256:{:x}", Sha256::digest(canonical_bytes(packet)?)))
+    let digest = Sha256::digest(canonical_bytes(packet)?);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest.iter() {
+        use std::fmt::Write;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    Ok(format!("sha256:{hex}"))
 }
 
 fn compute_counts(rows: &[PublishedRow]) -> DescriptiveCounts {
@@ -440,25 +459,18 @@ fn compute_counts(rows: &[PublishedRow]) -> DescriptiveCounts {
 // Validation
 // ---------------------------------------------------------------------------
 
-const FORBIDDEN_LEAK_SUBSTRINGS: &[&str] = &[
-    "\\",
-    "${",
-    "%TEMP%",
-    "%APPDATA%",
-    "%LOCALAPPDATA%",
-    "/home/",
-    "/Users/",
-    "file://",
-];
+const FORBIDDEN_LEAK_SUBSTRINGS: &[&str] =
+    &["\\", "${", "%TEMP%", "%APPDATA%", "%LOCALAPPDATA%", "/home/", "/Users/", "file://"];
 
 fn leak_violation(field: &str, value: &str) -> Option<String> {
     if FORBIDDEN_LEAK_SUBSTRINGS.iter().any(|bad| value.contains(bad)) {
         return Some(format!("field `{field}` leaks host/private/path detail"));
     }
     let bytes = value.as_bytes();
-    if bytes.windows(3).any(|w| {
-        w[0].is_ascii_alphabetic() && w[1] == b':' && (w[2] == b'\\' || w[2] == b'/')
-    }) {
+    if bytes
+        .windows(3)
+        .any(|w| w[0].is_ascii_alphabetic() && w[1] == b':' && (w[2] == b'\\' || w[2] == b'/'))
+    {
         return Some(format!("field `{field}` contains an absolute host path"));
     }
     None
@@ -476,9 +488,7 @@ fn is_relative_normalized_path(value: &str) -> bool {
         && !value.starts_with('/')
         && !value.starts_with('~')
         && !value.contains('\\')
-        && value.split('/').all(|segment| {
-            !segment.is_empty() && segment != "." && segment != ".."
-        })
+        && value.split('/').all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
 struct Violations<'a> {
@@ -515,10 +525,7 @@ impl<'a> Violations<'a> {
 
     fn scan_free_text(&mut self, field: &str, value: &str) {
         self.scan_text_value(field, value);
-        self.reject_unless(
-            !value.trim().is_empty(),
-            format!("field `{field}` must not be empty"),
-        );
+        self.reject_unless(!value.trim().is_empty(), format!("field `{field}` must not be empty"));
         // Generated Markdown stays line-oriented and byte-stable.
         self.reject_unless(
             !value.chars().any(char::is_control),
@@ -531,22 +538,27 @@ fn bounded_report(mut violations: Vec<String>) -> Vec<String> {
     if violations.len() > MAX_REPORTED_VIOLATIONS {
         let overflow = violations.len() - MAX_REPORTED_VIOLATIONS;
         violations.truncate(MAX_REPORTED_VIOLATIONS);
-        violations.push(format!(
-            "...and {overflow} more validation violations (truncated)"
-        ));
+        violations.push(format!("...and {overflow} more validation violations (truncated)"));
     }
     violations
 }
 
-fn validate_witness(v: &mut Violations, row_id: &str, upstream: &UpstreamCaseRef, witness: &WitnessRecord) {
+fn validate_witness(
+    v: &mut Violations,
+    row_id: &str,
+    upstream: &UpstreamCaseRef,
+    witness: &WitnessRecord,
+) {
     v.reject_unless(
         is_identifier_charset(&witness.identity),
-        "witness identity has invalid charset".to_string(),
+        format!("row `{row_id}` witness identity has invalid charset"),
     );
     v.scan_text_value("witness.minimizes_case_path", &witness.minimizes_case_path);
     // Falsifier 2: a minimized witness never replaces the original case.
     if witness.minimizes_case_path == upstream.case_path {
-        v.add("minimized witness replaces the original upstream case instead of minimizing it".to_string());
+        v.add(format!(
+            "row `{row_id}` minimized witness replaces the original upstream case instead of minimizing it"
+        ));
     }
 }
 
@@ -605,19 +617,17 @@ fn validate_history(v: &mut Violations, row_id: &str, history: &RowHistory) {
     ];
     for (field, link) in links {
         if let Some(id) = link {
-            v.reject_unless(
-                id != row_id,
-                format!("{field} references its own row"),
-            );
-            v.reject_unless(
-                is_identifier_charset(id),
-                format!("{field} has invalid charset"),
-            );
+            v.reject_unless(id != row_id, format!("{field} references its own row"));
+            v.reject_unless(is_identifier_charset(id), format!("{field} has invalid charset"));
         }
     }
 }
 
-fn validate_performance(v: &mut Violations, terminal_state: TerminalState, performance: &PerformanceEvidence) {
+fn validate_performance(
+    v: &mut Violations,
+    terminal_state: TerminalState,
+    performance: &PerformanceEvidence,
+) {
     // Performance plane independence: eligibility only after current
     // correctness agreement; evidence identity only when eligible.
     if !terminal_state.permits_performance_evidence() {
@@ -680,10 +690,7 @@ fn validate_row_against_series(
             ));
         }
     } else {
-        v.add(format!(
-            "row references undeclared series `{}`",
-            row.series_id
-        ));
+        v.add(format!("row references undeclared series `{}`", row.series_id));
     }
 
     match row.terminal_state {
@@ -703,14 +710,15 @@ fn validate_row_against_series(
             }
             v.reject_unless(
                 row.limitation.is_none(),
-                "agreement_current carries no limitation; use agreement_with_declared_limitation".to_string(),
+                "agreement_current carries no limitation; use agreement_with_declared_limitation"
+                    .to_string(),
             );
         }
         TerminalState::AgreementWithDeclaredLimitation => match &row.limitation {
             Some(limitation) => validate_limitation(&mut v, limitation),
-            None => v.add(
-                "agreement_with_declared_limitation requires a limitation record".to_string(),
-            ),
+            None => {
+                v.add("agreement_with_declared_limitation requires a limitation record".to_string())
+            }
         },
         TerminalState::UnsupportedOrExternalBoundary => {
             v.reject_unless(
@@ -726,7 +734,8 @@ fn validate_row_against_series(
             match &row.limitation {
                 Some(limitation) => validate_limitation(&mut v, limitation),
                 None => v.add(
-                    "platform_or_configuration_bound requires a platform-binding limitation".to_string(),
+                    "platform_or_configuration_bound requires a platform-binding limitation"
+                        .to_string(),
                 ),
             }
         }
@@ -744,19 +753,24 @@ fn validate_row_against_series(
                 "regression_not_installed requires a witness marked not_installed".to_string(),
             ),
             None => v.add(
-                "regression_not_installed requires the pending regression witness record".to_string(),
+                "regression_not_installed requires the pending regression witness record"
+                    .to_string(),
             ),
         },
         _ => {}
     }
 
-    if let Some(witness) = &row.witness {
-        if !matches!(
-            row.terminal_state,
-            TerminalState::WitnessPending | TerminalState::NoCurrentSnapshot | TerminalState::NoCurrentCompilerObservation | TerminalState::ClassificationPending
-        ) {
-            validate_witness(&mut v, &row.row_id, &row.upstream_case, witness);
-        }
+    let witness_plane_explains_absence = matches!(
+        row.terminal_state,
+        TerminalState::WitnessPending
+            | TerminalState::NoCurrentSnapshot
+            | TerminalState::NoCurrentCompilerObservation
+            | TerminalState::ClassificationPending
+    );
+    let witness_to_validate =
+        if witness_plane_explains_absence { None } else { row.witness.as_ref() };
+    if let Some(witness) = witness_to_validate {
+        validate_witness(&mut v, &row.row_id, &row.upstream_case, witness);
     }
 
     validate_owner(&mut v, &row.owner);
@@ -764,14 +778,6 @@ fn validate_row_against_series(
     validate_performance(&mut v, row.terminal_state, &row.performance);
 
     v.out
-}
-
-fn snapshot_presence(manifest: &StatusInputsManifest) -> BTreeMap<String, bool> {
-    manifest
-        .maintained_series
-        .iter()
-        .map(|series| (series.series_id.clone(), series.snapshot_identity.is_some()))
-        .collect()
 }
 
 fn validate_manifest(v: &mut Violations, manifest: &StatusInputsManifest) {
@@ -799,10 +805,7 @@ fn validate_manifest(v: &mut Violations, manifest: &StatusInputsManifest) {
         if seen_series.insert(series.series_id.as_str()) {
             v.reject_unless(
                 is_identifier_charset(&series.series_id) && is_identifier_charset(&series.role),
-                format!(
-                    "series `{}` id/role have invalid charset",
-                    series.series_id
-                ),
+                format!("series `{}` id/role have invalid charset", series.series_id),
             );
         } else {
             v.add(format!("duplicate series selector `{}`", series.series_id));
@@ -846,27 +849,13 @@ pub fn validate_packet(packet: &ConformanceStatusPacket) -> Result<()> {
         if !seen_series.insert(series.series_id.as_str()) {
             v.add(format!("duplicate published series `{}`", series.series_id));
         }
-        for (field, value) in [
-            ("series.role", &series.role),
-            ("series.snapshot_relation", &series.snapshot_relation),
-            (
-                "series.snapshot_identity",
-                &series.snapshot_identity,
-            ),
-            (
-                "series.upstream_index_identity",
-                &series.upstream_index_identity,
-            ),
-        ] {
-            v.scan_text(field, value);
-        }
+        v.scan_text_value("series.role", &series.role);
+        v.scan_text("series.snapshot_relation", &series.snapshot_relation);
+        v.scan_text("series.snapshot_identity", &series.snapshot_identity);
+        v.scan_text("series.upstream_index_identity", &series.upstream_index_identity);
     }
-    let sorted_series_ids: Vec<&str> = packet
-        .subject_binding
-        .maintained_series
-        .iter()
-        .map(|s| s.series_id.as_str())
-        .collect();
+    let sorted_series_ids: Vec<&str> =
+        packet.subject_binding.maintained_series.iter().map(|s| s.series_id.as_str()).collect();
     let mut sorted_sorted = sorted_series_ids.clone();
     sorted_sorted.sort_unstable();
     if sorted_series_ids != sorted_sorted {
@@ -914,10 +903,7 @@ pub fn validate_packet(packet: &ConformanceStatusPacket) -> Result<()> {
     if violations.is_empty() {
         Ok(())
     } else {
-        bail!(
-            "status packet failed validation:\n{}",
-            violations.join("\n")
-        )
+        bail!("status packet failed validation:\n{}", violations.join("\n"))
     }
 }
 
@@ -926,10 +912,9 @@ pub fn validate_packet(packet: &ConformanceStatusPacket) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path, what: &str) -> Result<T> {
-    let text = fs::read_to_string(path)
-        .with_context(|| format!("read {what} at {}", path.display()))?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("parse {what} at {}", path.display()))
+    let text =
+        fs::read_to_string(path).with_context(|| format!("read {what} at {}", path.display()))?;
+    serde_json::from_str(&text).with_context(|| format!("parse {what} at {}", path.display()))
 }
 
 /// Loads and shapes reviewed inputs from `<root>/manifest.json` and
@@ -937,13 +922,25 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path, what: &str) -> Result<T>
 pub fn load_inputs(root: &Path) -> Result<(StatusInputsManifest, Vec<CaseInputRow>)> {
     let manifest: StatusInputsManifest =
         read_json(&root.join("manifest.json"), "status inputs manifest")?;
+    {
+        let mut violations_scope = Violations::new("manifest");
+        validate_manifest(&mut violations_scope, &manifest);
+        let manifest_violations = bounded_report(violations_scope.out);
+        if !manifest_violations.is_empty() {
+            bail!(
+                "status inputs manifest failed validation:
+{}",
+                manifest_violations.join(
+                    "
+"
+                )
+            );
+        }
+    }
 
     let rows_dir = root.join("rows");
     if !rows_dir.is_dir() {
-        bail!(
-            "inputs root {} has no rows directory",
-            root.display()
-        );
+        bail!("inputs root {} has no rows directory", root.display());
     }
     let mut entries: Vec<PathBuf> = Vec::new();
     for entry in fs::read_dir(&rows_dir).with_context(|| format!("list {}", rows_dir.display()))? {
@@ -1046,7 +1043,7 @@ fn load_packet(path: &Path) -> Result<ConformanceStatusPacket> {
     Ok(packet)
 }
 
-pub fn run_build(inputs: &Path, output: &Path) -> Result<()> {
+pub fn run_build(inputs: &Path, output: &Path) -> Result<String> {
     let (manifest, rows) = load_inputs(inputs)?;
     let packet = project_packet(manifest, rows);
     validate_packet(&packet)?;
@@ -1055,94 +1052,93 @@ pub fn run_build(inputs: &Path, output: &Path) -> Result<()> {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     fs::write(output, &bytes).with_context(|| format!("write {}", output.display()))?;
-    println!(
+    Ok(format!(
         "built {} rows={} identity={}",
         PACKET_SCHEMA_VERSION,
         packet.rows.len(),
         packet_identity(&packet)?
-    );
-    Ok(())
+    ))
 }
 
-pub fn run_check(path: &Path) -> Result<()> {
+pub fn run_check(path: &Path) -> Result<String> {
     let packet = load_packet(path)?;
-    println!(
+    Ok(format!(
         "{} identity={} status_id={} series={} rows={}",
         PACKET_SCHEMA_VERSION,
         packet_identity(&packet)?,
         packet.status_id,
         packet.subject_binding.maintained_series.len(),
         packet.rows.len()
-    );
-    Ok(())
+    ))
 }
 
-pub fn run_show(
-    path: &Path,
-    series: Option<&str>,
-    concept: Option<&str>,
-) -> Result<()> {
+pub fn run_show(path: &Path, series: Option<&str>, concept: Option<&str>) -> Result<Vec<String>> {
     let packet = load_packet(path)?;
-    println!(
-        "status_id={} identity={}",
-        packet.status_id,
-        packet_identity(&packet)?
-    );
+    let mut lines =
+        vec![format!("status_id={} identity={}", packet.status_id, packet_identity(&packet)?)];
     for row in &packet.rows {
-        if let Some(series) = series {
-            if row.series_id != series {
-                continue;
-            }
+        let series_matches = match series {
+            Some(wanted) => row.series_id == wanted,
+            None => true,
+        };
+        let concept_matches = match concept {
+            Some(wanted) => row.concept_id == wanted || row.concept_family == wanted,
+            None => true,
+        };
+        if series_matches && concept_matches {
+            lines.extend(row_display_lines(row));
         }
-        if let Some(concept) = concept {
-            if row.concept_id != concept && row.concept_family != concept {
-                continue;
-            }
-        }
-        print_row_lines(row);
     }
-    Ok(())
+    Ok(lines)
 }
 
-fn print_row_lines(row: &PublishedRow) {
-    println!(
-        "row {} series={} concept_family={} concept_id={} obligation_id={}",
-        row.row_id, row.series_id, row.concept_family, row.concept_id, row.obligation_id
-    );
-    println!(
-        "  state={} boundary={} support_boundary={}",
-        row.terminal_state.as_str(),
-        row.boundary.as_str(),
-        support_boundary_str(row.support_boundary)
-    );
-    println!(
-        "  subjects oracle={} compiler={} instrument={}",
-        row.oracle_subject, row.compiler_subject, row.instrument_identity
-    );
-    println!(
-        "  upstream original retained snapshot_ref={} case_path={} case_name={}",
-        row.upstream_case.snapshot_ref, row.upstream_case.case_path, row.upstream_case.case_name
-    );
-    match &row.witness {
-        Some(witness) => println!(
+fn row_display_lines(row: &PublishedRow) -> Vec<String> {
+    let evidence_display = match row.performance.evidence_identity.as_deref() {
+        Some(identity) => identity.to_string(),
+        None => "<none>".to_string(),
+    };
+    let witness_line = match &row.witness {
+        Some(witness) => format!(
             "  witness kind={} identity={} minimizes_case_path={} installation={}",
             witness_kind_str(witness.kind),
             witness.identity,
             witness.minimizes_case_path,
             witness.installation.as_str()
         ),
-        None => println!("  witness none"),
-    }
-    println!("  owner={}", row.owner.canonical_owner);
-    println!(
-        "  performance correctness_eligible={} evidence={}",
-        row.performance.correctness_eligible,
-        row.performance.evidence_identity.as_deref().unwrap_or("<none>")
-    );
-    println!(
-        "  history upstream_change={:?} retained_obligation_after_removal={}",
-        row.history.upstream_change, row.history.retained_obligation_after_removal
-    );
+        None => "  witness none".to_string(),
+    };
+    vec![
+        format!(
+            "row {} series={} concept_family={} concept_id={} obligation_id={}",
+            row.row_id, row.series_id, row.concept_family, row.concept_id, row.obligation_id
+        ),
+        format!(
+            "  state={} boundary={} support_boundary={}",
+            row.terminal_state.as_str(),
+            row.boundary.as_str(),
+            support_boundary_str(row.support_boundary)
+        ),
+        format!(
+            "  subjects oracle={} compiler={} instrument={}",
+            row.oracle_subject, row.compiler_subject, row.instrument_identity
+        ),
+        format!(
+            "  upstream original retained snapshot_ref={} case_path={} case_name={}",
+            row.upstream_case.snapshot_ref,
+            row.upstream_case.case_path,
+            row.upstream_case.case_name
+        ),
+        witness_line,
+        format!("  owner={}", row.owner.canonical_owner),
+        format!(
+            "  performance correctness_eligible={} evidence={}",
+            row.performance.correctness_eligible, evidence_display
+        ),
+        format!(
+            "  history upstream_change={:?} retained_obligation_after_removal={}",
+            row.history.upstream_change, row.history.retained_obligation_after_removal
+        ),
+    ]
 }
 
 fn support_boundary_str(value: SupportBoundary) -> &'static str {
@@ -1173,31 +1169,25 @@ fn upstream_change_str(value: UpstreamChange) -> &'static str {
 
 const DIFF_MAX_LINES: usize = 100;
 
-pub fn run_diff(before: &Path, after: &Path) -> Result<()> {
+pub fn run_diff(before: &Path, after: &Path) -> Result<String> {
     let before_packet = load_packet(before)?;
     let after_packet = load_packet(after)?;
 
     if before_packet == after_packet {
-        println!(
-            "identical identity={}",
-            packet_identity(&before_packet)?
-        );
-        return Ok(());
+        return Ok(format!("identical identity={}", packet_identity(&before_packet)?));
     }
 
     let mut lines: Vec<String> = Vec::new();
-    summarize_binding_diff(&before_packet.subject_binding, &after_packet.subject_binding, &mut lines);
+    summarize_binding_diff(
+        &before_packet.subject_binding,
+        &after_packet.subject_binding,
+        &mut lines,
+    );
 
-    let before_by_id: BTreeMap<&str, &PublishedRow> = before_packet
-        .rows
-        .iter()
-        .map(|row| (row.row_id.as_str(), row))
-        .collect();
-    let after_by_id: BTreeMap<&str, &PublishedRow> = after_packet
-        .rows
-        .iter()
-        .map(|row| (row.row_id.as_str(), row))
-        .collect();
+    let before_by_id: BTreeMap<&str, &PublishedRow> =
+        before_packet.rows.iter().map(|row| (row.row_id.as_str(), row)).collect();
+    let after_by_id: BTreeMap<&str, &PublishedRow> =
+        after_packet.rows.iter().map(|row| (row.row_id.as_str(), row)).collect();
     for (row_id, before_row) in &before_by_id {
         match after_by_id.get(row_id) {
             None => lines.push(format!("- row {row_id} disappeared")),
@@ -1232,7 +1222,11 @@ pub fn run_diff(before: &Path, after: &Path) -> Result<()> {
     )
 }
 
-fn summarize_binding_diff(before: &SubjectBinding, after: &SubjectBinding, lines: &mut Vec<String>) {
+fn summarize_binding_diff(
+    before: &SubjectBinding,
+    after: &SubjectBinding,
+    lines: &mut Vec<String>,
+) {
     let fields = [
         (
             "compiler_candidate_identity",
@@ -1275,14 +1269,9 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
     let binding = &packet.subject_binding;
     let mut out = String::new();
     out.push_str("# Compiler upstream conformance status\n\n");
-    out.push_str(&format!(
-        "- packet_schema: `{PACKET_SCHEMA_VERSION}`\n"
-    ));
+    out.push_str(&format!("- packet_schema: `{PACKET_SCHEMA_VERSION}`\n"));
     out.push_str(&format!("- status_id: `{}`\n", packet.status_id));
-    out.push_str(&format!(
-        "- generator_identity: `{}`\n",
-        packet.generator_identity
-    ));
+    out.push_str(&format!("- generator_identity: `{}`\n", packet.generator_identity));
     out.push_str(&opt_line(
         "compiler_candidate_identity",
         &binding.compiler_candidate_identity.clone().into_option(),
@@ -1297,10 +1286,7 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
     ));
     out.push_str(&opt_line("slice_registry_identity", &binding.slice_registry_identity));
     out.push_str(&opt_line("maintained_sync_identity", &binding.maintained_sync_identity));
-    out.push_str(&opt_line(
-        "performance_packet_identity",
-        &binding.performance_packet_identity,
-    ));
+    out.push_str(&opt_line("performance_packet_identity", &binding.performance_packet_identity));
     out.push_str(&opt_line(
         "compiler_profile_generation_identity_informational_only",
         &binding.compiler_profile_generation_identity,
@@ -1309,7 +1295,7 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
     out.push_str("- release_authorized: false\n");
     out.push_str("- published_channels: (none; structural constant)\n");
     out.push('\n');
-    out.push_str(packet.no_score_statement);
+    out.push_str(&packet.no_score_statement);
     out.push_str("\n\n");
 
     // Progressive disclosure level 1: series and snapshots.
@@ -1318,12 +1304,9 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
         out.push_str(&format!("\n### {}\n", series.series_id));
         out.push_str(&format!("- role: `{}`\n", series.role));
         match &series.snapshot_identity {
-            Some(snapshot) => out.push_str(&format!(
-                "- snapshot_identity: `{snapshot}`\n"
-            )),
-            None => out.push_str(
-                "- snapshot_identity: absent (no accepted current upstream snapshot)\n",
-            ),
+            Some(snapshot) => out.push_str(&format!("- snapshot_identity: `{snapshot}`\n")),
+            None => out
+                .push_str("- snapshot_identity: absent (no accepted current upstream snapshot)\n"),
         }
         out.push_str(&opt_line("upstream_index_identity", &series.upstream_index_identity));
         out.push_str(&opt_line("snapshot_relation", &series.snapshot_relation));
@@ -1348,22 +1331,13 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
             last_family_concept = None;
         }
         if last_family_concept != Some((row.concept_family.as_str(), row.concept_id.as_str())) {
-            out.push_str(&format!(
-                "\n#### {} / {}\n",
-                row.concept_family, row.concept_id
-            ));
+            out.push_str(&format!("\n#### {} / {}\n", row.concept_family, row.concept_id));
             last_family_concept = Some((row.concept_family.as_str(), row.concept_id.as_str()));
         }
         out.push('\n');
         out.push_str(&format!("##### {} (`{}`)\n\n", row.row_id, row.obligation_id));
-        out.push_str(&format!(
-            "current result: `{}`\n\n",
-            row.terminal_state.as_str()
-        ));
-        out.push_str(&format!(
-            "- selected observation boundary: {}\n",
-            row.boundary.as_str()
-        ));
+        out.push_str(&format!("current result: `{}`\n\n", row.terminal_state.as_str()));
+        out.push_str(&format!("- selected observation boundary: {}\n", row.boundary.as_str()));
         out.push_str(&format!(
             "- oracle subject: `{}`\n- compiler subject: `{}`\n- instrument identity: `{}`\n",
             row.oracle_subject, row.compiler_subject, row.instrument_identity
@@ -1419,10 +1393,7 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
         if row.performance.correctness_eligible {
             out.push_str(&format!(
                 "- performance: correctness eligible; evidence identity: `{}`\n",
-                row.performance
-                    .evidence_identity
-                    .as_deref()
-                    .unwrap_or("<missing>")
+                row.performance.evidence_identity.as_deref().unwrap_or("<missing>")
             ));
         } else {
             out.push_str(
@@ -1447,10 +1418,7 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
     ));
     out.push_str("| terminal_state | count |\n|---|---|\n");
     for (state, count) in &packet.descriptive_counts.by_terminal_state {
-        out.push_str(&format!(
-            "| {} | {count} |\n",
-            state.as_str()
-        ));
+        out.push_str(&format!("| {} | {count} |\n", state.as_str()));
     }
     out.push_str("\n| series | total rows | terminal states |\n|---|---|---|\n");
     for series in &packet.descriptive_counts.per_series {
@@ -1482,10 +1450,8 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
                         row.row_id, successor
                     ));
                 } else if row.history.retained_obligation_after_removal {
-                    removed.push(format!(
-                        "`{}` (semantic obligation retained locally)",
-                        row.row_id
-                    ));
+                    removed
+                        .push(format!("`{}` (semantic obligation retained locally)", row.row_id));
                 }
             }
             UpstreamChange::Changed => changed.push(row.row_id.as_str()),
@@ -1510,11 +1476,11 @@ fn format_opt_id(value: &Option<String>) -> String {
     }
 }
 
-fn join_or_none(values: &[String]) -> String {
+fn join_or_none<S: std::fmt::Display>(values: &[S]) -> String {
     if values.is_empty() {
         "none".to_string()
     } else {
-        values.join(", ")
+        values.iter().map(|value| value.to_string()).collect::<Vec<_>>().join(", ")
     }
 }
 
@@ -1528,7 +1494,7 @@ impl OneLineOption for String {
     }
 }
 
-pub fn run_docs(status: &Path, output: &Path) -> Result<()> {
+pub fn run_docs(status: &Path, output: &Path) -> Result<String> {
     let packet = load_packet(status)?;
     let markdown = render_markdown(&packet)?;
     if let Some(parent) = output.parent() {
@@ -1536,26 +1502,19 @@ pub fn run_docs(status: &Path, output: &Path) -> Result<()> {
     }
     fs::write(output, markdown.as_bytes())
         .with_context(|| format!("write {}", output.display()))?;
-    println!("rendered {} bytes to {}", markdown.len(), output.display());
-    Ok(())
+    Ok(format!("rendered {} bytes to {}", markdown.len(), output.display()))
 }
 
-pub fn run_docs_check(status: &Path, path: &Path) -> Result<()> {
+pub fn run_docs_check(status: &Path, path: &Path) -> Result<String> {
     let packet = load_packet(status)?;
     let expected = render_markdown(&packet)?;
     let actual = fs::read_to_string(path)
         .with_context(|| format!("read generated view {}", path.display()))?;
     if actual == expected {
-        println!(
-            "generated view matches its validated packet ({})",
-            path.display()
-        );
-        return Ok(());
+        return Ok(format!("generated view matches its validated packet ({})", path.display()));
     }
-    let first_divergent = expected
-        .lines()
-        .zip(actual.lines())
-        .position(|(expected, actual)| expected != actual);
+    let first_divergent =
+        expected.lines().zip(actual.lines()).position(|(expected, actual)| expected != actual);
     bail!(
         "generated view at {} drifts from its validated packet{}; regenerate with `cargo xtask compiler upstream status docs`, never by editing prose",
         path.display(),
@@ -1565,3 +1524,6 @@ pub fn run_docs_check(status: &Path, path: &Path) -> Result<()> {
         }
     )
 }
+
+#[cfg(test)]
+mod tests;
