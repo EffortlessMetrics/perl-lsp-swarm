@@ -296,7 +296,7 @@ fn inline_completion_gates_are_split_scoped_ordered_and_budgeted()
     let expected: &[(&str, &str)] = &[
         (
             "inline_completion_registration",
-            "cargo build -p perllsp --locked && cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests",
+            "cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests",
         ),
         (
             "lsp_registration_contract",
@@ -342,14 +342,7 @@ fn inline_completion_gates_are_split_scoped_ordered_and_budgeted()
             "every child must be selected by a change to either formerly governed package"
         );
         assert_eq!(gate.command, expected_command);
-        if *gate_name == "inline_completion_registration" {
-            assert!(
-                gate.command.starts_with("cargo build -p perllsp --locked && "),
-                "server-spawning inline completion tests must use the prebuilt perllsp binary"
-            );
-        } else {
-            assert!(!gate.command.contains("&&"));
-        }
+        assert!(!gate.command.contains("&&"));
         timeout_total += gate.timeout_seconds.ok_or("child timeout must be explicit")?;
         budget_total += gate
             .budgets
@@ -681,3 +674,4 @@ fn lsp_smoke_is_atomic_bounded_and_independently_terminal() -> Result<(), Box<dy
 
     Ok(())
 }
+
