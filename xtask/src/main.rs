@@ -147,6 +147,14 @@ enum Commands {
         command: tasks::compiler_lexical_cutline::CompilerLexicalCutlineSubcommand,
     },
 
+    /// Build, check, list, and explain the deterministic install-claim catalog
+    /// (`distribution/public_release_claims.v2.json`, #11548).
+    PublicReleaseClaimsV2 {
+        /// Operation to run against the generated catalog.
+        #[command(subcommand)]
+        command: tasks::public_release_claims::PublicReleaseClaimsV2Subcommand,
+    },
+
     /// Validate differential real-Perl oracle receipt schema.
     CheckOracleReceiptSchema,
 
@@ -4633,6 +4641,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
+        Commands::PublicReleaseClaimsV2 { command } => {
+            tasks::public_release_claims::run(command)
+        }
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
         Commands::CheckProductHealthRailContract => product_health_rail_contract::run(),
