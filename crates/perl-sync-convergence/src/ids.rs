@@ -91,9 +91,19 @@ impl std::error::Error for IdentityError {}
 /// Immutable transaction identifier grouping successor generations.
 ///
 /// Opaque, caller-assigned, validated at construction and at the serde
-/// boundary.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+/// boundary (deserialization routes through [`TransactionId::new`]).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct TransactionId(String);
+
+impl<'de> Deserialize<'de> for TransactionId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
 
 impl TransactionId {
     /// Validate and construct a transaction ID.
@@ -127,8 +137,23 @@ impl fmt::Display for TransactionId {
 /// Derived via [`GenerationId::from_inputs`] from the exact inputs; equality
 /// therefore means "same exact inputs", and any moved input yields a distinct
 /// identifier.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+///
+/// Deserialization routes through [`GenerationId::parse`], so a persisted or
+/// wire-supplied value can never enter the type without passing the
+/// `gen:sha256:<64 lowercase hex>` validation (no path separators or arbitrary
+/// strings are constructible from hostile bytes).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct GenerationId(String);
+
+impl<'de> Deserialize<'de> for GenerationId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
+    }
+}
 
 impl GenerationId {
     const DOMAIN: &'static str = "perl_lsp.convergence.generation.v1";
@@ -258,5 +283,33 @@ mod tests {
         assert!(TransactionId::new("a\\b").is_err());
         assert!(TransactionId::new("C:temp").is_err());
         assert!(TransactionId::new(".hidden").is_err());
+    }
+
+    #[test]
+    fn serde_boundary_routes_through_constructors() {
+        // Malformed-wire controls: derived Deserialize used to admit these.
+        for hostile_tx in ["../escape", "a/b", "C:\\temp", ".hidden", "ctl\u{0007}id", ""] {
+            let wire = serde_json::to_string(hostile_tx).expect("json string");
+            assert!(
+                serde_json::from_str::<TransactionId>(&wire).is_err(),
+                "transaction id {hostile_tx:?} must be refused at the serde boundary"
+            );
+        }
+        for hostile_gen in ["gen:sha256:short", "gen:sha256:ZZZZ", "gen:other:digest", "../gen", ""]
+        {
+            let wire = serde_json::to_string(hostile_gen).expect("json string");
+            assert!(
+                serde_json::from_str::<GenerationId>(&wire).is_err(),
+                "generation id {hostile_gen:?} must be refused at the serde boundary"
+            );
+        }
+
+        // Well-formed values round-trip unchanged.
+        let tx = TransactionId::new("bridge-2026-08").expect("valid");
+        let json = serde_json::to_string(&tx).expect("serialize");
+        assert_eq!(serde_json::from_str::<TransactionId>(&json).expect("deserialize"), tx);
+        let id_gen = GenerationId::from_inputs(&inputs(""));
+        let json = serde_json::to_string(&id_gen).expect("serialize");
+        assert_eq!(serde_json::from_str::<GenerationId>(&json).expect("deserialize"), id_gen);
     }
 }

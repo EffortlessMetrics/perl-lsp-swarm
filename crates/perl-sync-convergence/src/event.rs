@@ -188,8 +188,9 @@ pub enum ReplayErrorKind {
     UnknownGeneration,
     /// Generation was started twice.
     DuplicateGeneration,
-    /// Two active generations claim the same direction and source parent
-    /// without supersession (negative control 2).
+    /// Another non-terminal generation already exists; a transaction carries
+    /// at most one current generation at a time, regardless of source parent
+    /// (negative control 2).
     ConcurrentActiveGeneration {
         /// Existing active generation identity.
         existing: String,
@@ -209,6 +210,9 @@ pub enum ReplayErrorKind {
     LiveLeaseExists,
     /// Heartbeat from a non-claimant or on a missing/expired lease.
     HeartbeatMismatch,
+    /// A replayed or claimed lease violates its structural laws: empty
+    /// claimant, backdated heartbeat, or expiry at/before the heartbeat.
+    InvalidLease(String),
     /// Takeover attempted against a live or mismatched displaced lease, or
     /// the reconciliation record is incomplete.
     InvalidTakeover(String),
@@ -227,7 +231,7 @@ impl fmt::Display for ReplayErrorKind {
             Self::ConcurrentActiveGeneration { existing } => {
                 write!(
                     f,
-                    "generation {existing} is already active for this direction and source parent"
+                    "generation {existing} is still active; successors require a terminal predecessor"
                 )
             }
             Self::IllegalTransition { from, to } => write!(f, "illegal transition {from} -> {to}"),
@@ -237,6 +241,7 @@ impl fmt::Display for ReplayErrorKind {
             }
             Self::LiveLeaseExists => f.write_str("a live lease already exists"),
             Self::HeartbeatMismatch => f.write_str("heartbeat does not match the live claimant"),
+            Self::InvalidLease(why) => write!(f, "invalid lease: {why}"),
             Self::InvalidTakeover(why) => write!(f, "invalid takeover: {why}"),
             Self::InvalidSupersession => {
                 f.write_str("supersession target must be an active generation")
@@ -348,7 +353,8 @@ impl ConvergenceView {
     ///
     /// Returns `None` when every generation reached a terminal state; an
     /// ambiguous multi-active journal cannot happen because replay refuses
-    /// concurrent active generations for the same source parent.
+    /// starting a generation while any non-terminal predecessor exists,
+    /// regardless of its source parent.
     #[must_use]
     pub fn active_generation(&self) -> Option<&GenerationRuntime> {
         let mut active =
@@ -420,11 +426,16 @@ fn apply_event(
             if v.generations.contains_key(generation_id) {
                 return Err(ReplayError { line, kind: ReplayErrorKind::DuplicateGeneration });
             }
-            let duplicate = v
-                .generations
-                .iter()
-                .find(|(_, g)| !g.state.is_terminal() && g.source_parent_sha == *source_parent_sha);
-            if let Some((existing_id, _)) = duplicate {
+            // A transaction carries at most one current generation at a time:
+            // every prior generation must be terminal (merged, rejected,
+            // superseded, ...) before another can start. Restricting the old
+            // check to the same source parent allowed a different-parent
+            // generation to start without supersession, after which
+            // `active_generation` could not reconstruct a single current
+            // generation in a fresh process.
+            if let Some((existing_id, _)) =
+                v.generations.iter().find(|(_, g)| !g.state.is_terminal())
+            {
                 return Err(ReplayError {
                     line,
                     kind: ReplayErrorKind::ConcurrentActiveGeneration {
@@ -506,9 +517,15 @@ fn apply_event(
         }
         ConvergenceEvent::LeaseClaimed { lease, .. } => {
             let v = view_mut(view, line)?;
-            if v.lease.as_ref().is_some_and(|l| !l.is_expired(lease.claimed_at)) {
+            // Any prior lease record — live or expired-but-unreclaimed —
+            // blocks a plain claim. An expired lease is reclaimable only
+            // through a recorded `TakeoverRecorded` reconciliation; this is
+            // the direct-post-expiry negative control.
+            if v.lease.is_some() {
                 return Err(ReplayError { line, kind: ReplayErrorKind::LiveLeaseExists });
             }
+            validate_replayed_lease(lease)
+                .map_err(|why| ReplayError { line, kind: ReplayErrorKind::InvalidLease(why) })?;
             if !v.generations.contains_key(&lease.input_generation) {
                 return Err(ReplayError { line, kind: ReplayErrorKind::UnknownGeneration });
             }
@@ -524,6 +541,26 @@ fn apply_event(
             if lease.claimed_by != *claimed_by || lease.is_expired(*heartbeat_at) {
                 return Err(ReplayError { line, kind: ReplayErrorKind::HeartbeatMismatch });
             }
+            // Replay enforces the same monotonic extension law as
+            // `Lease::heartbeat`: time never moves backward and an expiry at
+            // or before the heartbeat can never install an already-expired
+            // lease.
+            if *heartbeat_at <= lease.heartbeat_at {
+                return Err(ReplayError {
+                    line,
+                    kind: ReplayErrorKind::InvalidLease(
+                        "heartbeat time must strictly increase".to_string(),
+                    ),
+                });
+            }
+            if *new_expires_at <= *heartbeat_at {
+                return Err(ReplayError {
+                    line,
+                    kind: ReplayErrorKind::InvalidLease(
+                        "lease expiry must be after the heartbeat instant".to_string(),
+                    ),
+                });
+            }
             lease.heartbeat_at = *heartbeat_at;
             lease.lease_expires_at = *new_expires_at;
             Ok(())
@@ -535,9 +572,28 @@ fn apply_event(
                 l.claimed_by == takeover.displaced_claimant
                     && l.is_expired(takeover.reclaimed_at)
                     && l.input_generation == takeover.input_generation
-                    && l.input_generation == new_lease.input_generation
             });
             let generation_known = v.generations.contains_key(&new_lease.input_generation);
+            // The installed lease must be bound to this takeover epoch:
+            // claimant, generation, claim instant, and liveness all cohere.
+            let mut binding_failures: Vec<String> = Vec::new();
+            if new_lease.claimed_by != takeover.reclaimed_by {
+                binding_failures.push("claimant differs from the reclaiming writer".to_string());
+            }
+            if new_lease.claimed_at != takeover.reclaimed_at {
+                binding_failures
+                    .push("claim instant differs from the takeover instant".to_string());
+            }
+            if new_lease.input_generation != takeover.input_generation {
+                binding_failures
+                    .push("generation differs from the reconciled generation".to_string());
+            }
+            if new_lease.is_expired(takeover.reclaimed_at) {
+                binding_failures.push("installed lease is already expired".to_string());
+            }
+            if let Err(why) = validate_replayed_lease(new_lease) {
+                binding_failures.push(why);
+            }
             if !(record_ok && displaced_ok && generation_known) {
                 return Err(ReplayError {
                     line,
@@ -549,6 +605,12 @@ fn apply_event(
                         }
                         .to_string(),
                     ),
+                });
+            }
+            if !binding_failures.is_empty() {
+                return Err(ReplayError {
+                    line,
+                    kind: ReplayErrorKind::InvalidTakeover(binding_failures.join("; ")),
                 });
             }
             v.lease = Some(new_lease.clone());
@@ -581,4 +643,21 @@ fn generation_mut<'a>(
         Some(g) => Ok(g),
         None => Err(ReplayError { line, kind: ReplayErrorKind::UnknownGeneration }),
     }
+}
+
+/// Structural laws every replayed lease must satisfy regardless of how its
+/// bytes were produced. [`Lease::new`] guarantees these at construction, but
+/// journal deserialization bypasses constructors, so replay re-checks them
+/// before the lease participates in reconstruction.
+fn validate_replayed_lease(lease: &Lease) -> Result<(), String> {
+    if lease.claimed_by.trim().is_empty() {
+        return Err("lease claimant must be a non-empty identity".to_string());
+    }
+    if lease.heartbeat_at < lease.claimed_at {
+        return Err("heartbeat precedes the claim instant".to_string());
+    }
+    if lease.lease_expires_at <= lease.heartbeat_at {
+        return Err("lease expiry must be after the heartbeat instant".to_string());
+    }
+    Ok(())
 }

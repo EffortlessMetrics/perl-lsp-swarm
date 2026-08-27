@@ -58,11 +58,18 @@ pub enum StoreError {
         /// Offending generation identity.
         generation_id: String,
     },
-    /// Receipt release-context mode disagreed with its transaction's mode
-    /// (negative control 4).
+    /// Receipt release-context mode or direction disagreed with its
+    /// transaction's registered index entry (negative control 4).
     ReleaseModeConflict {
         /// Offending generation identity.
         generation_id: String,
+    },
+    /// The transaction has no exactly-one index entry: it was never
+    /// registered, or the index carries duplicates. Journal and index are
+    /// always reconciled fail-closed against each other.
+    UnregisteredTransaction {
+        /// Offending transaction identity.
+        transaction_id: String,
     },
     /// Transaction ID was unsafe for use as a directory name.
     UnsafeTransactionId(String),
@@ -101,8 +108,15 @@ impl std::fmt::Display for StoreError {
                 )
             }
             Self::ReleaseModeConflict { generation_id } => {
-                write!(f, "generation {generation_id} release mode conflicts with its transaction")
+                write!(
+                    f,
+                    "generation {generation_id} direction/release-mode conflicts with its transaction registration"
+                )
             }
+            Self::UnregisteredTransaction { transaction_id } => write!(
+                f,
+                "transaction {transaction_id} has no unique index entry; register it before journaling"
+            ),
             Self::UnsafeTransactionId(value) => {
                 write!(f, "transaction id is not a safe directory name: {value:?}")
             }
@@ -199,10 +213,26 @@ impl ConvergenceStore {
         )
     }
 
+    /// Return the exactly-one registered index entry for `tx`, failing closed
+    /// when the transaction is unregistered, duplicated, or the index itself
+    /// cannot be read (missing/malformed/unsupported never degrade).
+    fn unique_index_entry(&self, tx: &TransactionId) -> Result<TransactionIndexEntry, StoreError> {
+        let index = self.load_index()?;
+        let mut matches = index.transactions.iter().filter(|t| t.transaction_id == *tx);
+        match (matches.next(), matches.next()) {
+            (Some(entry), None) => Ok(entry.clone()),
+            _ => {
+                Err(StoreError::UnregisteredTransaction { transaction_id: tx.as_str().to_string() })
+            }
+        }
+    }
+
     /// Append one event after validating it against the current journal.
     ///
     /// The event is folded into the loaded journal first; any replay rule it
-    /// violates aborts the append without mutating disk state.
+    /// violates aborts the append without mutating disk state. An opening
+    /// event is additionally reconciled with the registered index entry, and
+    /// the line is flushed and fsynced before success is reported.
     pub fn append_event(
         &self,
         tx: &TransactionId,
@@ -210,6 +240,16 @@ impl ConvergenceStore {
     ) -> Result<ConvergenceView, StoreError> {
         if event.transaction_id() != tx {
             return Err(StoreError::ForeignEvent);
+        }
+        // Journal/index reconciliation on the opening event: direction and
+        // release mode must equal the unique registered entry.
+        if let ConvergenceEvent::TransactionOpened { direction, release_mode, .. } = event {
+            let entry = self.unique_index_entry(tx)?;
+            if entry.direction != *direction || entry.release_mode != *release_mode {
+                return Err(StoreError::ReleaseModeConflict {
+                    generation_id: tx.as_str().to_string(),
+                });
+            }
         }
         let mut events = self.load_journal(tx)?;
         events.push(event.clone());
@@ -228,6 +268,14 @@ impl ConvergenceStore {
             .open(&path)
             .map_err(|e| StoreError::Io(e.to_string()))?;
         writeln!(file, "{line}").map_err(|e| StoreError::Io(e.to_string()))?;
+        // Durable acknowledgement: a successful return must not depend on the
+        // OS page cache. Flush buffered bytes and fsync before reporting `Ok`.
+        file.flush().map_err(|e| StoreError::Io(e.to_string()))?;
+        let synced = file.sync_all();
+        drop(file);
+        synced.map_err(|e| {
+            StoreError::Io(format!("refusing to acknowledge unsynced journal append: {e}"))
+        })?;
         Ok(new_view)
     }
 
@@ -281,15 +329,13 @@ impl ConvergenceStore {
                 generation_id: receipt.generation_id.as_str().to_string(),
             });
         }
-        // Mode coherence across the transaction (negative control 4).
-        let conflicting_mode = self.load_index().is_ok_and(|index| {
-            index
-                .transactions
-                .iter()
-                .find(|t| &t.transaction_id == tx)
-                .is_some_and(|entry| entry.release_mode != receipt.release_context_mode)
-        });
-        if conflicting_mode {
+        // Mode/direction coherence against the unique registered entry
+        // (negative control 4). The index lookup is fail-closed: a missing,
+        // duplicated, malformed, or unsupported index aborts the write.
+        let entry = self.unique_index_entry(tx)?;
+        if entry.release_mode != receipt.release_context_mode
+            || entry.direction != receipt.direction
+        {
             return Err(StoreError::ReleaseModeConflict {
                 generation_id: receipt.generation_id.as_str().to_string(),
             });
@@ -305,6 +351,10 @@ impl ConvergenceStore {
     }
 
     /// Load one generation receipt, rejecting unsupported schema versions.
+    ///
+    /// The returned bytes are bound to the requested location: a receipt whose
+    /// transaction/generation identities do not match the requested path is
+    /// refused even when its internal validation passes (swapped-file control).
     pub fn read_receipt(
         &self,
         tx: &TransactionId,
@@ -318,6 +368,13 @@ impl ConvergenceStore {
             return Err(StoreError::UnsupportedReceiptVersion { found: file.schema_version });
         }
         file.receipt.validate().map_err(|e| StoreError::Malformed(e.to_string()))?;
+        if file.receipt.transaction_id != *tx || file.receipt.generation_id != *generation_id {
+            return Err(StoreError::Malformed(format!(
+                "receipt identity {}/{} does not match the requested location",
+                file.receipt.transaction_id,
+                file.receipt.generation_id.as_str()
+            )));
+        }
         Ok(file.receipt)
     }
 
@@ -341,6 +398,17 @@ impl ConvergenceStore {
     }
 
     fn atomic_write(&self, path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
+        self.atomic_write_with_sync(path, bytes, |file| file.sync_all())
+    }
+
+    /// Atomic replace with an injectable durability step so fault-injection
+    /// tests can prove a failed fsync is never acknowledged as success.
+    fn atomic_write_with_sync(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        sync_file: impl Fn(&mut fs::File) -> std::io::Result<()>,
+    ) -> Result<(), StoreError> {
         let parent = path.parent().ok_or_else(|| StoreError::Io("path without parent".into()))?;
         fs::create_dir_all(parent).map_err(|e| StoreError::Io(e.to_string()))?;
         let mut temp_name = path.file_name().map_or_else(
@@ -357,11 +425,30 @@ impl ConvergenceStore {
             let mut file =
                 fs::File::create(&temp_path).map_err(|e| StoreError::Io(e.to_string()))?;
             file.write_all(bytes).map_err(|e| StoreError::Io(e.to_string()))?;
-            file.sync_all().ok();
+            // A failed sync aborts the write: the destination is never
+            // replaced from unsynced bytes.
+            if let Err(e) = sync_file(&mut file) {
+                drop(file);
+                let _ = fs::remove_file(&temp_path);
+                return Err(StoreError::Io(format!(
+                    "refusing to acknowledge unwritten durable state: {e}"
+                )));
+            }
         }
         // std::fs::rename replaces existing destinations on both POSIX and
         // Windows (MoveFileEx with MOVEFILE_REPLACE_EXISTING).
         fs::rename(&temp_path, path).map_err(|e| StoreError::Io(e.to_string()))?;
+        // Make the directory entry itself durable on platforms where a
+        // directory fd can be opened and synced (POSIX).
+        #[cfg(unix)]
+        if let Some(dir_parent) = path.parent() {
+            match fs::File::open(dir_parent) {
+                Ok(directory) => directory
+                    .sync_all()
+                    .map_err(|e| StoreError::Io(format!("directory entry not durable: {e}")))?,
+                Err(e) => return Err(StoreError::Io(format!("directory entry not durable: {e}"))),
+            }
+        }
         Ok(())
     }
 }
@@ -379,4 +466,45 @@ struct JournalLine {
     schema_version: u32,
     #[serde(flatten)]
     event: ConvergenceEvent,
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    fn temp_root() -> (tempfile::TempDir, ConvergenceStore) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = ConvergenceStore::open(dir.path()).expect("open");
+        (dir, store)
+    }
+
+    #[test]
+    fn failed_sync_is_never_acknowledged_as_success() {
+        // Fault injection: the destination must not appear and no `Ok` may be
+        // returned when the durability step fails.
+        let (dir, _store) = temp_root();
+        let target = dir.path().join("index.v1.json");
+        let failing = |_: &mut fs::File| -> std::io::Result<()> {
+            Err(std::io::Error::other("injected sync failure"))
+        };
+        let result = _store.atomic_write_with_sync(&target, b"bytes", failing);
+        assert!(result.is_err(), "a failed fsync must surface as an error");
+        assert!(!target.exists(), "destination must never be replaced from unsynced bytes");
+
+        let injected = dir.path().join("index.v1.json.tmp.partial");
+        assert!(!injected.exists(), "partial artifact is cleaned up on failure");
+    }
+
+    #[test]
+    fn successful_sync_replaces_destination_atomically() {
+        let (dir, _store) = temp_root();
+        let target = dir.path().join("index.v1.json");
+        std::fs::write(&target, b"stale").expect("seed destination");
+        _store
+            .atomic_write_with_sync(&target, b"fresh", |file| file.sync_all())
+            .expect("atomic write succeeds");
+        assert_eq!(std::fs::read(&target).expect("read"), b"fresh");
+    }
 }

@@ -142,6 +142,13 @@ fn expired_lease_is_reclaimable_only_via_recorded_takeover() {
     let generation = generation_for(&"a".repeat(40));
 
     store
+        .register_transaction(TransactionIndexEntry {
+            transaction_id: tx.clone(),
+            direction: Direction::SwarmToSource,
+            release_mode: ReleaseContextMode::OrdinaryContinuous,
+        })
+        .expect("register");
+    store
         .append_event(&tx, &opened_event(&tx, ReleaseContextMode::OrdinaryContinuous))
         .expect("open");
     store.append_event(&tx, &started_event(&tx, &generation)).expect("start");
@@ -167,6 +174,23 @@ fn expired_lease_is_reclaimable_only_via_recorded_takeover() {
         duplicate,
         Err(StoreError::Replay(ReplayError { kind: ReplayErrorKind::LiveLeaseExists, .. }))
     ));
+
+    // A plain claim after expiry is also refused: only a recorded takeover
+    // may replace an expired lease (direct-post-expiry negative control).
+    let expired_claim = store.append_event(
+        &tx,
+        &ConvergenceEvent::LeaseClaimed {
+            transaction_id: tx.clone(),
+            lease: lease_for(&generation, "writer-c", T0 + 5_000, 1_000),
+        },
+    );
+    assert!(
+        matches!(
+            expired_claim,
+            Err(StoreError::Replay(ReplayError { kind: ReplayErrorKind::LiveLeaseExists, .. }))
+        ),
+        "a plain claim must never bypass the takeover reconciliation requirement"
+    );
 
     // After expiry, reclaiming without reconciliation evidence fails.
     let takeover_missing_evidence = Takeover {
@@ -238,6 +262,13 @@ fn second_active_generation_on_same_source_parent_fails_closed() {
         prior_accepted_generation: "",
     });
 
+    store
+        .register_transaction(TransactionIndexEntry {
+            transaction_id: tx.clone(),
+            direction: Direction::SwarmToSource,
+            release_mode: ReleaseContextMode::OrdinaryContinuous,
+        })
+        .expect("register");
     store
         .append_event(&tx, &opened_event(&tx, ReleaseContextMode::OrdinaryContinuous))
         .expect("open");
@@ -381,6 +412,13 @@ fn rejected_evidence_stays_rejected_and_immutable() {
     let generation = generation_for(&"a".repeat(40));
 
     store
+        .register_transaction(TransactionIndexEntry {
+            transaction_id: tx.clone(),
+            direction: Direction::SwarmToSource,
+            release_mode: ReleaseContextMode::OrdinaryContinuous,
+        })
+        .expect("register");
+    store
         .append_event(&tx, &opened_event(&tx, ReleaseContextMode::OrdinaryContinuous))
         .expect("open");
     store.append_event(&tx, &started_event(&tx, &generation)).expect("start");
@@ -509,6 +547,15 @@ fn invalidation_records_cause_and_descendants_durably() {
     let events = [
         opened_event(&tx, ReleaseContextMode::OrdinaryContinuous),
         started_event(&tx, &gen_old),
+        // The successor start requires a terminal predecessor: record the
+        // supersession lineage first.
+        ConvergenceEvent::GenerationSuperseded {
+            transaction_id: tx.clone(),
+            old_generation: gen_old.clone(),
+            successor_generation: gen_new.clone(),
+            reason_digest: "sha256:moved-input".into(),
+            superseded_at: TimestampMs::from_millis(T0 + 6),
+        },
         started_successor(&tx, &gen_new),
         ConvergenceEvent::InvalidationRecorded {
             transaction_id: tx.clone(),
@@ -588,4 +635,281 @@ fn malformed_persisted_state_fails_closed_without_degradation() {
     .expect("write unknown-direction journal");
     let err = fresh.load_journal(&tx).expect_err("unknown direction must fail closed");
     assert!(matches!(err, StoreError::Malformed(_)));
+}
+
+#[test]
+fn different_parent_start_refused_while_generation_active() {
+    // A different-parent generation must not start while the old one is
+    // still non-terminal; otherwise a fresh process could reconstruct zero
+    // or ambiguous current generations.
+    let tx = tx_id();
+    let gen_a = generation_for(&"a".repeat(40));
+    let gen_b = generation_for(&"f".repeat(40));
+
+    let events = [
+        opened_event(&tx, ReleaseContextMode::OrdinaryContinuous),
+        started_event(&tx, &gen_a),
+        ConvergenceEvent::GenerationStarted {
+            transaction_id: tx.clone(),
+            generation_id: gen_b.clone(),
+            source_parent_sha: "f".repeat(40),
+            swarm_parent_sha: "c".repeat(40),
+            started_at: TimestampMs::from_millis(T0 + 30),
+        },
+    ];
+    let refused = replay(&events).expect_err("no-supersession start must fail closed");
+    assert!(matches!(refused.kind, ReplayErrorKind::ConcurrentActiveGeneration { .. }));
+}
+
+#[test]
+fn heartbeat_rejects_backdated_time_and_non_extending_expiry() {
+    let tx = tx_id();
+    let generation = generation_for(&"a".repeat(40));
+    let base = [
+        opened_event(&tx, ReleaseContextMode::OrdinaryContinuous),
+        started_event(&tx, &generation),
+        ConvergenceEvent::LeaseClaimed {
+            transaction_id: tx.clone(),
+            lease: lease_for(&generation, "writer-a", T0 + 20, 1_000),
+        },
+    ];
+
+    // Backdated heartbeat (earlier than claim/previous heartbeat).
+    let mut events = base.to_vec();
+    events.push(ConvergenceEvent::LeaseHeartbeat {
+        transaction_id: tx.clone(),
+        claimed_by: "writer-a".into(),
+        heartbeat_at: TimestampMs::from_millis(T0 + 10),
+        new_expires_at: TimestampMs::from_millis(T0 + 5_000),
+    });
+    let refused = replay(&events).expect_err("backdated heartbeat must fail closed");
+    assert!(
+        matches!(refused.kind, ReplayErrorKind::InvalidLease(_)),
+        "time must never move backward during replay"
+    );
+
+    // Expiry at/before the heartbeat instant.
+    let mut events = base.to_vec();
+    events.push(ConvergenceEvent::LeaseHeartbeat {
+        transaction_id: tx.clone(),
+        claimed_by: "writer-a".into(),
+        heartbeat_at: TimestampMs::from_millis(T0 + 30),
+        new_expires_at: TimestampMs::from_millis(T0 + 20),
+    });
+    let refused = replay(&events).expect_err("already-expired extension must fail closed");
+    assert!(matches!(refused.kind, ReplayErrorKind::InvalidLease(_)));
+
+    // A lawful monotonic extension still succeeds.
+    let mut events = base.to_vec();
+    events.push(ConvergenceEvent::LeaseHeartbeat {
+        transaction_id: tx.clone(),
+        claimed_by: "writer-a".into(),
+        heartbeat_at: TimestampMs::from_millis(T0 + 500),
+        new_expires_at: TimestampMs::from_millis(T0 + 2_000),
+    });
+    let view = replay(&events).expect("lawful extension");
+    let lease = view.lease.expect("lease");
+    assert_eq!(lease.heartbeat_at, TimestampMs::from_millis(T0 + 500));
+    assert_eq!(lease.lease_expires_at, TimestampMs::from_millis(T0 + 2_000));
+}
+
+#[test]
+fn takeover_binds_installed_lease_to_the_reconciliation_record() {
+    let tx = tx_id();
+    let generation = generation_for(&"a".repeat(40));
+    let displaced = [
+        opened_event(&tx, ReleaseContextMode::OrdinaryContinuous),
+        started_event(&tx, &generation),
+        ConvergenceEvent::LeaseClaimed {
+            transaction_id: tx.clone(),
+            lease: lease_for(&generation, "writer-a", T0 + 20, 500),
+        },
+    ];
+    let takeover = |reclaimed_by: &str| Takeover {
+        displaced_claimant: "writer-a".into(),
+        reclaimed_by: reclaimed_by.into(),
+        reclaimed_at: TimestampMs::from_millis(T0 + 600),
+        input_generation: generation.clone(),
+        reconciled_observations: vec!["sha256:source-observed".into()],
+    };
+
+    // Control 1: installed lease claimant must be the reclaiming writer.
+    let wrong_claimant_lease = lease_for(&generation, "someone-else", T0 + 600, 1_000);
+    let mut events = displaced.to_vec();
+    events.push(ConvergenceEvent::TakeoverRecorded {
+        transaction_id: tx.clone(),
+        takeover: takeover("writer-b"),
+        new_lease: wrong_claimant_lease,
+    });
+    let refused = replay(&events).expect_err("unbound claimant must fail closed");
+    assert!(matches!(refused.kind, ReplayErrorKind::InvalidTakeover(_)));
+
+    // Control 2: the fresh claim instant must equal the takeover instant.
+    let drifting_lease = lease_for(&generation, "writer-b", T0 + 601, 1_000);
+    let mut events = displaced.to_vec();
+    events.push(ConvergenceEvent::TakeoverRecorded {
+        transaction_id: tx.clone(),
+        takeover: takeover("writer-b"),
+        new_lease: drifting_lease,
+    });
+    let refused = replay(&events).expect_err("drifting claim instant must fail closed");
+    assert!(matches!(refused.kind, ReplayErrorKind::InvalidTakeover(_)));
+
+    // Control 3: an already-expired lease can never be installed. Raw struct
+    // construction stands in for hostile deserialized bytes bypassing the
+    // validated constructor.
+    let expired_install = Lease {
+        claimed_by: "writer-b".into(),
+        claimed_at: TimestampMs::from_millis(T0 + 600),
+        heartbeat_at: TimestampMs::from_millis(T0 + 600),
+        lease_expires_at: TimestampMs::from_millis(T0 + 600),
+        input_generation: generation.clone(),
+        last_completed_transition: None,
+        next_permitted_actions: vec![PermittedAction::PlanCandidate],
+    };
+    let mut events = displaced.to_vec();
+    events.push(ConvergenceEvent::TakeoverRecorded {
+        transaction_id: tx.clone(),
+        takeover: takeover("writer-b"),
+        new_lease: expired_install,
+    });
+    let refused = replay(&events).expect_err("expired install must fail closed");
+    assert!(matches!(refused.kind, ReplayErrorKind::InvalidTakeover(_)));
+
+    // The bound, live replacement is accepted and becomes current state.
+    let bound_lease = lease_for(&generation, "writer-b", T0 + 600, 1_000);
+    let mut events = displaced.to_vec();
+    events.push(ConvergenceEvent::TakeoverRecorded {
+        transaction_id: tx.clone(),
+        takeover: takeover("writer-b"),
+        new_lease: bound_lease,
+    });
+    let view = replay(&events).expect("bound takeover");
+    assert_eq!(view.lease.as_ref().map(|l| l.claimed_by.as_str()), Some("writer-b"));
+}
+
+#[test]
+fn opened_event_requires_unique_registered_index_entry() {
+    // Missing registration fails closed on the opening event.
+    let (_, store) = store_in_temp();
+    let tx = TransactionId::new("never-registered-tx").expect("id");
+    let missing =
+        store.append_event(&tx, &opened_event(&tx, ReleaseContextMode::OrdinaryContinuous));
+    assert!(
+        matches!(missing, Err(StoreError::UnregisteredTransaction { .. })),
+        "journal and index must reconcile before the journal exists"
+    );
+
+    // Direction disagreement between index and journal also fails closed.
+    let (dir, store) = store_in_temp();
+    let tx = tx_id();
+    store
+        .register_transaction(TransactionIndexEntry {
+            transaction_id: tx.clone(),
+            direction: Direction::SourceToSwarm,
+            release_mode: ReleaseContextMode::OrdinaryContinuous,
+        })
+        .expect("register opposite direction");
+    let mismatched =
+        store.append_event(&tx, &opened_event(&tx, ReleaseContextMode::OrdinaryContinuous));
+    assert!(
+        matches!(mismatched, Err(StoreError::ReleaseModeConflict { .. })),
+        "a swarm_to_source journal must never open under a source_to_swarm registration"
+    );
+    drop(store);
+
+    // Duplicated index entries are malformed ownership and fail closed.
+    let entry_json = format!(
+        "{{\"transaction_id\":\"{}\",\"direction\":\"swarm_to_source\",\"release_mode\":\"ordinary_continuous\"}}",
+        tx.as_str()
+    );
+    let index = format!(
+        "{{\"schema_version\":{INDEX_SCHEMA_VERSION},\"transactions\":[{entry},{entry}]}}",
+        entry = entry_json
+    );
+    std::fs::write(dir.path().join("index.v1.json"), index).expect("write duplicated index");
+    let store = ConvergenceStore::open(dir.path()).expect("reopen");
+    let duplicated =
+        store.append_event(&tx, &opened_event(&tx, ReleaseContextMode::OrdinaryContinuous));
+    assert!(matches!(duplicated, Err(StoreError::UnregisteredTransaction { .. })));
+}
+
+#[test]
+fn unreadable_index_fails_receipt_writes_closed() {
+    let (dir, store) = store_in_temp();
+    let tx = tx_id();
+    let generation = generation_for(&"a".repeat(40));
+
+    // A malformed index must abort receipt writes instead of reading as "no
+    // conflict".
+    std::fs::write(dir.path().join("index.v1.json"), "{not json").expect("write garbage index");
+    let refused_receipt =
+        store.write_receipt(&receipt(&tx, &generation, ReleaseContextMode::OrdinaryContinuous));
+    assert!(
+        matches!(refused_receipt, Err(StoreError::Malformed(_))),
+        "garbage index must never read as an empty coherent store"
+    );
+
+    // Journal appends reconcile against the same index and must also fail.
+    let opened =
+        store.append_event(&tx, &opened_event(&tx, ReleaseContextMode::OrdinaryContinuous));
+    assert!(matches!(opened, Err(StoreError::Malformed(_))));
+}
+
+#[test]
+fn read_receipt_binds_bytes_to_requested_location() {
+    let (dir, store) = store_in_temp();
+    let tx = tx_id();
+    let gen_a = generation_for(&"a".repeat(40));
+    // B must be an internally coherent receipt for genuinely different
+    // inputs, so mutate exact inputs first and re-derive its declared ID.
+    let mut b_receipt = receipt(&tx, &gen_a, ReleaseContextMode::OrdinaryContinuous);
+    b_receipt.source_parent_sha = "f".repeat(40);
+    b_receipt.generation_id = b_receipt.expected_id();
+    let gen_b = b_receipt.generation_id.clone();
+    assert_ne!(gen_a, gen_b);
+    store
+        .register_transaction(TransactionIndexEntry {
+            transaction_id: tx.clone(),
+            direction: Direction::SwarmToSource,
+            release_mode: ReleaseContextMode::OrdinaryContinuous,
+        })
+        .expect("register");
+
+    store.write_receipt(&receipt(&tx, &gen_a, ReleaseContextMode::OrdinaryContinuous)).expect("A");
+    store.write_receipt(&b_receipt).expect("B");
+
+    // Swap persisted bytes: B's valid receipt at A's filename must not be
+    // returned as A's receipt. The filename stem is the bijective ':' ->
+    // '-' substitution used by the store layout.
+    let generations_dir = dir.path().join("transactions").join(tx.as_str()).join("generations");
+    let b_file = generations_dir.join(format!("{}.json", gen_b.as_str().replace(':', "-")));
+    let a_file = generations_dir.join(format!("{}.json", gen_a.as_str().replace(':', "-")));
+    assert!(a_file.exists(), "receipt A must be on disk at its stem");
+    assert!(b_file.exists(), "receipt B must be on disk at its stem");
+    let b_bytes = std::fs::read(&b_file).expect("read B receipt bytes");
+    std::fs::write(&a_file, b_bytes).expect("place B receipt at A's location");
+
+    let swapped = store.read_receipt(&tx, &gen_a);
+    assert!(
+        matches!(swapped, Err(StoreError::Malformed(_))),
+        "a receipt for another generation at this filename must be refused"
+    );
+
+    // The correctly placed receipts still load.
+    let ok_b = store.read_receipt(&tx, &gen_b).expect("B at B loads");
+    assert_eq!(ok_b.generation_id, gen_b);
+
+    // Restore A's own bytes so a same-location read succeeds too.
+    std::fs::write(&a_file, {
+        let restored = receipt(&tx, &gen_a, ReleaseContextMode::OrdinaryContinuous);
+        serde_json::to_vec_pretty(&GenerationReceiptFile {
+            schema_version: GENERATION_RECEIPT_SCHEMA_VERSION,
+            receipt: restored,
+        })
+        .expect("canonical A bytes")
+    })
+    .expect("restore A receipt");
+    let ok_a = store.read_receipt(&tx, &gen_a).expect("A at A loads after restore");
+    assert_eq!(ok_a.generation_id, gen_a);
 }

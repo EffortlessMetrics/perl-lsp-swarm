@@ -67,11 +67,17 @@ impl TransitionState {
     ///
     /// Terminal states are retained as immutable history; only supersession
     /// or explicit invalidation can make descendants stale afterwards.
+    ///
+    /// `Rejected` is terminal: recorded rejection evidence is immutable, so a
+    /// rejected generation neither stays active nor accepts later unresolved
+    /// transitions that would overwrite it. Starting a successor generation
+    /// remains a separate action and never rewrites the rejection itself.
     #[must_use]
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::PostMergeVerified
+            Self::Rejected
+                | Self::PostMergeVerified
                 | Self::Superseded
                 | Self::Noop
                 | Self::NotProven
@@ -98,6 +104,11 @@ impl fmt::Display for TransitionState {
 /// The vocabulary mirrors the controller's decision points; a fresh process
 /// reconstructs exactly which actions are permitted from the durable journal
 /// (issue #11282 acceptance: reconstruct current state and next legal actions).
+///
+/// Landing and ref-mutation authority is structurally absent from this type:
+/// no lease can grant it, at construction, update, or deserialization,
+/// because the action does not exist to be spelled. Controllers consult
+/// transaction state (`admitted`) instead of any live lease grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermittedAction {
@@ -113,8 +124,6 @@ pub enum PermittedAction {
     AwaitAdmission,
     /// Record admission rejection evidence.
     RecordRejection,
-    /// Start the landing merge.
-    StartLandingMerge,
     /// Verify the post-merge landing.
     VerifyLanding,
     /// Record a no-op receipt instead of opening a PR.
@@ -136,7 +145,6 @@ impl PermittedAction {
             Self::PublishCandidate => "publish_candidate",
             Self::AwaitAdmission => "await_admission",
             Self::RecordRejection => "record_rejection",
-            Self::StartLandingMerge => "start_landing_merge",
             Self::VerifyLanding => "verify_landing",
             Self::RecordNoOp => "record_no_op",
             Self::TakeoverAfterReconciliation => "takeover_after_reconciliation",
@@ -195,5 +203,57 @@ mod tests {
         assert!(TransitionState::InstrumentFailure.is_unresolved_or_failed());
         assert!(TransitionState::Rejected.is_unresolved_or_failed());
         assert!(!TransitionState::Merged.is_unresolved_or_failed());
+    }
+
+    #[test]
+    fn rejection_is_terminal_for_the_generation_lifecycle() {
+        // A recorded rejection is immutable history: it must not linger as an
+        // active generation, and no transition edge may leave it, including
+        // the wildcard unresolved outcomes that used to overwrite it.
+        for state in [
+            TransitionState::Observed,
+            TransitionState::Planned,
+            TransitionState::Materialized,
+            TransitionState::Published,
+            TransitionState::AdmissionPending,
+            TransitionState::MergePending,
+        ] {
+            assert!(!state.is_terminal(), "{state} is a non-terminal working state");
+        }
+        for state in [
+            TransitionState::Rejected,
+            TransitionState::PostMergeVerified,
+            TransitionState::Superseded,
+            TransitionState::Noop,
+            TransitionState::NotProven,
+            TransitionState::InstrumentFailure,
+        ] {
+            assert!(state.is_terminal(), "{state} must be terminal");
+        }
+    }
+
+    #[test]
+    fn merge_authority_is_structurally_absent_from_lease_vocabulary() {
+        // No wire spelling of PermittedAction may carry landing/merge
+        // authority; unknown spellings fail closed at deserialization.
+        assert!(serde_json::from_str::<PermittedAction>("\"start_landing_merge\"").is_err());
+        let every_action = [
+            PermittedAction::ObserveInputs,
+            PermittedAction::PlanCandidate,
+            PermittedAction::MaterializeCandidate,
+            PermittedAction::PublishCandidate,
+            PermittedAction::AwaitAdmission,
+            PermittedAction::RecordRejection,
+            PermittedAction::VerifyLanding,
+            PermittedAction::RecordNoOp,
+            PermittedAction::TakeoverAfterReconciliation,
+            PermittedAction::StartSuccessorGeneration,
+        ];
+        assert_eq!(every_action.len(), 10);
+        for action in every_action {
+            let json = serde_json::to_string(&action).unwrap();
+            assert_eq!(json.trim_matches('"'), action.as_str());
+            assert_eq!(serde_json::from_str::<PermittedAction>(&json).unwrap(), action);
+        }
     }
 }

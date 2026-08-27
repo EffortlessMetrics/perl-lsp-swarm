@@ -116,14 +116,11 @@ impl Lease {
         self.next_permitted_actions = next_permitted_actions;
     }
 
-    /// Merge or ref-mutation authority is never derivable from a live lease.
-    ///
-    /// The lease vocabulary deliberately excludes landing/merge actions;
-    /// callers must consult transaction state (`admitted`) instead.
-    #[must_use]
-    pub fn grants_merge_authority(&self) -> bool {
-        self.next_permitted_actions.contains(&PermittedAction::StartLandingMerge)
-    }
+    // There is deliberately no `grants_merge_authority` predicate: landing
+    // and ref-mutation actions are structurally absent from `PermittedAction`,
+    // so no lease can grant or be queried for merge authority at any
+    // construction, update, or deserialization boundary. Controllers consult
+    // transaction state (`admitted`) instead.
 }
 
 /// Recorded takeover of an expired lease after exact-state reconciliation.
