@@ -42,9 +42,11 @@ const INVALID_DIR: &str = "invalid";
 const GOLDEN_DIR: &str = "golden";
 
 /// Valid synthetic packets are stamped self-consistently by the sanctioned
-/// writer action (`test stamp_valid_fixtures --ignored` / stamp subcommand)
-/// and committed together with their golden report vectors.
-const VALID_FIXTURES: &[&str] = &[];
+/// writer action (`agent-dogfood stamp`, an explicit generator/author step)
+/// and committed together with their golden report vectors. List order — not
+/// filesystem enumeration order — defines the golden report projection.
+const VALID_FIXTURES: &[&str] =
+    &["parser_p05_synthetic.v1.json", "analysis_train_synthetic_transfer.v1.json"];
 
 /// Closed disposition vocabulary of the shared core.
 const DISPOSITIONS: &[&str] = &["started", "completed", "refused", "transferred", "not_proven"];
@@ -91,8 +93,7 @@ const CREDENTIAL_MARKERS: &[&str] = &[
 ];
 
 /// Machine-local path markers that must never survive into retained packets.
-const LOCAL_PATH_MARKERS: &[&str] =
-    &["\\users\\", "/users/", "/home/", "/root/", "%userprofile%"];
+const LOCAL_PATH_MARKERS: &[&str] = &["\\users\\", "/users/", "/home/", "/root/", "%userprofile%"];
 
 /// Mutable live-state key family banned at any depth (borrowed shape of the
 /// shared packet contracts): durable packets never embed scheduler state.
@@ -141,7 +142,7 @@ const ENVELOPE_DIGEST_DOMAIN: &str = "agent_packet_dogfood.core.v1.envelope";
 
 /// One deterministic validation violation with a stable reason code.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct Violation {
+pub(crate) struct Violation {
     code: String,
     detail: String,
 }
@@ -203,12 +204,7 @@ fn envelope_digest(
     result_digests: &[Option<String>],
 ) -> String {
     let string_array = |values: &[Option<String>]| -> Value {
-        Value::Array(
-            values
-                .iter()
-                .map(|d| Value::String(d.clone().unwrap_or_default()))
-                .collect(),
-        )
+        Value::Array(values.iter().map(|d| Value::String(d.clone().unwrap_or_default())).collect())
     };
     let mut canon = Map::new();
     canon.insert("domain".to_string(), Value::String(ENVELOPE_DIGEST_DOMAIN.to_string()));
@@ -254,11 +250,11 @@ pub fn stamp_manifest(doc: &mut Value) -> Result<()> {
     let run_id = root.get("run_id").and_then(Value::as_str).unwrap_or_default().to_string();
     // Disposition is read before mutation so envelope input mirrors what a
     // validator sees post-stamp.
-    let disposition = root.get("disposition").and_then(Value::as_str).unwrap_or_default().to_string();
+    let disposition =
+        root.get("disposition").and_then(Value::as_str).unwrap_or_default().to_string();
 
     if let Some(identity) = root.get_mut("identity").and_then(Value::as_object_mut) {
-        let packet_digest =
-            envelope_digest(&run_id, &disposition, &event_digests, &result_digests);
+        let packet_digest = envelope_digest(&run_id, &disposition, &event_digests, &result_digests);
         identity.insert("packet_digest".to_string(), Value::String(packet_digest));
     }
     Ok(())
@@ -276,7 +272,6 @@ fn string_field<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a str
     object.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
 }
 
-#[allow(dead_code)] // wired by the green validator commit
 fn check_unknown_keys(
     object: &Map<String, Value>,
     allowed: &[&str],
@@ -293,7 +288,6 @@ fn check_unknown_keys(
     }
 }
 
-#[allow(dead_code)] // wired by the green validator commit
 fn require_non_empty(
     object: &Map<String, Value>,
     key: &str,
@@ -302,15 +296,21 @@ fn require_non_empty(
     violations: &mut Vec<Violation>,
 ) {
     if string_field(object, key).is_none() {
-        violations.push(Violation::new(code, format!("{where_}: {key} must be a non-empty string")));
+        violations
+            .push(Violation::new(code, format!("{where_}: {key} must be a non-empty string")));
     }
 }
 
-#[allow(dead_code)] // wired by the green validator commit
-fn require_sha256_hex(object: &Map<String, Value>, key: &str, where_: &str, violations: &mut Vec<Violation>) {
+fn require_sha256_hex(
+    object: &Map<String, Value>,
+    key: &str,
+    where_: &str,
+    violations: &mut Vec<Violation>,
+) {
     match object.get(key).and_then(Value::as_str) {
         Some(digest)
-            if digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) => {}
+            if digest.len() == 64
+                && digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) => {}
         Some(_) => violations.push(Violation::new(
             "malformed_digest",
             format!("{where_}: {key} must be lowercase 64-hex sha256"),
@@ -340,7 +340,6 @@ fn scan_strings<F: FnMut(&str, &str)>(value: &Value, where_: &str, visit: &mut F
 }
 
 /// Hygiene guard: credentials/machine-local paths inside one retained string.
-#[allow(dead_code)] // wired by the green validator commit
 fn scan_hygiene(text: &str, where_: &str, violations: &mut Vec<Violation>) {
     let lowered = text.to_lowercase();
     if CREDENTIAL_MARKERS.iter().any(|marker| lowered.contains(marker)) {
@@ -367,7 +366,6 @@ fn scan_hygiene(text: &str, where_: &str, violations: &mut Vec<Violation>) {
 }
 
 /// Mutated-packet + hygiene recursion over one retained payload object.
-#[allow(dead_code)] // wired by the green validator commit
 fn scan_payload(payload: &Value, where_: &str, violations: &mut Vec<Violation>) {
     let mut visit = |text: &str, at: &str| scan_hygiene(text, at, violations);
     scan_strings(payload, where_, &mut visit);
@@ -389,7 +387,6 @@ fn scan_payload(payload: &Value, where_: &str, violations: &mut Vec<Violation>) 
     walk_keys(payload, where_);
 }
 
-#[allow(dead_code)] // wired by the green validator commit
 fn contains_forbidden_mutable_state(value: &Value, where_: &str, violations: &mut Vec<Violation>) {
     match value {
         Value::Object(object) => {
@@ -416,17 +413,15 @@ fn contains_forbidden_mutable_state(value: &Value, where_: &str, violations: &mu
 /// digest) when all structural rules held, even on digest mismatch, so the
 /// caller can still attempt envelope comparison.
 #[allow(clippy::too_many_arguments)]
-#[allow(dead_code)] // wired by the green validator commit
 fn validate_record(
     record: &Map<String, Value>,
-    index: usize,
     where_: &str,
     kinds: &[&str],
     allowed_keys: &[&str],
     expected_seq: u64,
     violations: &mut Vec<Violation>,
 ) -> Option<String> {
-    let at = format!("{where_}[{index}]");
+    let at = format!("{where_}[{expected_seq}]");
     check_unknown_keys(record, allowed_keys, &at, violations);
     match record.get("seq").and_then(Value::as_u64) {
         Some(seq) if seq == expected_seq => {}
@@ -437,14 +432,10 @@ fn validate_record(
     }
     match string_field(record, "kind") {
         Some(kind) if kinds.contains(&kind) => {}
-        Some(kind) => violations.push(Violation::new(
-            "unknown_record_kind",
-            format!("{at}: unknown kind {kind}"),
-        )),
-        None => violations.push(Violation::new(
-            "missing_record_kind",
-            format!("{at}: kind is required"),
-        )),
+        Some(kind) => violations
+            .push(Violation::new("unknown_record_kind", format!("{at}: unknown kind {kind}"))),
+        None => violations
+            .push(Violation::new("missing_record_kind", format!("{at}: kind is required"))),
     }
     if record.get("payload").and_then(as_str_map).is_none() {
         violations.push(Violation::new(
@@ -452,13 +443,11 @@ fn validate_record(
             format!("{at}: payload must be an object"),
         ));
     }
-    if let Some(at_ms) = record.get("at_ms") {
-        if at_ms.as_u64().is_none() {
-            violations.push(Violation::new(
-                "malformed_at_ms",
-                format!("{at}: at_ms must be a non-negative integer"),
-            ));
-        }
+    if record.get("at_ms").is_some_and(|at_ms| at_ms.as_u64().is_none()) {
+        violations.push(Violation::new(
+            "malformed_at_ms",
+            format!("{at}: at_ms must be a non-negative integer"),
+        ));
     }
     if canonical_form(&Value::Object(record.clone())).len() > MAX_RECORD_BYTES {
         violations.push(Violation::new(
@@ -485,23 +474,311 @@ fn validate_record(
             "missing_record_fields",
             format!("{at}: digest could not be recomputed without seq/kind/payload"),
         )),
-        (None, _) => violations.push(Violation::new(
-            "missing_identity_field",
-            format!("{at}: digest is required"),
-        )),
+        (None, _) => violations
+            .push(Violation::new("missing_identity_field", format!("{at}: digest is required"))),
     }
     recomputed
 }
 
-/// Deterministic boundary for the advisory advisory vocabulary: dispositions
-/// gate nothing here; they classify retained runs.
+/// Validate one manifest against the closed core. Every rule below is
+/// fail-closed and deterministic: the returned violation list is built in a
+/// fixed walk order, so equal documents yield equal violation sequences.
 pub(crate) fn validate_manifest(doc: &Value) -> Vec<Violation> {
-    if !doc.is_object() {
+    let mut violations = Vec::new();
+    let Some(root) = as_str_map(doc) else {
         return vec![Violation::new("not_an_object", "manifest must be a JSON object".to_string())];
+    };
+
+    if string_field(root, "schema") != Some(SCHEMA_NAME) {
+        violations.push(Violation::new("wrong_schema", format!("schema must be {SCHEMA_NAME}")));
     }
-    // RED STUB: rules land with the green validator commit; the committed
-    // negative-control suite fails against this stub by construction.
-    Vec::new()
+    if root.get("schema_version").and_then(Value::as_u64) != Some(1) {
+        violations
+            .push(Violation::new("wrong_schema_version", "schema_version must be 1".to_string()));
+    }
+    check_unknown_keys(root, ROOT_KEYS, "manifest", &mut violations);
+    contains_forbidden_mutable_state(doc, "manifest", &mut violations);
+    require_non_empty(root, "run_id", "missing_run_id", "manifest", &mut violations);
+
+    // Packet/tree/spec identity digests.
+    match root.get("identity").and_then(as_str_map) {
+        Some(identity) => {
+            check_unknown_keys(identity, IDENTITY_KEYS, "identity", &mut violations);
+            require_non_empty(
+                identity,
+                "packet_id",
+                "missing_identity_field",
+                "identity",
+                &mut violations,
+            );
+            require_sha256_hex(identity, "packet_digest", "identity", &mut violations);
+            require_sha256_hex(identity, "tree_sha", "identity", &mut violations);
+            require_non_empty(
+                identity,
+                "spec_ref",
+                "missing_identity_field",
+                "identity",
+                &mut violations,
+            );
+            require_sha256_hex(identity, "spec_digest", "identity", &mut violations);
+        }
+        None => violations.push(Violation::new(
+            "missing_identity",
+            "manifest: required identity was not supplied".to_string(),
+        )),
+    }
+
+    // Subject metadata is required and complete: model/permission identity is
+    // never optional (falsifier 2 of the family brief).
+    match root.get("subject").and_then(as_str_map) {
+        Some(subject) => {
+            check_unknown_keys(subject, SUBJECT_KEYS, "subject", &mut violations);
+            for section in ["agent", "tool"] {
+                match subject.get(section).and_then(as_str_map) {
+                    Some(named_version) => {
+                        check_unknown_keys(
+                            named_version,
+                            NAMED_VERSION_KEYS,
+                            &format!("subject.{section}"),
+                            &mut violations,
+                        );
+                        for field in NAMED_VERSION_KEYS {
+                            require_non_empty(
+                                named_version,
+                                field,
+                                "missing_subject_field",
+                                &format!("subject.{section}"),
+                                &mut violations,
+                            );
+                        }
+                    }
+                    None => violations.push(Violation::new(
+                        "missing_subject_field",
+                        format!("subject: {section} must be an object with name and version"),
+                    )),
+                }
+            }
+            match subject.get("model").and_then(as_str_map) {
+                Some(model) => {
+                    check_unknown_keys(model, MODEL_KEYS, "subject.model", &mut violations);
+                    require_non_empty(
+                        model,
+                        "id",
+                        "missing_subject_field",
+                        "subject.model",
+                        &mut violations,
+                    );
+                }
+                None => violations.push(Violation::new(
+                    "missing_subject_field",
+                    "subject: model must be an object with id".to_string(),
+                )),
+            }
+            // The permission scope ceiling may never be dropped or emptied.
+            let ceiling_ok = subject
+                .get("permissions")
+                .and_then(as_str_map)
+                .map(|permissions| {
+                    check_unknown_keys(
+                        permissions,
+                        PERMISSIONS_KEYS,
+                        "subject.permissions",
+                        &mut violations,
+                    );
+                    permissions.get("ceiling").and_then(Value::as_array)
+                })
+                .and_then(|ceiling| ceiling)
+                .is_some_and(|ceiling| {
+                    !ceiling.is_empty()
+                        && ceiling.len() <= 64
+                        && ceiling.iter().all(|scope| scope.as_str().is_some_and(|s| !s.is_empty()))
+                });
+            if !ceiling_ok {
+                violations.push(Violation::new(
+                    "missing_scope_ceiling",
+                    "subject: permission scope ceiling is required and non-empty".to_string(),
+                ));
+            }
+        }
+        None => violations.push(Violation::new(
+            "missing_subject",
+            "manifest: required subject metadata was not supplied".to_string(),
+        )),
+    }
+
+    // Closed disposition vocabulary.
+    match string_field(root, "disposition") {
+        Some(disposition) if DISPOSITIONS.contains(&disposition) => {}
+        Some(disposition) => violations.push(Violation::new(
+            "unknown_disposition",
+            format!("manifest: unknown disposition {disposition}"),
+        )),
+        None => violations.push(Violation::new(
+            "missing_disposition",
+            "manifest: disposition is required".to_string(),
+        )),
+    }
+
+    // Bounded observable event records; contiguous sequence from 0.
+    let mut recompute_records = |records: Option<&Vec<Value>>,
+                                 kinds: &[&str],
+                                 keys: &[&str],
+                                 required_min: bool,
+                                 max_records: usize,
+                                 label: &str|
+     -> Vec<Option<String>> {
+        let mut recomputed = Vec::new();
+        match records {
+            None => {
+                if required_min {
+                    violations.push(Violation::new(
+                        "missing_events",
+                        format!("manifest: at least one {label} record is required"),
+                    ));
+                }
+            }
+            Some(records) => {
+                if records.len() > max_records {
+                    violations.push(Violation::new(
+                        "retention_bound_exceeded",
+                        format!(
+                            "{label}: {} records exceed the {max_records}-record retention bound",
+                            records.len()
+                        ),
+                    ));
+                }
+                for (index, record) in records.iter().enumerate() {
+                    let digest = match record.as_object() {
+                        Some(object) => validate_record(
+                            object,
+                            label,
+                            kinds,
+                            keys,
+                            index as u64,
+                            &mut violations,
+                        ),
+                        None => {
+                            violations.push(Violation::new(
+                                "not_an_object",
+                                format!("{label}[{index}] must be an object"),
+                            ));
+                            None
+                        }
+                    };
+                    recomputed.push(digest);
+                }
+            }
+        }
+        recomputed
+    };
+
+    let event_digests = recompute_records(
+        root.get("events").and_then(Value::as_array),
+        EVENT_KINDS,
+        EVENT_KEYS,
+        true,
+        MAX_EVENTS,
+        "events",
+    );
+    let result_digests = recompute_records(
+        root.get("results").and_then(Value::as_array),
+        RESULT_KINDS,
+        RESULT_KEYS,
+        false,
+        MAX_RESULTS,
+        "results",
+    );
+
+    // Human-intervention ledger: every entry binds to an existing event
+    // boundary; a packet that hides intervention while citing none is fine,
+    // but every cited intervention must be complete.
+    if let Some(interventions) = root.get("human_intervention").and_then(Value::as_array) {
+        if interventions.len() > MAX_INTERVENTIONS {
+            violations.push(Violation::new(
+                "retention_bound_exceeded",
+                format!(
+                    "human_intervention: {} entries exceed the {MAX_INTERVENTIONS}-entry bound",
+                    interventions.len()
+                ),
+            ));
+        }
+        let known_seqs: Vec<u64> = root
+            .get("events")
+            .and_then(Value::as_array)
+            .map(|events| {
+                events
+                    .iter()
+                    .filter_map(Value::as_object)
+                    .filter_map(|event| event.get("seq").and_then(Value::as_u64))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (index, entry) in interventions.iter().enumerate() {
+            let at = format!("human_intervention[{index}]");
+            let Some(entry) = as_str_map(entry) else {
+                violations.push(Violation::new("not_an_object", format!("{at} must be an object")));
+                continue;
+            };
+            check_unknown_keys(entry, INTERVENTION_KEYS, &at, &mut violations);
+            match entry.get("before_seq").and_then(Value::as_u64) {
+                Some(seq) if known_seqs.contains(&seq) => {}
+                Some(_) | None => violations.push(Violation::new(
+                    "intervention_seq_unknown",
+                    format!("{at}: before_seq must reference an event seq boundary"),
+                )),
+            }
+            match string_field(entry, "role") {
+                Some(role) if INTERVENTION_ROLES.contains(&role) => {}
+                Some(role) => violations.push(Violation::new(
+                    "unknown_intervention_role",
+                    format!("{at}: unknown role {role}"),
+                )),
+                None => violations.push(Violation::new(
+                    "missing_intervention_role",
+                    format!("{at}: role is required"),
+                )),
+            }
+            require_non_empty(entry, "reason", "missing_intervention_reason", &at, &mut violations);
+            scan_hygiene(string_field(entry, "reason").unwrap_or_default(), &at, &mut violations);
+        }
+    } else if root.get("human_intervention").is_some() {
+        violations.push(Violation::new(
+            "not_an_object",
+            "human_intervention must be an array".to_string(),
+        ));
+    }
+
+    // Envelope integrity: the validator recomputes the packet digest from the
+    // canonical envelope over the RECOMPUTED record digests, never trusting
+    // the self-reported value (falsifier 6).
+    let recomputed_envelope = envelope_digest(
+        &string_of(root, "run_id"),
+        &string_of(root, "disposition"),
+        &event_digests,
+        &result_digests,
+    );
+    let recorded = root
+        .get("identity")
+        .and_then(as_str_map)
+        .and_then(|identity| identity.get("packet_digest"))
+        .and_then(Value::as_str)
+        .filter(|digest| {
+            digest.len() == 64
+                && digest.bytes().all(|byte| byte.is_ascii_digit() || byte.is_ascii_lowercase())
+        });
+    if recorded.is_some_and(|recorded| recorded != recomputed_envelope) {
+        violations.push(Violation::new(
+            "packet_digest_mismatch",
+            "identity: packet_digest does not match the recomputed integrity envelope (tampered mid-run)"
+                .to_string(),
+        ));
+    }
+
+    violations
+}
+
+fn string_of(root: &Map<String, Value>, key: &str) -> String {
+    string_field(root, key).unwrap_or_default().to_string()
 }
 
 /// Render one deterministic advisory report line-group for validated runs.
@@ -516,8 +793,8 @@ struct RunRow {
 }
 
 fn load_manifest(path: &Path) -> Result<(String, Value)> {
-    let text = fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let text =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let doc: Value = serde_json::from_str(&text)
         .with_context(|| format!("failed to parse {}", path.display()))?;
     let source = path
@@ -531,11 +808,8 @@ fn collect_rows(entries: &[(String, Value)]) -> Vec<RunRow> {
     entries
         .iter()
         .map(|(source, doc)| {
-            let run_id = doc
-                .get("run_id")
-                .and_then(Value::as_str)
-                .unwrap_or("<missing-run-id>")
-                .to_string();
+            let run_id =
+                doc.get("run_id").and_then(Value::as_str).unwrap_or("<missing-run-id>").to_string();
             let disposition = doc
                 .get("disposition")
                 .and_then(Value::as_str)
@@ -591,9 +865,15 @@ fn render_report(rows: &[RunRow], format: DogfoodReportFormat) -> String {
                 })
                 .collect();
             let mut report = Map::new();
-            report.insert("report".to_string(), Value::String("agent-packet-dogfood.core.report.v1".to_string()));
+            report.insert(
+                "report".to_string(),
+                Value::String("agent-packet-dogfood.core.report.v1".to_string()),
+            );
             report.insert("runs".to_string(), Value::Array(runs));
-            format!("{}\n", serde_json::to_string_pretty(&Value::Object(report)).unwrap_or_default())
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&Value::Object(report)).unwrap_or_default()
+            )
         }
     }
 }
@@ -699,17 +979,12 @@ fn run_validate(manifests: &[PathBuf], update_golden: bool) -> Result<()> {
                 .with_context(|| format!("failed to read {}", expected_path.display()))?,
         )
         .with_context(|| format!("failed to parse {}", expected_path.display()))?;
-        let mut names: Vec<String> = expected
-            .as_object()
-            .map(|object| object.keys().cloned().collect())
-            .unwrap_or_default();
+        let mut names: Vec<String> =
+            expected.as_object().map(|object| object.keys().cloned().collect()).unwrap_or_default();
         names.sort();
         for name in names {
-            let expected_code = expected
-                .get(&name)
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
+            let expected_code =
+                expected.get(&name).and_then(Value::as_str).unwrap_or_default().to_string();
             let path = invalid_dir.join(&name);
             let doc = load_manifest(&path)?.1;
             let violations = validate_manifest(&doc);
@@ -751,9 +1026,13 @@ fn run_validate(manifests: &[PathBuf], update_golden: bool) -> Result<()> {
         if update_golden {
             for (format, text) in &projections {
                 let path = fixture_dir.join(GOLDEN_DIR).join(format!(
-                    "report.{}",
+                    "agent_packet_dogfood_core.advisory.{}",
                     format.golden_extension()
                 ));
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)
+                        .with_context(|| format!("failed to create {}", parent.display()))?;
+                }
                 fs::write(&path, text)
                     .with_context(|| format!("failed to write {}", path.display()))?;
                 println!("wrote golden vector {}", path.display());
@@ -761,7 +1040,7 @@ fn run_validate(manifests: &[PathBuf], update_golden: bool) -> Result<()> {
         } else {
             for (format, text) in &projections {
                 let path = fixture_dir.join(GOLDEN_DIR).join(format!(
-                    "report.{}",
+                    "agent_packet_dogfood_core.advisory.{}",
                     format.golden_extension()
                 ));
                 let golden = fs::read_to_string(&path).with_context(|| {
@@ -824,12 +1103,12 @@ fn load_entries(manifests: &[PathBuf]) -> Result<Vec<(String, Value)>> {
         }
         return Ok(entries);
     }
-    manifests.iter().map(|path| load_manifest(path).map(|(s, d)| (s, d))).collect()
+    manifests.iter().map(|path| load_manifest(path)).collect()
 }
 
 fn run_stamp(path: &Path) -> Result<()> {
-    let text = fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let text =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let mut doc: Value = serde_json::from_str(&text)
         .with_context(|| format!("failed to parse {}", path.display()))?;
     stamp_manifest(&mut doc)?;
@@ -871,11 +1150,7 @@ fn validate_schema_file(root: &Path) -> Result<Vec<String>> {
         (&["$defs", "disposition", "enum"], DISPOSITIONS, "dispositions"),
         (&["$defs", "event_kind", "enum"], EVENT_KINDS, "event kinds"),
         (&["$defs", "result_kind", "enum"], RESULT_KINDS, "result kinds"),
-        (
-            &["$defs", "intervention_role", "enum"],
-            INTERVENTION_ROLES,
-            "intervention roles",
-        ),
+        (&["$defs", "intervention_role", "enum"], INTERVENTION_ROLES, "intervention roles"),
     ];
     for (path_segments, expected_values, label) in expected {
         match enum_of(path_segments) {
@@ -884,10 +1159,8 @@ fn validate_schema_file(root: &Path) -> Result<Vec<String>> {
             Some(values) => violations.push(format!(
                 "schema {label} enum drifted from the pinned closed vocabulary: {values:?}"
             )),
-            None => violations.push(format!(
-                "schema is missing the {label} enum at {}",
-                path_segments.join(".")
-            )),
+            None => violations
+                .push(format!("schema is missing the {label} enum at {}", path_segments.join("."))),
         }
     }
     Ok(violations)

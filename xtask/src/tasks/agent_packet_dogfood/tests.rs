@@ -8,7 +8,8 @@
 use super::*;
 use serde_json::json;
 
-const TREE_SHA_PLACEHOLDER: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+const TREE_SHA_PLACEHOLDER: &str =
+    "1111111111111111111111111111111111111111111111111111111111111111";
 
 /// (fixture name, pinned primary reason code) pairs — the complete
 /// fail-closed mutant matrix committed under `fixtures/…​/invalid`.
@@ -103,10 +104,7 @@ fn mutant<F: FnOnce(&mut Value)>(base: Value, f: F) -> Vec<Violation> {
 
 fn assert_contains(violations: &[Violation], expected: &str) {
     let codes = violation_codes(violations);
-    assert!(
-        codes.contains(&expected),
-        "expected reason code {expected}, got {codes:?}"
-    );
+    assert!(codes.contains(&expected), "expected reason code {expected}, got {codes:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -169,14 +167,9 @@ fn negative_tampered_packet_envelope_mid_run_fails_closed() {
     // captured before an attacker reordered the observable history: the
     // recomputed envelope must diverge from identity.packet_digest.
     let violations = mutant(base_manifest(), |doc| {
-        doc["events"][0].as_object_mut().unwrap().insert(
-            "kind".to_string(),
-            json!("error"),
-        );
+        doc["events"][0].as_object_mut().unwrap().insert("kind".to_string(), json!("error"));
         let events = doc["events"].as_array().unwrap();
-        let result_digests = vec![Some(
-            doc["results"][0]["digest"].as_str().unwrap().to_string(),
-        )];
+        let result_digests = vec![Some(doc["results"][0]["digest"].as_str().unwrap().to_string())];
         let run_id = doc["run_id"].as_str().unwrap().to_string();
         let mut recomputed_events = Vec::new();
         for event in events {
@@ -330,8 +323,8 @@ fn digests_recompute_stably_and_diverge_on_content_change() {
 
     let mut changed = doc.clone();
     changed["events"][0]["payload"]["note"] = json!("different observation");
-    let third = record_digest(changed["events"][0].as_object_mut().unwrap())
-        .expect("fields present");
+    let third =
+        record_digest(changed["events"][0].as_object_mut().unwrap()).expect("fields present");
     assert_ne!(first, third, "content change must change the digest");
 }
 
@@ -384,7 +377,8 @@ fn advisory_report_ordering_is_content_sorted_not_enumeration_sorted() {
     let parsed: Value = serde_json::from_str(&json_forward).expect("valid JSON report");
     assert_eq!(parsed["report"], json!("agent-packet-dogfood.core.report.v1"));
     let runs = parsed["runs"].as_array().expect("runs array");
-    let ids: Vec<&str> = runs.iter().filter_map(|r| r.get("run_id").and_then(Value::as_str)).collect();
+    let ids: Vec<&str> =
+        runs.iter().filter_map(|r| r.get("run_id").and_then(Value::as_str)).collect();
     let mut sorted_ids = ids.clone();
     sorted_ids.sort();
     assert_eq!(ids, sorted_ids, "JSON projection lists runs in sorted order");
@@ -436,10 +430,7 @@ fn every_pinned_mutant_has_a_committed_fixture_with_matching_expectation() {
             .get(*name)
             .and_then(Value::as_str)
             .unwrap_or_else(|| panic!("{name} is listed in expected_errors.json"));
-        assert_eq!(
-            actual, *code,
-            "{name} expectation stays aligned with the pinned vocabulary"
-        );
+        assert_eq!(actual, *code, "{name} expectation stays aligned with the pinned vocabulary");
         let doc = load_manifest(&path).expect("fixture parses").1;
         assert!(
             doc.get("schema").and_then(Value::as_str) == Some(SCHEMA_NAME),
