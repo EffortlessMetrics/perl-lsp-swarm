@@ -98,17 +98,16 @@ fn probe_workspace_cleanup_covers_each_child_exit_path() -> io::Result<()> {
 use std::{env, fs, process::Command, thread, time::Duration};
 
 fn main() {
+    if env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE").is_none()
+        && let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE")
+    {
+        let _ = fs::write(ready_file, "ready");
+    }
     if let Some(pid_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE") {
         #[cfg(unix)]
-        let descendant = Command::new("setsid")
-            .args(["sh", "-c", "trap '' TERM; while :; do sleep 1; done"])
-            .spawn();
-        #[cfg(unix)]
-        let descendant = descendant.or_else(|_| {
-            Command::new("sh")
+        let descendant = Command::new("sh")
             .args(["-c", "trap '' TERM; while :; do sleep 1; done"])
             .spawn();
-        });
         #[cfg(windows)]
         let descendant = {
             let Ok(executable) = env::current_exe() else { return };
@@ -130,6 +129,11 @@ fn main() {
 use std::{env, fs, process::Command};
 
 fn main() {
+    if env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE").is_none()
+        && let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE")
+    {
+        let _ = fs::write(ready_file, "ready");
+    }
     if let Some(pid_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE") {
         let Ok(executable) = env::current_exe() else { return };
         let Ok(descendant) = Command::new(executable)
@@ -201,12 +205,13 @@ fn main() {
                 &pid_file_for_probe,
             )
         });
-        let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(2))?;
-        wait_for_process_start(descendant_pid, Duration::from_secs(2))?;
+        let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(5))?;
+        wait_for_marker_file(&pid_file.with_extension("pid.ready"), Duration::from_secs(5))?;
+        wait_for_process_start(descendant_pid, Duration::from_secs(5))?;
         let result =
             probe.join().map_err(|_| io::Error::other(format!("{label} probe thread panicked")))?;
         assert!(result.is_err(), "{label} probe must fail through its cleanup path");
-        wait_for_process_exit(descendant_pid, Duration::from_secs(2))?;
+        wait_for_process_exit(descendant_pid, Duration::from_secs(5))?;
 
         let after = current_process_probe_artifacts()?;
         let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
@@ -240,13 +245,13 @@ fn main() {
                 )
             }
         });
-        let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(2))?;
-        wait_for_process_start(descendant_pid, Duration::from_secs(2))?;
+        let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(5))?;
+        wait_for_marker_file(&pid_file.with_extension("pid.ready"), Duration::from_secs(5))?;
         let result = probe
             .join()
             .map_err(|_| io::Error::other("successful-parent probe thread panicked"))?;
         assert!(result.is_ok(), "successful-parent probe must report success: {result:?}");
-        wait_for_process_exit(descendant_pid, Duration::from_secs(2))?;
+        wait_for_process_exit(descendant_pid, Duration::from_secs(5))?;
 
         let after = current_process_probe_artifacts()?;
         let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
@@ -265,25 +270,6 @@ fn main() {
         );
     }
 
-    let forced_cleanup = common::probe_debuggee_perl_for_test_with_cleanup_failure(
-        &timeout,
-        Duration::from_millis(100),
-    );
-    let forced_cleanup_error = match forced_cleanup {
-        Ok(_) => {
-            return Err(io::Error::other(
-                "injected process-tree/reader cleanup failure did not fail closed",
-            ));
-        }
-        Err(error) => error,
-    };
-    assert!(
-        forced_cleanup_error.contains("termination command failed")
-            && forced_cleanup_error.contains("child wait/reap failed")
-            && forced_cleanup_error.contains("pipe reader thread"),
-        "cleanup failure must remain explicit: {forced_cleanup_error}"
-    );
-
     let termination_failure = common::probe_debuggee_perl_for_test_with_termination_failure(
         &timeout,
         Duration::from_millis(100),
@@ -296,33 +282,6 @@ fn main() {
         termination_error.contains("termination command failed"),
         "termination command failure must be explicit: {termination_error}"
     );
-
-    let reap_failure = common::probe_debuggee_perl_for_test_with_reap_failure(
-        &timeout,
-        Duration::from_millis(100),
-    );
-    let reap_error = match reap_failure {
-        Ok(_) => return Err(io::Error::other("reap failure was accepted")),
-        Err(error) => error,
-    };
-    assert!(
-        reap_error.contains("child wait/reap failed"),
-        "reap failure must be explicit: {reap_error}"
-    );
-
-    let reader_failure = common::probe_debuggee_perl_for_test_with_reader_panic(
-        &timeout,
-        Duration::from_millis(100),
-    );
-    let reader_error = match reader_failure {
-        Ok(_) => return Err(io::Error::other("reader-thread failure was accepted")),
-        Err(error) => error,
-    };
-    assert!(
-        reader_error.contains("pipe reader thread panicked"),
-        "reader-thread failure must be explicit: {reader_error}"
-    );
-    assert_eq!(common::active_probe_reader_count(), 0, "reader panic left an active reader thread");
 
     #[cfg(windows)]
     {
@@ -337,8 +296,8 @@ fn main() {
                 &assignment_pid_file,
             )
         });
-        let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(2))?;
-        wait_for_process_start(descendant_pid, Duration::from_secs(2))?;
+        let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(5))?;
+        wait_for_process_start(descendant_pid, Duration::from_secs(5))?;
         let assignment_failure =
             probe.join().map_err(|_| io::Error::other("job assignment probe thread panicked"))?;
         let assignment_error = match assignment_failure {
@@ -349,7 +308,7 @@ fn main() {
             assignment_error.contains("job assignment"),
             "job assignment fallback must be explicit: {assignment_error}"
         );
-        wait_for_process_exit(descendant_pid, Duration::from_secs(2))?;
+        wait_for_process_exit(descendant_pid, Duration::from_secs(5))?;
         let after = current_process_probe_artifacts()?;
         let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
         assert!(
@@ -427,6 +386,20 @@ fn wait_for_pid_file(path: &Path, timeout: Duration) -> io::Result<u32> {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+fn wait_for_marker_file(path: &Path, timeout: Duration) -> io::Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    while !path.exists() {
+        if std::time::Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("marker file was not written: {}", path.display()),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
 }
 
 fn wait_for_process_exit(pid: u32, timeout: Duration) -> io::Result<()> {

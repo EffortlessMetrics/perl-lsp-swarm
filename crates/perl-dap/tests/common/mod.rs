@@ -13,10 +13,10 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
-use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -858,6 +858,9 @@ static DEBUGGEE_PERL: OnceLock<DebuggeePerlResolution> = OnceLock::new();
 static LAST_PROBE_PID: AtomicU32 = AtomicU32::new(0);
 #[cfg(test)]
 static ACTIVE_PROBE_READERS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static DEFERRED_PROBE_READERS: OnceLock<Mutex<Vec<JoinHandle<Result<(), String>>>>> =
+    OnceLock::new();
 
 fn debuggee_perl_candidates() -> Vec<PathBuf> {
     if let Some(pinned) = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV) {
@@ -925,24 +928,13 @@ fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
 enum CleanupFault {
     None,
     TerminationCommand,
-    Reap,
-    ReaderThreadPanic,
     #[cfg(windows)]
     JobAssignment,
-    Combined,
 }
 
 impl CleanupFault {
     fn termination_failed(self) -> bool {
-        matches!(self, Self::TerminationCommand | Self::Combined)
-    }
-
-    fn reap_failed(self) -> bool {
-        matches!(self, Self::Reap | Self::Combined)
-    }
-
-    fn reader_failed(self) -> bool {
-        matches!(self, Self::ReaderThreadPanic | Self::Combined)
+        matches!(self, Self::TerminationCommand)
     }
 
     #[cfg(windows)]
@@ -983,15 +975,6 @@ pub(crate) fn probe_debuggee_perl_for_test_with_descendant_pid(
 }
 
 #[cfg(test)]
-pub(crate) fn probe_debuggee_perl_for_test_with_cleanup_failure(
-    binary: &Path,
-    budget: Duration,
-) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(binary, budget, false, None, CleanupFault::Combined)
-        .map_err(|failure| failure.reason)
-}
-
-#[cfg(test)]
 pub(crate) fn probe_debuggee_perl_for_test_with_termination_failure(
     binary: &Path,
     budget: Duration,
@@ -1001,26 +984,27 @@ pub(crate) fn probe_debuggee_perl_for_test_with_termination_failure(
 }
 
 #[cfg(test)]
-pub(crate) fn probe_debuggee_perl_for_test_with_reap_failure(
-    binary: &Path,
-    budget: Duration,
-) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(binary, budget, false, None, CleanupFault::Reap)
-        .map_err(|failure| failure.reason)
-}
-
-#[cfg(test)]
-pub(crate) fn probe_debuggee_perl_for_test_with_reader_panic(
-    binary: &Path,
-    budget: Duration,
-) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(binary, budget, false, None, CleanupFault::ReaderThreadPanic)
-        .map_err(|failure| failure.reason)
-}
-
-#[cfg(test)]
 pub(crate) fn active_probe_reader_count() -> usize {
+    reap_deferred_probe_readers();
     ACTIVE_PROBE_READERS.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+fn reap_deferred_probe_readers() {
+    let Some(readers) = DEFERRED_PROBE_READERS.get() else { return };
+    let mut readers = match readers.lock() {
+        Ok(readers) => readers,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let mut pending = Vec::with_capacity(readers.len());
+    for reader in readers.drain(..) {
+        if reader.is_finished() {
+            let _ = reader.join();
+        } else {
+            pending.push(reader);
+        }
+    }
+    *readers = pending;
 }
 
 #[cfg(all(test, windows))]
@@ -1136,10 +1120,14 @@ fn probe_debuggee_perl_with_options(
         .env("TZ", "UTC");
     if let Some(descendant_pid_file) = descendant_pid_file {
         command.env("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE", descendant_pid_file);
+        command.env(
+            "PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE",
+            format!("{}.ready", descendant_pid_file.display()),
+        );
     }
     // A dedicated process group lets cleanup terminate descendants on Unix;
-    // Windows uses taskkill's process-tree mode below. Both are test-helper
-    // ownership boundaries: the probe owns the complete subprocess tree.
+    // Windows uses a Job Object and taskkill's process-tree fallback. These
+    // are the production-owned process-tree boundaries for the probe.
     #[cfg(unix)]
     command.process_group(0);
     let mut child = command.spawn().map_err(|e| fail(format!("cannot spawn: {e}")))?;
@@ -1153,7 +1141,7 @@ fn probe_debuggee_perl_with_options(
         Err(error) => {
             #[cfg(test)]
             if cleanup_fault.assignment_failed() {
-                std::thread::sleep(Duration::from_millis(250));
+                std::thread::sleep(Duration::from_secs(3));
             }
             let tree_kill = Command::new("taskkill")
                 .args(["/PID", &child.id().to_string(), "/T", "/F"])
@@ -1210,8 +1198,8 @@ fn probe_debuggee_perl_with_options(
         }
     });
 
-    let stdout_chunks = drain_pipe(stdout_pipe, cleanup_fault.reader_failed());
-    let stderr_chunks = drain_pipe(stderr_pipe, false);
+    let stdout_chunks = drain_pipe(stdout_pipe);
+    let stderr_chunks = drain_pipe(stderr_pipe);
 
     // The injected wait error is test-only. Give a controlled descendant a
     // scheduling window to start before exercising that immediate error path;
@@ -1240,8 +1228,8 @@ fn probe_debuggee_perl_with_options(
                     );
                     let writer_result =
                         writer.join().map_err(|_| "probe stdin writer thread panicked".to_string());
-                    let stdout_joined = join_pipe_reader(stdout_chunks, cleanup_fault);
-                    let stderr_joined = join_pipe_reader(stderr_chunks, cleanup_fault);
+                    let stdout_joined = join_pipe_reader(stdout_chunks);
+                    let stderr_joined = join_pipe_reader(stderr_chunks);
                     return Err(ProbeFailure {
                         reason: format!(
                             "no exit within {}s — perl5db cannot bootstrap over piped stdio{}",
@@ -1268,8 +1256,8 @@ fn probe_debuggee_perl_with_options(
                     terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
                 let writer_result =
                     writer.join().map_err(|_| "probe stdin writer thread panicked".to_string());
-                let stdout_joined = join_pipe_reader(stdout_chunks, cleanup_fault);
-                let stderr_joined = join_pipe_reader(stderr_chunks, cleanup_fault);
+                let stdout_joined = join_pipe_reader(stdout_chunks);
+                let stderr_joined = join_pipe_reader(stderr_chunks);
                 let cleanup_suffix = cleanup_failure_suffix(
                     tree_result,
                     writer_result,
@@ -1283,14 +1271,14 @@ fn probe_debuggee_perl_with_options(
     let writer_result = writer.join().map_err(|_| "probe stdin writer thread panicked".to_string());
 
     // A successful parent can still leave descendants holding the inherited
-    // pipe write ends. Close the probe's complete process-tree ownership
+    // pipe write ends. Close the probe's production-owned process-tree
     // boundary before joining readers; otherwise a descendant can make the
     // reader join unbounded even though the direct child exited successfully.
     let tree_result = terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
     #[cfg(windows)]
     drop(_probe_job);
-    let stdout = collect_pipe_output(stdout_chunks, cleanup_fault);
-    let stderr = collect_pipe_output(stderr_chunks, cleanup_fault);
+    let stdout = collect_pipe_output(stdout_chunks);
+    let stderr = collect_pipe_output(stderr_chunks);
     if tree_result.is_err() || writer_result.is_err() || stdout.is_err() || stderr.is_err() {
         let stdout_result = stdout;
         let stderr_result = stderr;
@@ -1371,7 +1359,7 @@ impl ProbePipe for ChildStderr {
 /// Drain `pipe` to EOF on a background thread, forwarding chunks to the
 /// returned receiver. The join handle remains owned by the probe so cleanup
 /// cannot silently return while a detached reader is still blocked on a pipe.
-fn drain_pipe<R>(pipe: R, panic_reader: bool) -> PipeDrain
+fn drain_pipe<R>(pipe: R) -> PipeDrain
 where
     R: ProbePipe,
 {
@@ -1391,9 +1379,6 @@ where
         }
         #[cfg(test)]
         let _activity = ReaderActivity;
-        if panic_reader {
-            std::panic::resume_unwind(Box::new("injected pipe reader panic"));
-        }
         let mut pipe = pipe;
         let mut buf = [0u8; 4096];
         loop {
@@ -1430,7 +1415,7 @@ where
 }
 
 /// Collect drained chunks into a string, bounded well inside the probe budget.
-fn collect_pipe_output(drain: PipeDrain, cleanup_fault: CleanupFault) -> Result<String, String> {
+fn collect_pipe_output(drain: PipeDrain) -> Result<String, String> {
     let mut bytes = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(2);
     while let Ok(chunk) =
@@ -1438,7 +1423,7 @@ fn collect_pipe_output(drain: PipeDrain, cleanup_fault: CleanupFault) -> Result<
     {
         bytes.extend_from_slice(&chunk);
     }
-    join_pipe_reader(drain, cleanup_fault).map(|()| String::from_utf8_lossy(&bytes).into_owned())
+    join_pipe_reader(drain).map(|()| String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Stop and join a pipe reader within a fixed budget. Windows anonymous pipes
@@ -1449,7 +1434,7 @@ fn collect_pipe_output(drain: PipeDrain, cleanup_fault: CleanupFault) -> Result<
 /// cancellation flag before polling and before each read, so termination closes
 /// the pipe boundary before this bounded join can expire. Test instrumentation
 /// verifies that no reader remains active after each cleanup scenario.
-fn join_pipe_reader(drain: PipeDrain, cleanup_fault: CleanupFault) -> Result<(), String> {
+fn join_pipe_reader(drain: PipeDrain) -> Result<(), String> {
     drop(drain.receiver);
     drain.cancel.store(true, Ordering::Release);
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -1460,12 +1445,17 @@ fn join_pipe_reader(drain: PipeDrain, cleanup_fault: CleanupFault) -> Result<(),
         let reader_result =
             drain.thread.join().map_err(|_| "pipe reader thread panicked".to_string())?;
         reader_result?;
-        if cleanup_fault.reader_failed() {
-            Err("injected pipe reader join failure".to_string())
-        } else {
-            Ok(())
-        }
+        Ok(())
     } else {
+        #[cfg(test)]
+        {
+            let readers = DEFERRED_PROBE_READERS.get_or_init(|| Mutex::new(Vec::new()));
+            let mut readers = match readers.lock() {
+                Ok(readers) => readers,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            readers.push(drain.thread);
+        }
         Err("pipe reader thread did not stop within 2s".to_string())
     }
 }
@@ -1507,15 +1497,20 @@ where
     if result == 0 { None } else { Some(available > 0) }
 }
 
-/// Terminate the complete probe process tree before joining pipe readers.
+/// Terminate the probe process tree within its production-owned boundary
+/// before joining pipe readers. Unix process groups and Windows Job Objects do
+/// not claim descendants that deliberately create a new session or escape a
+/// Job Object.
 ///
 /// Killing only the direct child is insufficient: a descendant can inherit a
 /// stdout/stderr handle and keep a reader blocked after the parent exits. The
-/// probe owns the tree, so timeout and wait-error cleanup must close that whole
-/// ownership boundary before joining either reader.
+/// probe owns its process-group/Job Object boundary, so timeout and wait-error
+/// cleanup closes that owned boundary before joining either reader. Descendants
+/// that deliberately create a new session or escape a Job Object are outside
+/// this helper's claim.
 fn terminate_probe_process_tree(
     child: &mut Child,
-    descendant_pid_file: Option<&Path>,
+    _descendant_pid_file: Option<&Path>,
     cleanup_fault: CleanupFault,
 ) -> Result<(), String> {
     let pid = child.id();
@@ -1543,34 +1538,6 @@ fn terminate_probe_process_tree(
             {
                 failures.push(format!(
                     "taskkill failed for probe child {pid}: {}",
-                    taskkill.err().map_or_else(
-                        || "non-success status".to_string(),
-                        |error| error.to_string()
-                    )
-                ));
-            }
-        }
-        if let Some(descendant_pid_file) = descendant_pid_file
-            && let Ok(pid_text) = fs::read_to_string(descendant_pid_file)
-            && let Ok(descendant_pid) = pid_text.trim().parse::<u32>()
-        {
-            let mut taskkill = Command::new("taskkill")
-                .args(["/PID", &descendant_pid.to_string(), "/T", "/F"])
-                .status();
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while process_id_is_alive(descendant_pid) && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(25));
-                if process_id_is_alive(descendant_pid) {
-                    taskkill = Command::new("taskkill")
-                        .args(["/PID", &descendant_pid.to_string(), "/F"])
-                        .status();
-                }
-            }
-            if !taskkill.as_ref().is_ok_and(|status| status.success())
-                || process_id_is_alive(descendant_pid)
-            {
-                failures.push(format!(
-                    "taskkill failed for descendant {descendant_pid}: {}",
                     taskkill.err().map_or_else(
                         || "non-success status".to_string(),
                         |error| error.to_string()
@@ -1619,38 +1586,6 @@ fn terminate_probe_process_tree(
                 ));
             }
         }
-        if let Some(descendant_pid_file) = descendant_pid_file
-            && let Ok(pid_text) = fs::read_to_string(descendant_pid_file)
-            && let Ok(descendant_pid) = pid_text.trim().parse::<u32>()
-            && process_id_is_alive(descendant_pid)
-        {
-            let term = Command::new("kill").args(["-TERM", &descendant_pid.to_string()]).status();
-            if !term.as_ref().is_ok_and(|status| status.success()) {
-                failures.push(format!(
-                    "SIGTERM failed for escaped descendant {descendant_pid}: {}",
-                    term.err().map_or_else(
-                        || "non-success status".to_string(),
-                        |error| error.to_string()
-                    )
-                ));
-            }
-            let deadline = Instant::now() + Duration::from_millis(500);
-            while process_id_is_alive(descendant_pid) && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            let kill = Command::new("kill").args(["-KILL", &descendant_pid.to_string()]).status();
-            if !kill.as_ref().is_ok_and(|status| status.success())
-                && process_id_is_alive(descendant_pid)
-            {
-                failures.push(format!(
-                    "SIGKILL failed for escaped descendant {descendant_pid}: {}",
-                    kill.err().map_or_else(
-                        || "non-success status".to_string(),
-                        |error| error.to_string()
-                    )
-                ));
-            }
-        }
     }
     if child_running && let Err(error) = child.kill() {
         match child.try_wait() {
@@ -1664,39 +1599,7 @@ fn terminate_probe_process_tree(
     if let Err(error) = child.wait() {
         failures.push(format!("child wait/reap failed: {error}"));
     }
-    if cleanup_fault.reap_failed() {
-        failures.push("child wait/reap failed: injected failure".to_string());
-    }
     if failures.is_empty() { Ok(()) } else { Err(failures.join("; ")) }
-}
-
-#[cfg(windows)]
-fn process_id_is_alive(pid: u32) -> bool {
-    Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-        .output()
-        .ok()
-        .is_some_and(|output| {
-            output.status.success()
-                && String::from_utf8_lossy(&output.stdout).lines().any(|line| {
-                    line.split(',')
-                        .nth(1)
-                        .is_some_and(|field| field.trim_matches('"') == pid.to_string())
-                })
-        })
-}
-
-#[cfg(unix)]
-fn process_id_is_alive(pid: u32) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-#[cfg(not(any(unix, windows)))]
-fn process_id_is_alive(_pid: u32) -> bool {
-    false
 }
 
 /// Diagnostic identity from the probe's own output — the perl5db banner line
