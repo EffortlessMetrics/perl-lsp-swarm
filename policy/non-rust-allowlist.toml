@@ -1751,6 +1751,52 @@ covered_by = [
 created = "2026-08-15"
 review_after = "2026-09-15"
 
+# =============================================================================
+# LSP4IJ host journey
+# Narrow per-file entries for the IntelliJ/LSP4IJ real-host evidence tier
+# (#12826): declared-host launch spec + real-session receipt validators and
+# their discriminating tests. No session receipt may ever be checked in;
+# receipts come only from hosted runs as run artifacts.
+
+[[allow]]
+id = "non-rust-lsp4ij-launch-spec-validator"
+path = "integrations/lsp4ij/host-journey/validate_lsp4ij_launch_spec.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/lsp4ij"
+reason = "Validates a declared-host launch spec before an LSP4IJ IDE launch."
+covered_by = ["python3 -m unittest discover -s integrations/lsp4ij/host-journey/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-26"
+review_after = "2027-02-26"
+
+[[allow]]
+id = "non-rust-lsp4ij-host-receipt-validator"
+path = "integrations/lsp4ij/host-journey/validate_lsp4ij_host_receipt.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/lsp4ij"
+reason = "Validates a produced real-host session receipt against the v1 contract; rejects synthetic origins for production closure."
+covered_by = ["python3 -m unittest discover -s integrations/lsp4ij/host-journey/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-26"
+review_after = "2027-02-26"
+
+[[allow]]
+id = "non-rust-lsp4ij-host-journey-tests"
+path = "integrations/lsp4ij/host-journey/tests/test_lsp4ij_host_journey_contracts.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/lsp4ij"
+reason = "Discriminating tests rejecting malformed and hostile launch specs/receipts and pinning schema-validator parity."
+covered_by = ["python3 -m unittest discover -s integrations/lsp4ij/host-journey/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-26"
+review_after = "2027-02-26"
+
 [[allow]]
 id = "non-rust-module-train-live-observation-fixtures"
 glob = "xtask/tests/fixtures/module-train-live/*.json"
@@ -3791,3 +3837,42 @@ covered_by = [
 ]
 created = "2026-08-26"
 review_after = "2027-02-22"
+
+[[allow]]
+id = "non-rust-lsp4ij-launch-spec-schema"
+path = "integrations/lsp4ij/host-journey/lsp4ij-launch-spec.v1.schema.json"
+kind = "integration_contract"
+language = "json"
+surface = "editor"
+classification = "production"
+owner = "editor/lsp4ij"
+reason = "Machine-readable contract for one declared hermetic IntelliJ+LSP4IJ launch; mirrors the hand validator that consumes it (#12826)."
+covered_by = ["python3 -m unittest discover -s integrations/lsp4ij/host-journey/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-26"
+review_after = "2027-02-26"
+
+[[allow]]
+id = "non-rust-lsp4ij-host-receipt-schema"
+path = "integrations/lsp4ij/host-journey/lsp4ij-host-receipt.v1.schema.json"
+kind = "integration_contract"
+language = "json"
+surface = "editor"
+classification = "production"
+owner = "editor/lsp4ij"
+reason = "Machine-readable contract for a real LSP4IJ host-session receipt with the synthetic-forbidden capture-origin law; mirrors the hand validator (#12826)."
+covered_by = ["python3 -m unittest discover -s integrations/lsp4ij/host-journey/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-26"
+review_after = "2027-02-26"
+
+[[allow]]
+id = "non-rust-lsp4ij-declared-host-example"
+path = "integrations/lsp4ij/host-journey/declared-host.launch-spec.example.json"
+kind = "editor_integration_template"
+language = "json"
+surface = "editor"
+classification = "config"
+owner = "editor/lsp4ij"
+reason = "Driver template for declared launches only; carries placeholders and zero digests until the driver fills them, never evidence, validated by the checked-in suite."
+covered_by = ["python3 -m unittest discover -s integrations/lsp4ij/host-journey/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-26"
+review_after = "2027-02-26"
