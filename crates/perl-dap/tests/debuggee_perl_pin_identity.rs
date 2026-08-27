@@ -124,7 +124,7 @@ fn valid_pin_selects_the_pinned_usable_identity() -> Result<(), Box<dyn Error>> 
                 .into(),
         );
     }
-    if !(resolved.identity.contains("pinned_perl") && !resolved.identity.contains("ambient_perl")) {
+    if !resolved.identity.contains("pinned_perl") || resolved.identity.contains("ambient_perl") {
         return Err(format!(
             "selected identity must come from the pinned control, got: {}",
             resolved.identity

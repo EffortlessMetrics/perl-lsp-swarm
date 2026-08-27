@@ -1496,25 +1496,20 @@ fn probe_debuggee_perl_with_options(
             )));
         }
         #[cfg(test)]
-        if cleanup_fault.thread_spawn_failed(ProbeThreadSpawnFailure::Writer)
+        if (cleanup_fault.thread_spawn_failed(ProbeThreadSpawnFailure::Writer)
             || cleanup_fault.thread_spawn_failed(ProbeThreadSpawnFailure::StdoutReader)
-            || cleanup_fault.thread_spawn_failed(ProbeThreadSpawnFailure::StderrReader)
+            || cleanup_fault.thread_spawn_failed(ProbeThreadSpawnFailure::StderrReader))
+            && let Some(descendant_pid_file) = descendant_pid_file
+            && let Err(error) = wait_for_spawn_failure_control(descendant_pid_file)
         {
-            if let Some(descendant_pid_file) = descendant_pid_file {
-                if let Err(error) = wait_for_spawn_failure_control(descendant_pid_file) {
-                    let cleanup = terminate_probe_process_tree(
-                        &mut child,
-                        Some(descendant_pid_file),
-                        cleanup_fault,
-                    );
-                    return Err(fail(format!(
-                        "spawn-failure control did not start its descendant: {error}{}",
-                        cleanup
-                            .err()
-                            .map_or_else(String::new, |error| format!("; cleanup failed: {error}"))
-                    )));
-                }
-            }
+            let cleanup =
+                terminate_probe_process_tree(&mut child, Some(descendant_pid_file), cleanup_fault);
+            return Err(fail(format!(
+                "spawn-failure control did not start its descendant: {error}{}",
+                cleanup
+                    .err()
+                    .map_or_else(String::new, |error| format!("; cleanup failed: {error}"))
+            )));
         }
 
         let Some(stdout_pipe) = child.stdout.take() else {
