@@ -5281,9 +5281,10 @@ profile = "recommended"
             );
         }
 
-        let widened = PerlOracleEnv::with_startup_inc_probe_timeout(Duration::from_secs(3), || {
-            config.clone().get_system_inc_probe_outcome()
-        });
+        let widened =
+            PerlOracleEnv::with_startup_inc_probe_timeout(Duration::from_secs(30), || {
+                config.clone().get_system_inc_probe_outcome()
+            });
         match widened {
             SystemIncProbeOutcome::Paths(paths)
                 if paths.iter().any(|path| path == Path::new("startup-sentinel")) =>
