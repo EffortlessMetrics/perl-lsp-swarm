@@ -72,37 +72,12 @@ fn find_configured_or_path_pipe_perl() -> Result<Option<PathBuf>, Box<dyn Error>
     Ok(None)
 }
 
-fn observe_pin_for_path(
-    launch_path: &str,
-    pinned: &std::path::Path,
-    script: &str,
-    cwd: &str,
-) -> Result<String, String> {
-    let mut session = DapWorkflowSession::new_with_perl(workflow_timeout(), Some(pinned))?;
-    match launch_path {
-        "launch" => {
-            session.launch(script)?;
-            session.set_breakpoints_checked(script, &[4])?;
-            session.configuration_done()?;
-        }
-        "launch_with_stop_on_entry" => session.launch_with_stop_on_entry(script, true)?,
-        "launch_with_cwd" => {
-            session.launch_with_cwd(script, cwd)?;
-            session.set_breakpoints_checked(script, &[4])?;
-            session.configuration_done()?;
-        }
-        other => return Err(format!("unknown launch path {other}")),
-    }
-    let stopped = session.wait_stopped_with_frame()?;
-    session.evaluate_expression("$^X", stopped.frame_id).map(|(value, _)| value)
-}
-
-fn observe_configured_pin_for_path(
+fn observe_pin_with_session(
+    mut session: DapWorkflowSession,
     launch_path: &str,
     script: &str,
     cwd: &str,
 ) -> Result<String, String> {
-    let mut session = DapWorkflowSession::new(workflow_timeout())?;
     match launch_path {
         "launch" => {
             session.launch(script)?;
@@ -163,7 +138,8 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
     let script_text = script.to_string_lossy().into_owned();
     let cwd = controls.path().to_string_lossy().into_owned();
     for launch_path in ["launch", "launch_with_stop_on_entry", "launch_with_cwd"] {
-        let reported = observe_pin_for_path(launch_path, &pinned, &script_text, &cwd)
+        let session = DapWorkflowSession::new_with_perl(workflow_timeout(), Some(&pinned))?;
+        let reported = observe_pin_with_session(session, launch_path, &script_text, &cwd)
             .map_err(|error| format!("{launch_path} failed: {error}"))?;
         let reported_lower = reported.to_ascii_lowercase();
         if !(reported_lower.contains("pinned-perl")
@@ -179,8 +155,10 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
 
     let _pin_guard = EnvGuard::set(DEBUGGEE_PERL_OVERRIDE_ENV, pinned.as_os_str());
     for launch_path in ["launch", "launch_with_stop_on_entry", "launch_with_cwd"] {
-        let configured_identity = observe_configured_pin_for_path(launch_path, &script_text, &cwd)
-            .map_err(|error| format!("configured {launch_path} failed: {error}"))?;
+        let session = DapWorkflowSession::new(workflow_timeout())?;
+        let configured_identity =
+            observe_pin_with_session(session, launch_path, &script_text, &cwd)
+                .map_err(|error| format!("configured {launch_path} failed: {error}"))?;
         let configured_identity_lower = configured_identity.to_ascii_lowercase();
         if !(configured_identity_lower.contains("pinned-perl")
             && !configured_identity_lower.contains("\\perl.exe")
