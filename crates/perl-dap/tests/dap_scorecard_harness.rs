@@ -258,17 +258,42 @@ fn locals_scope_ref_with_authority(
     ))
 }
 
-fn assert_wrong_frame_has_no_scopes(
+fn normalized_source_path(path: &str) -> String {
+    let mut normalized = path.replace('\\', "/");
+    if let Some(stripped) = normalized.strip_prefix("//?/") {
+        normalized = stripped.to_string();
+    }
+    while normalized.contains("//") {
+        normalized = normalized.replace("//", "/");
+    }
+    if cfg!(windows) {
+        normalized.make_ascii_lowercase();
+    }
+    normalized.trim_end_matches('/').to_string()
+}
+
+fn assert_source_path_matches(actual: &str, expected: &Path) -> Result<(), String> {
+    let expected = expected
+        .canonicalize()
+        .unwrap_or_else(|_| expected.to_path_buf())
+        .to_string_lossy()
+        .into_owned();
+    if normalized_source_path(actual) != normalized_source_path(&expected) {
+        return Err(format!(
+            "stopped frame source path does not identify scorecard script: actual={actual:?}, expected={expected:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn assert_stale_frame_has_no_scopes(
     session: &mut DapWorkflowSession,
     frame_id: i64,
 ) -> Result<(), String> {
-    let wrong_frame_id = frame_id
-        .checked_add(1)
-        .ok_or_else(|| format!("cannot construct wrong frame id after {frame_id}"))?;
-    let scopes = scopes_for_frame(session, wrong_frame_id)?;
+    let scopes = scopes_for_frame(session, frame_id)?;
     if !scopes.is_empty() {
         return Err(format!(
-            "wrong/stale frame_id={wrong_frame_id} returned scopes instead of an honest empty list: {scopes:?}"
+            "prior-generation frame_id={frame_id} returned scopes instead of an honest empty list: {scopes:?}"
         ));
     }
     Ok(())
@@ -299,10 +324,14 @@ fn probe_session_metrics(
     let script_text = r#"use strict;
 use warnings;
 our $x = 41;
-my @big = (1..500);
-our %meta = (name => "dap-scorecard");
-my $marker = $x + 1;
-print "marker=$marker\n";
+sub scorecard_frame {
+    my @big = (1..500);
+    our %meta = (name => "dap-scorecard");
+    my $marker = $x + 1;
+    print "marker=$marker\n";
+}
+scorecard_frame();
+scorecard_frame();
 "#;
     fs::write(&script_path, script_text).map_err(|e| e.to_string())?;
 
@@ -311,22 +340,49 @@ print "marker=$marker\n";
 
     let mut session = DapWorkflowSession::new(workflow_timeout())?;
     session.launch_pinned(perl_binary, script_str)?;
-    let resolved_lines = session.set_breakpoints_checked(script_str, &[6])?;
+    let resolved_lines = session.set_breakpoints_checked(script_str, &[10, 11])?;
     session.configuration_done()?;
 
     let stop = session.wait_stopped()?;
-    let (frame_id, source_path, frame_line) = session.stack_trace(stop.thread_id)?;
+    let (first_frame_id, first_source_path, first_frame_line) =
+        session.stack_trace(stop.thread_id)?;
     let expected_line =
         resolved_lines.first().copied().ok_or("setBreakpoints returned no resolved lines")?;
-    if frame_line != expected_line {
+    if first_frame_line != expected_line {
         return Err(format!(
-            "stopped frame is not the admitted breakpoint: thread_id={}, frame_id={}, source={source_path:?}, line={frame_line}, expected_line={expected_line}",
-            stop.thread_id, frame_id
+            "first stopped frame is not the admitted breakpoint: thread_id={}, frame_id={}, source={first_source_path:?}, line={first_frame_line}, expected_line={expected_line}",
+            stop.thread_id, first_frame_id
         ));
     }
+    assert_source_path_matches(&first_source_path, &script_path)?;
+    session.continue_exec(stop.thread_id)?;
+    let second_stop = session.wait_stopped()?;
+    if second_stop.thread_id != stop.thread_id {
+        return Err(format!(
+            "second stopped event changed thread authority: first={}, second={}",
+            stop.thread_id, second_stop.thread_id
+        ));
+    }
+    let (frame_id, source_path, frame_line) = session.stack_trace(second_stop.thread_id)?;
+    let expected_line = resolved_lines
+        .get(1)
+        .copied()
+        .ok_or("setBreakpoints returned fewer than two resolved lines")?;
+    if frame_line != expected_line {
+        return Err(format!(
+            "second stopped frame is not the admitted breakpoint: thread_id={}, frame_id={}, source={source_path:?}, line={frame_line}, expected_line={expected_line}",
+            second_stop.thread_id, frame_id
+        ));
+    }
+    assert_source_path_matches(&source_path, &script_path)?;
+    if frame_id == first_frame_id {
+        return Err(format!(
+            "second stopped generation reused the first frame id {frame_id}; stale-frame control is not valid"
+        ));
+    }
+    assert_stale_frame_has_no_scopes(&mut session, first_frame_id)?;
     // #10563: a live frame advertises Locals (plus Arguments); Globals is not
     // advertised, so the session metrics measure the Locals enumeration.
-    assert_wrong_frame_has_no_scopes(&mut session, frame_id)?;
     let locals_ref = locals_scope_ref_with_authority(&mut session, stop.thread_id, frame_id)?;
     let locals = session.variables(locals_ref)?;
 
