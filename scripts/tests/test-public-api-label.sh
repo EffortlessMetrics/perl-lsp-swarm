@@ -23,6 +23,9 @@ case "${1:-}:${2:-}" in
     exit 0
     ;;
   label:list)
+    if [[ "${FAKE_GH_MODE:-existing}" == "missing" ]]; then
+      exit 0
+    fi
     # The existing label is intentionally stale; the script must edit it.
     printf 'ci:public-api\n'
     ;;
@@ -34,6 +37,10 @@ case "${1:-}:${2:-}" in
     printf '%s\t%s\t%s\n' "${3}" "${5}" "${7}" > "${FAKE_GH_STATE}"
     ;;
   label:create)
+    if [[ "${3:-}" == "ci:public-api" ]]; then
+      [[ "${4:-}" == "--color" && "${5:-}" == "0052cc" ]] || exit 6
+      [[ "${6:-}" == "--description" && "${7:-}" == "Run public API surface validation" ]] || exit 7
+    fi
     printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
     ;;
   *)
@@ -57,3 +64,18 @@ if grep -Fq -- 'label create ci:public-api' "${LOG}"; then
 fi
 
 echo 'PASS stale public API label metadata is repaired with gh label edit'
+
+rm -f "${LOG}" "${STATE}"
+PATH="${FAKE_BIN}:${PATH}" \
+  FAKE_GH_LOG="${LOG}" \
+  FAKE_GH_STATE="${STATE}" \
+  FAKE_GH_MODE=missing \
+  bash "${REPO_ROOT}/scripts/gh/ensure-labels.sh" >/dev/null
+
+grep -Fqx -- 'label create ci:public-api --color 0052cc --description Run public API surface validation' "${LOG}"
+if [[ -e "${STATE}" ]]; then
+  echo 'FAIL missing public API label unexpectedly used edit state' >&2
+  exit 1
+fi
+
+echo 'PASS missing public API label is created with governed metadata'
