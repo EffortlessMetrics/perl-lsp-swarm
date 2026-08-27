@@ -104,13 +104,15 @@ function result(
 }
 
 type ParsedVersion = { major: number; minor: number; patch: number; prerelease: string[] };
-const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+const SEMVER =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
 function parseVersion(value: string): ParsedVersion | null {
   const match = SEMVER.exec(value);
   if (!match) return null;
   const prerelease = match[4]?.split('.') ?? [];
-  if (prerelease.some((part) => /^\d+$/.test(part) && part.length > 1 && part.startsWith('0'))) return null;
+  if (prerelease.some((part) => /^\d+$/.test(part) && part.length > 1 && part.startsWith('0')))
+    return null;
   return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), prerelease };
 }
 
@@ -124,9 +126,17 @@ function compareVersion(left: ParsedVersion, right: ParsedVersion): number {
     if (a !== b) return a < b ? -1 : 1;
   }
   if (left.prerelease.length === 0 || right.prerelease.length === 0) {
-    return left.prerelease.length === right.prerelease.length ? 0 : left.prerelease.length === 0 ? 1 : -1;
+    return left.prerelease.length === right.prerelease.length
+      ? 0
+      : left.prerelease.length === 0
+        ? 1
+        : -1;
   }
-  for (let index = 0; index < Math.max(left.prerelease.length, right.prerelease.length); index += 1) {
+  for (
+    let index = 0;
+    index < Math.max(left.prerelease.length, right.prerelease.length);
+    index += 1
+  ) {
     const a = left.prerelease[index];
     const b = right.prerelease[index];
     if (a === undefined || b === undefined) return a === undefined ? -1 : 1;

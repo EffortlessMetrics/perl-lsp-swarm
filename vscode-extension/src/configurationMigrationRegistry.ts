@@ -213,9 +213,7 @@ export function validateMigrationRegistry(registry: ConfigurationMigrationRegist
       row.compatibility_window.kind !== 'no_expiry' &&
       row.compatibility_window.post_expiry_disposition !== 'invalid'
     ) {
-      errors.push(
-        `unsupported migration must remain invalid after expiry: ${row.migration_id}`,
-      );
+      errors.push(`unsupported migration must remain invalid after expiry: ${row.migration_id}`);
     }
     if (row.installed_proof_requirement.length === 0) {
       errors.push(`migration must define installed proof requirement: ${row.migration_id}`);
