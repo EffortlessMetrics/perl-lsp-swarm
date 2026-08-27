@@ -34,10 +34,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::fs;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ci_route_plan::{
     Applicability, CI_ROUTE_PLAN_SCHEMA, CiRoutePlanV1, LifecycleDisposition, PolicyRole,
@@ -136,6 +133,11 @@ pub struct PrerequisiteEvidence {
 
 /// Child process terminal observation, verbatim from the runner. A signal /
 /// timeout kill stays visibly distinct from a clean exit here.
+///
+/// `in_process` marks a gate the runner executed in its own process
+/// (internal task dispatch): there was no child process, so `exit_code`
+/// stays `None` and process-terminal facts (signal/timeout/cancel) cannot
+/// coexist with it — the validator refuses that shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChildObservation {
@@ -153,6 +155,8 @@ pub struct ChildObservation {
     pub signal: Option<String>,
     pub timed_out: bool,
     pub cancelled: bool,
+    #[serde(default)]
+    pub in_process: bool,
 }
 
 /// Timing observation in UNIX milliseconds.
@@ -237,12 +241,30 @@ pub enum RoutedReaderGateStatus {
 #[serde(deny_unknown_fields)]
 pub struct RunObservation {
     pub runner_status: RoutedReaderGateStatus,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub hosted: Option<HostedIdentity>,
+    /// Pre-command prerequisite evidence. `None` means the runner could not
+    /// observe prerequisite state at all (never-started commands), which the
+    /// builder records as `Missing`, never as an assumed-ready fact.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub prerequisites: Option<PrerequisiteEvidence>,
     pub command_started: bool,
     pub child: ChildObservation,
     pub timing: ObservationTiming,
     pub artifacts: Vec<ArtifactRef>,
+    /// Named receipt/reporting identities that were expected for a completed
+    /// command but are absent or unreadable. Non-empty forces the reporting
+    /// plane below success; it never alters the product plane.
+    #[serde(default)]
+    pub receipt_shortfall: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +331,11 @@ pub struct RoutedGateResultV1 {
     pub command_started: bool,
     pub child: ChildObservation,
     pub timing: ObservationTiming,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub hosted: Option<HostedIdentity>,
     pub product: PlaneOutcome,
     pub instrument: PlaneOutcome,
@@ -318,7 +345,21 @@ pub struct RoutedGateResultV1 {
     /// Domain-separated SHA-256 of the canonical semantic projection:
     /// `SHA-256("routed_gate_result.v1\0" || bytes)`; recomputed and compared
     /// at validation, never part of its own preimage.
+    #[serde(deserialize_with = "reject_null_fingerprint")]
     pub result_fingerprint: String,
+}
+
+/// Explicit null for the fingerprint (or any non-optional field) is not a
+/// canonical spelling; fail closed at the deserializer.
+fn reject_null_fingerprint<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    match value {
+        Some(text) => Ok(text),
+        None => Err(serde::de::Error::custom("explicit null is not a canonical spelling")),
+    }
 }
 
 impl RoutedGateResultV1 {
@@ -534,7 +575,20 @@ pub fn build_routed_result(
             RoutedReaderGateStatus::Timeout => TerminalOutcome::Timeout,
             RoutedReaderGateStatus::CancelledAfterStart => TerminalOutcome::Cancelled,
             RoutedReaderGateStatus::Pass => {
-                if observation.child.exit_code == Some(0) && observation.child.signal.is_none() {
+                // A clean pass is either a child process exiting zero or an
+                // in-process gate with no process facts at all (review
+                // thread 3871822391: internal xtask dispatch never carries
+                // an exit code); anything else refuses to mint success.
+                let clean_process = observation.child.exit_code == Some(0)
+                    && observation.child.signal.is_none()
+                    && !observation.child.in_process;
+                let clean_in_process = observation.child.in_process
+                    && observation.child.exit_code.is_none()
+                    && observation.child.signal.is_none();
+                if (clean_process || clean_in_process)
+                    && !observation.child.timed_out
+                    && !observation.child.cancelled
+                {
                     TerminalOutcome::Success
                 } else {
                     return Err(
@@ -547,6 +601,37 @@ pub fn build_routed_result(
             // (including zero-exit free-form failures); the raw child fact
             // stays attached either way.
             RoutedReaderGateStatus::Fail => TerminalOutcome::Failure,
+        }
+    };
+
+    // --- reporting plane --------------------------------------------------
+    // The result artifact's own publication is this invocation's return
+    // contract (publish durably or fail loudly), not a field in the bytes —
+    // the fingerprint cannot cover its own write. The reporting plane
+    // records the run's receipt/reporting instruments observed before
+    // sealing (review threads 3871822398/3871822416).
+    let reporting = if !observation.command_started {
+        PlaneOutcome {
+            outcome: TerminalOutcome::NotProven,
+            detail: "command never started; no run reporting was produced".to_string(),
+        }
+    } else if !observation.receipt_shortfall.is_empty() {
+        PlaneOutcome {
+            outcome: TerminalOutcome::Missing,
+            detail: format!(
+                "missing receipt evidence: {}",
+                observation.receipt_shortfall.join("; ")
+            ),
+        }
+    } else if let Some(log) = observation.artifacts.iter().find(|artifact| artifact.role == "log") {
+        PlaneOutcome {
+            outcome: TerminalOutcome::Success,
+            detail: format!("gate log bound: {}", log.path),
+        }
+    } else {
+        PlaneOutcome {
+            outcome: TerminalOutcome::NotProven,
+            detail: "no bounded receipt identity supplied with the observation".to_string(),
         }
     };
 
@@ -589,18 +674,9 @@ pub fn build_routed_result(
         hosted: observation.hosted.clone(),
         product: PlaneOutcome { outcome: product_outcome, detail: product_detail(product_outcome) },
         instrument: PlaneOutcome { outcome: instrument_outcome, detail: instrument_detail },
-        // Reporting truth arrives only from actual publication attempts;
-        // until then the run itself asserts nothing about reporting.
-        reporting: PlaneOutcome {
-            outcome: TerminalOutcome::NotProven,
-            detail: "no reporting observation supplied with the execution".to_string(),
-        },
+        reporting,
         artifacts: observation.artifacts.clone(),
-        focused_reproduce_command: build_reproduce_command(
-            &plan.requested_profile,
-            gate_id,
-            &plan.subject.head_sha,
-        ),
+        focused_reproduce_command: build_reproduce_command(&row.native_tier, gate_id),
         result_fingerprint: String::new(),
     };
     result.result_fingerprint = result.semantic_fingerprint_of()?;
@@ -674,10 +750,14 @@ fn check_timing(timing: &ObservationTiming) -> Result<(), String> {
     }
 }
 
-fn build_reproduce_command(profile: &str, gate_id: &str, head_sha: &str) -> String {
-    format!(
-        "cargo xtask ci-route-plan explain --profile {profile} --gate {gate_id} --at {head_sha}"
-    )
+/// Invocable focused reproduction of the row's gate execution (review
+/// thread 3871822422). The plan spells native tiers in snake_case while the
+/// `gates` CLI spells them kebab-case, so the command is emitted in the CLI
+/// spelling; `cargo xtask gates --tier <tier> --gate <gate>` re-runs exactly
+/// this row's gate.
+fn build_reproduce_command(native_tier: &str, gate_id: &str) -> String {
+    let tier = native_tier.replace('_', "-");
+    format!("cargo xtask gates --tier {tier} --gate {gate_id}")
 }
 
 // ---------------------------------------------------------------------------
@@ -743,6 +823,18 @@ fn validate_hosted_identity(hosted: Option<&HostedIdentity>) -> Result<(), Strin
         if hosted.run_id.is_none() {
             return Err("hosted identity without a run id binds nothing".to_string());
         }
+        // A hosted result must bind the claimed identity set; a partial
+        // record (run id without workflow/job) contradicts the
+        // workflow/job/run/attempt binding contract (review thread
+        // 3872200290). `matrix` stays optional: a non-matrix job genuinely
+        // has no matrix context, and absence is the honest spelling.
+        if hosted.workflow.is_none() || hosted.job.is_none() {
+            return Err(
+                "hosted identity must bind workflow, job, run id, and run attempt together; \
+                 a partial ambient GitHub environment cannot be recorded as hosted evidence"
+                    .to_string(),
+            );
+        }
     }
     Ok(())
 }
@@ -781,8 +873,16 @@ fn validate_plane_honesty(result: &RoutedGateResultV1) -> Result<(), String> {
 
     match result.product.outcome {
         TerminalOutcome::Success => {
-            if result.child.exit_code != Some(0) || result.child.signal.is_some() {
-                return Err("success requires a clean zero exit and no signal".to_string());
+            let clean_process = result.child.exit_code == Some(0) && result.child.signal.is_none();
+            let clean_in_process = result.child.in_process
+                && result.child.exit_code.is_none()
+                && result.child.signal.is_none();
+            if !(clean_process || clean_in_process) {
+                return Err(
+                    "success requires a clean zero exit (or an in-process execution with no \
+                     process facts) and no signal"
+                        .to_string(),
+                );
             }
         }
         TerminalOutcome::Timeout => {
@@ -807,13 +907,27 @@ fn validate_plane_honesty(result: &RoutedGateResultV1) -> Result<(), String> {
         other => {
             // Missing/stale/not-proven/instrument-only products still must
             // not ride on a settled child that claims clean success.
-            if result.child.exit_code == Some(0) && result.child.signal.is_none() {
+            let clean_process = result.child.exit_code == Some(0) && result.child.signal.is_none();
+            let clean_in_process = result.child.in_process
+                && result.child.exit_code.is_none()
+                && result.child.signal.is_none();
+            if clean_process || clean_in_process {
                 return Err(format!(
-                    "non-verdict product outcome {} cannot coexist with a clean zero exit",
+                    "non-verdict product outcome {} cannot coexist with a clean exit",
                     other.as_str()
                 ));
             }
         }
+    }
+    // An in-process gate has no child process: process-terminal facts cannot
+    // coexist with it (review thread 3871822391).
+    if result.child.in_process
+        && (result.child.exit_code.is_some()
+            || result.child.signal.is_some()
+            || result.child.timed_out
+            || result.child.cancelled)
+    {
+        return Err("in-process execution cannot carry child-process terminal facts".to_string());
     }
     Ok(())
 }
@@ -827,76 +941,30 @@ fn is_hex_sha256(value: &str) -> bool {
 // Durable publication
 // ---------------------------------------------------------------------------
 
-/// Publish one result as a unique temporary artifact, flush completely,
-/// atomically rename into place, then read back and compare. Any partial
-/// write, sync/rename/read-back failure returns explicit non-success and
-/// removes the temporary artifact; no valid-looking current result survives
-/// a failed publication.
+/// Publish one result through the shared single-writer durable substrate
+/// ([`crate::durable_publish`], review thread 3872200294): unique
+/// create-new temporary file, complete write + flush + sync, temp read-back
+/// verification, atomic rename, POSIX directory sync, final read-back. The
+/// final name is content-addressed (`<gate>-<fingerprint-prefix>.json`), so
+/// repeat publication of identical bytes is idempotent while anything else
+/// lands under a different name instead of clobbering history.
 ///
-/// The final name is content-addressed (`<gate>-<fingerprint-prefix>.json`),
-/// so repeat publication of identical bytes is idempotent while anything
-/// else lands under a different name instead of clobbering history.
+/// Any substrate refusal is a typed error; a failing invocation never
+/// leaves a valid-looking current result under the requested name.
 pub fn publish_routed_receipt(
     directory: &Path,
     result: &RoutedGateResultV1,
 ) -> Result<PathBuf, String> {
     let bytes = result.canonical_json()?;
-    fs::create_dir_all(directory)
-        .map_err(|error| format!("receipt directory {}: {error}", directory.display()))?;
-
     let stem = sanitize_component(&result.row.gate_id);
     let short_fingerprint = result.result_fingerprint.get(..16).unwrap_or("").to_string();
     if short_fingerprint.len() < 16 {
         return Err("result fingerprint too short to publish".to_string());
     }
     let destination = directory.join(format!("{stem}-{short_fingerprint}.json"));
-
-    let temp_path = directory.join(unique_temp_name(&stem));
-    match write_flush_promote(&temp_path, &destination, &bytes) {
-        Ok(()) => Ok(destination),
-        // Pre-promotion failure: only this writer's temporary is provably
-        // ours to remove; anything at the destination predates this attempt.
-        Err(PromotionFailure::BeforePromotion(error)) => {
-            let _ = fs::remove_file(&temp_path);
-            Err(error)
-        }
-        // Post-promotion failure (read-back): the destination may already
-        // hold this writer's promoted bytes or a concurrent writer's
-        // completed artifact; never delete it — the typed refusal states the
-        // artifact could not be verified by this invocation.
-        Err(PromotionFailure::AfterPromotion(error)) => Err(error),
-    }
-}
-
-enum PromotionFailure {
-    BeforePromotion(String),
-    AfterPromotion(String),
-}
-
-fn write_flush_promote(
-    temp_path: &Path,
-    destination: &Path,
-    bytes: &[u8],
-) -> Result<(), PromotionFailure> {
-    let before = |error: String| PromotionFailure::BeforePromotion(error);
-    let after = |error: String| PromotionFailure::AfterPromotion(error);
-
-    let mut file = fs::File::create(temp_path)
-        .map_err(|error| before(format!("temporary artifact {}: {error}", temp_path.display())))?;
-    file.write_all(bytes)
-        .map_err(|error| before(format!("partial write into {}: {error}", temp_path.display())))?;
-    file.sync_all()
-        .map_err(|error| before(format!("flush failed for {}: {error}", temp_path.display())))?;
-    drop(file);
-    fs::rename(temp_path, destination)
-        .map_err(|error| after(format!("atomic rename onto {}: {error}", destination.display())))?;
-    let read_back = fs::read(destination).map_err(|error| {
-        after(format!("read-back failed for {}: {error}", destination.display()))
-    })?;
-    if read_back != bytes {
-        return Err(after("published receipt read-back differs from encoded bytes".to_string()));
-    }
-    Ok(())
+    crate::durable_publish::publish_atomically(&destination, &bytes)
+        .map_err(|error| error.to_string())?;
+    Ok(destination)
 }
 
 fn sanitize_component(value: &str) -> String {
@@ -904,17 +972,6 @@ fn sanitize_component(value: &str) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
         .collect()
-}
-
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-fn unique_temp_name(stem: &str) -> String {
-    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    format!(".tmp-{stem}-{nanos}-{sequence}.json")
 }
 
 /// Lowercase hex encoding (mirrors the #10179 encoder's fallback spelling).

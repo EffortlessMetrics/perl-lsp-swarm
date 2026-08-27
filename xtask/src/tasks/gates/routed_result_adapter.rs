@@ -4,13 +4,36 @@
 //! Everything here projects facts the runner already observed ([`GateResult`],
 //! gate logs, hosted environment variables); no command is re-run, no log text
 //! is reinterpreted into a verdict, and no plan identity is re-derived — the
-//! published `ci_route_plan.v1` (#10179) is consumed and validated verbatim
-//! before any work starts.
+//! published `ci_route_plan.v1` (#10179) is consumed and validated verbatim,
+//! and its subject + row execution identity are bound to the actual
+//! invocation before any gate runs.
 //!
 //! Offline-by-default wiring lives in `GateRunnerConfig::route_plan_path`:
 //! unset means unchanged legacy behavior (workflow topology is untouched);
 //! set means one normalized, durably published result per executed planned
 //! `run` row under `target/receipts/routed-results/`.
+//!
+//! # Runner-surface support boundary (review thread 3872200285)
+//!
+//! The typed domain covers the issue's full closed outcome vocabulary
+//! (dependency-blocked, signal, cancellation, missing/stale included), but
+//! this live adapter can only emit classes the current runner surface
+//! actually observes:
+//!
+//! - `GateResult` records exit codes, the runner's timeout flag, and
+//!   never-started (`error`/`skip`) statuses — those bind directly;
+//! - the runner observes no signal identities, has no cancellation path,
+//!   and has no dependency gating, so `signal` is `None`, `cancelled` is
+//!   `false`, and dependency maps are empty on every live record: these are
+//!   the runner's true observations, not fabricated verdicts;
+//! - a completed command implies its prerequisites were ready (the process
+//!   ran), so `Ready` is recorded only for started commands; a
+//!   never-started command carries no prerequisite evidence at all rather
+//!   than an assumed-ready fact;
+//! - when structured executor observation (#11618/#9548) lands, this
+//!   adapter binds those fields; until then the narrower live claim is
+//!   explicit here and in the PR contract, and the schema stays
+//!   incapable of encoding the mis-attributions the issue forbids.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -18,11 +41,11 @@ use std::path::Path;
 use color_eyre::eyre::{Context as _, Result, bail, eyre};
 use sha2::{Digest as _, Sha256};
 
-use xtask::ci_route_plan::CiRoutePlanV1;
+use xtask::ci_route_plan::{Applicability, CiRoutePlanV1, PlannedOutcome};
 use xtask::routed_result::{
-    ArtifactRef, ChildObservation, HostedIdentity, ObservationTiming, PlaneOutcome,
-    PrerequisiteEvidence, PrerequisiteState, RoutedGateResultV1, RoutedReaderGateStatus,
-    RunObservation, TerminalOutcome, build_routed_result, publish_routed_receipt,
+    ArtifactRef, ChildObservation, HostedIdentity, ObservationTiming, PrerequisiteEvidence,
+    PrerequisiteState, RoutedGateResultV1, RoutedReaderGateStatus, RunObservation,
+    build_routed_result, publish_routed_receipt,
 };
 
 use super::{GateDefinition, GateResult};
@@ -42,18 +65,29 @@ pub(super) fn load_compiled_plan(path: &Path) -> Result<CiRoutePlanV1> {
     Ok(plan)
 }
 
-/// Verify the supplied plan actually covers the gates this invocation will
-/// run: every applicable planned `run` row is among the executed selections,
-/// otherwise a planned row silently produces no result. Fails closed before
-/// any gate executes.
+/// Verify the supplied plan exactly covers the gates this invocation will
+/// run, in both directions, before any gate executes (review thread
+/// 3871822409): every applicable planned `run` row is among the executed
+/// selections, every selected gate has an applicable planned `run` row, and
+/// each matched row's execution identity (command, timeout policy) agrees
+/// with the actually loaded gate policy. An untampered but stale plan is
+/// refused here instead of publishing a result attributed to a different
+/// command or timeout (review thread 3871822396).
 pub(super) fn ensure_plan_covers_selection(
     plan: &CiRoutePlanV1,
-    selected_gate_names: &[&str],
+    selected_gates: &[&GateDefinition],
 ) -> Result<()> {
-    for row in &plan.rows {
-        let is_run_row = matches!(row.outcome, xtask::ci_route_plan::PlannedOutcome::Run { .. })
-            && row.applicability == xtask::ci_route_plan::Applicability::Applicable;
-        if is_run_row && !selected_gate_names.contains(&row.gate_id.as_str()) {
+    let planned_run_rows: Vec<&xtask::ci_route_plan::RoutePlanRow> = plan
+        .rows
+        .iter()
+        .filter(|row| {
+            matches!(row.outcome, PlannedOutcome::Run { .. })
+                && row.applicability == Applicability::Applicable
+        })
+        .collect();
+
+    for row in &planned_run_rows {
+        if !selected_gates.iter().any(|gate| gate.name == row.gate_id) {
             bail!(
                 "route plan marks gate {:?} as an applicable run row but the \
                  runner did not select it; refusing to run against a partially \
@@ -62,30 +96,120 @@ pub(super) fn ensure_plan_covers_selection(
             );
         }
     }
+    for gate in selected_gates {
+        let Some(row) = planned_run_rows.iter().find(|row| row.gate_id == gate.name) else {
+            bail!(
+                "runner selects gate {:?} but the plan has no applicable run row for it \
+                 (absent from the denominator, scoped-noop, quarantined, or error row); \
+                 plan mismatch is refused before any gate runs",
+                gate.name
+            );
+        };
+        let PlannedOutcome::Run { command, timeout_seconds, .. } = &row.outcome else {
+            continue;
+        };
+        if gate.command.trim() != command.trim() || gate.timeout_seconds != *timeout_seconds {
+            bail!(
+                "plan row execution identity for gate {:?} disagrees with the loaded gate \
+                 policy (command {:?}/{}s vs planned {:?}/{}s); \
+                 refusing a stale plan before execution",
+                gate.name,
+                gate.command.trim(),
+                gate.timeout_seconds,
+                command.trim(),
+                timeout_seconds
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Bind the plan subject to the actual invocation subject before any gate
+/// runs: a plan compiled for a different head SHA must never publish a
+/// result on this checkout (cross-SHA negative control; review thread
+/// 3871822396).
+pub(super) fn ensure_plan_subject_matches_invocation(
+    plan: &CiRoutePlanV1,
+    actual_head_sha: &str,
+) -> Result<()> {
+    if plan.subject.head_sha != actual_head_sha {
+        bail!(
+            "route plan subject head {} does not match this invocation's HEAD {}; \
+             refusing to execute against a foreign-subject plan",
+            plan.subject.head_sha,
+            actual_head_sha
+        );
+    }
     Ok(())
 }
 
 /// Hosted CI identity from the ambient GitHub Actions environment; `None`
-/// offline where inventing workflow identity would be fabrication.
-pub(super) fn collect_hosted_identity() -> Option<HostedIdentity> {
-    let run_id = std::env::var("GITHUB_RUN_ID").ok()?;
-    Some(HostedIdentity {
-        workflow: std::env::var("GITHUB_WORKFLOW").ok(),
-        job: std::env::var("GITHUB_JOB").ok(),
+/// only when no GitHub environment exists at all (offline). A partial
+/// environment (some variables present, the claimed identity set incomplete)
+/// is a typed refusal, never a silently unbound hosted record (review
+/// thread 3872200290). `GITHUB_JOB_MATRIX` stays optional: a non-matrix job
+/// genuinely has none.
+pub(super) fn collect_hosted_identity_from(
+    mut lookup: impl FnMut(&str) -> Option<String>,
+) -> Result<Option<HostedIdentity>> {
+    let workflow = lookup("GITHUB_WORKFLOW");
+    let job = lookup("GITHUB_JOB");
+    let run_id = lookup("GITHUB_RUN_ID");
+    let run_attempt = lookup("GITHUB_RUN_ATTEMPT");
+    let matrix = lookup("GITHUB_JOB_MATRIX");
+
+    if workflow.is_none() && job.is_none() && run_id.is_none() && run_attempt.is_none() {
+        return Ok(None);
+    }
+    let run_id = run_id.ok_or_else(|| {
+        eyre!(
+            "partial hosted identity environment: GITHUB_RUN_ID missing while other GitHub \
+             variables are present; refusing to normalize an unbound hosted result"
+        )
+    })?;
+    let workflow = workflow.ok_or_else(|| {
+        eyre!(
+            "partial hosted identity environment: GITHUB_WORKFLOW missing while other GitHub \
+             variables are present; refusing to normalize an unbound hosted result"
+        )
+    })?;
+    let job = job.ok_or_else(|| {
+        eyre!(
+            "partial hosted identity environment: GITHUB_JOB missing while other GitHub \
+             variables are present; refusing to normalize an unbound hosted result"
+        )
+    })?;
+    let run_attempt: u64 = run_attempt
+        .unwrap_or_default()
+        .parse()
+        .map_err(|error| eyre!("GITHUB_RUN_ATTEMPT is not a real attempt identity: {error}"))?;
+    if run_attempt == 0 {
+        bail!("partial hosted identity environment: GITHUB_RUN_ATTEMPT is not a positive attempt");
+    }
+    Ok(Some(HostedIdentity {
+        workflow: Some(workflow),
+        job: Some(job),
         run_id: Some(run_id),
-        run_attempt: std::env::var("GITHUB_RUN_ATTEMPT")
-            .ok()
-            .and_then(|attempt| attempt.parse().ok())
-            .unwrap_or(0),
-        matrix: std::env::var("GITHUB_JOB_MATRIX").ok(),
-    })
+        run_attempt,
+        matrix,
+    }))
+}
+
+/// Ambient-environment entry point used by the runner wiring.
+pub(super) fn collect_hosted_identity() -> Result<Option<HostedIdentity>> {
+    collect_hosted_identity_from(|name| std::env::var(name).ok())
 }
 
 /// Project one executed gate's runner facts into a typed observation. The
-/// projection preserves the runner's own distinctions exactly:
+/// projection preserves the runner's own distinctions exactly (see the
+/// module-level support boundary):
 ///
 /// - `error` means the command never produced a process result
-///   (`exit_code: None`) — the #10160 never-started class;
+///   (`exit_code: None`) — the #10160 never-started class; no prerequisite
+///   evidence is invented for it;
+/// - a `pass`/`fail` with `exit_code: None` is the runner's in-process
+///   dispatch (internal gates never carry an exit code), recorded as
+///   `in_process` instead of fabricating a process exit;
 /// - `timeout` keeps its dedicated flag so it cannot flatten into failure;
 /// - `skip` on an applicable run row stays honest as never-started
 ///   instrument evidence (a zero-exit free-form skip is not success and not
@@ -108,6 +232,10 @@ pub(super) fn observation_from_gate_result(
                 signal: None,
                 timed_out: false,
                 cancelled: false,
+                // In-process dispatch is the only producer of pass/fail
+                // without an exit code (`ShellExecutionResult.exit_code`
+                // is always an i32 for command gates).
+                in_process: result.exit_code.is_none(),
             },
         ),
         "fail" => (
@@ -118,6 +246,7 @@ pub(super) fn observation_from_gate_result(
                 signal: None,
                 timed_out: false,
                 cancelled: false,
+                in_process: result.exit_code.is_none(),
             },
         ),
         "timeout" => (
@@ -128,6 +257,7 @@ pub(super) fn observation_from_gate_result(
                 signal: None,
                 timed_out: true,
                 cancelled: false,
+                in_process: false,
             },
         ),
         // "error" (spawn/setup never produced a process result) and any
@@ -135,7 +265,13 @@ pub(super) fn observation_from_gate_result(
         _ => (
             RoutedReaderGateStatus::SpawnErrorBeforeStart,
             false,
-            ChildObservation { exit_code: None, signal: None, timed_out: false, cancelled: false },
+            ChildObservation {
+                exit_code: None,
+                signal: None,
+                timed_out: false,
+                cancelled: false,
+                in_process: false,
+            },
         ),
     };
 
@@ -152,35 +288,49 @@ pub(super) fn observation_from_gate_result(
         ObservationTiming { started_at_unix_ms: None, ended_at_unix_ms: None, duration_ms: 0 }
     };
 
-    let mut prerequisites_missing: Vec<String> = Vec::new();
-    let artifacts = project_log_artifact(result, receipt_root, &mut prerequisites_missing);
+    // Receipt/reporting evidence is independent of the pre-command
+    // prerequisite state: a missing or unreadable log on a completed command
+    // must degrade the reporting plane, never masquerade as a prerequisite
+    // fact or disappear behind an unconditional instrument success (review
+    // thread 3871822416).
+    let mut receipt_shortfall: Vec<String> = Vec::new();
+    let artifacts = project_log_artifact(result, receipt_root, &mut receipt_shortfall);
 
     RunObservation {
         runner_status,
         hosted,
-        prerequisites: Some(PrerequisiteEvidence {
-            state: PrerequisiteState::Ready,
-            missing_artifacts: prerequisites_missing,
-            dependency_gates: BTreeMap::new(),
-        }),
+        // A started command implies its prerequisites were ready (the
+        // process ran); a never-started command carries no prerequisite
+        // evidence rather than an assumed-ready fact (review thread
+        // 3872200285).
+        prerequisites: if command_started {
+            Some(PrerequisiteEvidence {
+                state: PrerequisiteState::Ready,
+                missing_artifacts: Vec::new(),
+                dependency_gates: BTreeMap::new(),
+            })
+        } else {
+            None
+        },
         command_started,
         child,
         timing,
         artifacts,
+        receipt_shortfall,
     }
 }
 
 fn project_log_artifact(
     result: &GateResult,
     receipt_root: &Path,
-    prerequisites_missing: &mut Vec<String>,
+    receipt_shortfall: &mut Vec<String>,
 ) -> Vec<ArtifactRef> {
     let Some(log_relative) = result.log_path.as_deref() else {
         if result.status != "skip" && result.status != "error" {
             // A settled command with no log path cannot offer bounded
             // receipt identities; the fact stays visible as missing
-            // instrument evidence rather than being papered over.
-            prerequisites_missing
+            // reporting evidence rather than being papered over.
+            receipt_shortfall
                 .push(format!("receipt log absent for completed gate {}", result.gate_name));
         }
         return Vec::new();
@@ -197,7 +347,7 @@ fn project_log_artifact(
             }]
         }
         Err(_) => {
-            prerequisites_missing
+            receipt_shortfall
                 .push(format!("receipt log unreadable: target/receipts/{log_relative}"));
             Vec::new()
         }
@@ -205,9 +355,15 @@ fn project_log_artifact(
 }
 
 /// Build, validate, and durably publish the normalized result for one
-/// executed planned `run` row. Publication or validation non-success returns
-/// a typed error; the atomic publisher guarantees no valid-looking partial
-/// result survives such a failure.
+/// executed planned `run` row.
+///
+/// The reporting plane is sealed into the bytes before publication (it
+/// records the run's observed receipt instruments), so there is exactly one
+/// publication of exactly the sealed bytes through the shared durable
+/// substrate; no pre-seal artifact can survive as the sole fresh record
+/// (review thread 3871822398). A publication that never succeeds surfaces
+/// as a typed error so the gates command fails loudly instead of continuing
+/// with no durable result (review thread 3871822403).
 pub(super) fn emit_planned_run_row_result(
     plan: &CiRoutePlanV1,
     gate: &GateDefinition,
@@ -217,34 +373,14 @@ pub(super) fn emit_planned_run_row_result(
     hosted: Option<HostedIdentity>,
 ) -> Result<RoutedGateResultV1> {
     let observation = observation_from_gate_result(gate, result, receipt_root, hosted);
-    let mut built = build_routed_result(plan, &gate.name, observation)
+    let built = build_routed_result(plan, &gate.name, observation)
         .map_err(|error| eyre!("result normalization refused for {}: {error}", gate.name))?;
-    built.reporting = record_publication(output_dir, &built)?;
-    // Reporting truth changed after sealing: re-seal with the publication
-    // observation attached so the stored fingerprint covers it.
-    built.result_fingerprint =
-        built.semantic_fingerprint_of().map_err(|error| eyre!("re-sealing failed: {error}"))?;
-    if built.reporting.outcome != TerminalOutcome::Success {
-        // Re-publish once so the durable artifact itself carries the
-        // reporting failure instead of leaving pre-publication bytes behind.
-        record_publication(output_dir, &built)?;
-    }
-    built.validate().map_err(|error| eyre!("published result failed validation: {error}"))?;
+    // canonical_json validates before any filesystem effect, then the
+    // substrate guarantees the destination holds exactly these bytes or the
+    // error propagates.
+    publish_routed_receipt(output_dir, &built)
+        .map_err(|error| eyre!("durable publication refused for {}: {error}", gate.name))?;
     Ok(built)
-}
-
-/// One publication attempt returning the resulting reporting plane.
-fn record_publication(output_dir: &Path, candidate: &RoutedGateResultV1) -> Result<PlaneOutcome> {
-    match publish_routed_receipt(output_dir, candidate) {
-        Ok(destination) => Ok(PlaneOutcome {
-            outcome: TerminalOutcome::Success,
-            detail: destination.display().to_string(),
-        }),
-        Err(publication_error) => Ok(PlaneOutcome {
-            outcome: TerminalOutcome::InstrumentFailure,
-            detail: publication_error,
-        }),
-    }
 }
 
 fn unix_millis_now() -> Option<i64> {
@@ -277,6 +413,7 @@ mod fixtures {
         RouteDispositionInput, RouteExecutionIdentity, RouteProfileExpansionInput,
         RouteSelectionEvidence, RouteSubjectRef, SelectorPlacement, SelectorProof, SelectorRole,
     };
+    use xtask::routed_result::TerminalOutcome;
 
     const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -371,10 +508,52 @@ mod fixtures {
         assert!(matches!(built.product.outcome, TerminalOutcome::Success));
         assert_eq!(built.row.command, "cargo fmt --check");
         assert_eq!(built.artifacts.len(), 1);
+
+        // The durable artifact must be the resealed record itself: parse the
+        // published bytes back and require the reporting plane on disk to be
+        // the same fact the returned object carries (review thread
+        // 3871822398 — the pre-reseal bytes must never survive as the sole
+        // fresh artifact).
+        let published: Vec<_> = std::fs::read_dir(dir.path().join("routed"))
+            .expect("output dir")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .collect();
+        assert_eq!(published.len(), 1, "exactly one normalized result per run: {published:?}");
+        let on_disk: RoutedGateResultV1 =
+            serde_json::from_slice(&std::fs::read(&published[0]).expect("artifact bytes"))
+                .expect("artifact parses");
+        on_disk.validate().expect("published artifact validates");
+        assert_eq!(on_disk.result_fingerprint, built.result_fingerprint);
+        assert!(
+            matches!(on_disk.reporting.outcome, TerminalOutcome::Success),
+            "durable artifact must carry the sealed reporting success, got {:?}",
+            on_disk.reporting
+        );
     }
 
     #[test]
-    fn execution_error_is_never_started_instrument_failure() {
+    fn publication_failure_fails_the_invocation() {
+        // A publication that can never succeed must surface as an error from
+        // the emission path so the gates command fails loudly instead of
+        // continuing with no durable result (review thread 3871822403).
+        let plan = compiled_fixture();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let receipt_root = dir.path().join("target/receipts");
+        std::fs::create_dir_all(&receipt_root).expect("receipts");
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"a file, not a directory").expect("blocker");
+        let output_dir = blocker.join("nested").join("routed-results");
+
+        let gate = fmt_gate_definition();
+        let result = passing_result();
+        let refused =
+            emit_planned_run_row_result(&plan, &gate, &result, &receipt_root, &output_dir, None);
+        assert!(refused.is_err(), "unpublishable result must fail the invocation");
+    }
+
+    #[test]
+    fn execution_error_is_never_started_with_no_invented_prerequisites() {
         let plan = compiled_fixture();
         let dir = tempfile::tempdir().expect("tempdir");
         let receipt_root = dir.path().join("target/receipts");
@@ -393,16 +572,86 @@ mod fixtures {
         .expect("emission succeeds honestly");
         assert!(matches!(built.product.outcome, TerminalOutcome::BlockedNotProven));
         assert!(!built.command_started);
-        assert!(matches!(built.instrument.outcome, TerminalOutcome::InstrumentFailure));
+        // No prerequisite evidence is invented for a never-started command:
+        // the builder records Missing, never an assumed-ready fact (review
+        // thread 3872200285).
+        assert!(matches!(built.prerequisites.state, PrerequisiteState::Missing));
+        assert!(matches!(built.instrument.outcome, TerminalOutcome::Missing));
     }
 
     #[test]
-    fn plan_not_covering_a_selected_run_row_is_refused_before_running() {
+    fn hosted_identity_requires_the_complete_claimed_binding_set() {
+        // Review thread 3872200290: a partial ambient GitHub environment is
+        // a typed refusal, never a silently unbound hosted record.
+        use std::collections::HashMap;
+        let full: HashMap<String, String> = HashMap::from([
+            ("GITHUB_WORKFLOW".to_string(), "PR Smoke".to_string()),
+            ("GITHUB_JOB".to_string(), "fast".to_string()),
+            ("GITHUB_RUN_ID".to_string(), "90210".to_string()),
+            ("GITHUB_RUN_ATTEMPT".to_string(), "2".to_string()),
+        ]);
+        let collected = collect_hosted_identity_from(|name| full.get(name).cloned())
+            .expect("complete environment binds");
+        let hosted = collected.expect("hosted identity present");
+        assert_eq!(hosted.run_attempt, 2);
+        assert!(hosted.matrix.is_none(), "matrix absence is legal for a non-matrix job");
+
+        let mut partial = full.clone();
+        partial.remove("GITHUB_JOB");
+        let refused = collect_hosted_identity_from(|name| partial.get(name).cloned());
+        assert!(refused.is_err(), "run id without job must refuse");
+
+        let offline = collect_hosted_identity_from(|_| None).expect("offline lookup");
+        assert!(offline.is_none(), "no GitHub environment means no hosted identity");
+    }
+
+    #[test]
+    fn plan_selection_must_match_the_plan_exactly_before_running() {
+        // Both directions refuse before any gate executes (review thread
+        // 3871822409): a plan run row the runner did not select, and a
+        // selected gate the plan does not cover with an applicable run row.
         let plan = compiled_fixture();
-        assert!(ensure_plan_covers_selection(&plan, &["fmt_gate"]).is_ok());
-        let refused = ensure_plan_covers_selection(&plan, &["other_gate"]);
-        assert!(refused.is_err());
-        assert!(refused.err().unwrap().to_string().contains("fmt_gate"));
+        let fmt_gate = fmt_gate_definition();
+        assert!(ensure_plan_covers_selection(&plan, &[&fmt_gate]).is_ok());
+
+        let other_gate = gate_definition_named("other_gate");
+        let refused_missing = ensure_plan_covers_selection(&plan, &[&other_gate]);
+        assert!(refused_missing.is_err());
+        assert!(refused_missing.err().unwrap().to_string().contains("fmt_gate"));
+
+        let refused_extra = ensure_plan_covers_selection(&plan, &[&fmt_gate, &other_gate]);
+        assert!(
+            refused_extra.is_err(),
+            "a selected gate absent from the plan denominator must refuse before execution, got {:?}",
+            refused_extra
+        );
+        assert!(refused_extra.err().unwrap().to_string().contains("other_gate"));
+    }
+
+    #[test]
+    fn plan_subject_and_row_execution_identity_bind_to_the_invocation() {
+        // A valid but stale plan must refuse before running: its subject
+        // head SHA and each row's execution identity (command/timeout) are
+        // checked against the actual invocation (review thread 3871822396).
+        let plan = compiled_fixture();
+        assert!(ensure_plan_subject_matches_invocation(&plan, SHA_A).is_ok());
+        let cross_sha = ensure_plan_subject_matches_invocation(&plan, SHA_B);
+        assert!(cross_sha.is_err(), "cross-SHA plan must refuse before execution");
+        assert!(cross_sha.err().unwrap().to_string().contains(SHA_B));
+
+        let mut stale_gate = fmt_gate_definition();
+        stale_gate.command = "cargo fmt --check --changed".to_string();
+        let stale_command = ensure_plan_covers_selection(&plan, &[&stale_gate]);
+        assert!(
+            stale_command.is_err(),
+            "a gate whose command disagrees with the plan row must refuse before execution"
+        );
+        assert!(stale_command.err().unwrap().to_string().contains("execution identity"));
+
+        let mut stale_timeout = fmt_gate_definition();
+        stale_timeout.timeout_seconds = 61;
+        let refused_timeout = ensure_plan_covers_selection(&plan, &[&stale_timeout]);
+        assert!(refused_timeout.is_err(), "a timeout-policy disagreement must refuse");
     }
 
     #[test]
@@ -419,6 +668,21 @@ mod fixtures {
         assert!(load_compiled_plan(&path).is_err(), "tampered plan must be refused");
     }
 
+    fn gate_definition_named(expected_name: &str) -> GateDefinition {
+        let gate: GateDefinition = serde_yaml_ng::from_str(
+            "name: other_gate
+tier: merge_gate
+description: fixture
+required: true
+command: cargo fmt --check
+timeout_seconds: 60
+",
+        )
+        .expect("gate definition");
+        assert_eq!(gate.name, expected_name);
+        gate
+    }
+
     fn fmt_gate_definition() -> GateDefinition {
         serde_yaml_ng::from_str(
             "name: fmt_gate\ntier: merge_gate\ndescription: fixture\nrequired: true\ncommand: cargo fmt --check\ntimeout_seconds: 60\n",
@@ -427,6 +691,9 @@ mod fixtures {
     }
 
     fn passing_result() -> GateResult {
+        // Honest for the in-process fmt gate: internal dispatch never
+        // carries an exit code, so the record must not fabricate Some(0)
+        // (review thread 3871822391).
         GateResult {
             gate_name: "fmt_gate".to_string(),
             tier: "merge_gate".to_string(),
@@ -434,13 +701,42 @@ mod fixtures {
             required: Some(true),
             duration_ms: 3500,
             command: "cargo fmt --check".to_string(),
-            exit_code: Some(0),
-            output_summary: None,
+            exit_code: None,
+            output_summary: Some("Executed internally via xtask task dispatch".to_string()),
             log_path: Some("logs/fmt_gate.log".to_string()),
             metrics: None,
             artifacts: None,
             first_failure: None,
         }
+    }
+
+    #[test]
+    fn process_pass_with_clean_exit_still_normalizes_as_success() {
+        // The command-executed path (exit code observed by the runner)
+        // stays a clean process success, not an in-process record.
+        let plan = compiled_fixture();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let receipt_root = dir.path().join("target/receipts");
+        let log_dir = receipt_root.join("logs");
+        std::fs::create_dir_all(&log_dir).expect("log dir");
+        std::fs::write(log_dir.join("fmt_gate.log"), b"unit clean").expect("log");
+
+        let gate = fmt_gate_definition();
+        let mut result = passing_result();
+        result.exit_code = Some(0);
+        result.output_summary = Some("command output".to_string());
+        let built = emit_planned_run_row_result(
+            &plan,
+            &gate,
+            &result,
+            &receipt_root,
+            &dir.path().join("routed"),
+            None,
+        )
+        .expect("emission succeeds");
+        assert!(matches!(built.product.outcome, TerminalOutcome::Success));
+        assert!(!built.child.in_process);
+        assert_eq!(built.child.exit_code, Some(0));
     }
 
     fn error_result() -> GateResult {

@@ -173,9 +173,11 @@ fn success_observation() -> RunObservation {
             signal: None,
             timed_out: false,
             cancelled: false,
+            in_process: false,
         },
         timing: timing(true),
         artifacts: Vec::new(),
+        receipt_shortfall: Vec::new(),
     }
 }
 
@@ -238,9 +240,11 @@ fn missing_binary_is_block_not_proven_without_product_verdict() {
             signal: None,
             timed_out: false,
             cancelled: false,
+            in_process: false,
         },
         timing: timing(false),
         artifacts: Vec::new(),
+        receipt_shortfall: Vec::new(),
     };
     let result =
         build_routed_result(&plan, "fmt_gate", observation).expect("blocked result builds");
@@ -277,9 +281,11 @@ fn prerequisite_failure_cannot_be_labelled_product_failure() {
             signal: None,
             timed_out: false,
             cancelled: false,
+            in_process: false,
         },
         timing: timing(true),
         artifacts: Vec::new(),
+        receipt_shortfall: Vec::new(),
     };
     assert!(
         build_routed_result(&plan, "fmt_gate", dishonest).is_err(),
@@ -304,9 +310,11 @@ fn prerequisite_failure_cannot_be_labelled_product_failure() {
             signal: None,
             timed_out: false,
             cancelled: false,
+            in_process: false,
         },
         timing: timing(false),
         artifacts: Vec::new(),
+        receipt_shortfall: Vec::new(),
     };
     let result = build_routed_result(&plan, "fmt_gate", honest).expect("honest block builds");
     result.validate().expect("honest block validates");
@@ -330,9 +338,11 @@ fn timeout_signal_cancel_stay_distinct() {
             signal: Some("SIGKILL(watchdog)".to_string()),
             timed_out: true,
             cancelled: false,
+            in_process: false,
         },
         timing: timing(true),
         artifacts: Vec::new(),
+        receipt_shortfall: Vec::new(),
     };
     let result = build_routed_result(&plan, "fmt_gate", timeout_observation).expect("timeout");
     result.validate().expect("timeout shape validates");
@@ -351,9 +361,11 @@ fn timeout_signal_cancel_stay_distinct() {
             signal: Some("SIGKILL".to_string()),
             timed_out: false,
             cancelled: false,
+            in_process: false,
         },
         timing: timing(true),
         artifacts: Vec::new(),
+        receipt_shortfall: Vec::new(),
     };
     let result = build_routed_result(&plan, "fmt_gate", flattened).expect("signal fail");
     assert!(matches!(result.product.outcome, xtask::routed_result::TerminalOutcome::Failure));
@@ -369,9 +381,11 @@ fn timeout_signal_cancel_stay_distinct() {
             signal: None,
             timed_out: false,
             cancelled: true,
+            in_process: false,
         },
         timing: timing(true),
         artifacts: Vec::new(),
+        receipt_shortfall: Vec::new(),
     };
     let result = build_routed_result(&plan, "fmt_gate", cancelled_observation).expect("cancelled");
     result.validate().expect("cancelled shape validates");
@@ -474,32 +488,304 @@ fn publication_is_durable_readback_verified_and_leave_no_temp() {
 }
 
 #[test]
-fn unsupported_runner_status_has_a_closed_vocabulary() {
+fn every_runner_status_variant_builds_a_consistent_valid_result() {
+    // Each closed-vocabulary status gets an observation that is internally
+    // consistent with it, so the builder AND validator are exercised for
+    // every variant instead of silently skipping the contradictory ones
+    // (review thread 3871805635).
     let plan = compiled_plan();
-    let variants = [
-        RoutedReaderGateStatus::Pass,
-        RoutedReaderGateStatus::Fail,
-        RoutedReaderGateStatus::Timeout,
-        RoutedReaderGateStatus::CancelledAfterStart,
-        RoutedReaderGateStatus::SpawnErrorBeforeStart,
-    ];
-    for status in variants {
-        let observation = RunObservation {
-            runner_status: status,
-            hosted: None,
-            prerequisites: Some(ready_prerequisites()),
-            command_started: true,
-            child: ChildObservation {
-                exit_code: Some(0),
-                signal: None,
-                timed_out: false,
-                cancelled: false,
+    let variants: Vec<(RoutedReaderGateStatus, RunObservation)> = vec![
+        (
+            RoutedReaderGateStatus::Pass,
+            RunObservation {
+                runner_status: RoutedReaderGateStatus::Pass,
+                hosted: None,
+                prerequisites: Some(ready_prerequisites()),
+                command_started: true,
+                child: ChildObservation {
+                    exit_code: Some(0),
+                    signal: None,
+                    timed_out: false,
+                    cancelled: false,
+                    in_process: false,
+                },
+                timing: timing(true),
+                artifacts: Vec::new(),
+                receipt_shortfall: Vec::new(),
             },
-            timing: timing(true),
-            artifacts: Vec::new(),
-        };
-        if let Ok(result) = build_routed_result(&plan, "fmt_gate", observation) {
-            result.validate().unwrap_or_else(|error| panic!("closed vocabulary outcome: {error}"));
-        }
+        ),
+        (
+            RoutedReaderGateStatus::Fail,
+            RunObservation {
+                runner_status: RoutedReaderGateStatus::Fail,
+                hosted: None,
+                prerequisites: Some(ready_prerequisites()),
+                command_started: true,
+                child: ChildObservation {
+                    exit_code: Some(1),
+                    signal: None,
+                    timed_out: false,
+                    cancelled: false,
+                    in_process: false,
+                },
+                timing: timing(true),
+                artifacts: Vec::new(),
+                receipt_shortfall: Vec::new(),
+            },
+        ),
+        (
+            RoutedReaderGateStatus::Timeout,
+            RunObservation {
+                runner_status: RoutedReaderGateStatus::Timeout,
+                hosted: None,
+                prerequisites: Some(ready_prerequisites()),
+                command_started: true,
+                child: ChildObservation {
+                    exit_code: None,
+                    signal: None,
+                    timed_out: true,
+                    cancelled: false,
+                    in_process: false,
+                },
+                timing: timing(true),
+                artifacts: Vec::new(),
+                receipt_shortfall: Vec::new(),
+            },
+        ),
+        (
+            RoutedReaderGateStatus::CancelledAfterStart,
+            RunObservation {
+                runner_status: RoutedReaderGateStatus::CancelledAfterStart,
+                hosted: None,
+                prerequisites: Some(ready_prerequisites()),
+                command_started: true,
+                child: ChildObservation {
+                    exit_code: None,
+                    signal: None,
+                    timed_out: false,
+                    cancelled: true,
+                    in_process: false,
+                },
+                timing: timing(true),
+                artifacts: Vec::new(),
+                receipt_shortfall: Vec::new(),
+            },
+        ),
+        (
+            RoutedReaderGateStatus::SpawnErrorBeforeStart,
+            RunObservation {
+                runner_status: RoutedReaderGateStatus::SpawnErrorBeforeStart,
+                hosted: None,
+                prerequisites: None,
+                command_started: false,
+                child: ChildObservation {
+                    exit_code: None,
+                    signal: None,
+                    timed_out: false,
+                    cancelled: false,
+                    in_process: false,
+                },
+                timing: timing(false),
+                artifacts: Vec::new(),
+                receipt_shortfall: Vec::new(),
+            },
+        ),
+    ];
+    for (status, observation) in variants {
+        let result = build_routed_result(&plan, "fmt_gate", observation).unwrap_or_else(|error| {
+            panic!("consistent {status:?} observation must build: {error}")
+        });
+        result
+            .validate()
+            .unwrap_or_else(|error| panic!("consistent {status:?} result must validate: {error}"));
     }
+}
+
+#[test]
+fn focused_reproduce_command_is_invocable_cli() {
+    // The command must run as spelled: `cargo xtask gates --tier <kebab>
+    // --gate <id>` (review thread 3871822422). The plan's native tier is
+    // snake_case; the CLI spelling is kebab-case.
+    let plan = compiled_plan();
+    let result = build_success(&plan);
+    assert_eq!(
+        result.focused_reproduce_command, "cargo xtask gates --tier pr-fast --gate fmt_gate",
+        "reproduce command must match the real gates CLI syntax"
+    );
+}
+
+#[test]
+fn publication_failure_into_unusable_directory_is_a_typed_error() {
+    // Publication never succeeding must surface as an error, never as an
+    // Ok carrying an instrument-failure plane that the invocation then
+    // drops (review thread 3871822403).
+    let plan = compiled_plan();
+    let result = build_success(&plan);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let blocker = dir.path().join("blocker");
+    fs::write(&blocker, b"a file, not a directory").expect("blocker file");
+    let output_dir = blocker.join("nested").join("routed-results");
+    let refused = publish_routed_receipt(&output_dir, &result);
+    assert!(refused.is_err(), "publication into an unusable directory must be a typed error");
+}
+
+// ---------------------------------------------------------------------------
+// Review-repair falsifiers (PR #12905 threads)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn in_process_pass_is_a_clean_product_verdict() {
+    // Review thread 3871822391: internal xtask dispatch passes without any
+    // child process; the builder must accept that as success instead of
+    // aborting normalization after the gate already ran.
+    let plan = compiled_plan();
+    let observation = RunObservation {
+        runner_status: RoutedReaderGateStatus::Pass,
+        hosted: None,
+        prerequisites: Some(ready_prerequisites()),
+        command_started: true,
+        child: ChildObservation {
+            exit_code: None,
+            signal: None,
+            timed_out: false,
+            cancelled: false,
+            in_process: true,
+        },
+        timing: timing(true),
+        artifacts: Vec::new(),
+        receipt_shortfall: Vec::new(),
+    };
+    let result = build_routed_result(&plan, "fmt_gate", observation).expect("in-process pass");
+    result.validate().expect("in-process pass validates");
+    assert!(matches!(result.product.outcome, xtask::routed_result::TerminalOutcome::Success));
+    assert!(result.child.in_process);
+
+    // An in-process record cannot carry child-process terminal facts.
+    let mut contradictory = RunObservation {
+        runner_status: RoutedReaderGateStatus::Pass,
+        hosted: None,
+        prerequisites: Some(ready_prerequisites()),
+        command_started: true,
+        child: ChildObservation {
+            exit_code: Some(0),
+            signal: None,
+            timed_out: false,
+            cancelled: false,
+            in_process: true,
+        },
+        timing: timing(true),
+        artifacts: Vec::new(),
+        receipt_shortfall: Vec::new(),
+    };
+    assert!(
+        build_routed_result(&plan, "fmt_gate", contradictory.clone()).is_err(),
+        "in_process with an exit code must refuse"
+    );
+    contradictory.child.exit_code = None;
+    contradictory.child.timed_out = true;
+    assert!(
+        build_routed_result(&plan, "fmt_gate", contradictory).is_err(),
+        "in_process with a timeout flag must refuse to build"
+    );
+}
+
+#[test]
+fn explicit_null_hosted_identity_fails_closed() {
+    // Review thread 3871822430: `"hosted": null` is not a canonical
+    // spelling of the absent optional and must refuse at parse.
+    let json = build_success(&compiled_plan()).canonical_json().expect("bytes");
+    let mut value: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    value["hosted"] = serde_json::Value::Null;
+    assert!(
+        serde_json::from_value::<RoutedGateResultV1>(value).is_err(),
+        "explicit null hosted must fail closed"
+    );
+
+    // The same rule holds on the runner-supplied observation.
+    let observation_bytes = serde_json::to_vec(&serde_json::json!({
+        "runner_status": "pass",
+        "hosted": null,
+        "prerequisites": null,
+        "command_started": true,
+        "child": {
+            "exit_code": 0,
+            "timed_out": false,
+            "cancelled": false,
+            "in_process": false
+        },
+        "timing": { "duration_ms": 0 },
+        "artifacts": [],
+        "receipt_shortfall": []
+    }))
+    .unwrap();
+    assert!(
+        serde_json::from_slice::<RunObservation>(&observation_bytes).is_err(),
+        "explicit null hosted on RunObservation must fail closed"
+    );
+}
+
+#[test]
+fn partial_hosted_identity_is_refused() {
+    // Review thread 3872200290: a hosted record that binds only a run id
+    // contradicts the workflow/job/run/attempt binding contract.
+    let plan = compiled_plan();
+    let mut observation = success_observation();
+    observation.hosted = Some(HostedIdentity {
+        workflow: None,
+        job: None,
+        run_id: Some("90210".to_string()),
+        run_attempt: 2,
+        matrix: None,
+    });
+    let result = build_routed_result(&plan, "fmt_gate", observation).expect("builds");
+    let refused = result.validate().expect_err("partial hosted identity must refuse");
+    assert!(refused.contains("hosted"), "{refused}");
+}
+
+#[test]
+fn receipt_shortfall_degrades_reporting_but_not_product() {
+    // Review thread 3871822416: a completed command with an absent or
+    // unreadable log must not report instrument/reporting success.
+    let plan = compiled_plan();
+    let mut observation = success_observation();
+    observation.receipt_shortfall =
+        vec!["receipt log unreadable: target/receipts/logs/fmt_gate.log".to_string()];
+    let result = build_routed_result(&plan, "fmt_gate", observation).expect("builds");
+    result.validate().expect("shortfall shape validates");
+    assert!(matches!(result.reporting.outcome, xtask::routed_result::TerminalOutcome::Missing));
+    assert!(
+        matches!(result.product.outcome, xtask::routed_result::TerminalOutcome::Success),
+        "the product fact stays independent of the reporting shortfall"
+    );
+}
+
+#[test]
+fn prerequisite_evidence_unavailable_is_missing_never_ready() {
+    // Review thread 3872200285: a never-started command must not carry an
+    // assumed-ready prerequisite fact when the runner could not observe one.
+    let plan = compiled_plan();
+    let observation = RunObservation {
+        runner_status: RoutedReaderGateStatus::SpawnErrorBeforeStart,
+        hosted: None,
+        prerequisites: None,
+        command_started: false,
+        child: ChildObservation {
+            exit_code: None,
+            signal: None,
+            timed_out: false,
+            cancelled: false,
+            in_process: false,
+        },
+        timing: timing(false),
+        artifacts: Vec::new(),
+        receipt_shortfall: Vec::new(),
+    };
+    let result = build_routed_result(&plan, "fmt_gate", observation).expect("builds");
+    result.validate().expect("unavailable-evidence shape validates");
+    assert!(matches!(result.prerequisites.state, PrerequisiteState::Missing));
+    assert!(matches!(result.instrument.outcome, xtask::routed_result::TerminalOutcome::Missing));
+    assert!(matches!(
+        result.product.outcome,
+        xtask::routed_result::TerminalOutcome::BlockedNotProven
+    ));
 }

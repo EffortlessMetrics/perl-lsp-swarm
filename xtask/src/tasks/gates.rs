@@ -1455,20 +1455,33 @@ fn run_gate_plan(
     fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
 
     // #9156: consume and validate the canonical plan/row identity BEFORE any
-    // gate executes, then emit exactly one normalized result per planned
-    // `run` row. Unset keeps legacy behavior (topology unchanged).
-    let routed_gate_plan = match config.route_plan_path.as_deref() {
-        Some(plan_path) => {
+    // gate executes — subject, selection symmetry, and row execution
+    // identity are bound to this invocation here — then emit exactly one
+    // normalized result per planned `run` row. Unset keeps legacy behavior
+    // (topology unchanged).
+    let routed_gate_plan = config
+        .route_plan_path
+        .as_deref()
+        .map(|plan_path| -> Result<(xtask::ci_route_plan::CiRoutePlanV1, PathBuf)> {
             let compiled = routed_result_adapter::load_compiled_plan(plan_path)?;
-            let selected_names: Vec<&str> =
-                plan.selected.iter().map(|planned| planned.gate.name.as_str()).collect();
-            routed_result_adapter::ensure_plan_covers_selection(&compiled, &selected_names)?;
+            let actual_head_sha = cmd!("git", "rev-parse", "HEAD")
+                .dir(&root)
+                .read()
+                .map_err(|error| eyre!("resolving HEAD to bind the route plan subject: {error}"))?
+                .trim()
+                .to_string();
+            routed_result_adapter::ensure_plan_subject_matches_invocation(
+                &compiled,
+                &actual_head_sha,
+            )?;
+            let selected_gates: Vec<&GateDefinition> =
+                plan.selected.iter().map(|planned| &planned.gate).collect();
+            routed_result_adapter::ensure_plan_covers_selection(&compiled, &selected_gates)?;
             let output_dir = root.join(routed_result_adapter::ROUTED_RESULTS_DIR);
             fs::create_dir_all(&output_dir).context("Failed to create routed-results directory")?;
-            Some((compiled, output_dir))
-        }
-        None => None,
-    };
+            Ok((compiled, output_dir))
+        })
+        .transpose()?;
 
     // Run each gate
     let mut results: Vec<GateResult> = Vec::new();
@@ -1501,7 +1514,7 @@ fn run_gate_plan(
 
         // One executed planned `run` row -> one normalized result (#9156).
         if let Some((compiled, output_dir)) = &routed_gate_plan {
-            let hosted = routed_result_adapter::collect_hosted_identity();
+            let hosted = routed_result_adapter::collect_hosted_identity()?;
             routed_result_adapter::emit_planned_run_row_result(
                 compiled,
                 gate,
