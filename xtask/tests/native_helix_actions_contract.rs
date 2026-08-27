@@ -19,7 +19,7 @@ use xtask::native_helix_actions::predicate::{
 };
 use xtask::native_helix_actions::{
     ACTION_ID_PREFIX, ACTIONS, ActionClass, CONTRACT_SCHEMA_VERSION, SurfaceClassification,
-    action_by_id, validate_observation, validate_table,
+    action_by_id, validate_observation, validate_run, validate_table,
 };
 
 const FIRST_INSTRUMENT_ACTION: &str = "helix.native.host_session.observe_handshake_from_log";
@@ -371,6 +371,46 @@ fn pinned_tokens_cite_their_owners() -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[test]
+fn review_hardening_laws_hold() -> Result<()> {
+    // P1: a successful observation cannot carry an older effect snapshot than
+    // its own settlement snapshot.
+    let observation = mutate(ARGV_ACTION, |o| {
+        o.observed.generations = GenerationSnapshot::zeroed();
+    })?;
+    rejected("cross-generation effect", &observation, "generation than the settlement snapshot")?;
+
+    // P2: each handoff row binds exactly its own channel token.
+    let observation = mutate(POST_RUN_HANDOFF, |o| {
+        if let ObservedRoute::HostHandoff { handoff } = &mut o.route {
+            *handoff = "host_process_handoff".to_string();
+        }
+    })?;
+    rejected("cross-bound handoff", &observation, "binds handoff")?;
+
+    // P2: a successful observation must never carry a limitation token.
+    let observation = mutate(ARGV_ACTION, |o| {
+        o.limitation_class = Some("stale_generation".to_string());
+    })?;
+    rejected("limitation on observed", &observation, "must not carry a limitation class")?;
+
+    // P2: ordered-run identity is enforced at run scope.
+    ensure!(validate_run(&[]).is_err(), "an empty slice is not a run");
+    let first = fixture(KEYS_ACTION)?;
+    let mut duplicate = fixture(FIRST_INSTRUMENT_ACTION)?;
+    duplicate.sequence = first.sequence;
+    ensure!(validate_run(&[first.clone(), duplicate]).is_err(), "duplicate sequences accepted");
+    let mut backwards = fixture(FIRST_INSTRUMENT_ACTION)?;
+    backwards.sequence = first.sequence - 1;
+    ensure!(validate_run(&[first.clone(), backwards]).is_err(), "decreasing sequences accepted");
+    let mut zeroed = fixture(KEYS_ACTION)?;
+    zeroed.sequence = 0;
+    ensure!(validate_run(&[zeroed]).is_err(), "zero sequence accepted");
+    let mut later = fixture(FIRST_INSTRUMENT_ACTION)?;
+    later.sequence = first.sequence + 1;
+    validate_run(&[first, later]).map_err(anyhow::Error::msg)
 }
 
 /// Local typed equality assertion with a readable message.

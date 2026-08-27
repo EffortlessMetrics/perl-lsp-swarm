@@ -617,6 +617,16 @@ pub fn validate_observation(observation: &TypedObservation) -> Result<(), String
                     "host handoff {handoff} is outside the closed handoff vocabulary"
                 ));
             }
+            // Each handoff row binds exactly its own token: attributing a
+            // launch to the post-run channel (or vice versa) mislabels which
+            // process operation produced the evidence.
+            let expected = expected_handoff_token(action.action_id);
+            if handoff != expected {
+                return Err(format!(
+                    "action {} binds handoff {expected:?}, not {handoff}",
+                    action.action_id
+                ));
+            }
         }
     }
 
@@ -773,6 +783,50 @@ pub fn validate_observation(observation: &TypedObservation) -> Result<(), String
                 action.action_id
             ));
         }
+    }
+    // Currentness of the effect itself: a successful observation's effect
+    // snapshot must be the run's own settlement snapshot. Predicates staying
+    // current while `observed` editor state is old is exactly the forgery
+    // #11409 falsifier 8 names.
+    if matches!(observation.result, ObservationResult::Observed)
+        && observation.observed.generations != observation.generations
+    {
+        return Err(format!(
+            "successful observation for {} carries an effect snapshot from a different \
+             generation than the settlement snapshot",
+            action.action_id
+        ));
+    }
+    Ok(())
+}
+
+/// The exact handoff token one handoff row binds.
+fn expected_handoff_token(action_id: &str) -> &'static str {
+    if action_id.ends_with("post_run_observation_handoff") {
+        "post_run_observation_handoff"
+    } else {
+        "host_process_handoff"
+    }
+}
+
+/// Validate an ordered run of observations: nonempty, every record lawful,
+/// and strictly increasing `sequence` so replay order is deterministic and
+/// duplicate/zero/decreasing identities cannot pass any validation seam.
+pub fn validate_run(observations: &[TypedObservation]) -> Result<(), String> {
+    if observations.is_empty() {
+        return Err("a run records at least one observation".to_string());
+    }
+    let mut previous: Option<u64> = None;
+    for observation in observations {
+        validate_observation(observation)?;
+        let sequence = observation.sequence;
+        if sequence == 0 {
+            return Err("run sequences start at 1; 0 is not an ordered identity".to_string());
+        }
+        if let Some(prior) = previous.filter(|seen| sequence <= *seen) {
+            return Err(format!("sequence {sequence} does not strictly increase past {prior}"));
+        }
+        previous = Some(sequence);
     }
     Ok(())
 }

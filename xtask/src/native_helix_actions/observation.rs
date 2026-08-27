@@ -286,6 +286,11 @@ pub fn validate_bounded(observation: &TypedObservation) -> Result<(), String> {
         return Err("effect digest is unbounded".to_string());
     }
     match &observation.limitation_class {
+        // A successful observation carries no limitation: attaching a failure
+        // token to `observed` produces a contradictory record.
+        Some(class) if !observation.result.requires_limitation() => {
+            return Err(format!("an observed result must not carry a limitation class: {class}"));
+        }
         Some(class) if is_bounded_token(class) => {}
         Some(class) => return Err(format!("limitation class is not a bounded token: {class}")),
         None if observation.result.requires_limitation() => {
