@@ -891,7 +891,8 @@
             "type": "object",
             "additionalProperties": false,
             "required": [
-              "title_prefix"
+              "title_prefix",
+              "handoff_fields"
             ],
             "properties": {
               "title_prefix": {

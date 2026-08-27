@@ -581,12 +581,18 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
     let claim_ranks = ladder_ranks(&m.claim_ceiling_ladder, "claim_ceiling")?;
     let claim_rank_of = rank_lookup(&m.claim_ceiling_ladder);
 
-    // Dependency class law: the four #10858 classes, fixed by contract.
-    let classes: BTreeSet<&str> = m.dependency_classes.iter().map(String::as_str).collect();
-    let expected_classes: BTreeSet<&str> = DEP_CLASSES.into_iter().collect();
-    if classes != expected_classes {
-        bail!("dependency_classes must equal {DEP_CLASSES:?}");
+    // Dependency class law: the four #10858 classes, fixed by contract,
+    // IN THIS ORDER. Canonicalization sorts arrays, so sequence here is
+    // carried by this law, not by the digest pin; other top-level lists are
+    // order-free by reviewed intent (identity planes, vocabularies, nodes'
+    // presentation fields), which is why they stay set/set-like.
+    if m.dependency_classes != DEP_CLASSES {
+        bail!(
+            "dependency_classes are contract and order-significant: expected {DEP_CLASSES:?}, found {:?}",
+            m.dependency_classes
+        );
     }
+    let classes: BTreeSet<&str> = m.dependency_classes.iter().map(String::as_str).collect();
     if m.dependency_class_semantics.len() != 4 {
         bail!("every dependency class needs worded semantics");
     }
@@ -615,7 +621,8 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
         bail!("edge_role_lattice is empty; ordered stages cannot hold");
     }
 
-    // Claim caps cover exactly the declared roles.
+    // Claim caps cover exactly the declared roles; an unknown cap value fails
+    // closed instead of silently acting unlimited against the ladder.
     let capped: BTreeSet<&str> = m.role_claim_caps.iter().map(|c| c.role.as_str()).collect();
     if capped != roles {
         bail!(
@@ -624,14 +631,18 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
             capped.difference(&roles).collect::<Vec<_>>()
         );
     }
-    let claim_cap_rank: BTreeMap<&str, u64> = m
-        .role_claim_caps
-        .iter()
-        .map(|c| {
-            let rank = *claim_ranks.get(c.max_claim.as_str()).unwrap_or(&u64::MAX);
-            (c.role.as_str(), rank)
-        })
-        .collect();
+    let mut claim_cap_rank: BTreeMap<&str, u64> = BTreeMap::new();
+    for cap in &m.role_claim_caps {
+        let rank = match claim_ranks.get(cap.max_claim.as_str()) {
+            Some(rank) => *rank,
+            None => bail!(
+                "role_claim_caps entry '{}' invents max_claim '{}' outside the reviewed ladder",
+                cap.role,
+                cap.max_claim
+            ),
+        };
+        claim_cap_rank.insert(cap.role.as_str(), rank);
+    }
 
     // External authorities: unique, hash-prefixed, worded.
     let mut authority_ids: BTreeSet<&str> = BTreeSet::new();
@@ -864,22 +875,34 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
             bail!("unknown wire_kind '{}' at {}", node.wire_kind, node.node_id);
         }
 
-        // Ceiling ranks within ladder + role caps.
+        // Ceiling ranks within ladder + role caps; unknown values fail closed
+        // instead of silently acting unlimited against the ladder.
         let app_cap = application_cap_for_role(node.role.as_str());
-        let app_value_rank =
-            *app_rank_of.get(node.application_ceiling.as_str()).unwrap_or(&u64::MAX);
-        if app_value_rank == u64::MAX
-            || app_value_rank > *app_ranks.get(app_cap).unwrap_or(&u64::MAX)
-        {
+        let app_value_rank = match app_rank_of.get(node.application_ceiling.as_str()) {
+            Some(rank) => *rank,
+            None => bail!(
+                "application_ceiling '{}' at {} is outside the reviewed ladder",
+                node.application_ceiling,
+                node.node_id
+            ),
+        };
+        if app_value_rank > *app_ranks.get(app_cap).unwrap_or(&u64::MAX) {
             bail!(
                 "application_ceiling '{}' exceeds role cap '{app_cap}' at {}",
                 node.application_ceiling,
                 node.node_id
             );
         }
-        let claim_value_rank = *claim_rank_of.get(node.claim_ceiling.as_str()).unwrap_or(&u64::MAX);
+        let claim_value_rank = match claim_rank_of.get(node.claim_ceiling.as_str()) {
+            Some(rank) => *rank,
+            None => bail!(
+                "claim_ceiling '{}' at {} is outside the reviewed ladder",
+                node.claim_ceiling,
+                node.node_id
+            ),
+        };
         let claim_cap = claim_cap_rank.get(node.role.as_str()).copied().unwrap_or(u64::MAX);
-        if claim_value_rank == u64::MAX || claim_value_rank > claim_cap {
+        if claim_value_rank > claim_cap {
             bail!(
                 "claim_ceiling '{}' exceeds the reviewed cap '{}' at {}",
                 node.claim_ceiling,
@@ -995,8 +1018,8 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
                         target_node.role
                     );
                 }
-                // Law 9: external perlimports can never sit under a native
-                // client/replay/claims consumer regardless of edge class.
+                // Law 9 (immediate edge): external perlimports can never sit
+                // directly under a native client/replay/claims consumer.
                 if matches!(
                     node.role.as_str(),
                     "actual_client" | "installed_replay" | "claim_closeout"
@@ -1025,6 +1048,45 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
     }
     for id in by_id.keys().copied().collect::<Vec<_>>() {
         visit_acyclic(id, &by_id, &mut colour)?;
+    }
+
+    // Law 9 over the complete hard dependency closure: no external-compat row
+    // may sit ANYWHERE beneath a native client/replay/claims consumer, however
+    // indirectly. Immediate edges alone would admit two-hop laundering.
+    for node in &m.nodes {
+        if !matches!(node.role.as_str(), "actual_client" | "installed_replay" | "claim_closeout") {
+            continue;
+        }
+        let mut visited: BTreeSet<&str> = BTreeSet::new();
+        let mut stack: Vec<&str> = Vec::new();
+        for dep in &node.dependencies {
+            if dep.class == "hard" && !dep.target.starts_with('#') {
+                stack.push(dep.target.as_str());
+            }
+        }
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+            let current_node = match by_id.get(current) {
+                Some(n) => *n,
+                None => bail!("closure walk left the graph at {current}"),
+            };
+            if current_node.product_context == "external_compatibility"
+                || current_node.role == "external_compatibility"
+            {
+                bail!(
+                    "external compatibility stage sits inside the native evidence closure of {} via {}",
+                    node.node_id,
+                    current
+                );
+            }
+            for dep in &current_node.dependencies {
+                if dep.class == "hard" && !dep.target.starts_with('#') {
+                    stack.push(dep.target.as_str());
+                }
+            }
+        }
     }
 
     // Manifest-level limitations stay worded (visibility is a contract).

@@ -447,3 +447,45 @@ fn import_cleanup_train_manifest_every_active_row_names_discriminators_and_bound
     );
     Ok(())
 }
+
+// Review-repair falsifiers (#12825 review round one): each locks a verified
+// reviewer finding so the failure mode cannot regress silently.
+
+#[test]
+fn import_cleanup_train_manifest_dependency_class_order_is_contract() -> Result<()> {
+    let mut value = real_value()?;
+    // The digest is order-invariant by design, so this reordering must be
+    // caught by structural law instead: swapping hard/evidence changes the
+    // published schema's ordered const without moving the pin.
+    if let Some(classes) = value.get_mut("dependency_classes").and_then(Value::as_array_mut) {
+        classes.swap(0, 1);
+    } else {
+        bail!("manifest lost dependency_classes");
+    }
+    assert_rejected(&value, "order-significant")
+}
+
+#[test]
+fn import_cleanup_train_manifest_external_inside_indirect_closure_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    // Two-hop laundering: the immediate-edge guard passes because CLNT10912
+    // reaches ECOM only through PROC10893; the closure walk must not.
+    append_dep(&mut value, "PROC10893", "ECOM10786", "hard")?;
+    assert_rejected(&value, "native evidence closure")
+}
+
+#[test]
+fn import_cleanup_train_manifest_unknown_claim_cap_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    let caps = value
+        .get_mut("role_claim_caps")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| color_eyre::eyre::eyre!("manifest lost role_claim_caps"))?;
+    for cap in caps.iter_mut() {
+        if cap.get("role").and_then(Value::as_str) == Some("candidate_discovery") {
+            *cap.get_mut("max_claim").ok_or_else(|| color_eyre::eyre::eyre!("no max_claim"))? =
+                Value::String("client_verified_bogus".into());
+        }
+    }
+    assert_rejected(&value, "invents max_claim")
+}
