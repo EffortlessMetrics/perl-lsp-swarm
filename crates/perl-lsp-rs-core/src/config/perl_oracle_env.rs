@@ -970,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_inc_probe_timeout_scopes_normal_early_nested_and_unwind() -> TestResult {
+    fn startup_inc_probe_timeout_scopes_normal_early_nested() -> TestResult {
         let baseline = effective_startup_inc_probe_timeout();
         let outer = Duration::from_secs(2);
         let inner = Duration::from_secs(3);
@@ -998,8 +998,15 @@ mod tests {
             return Err("normal return did not restore the prior timeout".into());
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn startup_inc_probe_timeout_restores_after_caught_unwind() -> TestResult {
+        let baseline = effective_startup_inc_probe_timeout();
+        let widened = Duration::from_secs(3);
         let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            PerlOracleEnv::with_startup_inc_probe_timeout(inner, || {
+            PerlOracleEnv::with_startup_inc_probe_timeout(widened, || {
                 std::panic::resume_unwind(Box::new("controlled unwind"));
             });
         }));
