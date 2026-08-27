@@ -10449,16 +10449,16 @@ Utils::process_data();
             "package Child;\nuse parent 'Parent';\nChild->greet();\n1;\n".to_string(),
         ));
 
-        let identity = must_some(index.with_semantic_queries_for_uri(
-            child_uri.as_str(),
-            |file_id, queries| {
+        let identity = index
+            .with_semantic_queries_for_uri(child_uri.as_str(), |file_id, queries| {
                 let candidate = queries.method_candidates("Child", "greet").first()?.clone();
                 let context = QueryContext::new(file_id, None, Some(45));
                 let definition = queries.definitions("Parent::greet", &context).first()?.clone();
                 let references = queries.references(candidate.entity_id);
                 Some((candidate.entity_id, definition.entity_id, references))
-            },
-        ));
+            })
+            .ok_or("missing semantic queries for inherited identity")?
+            .ok_or("inherited method identity chain did not resolve")?;
 
         assert_eq!(identity.0, identity.1);
         assert_eq!(identity.2.len(), 1);
