@@ -154,18 +154,9 @@ remote integration wait does not make a still-current substantive review stale.
 
 An armed auto-merge that appears stalled is usually waiting on the slowest required
 context, not broken: `ripr+ New Gap Gate` is the tail of the required union. The
-manual probe merge (`gh api -X PUT repos/{owner}/{repo}/pulls/<n>/merge -f
-merge_method=squash -f sha=<current-head-sha>`, the REST equivalent of
-`--match-head-commit` — never probe without the SHA, or a commit pushed after
-inspection can merge unreviewed) succeeds every time precisely because it is an
-administrator bypass of legacy branch-protection checks — it merges past a
-still-pending required context (#12357 was merged 22 minutes before `ripr+` reported;
-#12289's merged 42 minutes before it failed; #12565 confirmed the mechanism). Probe
-ONLY once the required union is green on the head SHA — `ripr+ New Gap Gate` is its
-last reporter — or an explicit waiver is recorded on the PR or issue naming every
-unmet requirement; before that, the armed merge remains the GitHub-owned wait
-(#12312's "stall" was exactly the ripr runtime — merged 13 seconds after `ripr+` went
-green).
+manual probe merge mechanism, its compare-and-swap SHA guard, and the waiver bar are
+single-sourced in `$merge-reconcile` — follow that skill's text rather than a second
+copy here.
 
 ## Useful GitHub boundary
 
