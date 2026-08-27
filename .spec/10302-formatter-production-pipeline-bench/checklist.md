@@ -8,7 +8,7 @@ Red-first receipts-of-record (2026-08-27, pure reads on the base pin):
 
 - Zero formatter bench surface: `BENCH_TARGETS` in
   `.github/workflows/ci-nightly.yml` enumerates exactly 14 targets
-  (perl-workspace, perl-token, perl-symbol, perl-pragma, perl-parser ×5,
+  (perl-workspace, perl-token, perl-symbol, perl-pragma, perl-parser ×6,
   perl-lsp-rs rope_performance_benchmark, perl-lexer, perl-dap,
   perl-incremental-parsing); `crates/perl-lsp-perltidy/Cargo.toml` has no
   criterion dev-dep and no `[[bench]]`.
@@ -19,7 +19,10 @@ Red-first receipts-of-record (2026-08-27, pure reads on the base pin):
   `implementation.rs:606`.
 - Production seams that must stay single-invocation:
   `perl-lsp-rs-core/src/providers/formatting/formatting.rs`
-  `native_document_decision` (:257) / `native_range_decision` (:273).
+  `native_document_decision` definition (:249; typed call :257) /
+  `native_range_decision` definition (:262; typed call :273). A successful
+  request invokes the provider/native pipeline once but the validation parse
+  gate twice: once for source and once for formatted output.
 - Integrity guards to consume verbatim: stale `target/criterion/` deletion +
   explicit per-target invocation + superset contract over cargo-metadata
   bench-kind targets (#3979), fixture tests
@@ -31,17 +34,48 @@ Planned surface:
 
 - [ ] `crates/perl-lsp-perltidy/src/native/counters.rs`: additive
       `NativePipelineCounters` (schema v1) + optional collector plumbed
-      through the typed call path only; zero behavior when unset
+      through the typed call path only; zero behavior when unset; exact
+      `pipeline_invocations`, aggregate `parse_gate_invocations`,
+      `source_parse_gate_invocations`, and
+      `formatted_output_parse_gate_invocations` counters prove successful-path
+      one-pipeline/two-parse attribution and disposition-specific early-refusal
+      counts (zero before parse; source == 1/output == 0 on source refusal;
+      source == 1/output == 1 on formatted-output refusal)
 - [ ] `crates/perl-lsp-perltidy/Cargo.toml`: additive criterion dev-dep +
       `[[bench]] name = "native_pipeline_benchmark" harness = false`
 - [ ] `crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs` +
       `benches/support/perf_subjects.rs`: checked-in scaling cohort
       (small/medium/large × delimited/statement/opaque/refusal/no-change ×
       LF/CRLF/bare-CR × tabs/spaces/width) with exact subject identity
+      and an actual `benchmark_group("native_pipeline")` /
+      `bench_function("document_small", ...)` pair producing representative
+      Criterion ID `native_pipeline/document_small` (not a direct benchmark
+      string containing `/`, which Criterion sanitizes to `_`)
 - [ ] `crates/perl-lsp-perltidy/tests/native_pipeline_counters_tests.rs`:
-      NPC-001..NPC-006 + NPC-010 canaries incl. detector sanity control
+      NPC-001..NPC-006 + NPC-010 pipeline/parse canaries incl. detector sanity
+      control and the early-refusal disposition table
+- [ ] `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs`:
+      drive public `format_document_decision` / `format_range_decision` with
+      shared counters and prove exactly one private `format_document_typed` /
+      `format_range_typed` call per request; do not claim this adapter property
+      from perltidy-only tests
 - [ ] `.github/workflows/ci-nightly.yml`: one `BENCH_TARGETS` entry
-      `"perl-lsp-perltidy:native_pipeline_benchmark:"`
+      `"perl-lsp-perltidy:native_pipeline_benchmark:"`; target identity is
+      `perl-lsp-perltidy:native_pipeline_benchmark`, and the trailing
+      delimiter encodes only the empty required-feature field
+- [ ] Strict nightly extraction includes the exact matching
+      `--expect-id "native_pipeline/document_small"`
+- [ ] `benchmarks/scripts/test_extract_criterion.py` includes the exact grouped
+      Criterion fixture layout
+      `native_pipeline/document_small/new/estimates.json`; the representative
+      ID proves target execution only, not full-matrix execution
+- [ ] Select and implement the receipt-identity path: a checked-in subject
+      identity sidecar keyed by canonical Criterion ID plus a fail-closed join
+      in `extract-criterion.py`; extend the receipt/formatter path so every
+      formatter row preserves content digest, config fingerprint, engine, and
+      the current toolchain/environment tag. Fixtures reject missing,
+      duplicate, stale, and unmatched identities. NPC-008 remains
+      `NOT_PROVEN` until this executable path passes end-to-end
 - [ ] NPC-007..NPC-009 structural pins inside the same test file
 
 Proof commands:
@@ -58,9 +92,12 @@ Open residuals (owned by upstream issues, not silently dropped):
 
 - [ ] Enroll #9327 representative corpus identities through the subject
       registry seam when that corpus lands
-- [ ] Align derived-output/allocation envelopes with #7140/#7501 product
-      bounds when they codify limits (schema-major bump + before/after
-      receipts)
+- [ ] Align derived-output envelopes with #7140/#7501 product bounds when they
+      codify limits (schema-major bump + before/after receipts); allocation
+      remains a separate real-oracle requirement
+- [ ] Keep #10302's allocation-count/allocated-byte requirement open and
+      `NOT_PROVEN` until a real allocation oracle measures both on a supported
+      proof run; derived output/replacement/retained bytes never substitute
 - [ ] Cross-environment timing comparisons remain out of scope permanently
       unless a reviewed policy changes the advisory posture (#3979/#5282)
 
