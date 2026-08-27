@@ -757,6 +757,30 @@ pub(crate) fn normalize_explicit_debuggee_pin(path: &Path) -> Result<PathBuf, St
     Ok(canonical)
 }
 
+#[cfg(test)]
+pub(crate) fn assert_pinned_identity(
+    reported: &str,
+    pinned: &Path,
+    ambient: &Path,
+    label: &str,
+) -> Result<(), String> {
+    let expected_pinned = normalize_explicit_debuggee_pin(pinned)
+        .map_err(|error| format!("{label} pinned path did not normalize: {error}"))?;
+    let expected_ambient = normalize_explicit_debuggee_pin(ambient)
+        .map_err(|error| format!("{label} ambient path did not normalize: {error}"))?;
+    let actual = normalize_explicit_debuggee_pin(Path::new(reported.trim()))
+        .map_err(|error| format!("{label} reported path did not normalize: {error}"))?;
+    if actual != expected_pinned {
+        return Err(format!(
+            "{label} evaluated $^X from {actual:?}, expected pinned {expected_pinned:?}"
+        ));
+    }
+    if actual == expected_ambient {
+        return Err(format!("{label} evaluated $^X from the ambient path {expected_ambient:?}"));
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 fn normalize_windows_path_prefix(path: PathBuf) -> PathBuf {
     let Some(path_text) = path.to_str() else {
@@ -1090,7 +1114,6 @@ enum CleanupFault {
     JobAssignment,
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProbeThreadSpawnFailure {
     Writer,
@@ -1112,7 +1135,6 @@ impl CleanupFault {
         matches!(self, Self::JobAssignment)
     }
 
-    #[cfg(test)]
     fn thread_spawn_failed(self, stage: ProbeThreadSpawnFailure) -> bool {
         matches!(self, Self::ThreadSpawn(actual) if actual == stage)
     }

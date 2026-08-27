@@ -97,16 +97,8 @@ fn live_debug_adapter_executes_the_pinned_interpreter_identity() -> Result<(), B
     let stopped = session.wait_stopped_with_frame().map_err(|e| e.to_string())?;
     let (reported, _) =
         session.evaluate_expression("$^X", stopped.frame_id).map_err(|e| e.to_string())?;
-    let reported_lower = reported.to_ascii_lowercase();
-    if !(reported_lower.contains("pinned-perl")
-        && !reported_lower.contains("\\perl.exe")
-        && !reported_lower.contains("/perl\n"))
-    {
-        return Err(format!(
-            "live DebugAdapter evaluated $^X from the wrong interpreter: {reported}"
-        )
-        .into());
-    }
+    common::assert_pinned_identity(&reported, &pinned, &ambient, "live DebugAdapter")
+        .map_err(std::io::Error::other)?;
     Ok(())
 }
 

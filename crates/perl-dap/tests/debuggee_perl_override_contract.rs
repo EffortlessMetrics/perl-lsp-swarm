@@ -231,6 +231,15 @@ fn attach_does_not_resolve_launch_pin_during_initialization() -> Result<(), Box<
     if stopped.reason != "attach" {
         return Err(format!("attach must stop with reason=attach, got {}", stopped.reason).into());
     }
+    let launch_error = common::resolve_launch_perl_path()
+        .err()
+        .ok_or("a rejected pin must remain rejected for a deferred launch")?;
+    if !launch_error.contains(DEBUGGEE_PERL_OVERRIDE_ENV) || !launch_error.contains(BOGUS_PIN) {
+        return Err(std::io::Error::other(format!(
+            "deferred launch resolution must retain the rejected pin, got: {launch_error}"
+        ))
+        .into());
+    }
     session.disconnect()?;
     Ok(())
 }

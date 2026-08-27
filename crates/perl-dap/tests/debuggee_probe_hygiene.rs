@@ -228,7 +228,9 @@ fn main() {
         });
         let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(5))?;
         wait_for_marker_file(&pid_file.with_extension("pid.ready"), Duration::from_secs(5))?;
-        wait_for_process_start(descendant_pid, Duration::from_secs(5))?;
+        if !simulate_wait_error {
+            wait_for_process_start(descendant_pid, Duration::from_secs(5))?;
+        }
         let result =
             probe.join().map_err(|_| io::Error::other(format!("{label} probe thread panicked")))?;
         require!(result.is_err(), "{label} probe must fail through its cleanup path");
@@ -350,6 +352,10 @@ fn main() {
         "termination-failure probe left newly created workspaces: {new_artifacts:?}"
     );
     require!(
+        after.iter().any(|path| path == seeded_stale.path()),
+        "termination-failure probe must not delete the pre-existing stale control"
+    );
+    require!(
         common::active_probe_reader_count() == 0,
         "termination-failure probe left an active reader thread"
     );
@@ -373,6 +379,10 @@ fn main() {
     require!(
         !new_artifacts.is_empty(),
         "real TempDir::close failure must leave a displaced workspace for explicit cleanup"
+    );
+    require!(
+        after.iter().any(|path| path == seeded_stale.path()),
+        "workspace cleanup failure must not delete the pre-existing stale control"
     );
     require!(
         common::active_probe_reader_count() == 0,
@@ -418,6 +428,10 @@ fn main() {
             "job assignment fallback left artifacts: {new_artifacts:?}"
         );
         require!(
+            after.iter().any(|path| path == seeded_stale.path()),
+            "job assignment fallback must not delete the pre-existing stale control"
+        );
+        require!(
             common::active_probe_reader_count() == 0,
             "job assignment fallback left an active reader thread"
         );
@@ -459,6 +473,10 @@ fn main() {
         require!(
             new_artifacts.is_empty(),
             "{label} failure left newly created workspaces: {new_artifacts:?}"
+        );
+        require!(
+            after.iter().any(|path| path == seeded_stale.path()),
+            "{label} failure must not delete the pre-existing stale control"
         );
         require!(
             common::active_probe_reader_count() == 0,

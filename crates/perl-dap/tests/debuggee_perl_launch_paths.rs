@@ -141,16 +141,8 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
         let session = DapWorkflowSession::new_with_perl(workflow_timeout(), Some(&pinned))?;
         let reported = observe_pin_with_session(session, launch_path, &script_text, &cwd)
             .map_err(|error| format!("{launch_path} failed: {error}"))?;
-        let reported_lower = reported.to_ascii_lowercase();
-        if !(reported_lower.contains("pinned-perl")
-            && !reported_lower.contains("\\perl.exe")
-            && !reported_lower.contains("/perl\n"))
-        {
-            return Err(format!(
-                "{launch_path} evaluated $^X from the wrong interpreter: {reported}"
-            )
-            .into());
-        }
+        common::assert_pinned_identity(&reported, &pinned, &ambient, launch_path)
+            .map_err(std::io::Error::other)?;
     }
 
     let _pin_guard = EnvGuard::set(DEBUGGEE_PERL_OVERRIDE_ENV, pinned.as_os_str());
@@ -159,17 +151,13 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
         let configured_identity =
             observe_pin_with_session(session, launch_path, &script_text, &cwd)
                 .map_err(|error| format!("configured {launch_path} failed: {error}"))?;
-        let configured_identity_lower = configured_identity.to_ascii_lowercase();
-        if !(configured_identity_lower.contains("pinned-perl")
-            && !configured_identity_lower.contains("\\perl.exe")
-            && !configured_identity_lower.contains("/perl\n"))
-        {
-            return Err(format!(
-                "configured pin was dropped by DapWorkflowSession::new for {launch_path}: \
-                 {configured_identity}"
-            )
-            .into());
-        }
+        common::assert_pinned_identity(
+            &configured_identity,
+            &pinned,
+            &ambient,
+            &format!("configured {launch_path}"),
+        )
+        .map_err(std::io::Error::other)?;
     }
     Ok(())
 }
