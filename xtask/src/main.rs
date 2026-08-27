@@ -571,7 +571,8 @@ enum Commands {
         no_build: bool,
     },
 
-    /// Regenerate public Shields endpoint JSON for README badges.
+    /// Deprecated compatibility delegate for the Python badge endpoint owner.
+    #[command(hide = true)]
     Badges {
         /// Check committed endpoints for drift without updating badges/.
         #[arg(long)]
