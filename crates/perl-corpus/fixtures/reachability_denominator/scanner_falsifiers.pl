@@ -16,6 +16,7 @@ my $regex_control = qr/
     |
     return          # 'return' inside the same literal is text
 /x;
+# denom-target:regex-literal
 
 my $string_control = "goto somewhere; exec('never');";
 
@@ -31,6 +32,7 @@ sub phantom_pod_sub {
 =cut
 
 __END__
+# denom-target:end-data
 sub phantom_end_sub {
     exit 1;
     print 'after __END__ is data, not flow';

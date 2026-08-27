@@ -1,4 +1,5 @@
 # Reachability denominator subject W1 same-name collision control module.
+# denom-target:same-name-control
 package Collision;
 use strict;
 use warnings;

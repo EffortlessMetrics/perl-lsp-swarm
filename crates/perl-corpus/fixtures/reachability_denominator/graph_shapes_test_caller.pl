@@ -3,7 +3,7 @@
 # Declared by fixtures/analysis_reachability_denominator/manifest.json (#10998).
 use strict;
 use warnings;
-use lib '.';
+use lib 'lib';
 use GraphShapes;
 
 my $probe = GraphShapes::isolated_never_called();

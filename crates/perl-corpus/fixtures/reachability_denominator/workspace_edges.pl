@@ -22,6 +22,7 @@ sub coderef_edge {
 }
 
 sub static_method_edge {
+    # denom-target:static-method
     return Target->build(4);
 }
 
@@ -31,6 +32,7 @@ sub dynamic_non_edge {
 }
 
 sub same_name_collision_control {
+    # denom-target:same-name-control
     return Collision::run(6);     # must not inherit Target::run facts
 }
 

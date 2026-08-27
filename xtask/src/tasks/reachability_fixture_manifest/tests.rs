@@ -392,8 +392,10 @@ fn required_coverage_is_never_a_deferral_for_missing_rows() -> TestResult {
     }
     let violations = validate_document(Path::new("/unused"), &manifest);
     assert!(
-        violations.iter().any(|v| v
-            .contains("family \"A_local_flow\" claims denominator coverage without any row")),
+        violations
+            .iter()
+            .any(|v| v
+                .contains("family \"A_local_flow\" claims denominator coverage without any row")),
         "required_coverage must not excuse a missing row population: {violations:?}"
     );
     Ok(())

@@ -8,6 +8,7 @@
 //! repairs failures, changes compatibility or promotes a claim.
 
 mod model;
+mod schema;
 mod view;
 
 use crate::utils::project_root;
@@ -21,6 +22,17 @@ use std::path::Path;
 use model::MANIFEST_RELATIVE_PATH;
 
 const SCHEMA_PATH: &str = "schemas/analysis_reachability_fixture_manifest.v1.schema.json";
+
+/// Fixture directories owned by this manifest whose internal module topology
+/// the validator resolves statically. Broader corpus trees stay outside:
+/// several of their fixtures deliberately reference nonexistent modules as
+/// negative controls, so a repository-wide import rule would fail closed on
+/// declared absences instead of defects.
+const OWNED_MODULE_DISCOVERY_ROOT: &str = "crates/perl-corpus/fixtures/reachability_denominator";
+
+/// Marker prefix a fixture line carries to declare that a logical
+/// `source://`/`package://` subject fragment grounds exactly here.
+const DENOM_TARGET_MARKER: &str = "# denom-target:";
 
 /// Claim-boundary phrases every manifest must carry verbatim.
 const REQUIRED_CLAIM_PHRASES: &[&str] = &[
@@ -76,7 +88,8 @@ fn regenerate_view(root: &Path) -> Result<()> {
     let manifest = load_manifest(root)?;
     // Validate the document itself; the view is the output being regenerated
     // here, so its drift rule cannot gate this path.
-    let violations = validate_document(root, &manifest);
+    let mut violations = evaluate_schema_constraints(root, &manifest)?;
+    violations.extend(validate_document(root, &manifest));
     if !violations.is_empty() {
         eprintln!("reachability fixture manifest violations:");
         for violation in &violations {
@@ -95,11 +108,23 @@ fn load_manifest(root: &Path) -> Result<model::Manifest> {
         .with_context(|| format!("failed to parse {}", model::MANIFEST_RELATIVE_PATH))
 }
 
+/// Evaluates the parsed manifest document against the pinned JSON Schema
+/// artifact so wire-contract mutations (consts, minimums, patterns, enums)
+/// become validation violations instead of Serde-shaped accidents.
+fn evaluate_schema_constraints(root: &Path, manifest: &model::Manifest) -> Result<Vec<String>> {
+    let text = read_text(root, SCHEMA_PATH)?;
+    let schema_value: serde_json::Value = serde_json::from_str(&text)?;
+    let instance = serde_json::to_value(manifest)
+        .context("failed to serialize manifest for schema evaluation")?;
+    Ok(schema::evaluate(&schema_value, &instance))
+}
+
 fn validate(root: &Path) -> Result<CoverageStats> {
     validate_json_parse(root, SCHEMA_PATH)?;
     validate_schema_identity(root)?;
     let manifest = load_manifest(root)?;
-    let mut violations = validate_document(root, &manifest);
+    let mut violations = evaluate_schema_constraints(root, &manifest)?;
+    violations.extend(validate_document(root, &manifest));
     validate_generated_view(root, &manifest, &mut violations);
 
     if !violations.is_empty() {
@@ -269,6 +294,7 @@ fn validate_rows(root: &Path, manifest: &model::Manifest, violations: &mut Vec<S
     let mut seen_row_ids = BTreeSet::new();
     let mut fixture_identities: BTreeMap<&str, (&str, &str)> = BTreeMap::new();
     let row_ids: BTreeSet<&str> = manifest.rows.iter().map(|row| row.row_id.as_str()).collect();
+    let mut scans: BTreeMap<String, FixtureScan> = BTreeMap::new();
 
     for row in &manifest.rows {
         let doc = format!("{}: row {}", MANIFEST_RELATIVE_PATH, row.row_id);
@@ -308,12 +334,321 @@ fn validate_rows(root: &Path, manifest: &model::Manifest, violations: &mut Vec<S
         validate_terminal_and_limitation(&doc, row, violations);
         validate_owner(&doc, row, manifest, violations);
         validate_authority_reference(root, &doc, row, &manifest.allowed_fixture_roots, violations);
+        validate_subject_source_facts(root, row, &doc, &mut scans, violations);
+        validate_module_discovery(root, row, &doc, &scans, violations);
+        let parse_ok = scans
+            .get(row.fixture.path.as_str())
+            .map(FixtureScan::structurally_complete)
+            .unwrap_or(false);
+        if !parse_ok {
+            violations.push(format!(
+                "{doc}: fixture {} does not reach structural completion under the product parser",
+                row.fixture.path
+            ));
+        }
     }
+}
+
+/// Byte-level scan cache shared across one validation pass: fixture sources
+/// are read once whether checked for subject grounding, syntax or imports.
+enum FixtureScan {
+    Loaded { source: String, structurally_complete: bool },
+    Unavailable { reason: String },
+}
+
+impl FixtureScan {
+    fn source(&self) -> Option<&str> {
+        match self {
+            Self::Loaded { source, .. } => Some(source),
+            Self::Unavailable { .. } => None,
+        }
+    }
+
+    /// A fixture passes when the product parser reaches structural
+    /// completion; recovered-but-terminated regions stay acceptable because
+    /// several corpus fixtures model malformed-input boundaries on purpose.
+    fn structurally_complete(&self) -> bool {
+        match self {
+            Self::Loaded { structurally_complete, .. } => *structurally_complete,
+            Self::Unavailable { .. } => false,
+        }
+    }
+}
+
+fn load_or_get_scan(root: &Path, relative: &str, scans: &mut BTreeMap<String, FixtureScan>) {
+    if scans.contains_key(relative) {
+        return;
+    }
+    match fs::read_to_string(root.join(relative)) {
+        Ok(source) => {
+            // parse_with_recovery surfaces terminal failure explicitly; a
+            // recovered-but-terminated region stays acceptable because
+            // several corpus fixtures model malformed-input boundaries.
+            let structurally_complete =
+                !perl_parser::Parser::new(&source).parse_with_recovery().terminated_early();
+            scans.insert(
+                relative.to_string(),
+                FixtureScan::Loaded { source, structurally_complete },
+            );
+        }
+        Err(error) => {
+            scans.insert(
+                relative.to_string(),
+                FixtureScan::Unavailable { reason: error.to_string() },
+            );
+        }
+    }
+}
+
+/// Grounds every `source://`/`package://` subject fragment in the referenced
+/// bytes. A fragment counts as discovered when any of these hold:
+/// 1. a `# denom-target:<fragment>` declaration line is present;
+/// 2. its dash-to-underscore transliteration appears as a word (matching how
+///    fragments name Perl symbols like `entry_calls_live_scc`);
+/// 3. the raw fragment text occurs verbatim.
+///
+/// Non-target schemes (`subject://`, `config://`, ...) are not source facts
+/// and stay outside this rule. Without this cross-check a manifest could pin
+/// digests for bytes that never exercise the declared target kind.
+fn validate_subject_source_facts(
+    root: &Path,
+    row: &model::Row,
+    doc: &str,
+    scans: &mut BTreeMap<String, FixtureScan>,
+    violations: &mut Vec<String>,
+) {
+    load_or_get_scan(root, &row.fixture.path, scans);
+    let Some(scan) = scans.get(row.fixture.path.as_str()) else { return };
+    let Some(source) = scan.source() else {
+        return; // unreadable fixture already yields digest/reference violations
+    };
+    for subject in &row.subjects {
+        let Some((scheme, locator)) = subject.split_once("://") else { continue };
+        if !matches!(scheme, "source" | "package") {
+            continue;
+        }
+        let Some(fragment) = locator.split_once('#').map(|(_, fragment)| fragment) else {
+            continue;
+        };
+        let symbol_form = fragment.replace('-', "_");
+        let grounded = source.lines().any(|line| {
+            line.trim_start().starts_with(DENOM_TARGET_MARKER)
+                && line.trim()[DENOM_TARGET_MARKER.len()..].trim() == fragment
+        }) || contains_word(source, &symbol_form)
+            || source.contains(fragment);
+        if !grounded {
+            violations.push(format!(
+                "{doc}: subject {subject:?} is not discoverable in {}: expected a \"{}{fragment}\" line, the symbol {symbol_form:?}, or the literal fragment",
+                row.fixture.path, DENOM_TARGET_MARKER
+            ));
+        }
+    }
+}
+
+/// ASCII word containment so fragments match Perl identifier spellings without
+/// matching inside longer identifiers unintentionally on both edges.
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    let is_identifier_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut search_from = 0usize;
+    while let Some(found) = haystack[search_from..].find(needle) {
+        let absolute = search_from + found;
+        let before = haystack[..absolute].chars().next_back();
+        let after_start = absolute + needle.len();
+        let after = haystack[after_start..].chars().next();
+        let boundary_before = before.map(is_identifier_char).unwrap_or(false);
+        let boundary_after = after.map(is_identifier_char).unwrap_or(false);
+        if !boundary_before && !boundary_after {
+            return true;
+        }
+        search_from = absolute + 1;
+    }
+    false
+}
+
+/// Static import-shape proof for the owned denominator tree (see
+/// [`OWNED_MODULE_DISCOVERY_ROOT`]): referenced modules must resolve to an
+/// existing `<name>.pm` under the fixture directory or its adjacent `lib/`,
+/// and module files there must declare their file-stem package.
+/// Naming mismatches like `package GraphShapes` living in `graph_shapes.pl`
+/// are exactly the discovery defects this closes (PR #12706 gmZ/gmaB).
+fn validate_module_discovery(
+    root: &Path,
+    row: &model::Row,
+    doc: &str,
+    scans: &BTreeMap<String, FixtureScan>,
+    violations: &mut Vec<String>,
+) {
+    if !row.fixture.path.starts_with(OWNED_MODULE_DISCOVERY_ROOT) {
+        return;
+    }
+    let Some(scan) = scans.get(row.fixture.path.as_str()) else { return };
+    let Some(source) = scan.source() else { return };
+
+    const PRAGMAS: &[&str] =
+        &["strict", "warnings", "lib", "utf8", "feature", "vars", "subs", "integer", "bigint"];
+
+    if row.fixture.path.ends_with(".pm") {
+        let stem = Path::new(row.fixture.path.as_str())
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default();
+        let declared_package = source.lines().find_map(|line| {
+            let trimmed = line.trim_start();
+            trimmed
+                .strip_prefix("package ")
+                .map(|rest| rest.trim().trim_end_matches(';').to_string())
+        });
+        if declared_package.as_deref() != Some(stem) {
+            violations.push(format!(
+                "{doc}: module file {} declares package {:?}; discovery requires the file-stem package {stem:?}",
+                row.fixture.path, declared_package
+            ));
+        }
+    }
+
+    if !row.fixture.path.ends_with(".pl") {
+        return;
+    }
+    let base_dir = Path::new(row.fixture.path.as_str()).parent().unwrap_or(Path::new(""));
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("use ") else { continue };
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == ':' || *c == '_')
+            .collect();
+        let bare = name.rsplit("::").next().unwrap_or(name.as_str());
+        if name.is_empty() || rest.trim_start().starts_with('(') || PRAGMAS.contains(&bare) {
+            continue;
+        }
+        let leaf = format!("{bare}.pm");
+        let mut resolved = None;
+        for candidate_root in [base_dir.join("lib"), base_dir.to_path_buf()] {
+            let candidate_dir = root.join(&candidate_root);
+            if walk_one_level(&candidate_dir, &leaf) {
+                resolved = Some(candidate_root.join(&leaf));
+                break;
+            }
+        }
+        if resolved.is_none() {
+            violations.push(format!(
+                "{doc}: fixture {} is not runnable through normal Perl module discovery: use {name} resolves no {leaf} beneath {} or its lib directory",
+                row.fixture.path,
+                OWNED_MODULE_DISCOVERY_ROOT
+            ));
+        }
+    }
+}
+
+/// One bounded directory probe (no recursion): module layouts in the owned
+/// tree are flat `lib/<Name>.pm` files.
+fn walk_one_level(dir: &Path, leaf: &str) -> bool {
+    fs::read_dir(dir)
+        .map(|entries| {
+            entries.filter_map(Result::ok).any(|entry| entry.file_name().to_string_lossy() == leaf)
+        })
+        .unwrap_or(false)
 }
 
 /// A pinned authority reference must live inside the declared fixture roots
 /// and point at existing bytes; byte-drift checking itself stays owned by the
 /// consumer proof named in its note.
+/// Shared repo-relative path safety gate used by fixture and authority
+/// references. Pushes one violation per defect and answers whether the caller
+/// may continue with filesystem-backed checks.
+fn path_shape_and_containment(
+    doc: &str,
+    kind: &str,
+    path: &str,
+    allowed_roots: &[String],
+    violations: &mut Vec<String>,
+) -> bool {
+    if path.starts_with('/')
+        || path.contains('\\')
+        || path.contains(':')
+        || Path::new(path).is_absolute()
+    {
+        violations.push(format!("{doc}: {kind} path must be repo-relative slash form: {path}"));
+        return false;
+    }
+    // Component scan: parent segments must never survive into root.join(),
+    // and empty/current-directory segments fail closed the same way.
+    let unsafe_component = |component: &str| matches!(component, "" | "." | "..");
+    if path.split('/').any(unsafe_component) {
+        for component in path.split('/').filter(|component| unsafe_component(component)) {
+            violations.push(format!(
+                "{doc}: {kind} path contains an unusable {component:?} component and traverses outside the declared repository tree: {path}"
+            ));
+        }
+        return false;
+    }
+    // Containment by whole components, never byte-prefix overlap, so a
+    // sibling directory named like an owned root cannot alias its way inside.
+    let parts: Vec<&str> = path.split('/').collect();
+    let within_declared_root = allowed_roots.iter().any(|allowed| {
+        let root_parts: Vec<&str> = allowed.split('/').collect();
+        parts.len() >= root_parts.len() && parts[..root_parts.len()] == root_parts[..]
+    });
+    if !within_declared_root {
+        violations.push(format!(
+            "{doc}: {kind} source escapes owned fixture roots without disposition: {path}"
+        ));
+        return false;
+    }
+    true
+}
+
+/// Walks every prefix of the declared path under the repository root and
+/// refuses to follow symbolic links or NTFS reparse points (junctions), which
+/// could redirect reads outside the declared roots even though every lexical
+/// component stays inside them.
+fn rejects_linked_segments(
+    doc: &str,
+    kind: &str,
+    root: &Path,
+    path: &str,
+    violations: &mut Vec<String>,
+) -> bool {
+    let mut walked = root.to_path_buf();
+    let components: Vec<&str> = path.split('/').collect();
+    let last_index = components.len() - 1;
+    for (index, &component) in components.iter().enumerate() {
+        walked.push(component);
+        match fs::symlink_metadata(&walked) {
+            Ok(metadata) => {
+                // A reparse point resolves via read_link on Windows as well;
+                // POSIX symlinks answer identically, so one probe covers both.
+                if fs::read_link(&walked).is_ok() || metadata.file_type().is_symlink() {
+                    violations.push(format!(
+                        "{doc}: {kind} path traverses a symbolic-link or reparse segment ({}) outside the declared repository tree",
+                        walked.display()
+                    ));
+                    return false;
+                }
+                // Intermediate segments must stay directories. Compare by
+                // position rather than string identity: root.join(path)
+                // retains the manifest's internal '/' separators, which would
+                // make byte comparison lie about the same filesystem object.
+                if !metadata.is_dir() && index != last_index {
+                    violations.push(format!(
+                        "{doc}: {kind} path descends through a non-directory segment: {}",
+                        walked.display()
+                    ));
+                    return false;
+                }
+            }
+            Err(error) => {
+                violations.push(format!(
+                    "{doc}: {kind} path segment {} cannot be inspected: {error}",
+                    walked.display()
+                ));
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn validate_authority_reference(
     root: &Path,
     doc: &str,
@@ -324,29 +659,22 @@ fn validate_authority_reference(
     let Some(reference) = &row.authority_reference else {
         return;
     };
-    let path = &reference.path;
-    if path.starts_with('/')
-        || path.contains('\\')
-        || path.contains(':')
-        || Path::new(path).is_absolute()
-    {
-        violations.push(format!(
-            "{doc}: authority reference path must be repo-relative slash form: {path}"
-        ));
+    if !path_shape_and_containment(
+        doc,
+        "authority reference",
+        reference.path.as_str(),
+        allowed_roots,
+        violations,
+    ) {
         return;
     }
-    let within_declared_root = allowed_roots.iter().any(|allowed| {
-        path == allowed.as_str()
-            || (path.starts_with(allowed.as_str())
-                && path.strip_prefix(allowed.as_str()).is_some_and(|rest| rest.starts_with('/')))
-    });
-    if !within_declared_root {
-        violations.push(format!("{doc}: authority reference escapes owned fixture roots: {path}"));
+    let full_path = root.join(reference.path.as_str());
+    if !full_path.is_file() {
+        violations
+            .push(format!("{doc}: authority reference points to missing file {}", reference.path));
         return;
     }
-    if !root.join(path).is_file() {
-        violations.push(format!("{doc}: authority reference points to missing file {path}"));
-    }
+    rejects_linked_segments(doc, "authority reference", root, &reference.path, violations);
 }
 
 fn validate_fixture_reference(
@@ -356,36 +684,28 @@ fn validate_fixture_reference(
     allowed_roots: &[String],
     violations: &mut Vec<String>,
 ) {
-    let path = &row.fixture.path;
-    if path.starts_with('/')
-        || path.contains('\\')
-        || path.contains(':')
-        || Path::new(path).is_absolute()
-    {
-        violations.push(format!("{doc}: fixture path must be repo-relative slash form: {path}"));
+    if !path_shape_and_containment(
+        doc,
+        "fixture",
+        row.fixture.path.as_str(),
+        allowed_roots,
+        violations,
+    ) {
         return;
     }
-    let within_declared_root = allowed_roots.iter().any(|allowed| {
-        path == allowed.as_str()
-            || (path.starts_with(allowed.as_str())
-                && path.strip_prefix(allowed.as_str()).is_some_and(|rest| rest.starts_with('/')))
-    });
-    if !within_declared_root {
-        violations.push(format!(
-            "{doc}: fixture source escapes owned fixture roots without disposition: {path}"
-        ));
-        return;
-    }
-    let full_path = root.join(path);
+    let full_path = root.join(row.fixture.path.as_str());
     if !full_path.is_file() {
-        violations.push(format!("{doc}: fixture path points to missing file {path}"));
+        violations.push(format!("{doc}: fixture path points to missing file {}", row.fixture.path));
+        return;
+    }
+    if !rejects_linked_segments(doc, "fixture", root, &row.fixture.path, violations) {
         return;
     }
     let actual = digest_file(&full_path).unwrap_or_else(|_| "<digest-error>".to_string());
     if actual != row.fixture.digest_sha256_lf {
         violations.push(format!(
-            "{doc}: fixture digest drift for {path}: recorded {}, computed {}",
-            row.fixture.digest_sha256_lf, actual
+            "{doc}: fixture digest drift for {}: recorded {}, computed {}",
+            row.fixture.path, row.fixture.digest_sha256_lf, actual
         ));
     }
 }
@@ -445,7 +765,8 @@ fn validate_controls(
             // A self-referential control supplies no opposite-direction or
             // neighbourhood evidence, so it can never satisfy the falsifier
             // requirement a promoted row relies on.
-            violations.push(format!("{doc}: control cannot reference its own row id {:?}", reference));
+            violations
+                .push(format!("{doc}: control cannot reference its own row id {:?}", reference));
             continue;
         }
         if !row_ids.contains(reference.as_str()) {
@@ -686,8 +1007,7 @@ fn validate_coverage(manifest: &model::Manifest, violations: &mut Vec<String>) {
         // Only named deferred slots (reason + owner) excuse a missing
         // population. Required coverage strings demand instantiation; they are
         // never themselves a deferral.
-        let has_deferral =
-            declared.is_some_and(|entry| !entry.deferred_coverage.is_empty());
+        let has_deferral = declared.is_some_and(|entry| !entry.deferred_coverage.is_empty());
         if !has_rows && !has_deferral {
             violations.push(format!(
                 "{DOC}: family {family:?} claims denominator coverage without any row"
@@ -799,6 +1119,56 @@ fn validate_coverage(manifest: &model::Manifest, violations: &mut Vec<String>) {
                 "{DOC}: terminal outcome {:?} ({}) has no denominator row and no named deferral",
                 terminal,
                 terminal.wire_name()
+            ));
+        }
+    }
+    // Reverse direction (PR #12706 gmaF): removing a required slot from a
+    // family denominator must fail closed even though every vocabulary slot
+    // still finds a row somewhere. Every instantiated row slot has to stay
+    // declared by its own family entry.
+    validate_row_slots_declared(manifest, violations);
+}
+
+fn validate_row_slots_declared(manifest: &model::Manifest, violations: &mut Vec<String>) {
+    const DOC: &str = MANIFEST_RELATIVE_PATH;
+    for row in &manifest.rows {
+        let Some(entry) =
+            manifest.denominator.iter().find(|candidate| candidate.family == row.train.family)
+        else {
+            violations.push(format!(
+                "{DOC}: family {:?} instantiates rows but declares no denominator entry",
+                row.train.family
+            ));
+            continue;
+        };
+        let declared: BTreeSet<&str> = entry
+            .required_coverage
+            .iter()
+            .map(String::as_str)
+            .chain(entry.deferred_coverage.iter().map(|slot| slot.coverage.as_str()))
+            .collect();
+        let stage_token = row
+            .expectations
+            .operation
+            .as_ref()
+            .map(|operation| format!("stage:{}", operation.stage.wire_name()));
+        if let Some(token) = &stage_token {
+            if !declared.contains(token.as_str()) {
+                violations.push(format!(
+                    "{DOC}: row {} exercises operation stage {:?} which the {:?} denominator does not declare",
+                    row.row_id,
+                    token.trim_start_matches("stage:"),
+                    entry.family
+                ));
+            }
+        }
+        let terminal_token = format!("terminal:{}", row.terminal.wire_name());
+        if !declared.contains(terminal_token.as_str()) {
+            violations.push(format!(
+                "{DOC}: row {} declares terminal outcome {:?} which the {:?} denominator does not declare",
+                row.row_id,
+                terminal_token.trim_start_matches("terminal:"),
+                entry.family
             ));
         }
     }
