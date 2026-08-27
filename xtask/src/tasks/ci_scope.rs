@@ -942,12 +942,19 @@ fn validate_subject_classification(output: &ScopeOutput) -> Result<()> {
     if output.changed_files.is_empty() || output.diff_class == "prose_only" {
         return Ok(());
     }
+    let requires_governed_projection = output
+        .changed_files
+        .iter()
+        .any(|path| path.ends_with(".rs") || matches!(path.as_str(), "Cargo.toml" | "Cargo.lock"));
+    if !requires_governed_projection {
+        return Ok(());
+    }
     let has_packages = !output.direct_crates.is_empty()
         || !output.reverse_dep_closure.is_empty()
         || !output.architecture_wideners.is_empty();
     if !has_packages && output.selected_lanes.is_empty() {
         return Err(eyre!(
-            "immutable CI subject has non-prose changed inputs but no package or typed policy lane"
+            "immutable CI subject has governed Rust or root Cargo inputs but no package or typed policy lane"
         ));
     }
     Ok(())
@@ -1510,6 +1517,31 @@ mod tests {
         assert!(output.risk_tags.contains(&RISK_TAG_DEP_CHANGE.to_string()));
         assert!(output.selected_lanes.iter().any(|l| l.lane == "publish"));
         assert!(output.selected_lanes.iter().any(|l| l.lane == "security"));
+        Ok(())
+    }
+
+    #[test]
+    fn immutable_subject_accepts_non_cargo_input_without_governed_projection() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-parser", "crates/perl-parser")]);
+        let files = vec!["scripts/standalone.py".to_string()];
+        let mut output = classify_files(&files, &metadata, "/workspace")?;
+        output.changed_files = files;
+
+        assert!(output.direct_crates.is_empty());
+        assert!(output.selected_lanes.is_empty());
+        validate_subject_classification(&output)
+    }
+
+    #[test]
+    fn immutable_subject_rejects_unprojected_rust_input() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-parser", "crates/perl-parser")]);
+        let files = vec!["src/orphan.rs".to_string()];
+        let mut output = classify_files(&files, &metadata, "/workspace")?;
+        output.changed_files = files;
+
+        assert!(output.direct_crates.is_empty());
+        assert!(output.selected_lanes.is_empty());
+        assert!(validate_subject_classification(&output).is_err());
         Ok(())
     }
 
