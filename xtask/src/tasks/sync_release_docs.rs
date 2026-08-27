@@ -687,7 +687,7 @@ fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String>
     let mut train_seen = false;
     let mut workspace_seen = false;
     let mut surface_seen = false;
-    let mut remaining_seen = false;
+    let mut remaining_count = 0;
     let mut current_heading: Option<&str> = None;
 
     let mut lines: Vec<String> = Vec::new();
@@ -731,6 +731,12 @@ fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String>
                     "status/release.md: remaining work anchor must be under `## Active Blockers`"
                 );
             }
+            remaining_count += 1;
+            if remaining_count > 1 {
+                bail!(
+                    "status/release.md: duplicate remaining work anchors under `## Active Blockers`"
+                );
+            }
             lines.push(if surface.shipped_date.is_some() {
                 format!(
                     "- Remaining work is operational: verify the existing `v{}` release receipt and close the remaining channel receipts; do not dispatch release orchestration for an already-shipped train.",
@@ -742,7 +748,6 @@ fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String>
                     surface.version
                 )
             });
-            remaining_seen = true;
         } else {
             lines.push(line.to_string());
         }
@@ -757,7 +762,7 @@ fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String>
     if !surface_seen {
         bail!("status/release.md: published crate surface line not found");
     }
-    if !remaining_seen {
+    if remaining_count == 0 {
         bail!("status/release.md: remaining blockers prep verification line not found");
     }
     Ok(restore_trailing_newline(content, &lines))
@@ -1025,6 +1030,27 @@ This closeout remains historical.\n";
             if !second.contains(boundary) {
                 bail!("second preparation sync omitted authority boundary: {boundary}");
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_release_notes_rejects_duplicate_preparation_anchors() -> Result<()> {
+        let input = "**Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta\n\
+**Workspace version line**: `v0.17.0`\n\
+**Published crate surface**: 34 crates\n\
+## Active Blockers\n\
+- Remaining work is operational: finish `v0.18.0` prep verification; #12876 product-policy closure and #12230 publication projection remain blocked, and #4343 release controller retains NO-GO authority until explicit human approval is recorded.\n\
+- Remaining work is operational: finish `v0.18.0` prep verification, then publish and record final channel receipts\n";
+        let error = match sync_release_notes(&input, &preparation_release_surface()) {
+            Ok(_) => bail!("duplicate preparation anchors were accepted"),
+            Err(error) => error,
+        };
+        if !error
+            .to_string()
+            .contains("duplicate remaining work anchors under `## Active Blockers`")
+        {
+            bail!("duplicate anchors returned the wrong diagnostic: {error}");
         }
         Ok(())
     }
