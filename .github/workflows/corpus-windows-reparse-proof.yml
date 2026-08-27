@@ -97,11 +97,13 @@ jobs:
 
           test_list="$(mktemp)"
           trap 'rm -f "$test_list"' EXIT
-          cargo test --locked -p perl-corpus --lib -- --list | tee "$test_list"
+          cargo test --locked -p perl-corpus --lib -- --list \
+            | sed 's/\r$//' \
+            | tee "$test_list"
 
           echo "Selected topology symlink tests:"
           for test_name in "${selected_tests[@]}"; do
-            if ! grep -Fq -- "${test_name}: test" "$test_list"; then
+            if ! grep -Fqx -- "${test_name}: test" "$test_list"; then
               echo "missing expected test: $test_name" >&2
               exit 1
             fi
@@ -109,5 +111,20 @@ jobs:
           done
 
           for test_name in "${selected_tests[@]}"; do
-            cargo test --locked -p perl-corpus --lib "$test_name" -- --exact --nocapture
+            test_output="$(mktemp)"
+            if ! cargo test --locked -p perl-corpus --lib "$test_name" \
+              -- --exact --nocapture \
+              2>&1 | sed 's/\r$//' | tee "$test_output"; then
+              rm -f "$test_output"
+              exit 1
+            fi
+
+            running_count="$(grep -Ec '^running 1 test$' "$test_output" || true)"
+            result_count="$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9.]+s$' "$test_output" || true)"
+            rm -f "$test_output"
+            if [[ "$running_count" -ne 1 || "$result_count" -ne 1 ]]; then
+              echo "exact test did not report exactly one executed test: $test_name" >&2
+              echo "running summaries: $running_count; result summaries: $result_count" >&2
+              exit 1
+            fi
           done

@@ -771,8 +771,11 @@ mod tests {
         root: &Path,
         path: &Path,
     ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let relative = path.strip_prefix(root)?;
-        let canonical_root = strip_verbatim_prefix(fs::canonicalize(root)?);
+        let mut relative = PathBuf::new();
+        for component in path.strip_prefix(root)?.components() {
+            relative.push(component.as_os_str());
+        }
+        let canonical_root = canonical_runtime_root(root)?;
         Ok(canonical_root.join(relative))
     }
 
