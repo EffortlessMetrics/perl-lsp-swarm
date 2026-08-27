@@ -325,6 +325,71 @@ export function findReleaseAssetName(
 }
 
 /**
+ * Result of looking an asset up in a `sha256sum(1)`-format SHA256SUMS manifest
+ * (#9839). `absent` means no well-formed entry names the requested asset;
+ * `conflicting` means several well-formed entries name it with disagreeing
+ * digests; both are fail-closed outcomes for the caller.
+ */
+export type Sha256SumsLookup =
+  | { status: 'found'; digest: string }
+  | { status: 'absent' }
+  | { status: 'conflicting' };
+
+// A genuine `sha256sum` entry anchors the 64-hex digest at the start of the
+// line, requires whitespace between digest and file field, and optionally
+// carries coreutils' binary-mode marker (outside the file field). Anything
+// else never supplies a digest (#9839).
+const SHA256_SUMS_ENTRY = /^([0-9a-fA-F]{64})[ \t]+(?:\*?)(.*)$/;
+
+/**
+ * Resolve the expected SHA-256 digest for `assetName` from a SHA256SUMS text.
+ *
+ * Anchored whole-token verification (#9839): an entry counts only when its
+ * leading token is exactly a SHA-256 digest and its file field exactly equals
+ * `assetName`. Lines that merely contain the asset name or a digest string as
+ * a substring cannot satisfy verification.
+ */
+export function lookupSha256SumsDigest(checksums: string, assetName: string): Sha256SumsLookup {
+  const digests = new Set<string>();
+
+  for (const rawLine of checksums.split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+    const entry = SHA256_SUMS_ENTRY.exec(line);
+
+    if (!entry) {
+      continue;
+    }
+
+    const [, digestToken, fileName] = entry;
+
+    if (!digestToken || fileName !== assetName) {
+      continue;
+    }
+
+    digests.add(digestToken.toLowerCase());
+  }
+
+  if (digests.size === 0) {
+    return { status: 'absent' };
+  }
+
+  if (digests.size > 1) {
+    return { status: 'conflicting' };
+  }
+
+  let resolvedDigest: string | undefined;
+  for (const digest of digests) {
+    resolvedDigest = digest;
+  }
+
+  if (!resolvedDigest) {
+    return { status: 'absent' };
+  }
+
+  return { status: 'found', digest: resolvedDigest };
+}
+
+/**
  * Map a managed-release-selector refusal to the established user-facing error
  * messages (#9925). The stable-channel `no_compatible_release` message is
  * pinned by existing behavior; every other refusal surfaces the selector's
@@ -898,23 +963,25 @@ export class BinaryDownloader {
           const checksumPath = path.join(tempDir, 'SHA256SUMS');
           await this.downloadFile(checksumAsset.browser_download_url, checksumPath);
 
-          // Find the checksum line for our file
-          const checksums = fs.readFileSync(checksumPath, 'utf8');
-          const lines = checksums.split('\n');
-          const checksumLine = lines.find((line) => line.includes(assetName));
+          // Find the checksum entry for our file
+          const sumsEntry = lookupSha256SumsDigest(
+            fs.readFileSync(checksumPath, 'utf8'),
+            assetName,
+          );
 
-          if (!checksumLine) {
+          if (sumsEntry.status === 'conflicting') {
+            throw new Error(
+              `Security check failed: Conflicting checksum entries for ${assetName} in SHA256SUMS.`,
+            );
+          }
+
+          if (sumsEntry.status !== 'found') {
             throw new Error(
               `Security check failed: Checksum for ${assetName} not found in SHA256SUMS file.`,
             );
           }
 
-          const expectedChecksum = checksumLine.split(/\s+/)[0]?.toLowerCase();
-          if (!expectedChecksum) {
-            throw new Error(
-              `Security check failed: Checksum for ${assetName} is malformed in SHA256SUMS.`,
-            );
-          }
+          const expectedChecksum = sumsEntry.digest;
           const actualChecksum = await this.calculateSHA256(archivePath);
 
           if (expectedChecksum !== actualChecksum) {
