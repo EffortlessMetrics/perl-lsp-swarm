@@ -97,6 +97,72 @@ fn merge_base_comparator_hard_errors_on_new_unpinned_ref() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn subject_binding_flags_pass_on_verified_merge_ref() -> Result<()> {
+    let (fixture, _outer) = scenario(PinMovement::None)?;
+
+    let output = run_cli(
+        fixture.root(),
+        Some("main"),
+        None,
+        &[
+            "--expect-merge-of",
+            &fixture.candidate_head,
+            "--expect-origin",
+            "EffortlessMetrics/perl-lsp-swarm",
+        ],
+        &fixture.receipt_path(),
+    )?;
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "bound scan failed on the verified subject:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let receipt = read_receipt(&fixture)?;
+    assert_eq!(receipt["passed"], Value::Bool(true));
+    assert_eq!(receipt["new_or_changed_count"], Value::from(0));
+    Ok(())
+}
+
+#[test]
+fn tampered_expected_head_fails_closed() -> Result<()> {
+    let (fixture, _outer) = scenario(PinMovement::None)?;
+    let forged = "0000000000000000000000000000000000000009";
+
+    let output = run_cli(
+        fixture.root(),
+        Some(fixture.main_tip.as_str()),
+        None,
+        &["--expect-merge-of", forged],
+        &fixture.receipt_path(),
+    )?;
+
+    assert_ne!(output.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not of the expected candidate"));
+    Ok(())
+}
+
+#[test]
+fn tampered_expected_origin_fails_closed() -> Result<()> {
+    let (fixture, _outer) = scenario(PinMovement::None)?;
+
+    let output = run_cli(
+        fixture.root(),
+        Some("main"),
+        None,
+        &["--expect-origin", "EffortlessMetrics/perl-lsp-swarm-fork"],
+        &fixture.receipt_path(),
+    )?;
+
+    assert_ne!(output.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("does not match expected repository"));
+    Ok(())
+}
+
 /// What the candidate's own workflow file contributes on top of the base history.
 enum PinMovement {
     /// Innocent candidate: touches nothing pin-like.
@@ -112,6 +178,10 @@ struct Fixture {
     receipt: PathBuf,
     /// Event-time base the PR would have recorded before any base-side movement.
     recorded_base: String,
+    /// Candidate head SHA: the second parent of the simulated merge ref.
+    candidate_head: String,
+    /// Current base branch tip: what `origin/<base.ref>` resolves to.
+    main_tip: String,
 }
 
 impl Fixture {
@@ -145,6 +215,10 @@ fn scenario(movement: PinMovement) -> Result<(Fixture, tempfile::TempDir)> {
     git(&repository, &["config", "user.name", "test"])?;
     git(&repository, &["config", "user.email", "test@example.com"])?;
     git(&repository, &["config", "core.autocrlf", "false"])?;
+    git(
+        &repository,
+        &["remote", "add", "origin", "https://github.com/EffortlessMetrics/perl-lsp-swarm.git"],
+    )?;
     std::fs::write(
         repository.join(".ci/policies/action-pin-provenance.toml"),
         format!(
@@ -188,16 +262,23 @@ fn scenario(movement: PinMovement) -> Result<(Fixture, tempfile::TempDir)> {
     )?;
     git(&repository, &["add", "--", ".github/workflows/pin-source.yml"])?;
     git(&repository, &["commit", "-m", "base-side pin arrival"])?;
+    let main_tip = git(&repository, &["rev-parse", "main"])?.trim().to_owned();
 
-    // M: GitHub's simulated merge of the candidate head with current main.
-    git(&repository, &["switch", "candidate"])?;
-    git(&repository, &["merge", "--no-edit", "-m", "simulated pull request merge", "main"])?;
+    // M: GitHub's simulated merge ref. GitHub merges the candidate head INTO
+    // the base branch, so parent1 is the incorporated base tip and parent2 is
+    // the candidate head. The result hangs off a detached HEAD while the base
+    // branch ref stays behind, mirroring refs/pull/N/merge vs refs/heads/main.
+    let candidate_head = git(&repository, &["rev-parse", "candidate"])?.trim().to_owned();
+    git(&repository, &["checkout", "--detach"])?;
+    git(&repository, &["merge", "--no-ff", "-m", "simulated pull request merge", "candidate"])?;
 
     Ok((
         Fixture {
             repository,
             receipt: outer.path().join("action-pin-provenance.json"),
             recorded_base,
+            candidate_head,
+            main_tip,
         },
         outer,
     ))

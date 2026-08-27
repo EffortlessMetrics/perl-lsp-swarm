@@ -51,6 +51,8 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           RECORDED_BASE_SHA: ${{ github.event.merge_group.base_sha || github.event.before }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           args=(
             --receipt target/receipts/action-pin-provenance.json
@@ -60,9 +62,15 @@ jobs:
           # pull_request.base.sha lags it after intervening merges and charges
           # other people's pin changes to this candidate (#10194). Resolve the
           # merge base against the fetched base branch at run time instead;
-          # unresolvable ancestry fails closed inside the tool.
+          # unresolvable ancestry fails closed inside the tool. The scan is
+          # bound to this subject: HEAD must be the simulated merge of this
+          # candidate head, and origin must name this repository.
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            args+=(--merge-base "origin/$PR_BASE_REF")
+            args+=(
+              --merge-base "origin/$PR_BASE_REF"
+              --expect-merge-of "$PR_HEAD_SHA"
+              --expect-origin "$REPOSITORY"
+            )
           elif [[ "$RECORDED_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && [[ ! "$RECORDED_BASE_SHA" =~ ^0+$ ]]; then
             args+=(--base "$RECORDED_BASE_SHA")
           fi
