@@ -24,6 +24,7 @@ run_cherry_pick_or_skip_empty() {
   local status
   cherry_pick_noop=false
   capture_file="$(mktemp)"
+  trap 'rm -f -- "$capture_file"; trap - RETURN' RETURN
   if "$@" >"$capture_file" 2>&1; then
     status=0
   else
@@ -31,19 +32,16 @@ run_cherry_pick_or_skip_empty() {
   fi
   if [ "$status" -eq 0 ]; then
     cat "$capture_file"
-    rm -f "$capture_file"
     return 0
   fi
   cat "$capture_file" >&2
   if [ "$status" -ne 1 ] || ! grep -Eqi 'previous[[:space:]]+cherry-pick[[:space:]]+is[[:space:]]+now[[:space:]]+empty' "$capture_file"; then
-    rm -f "$capture_file"
     echo "$label failed for a non-empty-cherry-pick reason; refusing no-op skip." >&2
     return 1
   fi
   local cherry_pick_head
   cherry_pick_head="$(git rev-parse --verify CHERRY_PICK_HEAD 2>/dev/null || true)"
   if [ "$cherry_pick_head" != "$expected_commit" ]; then
-    rm -f "$capture_file"
     echo "$label reported empty for $cherry_pick_head, expected $expected_commit; refusing no-op skip." >&2
     return 1
   fi
@@ -66,7 +64,6 @@ run_cherry_pick_or_skip_empty() {
     printf 'command-output:\n'
     cat "$capture_file"
   } > "$evidence_dir/empty-cherry-pick-$evidence_suffix.txt"
-  rm -f "$capture_file"
   git cherry-pick --skip
   cherry_pick_noop=true
   return 0

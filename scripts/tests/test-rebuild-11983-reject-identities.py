@@ -48,6 +48,7 @@ def exercise_empty_cherry_pick_guard(
     helper = script[start:end]
     required_fragments = (
         "capture_file=\"$(mktemp)\"",
+        "trap 'rm -f -- \"$capture_file\"; trap - RETURN' RETURN",
         "if \"$@\" >\"$capture_file\" 2>&1; then",
         "else\n    status=$?\n  fi",
         "previous[[:space:]]+cherry-pick[[:space:]]+is[[:space:]]+now[[:space:]]+empty",
@@ -124,6 +125,7 @@ test "$result" -eq {0 if expect_skip else 1}
                 "DIRTY_TREE": str(int(dirty_tree)),
                 "UNTRACKED_FILE": str(int(untracked_file)),
                 "SKIPPED": f"{root.as_posix()}/skipped",
+                "TMPDIR": str(root),
             },
             capture_output=True,
             text=True,
@@ -134,6 +136,8 @@ test "$result" -eq {0 if expect_skip else 1}
                 "empty cherry-pick guard fixture failed: "
                 f"status={result.returncode}; stdout={result.stdout!r}; stderr={result.stderr!r}"
             )
+        if list(root.glob("tmp.*")):
+            raise RuntimeError("empty cherry-pick helper leaked its capture file")
         if expect_skip:
             receipt = evidence / "empty-cherry-pick-first_cherry-pick_--continue.txt"
             if not skipped.is_file() or not receipt.is_file():
@@ -282,7 +286,7 @@ def write_manifest(
         reject.write_text("\n".join(reject_segments), encoding="utf-8")
         log_count = len(reject_segments) if mutation == "duplicate" else len(patch_segments)
         log_numbers = list(range(1, log_count + 1))
-        if mutation == "reorder" and index == 4:
+        if mutation == "ordinal_reorder" and index == 4:
             log_numbers.reverse()
         log.write_text(
             "".join(f"Rejected hunk #{number}.\n" for number in log_numbers),
@@ -364,24 +368,16 @@ def main() -> None:
         raise RuntimeError("empty cherry-pick helper does not capture combined output")
     if "previous[[:space:]]+cherry-pick[[:space:]]+is[[:space:]]+now[[:space:]]+empty" not in rebuild_script:
         raise RuntimeError("empty cherry-pick helper lacks the expected diagnostic matcher")
-    classification_start = rebuild_script.index("  local cherry_pick_head")
-    classification_end = rebuild_script.index("\n\n# Identity gate", classification_start)
-    classification = rebuild_script[classification_start:classification_end]
-    receipt_start = classification.index("printf 'command-output:\\n'")
-    receipt_cat = classification.index('cat "$capture_file"', receipt_start)
-    receipt_cleanup = classification.index('rm -f "$capture_file"', receipt_cat)
-    if receipt_cat > receipt_cleanup:
-        raise RuntimeError("empty cherry-pick evidence removes capture before reading it")
     if 'run_cherry_pick_or_skip_empty "first cherry-pick" "$first_commit" git cherry-pick "$first_commit"' not in rebuild_script:
         raise RuntimeError("initial cherry-pick bypasses the guarded helper")
     if "-- provider-confidence-matrix" in rebuild_script:
         raise RuntimeError("rebuild invokes the obsolete provider-confidence command")
     if "check-provider-confidence-matrix" not in rebuild_script:
         raise RuntimeError("rebuild omits the current provider-confidence command")
-    receipt_output = rebuild_script.index("    cat \"$capture_file\"", rebuild_script.index("printf 'command-output:"))
-    receipt_cleanup = rebuild_script.index('  rm -f "$capture_file"', receipt_output)
-    if receipt_cleanup < receipt_output:
-        raise RuntimeError("empty cherry-pick evidence removes diagnostic before recording it")
+    if 'elif [ "$cherry_pick_noop" = true ]; then\n  first_commit_noop=true' not in rebuild_script:
+        raise RuntimeError("initial empty cherry-pick is not recorded in reconstruction state")
+    if "first-commit: already-current-empty-cherry-pick-skipped" not in rebuild_script:
+        raise RuntimeError("reconstruction summary omits the initial empty-pick outcome")
     with tempfile.TemporaryDirectory(prefix="rebuild-11983-imports-") as directory:
         path = Path(directory) / "text_sync.rs"
         old = "old import\n"
@@ -439,8 +435,8 @@ def main() -> None:
             Path("reject-0.rej"),
         )
         expect_rejection(
-            write_manifest(root / "reorder", mutation="reorder"),
-            root / "reorder" / "evidence",
+            write_manifest(root / "ordinal-reorder", mutation="ordinal_reorder"),
+            root / "ordinal-reorder" / "evidence",
             "reject hunk ordinals",
         )
         table_mismatch = write_manifest(root / "table-mismatch")
@@ -457,14 +453,14 @@ def main() -> None:
             )
         finally:
             MODULE.EXPECTED_REJECT_IDENTITIES[table_path] = authored
-        table_order = write_manifest(root / "table-order")
+        table_order = write_manifest(root / "reorder")
         order_path = "crates/perl-lsp-rs/src/runtime/language/formatting_policy/tests.rs"
         ordered = MODULE.EXPECTED_REJECT_IDENTITIES[order_path]
         MODULE.EXPECTED_REJECT_IDENTITIES[order_path] = (ordered[1], ordered[0], *ordered[2:])
         try:
             expect_rejection(
                 table_order,
-                root / "table-order" / "evidence",
+                root / "reorder" / "evidence",
                 "exactly match the authored per-file table",
             )
         finally:
