@@ -179,7 +179,7 @@ fn word_not_5000_deep_does_not_sigsegv() {
     // Before fix: SIGSEGV at ~5000 due to unguarded self-recursion.
     let code = "not ".repeat(5000) + "1";
     assert!(
-        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_error),
+        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_family),
         "5000-deep `not` chain should fail with the recursion guard, not crash"
     );
 }
@@ -189,7 +189,7 @@ fn word_not_depth_130_hits_limit() {
     // 130 levels is just above MAX_RECURSION_DEPTH (128).
     let code = "not ".repeat(130) + "1";
     assert!(
-        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_error),
+        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_family),
         "130-deep `not` chain should hit the recursion guard"
     );
 }
@@ -199,7 +199,7 @@ fn word_not_129_calls_hit_limit() {
     // The 129th call is just above MAX_RECURSION_DEPTH (128) and trips the guard.
     let code = "not ".repeat(129) + "1";
     assert!(
-        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_error),
+        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_family),
         "129-deep `not` chain should hit the recursion guard"
     );
 }
@@ -212,7 +212,7 @@ fn bang_200_deep_does_not_sigsegv() {
     // Before fix: stack overflow in parse_unary at ~200 levels.
     let code = "!".repeat(200) + "1";
     assert!(
-        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_error),
+        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_family),
         "200-deep `!` chain should fail with RecursionDepthExhausted, not crash"
     );
 }
@@ -221,7 +221,7 @@ fn bang_200_deep_does_not_sigsegv() {
 fn bang_depth_130_hits_limit() {
     let code = "!".repeat(130) + "1";
     assert!(
-        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_error),
+        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_family),
         "130-deep `!` chain should hit the recursion guard"
     );
 }
@@ -233,7 +233,7 @@ fn unary_minus_depth_hits_limit() {
     // (giving 150 recursion levels), that still exceeds MAX_RECURSION_DEPTH=128.
     let code = "-".repeat(300) + "1";
     assert!(
-        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_error),
+        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_family),
         "300-deep unary-minus chain should hit the recursion guard"
     );
 }
@@ -243,7 +243,7 @@ fn increment_depth_130_hits_limit() {
     // Pre-increment also recurses through parse_unary.
     let code = "++".repeat(130) + "$x";
     assert!(
-        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_error),
+        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_family),
         "130-deep `++` chain should hit the recursion guard"
     );
 }
@@ -252,7 +252,7 @@ fn increment_depth_130_hits_limit() {
 fn power_chain_depth_hits_limit() {
     let code = "1 ** ".repeat(130) + "1";
     assert!(
-        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_error),
+        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_family),
         "130-deep power chain should fail with the recursion guard, not overflow the stack"
     );
 }
@@ -322,7 +322,7 @@ fn mixed_not_and_bang_nesting_hits_limit() {
     let inner = "not ".repeat(100) + "1";
     let code = "!".repeat(100) + "(" + &inner + ")";
     assert!(
-        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_error),
+        parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_family),
         "mixed !/not nesting should hit the recursion guard"
     );
 }
@@ -371,7 +371,7 @@ fn pathological_block_depth_still_hits_limit() {
 
 fn has_structural_nesting_error(output: &ParseOutput) -> bool {
     output.diagnostics.iter().any(is_structural_nesting_error)
-        && !output.diagnostics.iter().any(is_recursion_guard_error)
+        && !output.diagnostics.iter().any(is_recursion_guard_family)
 }
 
 fn nested_eval_blocks(depth: usize) -> String {
