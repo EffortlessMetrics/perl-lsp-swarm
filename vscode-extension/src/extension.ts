@@ -1796,10 +1796,13 @@ async function finalizeStartedLanguageClient(
 
   // This hook is part of the lifecycle controller so initial startup and
   // restart/reinstall generations rebuild the same client integrations.
-  const serverVersion = startedClient.initializeResult?.serverInfo?.version;
-  if (serverVersion) {
-    healthWidget?.setVersion(serverVersion);
-  }
+  // Refresh both self-reported identity fields on every generation (#12705):
+  // assigning and clearing here keeps the reused status widget honest across
+  // replacement startups instead of retaining the prior server's identity,
+  // while a custom/wrapper server's name survives alongside its version.
+  const serverInfo = startedClient.initializeResult?.serverInfo;
+  healthWidget?.setName(serverInfo?.name);
+  healthWidget?.setVersion(serverInfo?.version);
 
   // Offer AI inline completion once if the server advertises support (#1634).
   // Fire-and-forget; failures must not block lifecycle finalization.

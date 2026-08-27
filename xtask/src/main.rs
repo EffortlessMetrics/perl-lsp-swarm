@@ -38,28 +38,29 @@ use tasks::{
     build, build_timing, bump_version, change_set, check, check_agent_context, check_lint_policy,
     check_test_wiring, check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract,
     ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
-    ci_scope, clean, command_evidence, compare, corpus_audit, count_ratchet, cpan_corpus,
-    dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc,
-    doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features,
-    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
-    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
-    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
-    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
-    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
-    native_format, native_product_surface, native_tooling, oracle_fixture_manifest,
-    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
-    parser_ratchet, perl_core_harness, perl_kwalitee, populate_book, pre_push_plan,
-    prep_crates_io_launch, product_health_rail_contract, protocol_type_substrate_matrix,
-    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
-    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, reachability_fixture_manifest, receipts, release,
-    release_artifact_check, release_evidence, release_notes, release_turnkey, repo_hygiene,
-    ripr_evidence, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
-    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
-    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
-    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    ci_scope, clean, clippy_cost_measure, command_evidence, compare, compiler_lexical_cutline,
+    corpus_audit, count_ratchet, cpan_corpus, dead_code, debt_report, dependency_hygiene, dev,
+    devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
+    emacs_train_context, emacs_train_specs, features, finalize_check, fix_forward, fmt,
+    forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files, github,
+    github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
+    incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
+    install_surface_check, integration_proof, intent_diff_gate, issue_plan, layer_check,
+    lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate,
+    metrics, module_train, module_train_live, native_critic, native_format, native_neovim_train,
+    native_product_surface, native_tooling, oracle_fixture_manifest, oracle_receipt_schema,
+    oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet,
+    perl_core_harness, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
+    product_health_rail_contract, protocol_type_substrate_matrix, provider_confidence_matrix,
+    provider_promotion_ledger, publication_facts, publish, publish_closure, publish_manifest_check,
+    publish_receipts, quality_baseline, quality_gate, queue_health, queue_snapshot,
+    reachability_fixture_manifest, receipts, release, release_artifact_check, release_evidence,
+    release_notes, release_turnkey, repo_hygiene, ripr_evidence, seam_diff,
+    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
+    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
+    srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
+    sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
+    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
     validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
@@ -152,6 +153,14 @@ enum Commands {
         update_view: bool,
     },
 
+    /// List, validate, and explain the compiler lexical cut-line cases
+    /// manifest (`compiler_lexical_cutline_cases.v1`, #12156).
+    CompilerLexicalCutline {
+        /// Operation to run against the manifest.
+        #[command(subcommand)]
+        command: tasks::compiler_lexical_cutline::CompilerLexicalCutlineSubcommand,
+    },
+
     /// Validate differential real-Perl oracle receipt schema.
     CheckOracleReceiptSchema,
 
@@ -159,6 +168,13 @@ enum Commands {
     /// (train_edge_contract.v1), its programme-neutral fixtures, and the
     /// declared adaptations of the landed programme train manifests.
     CheckTrainEdgeContract,
+
+    /// Validate the stable native Neovim implementation train manifest
+    /// (native_neovim_train.v1, #11392): the closed schema, graph shift-left
+    /// rejection law with named diagnostics, the shuffled determinism
+    /// control, and every discriminating invalid fixture.
+    #[command(name = "check-native-neovim-train")]
+    CheckNativeNeovimTrain,
 
     /// Validate the dependency-neutral product-health rail/adapter registry contract.
     #[command(name = "check-product-health-rail-contract")]
@@ -212,6 +228,18 @@ enum Commands {
     EditorCompat {
         #[command(subcommand)]
         command: EditorCompatCommand,
+    },
+
+    /// Provision and verify the content-bound Vim + vim-lsp host test
+    /// instrument (vim_vim_lsp_host_toolchain.v1, #11372): the pinned Vim
+    /// release bytes plus the #11369-pinned vim-lsp subject, acquired,
+    /// digest-verified, cached under exact-identity keys, revalidated on
+    /// every use, and handed off as ephemeral roles. Test-instrument
+    /// identity only: no support verdict, journey, or receipt.
+    #[command(name = "vim-host-toolchain")]
+    VimHostToolchain {
+        #[command(subcommand)]
+        command: VimHostToolchainCommand,
     },
 
     /// Validate the shared adversarial review-packet, review-finding, and
@@ -1062,6 +1090,26 @@ enum Commands {
 
     /// Measure CI lane runtimes and emit timing artifacts.
     CiMeasure,
+
+    /// Time workspace Clippy by target-kind scope under controlled cache
+    /// states and write a receipt (#11736 decision-1 cost instrument).
+    ClippyCostMeasure {
+        /// Receipt output path (relative paths resolve against the project root).
+        #[arg(long, default_value = "target/receipts/clippy-cost-measurement.json")]
+        receipt: PathBuf,
+
+        /// Comma-separated scopes to measure: lib,all-targets
+        #[arg(long, value_delimiter = ',', default_value = "lib,all-targets")]
+        scopes: Vec<clippy_cost_measure::ClippyScope>,
+
+        /// Comma-separated cache states to measure: warm,members-cold
+        #[arg(long, value_delimiter = ',', default_value = "warm,members-cold")]
+        states: Vec<clippy_cost_measure::ClippyCacheState>,
+
+        /// Per-pass watchdog in seconds; a killed pass fails the measurement loudly.
+        #[arg(long, default_value_t = 2400)]
+        timeout_secs: u64,
+    },
 
     /// Analyze GitHub Actions costs over a recent period.
     CiCostMonitor {
@@ -2622,6 +2670,37 @@ enum EditorCompatCommand {
 }
 
 #[derive(Subcommand)]
+enum VimHostToolchainCommand {
+    /// Acquire (or revalidate) the pinned toolchain under --output and write
+    /// the deterministic identity manifest. Network is used only for
+    /// immutable subjects missing from the cache; an existing valid entry is
+    /// a pure offline revalidation, and any drift deletes and rebuilds.
+    Provision {
+        /// Output/cache root directory for the provisioned toolchain.
+        #[arg(long)]
+        output: PathBuf,
+
+        /// Offline vim-lsp acquisition: clone the pinned commit from this
+        /// local checkout instead of the governed upstream URL. The subject
+        /// identity law is identical in both modes.
+        #[arg(long)]
+        vim_lsp_source: Option<PathBuf>,
+
+        /// Execution-environment label recorded in identity.
+        #[arg(long, default_value = "local_runner")]
+        environment: String,
+    },
+    /// Offline revalidation of one provisioned identity manifest against its
+    /// sibling subjects: recomputes every digest and refuses any drift as a
+    /// typed instrument failure. Never touches the network.
+    Verify {
+        /// Path to a provisioned vim_vim_lsp_host_toolchain.v1.json.
+        #[arg(long)]
+        manifest: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum VimEditorCompatCommand {
     /// Execute a hermetic host journey: start exact Vim headless, load the
     /// pinned vim-lsp, register the canonical perllsp --stdio server, attach
@@ -2635,19 +2714,31 @@ enum VimEditorCompatCommand {
     /// bootstrap, native root selection with wrong-root discrimination, the
     /// diagnostics lifecycle through the client's own state, and baseline
     /// cleanup — against the governed diagnostics fixture.
+    /// `freshness-generations` (#11390) runs the six-cell freshness journey —
+    /// route classification, external source generations through the explicit
+    /// reload route, project config through the restart route, client
+    /// settings through the live push channel, stale generation rejection,
+    /// and provider ownership — against the governed freshness fixture.
+    /// `save-format` (#11396) runs the seven-cell format-on-save journey —
+    /// the documented BufWritePre autocmd owner over the canonical sync
+    /// format action, one-save-one-invocation cardinality, exact applied and
+    /// legitimate no-change bytes, distinct disabled/refused/failure
+    /// dispositions, and stale-result rejection — against the governed save
+    /// fixture.
     Run {
         /// Exact client subject id (see
         /// `xtask::vim_host_run::VimClientSubject::known_ids`).
         #[arg(long)]
         subject: String,
 
-        /// Hermetic journey to execute: host-lifecycle or bootstrap-diagnostics.
+        /// Hermetic journey to execute: host-lifecycle, bootstrap-diagnostics,
+        /// freshness-generations, or save-format.
         #[arg(long, default_value = "host-lifecycle")]
         journey: String,
 
-        /// Fixture variant for the bootstrap-diagnostics journey (canonical
-        /// must pass; defect_absent and wrong_root_decoy are negative
-        /// controls that must fail with their typed reason).
+        /// Fixture variant for the bootstrap-diagnostics,
+        /// freshness-generations, and save-format journeys (canonical must
+        /// pass; the negative controls must fail with their typed reason).
         #[arg(long, default_value = "canonical")]
         fixture_variant: String,
 
@@ -4066,6 +4157,22 @@ enum SyncDivergenceCommand {
         #[arg(long)]
         receipt: PathBuf,
     },
+    /// Scaffold a v2 reconciliation ledger with one unresolved row per
+    /// target-unique non-merge commit; it invents no terminal disposition.
+    Scaffold {
+        /// Exact swarm source ref; resolved as the patch-equivalence upstream.
+        #[arg(long)]
+        source: String,
+        /// Completed reconciliation boundary ref; resolved as the exclusive history floor.
+        #[arg(long)]
+        boundary: String,
+        /// Release-repo target ref (normally the release repository head).
+        #[arg(long)]
+        target: String,
+        /// Output reconciliation ledger JSON (schema v2).
+        #[arg(long)]
+        ledger: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4598,8 +4705,11 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckReachabilityFixtureManifest { update_view } => {
             reachability_fixture_manifest::run(update_view)
         }
+
+        Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
+        Commands::CheckNativeNeovimTrain => native_neovim_train::run(),
         Commands::CheckProductHealthRailContract => product_health_rail_contract::run(),
         Commands::CheckAgentImplementationPacket { update_golden } => {
             agent_implementation_packet::run(update_golden)
@@ -4621,6 +4731,43 @@ fn run_cli(cli: Cli) -> Result<()> {
             println!("validated {validated} specialized vim/vim-lsp observations");
             Ok(())
         }
+        Commands::VimHostToolchain { command } => match command {
+            VimHostToolchainCommand::Provision { output, vim_lsp_source, environment } => {
+                let repo_root = utils::project_root().map_err(|error| eyre!(error.to_string()))?;
+                let inputs = xtask::vim_host_toolchain::ProvisionInputs {
+                    output_root: output,
+                    repo_root: repo_root.clone(),
+                    authority: xtask::vim_host_toolchain::SubjectAuthoritySource::RepoRoot(
+                        repo_root,
+                    ),
+                    vim_lsp_source,
+                    vim_archive_source: None,
+                    vim_archive_expected_sha256: None,
+                    vim_executable_expected_sha256: None,
+                    execution_environment: environment,
+                };
+                let outcome = xtask::vim_host_toolchain::provision(
+                    &inputs,
+                    &xtask::vim_host_toolchain::probe_vim_version,
+                )
+                .map_err(|error| eyre!("{error}"))?;
+                println!("{}", xtask::vim_host_toolchain::render_handoff(&outcome));
+                Ok(())
+            }
+            VimHostToolchainCommand::Verify { manifest } => {
+                xtask::vim_host_toolchain::verify_layout(
+                    &manifest,
+                    &xtask::vim_host_toolchain::probe_vim_version,
+                )
+                .map_err(|error| eyre!("{error}"))?;
+                println!(
+                    "verified: {} identity holds for {}",
+                    xtask::vim_host_toolchain::SCHEMA_VERSION,
+                    manifest.display()
+                );
+                Ok(())
+            }
+        },
         Commands::EditorCompat { command } => match command {
             EditorCompatCommand::Vim { command } => match command {
                 VimEditorCompatCommand::Run {
@@ -4635,6 +4782,124 @@ fn run_cli(cli: Cli) -> Result<()> {
                 } => {
                     let repo_root =
                         utils::project_root().map_err(|error| eyre!(error.to_string()))?;
+                    if journey == "save-format" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_save_format_run::SaveFormatFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_save_format_run::host_save_format_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim save-format run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} driver_failure={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.driver_failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.driver_failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
+                                        outcome.driver_failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim save-format run did not pass: {result:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                    if journey == "freshness-generations" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_freshness_run::FreshnessFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_freshness_run::host_freshness_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim freshness-generations run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} driver_failure={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.driver_failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.driver_failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
+                                        outcome.driver_failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim freshness-generations run did not pass: {result:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     if journey == "bootstrap-diagnostics" {
                         // Same subject law as the host-lifecycle path: an
                         // unknown subject id is a typed error before any run,
@@ -4697,7 +4962,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                     if journey != "host-lifecycle" {
                         return Err(eyre!(
                             "unknown journey {journey}: known journeys are host-lifecycle, \
-                             bootstrap-diagnostics"
+                             bootstrap-diagnostics, freshness-generations, save-format"
                         ));
                     }
                     let outcome = xtask::vim_host_run::host_run_from_cli(
@@ -4823,6 +5088,15 @@ fn run_cli(cli: Cli) -> Result<()> {
                     target,
                     ledger,
                     receipt,
+                    working_directory: None,
+                })
+            }
+            SyncDivergenceCommand::Scaffold { source, boundary, target, ledger } => {
+                tasks::sync_divergence::scaffold(tasks::sync_divergence::ScaffoldConfig {
+                    source,
+                    boundary,
+                    target,
+                    ledger,
                     working_directory: None,
                 })
             }
@@ -5098,6 +5372,14 @@ fn run_cli(cli: Cli) -> Result<()> {
             })
         }
         Commands::CiMeasure => ci_measure::run(),
+        Commands::ClippyCostMeasure { receipt, scopes, states, timeout_secs } => {
+            clippy_cost_measure::run(clippy_cost_measure::ClippyCostMeasureArgs {
+                receipt,
+                scopes,
+                states,
+                timeout_secs,
+            })
+        }
         Commands::CiCostMonitor { days, json } => ci_metrics::run_cost_monitor(days, json),
         Commands::CiBaseline { branch, days, limit, output } => {
             ci_metrics::run_ci_baseline(branch, days, limit, output)

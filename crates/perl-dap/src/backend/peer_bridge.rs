@@ -14,14 +14,13 @@
 //!
 //! The bridge is a **parallel** path: it does not touch the native
 //! [`crate::debug_adapter::DebugAdapter`] dispatch funnel (decision DF1 remains
-//! deferred). [`run_external_peer_session`] drives it over a socket editor
-//! connection; [`DapPeerBridge::dispatch`] / [`DapPeerBridge::poll_events`] are
-//! the deterministic, testable core.
+//! deferred). [`run_external_peer_session_stdio`] drives it over editor stdio;
+//! [`DapPeerBridge::dispatch`] / [`DapPeerBridge::poll_events`] are the
+//! deterministic, testable core.
 
 #[cfg(test)]
 use perl_tdd_support::{must, must_some};
 use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -522,96 +521,15 @@ enum Step {
     Out,
 }
 
-// ---------------------------------------------------------------------------
-// Production session driver (socket editor transport)
-// ---------------------------------------------------------------------------
-
-/// Drive a [`DapPeerBridge`] over a socket editor connection.
-///
-/// Reads Content-Length framed DAP requests from the editor, dispatches each to
-/// the bridge, and writes framed responses/events back. Between reads it polls
-/// the backend for asynchronous events (stops, output, termination) so they
-/// reach the editor promptly — a short read timeout on the socket paces the
-/// interleave (the same technique the peer backend uses internally).
-///
-/// A concrete `TcpStream` is required (not a generic reader) because the
-/// interleave depends on `set_read_timeout`; the socket transport uses this.
-/// The stdio counterpart is [`run_external_peer_session_stdio`], which uses a
-/// reader thread + channel to interleave events since stdin has no read timeout.
-///
-/// # Errors
-/// Returns a transport error if the socket read/write fails irrecoverably.
-pub fn run_external_peer_session(
-    stream: TcpStream,
-    mut bridge: DapPeerBridge,
-    poll_interval: Duration,
-) -> std::io::Result<()> {
-    use perl_lsp_rs_core::transport::ContentLengthFramer;
-
-    stream.set_read_timeout(Some(poll_interval))?;
-    let mut reader = stream.try_clone()?;
-    let mut writer = stream;
-    let mut framer = ContentLengthFramer::new();
-    let mut buf = [0u8; 8 * 1024];
-
-    loop {
-        // Deliver any asynchronous backend events first.
-        let events = bridge.poll_events();
-        if !events.is_empty() {
-            write_dap_msgs(&mut writer, &events)?;
-        }
-
-        match reader.read(&mut buf) {
-            Ok(0) => break, // editor disconnected
-            Ok(n) => {
-                framer.push(&buf[..n]);
-                loop {
-                    match framer.try_next() {
-                        Ok(Some(body)) => {
-                            let (out, disconnect) = dispatch_frame(&mut bridge, &body);
-                            write_dap_msgs(&mut writer, &out)?;
-                            if disconnect {
-                                return Ok(());
-                            }
-                        }
-                        Ok(None) => break,
-                        // `ContentLengthFramer::try_next` already discards the
-                        // malformed header block before returning an error, so a
-                        // valid subsequent frame can still be parsed. Skip and keep
-                        // going rather than tearing down the whole session on one
-                        // bad frame — same recoverable handling as the stdio driver
-                        // (`run_peer_session_threaded`) and
-                        // `ContentLengthMessageReader::read_next`.
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                "peer bridge (socket): dropping malformed DAP frame"
-                            );
-                        }
-                    }
-                }
-            }
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                // No editor input this tick; loop to poll events again.
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
-}
-
-/// Drive a [`DapPeerBridge`] over **stdio** — the default DAP transport an editor
-/// uses when it spawns the adapter as a child process (`perl-dap --external-peer
-/// HOST:PORT` with no `--socket`).
+/// Drive a [`DapPeerBridge`] over **stdio** — the production DAP transport an
+/// editor uses when it spawns the adapter as a child process
+/// (`perl-dap --external-peer HOST:PORT`).
 ///
 /// stdin has no read timeout, so a dedicated reader thread frames requests off
 /// stdin and forwards each frame body over a channel; the main loop interleaves
 /// draining backend events to stdout with a `recv_timeout` on that channel, so
 /// asynchronous stops/output reach the editor promptly without blocking on
-/// stdin. This is the stdio counterpart of [`run_external_peer_session`].
+/// stdin.
 ///
 /// # Errors
 /// Returns a transport error if writing framed messages to stdout fails.

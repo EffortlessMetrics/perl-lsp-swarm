@@ -593,16 +593,14 @@ impl RefactoringEngine {
                 }
 
                 // Target file may not exist yet (will be created)
-                if let Some(parent) = target_file.parent() {
-                    if !parent.as_os_str().is_empty() && !parent.exists() {
-                        return Err(ParseError::SyntaxError {
-                            message: format!(
-                                "Target directory does not exist: {}",
-                                parent.display()
-                            ),
-                            location: 0,
-                        });
-                    }
+                if let Some(parent) = target_file.parent()
+                    && !parent.as_os_str().is_empty()
+                    && !parent.exists()
+                {
+                    return Err(ParseError::SyntaxError {
+                        message: format!("Target directory does not exist: {}", parent.display()),
+                        location: 0,
+                    });
                 }
 
                 if elements.is_empty() {
@@ -971,11 +969,11 @@ impl RefactoringEngine {
             let max_age = std::time::Duration::from_secs(self.config.backup_max_age_seconds);
 
             backup_dirs.retain(|dir| {
-                if let Ok(age) = now.duration_since(dir.modified) {
-                    if age > max_age {
-                        dirs_to_remove.push(dir.path.clone());
-                        return false;
-                    }
+                if let Ok(age) = now.duration_since(dir.modified)
+                    && age > max_age
+                {
+                    dirs_to_remove.push(dir.path.clone());
+                    return false;
                 }
                 true
             });
@@ -1473,17 +1471,15 @@ impl RefactoringEngine {
         // Find elements in the AST
         let mut found_names: HashSet<String> = HashSet::new();
         ast.for_each_child(|child| {
-            if let NodeKind::Subroutine { name, .. } = &child.kind {
-                if let Some(sub_name) = name {
-                    if elements.contains(sub_name) {
-                        found_names.insert(sub_name.clone());
-                        elements_to_move.push(ElementToMove {
-                            location: child.location,
-                            content: source_content[child.location.start..child.location.end]
-                                .to_string(),
-                        });
-                    }
-                }
+            if let NodeKind::Subroutine { name, .. } = &child.kind
+                && let Some(sub_name) = name
+                && elements.contains(sub_name)
+            {
+                found_names.insert(sub_name.clone());
+                elements_to_move.push(ElementToMove {
+                    location: child.location,
+                    content: source_content[child.location.start..child.location.end].to_string(),
+                });
             }
         });
 
