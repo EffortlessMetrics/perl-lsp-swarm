@@ -1487,6 +1487,13 @@ jobs:
       - name: Publish-provenance contract (required merge surface)
         run: cargo test -p xtask --test post_publish_smoke_version_provenance --locked -- --nocapture
 
+      # #12863/#12693: no gate row or other workflow executed the budget witness
+      # below, so its pins could all fail while every required check stayed
+      # green. It reads exactly the two files this job budgets, so run it next
+      # to the four contracts above on the same required merge surface.
+      - name: Gate-policy budget witness contract (required merge surface)
+        run: cargo test -p xtask --test issue_4657_ci_workflow_contract --locked -- --nocapture
+
   lsp-memory-smoke:
     name: LSP Memory Smoke
     runs-on: ubuntu-24.04
