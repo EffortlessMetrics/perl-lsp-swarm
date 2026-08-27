@@ -21,7 +21,9 @@ fi
 git config user.name EffortlessSteven
 git config user.email git@effortlesssteven.com
 
-git fetch origin main fix/11955-withdraw-secondary-format-routes
+# Cherry-pick sources survive via the durable merged pull-request ref; the
+# original source branch fix/11955-withdraw-secondary-format-routes was deleted.
+git fetch --no-tags origin main "+refs/pull/11983/head:refs/remotes/origin/pr-11983-source"
 git merge --no-edit origin/main
 
 git cat-file -e "${first_commit}^{commit}"
