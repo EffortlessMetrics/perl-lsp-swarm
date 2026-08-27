@@ -2,6 +2,11 @@ name: Badge Endpoints
 
 on:
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character source SHA to execute and bind into the artifact
+        required: true
+        type: string
   push:
     branches:
       - master
@@ -20,7 +25,10 @@ env:
 jobs:
   generate:
     name: Generate bounded badge payload
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    if: >-
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.source_sha == github.sha)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -158,7 +166,10 @@ jobs:
   open-pr:
     name: Open badge refresh PR
     needs: generate
-    if: vars.BADGE_ENDPOINTS_AUTO_PR == 'true'
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
+      vars.BADGE_ENDPOINTS_AUTO_PR == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -303,5 +314,5 @@ jobs:
             Generated without repository write authority by:
 
             ```bash
-            cargo xtask badges
+            python3 scripts/generate-badges.py
             ```

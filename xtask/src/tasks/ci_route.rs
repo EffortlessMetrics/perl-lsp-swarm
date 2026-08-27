@@ -439,6 +439,11 @@ const GENERATE_BADGES_WRAPPER_PACK: ProofPack = ProofPack {
     commands: &["bash scripts/tests/test-generate-badges-wrapper.sh"],
 };
 
+const RIPR_BADGE_ENDPOINTS_PACK: ProofPack = ProofPack {
+    id: "ripr-badge-endpoints-focused",
+    commands: &["python scripts/tests/test-generate-badges.py"],
+};
+
 const IGNORED_TEST_COUNT_WRAPPER_PACK: ProofPack = ProofPack {
     id: "ignored-test-count-wrapper-focused",
     commands: &["bash scripts/tests/test-ignored-test-count-wrapper.sh"],
@@ -1101,6 +1106,13 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         route.add_surface("generate-badges-wrapper");
         route.add_pack(GENERATE_BADGES_WRAPPER_PACK);
         route.add_coverage_pack("patch-coverage-generate-badges-wrapper");
+        return;
+    }
+
+    if file == "scripts/generate-badges.py" || file == "scripts/tests/test-generate-badges.py" {
+        route.add_surface("ripr-badge-endpoints");
+        route.add_pack(RIPR_BADGE_ENDPOINTS_PACK);
+        route.add_coverage_pack("patch-coverage-ripr-badge-endpoints");
         return;
     }
 
@@ -3059,6 +3071,32 @@ mod tests {
     }
 
     #[test]
+    fn ci_route_receipt_maps_both_ripr_badge_python_paths_to_focused_non_lcov_pack() -> Result<()> {
+        for path in ["scripts/generate-badges.py", "scripts/tests/test-generate-badges.py"] {
+            let receipt = route_receipt("origin/main", "HEAD", vec![path.to_string()])?;
+            assert_eq!(receipt.changed_surfaces, vec!["ripr-badge-endpoints"]);
+            assert!(proof_pack_ids(&receipt).contains(&"ripr-badge-endpoints-focused"));
+            assert!(receipt.required_proof_packs.iter().any(|pack| {
+                pack.id == "ripr-badge-endpoints-focused"
+                    && pack
+                        .commands
+                        .iter()
+                        .any(|command| command == "python scripts/tests/test-generate-badges.py")
+            }));
+            assert!(receipt.coverage_pack_selector.is_empty());
+            assert!(receipt.coverage_proof_packs.is_empty());
+            assert_eq!(
+                receipt
+                    .skipped_by_policy
+                    .get("patch-coverage-ripr-badge-endpoints")
+                    .map(String::as_str),
+                Some(NON_LCOV_COVERAGE_SKIP_REASON)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn ci_route_receipt_maps_ignored_test_count_wrapper_to_focused_non_lcov_pack() -> Result<()> {
         let receipt = route_receipt(
             "origin/main",
@@ -3359,6 +3397,7 @@ mod tests {
                 "patch-coverage-quick-receipts-wrapper",
                 "patch-coverage-publish-receipts-wrapper",
                 "patch-coverage-generate-badges-wrapper",
+                "patch-coverage-ripr-badge-endpoints",
                 "patch-coverage-ignored-test-count-wrapper",
                 "patch-coverage-swarm-summary-wrapper",
                 "patch-coverage-workspace-exclusions-wrapper",
@@ -3429,6 +3468,7 @@ mod tests {
             "patch-coverage-quick-receipts-wrapper",
             "patch-coverage-publish-receipts-wrapper",
             "patch-coverage-generate-badges-wrapper",
+            "patch-coverage-ripr-badge-endpoints",
             "patch-coverage-ignored-test-count-wrapper",
             "patch-coverage-swarm-summary-wrapper",
             "patch-coverage-workspace-exclusions-wrapper",
