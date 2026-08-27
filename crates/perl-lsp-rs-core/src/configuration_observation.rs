@@ -9,14 +9,29 @@
 //!
 //! Laws enforced structurally (see tests):
 //! - transport position and client-declared labels cannot strengthen
-//!   provenance;
+//!   provenance; labels stay a bounded diagnostics projection and are
+//!   rejected when oversized or excessive;
 //! - absence, explicit reset, malformed, unsupported, unavailable, and
 //!   instrument failure stay distinct;
 //! - identical values under different provenance produce different
 //!   observation identity;
+//! - identity digests are algorithm-tagged SHA-256 over complete
+//!   length-prefixed material, so no truncated-prefix collision is possible;
+//! - mechanically decidable catalog validation rules execute during
+//!   recording; interactive rules remain owned by the landed runtime slices;
+//! - unmodeled external facts cannot weaken evidence to raw-value policies
+//!   (`SafeValue`/`BoundedValue` are authority-reserved);
+//! - digest-only evidence keeps its distinguishing digest; only redacted
+//!   evidence collapses to a fixed marker;
+//! - each field is recorded at most once per envelope, canonical IDs are
+//!   unique in denominators, unknown canonical IDs always fail closed, and
+//!   completeness counts cover only the declared denominator (surplus rows
+//!   are disclosed separately);
 //! - secret values never enter fingerprints or serialized receipts;
 //! - environment/probe facts remain observations, never policy writers;
-//! - unknown source classes fail closed (`AuthorityNotProven`).
+//! - unknown source classes fail closed (`AuthorityNotProven`);
+//! - construction is builder-sealed: the finished observation derives
+//!   serialization output but not deserialization input.
 //!
 //! Reconciliation (#10813): every landed identity is reused verbatim —
 //! canonical field IDs and admission come from the checked configuration
@@ -39,15 +54,22 @@ use crate::configuration_authority::{
     ConfigSource, ConfigValidation, ConfigValueKind, EvidencePolicy, FieldAuthority,
     authority_by_id,
 };
-use crate::hashing::fnv1a64_hex;
+use crate::hashing::sha256_hex;
 
 /// Producer/schema generation of this observation contract version.
-pub(crate) const OBSERVATION_SCHEMA_GENERATION: u32 = 1;
+///
+/// Generation 2: observation identity digests became algorithm-tagged
+/// SHA-256 over full length-prefixed material (`sha256:` on the wire), and
+/// the fingerprint covers validation/evidence-policy/limitations/counts.
+/// Any further identity-visible change must bump this deliberately.
+pub(crate) const OBSERVATION_SCHEMA_GENERATION: u32 = 2;
 
 const MAX_IDENTITY_CHARS: usize = 128;
 const MAX_TEXT_VALUE_CHARS: usize = 4_096;
 const MAX_TEXT_LIST_ITEMS: usize = 256;
 const MAX_FIELDS_PER_OBSERVATION: usize = 512;
+const MAX_CLIENT_LABELS: usize = 16;
+const MAX_LABEL_CHARS: usize = 128;
 
 /// Failure modes for constructing or populating an observation. Adapters must
 /// repair or drop the observation; construction never silently coerces.
@@ -63,6 +85,12 @@ pub(crate) enum ObservationError {
     TextListTooLong { field: String, limit: usize },
     TooManyFields { limit: usize },
     PresentWithoutValue { field: String },
+    LabelOutOfBounds,
+    TooManyClientLabels { limit: usize },
+    DuplicateCanonicalField { id: String },
+    DuplicateObservation { field: String },
+    UnsupportedEvidencePolicy { field: String },
+    MalformedValue { field: String, reason: MalformedReason },
 }
 
 /// Provenance class fixed by the observing adapter, never by transported
@@ -213,14 +241,25 @@ impl ConfigurationSourceIdentity {
     /// Records a client-declared scope/trust label verbatim for diagnostics.
     ///
     /// Law: labels cannot strengthen provenance — they are excluded from
-    /// fingerprints and never read by admission logic.
+    /// fingerprints and never read by admission logic. The projection stays
+    /// bounded and allowlisted to diagnostics: label count, key length, and
+    /// value length are capped so transported labels cannot smuggle
+    /// unbounded or credential-shaped content into serialized receipts.
     pub(crate) fn with_client_label(
         mut self,
         key: impl Into<String>,
         value: impl Into<String>,
-    ) -> Self {
-        self.client_declared_labels.insert(key.into(), value.into());
-        self
+    ) -> Result<Self, ObservationError> {
+        let key = key.into();
+        let value = value.into();
+        if key.is_empty() || key.len() > MAX_LABEL_CHARS || value.len() > MAX_LABEL_CHARS {
+            return Err(ObservationError::LabelOutOfBounds);
+        }
+        if self.client_declared_labels.len() >= MAX_CLIENT_LABELS {
+            return Err(ObservationError::TooManyClientLabels { limit: MAX_CLIENT_LABELS });
+        }
+        self.client_declared_labels.insert(key, value);
+        Ok(self)
     }
 
     pub(crate) fn provenance(&self) -> ConfigurationProvenanceClass {
@@ -245,17 +284,15 @@ impl ConfigurationSourceIdentity {
 }
 
 /// Length-tagged bounded byte material for fingerprints and digests. The
-/// length prefix keeps concatenated components unambiguous.
+/// length prefix keeps concatenated components unambiguous, and the complete
+/// byte sequence is emitted so no prefix collision is possible before the
+/// final collision-resistant digest compresses the material.
 fn tag(prefix: &str, bytes: &[u8]) -> String {
     let mut hex = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         let _ = write!(hex, "{byte:02x}");
     }
-    if hex.len() > 64 {
-        format!("{prefix}{}:{:.64}", bytes.len(), hex)
-    } else {
-        format!("{prefix}{}:{hex}", bytes.len())
-    }
+    format!("{prefix}{}:{hex}", bytes.len())
 }
 
 /// Logical scope of the observed input.
@@ -491,6 +528,10 @@ pub(crate) enum ConfigurationObservationLimitation {
     ProvenanceUnknownOrUnsupported,
     EnvironmentFactNotPolicyWriter,
     PartialFieldPopulation,
+    /// The envelope recorded rows outside the declared denominator. Coverage
+    /// numbers still count only expected-denominator population; this
+    /// discloses the surplus rows separately.
+    PopulationBeyondDenominator,
     EnvelopeShapeUntrusted,
     SensitiveValueRedacted,
 }
@@ -564,7 +605,15 @@ impl ConfigurationObservationFingerprint {
 
 /// The immutable, versioned observation produced by
 /// [`ConfigurationObservationDraft::finish`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Serialize is derived because receipts are emitted; `Deserialize` is
+/// deliberately NOT derived: JSON cannot reconstruct this authority-bearing
+/// state without re-running the checked builder laws
+/// ([`ConfigurationObservationDraft::finish`] computes admission,
+/// redaction, limitations, and completeness from recorded facts). A decoded
+/// receipt future consumers accept must go through a validated wrapper, not
+/// raw derivation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ConfigurationObservation {
     schema_generation: u32,
     subject: ConfigurationObservationSubject,
@@ -617,6 +666,12 @@ impl ConfigurationObservation {
                 field.disposition.discriminant(),
                 field.admission.discriminant(),
             );
+            if let Some(validation) = &field.validation {
+                let _ = write!(material, "valid={validation:?};");
+            }
+            if let Some(evidence_policy) = &field.evidence_policy {
+                let _ = write!(material, "evidence={evidence_policy:?};");
+            }
             if let Some(value) = &field.normalized_value {
                 let _ = write!(material, "value={};", value.evidence_material());
             }
@@ -625,8 +680,25 @@ impl ConfigurationObservation {
             }
             material.push('|');
         }
-        let _ = write!(material, "/completeness={}", self.completeness.discriminant());
-        ConfigurationObservationFingerprint { digest: fnv1a64_hex(material.as_bytes()) }
+        for limitation in &self.limitations {
+            let _ = write!(material, "env-lim={limitation:?};");
+        }
+        match self.completeness {
+            ConfigurationCompleteness::Complete { expected, observed }
+            | ConfigurationCompleteness::Partial { expected, observed } => {
+                let _ = write!(
+                    material,
+                    "/completeness={};expected={expected};observed={observed}",
+                    self.completeness.discriminant(),
+                );
+            }
+            other => {
+                let _ = write!(material, "/completeness={}", other.discriminant());
+            }
+        }
+        // Collision-resistant identity over the full canonical material; the
+        // `sha256:` prefix names the algorithm explicitly on the wire.
+        ConfigurationObservationFingerprint { digest: sha256_hex(material.as_bytes()) }
     }
 }
 
@@ -674,14 +746,23 @@ impl ConfigurationObservationDraft {
     }
 
     /// Declares the expected denominator from canonical authority IDs.
-    /// Unknown IDs fail closed instead of widening the denominator.
+    /// Unknown IDs fail closed instead of widening the denominator, IDs must
+    /// be unique (duplicates would silently skew completeness counts), and
+    /// the denominator obeys the same field-count bound as observations.
     pub(crate) fn expect_canonical_fields(&mut self, ids: &[&str]) -> Result<(), ObservationError> {
+        if ids.len() > MAX_FIELDS_PER_OBSERVATION {
+            return Err(ObservationError::TooManyFields { limit: MAX_FIELDS_PER_OBSERVATION });
+        }
+        let mut seen = BTreeSet::new();
         for id in ids {
             if authority_by_id(id).is_none() {
                 return Err(ObservationError::UnknownCanonicalField { id: (*id).to_string() });
             }
+            if !seen.insert(*id) {
+                return Err(ObservationError::DuplicateCanonicalField { id: (*id).to_string() });
+            }
         }
-        self.expected_denominator = ids.iter().map(|id| (*id).to_string()).collect();
+        self.expected_denominator = seen.into_iter().map(str::to_string).collect();
         self.expected_denominator.sort();
         Ok(())
     }
@@ -716,6 +797,12 @@ impl ConfigurationObservationDraft {
             return Err(ObservationError::TooManyFields { limit: MAX_FIELDS_PER_OBSERVATION });
         }
         let key = identity.key().to_string();
+        // A field is observed once per envelope: a later recording must never
+        // silently overwrite an earlier one (permutation-sensitive receipts
+        // are not deterministic observations).
+        if self.fields.contains_key(&key) {
+            return Err(ObservationError::DuplicateObservation { field: key });
+        }
         let policy = match &identity {
             ObservedFieldIdentity::Canonical { id } => match canonical_field_policy(id) {
                 Some(policy) => Some(policy),
@@ -742,6 +829,33 @@ impl ConfigurationObservationDraft {
             );
             if !compatible {
                 return Err(ObservationError::UnsupportedValueKind { field: key.clone() });
+            }
+            // Execute the mechanically decidable catalog rules before any
+            // evidence handling, so a value the authority would reject is a
+            // typed malformed outcome instead of an admitted observation.
+            // Structurally interactive rules (enum spellings, path/executable/
+            // header/endpoint shapes) require the generation/runtime pipeline
+            // and stay owned by the landed runtime slices (#7057).
+            match policy.validation {
+                ConfigValidation::NonEmptyString => {
+                    if value.raw_text_parts().iter().any(|part| part.is_empty()) {
+                        return Err(ObservationError::MalformedValue {
+                            field: key.clone(),
+                            reason: MalformedReason::WrongShape,
+                        });
+                    }
+                }
+                ConfigValidation::UnsignedRange { minimum, maximum } => {
+                    if let NormalizedValue::Count(count) = &value
+                        && (*count < minimum || *count > maximum)
+                    {
+                        return Err(ObservationError::MalformedValue {
+                            field: key.clone(),
+                            reason: MalformedReason::OutOfRange,
+                        });
+                    }
+                }
+                _ => {}
             }
         }
         for part in value.raw_text_parts() {
@@ -780,14 +894,30 @@ impl ConfigurationObservationDraft {
         };
 
         let mut limitations = BTreeSet::new();
+        // Unmodeled external facts are sensitive-by-default: an adapter that
+        // is not backed by the authority catalog cannot weaken evidence to a
+        // raw-value policy. SafeValue/BoundedValue are reserved for canonical
+        // rows whose sensitivity the catalog already classified.
+        if matches!(identity, ObservedFieldIdentity::Unmodeled { .. })
+            && matches!(evidence_policy, EvidencePolicy::SafeValue | EvidencePolicy::BoundedValue)
+        {
+            return Err(ObservationError::UnsupportedEvidencePolicy { field: key });
+        }
         let normalized_value = match evidence_policy {
-            EvidencePolicy::Redacted | EvidencePolicy::DerivedDigestOnly => {
+            EvidencePolicy::Redacted => {
                 limitations.insert(ConfigurationObservationLimitation::SensitiveValueRedacted);
                 NormalizedValue::Redacted
             }
             EvidencePolicy::PathIdentityOnly => {
                 limitations.insert(ConfigurationObservationLimitation::SensitiveValueRedacted);
-                NormalizedValue::DigestOnly(fnv1a64_hex(value.evidence_material().as_bytes()))
+                NormalizedValue::DigestOnly(sha256_hex(value.evidence_material().as_bytes()))
+            }
+            // Digest-only evidence keeps its distinguishing collision-resistant
+            // digest; only truly redacted evidence collapses to the constant
+            // marker.
+            EvidencePolicy::DerivedDigestOnly => {
+                limitations.insert(ConfigurationObservationLimitation::SensitiveValueRedacted);
+                NormalizedValue::DigestOnly(sha256_hex(value.evidence_material().as_bytes()))
             }
             EvidencePolicy::SafeValue | EvidencePolicy::BoundedValue => value,
         };
@@ -822,6 +952,17 @@ impl ConfigurationObservationDraft {
         let key = identity.key().to_string();
         if disposition == ConfigurationObservationDisposition::Present {
             return Err(ObservationError::PresentWithoutValue { field: key });
+        }
+        // Same fail-closed law as record_present: an ID that is not in the
+        // canonical namespace must surface as UnknownCanonicalField, and only
+        // the explicit Unmodeled variant may carry external markers.
+        if matches!(identity, ObservedFieldIdentity::Canonical { .. })
+            && canonical_field_policy(identity.key()).is_none()
+        {
+            return Err(ObservationError::UnknownCanonicalField { id: key.clone() });
+        }
+        if self.fields.contains_key(&key) {
+            return Err(ObservationError::DuplicateObservation { field: key });
         }
         let validation = match &identity {
             ObservedFieldIdentity::Canonical { id } => {
@@ -899,8 +1040,20 @@ impl ConfigurationObservationDraft {
         let missing_expected =
             self.expected_denominator.iter().any(|id| !self.fields.contains_key(id));
 
+        // Coverage counts only the declared denominator population; rows
+        // outside it (unmodeled facts, out-of-denominator recordings) are
+        // disclosed through a limitation instead of inflating completeness.
+        let denominator: BTreeSet<&str> =
+            self.expected_denominator.iter().map(String::as_str).collect();
+        if self.fields.keys().any(|key| !denominator.contains(key.as_str())) {
+            self.limitations
+                .insert(ConfigurationObservationLimitation::PopulationBeyondDenominator);
+        }
+
         let expected = self.expected_denominator.len() as u32;
-        let observed = self.fields.len() as u32;
+        let observed =
+            self.expected_denominator.iter().filter(|id| self.fields.contains_key(*id)).count()
+                as u32;
         let completeness = if self.envelope_malformed {
             ConfigurationCompleteness::EnvelopeMalformed
         } else if instrument_failure {
@@ -1024,7 +1177,9 @@ mod tests {
         )
         .expect("valid identity")
         .with_client_label("scope", "global")
-        .with_client_label("trusted", "true");
+        .expect("bounded label")
+        .with_client_label("trusted", "true")
+        .expect("bounded label");
         let mut draft =
             ConfigurationObservationDraft::new(subject(ObservationScope::Global), labeled)
                 .expect("draft constructs");
@@ -1548,7 +1703,9 @@ mod tests {
     }
 
     /// Deterministic schema fixtures: two independent generations serialize
-    /// byte-identically, survive a round trip, and pin the wire format.
+    /// byte-identically and pin the wire format. Construction is
+    /// builder-sealed — the observation type deliberately derives no
+    /// `Deserialize`, so serialized bytes cannot reconstruct asserted state.
     #[test]
     fn deterministic_serde_fixtures_are_byte_stable_across_generations() {
         let generate = || {
@@ -1576,16 +1733,369 @@ mod tests {
         let second_bytes = serde_json::to_vec_pretty(&second).expect("serializes");
         assert_eq!(first_bytes, second_bytes, "second generation must be byte-identical");
 
-        let reparsed: ConfigurationObservation =
-            serde_json::from_slice(&first_bytes).expect("deserializes");
-        assert_eq!(
-            serde_json::to_vec_pretty(&reparsed).expect("reserializes"),
-            first_bytes,
-            "round trip must be byte-stable"
-        );
-
+        // Byte-stability is one-directional: these bytes are an emitted
+        // receipt, not a construction input. `ConfigurationObservation`
+        // derives no Deserialize (see type doc).
         let golden = std::str::from_utf8(&first_bytes).expect("utf8 fixture");
         pin_golden_fixture(golden);
+    }
+
+    /// Falsifier #11: client labels stay bounded diagnostics — oversized or
+    /// excessive label material is rejected, never serialized verbatim.
+    #[test]
+    fn client_labels_are_bounded_diagnostics() {
+        let base = ConfigurationSourceIdentity::new(
+            "perl-lsp-rs-core/test",
+            OBSERVATION_SCHEMA_GENERATION,
+            ConfigurationProvenanceClass::GenericUnscopedClient,
+            ObservationTransport::InitializeSession { session_id: "s-9".to_string() },
+        )
+        .expect("valid identity");
+
+        let oversized_key = base.clone().with_client_label("k".repeat(MAX_LABEL_CHARS + 1), "v");
+        let oversized_value = base.clone().with_client_label("k", "v".repeat(MAX_LABEL_CHARS + 1));
+        let empty_key = base.clone().with_client_label("", "v");
+        assert!(matches!(oversized_key, Err(ObservationError::LabelOutOfBounds)));
+        assert!(matches!(oversized_value, Err(ObservationError::LabelOutOfBounds)));
+        assert!(matches!(empty_key, Err(ObservationError::LabelOutOfBounds)));
+
+        let saturated = (0..MAX_CLIENT_LABELS).fold(base.clone(), |identity, index| {
+            identity.with_client_label(format!("key-{index}"), "v").expect("bounded")
+        });
+        assert!(matches!(
+            saturated.with_client_label("one-too-many", "v"),
+            Err(ObservationError::TooManyClientLabels { .. })
+        ));
+    }
+
+    /// Falsifier #12: long identities that share a prefix beyond any legacy
+    /// truncation window still produce distinct observations. Fingerprint
+    /// digests are algorithm-tagged SHA-256 over complete length-prefixed
+    /// material (`sha256:` prefix), never truncated byte prefixes.
+    #[test]
+    fn same_length_same_prefix_long_identities_remain_distinct() {
+        let root_for = |suffix: &str| {
+            finish(
+                ConfigurationProvenanceClass::PerRootWorkspaceConfiguration,
+                ObservationTransport::ConfigurationPullResult { request_id: "req-l".to_string() },
+                ObservationScope::Root { root_identity: format!("{}-{suffix}", "r".repeat(36)) },
+                |draft| {
+                    draft.expect_canonical_fields(&["workspace.include_paths"]).expect("row");
+                    draft
+                        .record_present(
+                            ObservedFieldIdentity::canonical("workspace.include_paths"),
+                            NormalizedValue::TextList(vec!["lib".to_string()]),
+                            None,
+                        )
+                        .expect("records");
+                },
+            )
+        };
+        // Same length, same first bytes well past any truncation boundary,
+        // differing only in the suffix.
+        assert_ne!(root_for("aaaa").fingerprint(), root_for("bbbb").fingerprint());
+    }
+
+    /// Falsifier #13: unmodeled external facts cannot weaken evidence to a
+    /// raw-value policy, digest-only policy keeps distinguishing collision-
+    /// resistant digests, and redaction alone collapses to a fixed marker.
+    #[test]
+    fn unmodeled_evidence_floor_and_digest_only_identity() {
+        let weak_source = source(
+            ConfigurationProvenanceClass::ProcessEnvironment,
+            ObservationTransport::EnvironmentVariable { name: "PERL5LIB".to_string() },
+        );
+
+        // Sensitivity floor: raw-value policies are authority-reserved.
+        let mut safe_attempt = ConfigurationObservationDraft::new(
+            subject(ObservationScope::Global),
+            weak_source.clone(),
+        )
+        .expect("draft constructs");
+        assert!(matches!(
+            safe_attempt.record_present(
+                ObservedFieldIdentity::unmodeled("PERL5LIB"),
+                NormalizedValue::Text("/opt/site/lib".to_string()),
+                Some(EvidencePolicy::SafeValue),
+            ),
+            Err(ObservationError::UnsupportedEvidencePolicy { .. })
+        ));
+
+        let mut bounded_attempt = ConfigurationObservationDraft::new(
+            subject(ObservationScope::Global),
+            weak_source.clone(),
+        )
+        .expect("draft constructs");
+        assert!(matches!(
+            bounded_attempt.record_present(
+                ObservedFieldIdentity::unmodeled("PERL5LIB"),
+                NormalizedValue::Count(3),
+                Some(EvidencePolicy::BoundedValue),
+            ),
+            Err(ObservationError::UnsupportedEvidencePolicy { .. })
+        ));
+
+        // Digest-only evidence is accepted for the rejected key after the
+        // failed recording and keeps its distinguishing algorithm-tagged
+        // digest.
+        let with_digest = finish(
+            ConfigurationProvenanceClass::ProcessEnvironment,
+            ObservationTransport::EnvironmentVariable { name: "PERL5LIB".to_string() },
+            ObservationScope::Global,
+            |draft| {
+                draft
+                    .record_present(
+                        ObservedFieldIdentity::unmodeled("PERL5LIB"),
+                        NormalizedValue::Text("/opt/site/lib".to_string()),
+                        Some(EvidencePolicy::DerivedDigestOnly),
+                    )
+                    .expect("digest-only allowed");
+            },
+        );
+        let left_digest =
+            match with_digest.observed_field("PERL5LIB").and_then(|field| field.normalized_value())
+            {
+                Some(NormalizedValue::DigestOnly(digest)) => digest.clone(),
+                other => panic!("expected digest-only evidence, got {other:?}"),
+            };
+
+        let distinct = finish(
+            ConfigurationProvenanceClass::ProcessEnvironment,
+            ObservationTransport::EnvironmentVariable { name: "PERL5LIB".to_string() },
+            ObservationScope::Global,
+            |draft| {
+                draft
+                    .record_present(
+                        ObservedFieldIdentity::unmodeled("PERL5LIB"),
+                        NormalizedValue::Text("/different/private/lib".to_string()),
+                        Some(EvidencePolicy::DerivedDigestOnly),
+                    )
+                    .expect("digest-only allowed");
+            },
+        );
+        let right_digest =
+            match distinct.observed_field("PERL5LIB").and_then(|field| field.normalized_value()) {
+                Some(NormalizedValue::DigestOnly(digest)) => digest.clone(),
+                other => panic!("expected digest-only evidence, got {other:?}"),
+            };
+        assert_ne!(left_digest, right_digest);
+        assert!(left_digest.starts_with("sha256:"));
+    }
+
+    /// Falsifier #14: the declared denominator rejects duplicate IDs (which
+    /// would silently skew completeness counts) and obeys the field-count
+    /// bound.
+    #[test]
+    fn denominator_rejects_duplicate_ids_and_binds_size() {
+        let mut draft = ConfigurationObservationDraft::new(
+            subject(ObservationScope::Global),
+            source(
+                ConfigurationProvenanceClass::CompiledDefault,
+                ObservationTransport::CompiledDefaultsEmitted,
+            ),
+        )
+        .expect("draft constructs");
+        let attempted = draft.expect_canonical_fields(&["ai.model", "ai.model"]);
+        assert!(matches!(
+            attempted,
+            Err(ObservationError::DuplicateCanonicalField { id }) if id == "ai.model",
+        ));
+
+        let oversized: Vec<&str> =
+            std::iter::repeat("x").take(MAX_FIELDS_PER_OBSERVATION + 1).collect();
+        assert!(matches!(
+            draft.expect_canonical_fields(&oversized),
+            Err(ObservationError::TooManyFields { .. })
+        ));
+    }
+
+    /// Falsifier #15: a recorded field can never be silently overwritten by a
+    /// later recording, in either present/disposition permutation.
+    #[test]
+    fn duplicate_field_records_are_rejected_in_any_permutation() {
+        let mut first = ConfigurationObservationDraft::new(
+            subject(ObservationScope::Global),
+            source(
+                ConfigurationProvenanceClass::TrustedUserOrMachineAdapter,
+                ObservationTransport::OperatorInvocation,
+            ),
+        )
+        .expect("draft constructs");
+        first
+            .record_present(
+                ObservedFieldIdentity::canonical("ai.model"),
+                NormalizedValue::Text("native".to_string()),
+                None,
+            )
+            .expect("first recording lands");
+        let overwritten = first.record_disposition(
+            ObservedFieldIdentity::canonical("ai.model"),
+            ConfigurationObservationDisposition::InstrumentFailure,
+        );
+        assert!(matches!(overwritten, Err(ObservationError::DuplicateObservation { .. })));
+        let preserved = first.finish().expect("finishes");
+        assert_eq!(
+            preserved.observed_field("ai.model").map(|field| field.disposition()),
+            Some(ConfigurationObservationDisposition::Present)
+        );
+
+        let mut second = ConfigurationObservationDraft::new(
+            subject(ObservationScope::Global),
+            source(
+                ConfigurationProvenanceClass::TrustedUserOrMachineAdapter,
+                ObservationTransport::OperatorInvocation,
+            ),
+        )
+        .expect("draft constructs");
+        second
+            .record_disposition(
+                ObservedFieldIdentity::canonical("ai.model"),
+                ConfigurationObservationDisposition::Unavailable,
+            )
+            .expect("disposition lands");
+        let overwrite_value = second.record_present(
+            ObservedFieldIdentity::canonical("ai.model"),
+            NormalizedValue::Text("late".to_string()),
+            None,
+        );
+        assert!(matches!(overwrite_value, Err(ObservationError::DuplicateObservation { .. })));
+    }
+
+    /// Falsifier #16: non-present recordings reject unknown canonical IDs,
+    /// exactly like value recordings; only Unmodeled may carry external
+    /// markers.
+    #[test]
+    fn disposition_unknown_canonical_field_fails_closed() {
+        let mut draft = ConfigurationObservationDraft::new(
+            subject(ObservationScope::Global),
+            source(
+                ConfigurationProvenanceClass::GenericUnscopedClient,
+                ObservationTransport::ConfigurationPullResult { request_id: "req-x".to_string() },
+            ),
+        )
+        .expect("draft constructs");
+        let attempted = draft.record_disposition(
+            ObservedFieldIdentity::canonical("not.a.canonical.field"),
+            ConfigurationObservationDisposition::Absent,
+        );
+        assert!(matches!(
+            attempted,
+            Err(ObservationError::UnknownCanonicalField { id }) if id == "not.a.canonical.field"
+        ));
+    }
+
+    /// Falsifier #17: completeness counts describe denominator coverage, and
+    /// rows beyond the denominator are disclosed as their own limitation
+    /// instead of inflating coverage or forcing partial populations.
+    #[test]
+    fn completeness_counts_coverage_and_discloses_extras() {
+        let extras = finish(
+            ConfigurationProvenanceClass::PerRootWorkspaceConfiguration,
+            ObservationTransport::ConfigurationPullResult { request_id: "req-e".to_string() },
+            ObservationScope::Root { root_identity: "root-a".to_string() },
+            |draft| {
+                draft.expect_canonical_fields(&["workspace.include_paths"]).expect("row");
+                draft
+                    .record_present(
+                        ObservedFieldIdentity::canonical("workspace.include_paths"),
+                        NormalizedValue::TextList(vec!["lib".to_string()]),
+                        None,
+                    )
+                    .expect("records");
+                for marker in ["PERL5LIB", "PERLLIB", "PERL5OPT"] {
+                    draft
+                        .record_present(
+                            ObservedFieldIdentity::unmodeled(marker),
+                            NormalizedValue::Text("present".to_string()),
+                            Some(EvidencePolicy::DerivedDigestOnly),
+                        )
+                        .expect("floor-compliant evidence");
+                }
+            },
+        );
+        assert!(matches!(
+            extras.completeness(),
+            ConfigurationCompleteness::Complete { expected: 1, observed: 1 }
+        ));
+        assert!(extras.limitations().any(|limitation| matches!(
+            limitation,
+            ConfigurationObservationLimitation::PopulationBeyondDenominator
+        )));
+
+        let sparse = finish(
+            ConfigurationProvenanceClass::CompiledDefault,
+            ObservationTransport::CompiledDefaultsEmitted,
+            ObservationScope::Global,
+            |draft| {
+                draft
+                    .expect_canonical_fields(&["telemetry.enabled", "formatting.tabs"])
+                    .expect("rows");
+                draft
+                    .record_present(
+                        ObservedFieldIdentity::canonical("formatting.tabs"),
+                        NormalizedValue::Flag(false),
+                        None,
+                    )
+                    .expect("records");
+            },
+        );
+        assert!(matches!(
+            sparse.completeness(),
+            ConfigurationCompleteness::Partial { expected: 2, observed: 1 }
+        ));
+    }
+
+    /// Falsifier #18: mechanically decidable catalog rules execute during
+    /// recording, producing typed malformed outcomes instead of admitting
+    /// values the authority would reject.
+    #[test]
+    fn mechanical_catalog_validation_executes_on_recording() {
+        let mut draft = ConfigurationObservationDraft::new(
+            subject(ObservationScope::Global),
+            source(
+                ConfigurationProvenanceClass::TrustedUserOrMachineAdapter,
+                ObservationTransport::OperatorInvocation,
+            ),
+        )
+        .expect("draft constructs");
+
+        // ai.api_key_env carries Validation::NonEmptyString: an empty string
+        // is a typed malformed value, not an admitted secret slot.
+        let empty_credential = draft.record_present(
+            ObservedFieldIdentity::canonical("ai.api_key_env"),
+            NormalizedValue::Text(String::new()),
+            None,
+        );
+        assert!(matches!(
+            empty_credential,
+            Err(ObservationError::MalformedValue { reason: MalformedReason::WrongShape, .. })
+        ));
+
+        // ai.max_inflight carries Validation::UnsignedRange {1..=64}.
+        let zero = draft.record_present(
+            ObservedFieldIdentity::canonical("ai.max_inflight"),
+            NormalizedValue::Count(0),
+            None,
+        );
+        let above = draft.record_present(
+            ObservedFieldIdentity::canonical("ai.max_inflight"),
+            NormalizedValue::Count(65),
+            None,
+        );
+        let ceiling = draft.record_present(
+            ObservedFieldIdentity::canonical("ai.max_inflight"),
+            NormalizedValue::Count(64),
+            None,
+        );
+        assert!(matches!(
+            zero,
+            Err(ObservationError::MalformedValue { reason: MalformedReason::OutOfRange, .. })
+        ));
+        assert!(matches!(
+            above,
+            Err(ObservationError::MalformedValue { reason: MalformedReason::OutOfRange, .. })
+        ));
+        ceiling.expect("boundary value within range records");
     }
 
     /// Pins the current fixture format; any schema-visible change must update
@@ -1596,7 +2106,7 @@ mod tests {
     }
 
     const GOLDEN_COMPILED_DEFAULT_FIXTURE: &str = r#"{
-  "schema_generation": 1,
+  "schema_generation": 2,
   "subject": {
     "observation_id": "obs-fixture",
     "scope": "Global",
@@ -1606,7 +2116,7 @@ mod tests {
   },
   "source": {
     "producer_id": "perl-lsp-rs-core/test",
-    "schema_generation": 1,
+    "schema_generation": 2,
     "provenance": "CompiledDefault",
     "transport": "CompiledDefaultsEmitted",
     "client_declared_labels": {}
