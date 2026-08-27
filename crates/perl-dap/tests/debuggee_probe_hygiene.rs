@@ -28,29 +28,6 @@ use std::process::Command;
 use std::time::Duration;
 
 const PROBE_PREFIX: &str = "perl-lsp-dap-debuggee-probe-";
-const PROBE_PID_FILE_ENV: &str = "PERL_LSP_DAP_PROBE_PID_FILE";
-
-struct EnvGuard {
-    key: &'static str,
-    previous: Option<std::ffi::OsString>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: &Path) -> Self {
-        let previous = std::env::var_os(key);
-        unsafe { std::env::set_var(key, value) };
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            Some(value) => unsafe { std::env::set_var(self.key, value) },
-            None => unsafe { std::env::remove_var(self.key) },
-        }
-    }
-}
 
 /// Temp entries whose name starts with our prefix AND carries this process's
 /// pid token — i.e., workspaces materialized by THIS binary. Matches both

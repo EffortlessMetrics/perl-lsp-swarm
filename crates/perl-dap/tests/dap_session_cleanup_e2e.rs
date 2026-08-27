@@ -10,7 +10,7 @@ mod common;
 
 #[cfg(feature = "dap-phase2")]
 mod cleanup_tests {
-    use anyhow::{Result, anyhow};
+    use anyhow::Result;
     use perl_dap::{DapMessage, DebugAdapter};
     use serde_json::{Value, json};
     use std::fs;
@@ -205,7 +205,7 @@ mod cleanup_tests {
     /// leaking it as a zombie.
     #[tokio::test]
     async fn test_drop_reaps_launched_perl_process() -> Result<()> {
-        if debuggee_perl_or_typed_skip("test_drop_reaps_launched_perl_process").is_none() {
+        if !perl_available() {
             return Ok(());
         }
         let perl = debuggee_perl_or_typed_skip("test_drop_reaps_launched_perl_process")
@@ -280,7 +280,7 @@ while (1) {
     /// under Perl-session conditions).
     #[tokio::test]
     async fn test_disconnect_then_drop_idempotent_with_perl() -> Result<()> {
-        if debuggee_perl_or_typed_skip("test_disconnect_then_drop_idempotent_with_perl").is_none() {
+        if !perl_available() {
             return Ok(());
         }
 

@@ -35,6 +35,10 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 //
 const MODULE_BREAKPOINT_LINE: u64 = 14; // my $x = 1 — first executable line in sub run
 
+fn perl_available() -> bool {
+    common::debuggee_perl_or_typed_skip("dap_module_resolution_smoke").is_some()
+}
+
 fn smoke_timeout() -> Duration {
     if std::env::var_os("LLVM_PROFILE_FILE").is_some()
         || std::env::var_os("CARGO_LLVM_COV").is_some()
@@ -172,11 +176,10 @@ fn test_module_breakpoint_accepted_without_session() -> TestResult {
 /// Skips when `perl` is not on `PATH`.
 #[test]
 fn test_module_breakpoint_hit_status_receipt() -> TestResult {
-    let Some(perl) =
-        common::debuggee_perl_or_typed_skip("test_module_breakpoint_hit_status_receipt")
-    else {
+    if !perl_available() {
+        eprintln!("Skipping test_module_breakpoint_hit_status_receipt - perl not available");
         return Ok(());
-    };
+    }
 
     let (_dir, script_str, module_str) = setup_fixtures()?;
     let timeout = smoke_timeout();
@@ -202,7 +205,7 @@ fn test_module_breakpoint_hit_status_receipt() -> TestResult {
                 "program": script_str,
                 "args": [],
                 "stopOnEntry": true,
-                "perlPath": perl.binary,
+                "perlPath": perl_path.to_string_lossy(),
                 "env": {
                     "PERL_PERTURB_KEYS": "0",
                     "PERL_HASH_SEED": "0",
