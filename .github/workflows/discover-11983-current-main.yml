@@ -9,7 +9,7 @@ on:
       - scripts/maintenance/rebuild_11983_current_main.sh
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: rebuild-11983-${{ github.event.pull_request.number }}
@@ -25,11 +25,22 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Checkout current-main repair branch
+      - name: Checkout pull-request head revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: repair/11983-current-main
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Reconstruct, strengthen, verify, and publish containment candidate
+      - name: Reconstruct, strengthen, verify, and prove containment candidate
+        env:
+          REBUILD_EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash scripts/maintenance/rebuild_11983_current_main.sh
+
+      - name: Upload reconstruction evidence (read-only lane)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rebuild-11983-evidence-${{ github.event.pull_request.head.sha }}
+          path: target/receipts/rebuild-11983/
+          retention-days: 30

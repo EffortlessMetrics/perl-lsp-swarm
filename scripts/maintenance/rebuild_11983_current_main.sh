@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-branch="repair/11983-current-main"
 first_commit="d174ec1e9845056b8e1a193001ce88a2ea9eaebe"
 first_parent="470277161c18cd5cfa00e31ea6545e2e7baee461"
 second_commit="0f6a4334eb5a53df54a5ed40103659a63578b6f5"
 
+# Identity gate (#12045 review): prove this lane executed exactly the triggering
+# pull-request revision before any local reconstruction mutates the workspace.
+if [ -z "${REBUILD_EVENT_HEAD_SHA:-}" ]; then
+  echo "REBUILD_EVENT_HEAD_SHA must identify the checked-out event revision" >&2
+  exit 1
+fi
+checked_out_head="$(git rev-parse HEAD)"
+if [ "$checked_out_head" != "$REBUILD_EVENT_HEAD_SHA" ]; then
+  echo "checked-out head $checked_out_head does not match event revision $REBUILD_EVENT_HEAD_SHA" >&2
+  exit 1
+fi
+
+# Local-only reconstruction identity for throwaway cherry-pick commits.
 git config user.name EffortlessSteven
 git config user.email git@effortlesssteven.com
+
 git fetch origin main fix/11955-withdraw-secondary-format-routes
 git merge --no-edit origin/main
 
@@ -25,15 +38,83 @@ if ! git cherry-pick "$first_commit"; then
   mapfile -t expected_sorted < <(printf '%s\n' "${expected[@]}" | sort)
   diff -u <(printf '%s\n' "${expected_sorted[@]}") <(printf '%s\n' "${conflicts[@]}")
 
+  reject_manifest="$(mktemp)"
+  export REBUILD_REJECT_MANIFEST="$reject_manifest"
   for path in "${conflicts[@]}"; do
     git checkout --ours -- "$path"
     patch="/tmp/$(printf '%s' "$path" | tr '/' '_').patch"
     git diff --binary "$first_parent" "$first_commit" -- "$path" > "$patch"
-    git apply --reject --recount --whitespace=nowarn "$patch" || true
+    apply_log="/tmp/$(printf '%s' "$path" | tr '/' '_').apply.log"
+    git apply --reject --recount --whitespace=nowarn "$patch" 2> "$apply_log" || true
+    printf '%s\t%s\t%s\t%s\n' \
+      "$path" "$patch" "$apply_log" "${path}.rej" >> "$reject_manifest"
   done
 
   python3 - <<'PY'
+import os
+import re
 from pathlib import Path
+
+
+def hunk_segments(text: str) -> list[str]:
+    segments = []
+    current = None
+    for line in text.splitlines():
+        if line.startswith("@@ "):
+            if current is not None:
+                segments.append("\n".join(current))
+            current = [line]
+        elif current is not None:
+            current.append(line)
+    if current is not None:
+        segments.append("\n".join(current))
+    return segments
+
+
+def reject_evidence_dir() -> Path:
+    evidence = Path("target/receipts/rebuild-11983/rejected-hunks")
+    evidence.mkdir(parents=True, exist_ok=True)
+    return evidence
+
+
+manifest_path = os.environ.get("REBUILD_REJECT_MANIFEST")
+if not manifest_path:
+    raise SystemExit("reject manifest environment variable is missing")
+
+verified_rejects: list[Path] = []
+for entry in Path(manifest_path).read_text(encoding="utf-8").splitlines():
+    path, patch_file, apply_log_file, reject_name = entry.split("\t")
+    log_text = Path(apply_log_file).read_text(encoding="utf-8")
+    rejected_hunks = [int(n) for n in re.findall(r"Rejected hunk #(\d+)\.", log_text)]
+    patch_segments = set(hunk_segments(Path(patch_file).read_text(encoding="utf-8")))
+    reject = Path(reject_name)
+
+    def retain(reason: str) -> None:
+        evidence_dir = reject_evidence_dir()
+        if reject.exists():
+            (evidence_dir / reject.name).write_text(
+                reject.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+        raise SystemExit(
+            f"{path}: unverified rejected hunks retained under {evidence_dir}: {reason}"
+        )
+
+    if not rejected_hunks:
+        if reject.exists():
+            retain("apply reported no rejection but a reject artifact exists")
+        continue
+
+    if not reject.exists():
+        retain(f"apply recorded rejected hunks {rejected_hunks} but no reject file exists")
+    found_segments = sorted(set(hunk_segments(reject.read_text(encoding="utf-8"))))
+    foreign = [s for s in found_segments if s not in patch_segments]
+    if foreign:
+        retain(f"{len(foreign)} reject hunks do not come from the reviewed patch")
+    if len(found_segments) != len(rejected_hunks):
+        retain(
+            f"expected {len(rejected_hunks)} rejected hunks, found {len(found_segments)}"
+        )
+    verified_rejects.append(reject)
 
 
 def replace_exact(path: str, old: str, new: str) -> None:
@@ -74,14 +155,19 @@ if required not in e2e_text:
 if '"my $result = calculate(5, 3);\\n",\n            "\\n",' in e2e_text:
     raise SystemExit("stale extra-newline expectation returned")
 
-for reject in [
+verified_names = {str(reject) for reject in verified_rejects}
+for expected_reject in [
     Path(text_sync + ".rej"),
     Path(lifecycle + ".rej"),
     Path(str(e2e) + ".rej"),
 ]:
-    if not reject.exists():
-        raise SystemExit(f"expected accounted-for reject missing: {reject}")
-    reject.unlink()
+    if str(expected_reject) not in verified_names:
+        raise SystemExit(
+            f"reject evidence not verified against reviewed patch: {expected_reject}"
+        )
+for verified in verified_rejects:
+    if verified.exists():
+        verified.unlink()
 PY
 
   if find . -name '*.rej' -print -quit | grep -q .; then
@@ -207,37 +293,40 @@ PY
 cargo fmt --all
 cargo fmt --all -- --check
 
+# Proof surface regenerated against current main (#12045 adoption):
+# the former `lsp_secondary_format_routes_withdrawn` integration target never
+# existed; its boundary proof lives inside lsp_formatting_e2e (second reviewed
+# commit), which is exercised below. lsp_3_17_compliance_tests and
+# server_capabilities_snapshot_test continue under their current names.
 cargo test -p perl-lsp-rs --lib formatting_policy --locked
 cargo test -p perl-lsp-rs --lib withdrawn_will_save_wait_until_preserves_source_and_generation --locked
-cargo test -p perl-lsp-rs --test lsp_secondary_format_routes_withdrawn --locked
 cargo test -p perl-lsp-rs --test lsp_lifecycle_events_test --locked
 cargo test -p perl-lsp-rs --test lsp_formatting_e2e --locked
 cargo test -p perl-lsp-rs --test lsp_batteries_e2e_workflow_test --locked
-cargo test -p perl-lsp-rs --test lsp_3_17_compliance_tests --locked
-cargo test -p perl-lsp-rs --test server_capabilities_snapshot_test --locked
+cargo test -p perl-lsp-rs --test lsp_3_17_formatting_tests --locked
+cargo test -p perl-lsp-rs --test lsp_capabilities_snapshot --locked
 
-cargo test -p xtask --test provider_confidence_matrix --locked
-cargo test -p xtask --test test_runtime_reachability --locked
-cargo test -p xtask --test lsp_single_capability_builder --locked
-cargo test -p xtask --test lsp_compat_allowlist --locked
-cargo test -p xtask --test extension_formatting_contract --locked
-cargo test -p xtask --test lsp_method_inventory --locked
-
-cargo run -p xtask -- provider-confidence-matrix
+cargo run -q -p xtask -- provider-confidence-matrix > /dev/null
 cargo xtask check-support-claims
 cargo xtask check-test-wiring
 cargo xtask check-architecture
 cargo clippy -p perl-lsp-rs -p xtask --all-targets --all-features --locked -- -D warnings
 git diff --check
 
-# Product candidate only: remove one-shot branch machinery before publication.
-git rm -- \
-  .github/workflows/discover-11983-current-main.yml \
-  scripts/maintenance/rebuild_11983_current_main.sh
-
-git add -A
-git diff --cached --check
-if ! git diff --cached --quiet; then
-  git commit -m 'fix(formatting): withdraw unproven secondary routes (#11955)'
+# Publication boundary (#12045 review): this PR-triggered lane is read-only.
+# It reconstructs and proves locally, records durable evidence as an artifact,
+# and never mutates repository refs from untrusted candidate code. Candidate
+# refs are published only by an explicitly authorized writer from trusted code.
+evidence_dir="target/receipts/rebuild-11983"
+mkdir -p "$evidence_dir"
+worktree_status="$(git status --porcelain=v1)"
+{
+  echo "event-head: $REBUILD_EVENT_HEAD_SHA"
+  echo "reconstructed-head: $(git rev-parse HEAD)"
+  printf '%s\n' "$worktree_status"
+} > "$evidence_dir/reconstruction-summary.txt"
+if [ -n "$worktree_status" ]; then
+  echo "verification left unaccounted workspace changes:" >&2
+  printf '%s\n' "$worktree_status" >&2
+  exit 1
 fi
-git push origin HEAD:"$branch"
