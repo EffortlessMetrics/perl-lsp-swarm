@@ -211,16 +211,96 @@ fn quick_success_subject_classifies_success() -> anyhow::Result<()> {
 
 #[test]
 fn surviving_child_process_fails_cleanup_regardless_of_events() -> anyhow::Result<()> {
-    let before = ProbeCapture::Captured("  2 vim /tmp/host\n".to_string());
-    let after =
-        ProbeCapture::Captured("  2 vim /tmp/host\n 4242 /tmp/host/perllsp --stdio\n".to_string());
-    let judgment = judge_cleanup(&before, &after, "/tmp/host", false, true);
+    // The pid-2 candidate is present in both captures (this run's pre-existing
+    // state); only the pid-4242 candidate is new since the before-snapshot.
+    let before = ProbeCapture::Captured("  2 /checkout/target/debug/perllsp --stdio\n".to_string());
+    let after = ProbeCapture::Captured(
+        "  2 /checkout/target/debug/perllsp --stdio\n \
+             4242 /checkout/target/debug/perllsp --stdio\n"
+            .to_string(),
+    );
+    let judgment = judge_cleanup(&before, &after, "/checkout/target/debug/perllsp", false, true);
     assert_eq!(judgment.result, CleanupResult::Fail);
     assert_eq!(judgment.survivors.len(), 1);
     assert_eq!(judgment.survivors[0].pid, 4242);
     // A client-emitted shutdown event cannot repair an observed OS leak: the
     // judgment is made purely from process-set evidence.
     assert!(judgment.detail.contains("surviving candidate process"));
+    Ok(())
+}
+
+/// A helper process sharing the candidate's path prefix must not be absorbed
+/// by substring matching: needle matching holds at component boundaries only
+/// (P1 review finding on #12794).
+#[test]
+fn decoy_prefix_process_cannot_absorb_the_candidate_needle() {
+    let needle = "/checkout/target/debug/perllsp";
+    let before =
+        vec![ProcessProbeLine { pid: 2, args: "/checkout/target/debug/perllsp --stdio".into() }];
+    let after = vec![
+        ProcessProbeLine { pid: 2, args: "/checkout/target/debug/perllsp --stdio".into() },
+        // Only the decoy appears after the run: it must NOT count as a leaked
+        // candidate, nor hide the clean verdict behind a fabricated survivor.
+        ProcessProbeLine { pid: 7, args: "/checkout/target/debug/perllsp-helper serve".into() },
+    ];
+    let survivors = surviving_processes(&before, &after, needle);
+    assert!(
+        survivors.is_empty(),
+        "a prefix-sharing decoy must never match the candidate needle: {survivors:?}"
+    );
+}
+
+/// Failed boundary occurrences are skipped one character at a time; the scan
+/// must cross multi-byte descriptions without ever slicing mid-character
+/// (reachable panic in an earlier draft advanced by raw byte offset), while a
+/// clean component-bounded occurrence still matches.
+#[test]
+fn multibyte_descriptions_never_panic_and_component_matching_still_holds() {
+    let needle = "测试";
+    let decoys = vec![
+        ProcessProbeLine { pid: 5, args: "αβ测试 serve".into() },
+        ProcessProbeLine { pid: 6, args: "测试-后缀 --standby".into() },
+    ];
+    let real = vec![ProcessProbeLine { pid: 9, args: "α 测试 --stdio".into() }];
+    for line in &decoys {
+        assert!(
+            surviving_processes(&[], std::slice::from_ref(line), needle).is_empty(),
+            "decoy {line:?} must not match"
+        );
+    }
+    let survivors = surviving_processes(&[], &real, needle);
+    assert_eq!(survivors.len(), 1);
+    assert_eq!(survivors[0].pid, 9);
+}
+
+#[test]
+fn empty_probe_captures_are_instrument_failure_not_clean() -> anyhow::Result<()> {
+    // Zero rows from a successful probe command cannot mean "no processes":
+    // the live run itself is always present. Empty captures must degrade to
+    // not_proven, never pass (P1 review finding on #12794).
+    let error = xtask::editor_host::parse_process_snapshot("")
+        .err()
+        .map(|value| format!("{value:#}"))
+        .ok_or_else(|| anyhow::anyhow!("an empty snapshot must be rejected"))?;
+    assert!(error.contains("zero rows"), "typed empty-snapshot refusal required: {error}");
+
+    let judgment = judge_cleanup(
+        &ProbeCapture::Captured(" 1 init\n".to_string()),
+        &ProbeCapture::Captured(String::new()),
+        "init",
+        false,
+        true,
+    );
+    assert_eq!(judgment.result, CleanupResult::NotProven);
+
+    let judgment = judge_cleanup(
+        &ProbeCapture::Captured(String::new()),
+        &ProbeCapture::Captured(" 1 init\n".to_string()),
+        "init",
+        false,
+        true,
+    );
+    assert_eq!(judgment.result, CleanupResult::NotProven);
     Ok(())
 }
 

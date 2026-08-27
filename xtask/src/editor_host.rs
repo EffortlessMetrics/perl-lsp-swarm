@@ -403,8 +403,9 @@ pub fn probe_process_table() -> Option<Result<String>> {
 
 /// Parse a `ps -eo pid=,args=` style snapshot into deterministic lines sorted
 /// numerically by `(pid, args)`. Lines not matching the `pid args` shape are
-/// rejected: an unparseable process probe is evidence failure, not a silent
-/// empty set.
+/// rejected, and a capture with zero rows is rejected: a live run's own
+/// process is always in the table, so an empty snapshot is an instrument
+/// failure, never a silent clean set.
 pub fn parse_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine>> {
     let mut lines = Vec::new();
     for line in text.lines() {
@@ -419,6 +420,9 @@ pub fn parse_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine>> {
             .parse()
             .with_context(|| format!("process snapshot line is not `pid args`: {trimmed:?}"))?;
         lines.push(ProcessProbeLine { pid, args: args.to_string() });
+    }
+    if lines.is_empty() {
+        bail!("process probe captured zero rows; an empty snapshot is instrument failure");
     }
     lines.sort();
     Ok(lines)
@@ -444,6 +448,9 @@ pub fn parse_windows_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine
             .with_context(|| format!("windows process snapshot pid is not numeric: {trimmed:?}"))?;
         lines.push(ProcessProbeLine { pid, args: image.to_string() });
     }
+    if lines.is_empty() {
+        bail!("windows process probe captured zero rows; an empty snapshot is instrument failure");
+    }
     lines.sort();
     Ok(lines)
 }
@@ -461,6 +468,21 @@ pub fn render_process_snapshot(lines: &[ProcessProbeLine]) -> String {
 /// probe. Both inputs are already numerically sorted by the parsers; the
 /// comparison is therefore deterministic and immune to the historical bug of
 /// comparing textual PID columns lexicographically (where `10` < `100` < `2`).
+///
+/// Survivor contract: "new since before-snapshot", not merely "alive". A
+/// candidate process present in both captures is treated as this run's own
+/// pre-existing state and never flagged; a caller passing an empty or omitted
+/// before-set deliberately inverts this to flag every candidate match as a
+/// survivor. Consumers must choose the shape that matches their claim and not
+/// mix them inside one comparison.
+///
+/// Attribution limitation: survivors are attributed to this run by executable
+/// text alone; an unrelated host run of the same candidate started after this
+/// run's before-probe is indistinguishable from a leak. That over-attribution
+/// is fail-closed (a false `Fail`, never a false `Pass`); parent-owned
+/// attribution beyond text identity remains open on #10894. Also note this
+/// compares only what the platform probe reports — grandchild processes the
+/// deadline kill left running are detected here but never repaired.
 pub fn surviving_processes(
     before: &[ProcessProbeLine],
     after: &[ProcessProbeLine],
@@ -475,19 +497,53 @@ pub fn surviving_processes(
         .collect()
 }
 
-/// Whether one process description belongs to the candidate named by `needle`.
-/// Windows image names are case-insensitive end to end (`tasklist` reports
-/// each image in its own casing while a configured path may use another), so
-/// matching folds case on that platform; command-line probes elsewhere match
-/// exactly.
+/// Whether one process description belongs to the candidate named by
+/// `needle`. Two laws, both fail-closed in opposite directions:
+///
+/// - **Component boundary**: an occurrence of `needle` counts only at a
+///   component edge — start-of-description or preceded by whitespace — and
+///   must end at whitespace or end-of-description. A decoy such as
+///   `/tmp/host/perllsp-helper` therefore cannot absorb a needle of
+///   `/tmp/host/perllsp` and fabricate a survivor.
+/// - **Windows image casing**: image names are case-insensitive end to end on
+///   Windows (`tasklist` reports its own casing; a configured path may use
+///   another), so matching folds case there, and a trailing `.exe`
+///   continuation is part of the same executable name. Command-line probes on
+///   other platforms match exactly.
 fn matches_needle(args: &str, needle: &str) -> bool {
-    if cfg!(windows) {
-        let folded_args = args.to_lowercase();
-        let folded_needle = needle.to_lowercase();
-        folded_args.contains(&folded_needle)
-    } else {
-        args.contains(needle)
+    let fold = cfg!(windows);
+    let haystack = if fold { args.to_lowercase() } else { args.to_string() };
+    let target = if fold { needle.to_lowercase() } else { needle.to_string() };
+    let bytes = haystack.as_bytes();
+    let mut search_from = 0;
+    while let Some(relative) = haystack[search_from..].find(&target) {
+        let start = search_from + relative;
+        let end = start + target.len();
+        let leading_ok = start == 0 || bytes[start - 1].is_ascii_whitespace();
+        let trailing = bytes.get(end).copied();
+        // A Windows image name may continue into its `.exe`/`.dll` extension;
+        // every other continuation character makes this a different process.
+        let trailing_ok = match trailing {
+            None | Some(b' ') | Some(b'\t') => true,
+            Some(b'.') => fold,
+            _ => false,
+        };
+        if leading_ok && trailing_ok {
+            return true;
+        }
+        // Advance one character boundary past the failed occurrence. Byte
+        // arithmetic alone could land inside a multi-byte character and panic
+        // the slice below; scan to the next boundary instead.
+        let mut next = start + 1;
+        while next < haystack.len() && !haystack.is_char_boundary(next) {
+            next += 1;
+        }
+        if next >= haystack.len() {
+            break;
+        }
+        search_from = next;
     }
+    false
 }
 
 /// Judge OS-level cleanup from before/after process captures, composing the
