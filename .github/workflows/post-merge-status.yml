@@ -513,7 +513,10 @@ jobs:
           token: ${{ github.token }}
           branch: automation/post-merge-status
           base: ${{ github.event.repository.default_branch }}
-          delete-branch: true
+          # No delete-branch: an open PR that names this generated branch
+          # as its base is a live dependency on it, and deleting the base
+          # auto-closes that child (#12885). Cleanup is a separate admitted
+          # decision via `xtask branch-deletion-admission admit`.
           title: "chore(docs): regenerate post-merge status and inventory (#6012, #11731)"
           commit-message: "chore(docs): regenerate post-merge status and inventory (#6012, #11731)"
           body: |

@@ -7,11 +7,14 @@ use xtask::branch_deletion_admission::{
     AdmissionRequest, BranchSubject, DeletionAdmission, GraphCompleteness, Mergeability, NextOwner,
     ObservedPullRequest, OpenChildGraph, ParentSubject, ParentTerminality, PullRequestState,
     RepositoryId, WorktreeOwnership, branch_deletion_command, evaluate, merge_command,
-    render_disposition,
+    remote_verification_command, render_disposition,
 };
 
 const PARENT_BRANCH: &str = "agent/vim-activation-root-7762";
 const REVIEWED_SHA: &str = "1111111111111111111111111111111111111111";
+const OTHER_SHA: &str = "2222222222222222222222222222222222222222";
+/// A realistic object id containing letters, so case sensitivity is testable.
+const LETTERED_SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
 
 fn repository() -> RepositoryId {
     RepositoryId::new("EffortlessMetrics", "perl-lsp-swarm")
@@ -35,6 +38,7 @@ fn admissible_request() -> AdmissionRequest {
             pull_requests: Vec::new(),
         },
         worktree_ownership: WorktreeOwnership::Clear,
+        remote: "origin".to_string(),
     }
 }
 
@@ -127,7 +131,7 @@ fn retaining_outcomes_carry_no_admitted_tip() {
     assert_eq!(evaluate(&retained).admitted_sha, None);
 
     let mut moved = admissible_request();
-    moved.branch.current_sha = Some("2222222222222222222222222222222222222222".to_string());
+    moved.branch.current_sha = Some(OTHER_SHA.to_string());
     assert_eq!(evaluate(&moved).admitted_sha, None);
 }
 
@@ -437,6 +441,136 @@ fn the_retained_packet_renders_every_field_a_reconciler_needs() {
     );
 }
 
+/// Caller-supplied JSON must not be able to reach `SAFE_TO_DELETE` by being
+/// incomplete. Each case perturbs exactly one field of the admissible fixture
+/// into a shape a hand-written or truncated request could plausibly carry.
+#[test]
+fn a_malformed_request_cannot_reach_safe_to_delete() {
+    let cases: Vec<(&str, Box<dyn Fn(&mut AdmissionRequest)>)> = vec![
+        (
+            "empty reviewed sha",
+            Box::new(|r: &mut AdmissionRequest| {
+                r.parent.reviewed_head_sha = String::new();
+                r.branch.current_sha = Some(String::new());
+            }),
+        ),
+        (
+            "abbreviated sha",
+            Box::new(|r: &mut AdmissionRequest| {
+                r.parent.reviewed_head_sha = "1111111".to_string();
+                r.branch.current_sha = Some("1111111".to_string());
+            }),
+        ),
+        (
+            // Must carry letters: an all-digit sha is unchanged by
+            // to_uppercase, so REVIEWED_SHA here would pass without
+            // exercising the check at all.
+            "uppercase sha",
+            Box::new(|r: &mut AdmissionRequest| {
+                r.parent.reviewed_head_sha = LETTERED_SHA.to_uppercase();
+                r.branch.current_sha = Some(LETTERED_SHA.to_uppercase());
+            }),
+        ),
+        (
+            "non-hex sha",
+            Box::new(|r: &mut AdmissionRequest| {
+                let bogus = "z".repeat(40);
+                r.parent.reviewed_head_sha = bogus.clone();
+                r.branch.current_sha = Some(bogus);
+            }),
+        ),
+        ("zero parent number", Box::new(|r: &mut AdmissionRequest| r.parent.number = 0)),
+        ("empty head ref", Box::new(|r: &mut AdmissionRequest| r.parent.head_ref = String::new())),
+        (
+            "empty repository owner",
+            Box::new(|r: &mut AdmissionRequest| {
+                r.parent.repository.owner = String::new();
+            }),
+        ),
+        ("empty remote", Box::new(|r: &mut AdmissionRequest| r.remote = String::new())),
+        (
+            "child with zero number",
+            Box::new(|r: &mut AdmissionRequest| {
+                let mut broken = child(7810, false, Mergeability::Clean);
+                broken.number = 0;
+                r.graph.pull_requests = vec![broken];
+            }),
+        ),
+        (
+            "child with empty base ref",
+            Box::new(|r: &mut AdmissionRequest| {
+                let mut broken = child(7810, false, Mergeability::Clean);
+                broken.base_ref = String::new();
+                r.graph.pull_requests = vec![broken];
+            }),
+        ),
+    ];
+
+    for (label, perturb) in cases {
+        let mut request = admissible_request();
+        perturb(&mut request);
+        let outcome = evaluate(&request);
+        assert_eq!(
+            outcome.admission,
+            DeletionAdmission::RetainGraphNotProven,
+            "{label} must retain, got {:?} ({})",
+            outcome.admission,
+            outcome.detail,
+        );
+        assert_eq!(branch_deletion_command(&outcome), None, "{label} must yield no command");
+    }
+
+    // Positive control. Without it, a validator that rejected every request
+    // would satisfy every case above.
+    let mut well_formed = admissible_request();
+    well_formed.parent.reviewed_head_sha = LETTERED_SHA.to_string();
+    well_formed.branch.current_sha = Some(LETTERED_SHA.to_string());
+    let outcome = evaluate(&well_formed);
+    assert_eq!(
+        outcome.admission,
+        DeletionAdmission::SafeToDelete,
+        "a well-formed lowercase sha must still be admitted ({})",
+        outcome.detail,
+    );
+    assert_eq!(outcome.admitted_sha.as_deref(), Some(LETTERED_SHA));
+}
+
+/// The deletion targets a remote *name*, which alone says nothing about which
+/// repository it resolves to — so the same-repository child check would not
+/// cover a caller pointed elsewhere. The plan must therefore pair the deletion
+/// with a verification naming the admitted repository.
+#[test]
+fn the_deletion_plan_binds_the_remote_to_the_admitted_repository() {
+    let mut request = admissible_request();
+    request.remote = "upstream".to_string();
+    let outcome = evaluate(&request);
+
+    let (verification, expected) =
+        remote_verification_command(&outcome).unwrap_or_else(|| (Vec::new(), String::new()));
+    assert_eq!(
+        verification,
+        vec![
+            "git".to_string(),
+            "remote".to_string(),
+            "get-url".to_string(),
+            "upstream".to_string(),
+        ],
+    );
+    assert_eq!(expected, "EffortlessMetrics/perl-lsp-swarm");
+
+    // The deletion must target the same remote the verification checked.
+    let command = branch_deletion_command(&outcome).unwrap_or_default();
+    assert!(command.contains(&"upstream".to_string()), "{command:?}");
+    assert!(!command.contains(&"origin".to_string()), "must not fall back to origin: {command:?}");
+
+    // A retaining outcome gets neither.
+    let mut retained = admissible_request();
+    retained.graph.pull_requests = vec![child(7810, false, Mergeability::Clean)];
+    let retained = evaluate(&retained);
+    assert!(remote_verification_command(&retained).is_none());
+    assert!(branch_deletion_command(&retained).is_none());
+}
+
 // ── Recurrence check (falsifier 10) ───────────────────────────────────────────
 
 /// Executable surfaces scanned for an unguarded merge-and-delete. Prose is
@@ -491,12 +625,24 @@ fn no_executable_path_merges_with_delete_branch() -> Result<(), Box<dyn std::err
         if !directory.exists() {
             return Err(format!("executable surface {surface} is missing; update the scan").into());
         }
-        for entry in walkdir::WalkDir::new(&directory).into_iter().filter_map(Result::ok) {
+        for entry in walkdir::WalkDir::new(&directory) {
+            // A guard that silently skips what it cannot read is a guard that
+            // fails open: an unreadable file is unscanned, not clean.
+            let entry = entry.map_err(|error| format!("traversing {surface}: {error}"))?;
             if !entry.file_type().is_file() {
                 continue;
             }
-            let Ok(source) = std::fs::read_to_string(entry.path()) else {
-                continue; // binary or non-UTF-8 file: nothing to scan
+            let source = match std::fs::read_to_string(entry.path()) {
+                Ok(source) => source,
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                    // Genuinely binary (fixtures, archives): cannot contain a
+                    // shell invocation, so this is a real exemption rather
+                    // than a swallowed failure.
+                    continue;
+                }
+                Err(error) => {
+                    return Err(format!("reading {}: {error}", entry.path().display()).into());
+                }
             };
             scanned_files += 1;
             for (index, line) in logical_lines(&source).iter().enumerate() {
@@ -505,7 +651,9 @@ fn no_executable_path_merges_with_delete_branch() -> Result<(), Box<dyn std::err
                 if line.trim_start().starts_with('#') || line.trim_start().starts_with("//") {
                     continue;
                 }
-                if line.contains("gh pr merge") && line.contains("--delete-branch") {
+                if (line.contains("gh pr merge") && line.contains("--delete-branch"))
+                    || (line.contains("delete-branch:") && line.contains("true"))
+                {
                     offenders.push(format!(
                         "{}:{}: {}",
                         entry.path().strip_prefix(&root).unwrap_or(entry.path()).display(),
@@ -521,9 +669,10 @@ fn no_executable_path_merges_with_delete_branch() -> Result<(), Box<dyn std::err
     assert!(
         offenders.is_empty(),
         "merge-and-delete is not an admissible integration path (#12885). \
-         Merge without --delete-branch, then route branch cleanup through \
-         `branch-deletion-admission admit`, which retains while any open PR \
-         names the branch as its base. Offending sites:\n  {}",
+         Merge without --delete-branch and do not hand a deletion input to an \
+         action; route branch cleanup through `branch-deletion-admission \
+         admit`, which retains while any open PR names the branch as its \
+         base. Offending sites:\n  {}",
         offenders.join("\n  "),
     );
     Ok(())
@@ -547,6 +696,15 @@ fn the_recurrence_scan_detects_a_planted_violation() {
         .iter()
         .any(|line| line.contains("gh pr merge") && line.contains("--delete-branch"));
     assert!(found, "the scan must join line continuations before matching");
+
+    // The action-input form: `delete-branch: true` handed to
+    // peter-evans/create-pull-request deletes the generated head branch and is
+    // just as unguarded as the CLI flag.
+    let workflow_input = "        with:\n          delete-branch: true\n";
+    let found = logical_lines(workflow_input)
+        .iter()
+        .any(|line| line.contains("delete-branch:") && line.contains("true"));
+    assert!(found, "the scan must detect an action deletion input");
 
     // A comment explaining the absent flag must not be reported.
     let documented = "# No --delete-branch here: see #12885\ngh pr merge \"$PR\" --squash\n";

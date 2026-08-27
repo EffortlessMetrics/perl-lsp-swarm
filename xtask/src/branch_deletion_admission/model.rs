@@ -166,6 +166,86 @@ pub struct AdmissionRequest {
     pub branch: BranchSubject,
     pub graph: OpenChildGraph,
     pub worktree_ownership: WorktreeOwnership,
+    /// Git remote the deletion would target. Defaults to `origin`.
+    ///
+    /// A remote *name* does not by itself say which repository it resolves to,
+    /// so the emitted plan pairs the deletion with a verification command; see
+    /// `route::remote_verification_command`.
+    #[serde(default = "default_remote")]
+    pub remote: String,
+}
+
+fn default_remote() -> String {
+    "origin".to_string()
+}
+
+/// Whether `candidate` is a full 40-character lowercase hexadecimal git object
+/// id.
+///
+/// Deliberately strict. An abbreviated, uppercase, or empty value cannot be
+/// leased against, and a request carrying one is malformed rather than merely
+/// unlucky — accepting it would let `SAFE_TO_DELETE` be reached with a lease
+/// target git will not honour.
+pub(crate) fn is_full_object_id(candidate: &str) -> bool {
+    candidate.len() == 40
+        && candidate.chars().all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+}
+
+impl AdmissionRequest {
+    /// Structural validation of the request before any admission logic runs.
+    ///
+    /// The request arrives as caller-supplied JSON, so absent or malformed
+    /// fields must not be able to reach `SAFE_TO_DELETE`. Returns the first
+    /// problem found, phrased for the retention detail.
+    pub(crate) fn structural_problem(&self) -> Option<String> {
+        if self.parent.repository.owner.trim().is_empty()
+            || self.parent.repository.name.trim().is_empty()
+        {
+            return Some("parent repository owner and name must both be non-empty".to_string());
+        }
+        if self.parent.number == 0 {
+            return Some("parent pull request number must be non-zero".to_string());
+        }
+        if self.parent.head_ref.trim().is_empty() {
+            return Some("parent head_ref must be non-empty".to_string());
+        }
+        if self.remote.trim().is_empty() {
+            return Some("remote must be non-empty".to_string());
+        }
+        if !is_full_object_id(&self.parent.reviewed_head_sha) {
+            return Some(format!(
+                "parent reviewed_head_sha {:?} is not a full 40-character object id",
+                self.parent.reviewed_head_sha
+            ));
+        }
+        if let Some(current) = self.branch.current_sha.as_deref()
+            && !is_full_object_id(current)
+        {
+            return Some(format!(
+                "branch current_sha {current:?} is not a full 40-character object id"
+            ));
+        }
+        for pull_request in &self.graph.pull_requests {
+            if pull_request.number == 0 {
+                return Some("an observed pull request has number 0".to_string());
+            }
+            if pull_request.base_ref.trim().is_empty() {
+                return Some(format!(
+                    "observed pull request #{} has an empty base_ref",
+                    pull_request.number
+                ));
+            }
+            if pull_request.repository.owner.trim().is_empty()
+                || pull_request.repository.name.trim().is_empty()
+            {
+                return Some(format!(
+                    "observed pull request #{} has an incomplete repository identity",
+                    pull_request.number
+                ));
+            }
+        }
+        None
+    }
 }
 
 /// The five admission outcomes named by #12885.
@@ -253,6 +333,9 @@ pub struct AdmissionOutcome {
     /// Why this outcome was reached, in terms a reconciler can act on.
     pub detail: String,
     pub retained_children: Vec<RetainedChild>,
+    /// Git remote the deletion would target, echoed from the request so the
+    /// emitted command and its verification name the same remote.
+    pub remote: String,
     /// The branch tip this admission was granted against, present only for
     /// `SAFE_TO_DELETE`.
     ///

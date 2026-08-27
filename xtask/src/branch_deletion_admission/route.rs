@@ -1,6 +1,6 @@
 //! Routing the admission outcome into the commands the integration path runs.
 
-use super::model::{AdmissionOutcome, DeletionAdmission};
+use super::model::AdmissionOutcome;
 
 /// The canonical protected-integration merge command.
 ///
@@ -64,11 +64,38 @@ pub fn branch_deletion_command(outcome: &AdmissionOutcome) -> Option<Vec<String>
     Some(vec![
         "git".to_string(),
         "push".to_string(),
-        "origin".to_string(),
+        outcome.remote.clone(),
         format!("--force-with-lease=refs/heads/{}:{admitted_sha}", outcome.branch),
         "--delete".to_string(),
         outcome.branch.clone(),
     ])
+}
+
+/// The command that binds the remote *name* to the admitted repository.
+///
+/// `branch_deletion_command` pushes to a remote name, and a name alone says
+/// nothing about which repository it resolves to — the same-repository child
+/// check in `evaluate` is snapshot-local, so a caller pointed at a different
+/// remote would delete a branch no child check ever covered. The caller must
+/// run this first and confirm the output identifies
+/// [`AdmissionOutcome::repository`]; the expected identity is returned
+/// alongside so there is nothing to look up.
+///
+/// Returns `None` for any outcome that does not admit deletion.
+pub fn remote_verification_command(outcome: &AdmissionOutcome) -> Option<(Vec<String>, String)> {
+    if !outcome.admission.admits_deletion() {
+        return None;
+    }
+
+    Some((
+        vec![
+            "git".to_string(),
+            "remote".to_string(),
+            "get-url".to_string(),
+            outcome.remote.clone(),
+        ],
+        outcome.repository.clone(),
+    ))
 }
 
 /// Human-readable disposition, for logs and PR comments.
@@ -104,15 +131,13 @@ pub fn render_disposition(outcome: &AdmissionOutcome) -> String {
         ));
     }
 
+    if let Some((verification, expected_repository)) = remote_verification_command(outcome) {
+        rendered
+            .push_str(&format!("\n  verify: {} == {expected_repository}", verification.join(" ")));
+    }
     if let Some(command) = branch_deletion_command(outcome) {
         rendered.push_str(&format!("\n  run: {}", command.join(" ")));
     }
-
-    debug_assert!(
-        matches!(outcome.admission, DeletionAdmission::RetainOpenChildren)
-            || outcome.retained_children.is_empty(),
-        "only RETAIN_OPEN_CHILDREN carries retained children",
-    );
 
     rendered
 }

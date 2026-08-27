@@ -20,7 +20,9 @@ pub use model::{
     Mergeability, NextOwner, ObservedPullRequest, OpenChildGraph, ParentSubject, ParentTerminality,
     PullRequestState, RepositoryId, RetainedChild, WorktreeOwnership,
 };
-pub use route::{branch_deletion_command, merge_command, render_disposition};
+pub use route::{
+    branch_deletion_command, merge_command, remote_verification_command, render_disposition,
+};
 
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::{Context, Result};

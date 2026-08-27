@@ -45,8 +45,21 @@ pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
         admission,
         detail,
         retained_children,
+        remote: request.remote.clone(),
         admitted_sha: None,
     };
+
+    // 0. The request is caller-supplied JSON. A malformed or incomplete one
+    //    must not be able to reach SAFE_TO_DELETE: an absent SHA, a zero PR
+    //    number, or an empty repository identity is missing evidence, not
+    //    permission.
+    if let Some(problem) = request.structural_problem() {
+        return outcome(
+            DeletionAdmission::RetainGraphNotProven,
+            format!("admission request is not well formed: {problem}"),
+            Vec::new(),
+        );
+    }
 
     // 1. The parent must have reached the terminal state this route expects.
     //    A merged parent is not on its own evidence that cleanup is safe —
