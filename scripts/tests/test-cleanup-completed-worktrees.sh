@@ -296,12 +296,16 @@ branch refs/heads/${branch}
 EOF
 }
 
+# `set -e` is active and these capture output in a command substitution, so a
+# non-zero exit from the script would abort the whole suite instead of failing
+# one assertion — measured: 22 assertions, no FAIL line, no summary. Exit status
+# is asserted separately by test_successful_sweeps_exit_zero.
 run_cleanup_dry_run() {
   local case_dir="$1"
   PATH="${case_dir}/bin:${PATH}" \
     MOCK_STATE="$case_dir" \
     MOCK_REPO_ROOT="${case_dir}/repo" \
-    bash "$IMPL" --dry-run 2>&1
+    bash "$IMPL" --dry-run 2>&1 || true
 }
 
 # The mutating front door. --dry-run is the read-only one; this exists so the
@@ -311,7 +315,7 @@ run_cleanup_real() {
   PATH="${case_dir}/bin:${PATH}" \
     MOCK_STATE="$case_dir" \
     MOCK_REPO_ROOT="${case_dir}/repo" \
-    bash "$IMPL" 2>&1
+    bash "$IMPL" 2>&1 || true
 }
 
 exit_status_of() {
@@ -496,7 +500,7 @@ run_cleanup_json() {
   PATH="${case_dir}/bin:${PATH}" \
     MOCK_STATE="$case_dir" \
     MOCK_REPO_ROOT="${case_dir}/repo" \
-    bash "$IMPL" --json 2>/dev/null
+    bash "$IMPL" --json 2>/dev/null || true
 }
 
 test_json_escapes_special_characters() {
@@ -763,7 +767,7 @@ test_json_projection_carries_the_inspection_axes() {
   write_unreachable_worktree_list "$case_dir" 'F:\code\Opencode\Rust\wt-pr11859'
 
   output="$(PATH="${case_dir}/bin:${PATH}" MOCK_STATE="$case_dir" \
-    MOCK_REPO_ROOT="${case_dir}/repo" bash "$IMPL" --json --dry-run 2>/dev/null)"
+    MOCK_REPO_ROOT="${case_dir}/repo" bash "$IMPL" --json --dry-run 2>/dev/null || true)"
 
   # Human and JSON projections must agree on the same semantic row.
   assert_contains "json reports the dry-run axis" "$output" '"dry_run":true'
