@@ -20,6 +20,7 @@ pub mod emacs_subject_fan_in;
 pub mod emacs_subject_manifest;
 pub mod file_identity;
 pub mod git_ancestry;
+pub mod native_helix_actions;
 pub mod native_neovim_actions;
 pub mod publication_drift;
 pub mod rust_hygiene;
