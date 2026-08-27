@@ -1152,15 +1152,15 @@ fn validate_row_slots_declared(manifest: &model::Manifest, violations: &mut Vec<
             .operation
             .as_ref()
             .map(|operation| format!("stage:{}", operation.stage.wire_name()));
-        if let Some(token) = &stage_token {
-            if !declared.contains(token.as_str()) {
-                violations.push(format!(
-                    "{DOC}: row {} exercises operation stage {:?} which the {:?} denominator does not declare",
-                    row.row_id,
-                    token.trim_start_matches("stage:"),
-                    entry.family
-                ));
-            }
+        if let Some(token) = &stage_token
+            && !declared.contains(token.as_str())
+        {
+            violations.push(format!(
+                "{DOC}: row {} exercises operation stage {:?} which the {:?} denominator does not declare",
+                row.row_id,
+                token.trim_start_matches("stage:"),
+                entry.family
+            ));
         }
         let terminal_token = format!("terminal:{}", row.terminal.wire_name());
         if !declared.contains(terminal_token.as_str()) {

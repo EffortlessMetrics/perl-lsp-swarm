@@ -384,12 +384,12 @@ fn eval(
                 }
             }
             "uniqueItems" => {
-                if subschema.as_bool() == Some(true) {
-                    if let Some(elements) = instance.as_array() {
-                        for (index, element) in elements.iter().enumerate() {
-                            if elements.iter().take(index).any(|earlier| earlier == element) {
-                                out.push(format!("{at}[{index}]: duplicate array entry"));
-                            }
+                if subschema.as_bool() == Some(true)
+                    && let Some(elements) = instance.as_array()
+                {
+                    for (index, element) in elements.iter().enumerate() {
+                        if elements.iter().take(index).any(|earlier| earlier == element) {
+                            out.push(format!("{at}[{index}]: duplicate array entry"));
                         }
                     }
                 }
@@ -470,10 +470,10 @@ fn check_string_subject(
     out: &mut Vec<String>,
 ) {
     let text = subject.as_str().unwrap_or_default();
-    if let Some(matcher) = matcher {
-        if !matcher.is_match(text) {
-            out.push(format!("{at}: name {text:?} violates its schema pattern"));
-        }
+    if let Some(matcher) = matcher
+        && !matcher.is_match(text)
+    {
+        out.push(format!("{at}: name {text:?} violates its schema pattern"));
     }
     if let Some(limit) = min_length {
         let length = text.chars().count() as u64;
@@ -487,10 +487,10 @@ fn check_string_subject(
             out.push(format!("{at}: name {text:?} violates maxLength {limit}"));
         }
     }
-    if let Some(allowed) = allowed_enum {
-        if !allowed.contains(subject) {
-            out.push(format!("{at}: name {text:?} is outside the schema enum"));
-        }
+    if let Some(allowed) = allowed_enum
+        && !allowed.contains(subject)
+    {
+        out.push(format!("{at}: name {text:?} is outside the schema enum"));
     }
 }
 
