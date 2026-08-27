@@ -2,12 +2,13 @@
 
 Each row binds one stable proposition to its discriminating executable proof.
 Proof lives in `crates/perl-lsp-perltidy/tests/formatter_property_harness_tests.rs`
-(generators and test-only orchestration) plus the feature-gated shared invariant
-core at `crates/perl-lsp-perltidy/src/formatter_property_harness/`, consumed by
-both the package tests and `fuzz/fuzz_targets/perl_tidy_formatter.rs`.
-The package tests and fuzz path both enable the named
-`formatter-property-harness` feature; the fuzz target is an adapter, not a
-second checker. No test-only `tests/support/` module is the sharing boundary.
+with one test-only invariant core under
+`crates/perl-lsp-perltidy/tests/support/formatter_property_harness/`.
+Proptest supplies deterministic structure-aware generation, shrinking, and
+replay for focused, scheduled, and release profiles; no public feature, product
+module, extra crate, or cargo-fuzz adapter is part of the claim. Every
+first-party entry point is fallible and carries typed case identity without new
+panic-family, unchecked-indexing, or unsafe exceptions.
 
 | Row | Proposition | Proof | Status |
 | --- | --- | --- | --- |
@@ -16,11 +17,11 @@ second checker. No test-only `tests/support/` module is the sharing boundary.
 | FPH-003 | For every `Applied` outcome, the complete plan applied via independent `apply_edits_exact` equals the rendered bytes exactly, edits are ordered, pairwise non-overlapping, and contained in the requested target or its exactly recorded widening | `applied_plan_independently_applies_to_rendered_bytes`, `applied_edits_are_ordered_nonoverlapping_and_target_contained` | offline |
 | FPH-004 | Second pass on the formatted output from a fresh context is a legitimate `NoChange` (`AlreadyFormatted`) with zero edits — idempotence | `second_pass_is_legitimate_nochange` | offline |
 | FPH-005 | `Refused`/`FailedOrNotProven` outcomes never carry an applied or partial plan: `edits` is empty and the reason class is one of the stable refusal codes; deliberately invalid/recovered generated source maps only to typed refusals | `refusals_carry_no_plan_and_exact_reason_class` | offline |
-| FPH-006 | Line-ending conventions are preserved across LF/CRLF/bare-CR/mixed variants (`FormatSafetyEvidence.line_endings == Preserved` whenever input parses) and every emitted UTF-16 range is valid for the exact subject geometry (#8048 rules) | `line_endings_and_utf16_geometry_survive_variants` | offline |
-| FPH-007 | Generation is bounded and receipted: case record carries generator schema/version, seed, source digest, target, profile fingerprint, admitted families; identical inputs produce an identical normalized receipt; no wall-clock assertion exists in the checker | `generated_case_receipt_is_deterministic_and_bounded` | offline |
+| FPH-006 | Under `FinalNewline::Preserve`, LF/CRLF/bare-CR/mixed conventions are preserved. Under `Insert` or `Trim`, only the requested terminal-newline policy delta is permitted and evidence reports `ChangedByFormatter`; the unaffected body convention remains unchanged. Every emitted UTF-16 range is valid for the exact subject geometry (#8048 rules) | `line_endings_and_utf16_geometry_survive_variants` (negative control: treating `Insert` on terminal CRLF as `Preserved` turns the test red) | offline |
+| FPH-007 | Generation is bounded and receipted: the focused profile runs one deterministic exemplar for every admitted family plus exactly 64 generated cases from a programmatic fixed seed and one test thread; each case record carries generator schema/version, seed, source digest, target, profile fingerprint, admitted families, and replay identity. `FPH_SEED=<u64>` reproduces the same normalized cases and receipt; no wall-clock assertion exists in the checker | `generated_case_receipt_is_deterministic_bounded_and_replayable` | offline |
 | FPH-008 | Dormant invariant slots fail closed: cancellation/budget interruption, structural preservation beyond parse success, and protected-region hash families exist as registered dispositions that report `not_proven` on today's tree instead of passing vacuously | `dormant_invariants_report_not_proven_until_dependencies_land` (flip: they turn into real assertions when #7140/#7101/#7104/#8146 mechanisms land) | offline |
-| FPH-009 | The harness never reuses production edit application or oracle substitution: it must not reference `PerlTidyFormatter`, subprocess adapters, or apply its expected bytes using the producer's own derivation path | `harness_module_does_not_reference_external_oracle` (source-text pin over the harness module, house policy-pin pattern) | offline |
-| FPH-010 | A cargo-fuzz target drives the same feature-gated invariant core from structured byte mutations and is declared in `fuzz/Cargo.toml` (adding the missing `perl-lsp-perltidy` path dependency with `formatter-property-harness` enabled); minimized crashes land as committed focused regressions under the crate's regression-file convention | manifest/source structural pins in `fph_policy_pins` require the shared `src/formatter_property_harness/` boundary, feature wiring in both consumers, and no duplicate checker; minimization is demonstrated by one checked-in `.proptest-regressions` entry wire format compatible with `crates/perl-lexer/tests/lexer_robustness_tests.proptest-regressions` | offline |
+| FPH-009 | The harness never reuses production edit application or substitutes an external oracle: the checker, strategies, orchestration, and policy test must not reference `PerlTidyFormatter`, spawn a process, execute generated Perl, use the producer's own expected-byte derivation, or add panic-family/unchecked-indexing/unsafe exceptions | `fph_policy_pins` in `tests/formatter_property_harness_tests.rs` scans the complete planned harness surface for `unwrap`, `expect`, panic/assert/todo/unimplemented/unreachable/debug macros, unchecked indexing/slicing, and `unsafe`, in addition to the oracle/process bans; repository panic/unsafe and cargo-allow no-new ratchets provide independent backstops | offline |
+| FPH-010 | Every counterexample shrinks through the same proptest strategy into both its persisted replay identity and a readable focused regression test before or with the fix; focused, scheduled, and release profiles use distinct bounded seed/case/shrink budgets and normalized receipt schemas | `persisted_counterexample_replays_and_matches_focused_regression`, `execution_profiles_are_distinct_bounded_and_receipted`; mutation controls remove either the persistence row or focused regression and require the proof to fail | offline |
 
 ## Mutation controls (must stay red if reintroduced)
 
@@ -32,15 +33,27 @@ second checker. No test-only `tests/support/` module is the sharing boundary.
 - Non-deterministic seed/order dependence changing normalized receipts → FPH-007
 - Random-byte rejection-dominant generation replacing structured subjects → FPH-001/FPH-007
 - Generated Perl executed anywhere in the harness → FPH-009 (source-text pin bans process spawning)
+- Panic-family, unchecked-indexing, or unsafe syntax added anywhere in the
+  harness surface → FPH-009 source pin, with repository no-new ratchets as
+  independent backstops
+- A minimized counterexample discarded, made non-replayable, or omitted from
+  its readable focused regression → FPH-010
+- Focused/scheduled/release profiles sharing an unbounded or indistinguishable
+  budget/receipt identity → FPH-007/FPH-010
 - Wall-clock thresholds standing in for bounded work → FPH-007
 
 ## Non-proof residuals (named, not silently dropped)
 
-- Scheduled-tier seed/time budgets and release-tier receipt consumption by
-  #7147/#9749 stay governed by those issues' consumers; this claim ships the
-  deterministic PR/focused tier plus the wired-but-dormant schedule hooks.
+- Scheduled/release workflow wiring and receipt consumption by #7147/#9749
+  stay governed by those issues' consumers; this claim ships the three bounded
+  profiles and normalized receipt producer without adding a workflow.
 - Real statistical depth per family and crash-cluster triage workflow are
   runtime operations, not unit proof.
+- Ordinary PR proof runs only the deterministic focused profile. Scheduled and
+  release consumers use the larger explicit case/shrink profiles, publish the
+  normalized receipt, and report timeout/missing/instrument failure as
+  `NOT_PROVEN`. Enabling either consumer requires a measured LEM projection and
+  owns any workflow change; this spec does not add a workflow.
 - Trivia/opaque hashing (#7111/#7120), structural-preservation oracle
   (#8146), and cancellation checkpoints (#7140) convert FPH-008 dormancies;
   landing them is owned by those issues, not this spec.

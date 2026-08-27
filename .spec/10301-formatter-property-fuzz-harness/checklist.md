@@ -6,7 +6,7 @@ Composition sibling: #10302 bench spec
 
 Red-first receipts-of-record (2026-08-27, pure reads on the base pin):
 
-- Zero formatter fuzz surface: `fuzz/Cargo.toml` declares 20 targets
+- Zero formatter fuzz surface: `fuzz/Cargo.toml` declares 21 targets
   (substitution_parsing, builtin_functions, lsp_cancellation_registry,
   unicode_positions, utf16_roundtrip, lsp_navigation, heredoc_parsing,
   quote_operators, declaration_parsing, parser_integration,
@@ -28,28 +28,48 @@ Red-first receipts-of-record (2026-08-27, pure reads on the base pin):
 - proptest precedent: root `Cargo.toml:364`;
   `crates/perl-lexer/tests/lexer_robustness_tests.proptest-regressions`.
 
+These receipts are historical evidence for the spec. Before implementation,
+rerun every source/count/API receipt against that implementation branch's merge
+base and update this bundle if the seam changed; a mismatch or unavailable
+source is `NOT_PROVEN`, not permission to code from the old line reference.
+
 Planned surface:
 
-- [ ] `crates/perl-lsp-perltidy/src/formatter_property_harness/`:
-      feature-gated, shareable invariant core with seed/schema/receipt types,
-      checker consuming only `format_*_typed` + `apply_edits_exact`, and
-      dormant disposition registry for gated invariants; it is the single
-      checker imported by both package tests and the fuzz target
+- [ ] `crates/perl-lsp-perltidy/tests/support/formatter_property_harness/`:
+      one test-only module owning fallible `check_case`, the admitted-family
+      registry, structured strategies, seed/profile/schema/receipt types, and
+      dormant dispositions. It consumes canonical product APIs but exposes no
+      public product feature or second checker
 - [ ] `crates/perl-lsp-perltidy/tests/formatter_property_harness_tests.rs`:
-      test-only generators/mutators over admitted safe-subset families,
-      bounded case construction, and FPH-001..FPH-009 incl. mutation controls;
-      invoke the shared core with the `formatter-property-harness` feature
-- [ ] `crates/perl-lsp-perltidy/Cargo.toml`: additive empty
-      `formatter-property-harness` feature plus `proptest.workspace = true`
-      dev-dependency only; the feature gates the shareable module and does not
-      add it to default production builds
-- [ ] `fuzz/Cargo.toml`: add `perl-lsp-perltidy` path dep with
-      `features = ["formatter-property-harness"]` +
-      `[[bin]] name = "perl_tidy_formatter"`
-- [ ] `fuzz/fuzz_targets/perl_tidy_formatter.rs`: structured mutation front
-      end calling the shared invariant core; never executes Perl
-- [ ] One minimized committed regression demonstrating the crash/property →
-      focused-fixture pipeline end to end
+      programmatic `FPH_SEED` parsing, one deterministic exemplar per admitted
+      family, exactly 64 generated focused cases on one test thread, and
+      FPH-001..FPH-010 including mutation controls. Its `fph_policy_pins` test
+      reads the complete harness/test surface and proves one checker, no
+      subprocess/Perl execution or external oracle, and no producer-side
+      expected-byte derivation. The same test rejects `unwrap`, `expect`,
+      panic/assert/todo/unimplemented/unreachable/debug macros, unchecked
+      indexing/slicing, and `unsafe`; repository panic/unsafe and cargo-allow
+      no-new ratchets provide independent backstops
+- [ ] `crates/perl-lsp-perltidy/Cargo.toml`: add
+      `proptest.workspace = true` as a dev-dependency; update `Cargo.lock` only
+      if Cargo changes the existing locked graph
+- [ ] `tests/formatter_property_harness_tests.proptest-regressions`: checked-in
+      minimized persistence entries; every discovered entry is paired with a
+      readable named Rust regression test and normalized receipt identity
+- [ ] Three profiles are DATA in the harness: focused = every-family exemplar +
+      64 generated cases/1,024 shrink iterations; scheduled = 16 fixed seeds ×
+      256 cases/4,096 shrink iterations; release = 64 fixed seeds × 256 cases/
+      4,096 shrink iterations, bound to the supplied candidate/profile/schema.
+      Invalid profile/seed/candidate input is a typed failure. Missing, timeout,
+      stale-schema, or instrument failure is `NOT_PROVEN`
+- [ ] Normalized schema `formatter_property_harness.v1` writes atomically to
+      `target/formatter-property-harness/<profile>/receipt.json`, with stable
+      row order and no timestamps/absolute paths. Release rows require the
+      caller-supplied exact candidate; consumers validate that binding
+- [ ] Ordinary PR routing selects only focused proof for formatter/harness
+      changes. Scheduled/release consumers own their later workflow wiring and
+      normalized artifact upload; before enabling either, record a measured LEM
+      projection and routing rationale. This claim changes no workflow
 
 Proof commands:
 
@@ -57,9 +77,14 @@ Proof commands:
 cargo fmt -p perl-lsp-perltidy -- --check
 cargo clippy -p perl-lsp-perltidy --all-targets --locked -- -D warnings
 cargo test -p perl-lsp-perltidy --all-targets --locked
-cargo test -p perl-lsp-perltidy --features formatter-property-harness \
-  --test formatter_property_harness_tests -- --test-threads=1
-cargo check --manifest-path fuzz/Cargo.toml --bin perl_tidy_formatter
+cargo test -p perl-lsp-perltidy \
+  --test formatter_property_harness_tests --locked -- --test-threads=1
+FPH_PROFILE=focused FPH_SEED=10301 cargo test -p perl-lsp-perltidy \
+  --test formatter_property_harness_tests --locked -- --test-threads=1
+cargo xtask ci-hygiene check-unwraps-prod
+cargo xtask ci-hygiene check-panic-test
+cargo xtask ci-hygiene check-unsafe-prod
+cargo-allow check --mode no-new
 ```
 
 Open residuals (owned by upstream issues, not silently dropped):
@@ -68,4 +93,4 @@ Open residuals (owned by upstream issues, not silently dropped):
       dormancy when #7140 lands checkpoint inputs
 - [ ] Structural preservation beyond parse success (#8146) and trivia/
       opaque hashing (#7101/#7104/#7111/#7120) convert their dormancies
-- [ ] Scheduled/release tier budgets and #7147/#9749 receipt consumption
+- [ ] Scheduled/release workflow wiring and #7147/#9749 receipt consumption
