@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12254 |
+| Total tracked files | 12256 |
 | Rust-family files | 3745 |
-| Non-Rust files | 8509 |
-| Allowlisted | 6274 |
+| Non-Rust files | 8511 |
+| Allowlisted | 6276 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -19,7 +19,7 @@
 | config | 480 |
 | documentation | 2775 |
 | generated | 2 |
-| production | 331 |
+| production | 333 |
 | test | 2033 |
 | tooling | 653 |
 | unclassified | 2235 |
@@ -8320,6 +8320,7 @@
 | `vscode-extension/src/languageClientStartupMetrics.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/languageServerHealth.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/loadedModuleReloadFamily.generated.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/lspProviderCall.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedCacheProtocol.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedCandidateRuntime.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedCandidateSelection.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -8406,6 +8407,7 @@
 | `vscode-extension/src/test/languageClientStartupMetrics.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/languageServerHealth.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/loadedModuleReloadFamily.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/lspProviderCall.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedCacheProtocol.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedCandidateRuntime.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedCandidateSelection.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
