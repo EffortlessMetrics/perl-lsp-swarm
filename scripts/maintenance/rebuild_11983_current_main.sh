@@ -250,6 +250,8 @@ PY
   if [ "$cherry_pick_noop" = true ]; then
     first_commit_noop=true
   fi
+elif [ "$cherry_pick_noop" = true ]; then
+  first_commit_noop=true
 fi
 
 run_cherry_pick_or_skip_empty "second cherry-pick" "$second_commit" git cherry-pick "$second_commit"

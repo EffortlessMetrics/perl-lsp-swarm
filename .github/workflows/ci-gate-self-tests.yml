@@ -32,6 +32,7 @@ on:
       - 'scripts/tests/test-distribution-manifest-consistency.sh'
       - 'scripts/maintenance/verify_11983_reject_identities.py'
       - 'scripts/tests/test-rebuild-11983-reject-identities.py'
+      - 'scripts/maintenance/rebuild_11983_current_main.sh'
       # The manifest-consistency gate derives its expected values from these
       # three authorities, so a change to any of them can make every
       # distribution manifest stale. Without them here, the only gate that

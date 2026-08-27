@@ -40,6 +40,7 @@ def exercise_empty_cherry_pick_guard(
     cherry_pick_status: int,
     dirty_tree: bool,
     expect_skip: bool,
+    untracked_file: bool = False,
 ) -> None:
     script = (ROOT / "scripts/maintenance/rebuild_11983_current_main.sh").read_text(encoding="utf-8")
     start = script.index("reconstruction_tree_is_clean() {\n")
@@ -82,6 +83,9 @@ case "$*" in
     exit "${DIRTY_TREE}"
     ;;
   "ls-files --others --exclude-standard")
+    if [ "${UNTRACKED_FILE:-0}" -eq 1 ]; then
+      printf '%s\\n' 'untracked.txt'
+    fi
     exit 0
     ;;
   "cherry-pick --skip")
@@ -118,6 +122,7 @@ test "$result" -eq {0 if expect_skip else 1}
                 "FAKE_CHERRY_PICK_HEAD": cherry_pick_head,
                 "CHERRY_PICK_STATUS": str(cherry_pick_status),
                 "DIRTY_TREE": str(int(dirty_tree)),
+                "UNTRACKED_FILE": str(int(untracked_file)),
                 "SKIPPED": f"{root.as_posix()}/skipped",
             },
             capture_output=True,
@@ -332,6 +337,14 @@ def main() -> None:
         cherry_pick_head="d174ec1e9845056b8e1a193001ce88a2ea9eaebe",
         expected_commit="d174ec1e9845056b8e1a193001ce88a2ea9eaebe",
         cherry_pick_status=1,
+        dirty_tree=False,
+        untracked_file=True,
+        expect_skip=False,
+    )
+    exercise_empty_cherry_pick_guard(
+        cherry_pick_head="d174ec1e9845056b8e1a193001ce88a2ea9eaebe",
+        expected_commit="d174ec1e9845056b8e1a193001ce88a2ea9eaebe",
+        cherry_pick_status=1,
         dirty_tree=True,
         expect_skip=False,
     )
@@ -386,6 +399,10 @@ def main() -> None:
                 raise RuntimeError(f"unexpected import-helper rejection: {error}") from error
         else:
             raise RuntimeError("arbitrary marker-free import state was accepted")
+        path.write_text(old, encoding="utf-8")
+        replace_stale_import(str(path), old, new, "CodeFormatter", current)
+        if path.read_text(encoding="utf-8") != new:
+            raise RuntimeError("valid stale import was not replaced")
 
     with tempfile.TemporaryDirectory(prefix="rebuild-11983-identities-") as directory:
         root = Path(directory)
