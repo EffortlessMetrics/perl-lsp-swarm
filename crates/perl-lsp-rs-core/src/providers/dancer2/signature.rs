@@ -103,6 +103,22 @@ mod tests {
     }
 
     #[test]
+    fn selected_extractions_keep_contextual_option_helper() -> Result<(), String> {
+        let source = include_str!("signature.rs");
+        for (keyword, context) in
+            [("get", "get forms"), ("post", "post forms"), ("any", "any forms")]
+        {
+            let expected = format!(
+                "must_some_with(route_keyword_signature_forms(\"{keyword}\"), \"{context}\")"
+            );
+            if !source.contains(&expected) {
+                return Err(format!("missing contextual extraction for {keyword}: {expected}"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn non_route_keywords_have_no_route_signature() {
         assert!(route_keyword_signature_forms("hook").is_none());
         assert!(route_keyword_signature_forms("delete").is_none());
