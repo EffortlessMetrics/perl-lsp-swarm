@@ -90,6 +90,62 @@
         "gnu_tarball_sha256": "sha256:c16bf52a9a03f7e1f84f6f2668271a08418064b740a398c29b0b8c4ae50fbf9e",
         "observed_client_version_header": "1.24"
       }
+    },
+    {
+      "subject_id": "released_lsp_mode_melpa_stable_10_0_0",
+      "client_kind": "lsp_mode",
+      "source_state": "released",
+      "emacs_release_tag": "913a6c07f163205cb568bc68d7dfe677dbc358ab",
+      "emacs_version_token": "30.1",
+      "client_version_hint": "10.0.0",
+      "client_source_relative_path": "lsp-mode.el",
+      "client_source_sha256": "sha256:70466bde62d673a848f7e55d0e2a91d1a11b8fff76bad36ae5ff0c2a59445db0",
+      "materialization": "explicit_input",
+      "client_library_forms": ["lsp-mode.el"],
+      "external_package": {
+        "archive_url": "https://stable.melpa.org/packages/lsp-mode-10.0.0.tar",
+        "archive_sha256": "sha256:ad7d46d6bb5b2f840f73c5884cf86dd2678ff6ce68d1bede9ba6b9b60b5668ba",
+        "attested_source_commit": "913a6c07f163205cb568bc68d7dfe677dbc358ab",
+        "package_requires": [
+          "emacs 28.1",
+          "dash 2.18.0",
+          "f 0.21.0",
+          "ht 2.3",
+          "spinner 1.7.3",
+          "markdown-mode 2.3",
+          "lv 0",
+          "eldoc 1.11"
+        ],
+        "minimum_emacs": "28.1",
+        "checksum_disposition": "melpa_stable_archive_sha256_at_audit_time"
+      },
+      "digest_audit": {
+        "gnu_tarball_url": "https://stable.melpa.org/packages/lsp-mode-10.0.0.tar",
+        "gnu_tarball_sha256": "sha256:ad7d46d6bb5b2f840f73c5884cf86dd2678ff6ce68d1bede9ba6b9b60b5668ba",
+        "observed_client_version_header": "10.0.0"
+      }
+    },
+    {
+      "subject_id": "source_lsp_mode_github_6bfc593",
+      "client_kind": "lsp_mode",
+      "source_state": "upstream_source",
+      "emacs_release_tag": "6bfc593d7b1bc0dd656f09ffce52cc085ebced05",
+      "emacs_version_token": "30.1",
+      "client_version_hint": "10.0.1",
+      "client_source_relative_path": "lsp-mode.el",
+      "client_source_sha256": "sha256:2878b061e01de2239ae2d1206838cead3a0726c6cb6e7c4280d4248197ab568d",
+      "materialization": "explicit_input",
+      "client_library_forms": ["lsp-mode.el"],
+      "source_tree": {
+        "source_repo_url": "https://github.com/emacs-lsp/lsp-mode",
+        "commit": "6bfc593d7b1bc0dd656f09ffce52cc085ebced05",
+        "tree_sha1": "b9111a657fe1376f92d203ba4951868fb0fa3f57"
+      },
+      "digest_audit": {
+        "gnu_tarball_url": "https://raw.githubusercontent.com/emacs-lsp/lsp-mode/6bfc593d7b1bc0dd656f09ffce52cc085ebced05/lsp-mode.el",
+        "gnu_tarball_sha256": "sha256:2878b061e01de2239ae2d1206838cead3a0726c6cb6e7c4280d4248197ab568d",
+        "observed_client_version_header": "10.0.1"
+      }
     }
   ]
 }

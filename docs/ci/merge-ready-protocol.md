@@ -21,23 +21,24 @@ Receipt JSON uses `.ci/receipts/schemas/merge-readiness.schema.json` and include
 
 ## Required checks source
 
-This repository's `main` branch is gated by **two separate GitHub mechanisms**,
-and a merge is blocked by the union of both. Conventional required checks are
+This repository's `main` branch is gated by GitHub enforcement mechanisms,
+and a merge is blocked by their union. Conventional required checks are
 read from `.ci/policies/required-checks.toml` first.
 
 Only entries explicitly marked `required = true` are treated as required. The
 current proof-floor contexts, by source mechanism, are:
 
-Classic branch protection (`GET /repos/{owner}/{repo}/branches/main/protection`):
+Ruleset `main` (id `16664791`, `GET /repos/{owner}/{repo}/rules/branches/main`):
 
 - `Perl LSP Rust Small Result`
 - `ripr+ New Gap Gate`
-
-Ruleset `main` (id `16664791`, `GET /repos/{owner}/{repo}/rules/branches/main`):
-
 - `Compile All Targets (bit-rot guard)`
 - `Conflict marker check`
 - `validate-title`
+
+Classic branch protection (`GET /repos/{owner}/{repo}/branches/main/protection`)
+no longer requires any status context. Rulesets bind administrators, so none of
+these contexts can be bypassed by a manual admin probe while pending.
 
 This list must match the live branch protection and ruleset state exactly. It
 is not self-verifying: nothing compares it against GitHub, so a context added

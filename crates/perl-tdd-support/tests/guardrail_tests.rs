@@ -1,4 +1,5 @@
 //! Integration tests for CI Guardrail Ignored Test Monitoring
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_tdd_support::governance::*;
 use std::collections::HashMap;

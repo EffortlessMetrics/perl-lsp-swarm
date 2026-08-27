@@ -371,23 +371,21 @@ pub(crate) fn verify_inventory_projection(markdown: &str) -> Result<()> {
 
     if let (Some(&allowlisted), Some(&rows)) =
         (summary_counts.get("Allowlisted"), section_rows.get("Allowlisted non-Rust files"))
+        && allowlisted != rows
     {
-        if allowlisted != rows {
-            bail!(
-                "non-Rust inventory summary reports {allowlisted} allowlisted files but the \
-                 table projects {rows} rows; regenerate the summary with the same pass"
-            );
-        }
+        bail!(
+            "non-Rust inventory summary reports {allowlisted} allowlisted files but the \
+             table projects {rows} rows; regenerate the summary with the same pass"
+        );
     }
     if let (Some(&unclassified), Some(&rows)) =
         (summary_counts.get("Unclassified"), section_rows.get("Unclassified files"))
+        && unclassified != rows
     {
-        if unclassified != rows {
-            bail!(
-                "non-Rust inventory summary reports {unclassified} unclassified files but the \
-                 table projects {rows} rows; regenerate the summary with the same pass"
-            );
-        }
+        bail!(
+            "non-Rust inventory summary reports {unclassified} unclassified files but the \
+             table projects {rows} rows; regenerate the summary with the same pass"
+        );
     }
     Ok(())
 }

@@ -61,6 +61,15 @@ on:
       - 'scripts/tests/test-worktree-manager.sh'
       - '.cargo/config.toml'
       - 'scripts/tests/test-target-isolation.sh'
+      # ripr lane termination classification + bounded same-head retry
+      # (#6807/#12563/#12771): the gate's eviction classifier is itself a
+      # gate. These self-tests prove a genuine red still redding the required
+      # "ripr+ New Gap Gate" and only positive runner-teardown evidence
+      # reaching the single-retry path.
+      - '.github/workflows/ripr.yml'
+      - '.github/workflows/ripr-infra-retry.yml'
+      - 'scripts/ci/classify-ripr-lane-termination'
+      - 'scripts/tests/test-classify-ripr-lane-termination.sh'
       # Toolchain guard for bash entrypoints (issue #12593): the coverage
       # consistency test scans every cargo-invoking scripts/*.sh, so any
       # script change re-proves that none of them dodges the guard.
@@ -429,4 +438,31 @@ jobs:
             echo "## Cargo toolchain guard self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The guard contract regressed — a bash entrypoint could again hand builds to a cargo older than the workspace rust-version and surface it as a manifest parse error. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  ripr-lane-termination-classifier-self-test:
+    name: ripr lane-termination classifier self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run ripr termination classifier + bounded-retry self-test
+        run: bash scripts/tests/test-classify-ripr-lane-termination.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## ripr lane-termination classifier self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The eviction classifier (#6807, #12563, #12771) keeps the boundary that matters: a genuine gap receipt (\"quality gate failed\") always classifies ripr-failure — with or without a later teardown marker, so real reds are never auto-retried — while only positive runner-teardown evidence yields infra-no-proof for the single same-head retry (ripr-infra-retry), silence or unreadable logs fail closed to ripr-failure, and attempt >= 2 surfaces NOT_PROVEN loudly." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## ripr lane-termination classifier self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The classifier or decision table regressed — an infra kill could mask a genuine red, a retry could loop unboundedly, or absent evidence could pass. Check the step output above for which fixture misclassified." >> "$GITHUB_STEP_SUMMARY"
           fi

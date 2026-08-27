@@ -28,6 +28,7 @@ cargo doc -p perl-parser-pest --open     # View docs
 | `pratt_parser` | `PrattParser` for Perl operator precedence (Pratt/TDOP algorithm) |
 | `sexp_formatter` | `SexpFormatter` and `SexpBuilder` for tree-sitter-compatible S-expression output |
 | `error` | `ParseError`, `ParseResult`, `ScannerError`, `UnicodeError` types |
+| `outcome` | Typed parse outcome / diagnostic / original-source range vocabulary (`#8427`). Substrate only; does not change `parse()` |
 
 ### Key Types (re-exported from `lib.rs`)
 
@@ -37,6 +38,7 @@ cargo doc -p perl-parser-pest --open     # View docs
 - `PrattParser` -- operator-precedence parser with `Precedence`, `Associativity`, `OpInfo`
 - `SexpFormatter` -- configurable formatter with `.with_positions()` and `.compact()` builder methods
 - `ParseError` / `ParseResult<T>` -- serializable error types with `thiserror` derives
+- `ParseOutcome` / `ParseAttempt` / `StrictParseError` / `ParserFailure` / `SourceRange` -- typed completeness, rejection, and instrument-failure vocabulary (`#8427`). Not consumed by `parse()` yet
 
 ### Dependencies
 
@@ -63,6 +65,25 @@ let mut parser = PureRustPerlParser::new();
 let ast = parser.parse("my $x = 42;")?;
 let sexp = parser.to_sexp(&ast);
 ```
+
+## Fixture manifest (test substrate)
+
+Package-local fixture identity for the pest train lives under `tests/fixtures/`.
+The reusable runner is `tests/support/` and is exercised by
+`cargo test -p perl-parser-pest --test fixture_manifest`. Rows record current
+parse observations only; they do not declare the parser correct or replace
+existing inline tests.
+
+```text
+tests/fixtures/manifest.toml
+tests/fixtures/sources/**
+tests/fixture_manifest.rs
+tests/support/**
+```
+
+Load and select through a caller-supplied package root (`CARGO_MANIFEST_DIR`),
+not the workspace root. Duplicate IDs, path escape, missing sources, empty
+selection, and parser panics fail closed as instrument errors.
 
 ## Important Notes
 

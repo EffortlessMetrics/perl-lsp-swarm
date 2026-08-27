@@ -241,6 +241,6 @@ fn amper_call_sexp_starts_with_amper_call() -> TestResult {
 fn amper_call_no_parens_sexp() -> TestResult {
     let expr = first_statement_expr("&foo;")?;
     let sexp = expr.to_sexp();
-    assert!(sexp.contains("amper_call"), "&foo sexp must contain 'amper_call', got: {sexp}");
+    assert!(sexp.contains("amper_sub"), "&foo sexp must contain 'amper_sub', got: {sexp}");
     Ok(())
 }

@@ -15,7 +15,7 @@ fn lex(source: &str) -> Result<Vec<Token>, Box<dyn Error>> {
     let mut tokens = Vec::new();
     loop {
         let token = stream.next()?;
-        if token.kind == TokenKind::Eof {
+        if token.kind() == TokenKind::Eof {
             break;
         }
         tokens.push(token);
