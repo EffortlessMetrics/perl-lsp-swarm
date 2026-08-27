@@ -331,6 +331,12 @@ git diff --check
 # It reconstructs and proves locally, records durable evidence as an artifact,
 # and never mutates repository refs from untrusted candidate code. Candidate
 # refs are published only by an explicitly authorized writer from trusted code.
+if ! git diff --quiet; then
+  git diff --binary > "$evidence_dir/strengthened-edits.patch"
+  echo "throwaway reconstruction edits (proof-exercised) preserved in strengthened-edits.patch" \
+    >> "$evidence_dir/reconstruction-summary.txt"
+  git checkout -- .
+fi
 worktree_status="$(git status --porcelain=v1)"
 {
   echo "event-head: $REBUILD_EVENT_HEAD_SHA"
