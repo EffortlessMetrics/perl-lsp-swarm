@@ -3181,6 +3181,7 @@ async function recoverFromObservedCrash(
     // advertises its last accepted `running` generation. Retire that dead
     // client before presenting the manual-recovery boundary so exhaustion is
     // observably terminal and an explicit retry starts from `stopped`.
+    disposeClientIntegrations();
     await languageClientLifecycle?.stop();
     await reportCrashBudgetExhausted();
     return;

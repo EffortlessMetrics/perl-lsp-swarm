@@ -282,13 +282,15 @@ describe('mid-session silent server crash recovery (#4625)', () => {
 
   test('budget exhaustion retires the live client after exactly three replacements', async () => {
     let created = 0;
-    const lifecycle = new ExtensionLanguageClientLifecycle<FakeLifecycleClient, FakeLifecycleEvent>({
-      resolveServerPath: async () => '/server/perllsp',
-      createClient: () => {
-        created += 1;
-        return new FakeLifecycleClient(Promise.resolve(), created);
+    const lifecycle = new ExtensionLanguageClientLifecycle<FakeLifecycleClient, FakeLifecycleEvent>(
+      {
+        resolveServerPath: async () => '/server/perllsp',
+        createClient: () => {
+          created += 1;
+          return new FakeLifecycleClient(Promise.resolve(), created);
+        },
       },
-    });
+    );
     _setLanguageClientLifecycleForTest(injectedLifecycle(lifecycle));
     await lifecycle.start();
 
