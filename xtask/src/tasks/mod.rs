@@ -157,6 +157,7 @@ pub mod release_turnkey;
 pub mod repo_hygiene;
 pub mod review_receipts;
 pub mod ripr_evidence;
+pub mod rust_small_proof;
 pub mod seam_diff;
 pub mod semantic_inline_next_edit;
 pub mod semantic_inline_receipts;
