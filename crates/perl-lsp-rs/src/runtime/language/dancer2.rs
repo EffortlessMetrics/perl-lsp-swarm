@@ -220,12 +220,11 @@ mod activation_anchoring_tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    fn parse_ast(source: &str) -> perl_parser::ast::Node {
+    type TestError = Box<dyn std::error::Error>;
+
+    fn parse_ast(source: &str) -> Result<perl_parser::ast::Node, TestError> {
         let mut parser = perl_parser::Parser::new(source);
-        match parser.parse() {
-            Ok(ast) => ast,
-            Err(error) => panic!("fixture must parse: {error}"),
-        }
+        parser.parse().map_err(|error| format!("fixture must parse: {error}").into())
     }
 
     fn stub_module(version: &str) -> String {
@@ -234,12 +233,12 @@ mod activation_anchoring_tests {
 
     /// Stub Dancer2 distribution layout: one folder root with its own
     /// `lib/Dancer2.pm`.
-    fn make_app_folder(base: &Path, name: &str, version: &str) -> PathBuf {
+    fn make_app_folder(base: &Path, name: &str, version: &str) -> Result<PathBuf, TestError> {
         let folder = base.join(name);
         let lib = folder.join("lib");
-        std::fs::create_dir_all(&lib).expect("create lib dir");
-        std::fs::write(lib.join("Dancer2.pm"), stub_module(version)).expect("write stub module");
-        folder
+        std::fs::create_dir_all(&lib)?;
+        std::fs::write(lib.join("Dancer2.pm"), stub_module(version))?;
+        Ok(folder)
     }
 
     fn isolated_workspace_config() -> WorkspaceConfig {
@@ -249,12 +248,14 @@ mod activation_anchoring_tests {
         config
     }
 
-    fn server_with_folders(folders: &[(&Path, Option<WorkspaceConfig>)]) -> LspServer {
+    fn server_with_folders(
+        folders: &[(&Path, Option<WorkspaceConfig>)],
+    ) -> Result<LspServer, TestError> {
         let server = LspServer::new();
         let mut states = Vec::new();
         for (path, config) in folders {
             let mut state =
-                WorkspaceFolderState::new(path_uri(path)).with_path(path.to_path_buf());
+                WorkspaceFolderState::new(path_uri(path)?).with_path(path.to_path_buf());
             if let Some(config) = config {
                 state = state.with_effective_workspace_config(config.clone());
             }
@@ -264,14 +265,13 @@ mod activation_anchoring_tests {
         if let Some((first, _)) = folders.first() {
             *server.root_path.lock() = Some(first.to_path_buf());
         }
-        server
+        Ok(server)
     }
 
-    fn path_uri(path: &Path) -> String {
-        match url::Url::from_file_path(path) {
-            Ok(url) => url.to_string(),
-            Err(()) => panic!("fixture path must convert to a URI: {}", path.display()),
-        }
+    fn path_uri(path: &Path) -> Result<String, TestError> {
+        url::Url::from_file_path(path)
+            .map(|url| url.to_string())
+            .map_err(|()| format!("fixture path must convert to a URI: {}", path.display()).into())
     }
 
     fn normalized(path: &str) -> String {
@@ -282,10 +282,10 @@ mod activation_anchoring_tests {
         server: &LspServer,
         doc_path: &Path,
         source: &str,
-    ) -> Dancer2RequestContext {
+    ) -> Result<Dancer2RequestContext, TestError> {
         let content_hash = perl_lsp_rs_core::tooling::perl_critic::hash_content(source);
-        let ast = parse_ast(source);
-        server.dancer2_request_context(&path_uri(doc_path), source, content_hash, &ast)
+        let ast = parse_ast(source)?;
+        Ok(server.dancer2_request_context(&path_uri(doc_path)?, source, content_hash, &ast))
     }
 
     // A `use lib` placed after the import belongs to later code: it must not
@@ -299,11 +299,11 @@ mod activation_anchoring_tests {
         std::fs::write(vendor.join("Dancer2.pm"), stub_module("1.300.0"))?;
 
         let config = isolated_workspace_config();
-        let server = server_with_folders(&[(&ws, Some(config))]);
+        let server = server_with_folders(&[(&ws, Some(config))])?;
         let doc = ws.join("bin").join("app.pl");
         let source = "use Dancer2;\nget '/x' => sub {1};\nuse lib 'vendor';\n";
 
-        let context = request_context(&server, &doc, source);
+        let context = request_context(&server, &doc, source)?;
 
         assert!(
             !context.activations.has_exact(),
@@ -326,11 +326,11 @@ mod activation_anchoring_tests {
         std::fs::write(vendor.join("Dancer2.pm"), stub_module("1.300.0"))?;
 
         let config = isolated_workspace_config();
-        let server = server_with_folders(&[(&ws, Some(config))]);
+        let server = server_with_folders(&[(&ws, Some(config))])?;
         let doc = ws.join("bin").join("app.pl");
         let source = "use lib 'vendor';\nuse Dancer2;\n";
 
-        let context = request_context(&server, &doc, source);
+        let context = request_context(&server, &doc, source)?;
 
         assert!(context.activations.has_exact(), "preceding root still activates exactly");
         assert_eq!(
@@ -353,11 +353,11 @@ mod activation_anchoring_tests {
 
         let mut config = isolated_workspace_config();
         config.include_paths = vec!["lib_ok".to_string()];
-        let server = server_with_folders(&[(&ws, Some(config))]);
+        let server = server_with_folders(&[(&ws, Some(config))])?;
         let doc = ws.join("bin").join("app.pl");
         let source = "no lib 'lib_ok';\nuse Dancer2;\n";
 
-        let context = request_context(&server, &doc, source);
+        let context = request_context(&server, &doc, source)?;
 
         assert!(
             !context.activations.has_exact(),
@@ -370,7 +370,7 @@ mod activation_anchoring_tests {
 
         // Control: without the cancellation the configured root activates.
         let kept = "use Dancer2;\n";
-        let context = request_context(&server, &doc, kept);
+        let context = request_context(&server, &doc, kept)?;
         assert!(
             context.activations.has_exact(),
             "without `no lib`, the configured root still resolves the module"
@@ -381,15 +381,15 @@ mod activation_anchoring_tests {
     #[test]
     fn relative_lexical_root_resolves_against_owning_folder_only() -> TestResult {
         let temp = tempfile::tempdir()?;
-        let svc_a = make_app_folder(temp.path(), "svc-a", "1.101.001");
-        let svc_b = make_app_folder(temp.path(), "svc-b", "1.102.002");
+        let svc_a = make_app_folder(temp.path(), "svc-a", "1.101.001")?;
+        let svc_b = make_app_folder(temp.path(), "svc-b", "1.102.002")?;
 
         // Registration order matters: the owning folder must NOT be first.
-        let server = server_with_folders(&[(&svc_a, None), (&svc_b, None)]);
+        let server = server_with_folders(&[(&svc_a, None), (&svc_b, None)])?;
         let doc_b = svc_b.join("bin").join("app.pl");
         let source = "use lib 'lib';\nuse Dancer2;\n";
 
-        let context = request_context(&server, &doc_b, source);
+        let context = request_context(&server, &doc_b, source)?;
 
         let module = context
             .activations
@@ -405,10 +405,7 @@ mod activation_anchoring_tests {
         assert!(
             context.activations.has_exact(),
             "owning-folder resolution must be exact: {:?}",
-            context
-                .activations
-                .for_package("main")
-                .map(|package| package.facts.state.clone())
+            context.activations.for_package("main").map(|package| package.facts.state.clone())
         );
         Ok(())
     }
@@ -418,16 +415,16 @@ mod activation_anchoring_tests {
     #[test]
     fn multi_root_apps_each_resolve_within_their_own_folder() -> TestResult {
         let temp = tempfile::tempdir()?;
-        let svc_a = make_app_folder(temp.path(), "svc-a", "1.101.001");
-        let svc_b = make_app_folder(temp.path(), "svc-b", "1.102.002");
+        let svc_a = make_app_folder(temp.path(), "svc-a", "1.101.001")?;
+        let svc_b = make_app_folder(temp.path(), "svc-b", "1.102.002")?;
 
-        let server = server_with_folders(&[(&svc_a, None), (&svc_b, None)]);
+        let server = server_with_folders(&[(&svc_a, None), (&svc_b, None)])?;
         let doc_a = svc_a.join("bin").join("app.pl");
         let doc_b = svc_b.join("bin").join("app.pl");
         let source = "use lib 'lib';\nuse Dancer2;\n";
 
-        let context_a = request_context(&server, &doc_a, source);
-        let context_b = request_context(&server, &doc_b, source);
+        let context_a = request_context(&server, &doc_a, source)?;
+        let context_b = request_context(&server, &doc_b, source)?;
 
         let module_a =
             context_a.activations.module.as_ref().ok_or("folder A must resolve its module")?;
