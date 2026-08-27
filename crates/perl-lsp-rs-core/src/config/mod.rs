@@ -1803,69 +1803,6 @@ impl WorkspaceConfig {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) const SYSTEM_INC_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Thread-local widening of [`SYSTEM_INC_PROBE_TIMEOUT`], test builds only.
-///
-/// The startup `@INC` probe budget is a production latency contract: a stalled
-/// interpreter must not block the LSP for longer than one second. A handful of
-/// unit tests instead need one *successful* live probe in order to observe a
-/// downstream property (memoization, dedupe), and on a loaded or cold host a
-/// healthy `perl` can take several seconds just to reach `main` — antivirus
-/// scan storms and cold DLL loads all charge against the same deadline. Those
-/// tests then fail as `TimedOut` while asserting nothing about latency (#12902).
-///
-/// The override is thread-local and never compiled into a release build, so a
-/// widening test cannot relax the bound observed by any sibling test thread —
-/// `get_system_inc_does_not_stall_on_slow_interpreter` and
-/// `output_with_timeout_kills_long_running_subprocess` keep proving the real
-/// 1 s contract concurrently.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-thread_local! {
-    static SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE: std::cell::Cell<Option<Duration>> =
-        const { std::cell::Cell::new(None) };
-}
-
-/// Scoped guard that widens the startup `@INC` probe budget on this thread and
-/// restores the previous value on drop.
-///
-/// Only available in test builds; see [`SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE`].
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) struct SystemIncProbeTimeoutGuard {
-    previous: Option<Duration>,
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-impl SystemIncProbeTimeoutGuard {
-    /// Widen this thread's probe budget to `timeout` until the guard drops.
-    pub(crate) fn widen_to(timeout: Duration) -> Self {
-        let previous = SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(|slot| slot.replace(Some(timeout)));
-        Self { previous }
-    }
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-impl Drop for SystemIncProbeTimeoutGuard {
-    fn drop(&mut self) {
-        SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(|slot| slot.set(self.previous));
-    }
-}
-
-/// Budget applied to one startup `@INC` probe.
-///
-/// Always [`SYSTEM_INC_PROBE_TIMEOUT`] outside test builds. In test builds a
-/// thread-scoped [`SystemIncProbeTimeoutGuard`] may widen it for the calling
-/// thread only.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn effective_system_inc_probe_timeout() -> Duration {
-    #[cfg(test)]
-    {
-        if let Some(widened) = SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(std::cell::Cell::get) {
-            return widened;
-        }
-    }
-
-    SYSTEM_INC_PROBE_TIMEOUT
-}
-
 /// Run `command` with a wall-clock timeout, killing the child if it exceeds
 /// `timeout`. Returns `io::Error` with kind `TimedOut` on timeout. Used by
 /// `fetch_perl_inc` so a hanging or slow `perl` interpreter cannot stall
@@ -5202,14 +5139,6 @@ profile = "recommended"
     /// A second lookup must reuse the first probe result rather than launch a
     /// new interpreter. The missing path makes a reprobe observably fail with
     /// `IoFailed`, so a fast second process cannot satisfy this oracle.
-    ///
-    /// The claim is memoization, not latency, but the discriminator needs one
-    /// *successful* live probe first. The production 1 s budget is far too tight
-    /// for that on a loaded host — spawn and interpreter-init stalls charge
-    /// against the same deadline and produced spurious `TimedOut` failures at
-    /// 6/10 even when run in isolation (#12902). Widen the budget for this
-    /// thread only; every sibling test keeps the real 1 s bound, and
-    /// `get_system_inc_does_not_stall_on_slow_interpreter` still proves it.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn get_system_inc_reuses_cached_probe_without_relaunching() -> TestResult {
@@ -5217,7 +5146,6 @@ profile = "recommended"
             Ok(path) => path,
             Err(_) => return Ok(()),
         };
-        let _probe_budget = SystemIncProbeTimeoutGuard::widen_to(Duration::from_secs(60));
         let missing_perl = tempfile::tempdir()?.path().join("missing-perl");
         let mut config = WorkspaceConfig {
             use_system_inc: true,
@@ -5256,76 +5184,6 @@ profile = "recommended"
         let reused = config.get_system_inc_probe_outcome();
         assert_eq!(reused, cached, "second lookup must reuse the cached outcome");
         assert_eq!(config.get_system_inc().to_vec(), cached_paths);
-        Ok(())
-    }
-
-    /// The test-only widening seam must be inert unless a guard is live, must
-    /// apply to the probe budget the oracle actually carries, and must restore
-    /// the production bound on drop. Without this, a leaked guard would silently
-    /// relax `get_system_inc_does_not_stall_on_slow_interpreter`'s subject.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn system_inc_probe_timeout_widening_is_scoped_and_restored() -> TestResult {
-        let perl_path = match resolve_perl_path_with_toolchain() {
-            Ok(path) => path,
-            Err(_) => return Ok(()),
-        };
-        let config = WorkspaceConfig {
-            use_system_inc: true,
-            perl_path: Some(perl_path.to_string_lossy().into_owned()),
-            ..WorkspaceConfig::default()
-        };
-        let probe_timeout = |config: &WorkspaceConfig| {
-            PerlOracleEnv::for_module_resolution(config).map(|oracle| oracle.timeout)
-        };
-
-        assert_eq!(
-            effective_system_inc_probe_timeout(),
-            SYSTEM_INC_PROBE_TIMEOUT,
-            "no guard is live, so the production bound must apply",
-        );
-        assert_eq!(
-            probe_timeout(&config),
-            Some(SYSTEM_INC_PROBE_TIMEOUT),
-            "the oracle must carry the production bound by default",
-        );
-
-        {
-            let _widened = SystemIncProbeTimeoutGuard::widen_to(Duration::from_secs(60));
-            assert_eq!(effective_system_inc_probe_timeout(), Duration::from_secs(60));
-            assert_eq!(
-                probe_timeout(&config),
-                Some(Duration::from_secs(60)),
-                "a live guard must reach the oracle the probe runs with",
-            );
-        }
-
-        assert_eq!(
-            effective_system_inc_probe_timeout(),
-            SYSTEM_INC_PROBE_TIMEOUT,
-            "dropping the guard must restore the production bound",
-        );
-        assert_eq!(probe_timeout(&config), Some(SYSTEM_INC_PROBE_TIMEOUT));
-        Ok(())
-    }
-
-    /// A widening guard on one thread must not be observable on another. This is
-    /// what keeps the seam safe under the full-suite parallel run that motivated
-    /// it: sibling tests asserting the 1 s latency contract run concurrently.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn system_inc_probe_timeout_widening_does_not_escape_its_thread() -> TestResult {
-        let _widened = SystemIncProbeTimeoutGuard::widen_to(Duration::from_secs(60));
-        assert_eq!(effective_system_inc_probe_timeout(), Duration::from_secs(60));
-
-        let observed_elsewhere =
-            std::thread::spawn(effective_system_inc_probe_timeout).join().map_err(|_| {
-                "the observer thread panicked while reading the probe budget".to_string()
-            })?;
-        assert_eq!(
-            observed_elsewhere, SYSTEM_INC_PROBE_TIMEOUT,
-            "a widened budget must stay on the thread that widened it",
-        );
         Ok(())
     }
 
