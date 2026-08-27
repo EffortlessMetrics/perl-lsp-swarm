@@ -29,12 +29,13 @@ regression.
   `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs`, driving
   public `format_document_decision` / `format_range_decision` with shared
   counters so a duplicate private typed call is observable; a perltidy-only
-  test cannot establish adapter call count. Successful/no-change pipelines
-  deliberately validate twice, once at the source parse gate and once at the
-  formatted-output parse gate. Early refusals are disposition-specific:
-  disabled/invalid-range/literal-preserve-before-parse paths parse zero times,
-  source-parse refusals parse source once, and formatted-output refusals reach
-  both gates.
+  test cannot establish adapter call count. Vector order is always
+  `(pipeline_invocations, source_parse_gate_invocations,
+  formatted_output_parse_gate_invocations)`: Off `0/0/0`; invalid range and typed literal-preserve
+  refusal `1/0/0`; source-parse refusal `1/1/0`; successful/no-change document
+  and complete-range `1/1/1`. The formatted-output-refusal branch at
+  `implementation.rs:235-249` is currently unreachable, so its disposition
+  and counters remain `NOT_PROVEN` rather than receiving synthetic proof.
 - Bench infrastructure already exists and must be consumed, not forked:
   `.github/workflows/ci-nightly.yml` benchmark job deletes stale
   `target/criterion/` before running (#3979 integrity guards), invokes each
@@ -62,40 +63,50 @@ regression.
   with a registered extension seam for #9327, and counter envelopes must
   carry their own versioned schema until #7140 codifies product limits.
   Derived output/replacement/retained bytes can prove output growth but are
-  not an allocation oracle: allocation count and allocated bytes remain
-  `NOT_PROVEN`, and #10302's allocation requirement stays open until both are
-  measured on a supported proof run.
+  not an allocation oracle. The selected future route is a serialized
+  benchmark-only counting global allocator adapted from
+  `xtask/src/allocation_tracker.rs`; allocation count/bytes/peak remain
+  `NOT_PROVEN` until that seam produces a supported proof run and kills its
+  controlled extra-copy mutant.
 
-## Approach chosen (deterministic work-counter instrument + counter-shape canaries; timing stays advisory)
+## Approach chosen (operation counters + serialized allocation window + counter-shape canaries; timing stays advisory)
 
 Ranked against the issue's required instrumentation using only in-tree
 evidence:
 
 1. **Chosen — versioned `NativePipelineCounters` populated on the real
    classify/format path + Criterion subject benches + plain-test counter
-   canaries.** Additive, zero-cost when unset: an optional metrics collector
-   hangs off the typed call path (`format_document_typed` /
-   `format_range_typed`) recording the provider/native-pipeline invocation
+   canaries.** Additive, zero-cost when unset: `NativeFormatter` gains an
+   optional operation-scoped collector/builder. `FormattingProvider` gains an
+   optional collector field/builder and forwards the same handle through each
+   private `NativeFormatter::new()` call. The typed call path
+   (`format_document_typed` / `format_range_typed`) records the pipeline invocation
    plus distinctly attributed source and formatted-output parse-gate
    invocations, tokens/nodes observed by each gate, lines processed,
    delimited groups fitted, edits derived, output/replacement bytes, peak
    depth, and total elapsed under a named clock tag — extending
    `FormatChangeSummary`'s precedent rather than inventing a parallel
-   formatter. For every successful document/range request the exact invariant
-   is one pipeline invocation and two parse-gate invocations (one source, one
-   formatted output); canaries reject an adapter double-call, a skipped gate,
-   or either gate running twice. A separate refusal-table canary pins zero
-   gates for disabled/invalid-range/literal-preserve-before-parse, source == 1
-   and output == 0 for source-parse refusal, and one of each for
-   formatted-output refusal. Provider tests live in
+   formatter. In the fixed `(pipeline_invocations,
+   source_parse_gate_invocations, formatted_output_parse_gate_invocations)`
+   order, reachable provider-seam vectors are Off
+   `0/0/0`, invalid range and typed literal-preserve `1/0/0`, source refusal
+   `1/1/0`, and successful/no-change document and complete-range `1/1/1`;
+   canaries reject a duplicated private typed call, a skipped successful gate,
+   or a collapsed refusal table. Formatted-output refusal remains
+   `NOT_PROVEN` because its defensive branch is currently unreachable.
+   Provider tests live in
    `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs` and
    drive the public decision methods with shared counters; the perltidy
    canaries own only pipeline-internal attribution. Benches live in
    `crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs`
-   over checked-in scaling fixtures (small/medium/large ×
-   delimited/statement/opaque/refusal/no-change rows × LF/CRLF/bare-CR ×
-   tabs/spaces/width boundaries) whose size ratios expose superlinear
-   growth without dangerous allocations. The PR-blocking discriminators are
+   over a checked-in authoritative registry keyed by canonical Criterion ID.
+   Its completeness test covers every named #10302 member:
+   module/script/test/PSGI/data-processing; compact/multiline;
+   delimited/statement/expression/list-operator; comment/trivia/opaque;
+   Unicode/tabs/spaces/LF/CRLF/bare-CR; no-change/applied/preserved/refused;
+   document/complete-range; bounded size/depth/width. Those bounded scaling
+   rows expose superlinear growth without dangerous allocations. The
+   PR-blocking discriminators are
    plain deterministic test files asserting (a) single pipeline invocation
    per request at the provider seam, (b) linear-or-bounded counter ratios
    across N/2N/4N scaling steps, (c) refusal/opaque rows stay cost-bounded.
@@ -134,12 +145,42 @@ exists solely to encode an empty required-feature field.
 Per-subject receipt identity is not present today: `extract-criterion.py`
 keeps Criterion timing plus global Git SHA/dirty state, OS, and Rust version,
 and `format-results.py` does not recover fixture digest, config fingerprint,
-or engine. NPC-008 is therefore `NOT_PROVEN`. This spec selects one executable
-repair, not an either/or: check in a subject-identity sidecar keyed by canonical
-Criterion ID; extend strict extraction to join it fail-closed; and preserve/
-render the joined content digest, config fingerprint, engine, and current
-toolchain/environment tag in the durable result. Fixture proof rejects
-missing, duplicate, stale, and unmatched formatter identities.
+or engine. NPC-008 is therefore `NOT_PROVEN`. The selected implementation has
+two distinct artifacts keyed by canonical Criterion ID: a checked-in
+authoritative `native_pipeline_subjects.v1.json` registry, and a runtime-
+generated `target/criterion/native-pipeline-measurements.v1.json` sidecar.
+The sidecar carries schema/run and observed identity, stage/work/edit/depth/
+invocation counters, allocation measurements and supported-platform state,
+and receipt-pass stage plus total timing. It has exactly one row per registry
+subject, produced by a dedicated serialized receipt pass outside Criterion's
+repeated timing iterations; Criterion timing stays separate and joins by
+canonical ID. Strict extraction takes both paths and an expected run ID,
+requires a 1:1 Criterion/registry/sidecar join, and fails missing,
+duplicate, stale, unmatched, or schema-mismatched rows before the formatter-
+results path preserves every field.
+
+Allocation uses a separate durable seam inside the benchmark executable:
+`crates/perl-lsp-perltidy/benches/support/allocation_tracker.rs`, adapting the
+counting global allocator in `xtask/src/allocation_tracker.rs`.
+One dedicated receipt pass per registry subject is serialized outside
+Criterion's repeated timing iterations; warm-up occurs before reset; the
+allocator window begins immediately before the production `format_*_typed`
+call and is snapshotted immediately after; sidecar serialization occurs
+outside it. Criterion timing is joined separately. The
+sidecar records `allocation_count`, `allocated_bytes`, and `peak_delta_bytes`
+with a supported-platform tag. Unsupported/unavailable measurement stays
+`NOT_PROVEN`. Because the benchmark allocator requires `unsafe impl
+GlobalAlloc`, unsafe trait methods, and forwarding blocks, the implementation
+must place `SAFETY:` comments at each site and add narrow owned cargo-allow
+receipts in family `formatter-native-bench-global-allocator-v1`: exact
+benchmark allocator file glob with one AST selector for each of `unsafe_impl`,
+`unsafe_fn`, and `unsafe_block`; owner `formatter/performance`; reason limited
+to forwarding the GlobalAlloc contract to `System`; allocator-test and mutant
+evidence; created `2026-08-27`; review-after `2026-11-27`.
+`cargo-allow check --mode no-new` is required proof. The controlled mutant
+`allocation_oracle_rejects_extra_temporary_copy` keeps one extra temporary
+allocation/copy live inside that window and must turn the allocation canary
+red before being reverted.
 
 **Anti-masking clause:** no check introduced by this claim may be satisfied
 by increasing any timeout, budget constant, size cap, or iteration bound;
@@ -151,10 +192,11 @@ work, never by relaxing bounds.
 
 Measurement-only claim: no formatter algorithm rewrite, no production
 telemetry, no execution of Perl, no release/publication surface. Counters
-are thin additive hooks on existing functions; behavior when the collector
-is unset (all current callers, tests, goldens) is byte-identical. Derived-byte
-counter proof is limited to output growth; it does not claim allocation count
-or allocated-byte proof.
+are operation-scoped additive hooks on the native formatter and provider;
+behavior when the optional collector is unset (all current callers, tests,
+goldens) is byte-identical. The counting allocator exists only in the benchmark
+executable. Derived-byte proof is limited to output growth and never claims
+allocation count/bytes/peak.
 
 ## Composition
 
@@ -162,7 +204,9 @@ Sibling spec `.spec/10301-formatter-property-fuzz-harness/` shares only
 subject vocabulary; file sets are disjoint (this claim: `benches/`,
 additive `src/native/` counter plumbing, crate `Cargo.toml` dev-dep,
 provider proof in `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs`,
-extractor/formatter receipt-schema fixtures and sidecar join,
+provider collector forwarding, checked-in subject registry, runtime
+measurement sidecar schema, benchmark-only allocation tracker,
+extractor/formatter receipt-schema fixtures and three-way join,
 `.github/workflows/ci-nightly.yml` BENCH_TARGETS and strict-ID entries, canary
 test file).
 Nightly workflow policy comments (#3979) remain authoritative for the
@@ -172,5 +216,6 @@ benchmark job.
 
 Single revert: remove the criterion dev-dep, benches dir, counter collector
 plumbing (callers never read it), provider/canary tests, subject-identity
-sidecar and fail-closed receipt-schema join, and the BENCH_TARGETS/strict-ID
-entries. Baselines remain untouched; no tracked artifact regeneration.
+registry, runtime-sidecar writer, benchmark-only allocation tracker, and
+fail-closed receipt-schema join, and the BENCH_TARGETS/strict-ID entries.
+Baselines remain untouched; no tracked artifact regeneration.

@@ -20,9 +20,12 @@ Red-first receipts-of-record (2026-08-27, pure reads on the base pin):
 - Production seams that must stay single-invocation:
   `perl-lsp-rs-core/src/providers/formatting/formatting.rs`
   `native_document_decision` definition (:249; typed call :257) /
-  `native_range_decision` definition (:262; typed call :273). A successful
-  request invokes the provider/native pipeline once but the validation parse
-  gate twice: once for source and once for formatted output.
+  `native_range_decision` definition (:262; typed call :273). Reachable
+  vector order is `(pipeline_invocations, source_parse_gate_invocations,
+  formatted_output_parse_gate_invocations)`: Off `0/0/0`, invalid range and
+  typed literal-preserve refusal `1/0/0`, source refusal `1/1/0`, and
+  successful/no-change document or complete-range `1/1/1`. The defensive
+  formatted-output-refusal branch is currently unreachable and `NOT_PROVEN`.
 - Integrity guards to consume verbatim: stale `target/criterion/` deletion +
   explicit per-target invocation + superset contract over cargo-metadata
   bench-kind targets (#3979), fixture tests
@@ -33,32 +36,75 @@ Red-first receipts-of-record (2026-08-27, pure reads on the base pin):
 Planned surface:
 
 - [ ] `crates/perl-lsp-perltidy/src/native/counters.rs`: additive
-      `NativePipelineCounters` (schema v1) + optional collector plumbed
-      through the typed call path only; zero behavior when unset; exact
+      `NativePipelineCounters` (schema v1) + cloneable operation-scoped
+      collector handle; `NativeFormatter` gets an optional collector builder
+      and forwards it through the typed call path; zero behavior when unset;
+      exact
       `pipeline_invocations`, aggregate `parse_gate_invocations`,
       `source_parse_gate_invocations`, and
       `formatted_output_parse_gate_invocations` counters prove successful-path
       one-pipeline/two-parse attribution and disposition-specific early-refusal
-      counts (zero before parse; source == 1/output == 0 on source refusal;
-      source == 1/output == 1 on formatted-output refusal)
+      counts
+- [ ] `FormattingProvider` gains an optional collector field/builder and
+      forwards the same operation handle through both private
+      `NativeFormatter::new()` call sites; default/unset construction remains
+      byte-identical and zero-effect
 - [ ] `crates/perl-lsp-perltidy/Cargo.toml`: additive criterion dev-dep +
       `[[bench]] name = "native_pipeline_benchmark" harness = false`
 - [ ] `crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs` +
-      `benches/support/perf_subjects.rs`: checked-in scaling cohort
-      (small/medium/large × delimited/statement/opaque/refusal/no-change ×
-      LF/CRLF/bare-CR × tabs/spaces/width) with exact subject identity
+      `benches/support/perf_subjects.rs`: benchmark executable and subject
+      loader over the authoritative registry
       and an actual `benchmark_group("native_pipeline")` /
       `bench_function("document_small", ...)` pair producing representative
       Criterion ID `native_pipeline/document_small` (not a direct benchmark
       string containing `/`, which Criterion sanitizes to `_`)
+- [ ] Checked-in authoritative
+      `crates/perl-lsp-perltidy/benches/native_pipeline_subjects.v1.json`, keyed
+      by canonical Criterion ID, covers every required matrix member:
+      module/script/test/PSGI/data-processing; compact/multiline;
+      delimited/statement/expression/list-operator; comment/trivia/opaque;
+      Unicode/tabs/spaces/LF/CRLF/bare-CR;
+      no-change/applied/preserved/refused; document/complete-range; bounded
+      size/depth/width. `subject_registry_covers_full_issue_matrix` fails for
+      any missing category, request target, identity field, or bound; #9327
+      remains later exact corpus enrollment
+- [ ] Benchmark-only counting global allocator adapted from
+      `xtask/src/allocation_tracker.rs` in
+      `crates/perl-lsp-perltidy/benches/support/allocation_tracker.rs`:
+      serialize each measured operation,
+      and run one dedicated receipt pass per registry subject outside
+      Criterion's repeated timing iterations. Warm up outside the window,
+      reset immediately before `format_*_typed`, snapshot immediately after,
+      and serialize later; join Criterion timing separately. Record
+      `allocation_count`, `allocated_bytes`, `peak_delta_bytes`, and a
+      supported-platform/unavailable tag; unavailable stays `NOT_PROVEN`
+- [ ] The benchmark allocator's `unsafe impl GlobalAlloc` and each unsafe
+      forwarding operation have site-local `SAFETY:` comments. Add narrow
+      owned cargo-allow receipts in family
+      `formatter-native-bench-global-allocator-v1`, each with exact glob
+      `crates/perl-lsp-perltidy/benches/support/allocation_tracker.rs` and one
+      AST selector (`unsafe_impl`, `unsafe_fn`, or `unsafe_block`), owner
+      `formatter/performance`, reason limited to forwarding the GlobalAlloc
+      contract to `System`, allocator-test + controlled-mutant evidence,
+      `created = "2026-08-27"`, and `review_after = "2026-11-27"`
+- [ ] Runtime-generated
+      `target/criterion/native-pipeline-measurements.v1.json`, distinct from
+      the checked-in registry and keyed by canonical Criterion ID, records
+      schema/run identity, observed subject/config/engine/environment identity,
+      stage/work/edit/depth/invocation counters, allocation measurements, and
+      receipt-pass stage + total timing. It contains exactly one row per
+      registry subject from the dedicated serialized receipt pass; Criterion's
+      repeated timing samples remain separate and join later by canonical ID
 - [ ] `crates/perl-lsp-perltidy/tests/native_pipeline_counters_tests.rs`:
       NPC-001..NPC-006 + NPC-010 pipeline/parse canaries incl. detector sanity
       control and the early-refusal disposition table
 - [ ] `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs`:
-      drive public `format_document_decision` / `format_range_decision` with
-      shared counters and prove exactly one private `format_document_typed` /
-      `format_range_typed` call per request; do not claim this adapter property
-      from perltidy-only tests
+      construct the public provider with the shared collector, drive
+      `format_document_decision` / `format_range_decision`, prove exactly one
+      private typed call, and pin exact reachable `0/0/0`, `1/0/0`, `1/1/0`,
+      and `1/1/1` vectors; do not claim the currently unreachable
+      formatted-output-refusal vector or this adapter property from
+      perltidy-only tests
 - [ ] `.github/workflows/ci-nightly.yml`: one `BENCH_TARGETS` entry
       `"perl-lsp-perltidy:native_pipeline_benchmark:"`; target identity is
       `perl-lsp-perltidy:native_pipeline_benchmark`, and the trailing
@@ -69,26 +115,38 @@ Planned surface:
       Criterion fixture layout
       `native_pipeline/document_small/new/estimates.json`; the representative
       ID proves target execution only, not full-matrix execution
-- [ ] Select and implement the receipt-identity path: a checked-in subject
-      identity sidecar keyed by canonical Criterion ID plus a fail-closed join
-      in `extract-criterion.py`; extend the receipt/formatter path so every
-      formatter row preserves content digest, config fingerprint, engine, and
-      the current toolchain/environment tag. Fixtures reject missing,
-      duplicate, stale, and unmatched identities. NPC-008 remains
-      `NOT_PROVEN` until this executable path passes end-to-end
+- [ ] Extend `extract-criterion.py` with required `--subject-registry`,
+      `--measurement-sidecar`, and `--expect-run-id` inputs. For formatter
+      rows, strict mode requires a 1:1 Criterion/registry/runtime-sidecar join;
+      extend the receipt/formatter path so every joined field survives.
+      Fixtures reject missing, duplicate, stale, unmatched, and schema-
+      mismatched rows. NPC-008 remains `NOT_PROVEN` until this path passes
+      end-to-end
 - [ ] NPC-007..NPC-009 structural pins inside the same test file
 
 Proof commands:
 
 ```bash
-cargo fmt -p perl-lsp-perltidy -- --check
-cargo clippy -p perl-lsp-perltidy --all-targets --locked -- -D warnings
+cargo fmt -p perl-lsp-perltidy -p perl-lsp-rs-core -- --check
+cargo clippy -p perl-lsp-perltidy -p perl-lsp-rs-core --all-targets --locked -- -D warnings
 cargo test -p perl-lsp-perltidy --all-targets --locked
-cargo test -p perl-lsp-perltidy --test native_pipeline_counters_tests -- --test-threads=1
+cargo test -p perl-lsp-rs-core --all-targets --locked
+cargo test -p perl-lsp-perltidy --test native_pipeline_counters_tests --locked -- --test-threads=1
 cargo test -p perl-lsp-rs-core --test native_pipeline_invocation_tests --locked
-cargo bench -p perl-lsp-perltidy --bench native_pipeline_benchmark -- --quick
+cargo-allow check --mode no-new
+export NATIVE_PIPELINE_RUN_ID="${GITHUB_RUN_ID:-local}-$(git rev-parse HEAD)-$(date +%s)"
+rm -f target/criterion/native-pipeline-measurements.v1.json
+NATIVE_PIPELINE_RUN_ID="$NATIVE_PIPELINE_RUN_ID" \
+  cargo bench -p perl-lsp-perltidy --bench native_pipeline_benchmark -- --quick
 python3 benchmarks/scripts/test_extract_criterion.py -v
 python3 benchmarks/scripts/test_benchmark_guards.py -v
+python3 benchmarks/scripts/extract-criterion.py \
+  --output benchmarks/results/latest.json \
+  --strict \
+  --subject-registry crates/perl-lsp-perltidy/benches/native_pipeline_subjects.v1.json \
+  --measurement-sidecar target/criterion/native-pipeline-measurements.v1.json \
+  --expect-run-id "$NATIVE_PIPELINE_RUN_ID" \
+  --expect-id "native_pipeline/document_small"
 ```
 
 Open residuals (owned by upstream issues, not silently dropped):
@@ -101,11 +159,17 @@ Open residuals (owned by upstream issues, not silently dropped):
 - [ ] Keep #10302's allocation-count/allocated-byte requirement open and
       `NOT_PROVEN` until a real allocation oracle measures both on a supported
       proof run; derived output/replacement/retained bytes never substitute.
-      The oracle proof must include controlled mutant
+      Use the serialized benchmark-only counting allocator adapted from
+      `xtask/src/allocation_tracker.rs`; require supported-platform evidence
+      for allocation count/bytes/peak, site-local `SAFETY:` comments, and the
+      narrow owned cargo-allow receipt. The oracle proof must include controlled mutant
       `allocation_oracle_rejects_extra_temporary_copy`: add one temporary
       allocation/copy to the measured production path, demonstrate the
       allocation canary turns red because count/bytes increase, then revert
       the mutant and retain both receipts
+- [ ] Keep formatted-output-refusal disposition/counters `NOT_PROVEN` while
+      the defensive production branch remains unreachable; do not add a
+      synthetic direct-only test and call it production proof
 - [ ] Cross-environment timing comparisons remain out of scope permanently
       unless a reviewed policy changes the advisory posture (#3979/#5282)
 
@@ -114,5 +178,6 @@ Open residuals (owned by upstream issues, not silently dropped):
 Promoting NPC-003/NPC-004 counter canaries from package-scoped proof to a
 required merge-blocking check for all formatter-touching PRs changes
 integration posture beyond this lane's authority. Default delivered here:
-they block within `-p perl-lsp-perltidy` proof runs; making them required
-organization-wide is left as an explicit human decision.
+pipeline/counter canaries block within `-p perl-lsp-perltidy`, while provider
+single-invocation/vector canaries block within `-p perl-lsp-rs-core`; making
+either required organization-wide is left as an explicit human decision.
