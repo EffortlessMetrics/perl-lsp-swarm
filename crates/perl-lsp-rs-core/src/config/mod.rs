@@ -1828,6 +1828,7 @@ thread_local! {
 /// `get_system_inc_does_not_stall_on_slow_interpreter` and
 /// `output_with_timeout_kills_long_running_subprocess`.
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[must_use = "the widened budget lasts only while this guard is held"]
 pub(crate) struct SystemIncProbeTimeoutOverride {
     previous: Option<Duration>,
 }
