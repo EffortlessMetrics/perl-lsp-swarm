@@ -101,7 +101,7 @@ fn main() {
     if let Some(pid_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE") {
         #[cfg(unix)]
         let descendant = Command::new("sh")
-            .args(["-c", "trap '' TERM; sleep 60"])
+            .args(["-c", "trap '' TERM; while :; do sleep 1; done"])
             .spawn();
         #[cfg(windows)]
         let descendant = {

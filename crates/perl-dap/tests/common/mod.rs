@@ -12,9 +12,10 @@ use std::collections::VecDeque;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
+use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -1100,17 +1101,50 @@ fn probe_debuggee_perl_with_options(
 struct PipeDrain {
     receiver: Receiver<Vec<u8>>,
     thread: JoinHandle<()>,
+    cancel: Arc<AtomicBool>,
+}
+
+trait ProbePipe: Read + Send + 'static {
+    fn has_data(&self) -> Option<bool>;
+}
+
+impl ProbePipe for ChildStdout {
+    fn has_data(&self) -> Option<bool> {
+        probe_pipe_has_data(self)
+    }
+}
+
+impl ProbePipe for ChildStderr {
+    fn has_data(&self) -> Option<bool> {
+        probe_pipe_has_data(self)
+    }
 }
 
 /// Drain `pipe` to EOF on a background thread, forwarding chunks to the
 /// returned receiver. The join handle remains owned by the probe so cleanup
 /// cannot silently return while a detached reader is still blocked on a pipe.
-fn drain_pipe<R: Read + Send + 'static>(pipe: R) -> PipeDrain {
+fn drain_pipe<R>(pipe: R) -> PipeDrain
+where
+    R: ProbePipe,
+{
     let (tx, rx) = channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let thread_cancel = Arc::clone(&cancel);
     let thread = std::thread::spawn(move || {
         let mut pipe = pipe;
         let mut buf = [0u8; 4096];
         loop {
+            if thread_cancel.load(Ordering::Acquire) {
+                break;
+            }
+            match pipe.has_data() {
+                Some(true) => {}
+                Some(false) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                None => break,
+            }
             match pipe.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
@@ -1121,7 +1155,7 @@ fn drain_pipe<R: Read + Send + 'static>(pipe: R) -> PipeDrain {
             }
         }
     });
-    PipeDrain { receiver: rx, thread }
+    PipeDrain { receiver: rx, thread, cancel }
 }
 
 /// Collect drained chunks into a string, bounded well inside the probe budget.
@@ -1133,13 +1167,53 @@ fn collect_pipe_output(drain: PipeDrain) -> String {
     {
         bytes.extend_from_slice(&chunk);
     }
-    let _ = drain.thread.join();
+    let _ = join_pipe_reader(drain);
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-fn join_pipe_reader(drain: PipeDrain) {
+/// Stop and join a pipe reader within a fixed budget. Windows anonymous pipes
+/// are polled with `PeekNamedPipe`, so cancellation is observable even when an
+/// inherited descendant has kept the write end open. Process-tree termination
+/// happens before this helper is called; the cancellation budget is the final
+/// guard against an unbounded reader join.
+fn join_pipe_reader(drain: PipeDrain) -> bool {
     drop(drain.receiver);
-    let _ = drain.thread.join();
+    drain.cancel.store(true, Ordering::Release);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !drain.thread.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if drain.thread.is_finished() {
+        let _ = drain.thread.join();
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(not(windows))]
+fn probe_pipe_has_data<T>(_pipe: &T) -> Option<bool> {
+    Some(true)
+}
+
+#[cfg(windows)]
+fn probe_pipe_has_data<R>(pipe: &R) -> Option<bool>
+where
+    R: std::os::windows::io::AsRawHandle,
+{
+    use std::ptr::null_mut;
+    let mut available = 0u32;
+    let result = unsafe {
+        winapi::um::namedpipeapi::PeekNamedPipe(
+            pipe.as_raw_handle() as winapi::shared::ntdef::HANDLE,
+            null_mut(),
+            0,
+            null_mut(),
+            &mut available,
+            null_mut(),
+        )
+    };
+    if result == 0 { None } else { Some(available > 0) }
 }
 
 /// Terminate the complete probe process tree before joining pipe readers.
