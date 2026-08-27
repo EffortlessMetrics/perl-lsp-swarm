@@ -23,8 +23,24 @@ const SAMPLE_FIXTURE_RELATIVE: &str = "crates/reachability_fixtures/sample.pl";
 const SAMPLE_FIXTURE_BODY: &str = "sub demo { return 1; }\nprint demo();\n";
 
 fn digest_of(body: &str) -> String {
-    let normalized: Vec<u8> = body.bytes().filter(|byte| *byte != b'\r').collect();
-    Sha256::digest(&normalized).iter().map(|byte| format!("{byte:02x}")).collect()
+    // Mirrors DIGEST_ALGORITHM = "sha256-lf-normalized": only CRLF sequences
+    // normalize to LF; a bare CR is semantic and must move the digest.
+    let mut hasher = Sha256::new();
+    let mut bytes_iter = body.bytes().peekable();
+    while let Some(byte) = bytes_iter.next() {
+        match byte {
+            b'\r' => {
+                if bytes_iter.peek() == Some(&b'\n') {
+                    bytes_iter.next();
+                    hasher.update([b'\n']);
+                } else {
+                    hasher.update([b'\r']);
+                }
+            }
+            other => hasher.update([other]),
+        }
+    }
+    hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 struct Workspace {
@@ -288,6 +304,97 @@ fn rejects_unknown_control_links() -> TestResult {
     assert!(
         violations.iter().any(|v| v.contains("links unknown row")),
         "missing dangling-control violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_self_referential_control_links() -> TestResult {
+    // A promoted row satisfies has_control merely by naming itself; a
+    // self-referential control supplies no opposite-direction evidence.
+    let manifest = minimal_manifest(vec![positive_row("self-control", Some("self-control"))]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("cannot reference its own row id")),
+        "missing self-control violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_missing_instrument_without_not_proven_on_any_terminal() -> TestResult {
+    // Instrument receipt enforcement cannot be limited to terminals selected
+    // by requires_instrument_receipt(): a stale/not_ready/unsupported row with
+    // a missing instrument would validate clean while the view counts it as
+    // NOT_PROVEN.
+    let mut row = control_row("stale-missing-instrument");
+    row.terminal = TerminalOutcome::Stale;
+    row.instrument = Some(InstrumentStatus {
+        status: InstrumentStatusKind::Missing,
+        disposition: "assumed_zero".to_string(),
+    });
+    let manifest = minimal_manifest(vec![row]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.contains("missing instrumentation requires the explicit not_proven")),
+        "missing universal-instrument violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn digest_normalizes_only_crlf_sequences() -> TestResult {
+    // CRLF normalizes to LF so checkout settings cannot change identity, but a
+    // bare carriage return stays semantic payload and moves the digest.
+    let workspace = Workspace::new()?;
+    let path = workspace.root().join("crates/reachability_fixtures/cr_norm.pl");
+    fs::write(&path, b"a\r\nb\rc\n")?;
+    assert_eq!(digest_file(&path)?, digest_of("a\nb\rc\n"));
+    Ok(())
+}
+
+#[test]
+fn rejects_parent_component_escape_from_declared_root() -> TestResult {
+    // `crates/../escape.pl` starts with an allowed root lexically, but
+    // root.join() then reads outside the declared fixture tree; the component
+    // scan must fail closed before any byte leaves the owned roots.
+    let workspace = Workspace::new()?;
+    let escape_body = "sub escaped { return 'outside'; }\n";
+    fs::write(workspace.root().join("crates/pinned.pl"), SAMPLE_FIXTURE_BODY)?;
+    fs::write(workspace.root().join("escape.pl"), escape_body)?;
+
+    let mut row = positive_row("traversal", None);
+    row.fixture.path = "crates/../escape.pl".to_string();
+    row.fixture.digest_sha256_lf = digest_of(escape_body);
+    let manifest = minimal_manifest(vec![row]);
+    let violations = validate_document(&workspace.root(), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("parent component") || v.contains("traverses")),
+        "missing parent-component escape violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn required_coverage_is_never_a_deferral_for_missing_rows() -> TestResult {
+    // A family with no rows that declares only required_coverage strings has a
+    // coverage gap with no deferred owner or reason; it must stay a violation.
+    let mut row = control_row("w-only");
+    row.train = train("W_workspace_facts");
+    let mut manifest = minimal_manifest(vec![row]);
+    for entry in &mut manifest.denominator {
+        if entry.family == "A_local_flow" {
+            entry.deferred_coverage.clear();
+            entry.required_coverage = vec!["terminal:checked_near_overflow".to_string()];
+        }
+    }
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| v
+            .contains("family \"A_local_flow\" claims denominator coverage without any row")),
+        "required_coverage must not excuse a missing row population: {violations:?}"
     );
     Ok(())
 }

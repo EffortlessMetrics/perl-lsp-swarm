@@ -390,14 +390,28 @@ fn validate_fixture_reference(
     }
 }
 
+/// [`model::DIGEST_ALGORITHM`] implementation: read the checked-out bytes,
+/// normalize CRLF line endings to LF, then SHA-256 the stream. Only `\r\n`
+/// sequences rewrite; a bare carriage return is semantic payload, so it moves
+/// the digest and cannot silently evade fixture-identity checking.
 fn digest_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path)?;
-    let normalized: Vec<u8> = bytes
-        .iter()
-        .copied()
-        .flat_map(|byte| if byte == b'\r' { None } else { Some(byte) })
-        .collect();
-    let digest = Sha256::digest(&normalized);
+    let mut hasher = Sha256::new();
+    let mut bytes_iter = bytes.iter().copied().peekable();
+    while let Some(byte) = bytes_iter.next() {
+        match byte {
+            b'\r' => {
+                if bytes_iter.peek() == Some(&b'\n') {
+                    bytes_iter.next();
+                    hasher.update([b'\n']);
+                } else {
+                    hasher.update([b'\r']);
+                }
+            }
+            other => hasher.update([other]),
+        }
+    }
+    let digest = hasher.finalize();
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>())
 }
 
@@ -427,6 +441,13 @@ fn validate_controls(
             .push(format!("{doc}: promoted positive row lacks an opposite/near-neighbour control"));
     }
     for reference in [&row.controls.opposite, &row.controls.near_neighbour].into_iter().flatten() {
+        if *reference == row.row_id {
+            // A self-referential control supplies no opposite-direction or
+            // neighbourhood evidence, so it can never satisfy the falsifier
+            // requirement a promoted row relies on.
+            violations.push(format!("{doc}: control cannot reference its own row id {:?}", reference));
+            continue;
+        }
         if !row_ids.contains(reference.as_str()) {
             violations.push(format!("{doc}: control links unknown row {:?}", reference));
         }
@@ -572,6 +593,17 @@ fn validate_terminal_and_limitation(doc: &str, row: &model::Row, violations: &mu
             ));
         }
     }
+    if let Some(instrument) = &row.instrument
+        && matches!(instrument.status, model::InstrumentStatusKind::Missing)
+        && !instrument.disposition.trim().eq_ignore_ascii_case("not_proven")
+    {
+        // Any missing instrument is NOT_PROVEN regardless of terminal class;
+        // the generated view counts it that way, so a divergent disposition
+        // would contradict the canonical evidence surface.
+        violations.push(format!(
+            "{doc}: missing instrumentation requires the explicit not_proven disposition"
+        ));
+    }
     if row.limitation.support_class.requires_exit_owner()
         && row.limitation.exit_owner_issue.is_none()
     {
@@ -651,9 +683,11 @@ fn validate_coverage(manifest: &model::Manifest, violations: &mut Vec<String>) {
     for family in model::FAMILIES {
         let declared = manifest.denominator.iter().find(|entry| entry.family == *family);
         let has_rows = manifest.rows.iter().any(|row| row.train.family == *family);
-        let has_deferral = declared.is_some_and(|entry| {
-            !entry.deferred_coverage.is_empty() || !entry.required_coverage.is_empty()
-        });
+        // Only named deferred slots (reason + owner) excuse a missing
+        // population. Required coverage strings demand instantiation; they are
+        // never themselves a deferral.
+        let has_deferral =
+            declared.is_some_and(|entry| !entry.deferred_coverage.is_empty());
         if !has_rows && !has_deferral {
             violations.push(format!(
                 "{DOC}: family {family:?} claims denominator coverage without any row"
