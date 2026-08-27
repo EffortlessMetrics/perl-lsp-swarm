@@ -147,12 +147,13 @@ mod tests {
         let (activations, facts) = setup(source);
         let keyword_offset = must_some_with(source.find("get"), "keyword offset");
         let target = definition_target_at(&activations, &facts, keyword_offset);
+        let target_context = format!("expected declaration fallback, got {target:?}");
         let label = must_some_with(
             match target {
                 Some(Dancer2DefinitionTarget::Anchor { label, .. }) => Some(label),
                 Some(Dancer2DefinitionTarget::TypedRefusal { .. }) | None => None,
             },
-            "expected declaration fallback",
+            target_context,
         );
         assert!(
             label.contains("declaration"),
