@@ -10,7 +10,7 @@
 | Rust-family files | 3743 |
 | Non-Rust files | 8503 |
 | Allowlisted | 6269 |
-| Unclassified | 2234 |
+| Unclassified | 2235 |
 
 ## Non-Rust files by category
 
@@ -22,7 +22,7 @@
 | production | 331 |
 | test | 2034 |
 | tooling | 650 |
-| unclassified | 2234 |
+| unclassified | 2235 |
 
 ## Unclassified files
 
