@@ -148,12 +148,33 @@ if (-not (Test-Path -Path $canonical -PathType Container)) {
 }
 
 if ($PrNumber -gt 0) {
-    $prJson = & gh pr view $PrNumber --json state,mergedAt,headRefName 2>&1
+    # Bind the lookup to the repository origin points at. Without --repo, gh
+    # infers it from the working directory, so the PR consulted may not belong
+    # to the repository whose branch is about to be deleted.
+    $originUrl = (& git -C $canonical remote get-url origin 2>$null)
+    if ([string]::IsNullOrWhiteSpace($originUrl)) {
+        Fail "Unable to derive origin for $canonical. Refusing: the PR lookup would not be bound to a repository."
+    }
+    $repoSlug = ([string]$originUrl).Trim() -replace '\.git$', '' -replace '^.*[:/]([^/]+/[^/]+)$', '$1'
+    if ($repoSlug -notmatch '^[^/]+/[^/]+$') {
+        Fail "Unable to derive owner/name from origin '$originUrl'. Refusing."
+    }
+
+    $prJson = & gh pr view $PrNumber --repo $repoSlug --json state,mergedAt,headRefName,isCrossRepository 2>&1
     if ($LASTEXITCODE -ne 0) {
         Fail "Unable to verify PR #$PrNumber. Output: $prJson"
     }
 
     $pr = $prJson | ConvertFrom-Json
+
+    # A cross-repository (fork) PR's headRefName names a branch in the FORK.
+    # A local branch of the same name is a different branch, so binding to
+    # headRefName would authorize deleting the wrong ref. Absent metadata is
+    # treated as cross-repository: a response that does not say must not be
+    # read as saying "not a fork".
+    if ($null -eq $pr.isCrossRepository -or [bool]$pr.isCrossRepository) {
+        Fail "PR #$PrNumber is cross-repository, or its fork metadata is missing. Refusing: its head branch does not live in this repository."
+    }
     if (-not $Abandoned -and [string]::IsNullOrWhiteSpace([string]$pr.mergedAt)) {
         Fail "PR #$PrNumber is not merged. Cleanup is blocked."
     }

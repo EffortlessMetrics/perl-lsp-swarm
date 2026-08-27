@@ -139,17 +139,78 @@ remove_worktree() {
     git_out git -C "$REPO_ROOT" worktree remove "$path"
 }
 
+# Canonical `owner/name` for the repository origin points at.
+#
+# Without it, `gh` infers the repository from the working directory, so a
+# branch can be matched against a pull request in a different repository. An
+# underivable origin is a fail-closed refusal, not a fallback to inference.
+origin_repo_slug() {
+    git -C "$REPO_ROOT" remote get-url origin 2>/dev/null \
+        | sed -E 's#\.git$##; s#^.*[:/]([^/]+/[^/]+)$#\1#'
+}
+
+# Succeed only when the local branch tip is the tip the admission was granted
+# for. The admission reasons about the REMOTE branch; deleting the local ref is
+# a separate act, and a local tip carrying commits that never reached the
+# remote is unsalvaged work no admission covered.
+local_tip_is_admitted() {
+    local branch="$1" local_sha remote_sha
+
+    local_sha="$(git -C "$REPO_ROOT" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)" \
+        || return 1
+    [[ -n "$local_sha" ]] || return 1
+
+    remote_sha="$(git -C "$REPO_ROOT" ls-remote origin "refs/heads/$branch" 2>/dev/null \
+        | awk 'NR==1{print $1}')"
+    if [[ -z "$remote_sha" ]]; then
+        remote_sha="$(git -C "$REPO_ROOT" rev-parse --verify --quiet \
+            "refs/remotes/origin/$branch" 2>/dev/null)"
+    fi
+    [[ -n "$remote_sha" ]] || return 1
+
+    [[ "$local_sha" == "$remote_sha" ]]
+}
+
+# Ask the shared live admission before deleting a local branch (#12885). No gh,
+# an underivable origin, a failed lookup, a non-numeric result, a retaining
+# admission, or a local tip that is not the admitted remote tip all retain.
+branch_deletion_admitted() {
+    local branch="$1" pr_number repo_slug admission
+
+    command -v gh >/dev/null 2>&1 || return 1
+    repo_slug="$(origin_repo_slug)" || return 1
+    [[ -n "$repo_slug" && "$repo_slug" == */* ]] || return 1
+
+    pr_number="$(gh pr list --repo "$repo_slug" --head "$branch" --state merged \
+        --json number --jq '.[0].number' 2>/dev/null)" || return 1
+    [[ "$pr_number" =~ ^[0-9]+$ ]] || return 1
+
+    admission="$(cd "$REPO_ROOT" && pwd)/scripts/branch-deletion-admission"
+    [[ -f "$admission" ]] || return 1
+    bash "$admission" plan --pr "$pr_number" --remote origin >/dev/null 2>&1 || return 1
+
+    local_tip_is_admitted "$branch"
+}
+
 delete_branch() {
     local branch="$1"
     $DRY_RUN && return 0
+    if ! branch_deletion_admitted "$branch"; then
+        printf '    -> retaining local branch %s: branch-deletion admission refused\n' \
+            "$branch" >&2
+        return 0
+    fi
     git_out git -C "$REPO_ROOT" branch -D "$branch" || true
 }
 
 branch_landed_via_pr() {
-    local branch="$1"
+    local branch="$1" repo_slug
     [[ -n "$branch" ]] || return 1
     command -v gh >/dev/null 2>&1 || return 1
-    gh pr list --head "$branch" --state merged --json number 2>/dev/null | grep -q '"number"'
+    repo_slug="$(origin_repo_slug)" || return 1
+    [[ -n "$repo_slug" && "$repo_slug" == */* ]] || return 1
+    gh pr list --repo "$repo_slug" --head "$branch" --state merged --json number 2>/dev/null \
+        | grep -q '"number"'
 }
 
 # Stale origin refs make "unpushed" wrong in the dangerous direction, so refresh

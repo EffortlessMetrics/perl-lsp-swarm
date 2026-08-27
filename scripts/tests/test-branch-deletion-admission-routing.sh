@@ -27,10 +27,47 @@ if ! grep -qF 'is not PR #$PrNumber' "$ROOT/scripts/agent-cleanup.ps1" ||
 fi
 pass 'agent-cleanup.ps1 binds an explicit -Branch to the merged PR head'
 
-if grep -nE 'git(-C [^ ]+)? branch -[dD]' "$ROOT/scripts/cleanup-completed-worktrees.sh" >/dev/null; then
-    fail 'cleanup-completed-worktrees has an unguarded local branch delete'
-fi
-pass 'cleanup-completed-worktrees has no local branch delete path'
+# Every local branch delete must be guarded by the shared admission.
+#
+# The previous form of this check was `git(-C [^ ]+)? branch -[dD]`, which has
+# no space between `git` and `-C` and therefore could never match the real call
+# `git -C "$REPO_ROOT" branch -D`. It passed while an unguarded delete sat in
+# cleanup-completed-worktrees.sh. The regex below is verified against a literal
+# sample first, so a future edit cannot silently make it vacuous again.
+BRANCH_DELETE_RE='git( +-C +[^ ]+)? +branch +-[dD]'
+printf 'git_out git -C "$REPO_ROOT" branch -D "$branch" || true\n' \
+    | grep -qE "$BRANCH_DELETE_RE" \
+    || fail 'the branch-delete detector does not match a real call; the check would be vacuous'
+printf 'git branch -D foo\n' | grep -qE "$BRANCH_DELETE_RE" \
+    || fail 'the branch-delete detector misses the bare form'
+printf 'git branch --list\n' | grep -qE "$BRANCH_DELETE_RE" \
+    && fail 'the branch-delete detector matches a non-delete command'
+pass 'the branch-delete detector matches real calls and only real calls'
+
+# Scope the check to the enclosing function, not the file. A file-level grep
+# passes as soon as the admission is mentioned anywhere, so deleting the guard
+# CALL while leaving its helper defined would slip through — the same vacuity
+# the detector above exists to prevent.
+for file in scripts/cleanup-completed-worktrees.sh scripts/swarm-clean; do
+    unguarded="$(awk -v re="$BRANCH_DELETE_RE" '
+        /^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*\{/ {
+            fn = $0; sub(/[[:space:]]*\(\).*/, "", fn)
+            infn = 1; deletes = 0; guarded = 0; next
+        }
+        infn && /^\}/ {
+            if (deletes && !guarded) print fn
+            infn = 0; next
+        }
+        infn {
+            if ($0 ~ re) deletes = 1
+            if ($0 ~ /branch_deletion_admitted/) guarded = 1
+        }
+    ' "$ROOT/$file")"
+    if [[ -n "$unguarded" ]]; then
+        fail "$file: these functions delete a local branch without the shared admission: $unguarded"
+    fi
+    pass "$file guards every local branch delete with the shared admission"
+done
 
 REPO="$TMP/repo"
 git init -q --bare "$REPO.git"
