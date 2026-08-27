@@ -488,6 +488,35 @@ fn main() {
     Ok(())
 }
 
+#[test]
+fn cleanup_command_wait_error_kills_and_reaps_helper() -> io::Result<()> {
+    let mut command = if cfg!(windows) {
+        let mut command = Command::new("ping");
+        command.args(["127.0.0.1", "-n", "31"]);
+        command
+    } else {
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        command
+    };
+    let (pid, result) = common::run_cleanup_command_for_test(command, Duration::from_secs(5))
+        .map_err(io::Error::other)?;
+    let error = match result {
+        Ok(status) => {
+            return Err(io::Error::other(format!(
+                "injected cleanup wait failure unexpectedly succeeded: {status}"
+            )));
+        }
+        Err(error) => error,
+    };
+    if !error.contains("injected cleanup command wait failure") {
+        return Err(io::Error::other(format!(
+            "cleanup helper returned the wrong failure: {error}"
+        )));
+    }
+    wait_for_process_exit("cleanup-command-wait-error", pid, Duration::from_secs(5))
+}
+
 #[cfg(windows)]
 fn wait_for_probe_pid(timeout: Duration) -> io::Result<u32> {
     let deadline = std::time::Instant::now() + timeout;

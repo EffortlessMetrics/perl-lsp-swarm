@@ -96,9 +96,10 @@ impl DapWorkflowSession {
     }
 
     /// Create a session and make every convenience launch helper use the
-    /// supplied interpreter path verbatim.
+    /// supplied interpreter path after explicit identity normalization.
     pub fn new_with_perl(timeout: Duration, perl_path: Option<&Path>) -> Result<Self, String> {
-        Self::new_initialized(timeout, perl_path, false)
+        let normalized_perl_path = perl_path.map(normalize_explicit_debuggee_pin).transpose()?;
+        Self::new_initialized(timeout, normalized_perl_path.as_deref(), false)
     }
 
     fn new_initialized(
@@ -142,10 +143,11 @@ impl DapWorkflowSession {
     /// bash-spawned vs cmd-spawned test runs on Windows. Native MSWin32 perl
     /// builds (e.g. Strawberry) hang at perl5db bootstrap when stdio is piped,
     /// so an unpinned session silently never reaches its first stop (#12594
-    /// item 6b). The pinned binary is passed as `perlPath`, which the adapter
-    /// honors verbatim.
+    /// item 6b). The normalized pinned binary is passed as `perlPath`, which
+    /// the adapter honors as the requested interpreter identity.
     pub fn launch_pinned(&mut self, perl_binary: &Path, script_path: &str) -> Result<(), String> {
-        let args = launch_arguments(script_path, None, false, Some(perl_binary));
+        let normalized_perl_binary = normalize_explicit_debuggee_pin(perl_binary)?;
+        let args = launch_arguments(script_path, None, false, Some(&normalized_perl_binary));
         let resp = self.request("launch", Some(args));
         self.expect_success(&resp, "launch")?;
         Ok(())
@@ -160,7 +162,8 @@ impl DapWorkflowSession {
         script_path: &str,
         env_overrides: &Value,
     ) -> Result<(), String> {
-        let mut args = launch_arguments(script_path, None, true, Some(perl_binary));
+        let normalized_perl_binary = normalize_explicit_debuggee_pin(perl_binary)?;
+        let mut args = launch_arguments(script_path, None, true, Some(&normalized_perl_binary));
         let launch_env = args
             .get_mut("env")
             .and_then(Value::as_object_mut)
@@ -1783,26 +1786,71 @@ fn wait_for_child_reap(child: &mut Child, budget: Duration) -> Result<(), String
 /// itself a cleanup failure; it must not prevent the probe from returning its
 /// diagnostic.
 fn run_cleanup_command(
-    mut command: Command,
+    command: Command,
     budget: Duration,
 ) -> Result<std::process::ExitStatus, String> {
-    let mut child =
-        command.spawn().map_err(|error| format!("cannot spawn cleanup command: {error}"))?;
+    run_cleanup_command_inner(command, budget, false).1
+}
+
+#[cfg(test)]
+pub(crate) fn run_cleanup_command_for_test(
+    command: Command,
+    budget: Duration,
+) -> Result<(u32, Result<std::process::ExitStatus, String>), String> {
+    let (pid, result) = run_cleanup_command_inner(command, budget, true);
+    match pid {
+        Some(pid) => Ok((pid, result)),
+        None => Err(format!("cleanup command did not spawn: {result:?}")),
+    }
+}
+
+fn run_cleanup_command_inner(
+    mut command: Command,
+    budget: Duration,
+    mut inject_wait_error: bool,
+) -> (Option<u32>, Result<std::process::ExitStatus, String>) {
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return (None, Err(format!("cannot spawn cleanup command: {error}")));
+        }
+    };
+    let pid = child.id();
     let deadline = Instant::now() + budget;
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(status),
+        let wait_result = if inject_wait_error {
+            inject_wait_error = false;
+            Err(io::Error::other("injected cleanup command wait failure"))
+        } else {
+            child.try_wait()
+        };
+        match wait_result {
+            Ok(Some(status)) => return (Some(pid), Ok(status)),
             Ok(None) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(10));
             }
             Ok(None) => {
                 let kill_error = child.kill().err().map(|error| error.to_string());
                 let reap = wait_for_child_reap(&mut child, CLEANUP_REAP_BUDGET);
-                return Err(format!(
-                    "cleanup command timed out after {budget:?} (kill={kill_error:?}, reap={reap:?})"
-                ));
+                return (
+                    Some(pid),
+                    Err(format!(
+                        "cleanup command timed out after {budget:?} (kill={kill_error:?}, reap={reap:?})"
+                    )),
+                );
             }
-            Err(error) => return Err(format!("cleanup command wait failed: {error}")),
+            Err(error) => {
+                // A wait error does not release ownership of the helper child. Attempt
+                // termination and bounded reap before returning the original failure.
+                let kill_error = child.kill().err().map(|error| error.to_string());
+                let reap = wait_for_child_reap(&mut child, CLEANUP_REAP_BUDGET);
+                return (
+                    Some(pid),
+                    Err(format!(
+                        "cleanup command wait failed: {error} (kill={kill_error:?}, reap={reap:?})"
+                    )),
+                );
+            }
         }
     }
 }
