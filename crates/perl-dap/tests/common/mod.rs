@@ -158,8 +158,7 @@ impl DapWorkflowSession {
         // Gated callers use this helper after `perl_available()`. Resolve the
         // same pinned identity here as well so a valid pin controls the live
         // process, even when the caller uses the legacy convenience method.
-        let perl_binary = resolve_launch_perl_path()?;
-        let args = launch_arguments(script_path, None, stop_on_entry, perl_binary.as_deref());
+        let args = resolved_launch_arguments(script_path, None, stop_on_entry)?;
         let resp = self.request("launch", Some(args));
         self.expect_success(&resp, "launch")?;
         Ok(())
@@ -172,8 +171,7 @@ impl DapWorkflowSession {
     pub fn launch_with_cwd(&mut self, script_path: &str, cwd: &str) -> Result<(), String> {
         // Keep the explicit cwd path under the same pin-propagating contract
         // as `launch`; this is a gated live-session consumer too.
-        let perl_binary = resolve_launch_perl_path()?;
-        let args = launch_arguments(script_path, Some(cwd), false, perl_binary.as_deref());
+        let args = resolved_launch_arguments(script_path, Some(cwd), false)?;
         let resp = self.request("launch", Some(args));
         self.expect_success(&resp, "launch")?;
         Ok(())
@@ -640,6 +638,24 @@ mod launch_argument_tests {
         );
         assert_eq!(args.get("stopOnEntry"), Some(&Value::Bool(true)));
     }
+}
+
+fn resolved_launch_arguments(
+    script_path: &str,
+    cwd: Option<&str>,
+    stop_on_entry: bool,
+) -> Result<Value, String> {
+    let perl_binary = resolve_launch_perl_path()?;
+    Ok(launch_arguments(script_path, cwd, stop_on_entry, perl_binary.as_deref()))
+}
+
+#[cfg(test)]
+pub(crate) fn resolved_launch_arguments_for_test(
+    script_path: &str,
+    cwd: Option<&str>,
+    stop_on_entry: bool,
+) -> Result<Value, String> {
+    resolved_launch_arguments(script_path, cwd, stop_on_entry)
 }
 
 /// Resolve the interpreter for a shared launch convenience.

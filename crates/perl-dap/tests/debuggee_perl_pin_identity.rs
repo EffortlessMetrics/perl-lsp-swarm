@@ -100,6 +100,13 @@ fn valid_pin_selects_the_pinned_usable_identity() -> Result<(), Box<dyn Error>> 
         Some(pinned.clone()),
         "shared launch helpers must receive the exact pinned identity"
     );
+    let launch_arguments = common::resolved_launch_arguments_for_test("fixture.pl", None, true)
+        .map_err(|reason| format!("resolved launch request could not be built: {reason}"))?;
+    assert_eq!(
+        launch_arguments.get("perlPath").and_then(|value| value.as_str()),
+        Some(pinned.to_string_lossy().as_ref()),
+        "the convenience launch request must carry the pinned identity"
+    );
     assert_eq!(
         resolved.binary, pinned,
         "resolver must retain the exact usable pinned identity instead of selecting PATH perl"
