@@ -1760,9 +1760,10 @@ fn expand_arg_to_names(arg: &str) -> Vec<String> {
             c => c,
         };
         if let (Some(start), Some(end)) = (arg.find(open), arg.rfind(close))
-            && start < end
+            && start + open.len_utf8() <= end
         {
-            let content = &arg[start + 1..end];
+            // Byte-boundary-safe slice: qw delimiters may be multi-byte UTF-8.
+            let content = &arg[start + open.len_utf8()..end];
             return content
                 .split_whitespace()
                 .filter(|s| !s.is_empty())
@@ -1891,6 +1892,20 @@ mod tests {
     use crate::parser::Parser;
     use perl_tdd_support::{must, must_some};
     use std::collections::HashSet;
+
+    #[test]
+    fn expand_arg_to_names_handles_multibyte_qw_delimiters_without_panic() {
+        // Multi-byte UTF-8 qw delimiters are valid Perl; byte-offset slicing
+        // must not panic or split mid-character (#12731 review).
+        assert_eq!(
+            expand_arg_to_names("qw•Base1 Base2•"),
+            ["Base1".to_string(), "Base2".to_string()]
+        );
+        assert_eq!(
+            expand_arg_to_names("qw(Base1 Base2)"),
+            ["Base1".to_string(), "Base2".to_string()]
+        );
+    }
 
     fn build_models(code: &str) -> Vec<ClassModel> {
         let mut parser = Parser::new(code);

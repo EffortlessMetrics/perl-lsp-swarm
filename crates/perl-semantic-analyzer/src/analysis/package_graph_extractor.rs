@@ -272,8 +272,9 @@ impl ExtractorState {
         }
         // Other qw variants: qw{...}, qw[...], qw/.../ etc.
         if arg.starts_with("qw") && arg.len() > 3 {
-            let bytes = arg.as_bytes();
-            let open = bytes[2] as char;
+            // Character-based delimiter detection: qw delimiters may be
+            // multi-byte UTF-8 (byte indexing would misdetect and panic).
+            let open = arg.chars().nth(2).unwrap_or(' ');
             let close = match open {
                 '(' => ')',
                 '{' => '}',
@@ -281,10 +282,11 @@ impl ExtractorState {
                 '<' => '>',
                 c => c,
             };
+            let content_start = 2 + open.len_utf8();
             if let Some(end) = arg.rfind(close)
-                && end > 3
+                && end > content_start
             {
-                let content = &arg[3..end];
+                let content = &arg[content_start..end];
                 return content
                     .split_whitespace()
                     .filter(|s| !s.is_empty())
@@ -335,6 +337,20 @@ impl ExtractorState {
 mod tests {
     use super::*;
     use crate::Parser;
+
+    #[test]
+    fn expand_arg_to_names_handles_multibyte_qw_delimiters_without_panic() {
+        // Multi-byte UTF-8 qw delimiters are valid Perl; byte-offset slicing
+        // must not panic or split mid-character (#12731 review).
+        assert_eq!(
+            ExtractorState::expand_arg_to_names("qw•Base1 Base2•"),
+            ["Base1".to_string(), "Base2".to_string()]
+        );
+        assert_eq!(
+            ExtractorState::expand_arg_to_names("qw(Base1 Base2)"),
+            ["Base1".to_string(), "Base2".to_string()]
+        );
+    }
 
     /// Parse Perl source and extract package graph edges.
     fn parse_and_extract(code: &str) -> Vec<PackageEdge> {
