@@ -308,6 +308,13 @@ fn main() {
         Duration::from_secs(5),
     )?;
     wait_for_process_start(termination_descendant_pid, Duration::from_secs(5))?;
+    let termination_probe_pid = common::last_probe_pid_for_test().ok_or_else(|| {
+        io::Error::other("termination-failure probe did not record its child PID")
+    })?;
+    assert!(
+        process_exists(termination_probe_pid)?,
+        "termination-failure probe child must be live before the injected cleanup failure"
+    );
     let termination_failure = termination_probe
         .join()
         .map_err(|_| io::Error::other("termination-failure probe thread panicked"))?;
@@ -316,9 +323,15 @@ fn main() {
         Err(error) => error,
     };
     assert!(
-        termination_error.contains("termination command failed"),
-        "termination command failure must be explicit: {termination_error}"
+        termination_error.contains("owned process termination failure"),
+        "owned termination failure must be explicit: {termination_error}"
     );
+    assert!(
+        process_exists(termination_probe_pid)?,
+        "the injected termination failure must return with the owned child retained"
+    );
+    common::force_cleanup_probe_process_for_test(termination_probe_pid)
+        .map_err(io::Error::other)?;
     wait_for_process_exit(
         "termination-failure",
         termination_descendant_pid,
@@ -353,13 +366,21 @@ fn main() {
     let after = current_process_probe_artifacts()?;
     let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
     assert!(
-        new_artifacts.is_empty(),
-        "workspace cleanup failure control left newly created workspaces: {new_artifacts:?}"
+        !new_artifacts.is_empty(),
+        "real TempDir::close failure must leave a displaced workspace for explicit cleanup"
     );
     assert_eq!(
         common::active_probe_reader_count(),
         0,
         "workspace cleanup failure left an active reader thread"
+    );
+    for artifact in &new_artifacts {
+        fs::remove_dir_all(artifact)?;
+    }
+    let after_explicit_cleanup = current_process_probe_artifacts()?;
+    assert!(
+        after_explicit_cleanup.iter().all(|path| before.contains(path)),
+        "explicit cleanup must remove only the displaced workspace: {after_explicit_cleanup:?}"
     );
 
     #[cfg(windows)]

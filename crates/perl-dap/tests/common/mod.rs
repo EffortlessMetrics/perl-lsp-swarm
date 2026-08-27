@@ -736,20 +736,49 @@ fn normalize_windows_path_prefix(path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod explicit_pin_tests {
-    use super::normalize_explicit_debuggee_pin;
+    use super::{launch_arguments, normalize_explicit_debuggee_pin};
     use std::fs;
-    use std::path::Path;
 
     #[test]
-    fn relative_pin_is_resolved_before_launch() -> Result<(), String> {
-        let expected = std::env::current_dir()
+    fn nested_relative_pin_is_frozen_before_different_launch_cwd() -> Result<(), String> {
+        let process_cwd = std::env::current_dir()
             .map_err(|error| format!("the current directory should resolve: {error}"))?;
-        let expected = fs::canonicalize(expected).map_err(|error| error.to_string())?;
+        let controls = tempfile::Builder::new()
+            .prefix("perl-lsp-dap-relative-pin-")
+            .tempdir_in(&process_cwd)
+            .map_err(|error| format!("relative-pin controls should be created: {error}"))?;
+        let nested_dir = controls.path().join("nested").join("bin");
+        fs::create_dir_all(&nested_dir)
+            .map_err(|error| format!("nested relative-pin directory should be created: {error}"))?;
+        let binary = nested_dir.join(if cfg!(windows) { "pinned-perl.exe" } else { "pinned-perl" });
+        fs::write(&binary, b"pin identity control")
+            .map_err(|error| format!("relative-pin executable should be created: {error}"))?;
+        let relative = binary
+            .strip_prefix(&process_cwd)
+            .map_err(|error| format!("control path should be relative to the test cwd: {error}"))?;
+        let expected = fs::canonicalize(&binary).map_err(|error| error.to_string())?;
         #[cfg(windows)]
         let expected = super::normalize_windows_path_prefix(expected);
-        let resolved = normalize_explicit_debuggee_pin(Path::new("."))
-            .map_err(|error| format!("the current directory should canonicalize: {error}"))?;
+        let resolved = normalize_explicit_debuggee_pin(relative)
+            .map_err(|error| format!("the nested relative pin should canonicalize: {error}"))?;
         assert_eq!(resolved, expected);
+
+        let different_cwd = controls.path().join("different-launch-cwd");
+        fs::create_dir(&different_cwd)
+            .map_err(|error| format!("different launch cwd should be created: {error}"))?;
+        let different_cwd =
+            different_cwd.to_str().ok_or("different launch cwd should be valid UTF-8")?;
+        let launch = launch_arguments("fixture.pl", Some(different_cwd), false, Some(&resolved));
+        assert_eq!(
+            launch.get("perlPath").and_then(|value| value.as_str()),
+            Some(resolved.to_string_lossy().as_ref()),
+            "the launch must carry the canonical pin, not reinterpret it under cwd"
+        );
+        assert_eq!(
+            launch.get("cwd").and_then(|value| value.as_str()),
+            Some(different_cwd),
+            "the launch must retain its independent working directory"
+        );
         Ok(())
     }
 
@@ -758,6 +787,7 @@ mod explicit_pin_tests {
     fn non_utf8_pin_is_rejected_before_launch() -> Result<(), String> {
         use std::ffi::OsString;
         use std::os::unix::ffi::OsStringExt;
+        use std::path::Path;
 
         let path_value = OsString::from_vec(vec![b'/', b't', b'm', b'p', 0xff]);
         let path = Path::new(&path_value);
@@ -942,6 +972,8 @@ static LAST_PROBE_USED_SIGKILL: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 static DEFERRED_PROBE_READERS: OnceLock<Mutex<Vec<JoinHandle<Result<(), String>>>>> =
     OnceLock::new();
+#[cfg(test)]
+static DEFERRED_PROBE_CHILDREN: OnceLock<Mutex<Vec<Child>>> = OnceLock::new();
 
 fn debuggee_perl_candidates() -> Vec<PathBuf> {
     if let Some(pinned) = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV) {
@@ -1008,7 +1040,7 @@ fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CleanupFault {
     None,
-    TerminationCommand,
+    TerminationOperations,
     WorkspaceRemoval,
     #[cfg(windows)]
     JobAssignment,
@@ -1016,7 +1048,7 @@ enum CleanupFault {
 
 impl CleanupFault {
     fn termination_failed(self) -> bool {
-        matches!(self, Self::TerminationCommand)
+        matches!(self, Self::TerminationOperations)
     }
 
     fn workspace_removal_failed(self) -> bool {
@@ -1071,7 +1103,7 @@ pub(crate) fn probe_debuggee_perl_for_test_with_termination_failure(
         budget,
         false,
         Some(descendant_pid_file),
-        CleanupFault::TerminationCommand,
+        CleanupFault::TerminationOperations,
     )
     .map_err(|failure| failure.reason)
 }
@@ -1193,6 +1225,16 @@ pub(crate) fn last_probe_pid_for_test() -> Option<u32> {
     }
 }
 
+#[cfg(test)]
+fn defer_probe_child_for_test(child: Child) {
+    let children = DEFERRED_PROBE_CHILDREN.get_or_init(|| Mutex::new(Vec::new()));
+    let mut children = match children.lock() {
+        Ok(children) => children,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    children.push(child);
+}
+
 fn probe_debuggee_perl_with_options(
     binary: &Path,
     probe_budget: Duration,
@@ -1242,44 +1284,54 @@ fn probe_debuggee_perl_with_options(
         command.process_group(0);
         let mut child = command.spawn().map_err(|e| fail(format!("cannot spawn: {e}")))?;
         #[cfg(windows)]
-        let _probe_job = match if cleanup_fault.assignment_failed() {
-            Err(io::Error::other("injected job assignment failure"))
+        let _probe_job = if cleanup_fault.termination_failed() {
+            // Leave the owned process tree live for the termination-failure
+            // control. This makes the injected failure exercise the same
+            // cleanup boundary as production, and the test harness performs
+            // explicit cleanup after observing the bounded return.
+            None
         } else {
-            ProbeJob::assign(&child)
-        } {
-            Ok(job) => job,
-            Err(error) => {
-                #[cfg(test)]
-                if cleanup_fault.assignment_failed() {
-                    std::thread::sleep(Duration::from_secs(3));
-                }
-                let tree_kill = taskkill_process_tree(child.id());
-                let native_tree_kill = terminate_windows_process_tree(child.id());
-                let kill = child.kill();
-                let wait = wait_for_child_reap(&mut child, CLEANUP_REAP_BUDGET);
-                let mut cleanup = vec![format!(
-                    "cannot assign probe process tree to a kill-on-close job: {error}"
-                )];
-                if !tree_kill.as_ref().is_ok_and(|status| status.success()) {
-                    cleanup.push(format!(
-                        "taskkill process-tree fallback failed: {}",
-                        tree_kill.map_or_else(
-                            |error| error,
-                            |status| format!("non-success status: {status}")
-                        )
-                    ));
-                }
-                if let Err(error) = native_tree_kill {
-                    cleanup.push(format!("native process-tree fallback failed: {error}"));
-                }
-                if let Err(error) = kill {
-                    cleanup.push(format!("direct child kill failed: {error}"));
-                }
-                if let Err(error) = wait {
-                    cleanup.push(format!("bounded child wait/reap failed: {error}"));
-                }
-                return Err(fail(cleanup.join("; ")));
-            }
+            Some(
+                match if cleanup_fault.assignment_failed() {
+                    Err(io::Error::other("injected job assignment failure"))
+                } else {
+                    ProbeJob::assign(&child)
+                } {
+                    Ok(job) => job,
+                    Err(error) => {
+                        #[cfg(test)]
+                        if cleanup_fault.assignment_failed() {
+                            std::thread::sleep(Duration::from_secs(3));
+                        }
+                        let tree_kill = taskkill_process_tree(child.id());
+                        let native_tree_kill = terminate_windows_process_tree(child.id());
+                        let kill = child.kill();
+                        let wait = wait_for_child_reap(&mut child, CLEANUP_REAP_BUDGET);
+                        let mut cleanup = vec![format!(
+                            "cannot assign probe process tree to a kill-on-close job: {error}"
+                        )];
+                        if !tree_kill.as_ref().is_ok_and(|status| status.success()) {
+                            cleanup.push(format!(
+                                "taskkill process-tree fallback failed: {}",
+                                tree_kill.map_or_else(
+                                    |error| error,
+                                    |status| format!("non-success status: {status}")
+                                )
+                            ));
+                        }
+                        if let Err(error) = native_tree_kill {
+                            cleanup.push(format!("native process-tree fallback failed: {error}"));
+                        }
+                        if let Err(error) = kill {
+                            cleanup.push(format!("direct child kill failed: {error}"));
+                        }
+                        if let Err(error) = wait {
+                            cleanup.push(format!("bounded child wait/reap failed: {error}"));
+                        }
+                        return Err(fail(cleanup.join("; ")));
+                    }
+                },
+            )
         };
         #[cfg(test)]
         LAST_PROBE_PID.store(child.id(), Ordering::Release);
@@ -1350,6 +1402,10 @@ fn probe_debuggee_perl_with_options(
                             .map_err(|_| "probe stdin writer thread panicked".to_string());
                         let stdout_joined = join_pipe_reader(stdout_chunks);
                         let stderr_joined = join_pipe_reader(stderr_chunks);
+                        #[cfg(test)]
+                        if cleanup_fault.termination_failed() {
+                            defer_probe_child_for_test(child);
+                        }
                         return Err(ProbeFailure {
                             reason: format!(
                                 "no exit within {}s — perl5db cannot bootstrap over piped stdio{}",
@@ -1387,6 +1443,10 @@ fn probe_debuggee_perl_with_options(
                         stdout_joined,
                         stderr_joined,
                     );
+                    #[cfg(test)]
+                    if cleanup_fault.termination_failed() {
+                        defer_probe_child_for_test(child);
+                    }
                     return Err(fail(format!("probe wait failed: {e}{cleanup_suffix}")));
                 }
             }
@@ -1444,14 +1504,19 @@ fn probe_debuggee_perl_with_options(
         })
     })();
 
-    let close_result = probe_dir.close();
     let close_result = if cleanup_fault.workspace_removal_failed() {
-        match close_result {
-            Ok(()) => Err(io::Error::other("injected probe workspace cleanup failure")),
+        // Move the directory away from the TempDir's recorded path so the
+        // actual `TempDir::close` call takes its filesystem-error branch. The
+        // displaced, process-owned artifact is intentionally left for the
+        // hygiene test to identify and remove explicitly.
+        let mut displaced = probe_dir.path().to_path_buf();
+        displaced.set_extension("close-failure");
+        match fs::rename(probe_dir.path(), &displaced) {
+            Ok(()) => probe_dir.close(),
             Err(error) => Err(error),
         }
     } else {
-        close_result
+        probe_dir.close()
     };
 
     match (result, close_result) {
@@ -1659,20 +1724,6 @@ fn terminate_windows_process_tree(root_pid: u32) -> Result<(), String> {
     result
 }
 
-#[cfg(unix)]
-fn termination_failure_command() -> Command {
-    let mut command = Command::new("sleep");
-    command.arg("60");
-    command
-}
-
-#[cfg(windows)]
-fn termination_failure_command() -> Command {
-    let mut command = Command::new("cmd");
-    command.args(["/C", "ping 127.0.0.1 -n 61 > nul"]);
-    command
-}
-
 struct PipeDrain {
     receiver: Receiver<Vec<u8>>,
     thread: JoinHandle<Result<(), String>>,
@@ -1859,16 +1910,11 @@ fn terminate_probe_process_tree(
             true
         }
     };
-    if cleanup_fault.termination_failed() {
-        let termination =
-            run_cleanup_command(termination_failure_command(), CLEANUP_COMMAND_BUDGET);
-        if let Err(error) = termination {
-            failures.push(format!("termination command failed: {error}"));
-        }
-    }
     #[cfg(windows)]
     {
-        if child_running {
+        if child_running && cleanup_fault.termination_failed() {
+            failures.push("injected owned process termination failure".to_string());
+        } else if child_running {
             let taskkill = taskkill_process_tree(pid);
             if !taskkill.as_ref().is_ok_and(|status| status.success())
                 && child.try_wait().ok().flatten().is_none()
@@ -1882,7 +1928,10 @@ fn terminate_probe_process_tree(
                 ));
             }
         }
-        if child_running && let Err(error) = terminate_windows_process_tree(pid) {
+        if child_running
+            && !cleanup_fault.termination_failed()
+            && let Err(error) = terminate_windows_process_tree(pid)
+        {
             failures.push(format!("native process-tree cleanup failed: {error}"));
         }
     }
@@ -1892,7 +1941,9 @@ fn terminate_probe_process_tree(
         if child_running && !group_exists {
             failures.push(format!("probe process group {pid} was not available"));
         }
-        if group_exists {
+        if group_exists && cleanup_fault.termination_failed() {
+            failures.push("injected owned process-group termination failure".to_string());
+        } else if group_exists {
             let term = signal_process_group(pid, "-TERM");
             if let Err(error) = term {
                 failures.push(format!("SIGTERM failed for probe process group {pid}: {error}"));
@@ -1915,7 +1966,9 @@ fn terminate_probe_process_tree(
             }
         }
     }
-    if child_running && let Err(error) = child.kill() {
+    if child_running && cleanup_fault.termination_failed() {
+        failures.push("injected direct child termination failure".to_string());
+    } else if child_running && let Err(error) = child.kill() {
         match child.try_wait() {
             Ok(Some(_)) => {}
             Ok(None) => failures.push(format!("direct child kill failed: {error}")),
@@ -1927,6 +1980,54 @@ fn terminate_probe_process_tree(
     if child_running && let Err(error) = wait_for_child_reap(child, CLEANUP_REAP_BUDGET) {
         failures.push(format!("bounded child wait/reap failed: {error}"));
     }
+    if failures.is_empty() { Ok(()) } else { Err(failures.join("; ")) }
+}
+
+/// Explicit test-harness cleanup for the retained-child termination-failure
+/// control. Production cleanup never uses this escape hatch: the fault
+/// injection intentionally leaves the owned process tree live so the test can
+/// prove the bounded error return before cleaning the exact recorded PID.
+#[cfg(test)]
+pub(crate) fn force_cleanup_probe_process_for_test(pid: u32) -> Result<(), String> {
+    let mut failures = Vec::new();
+    #[cfg(windows)]
+    {
+        let taskkill = taskkill_process_tree(pid);
+        if !taskkill.as_ref().is_ok_and(|status| status.success())
+            && let Err(native) = terminate_windows_process_tree(pid)
+        {
+            failures.push(format!(
+                "test-harness process cleanup failed (taskkill={taskkill:?}; native={native})"
+            ));
+        }
+    }
+    #[cfg(unix)]
+    {
+        if let Err(error) = signal_process_group(pid, "-KILL") {
+            failures.push(format!("test-harness process-group cleanup failed: {error}"));
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        failures.push("test-harness process cleanup is unsupported on this platform".to_string());
+    }
+
+    let deferred_child = DEFERRED_PROBE_CHILDREN.get().and_then(|children| {
+        let mut children = match children.lock() {
+            Ok(children) => children,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        children.iter().position(|child| child.id() == pid).map(|index| children.remove(index))
+    });
+    if let Some(mut child) = deferred_child {
+        if let Err(error) = wait_for_child_reap(&mut child, CLEANUP_REAP_BUDGET) {
+            failures.push(format!("test-harness child reap failed: {error}"));
+        }
+    } else {
+        failures.push(format!("no deferred probe child was recorded for PID {pid}"));
+    }
+
     if failures.is_empty() { Ok(()) } else { Err(failures.join("; ")) }
 }
 
