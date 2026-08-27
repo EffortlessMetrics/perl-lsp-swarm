@@ -1803,6 +1803,69 @@ impl WorkspaceConfig {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) const SYSTEM_INC_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Test-only widening seam for the startup `@INC` probe deadline.
+///
+/// Memoization-claim tests (for example
+/// `get_system_inc_reuses_cached_probe_without_relaunching`) need exactly one
+/// *successful* live probe before they can assert anything about caching.
+/// That makes them sensitive to host scheduler weather — cold interpreter
+/// starts, antivirus scan storms, and `CreateProcess` stalls all count
+/// against the same 1 s budget — and they surfaced as spurious
+/// `SystemIncProbeOutcome::TimedOut` failures.
+///
+/// The override is thread-local, so a widening test never relaxes the bound
+/// observed by sibling test threads, and it does not exist at all outside
+/// `cfg(test)`. The production latency contract stays at
+/// [`SYSTEM_INC_PROBE_TIMEOUT`] and is still proved by
+/// `get_system_inc_does_not_stall_on_slow_interpreter` and
+/// `output_with_timeout_kills_long_running_subprocess`.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod system_inc_probe_timeout_override {
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    thread_local! {
+        static WIDENED: Cell<Option<Duration>> = const { Cell::new(None) };
+    }
+
+    /// Restores the previous thread-local deadline when dropped.
+    pub(super) struct WidenGuard(Option<Duration>);
+
+    impl WidenGuard {
+        /// Widen the probe deadline for the current thread only.
+        pub(super) fn new(timeout: Duration) -> Self {
+            Self(WIDENED.with(|slot| slot.replace(Some(timeout))))
+        }
+    }
+
+    impl Drop for WidenGuard {
+        fn drop(&mut self) {
+            let previous = self.0;
+            WIDENED.with(|slot| slot.set(previous));
+        }
+    }
+
+    /// The widened deadline in force on this thread, if any.
+    pub(super) fn current() -> Option<Duration> {
+        WIDENED.with(Cell::get)
+    }
+}
+
+/// The startup `@INC` probe deadline in force for this call.
+///
+/// Always [`SYSTEM_INC_PROBE_TIMEOUT`] in any non-`cfg(test)` build; under
+/// `cfg(test)` a thread-local widening may apply. See
+/// [`system_inc_probe_timeout_override`].
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn effective_system_inc_probe_timeout() -> Duration {
+    #[cfg(test)]
+    if let Some(widened) = system_inc_probe_timeout_override::current() {
+        return widened;
+    }
+
+    SYSTEM_INC_PROBE_TIMEOUT
+}
+
 /// Run `command` with a wall-clock timeout, killing the child if it exceeds
 /// `timeout`. Returns `io::Error` with kind `TimedOut` on timeout. Used by
 /// `fetch_perl_inc` so a hanging or slow `perl` interpreter cannot stall
@@ -5163,6 +5226,17 @@ profile = "recommended"
             perl_args: vec!["-e".into(), "print(qq(cache-sentinel).chr(10));".into()],
             ..WorkspaceConfig::default()
         };
+
+        // This test's claim is memoization, not latency: it needs exactly one
+        // *successful* live probe before it can assert that the second lookup
+        // reuses the cached outcome. The production 1 s deadline also has to
+        // cover interpreter spawn, so under host scheduler weather the first
+        // probe intermittently came back `TimedOut` and the test failed on a
+        // signal it does not own. Widen the deadline on this thread only; the
+        // 1 s production bound stays in force for every sibling test thread
+        // and is proved by `get_system_inc_does_not_stall_on_slow_interpreter`
+        // and `output_with_timeout_kills_long_running_subprocess`.
+        let _widened = system_inc_probe_timeout_override::WidenGuard::new(Duration::from_secs(60));
 
         let cached = config.get_system_inc_probe_outcome();
         let cached_paths = match &cached {
