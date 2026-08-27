@@ -343,10 +343,14 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
         match ch {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
+            // `clippy::collapsible_match` wants the inner `if` folded into a
+            // guard. `stack.pop().is_none()` is exactly `stack.is_empty()`, so
+            // guard on the non-mutating predicate and keep the pop in the arm
+            // body: a guard whose truth depends on its own side effect is easy
+            // to misread the next time an arm is inserted above this one.
+            ')' | ']' | '}' if stack.is_empty() => return idx.saturating_sub(start),
             ')' | ']' | '}' => {
-                if stack.pop().is_none() {
-                    return idx.saturating_sub(start);
-                }
+                stack.pop();
             }
             ',' | ';' if stack.is_empty() => return idx.saturating_sub(start),
             _ => {}
