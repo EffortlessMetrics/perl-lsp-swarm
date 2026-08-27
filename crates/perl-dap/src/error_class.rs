@@ -2,18 +2,18 @@
 //!
 //! Domain error types keep their own shape and typed sources. This module owns
 //! the #4979 category policy for variants whose origin is already determined by
-//! the variant itself.
+//! the variant itself, and for originated parse wrappers (#8746).
 //!
-//! Context-dependent stack/variable parse variants are not classified here.
-//! [`crate::stack::StackParseError::UnrecognizedFormat`] and
-//! [`crate::variables::VariableParseError`]'s unrecognized/unterminated variants
-//! wait on the debugger-output origin wrapper in #8746.
+//! Context-dependent stack/variable parse variants are classified only through
+//! [`crate::parse_origin::OriginatedParseError`]. The raw parse enums stay
+//! unclassified; callers must supply origin.
 
 use crate::eval::ValidationError;
+use crate::parse_origin::OriginatedParseError;
 use crate::peer_protocol::PeerFrameError;
 use crate::security::SecurityError;
-use crate::stack::FixedOriginStackParseError;
-use crate::variables::FixedOriginVariableParseError;
+use crate::stack::{FixedOriginStackParseError, StackParseError};
+use crate::variables::{FixedOriginVariableParseError, VariableParseError};
 use perl_parser_core::{ErrorCategory, ErrorClass};
 
 const fn assert_error_class<T: ErrorClass>() {}
@@ -24,6 +24,8 @@ const _: () = {
     assert_error_class::<PeerFrameError>();
     assert_error_class::<FixedOriginStackParseError<'static>>();
     assert_error_class::<FixedOriginVariableParseError<'static>>();
+    assert_error_class::<OriginatedParseError<StackParseError>>();
+    assert_error_class::<OriginatedParseError<VariableParseError>>();
 };
 
 impl ErrorClass for ValidationError {
@@ -75,6 +77,24 @@ impl ErrorClass for FixedOriginVariableParseError<'_> {
         match self {
             Self::MaxDepthExceeded(_) => ErrorCategory::ResourceLimit,
             Self::RegexError(_) => ErrorCategory::Bug,
+        }
+    }
+}
+
+impl ErrorClass for OriginatedParseError<StackParseError> {
+    fn error_class(&self) -> ErrorCategory {
+        match self.parse_error().as_fixed_origin() {
+            Some(fixed) => fixed.error_class(),
+            None => self.origin().context_dependent_category(),
+        }
+    }
+}
+
+impl ErrorClass for OriginatedParseError<VariableParseError> {
+    fn error_class(&self) -> ErrorCategory {
+        match self.parse_error().as_fixed_origin() {
+            Some(fixed) => fixed.error_class(),
+            None => self.origin().context_dependent_category(),
         }
     }
 }

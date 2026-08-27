@@ -4,6 +4,7 @@
 //! parser-error baselines, etc.) used by the `just` recipes and CI gates.
 // CLI binary: println!/eprintln! are intentional user-facing output.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_ci_hygiene::version_sync;
 use perl_ci_hygiene::walk_rs_files;

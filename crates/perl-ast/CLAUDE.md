@@ -32,11 +32,11 @@ cargo doc -p perl-ast --open         # View documentation
 |------|---------|
 | `lib.rs` | Re-exports `Node`, `NodeKind`, `SourceLocation` |
 | `ast.rs` | Primary AST: `Node` struct (kind + location), `NodeKind` enum (50+ variants) |
-| `kind_schema/` | Structural `NodeKind` registry: production `FieldId` membership and field-aware child traversal; not rendering/status/fingerprint authority |
+| `kind_schema/` | Structural `NodeKind` registry: production `FieldId` membership, field-aware child traversal, schema identity, and freshness-gated NodeKind inventory; not rendering or parser behavior |
 | `ast/node_clone.rs` | Iterative `Node` clone over canonical child fields |
 | `ast/node_debug.rs` | Iterative bounded `Node`/`NodeKind` `Debug` |
 | `ast/node_eq.rs` | Iterative `Node` equality over canonical child fields |
-| `ast/node_sexp.rs` | Native debug S-expression projection (`to_sexp`); not Tree-sitter compatibility |
+| `ast/node_sexp.rs` | Native debug S-expression projection (`to_sexp`, `render_debug_sexp`); not Tree-sitter compatibility |
 | `ast/read_cursor.rs` | Iterative exact/bounded whole-tree reads over canonical child fields |
 | `v2.rs` | Enhanced AST for incremental parsing: `Node` with `NodeId` + `Range`, `NodeIdGenerator`, `MissingKind`, `DiagnosticId` |
 
@@ -89,8 +89,10 @@ match &node.kind {
 
 - `ast::Node` is a concrete struct, not a trait -- work with it via pattern matching on `NodeKind`
 - `Node::to_sexp()` is a native debug S-expression projection (one root per node,
-  canonical child fields, one escaping policy). It is not Tree-sitter compatibility
-  (issue 8047), AST equality (issue 7045), or typed machine output (issue 8044).
+  canonical child fields, one escaping policy). Completeness is
+  `Node::render_debug_sexp`. The `String` wrapper cannot prove completeness.
+  It is not Tree-sitter compatibility (issue 8047), AST equality (issue 7045),
+  or typed machine output (issue 8044).
 - `NodeKind::kind_name()` returns a static string name; `NodeKind::ALL_KIND_NAMES` lists all names
 - `NodeKind::grammar_kind_name_static()` is the allocation-free canonical grammar-kind table; `grammar_kind_name()` handles only runtime-derived names
 - Adding a new `NodeKind` variant also requires deliberate classification in `grammar_kind_name_static()`; its exhaustive match is part of the metadata drift guard

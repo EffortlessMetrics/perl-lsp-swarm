@@ -125,8 +125,12 @@ supported client that requires editor TCP.
   with a stdio migration that preserves the selected peer backend. They are not
   silently ignored.
 - #10567 proves stdio-only editor authority and zero ambient DAP listeners
-  across every process mode. Do not implement that leaf, #7486, or
-  editor-socket authentication in the PR that lands a later child.
+  across every process mode. The composed proof lives in
+  `crates/perl-dap/tests/dap_editor_transport_security.rs` and
+  `scripts/ci/dap_editor_transport_security.py`. Missing socket observation is
+  `not_proven` / `instrument_failure`, never a zero-listener pass. Do not
+  implement #7486 or editor-socket authentication in the PR that lands a later
+  child.
 - If later evidence proves a current supported client requires editor TCP,
   `ruling_status` cannot stay `accepted` and #7486 must be amended before
   further removal.
@@ -135,6 +139,7 @@ supported client that requires editor TCP.
 
 - #10565 — native editor `--socket` / `run_socket` production admission removed.
 - #10566 — external-peer editor socket wrappers removed; peer-only TCP retained.
-- #10567 — prove stdio-only editor authority and zero ambient DAP listeners.
-- Do not implement #10567, #7486, or editor-socket authentication in the PR
-  that lands a later child.
+- #10567 — composed stdio-only editor-authority / zero ambient listener proof
+  (`dap_editor_transport_security.v1`).
+- Do not implement #7486 or editor-socket authentication in the PR that lands
+  a later child.
