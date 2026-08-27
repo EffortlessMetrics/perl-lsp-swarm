@@ -1803,6 +1803,69 @@ impl WorkspaceConfig {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) const SYSTEM_INC_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    /// Test-only widening of the startup `@INC` probe budget, per thread.
+    ///
+    /// See [`SystemIncProbeTimeoutGuard`] for the motivation and the reason
+    /// this is thread-local rather than global.
+    static SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Installs a wider startup-`@INC` probe budget on the current thread for as
+/// long as the guard lives, restoring the previous budget on drop.
+///
+/// #12902: a memoization test needs one live probe to actually *succeed*
+/// before it can prove the outcome is reused. The production budget
+/// ([`SYSTEM_INC_PROBE_TIMEOUT`]) is 1 s, and on hosts where `CreateProcess`
+/// plus interpreter start-up transiently stalls for seconds (antivirus scan
+/// storms, cold DLL loads) that probe times out — so the memoization claim
+/// reported a spurious failure about latency it was never testing.
+///
+/// Two properties keep this honest:
+///
+/// - it is `cfg(test)`, so only this crate's own unit tests can compile a path
+///   that observes anything other than the constant — not release builds, and
+///   not dependent crates' tests, which do not set `cfg(test)` here;
+/// - it is thread-local, so a widening installed by a memoization test cannot
+///   leak into siblings running concurrently. In particular
+///   `get_system_inc_does_not_stall_on_slow_interpreter` keeps asserting the
+///   production 1 s bound.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) struct SystemIncProbeTimeoutGuard(Option<Duration>);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl SystemIncProbeTimeoutGuard {
+    /// Widen the current thread's probe budget to `timeout`.
+    pub(crate) fn widen_to(timeout: Duration) -> Self {
+        Self(SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(|slot| slot.replace(Some(timeout))))
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl Drop for SystemIncProbeTimeoutGuard {
+    fn drop(&mut self) {
+        SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(|slot| slot.set(self.0));
+    }
+}
+
+/// The startup `@INC` probe budget in force on the current thread.
+///
+/// This is always [`SYSTEM_INC_PROBE_TIMEOUT`] outside this crate's own unit
+/// tests; see `SystemIncProbeTimeoutGuard` (compiled only under `cfg(test)`)
+/// for why the test build can widen it and why that widening cannot escape the
+/// thread that installed it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn effective_system_inc_probe_timeout() -> Duration {
+    #[cfg(test)]
+    if let Some(timeout) = SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(std::cell::Cell::get) {
+        return timeout;
+    }
+
+    SYSTEM_INC_PROBE_TIMEOUT
+}
+
 /// Run `command` with a wall-clock timeout, killing the child if it exceeds
 /// `timeout`. Returns `io::Error` with kind `TimedOut` on timeout. Used by
 /// `fetch_perl_inc` so a hanging or slow `perl` interpreter cannot stall
@@ -5146,6 +5209,15 @@ profile = "recommended"
             Ok(path) => path,
             Err(_) => return Ok(()),
         };
+
+        // #12902: the subject here is memoization, not latency. A live probe
+        // has to succeed once before reuse can be observed at all, and the
+        // production 1 s budget races transient interpreter spawn stalls, so
+        // the test reported `TimedOut` for a claim it was never making. Widen
+        // the budget on this thread only. The discriminator is unaffected: a
+        // relaunch below spawns a *missing* binary, which fails immediately as
+        // `IoFailed` rather than consuming the budget.
+        let _probe_budget = SystemIncProbeTimeoutGuard::widen_to(Duration::from_secs(60));
         let missing_perl = tempfile::tempdir()?.path().join("missing-perl");
         let mut config = WorkspaceConfig {
             use_system_inc: true,
@@ -5184,6 +5256,101 @@ profile = "recommended"
         let reused = config.get_system_inc_probe_outcome();
         assert_eq!(reused, cached, "second lookup must reuse the cached outcome");
         assert_eq!(config.get_system_inc().to_vec(), cached_paths);
+        Ok(())
+    }
+
+    /// The #12902 widening seam must be inert unless a guard is live and must
+    /// restore the previous budget on drop. Without this, a memoization test
+    /// could silently relax the production latency bound for every probe that
+    /// follows on its thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn system_inc_probe_timeout_seam_defaults_to_production_bound() {
+        assert_eq!(effective_system_inc_probe_timeout(), SYSTEM_INC_PROBE_TIMEOUT);
+
+        {
+            let _outer = SystemIncProbeTimeoutGuard::widen_to(Duration::from_secs(30));
+            assert_eq!(effective_system_inc_probe_timeout(), Duration::from_secs(30));
+
+            let _inner = SystemIncProbeTimeoutGuard::widen_to(Duration::from_secs(45));
+            assert_eq!(effective_system_inc_probe_timeout(), Duration::from_secs(45));
+        }
+
+        assert_eq!(
+            effective_system_inc_probe_timeout(),
+            SYSTEM_INC_PROBE_TIMEOUT,
+            "the widened budget must not survive the guard that installed it",
+        );
+    }
+
+    /// End-to-end proof that the widening seam reaches the *live* probe, not
+    /// just the oracle constructor: one interpreter program that outlives the
+    /// production budget must fail bounded under the default budget and succeed
+    /// under a widened one. If `fetch_perl_inc` ever stops honouring the
+    /// effective timeout, the widened leg fails here instead of #12902 quietly
+    /// coming back.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn effective_timeout_governs_the_live_startup_inc_probe() -> TestResult {
+        let perl_path = match resolve_perl_path_with_toolchain() {
+            Ok(path) => path,
+            Err(_) => return Ok(()),
+        };
+        // `perl_args` run before the appended `-e print join("\n", @INC)`
+        // block, and perl concatenates `-e` programs into one script, so the
+        // trailing semicolon is load-bearing.
+        let slow_program = |path: &Path| WorkspaceConfig {
+            use_system_inc: true,
+            perl_path: Some(path.to_string_lossy().into_owned()),
+            perl_args: vec!["-e".into(), "sleep 2;".into()],
+            ..WorkspaceConfig::default()
+        };
+
+        // The production budget is 1 s, so a 2 s program cannot produce paths.
+        // Which failure class the host reports varies (spawn shims, msys perl),
+        // and this leg only claims "not a successful probe".
+        let mut bounded = slow_program(&perl_path);
+        let bounded_outcome = bounded.get_system_inc_probe_outcome();
+        assert!(
+            !matches!(bounded_outcome, SystemIncProbeOutcome::Paths(_)),
+            "the production budget must not admit a 2s probe, got {bounded_outcome:?}",
+        );
+
+        let _probe_budget = SystemIncProbeTimeoutGuard::widen_to(Duration::from_secs(30));
+        let mut widened = slow_program(&perl_path);
+        let widened_outcome = widened.get_system_inc_probe_outcome();
+        assert!(
+            matches!(widened_outcome, SystemIncProbeOutcome::Paths(_)),
+            "the widened budget must let the same 2s probe finish, got {widened_outcome:?}",
+        );
+        Ok(())
+    }
+
+    /// The seam is only worth anything if the probe's oracle actually reads it.
+    /// Pin both directions on the constructor `fetch_perl_inc` uses, so a future
+    /// refactor that re-hardcodes the constant fails here rather than resurrecting
+    /// the #12902 flake.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn startup_inc_probe_oracle_reads_the_effective_timeout() -> TestResult {
+        let perl_path = match resolve_perl_path_with_toolchain() {
+            Ok(path) => path,
+            Err(_) => return Ok(()),
+        };
+        let config = WorkspaceConfig {
+            use_system_inc: true,
+            perl_path: Some(perl_path.to_string_lossy().into_owned()),
+            ..WorkspaceConfig::default()
+        };
+
+        let production = PerlOracleEnv::for_startup_inc_probe(&config)
+            .ok_or("for_startup_inc_probe returned None for a resolved interpreter")?;
+        assert_eq!(production.timeout, SYSTEM_INC_PROBE_TIMEOUT);
+
+        let _probe_budget = SystemIncProbeTimeoutGuard::widen_to(Duration::from_secs(30));
+        let widened = PerlOracleEnv::for_startup_inc_probe(&config)
+            .ok_or("for_startup_inc_probe returned None for a resolved interpreter")?;
+        assert_eq!(widened.timeout, Duration::from_secs(30));
         Ok(())
     }
 
