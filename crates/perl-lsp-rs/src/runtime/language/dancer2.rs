@@ -464,14 +464,14 @@ mod activation_anchoring_tests {
     #[test]
     fn unowned_document_does_not_fan_out_across_workspace_folders() -> TestResult {
         let temp = tempfile::tempdir()?;
-        let svc_a = make_app_folder(temp.path(), "svc-a", "1.101.001");
-        let svc_b = make_app_folder(temp.path(), "svc-b", "1.102.002");
+        let svc_a = make_app_folder(temp.path(), "svc-a", "1.101.001")?;
+        let svc_b = make_app_folder(temp.path(), "svc-b", "1.102.002")?;
 
-        let server = server_with_folders(&[(&svc_a, None), (&svc_b, None)]);
+        let server = server_with_folders(&[(&svc_a, None), (&svc_b, None)])?;
         let detached_doc = temp.path().join("detached").join("app.pl");
         let source = "use lib 'lib';\nuse Dancer2;\n";
 
-        let context = request_context(&server, &detached_doc, source);
+        let context = request_context(&server, &detached_doc, source)?;
 
         assert!(
             context.activations.module.is_none(),
@@ -509,11 +509,11 @@ mod activation_anchoring_tests {
         std::fs::create_dir_all(&vendor)?;
         std::fs::write(vendor.join("Dancer2.pm"), stub_module("1.300.0"))?;
 
-        let server = server_with_folders(&[(&ws, Some(isolated_workspace_config()))]);
+        let server = server_with_folders(&[(&ws, Some(isolated_workspace_config()))])?;
         let doc = ws.join("bin").join("app.pl");
         let source = "use Dancer2;\nuse lib 'vendor';\nuse Dancer2;\n";
 
-        let context = request_context(&server, &doc, source);
+        let context = request_context(&server, &doc, source)?;
 
         assert!(
             context.activations.module.is_none(),
