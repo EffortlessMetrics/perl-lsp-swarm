@@ -28,8 +28,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BoundaryLink, EntityId, FactId, FileId, ScopeId, SemanticConfidence, SemanticProvenance,
-    SemanticReasonCode, SourceAnchor, SourceGeneration,
+    BoundaryKind, BoundaryLink, EntityId, FactId, FileId, ScopeId, SemanticConfidence,
+    SemanticProvenance, SemanticReasonCode, SourceAnchor, SourceGeneration,
 };
 
 /// `call_application_subject.v1` schema version.
@@ -1126,6 +1126,38 @@ impl EffectRef {
     }
 }
 
+/// One provenance edge from the packet to an observed boundary SITE, in
+/// source order.
+///
+/// Distinct from the envelope's `referenced_boundaries`: that set dedups by
+/// semantic boundary identity (correct — equivalent facts share identity),
+/// while `boundary_sites` retains every provenance edge (the issue's
+/// identity/normalization law). Two `eval` sites with the same boundary kind
+/// dedup to one envelope link but keep two site records with their own
+/// anchors.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoundarySiteRef {
+    /// Boundary category observed at this site.
+    pub kind: BoundaryKind,
+    /// Identity of the boundary site fact.
+    pub source: CallableFactRef,
+    /// Source anchor of the site, when source-backed.
+    pub anchor: Option<SourceAnchor>,
+}
+
+impl BoundarySiteRef {
+    /// Construct one boundary site reference.
+    #[must_use]
+    pub const fn new(
+        kind: BoundaryKind,
+        source: CallableFactRef,
+        anchor: Option<SourceAnchor>,
+    ) -> Self {
+        Self { kind, source, anchor }
+    }
+}
+
 /// Bounded work accounting for one summary. The work law: zero useful
 /// visited operations can never satisfy a required summary.
 #[non_exhaustive]
@@ -1218,13 +1250,18 @@ pub struct CallableSemanticSummary {
     pub effects: Vec<EffectRef>,
     /// Outbound call dependencies in source (lowered) order.
     pub outbound_calls: Vec<OutboundCallDependency>,
+    /// Every observed boundary site in source order — the per-site
+    /// provenance record. The envelope's `referenced_boundaries` dedups by
+    /// semantic boundary identity; this list keeps each edge.
+    pub boundary_sites: Vec<BoundarySiteRef>,
     /// Work accounting for this summary.
     pub work: SummaryWorkLedger,
 }
 
 impl CallableSemanticSummary {
     /// Construct one packet. Source-ordered lists (`result_exits`,
-    /// `bindings`, `effects`, `outbound_calls`) are preserved verbatim;
+    /// `bindings`, `effects`, `outbound_calls`, `boundary_sites`) are
+    /// preserved verbatim;
     /// canonical ordering applies to identity sets (enforced by
     /// [`CallableSemanticSummaryRef::new`] and
     /// [`OutboundCallDependency::new`]) and is checked fail-closed by
@@ -1243,6 +1280,7 @@ impl CallableSemanticSummary {
         bindings: Vec<BindingPlaceRef>,
         effects: Vec<EffectRef>,
         outbound_calls: Vec<OutboundCallDependency>,
+        boundary_sites: Vec<BoundarySiteRef>,
         work: SummaryWorkLedger,
     ) -> Self {
         Self {
@@ -1258,6 +1296,7 @@ impl CallableSemanticSummary {
             bindings,
             effects,
             outbound_calls,
+            boundary_sites,
             work,
         }
     }
@@ -1354,6 +1393,19 @@ impl CallableSemanticSummary {
                     entry.facet, entry.missing, entry.outbound_dependencies
                 ));
             }
+        }
+        // Boundary provenance: the Boundary facet's ledger count must agree
+        // with the packet's site record — never a deduped or dropped count.
+        if let Some(entry) =
+            self.facets.iter().find(|entry| entry.facet == SummaryFacetKind::Boundary)
+            && entry.selected as usize != self.boundary_sites.len()
+        {
+            violations.push(format!(
+                "Boundary facet selected {} disagrees with {} recorded boundary sites \
+                 (site/ledger mismatch)",
+                entry.selected,
+                self.boundary_sites.len()
+            ));
         }
         // Outbound dependencies: never pure/empty/non-throwing. Every
         // dependency names a non-empty canonically ordered blocked set, and

@@ -590,6 +590,11 @@ fn summary_packet() -> CallableSemanticSummary {
             vec![SummaryFacetKind::Effect, SummaryFacetKind::Result],
             CallResolution::UnresolvedTransitive,
         )],
+        boundary_sites: vec![BoundarySiteRef::new(
+            BoundaryKind::DynamicValue,
+            CallableFactRef::HirItem(9),
+            Some(anchor()),
+        )],
         work: SummaryWorkLedger {
             planned_callables: 1,
             visited_callables: 1,
@@ -801,4 +806,25 @@ fn falsifier_summary_schema_and_anchor_guards() {
     let mut packet = summary_packet();
     packet.callable_name = Some(String::new());
     assert!(packet.validate().is_err());
+}
+
+#[test]
+fn falsifier_boundary_site_ledger_mismatch() {
+    // The Boundary facet's ledger must agree with the packet's site record:
+    // deduped or dropped provenance is a validation violation.
+    let mut packet = summary_packet();
+    assert!(packet.validate().is_ok(), "fixture: one site, selected=1");
+    packet.boundary_sites = vec![];
+    let violations = must_err(packet.validate());
+    assert!(violations.iter().any(|v| v.contains("site/ledger mismatch")));
+
+    // Two sites with a deduped count of one is equally dishonest.
+    let mut packet = summary_packet();
+    packet.boundary_sites.push(BoundarySiteRef::new(
+        BoundaryKind::DynamicValue,
+        CallableFactRef::HirItem(11),
+        Some(anchor()),
+    ));
+    let violations = must_err(packet.validate());
+    assert!(violations.iter().any(|v| v.contains("site/ledger mismatch")));
 }

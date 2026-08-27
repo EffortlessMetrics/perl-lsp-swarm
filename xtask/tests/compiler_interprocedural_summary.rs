@@ -46,9 +46,16 @@ fn compiler_interprocedural_summary_contract_lives_in_semantic_facts()
         "pub enum EffectKind",
         "pub struct EffectRef",
         "pub struct SummaryWorkLedger",
+        "pub struct BoundarySiteRef",
     ] {
         assert!(module.contains(ty), "missing packet contract type: {ty}");
     }
+    // The packet retains per-site boundary provenance, distinct from the
+    // envelope's deduped referenced boundary identity set.
+    assert!(
+        module.contains("boundary_sites: Vec<BoundarySiteRef>"),
+        "the packet must retain per-site boundary provenance"
+    );
     // The packet carries its own fail-closed validation seam (the module now
     // has at least four `validate()` implementations: subject, ref, result,
     // packet).
@@ -123,6 +130,7 @@ fn compiler_interprocedural_summary_falsifier_coverage() -> Result<(), Box<dyn s
         "falsifier_zero_work_summary",
         "falsifier_summary_ordering",
         "falsifier_summary_stale_reuse",
+        "falsifier_boundary_site_ledger_mismatch",
     ] {
         assert!(contract_tests.contains(falsifier), "missing contract falsifier test: {falsifier}");
     }
@@ -140,6 +148,10 @@ fn compiler_interprocedural_summary_falsifier_coverage() -> Result<(), Box<dyn s
         "deterministic",
         "privacy",
         "accounted",
+        "goto",
+        "poison_pairing",
+        "boundary_sites",
+        "content_sensitive",
     ] {
         assert!(analyzer_tests.contains(class), "missing assembler falsifier class: {class}");
     }

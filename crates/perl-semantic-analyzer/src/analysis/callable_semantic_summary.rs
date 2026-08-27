@@ -58,10 +58,10 @@ use perl_parser_core::hir::{
 };
 use perl_parser_core::pir::{PirNode, PirOperation, lower_single_body};
 use perl_semantic_facts::interprocedural::{
-    BindingPlaceRef, BodyIdentity, CallResolution, CallableFactRef, CallableSemanticSummary,
-    CallableSemanticSummaryRef, ClaimCeiling, CompositionPolicy, EffectKind, EffectRef,
-    FacetCompleteness, OutboundCallDependency, OutboundCallee, PlaceRole, PrivacyClass,
-    RefusalCeiling, ResultExitKind, ResultExitRef, ResultFacets, SummaryCurrentness,
+    BindingPlaceRef, BodyIdentity, BoundarySiteRef, CallResolution, CallableFactRef,
+    CallableSemanticSummary, CallableSemanticSummaryRef, ClaimCeiling, CompositionPolicy,
+    EffectKind, EffectRef, FacetCompleteness, OutboundCallDependency, OutboundCallee, PlaceRole,
+    PrivacyClass, RefusalCeiling, ResultExitKind, ResultExitRef, ResultFacets, SummaryCurrentness,
     SummaryFacetKind, SummaryFacetStatus, SummaryWorkLedger, WorkBudget,
 };
 use perl_semantic_facts::semantic_identity::SemanticIdentityFingerprint;
@@ -157,25 +157,47 @@ pub fn assemble_callable_summaries(
 ) -> CallableSummaryAssembly {
     let decls = collect_callable_decls(file);
     let mut assembly = CallableSummaryAssembly::default();
-    // Per-(kind, name) occurrence cursors pair each declaration with its
-    // body. Both sequences are depth-first source order, so the k-th
-    // declaration with a given (kind, name) owns the k-th matching body.
-    let mut body_cursor = std::collections::BTreeMap::<(bool, Option<String>), usize>::new();
     let callable_bodies = collect_callable_bodies(file);
 
     for decl in &decls {
-        let key = (decl.is_method, decl.name.clone());
-        let occurrence = body_cursor.entry(key.clone()).or_insert(0);
-        let body = callable_bodies.get(&key).and_then(|bodies| bodies.get(*occurrence));
-        *occurrence += 1;
-        match body {
-            Some(&(body_idx, body)) => {
-                assemble_one(file, ctx, decl, body_idx, body, &mut assembly);
+        // Range-containment pairing (order-independent by construction): a
+        // declaration owns the body whose owner matches AND whose root-block
+        // range is enclosed in the declaration's range. A declaration whose
+        // body was never lowered (e.g. a signature-default anonymous sub)
+        // finds zero candidates — it blocks honestly without shifting any
+        // other declaration's pairing.
+        let decl_range = normalize_range(decl.item.range);
+        let mut candidates: Vec<(usize, &HirBody)> = callable_bodies
+            .iter()
+            .filter(|(_, body)| {
+                owner_matches(body, decl.is_method, &decl.name)
+                    && body
+                        .source_map
+                        .block_range(body.root_block)
+                        .map(normalize_range)
+                        .is_some_and(|root| {
+                            decl_range.start <= root.start && root.end <= decl_range.end
+                        })
+            })
+            .map(|(body_idx, body)| (*body_idx, *body))
+            .collect();
+        match candidates.len() {
+            1 => {
+                let (body_idx, body) = candidates.remove(0);
+                assemble_one(file, ctx, decl, decl_range, body_idx, body, &mut assembly);
             }
-            None => assembly.blockers.push(AssemblyBlocker {
+            0 => assembly.blockers.push(AssemblyBlocker {
                 callable_name: decl.name.clone(),
                 body_idx: usize::MAX,
-                reason: "declaration has no lowerable body in the HIR body arena".to_string(),
+                reason: "declaration has no lowerable body enclosed in its range".to_string(),
+            }),
+            n => assembly.blockers.push(AssemblyBlocker {
+                callable_name: decl.name.clone(),
+                body_idx: usize::MAX,
+                reason: format!(
+                    "ambiguous declaration/body pairing: {n} candidate bodies enclosed in the \
+                     declaration range (fail closed, never guess)"
+                ),
             }),
         }
     }
@@ -221,22 +243,23 @@ fn collect_callable_decls<'a>(file: &'a HirFile) -> Vec<CallableDecl<'a>> {
         .collect()
 }
 
-/// Collect callable bodies grouped by (is_method, name), each group in
-/// stable source order, paired with the body's arena index.
-fn collect_callable_bodies(
-    file: &HirFile,
-) -> std::collections::BTreeMap<(bool, Option<String>), Vec<(usize, &HirBody)>> {
-    let mut groups: std::collections::BTreeMap<(bool, Option<String>), Vec<(usize, &HirBody)>> =
-        std::collections::BTreeMap::new();
-    for (body_idx, body) in file.bodies.iter().enumerate() {
-        let key = match &body.owner {
-            BodyOwnerKind::Subroutine { name } => (false, name.clone()),
-            BodyOwnerKind::Method { name } => (true, Some(name.clone())),
-            BodyOwnerKind::ProgramRoot => continue,
-        };
-        groups.entry(key).or_default().push((body_idx, body));
+/// Collect callable bodies (subroutine and method owners) with their arena
+/// indices, in body-arena order.
+fn collect_callable_bodies(file: &HirFile) -> Vec<(usize, &HirBody)> {
+    file.bodies
+        .iter()
+        .enumerate()
+        .filter(|(_, body)| !matches!(body.owner, BodyOwnerKind::ProgramRoot))
+        .collect()
+}
+
+/// Whether a body's owner matches a declaration's (kind, name) identity.
+fn owner_matches(body: &HirBody, is_method: bool, name: &Option<String>) -> bool {
+    match (&body.owner, is_method) {
+        (BodyOwnerKind::Subroutine { name: owner }, false) => owner == name,
+        (BodyOwnerKind::Method { name: owner }, true) => &Some(owner.clone()) == name,
+        _ => false,
     }
-    groups
 }
 
 /// The innermost callable (`Subroutine`/`Method`) scope enclosing `start`,
@@ -259,6 +282,7 @@ fn assemble_one(
     file: &HirFile,
     ctx: &SummaryAssemblyContext,
     decl: &CallableDecl<'_>,
+    decl_range: perl_parser_core::SourceLocation,
     body_idx: usize,
     body: &HirBody,
     assembly: &mut CallableSummaryAssembly,
@@ -278,34 +302,23 @@ fn assemble_one(
         block("declaration has no scope identity; outbound calls cannot be attributed");
         return;
     };
-    // Declaration/body join check: the declaration range must enclose the
-    // body root block range. A failed join is a blocker, never a guessed
-    // pairing. Ranges are normalized because parser recovery can emit
-    // degenerate spans.
-    let decl_range = normalize_range(decl.item.range);
-    let body_range = body.source_map.block_range(body.root_block).map(normalize_range);
-    let joins = match body_range {
-        Some(body_range) => {
-            decl_range.start <= body_range.start && body_range.end <= decl_range.end
-        }
-        None => false,
-    };
-    if !joins {
-        block("declaration/body join failed: the declaration range does not enclose the body");
-        return;
-    }
 
     let nodes = lower_single_body(body, perl_parser_core::hir::HirBodyId(body_idx as u32), file);
     let outbound = collect_outbound(file, ctx, decl_scope);
+    let unmodeled = count_unmodeled(body);
     // The work law: zero useful visited operations can never satisfy a
-    // summary. Visited operations are the per-body PIR nodes plus the
-    // attributed flat call/boundary items this callable owns.
-    if nodes.is_empty() && outbound.items_visited == 0 {
+    // summary. Visited operations are the per-body PIR nodes, the attributed
+    // flat items this callable owns, and the unmodeled body expressions the
+    // assembler walked and declared missing. A genuinely empty body (no
+    // nodes, no items, no expressions) is the only zero-work shape.
+    let visited_ops =
+        (nodes.len() as u32).saturating_add(outbound.items_visited).saturating_add(unmodeled);
+    if visited_ops == 0 {
         block("body lowered to zero PIR nodes: zero useful work can never satisfy a summary");
         return;
     }
 
-    let packet = build_packet(ctx, decl, decl_range, body_idx, body, &nodes, outbound);
+    let packet = build_packet(ctx, decl, decl_range, body_idx, body, &nodes, outbound, unmodeled);
     assembly.summaries.push(packet);
 }
 
@@ -413,15 +426,29 @@ fn callable_entity_id(
 }
 
 /// Content identity of one callable body: a canonical fingerprint over the
-/// caller-supplied file body identity, the body index, and the lowered
-/// operation sequence (operation families and anchors in lowering order).
-fn body_identity(ctx: &SummaryAssemblyContext, body_idx: usize, nodes: &[PirNode]) -> BodyIdentity {
+/// caller-supplied file body identity, the body index, the lowered operation
+/// sequence (operation families and anchors in lowering order), and the
+/// outbound joins — each dependency's callee shape and anchor and each
+/// boundary site's kind and anchor, in source order. A changed call target
+/// or boundary site is a different body.
+fn body_identity(
+    ctx: &SummaryAssemblyContext,
+    body_idx: usize,
+    nodes: &[PirNode],
+    outbound_calls: &[OutboundCallDependency],
+    boundary_sites: &[BoundarySiteRef],
+) -> BodyIdentity {
     let mut fingerprint = SemanticIdentityFingerprint::new("callable-body-v1")
         .field("document", &ctx.document.0.to_string())
         .field("body", &body_idx.to_string());
     if let BodyIdentity::Exact(file_identity) = &ctx.body {
         fingerprint = fingerprint.field("file-body", file_identity);
     }
+    let anchor_text = |anchor: &Option<SourceAnchor>| {
+        anchor
+            .map(|anchor| format!("{}:{}", anchor.start_byte, anchor.end_byte))
+            .unwrap_or_else(|| "none".to_string())
+    };
     for node in nodes {
         fingerprint = fingerprint.field("op", node.operation.name()).field(
             "op-anchor",
@@ -432,15 +459,33 @@ fn body_identity(ctx: &SummaryAssemblyContext, body_idx: usize, nodes: &[PirNode
                 .unwrap_or_else(|| "none".to_string()),
         );
     }
+    for dependency in outbound_calls {
+        let callee = match &dependency.callee {
+            OutboundCallee::Named(name) => format!("named:{name}"),
+            OutboundCallee::Dynamic(_) => "dynamic".to_string(),
+            // Unknown and any future callee shape: conservative identity.
+            _ => "unknown".to_string(),
+        };
+        fingerprint = fingerprint
+            .field("call", &callee)
+            .field("call-anchor", &anchor_text(&dependency.anchor));
+    }
+    for site in boundary_sites {
+        fingerprint = fingerprint
+            .field("boundary", &format!("{:?}", site.kind))
+            .field("boundary-anchor", &anchor_text(&site.anchor));
+    }
     BodyIdentity::Exact(fingerprint.finish())
 }
 
 /// Record one method-call-shaped outbound dependency. A bareword/identifier
 /// receiver (`Foo->bar`) is the static class-call shape; any other receiver
-/// makes dispatch receiver-dependent, a dynamic boundary that also blocks
-/// Control.
+/// makes dispatch receiver-dependent — a dynamic boundary site that also
+/// blocks Control. An unresolved call is never "non-throwing": Exception is
+/// always blocked.
 fn push_method_call(
     outbound_calls: &mut Vec<OutboundCallDependency>,
+    boundary_sites: &mut Vec<BoundarySiteRef>,
     reference: CallableFactRef,
     anchor: Option<SourceAnchor>,
     method: &str,
@@ -452,37 +497,52 @@ fn push_method_call(
             reference,
             anchor,
             OutboundCallee::Named(method.to_string()),
-            vec![SummaryFacetKind::Result, SummaryFacetKind::Effect],
+            vec![SummaryFacetKind::Result, SummaryFacetKind::Effect, SummaryFacetKind::Exception],
             CallResolution::UnresolvedTransitive,
         ));
     } else {
+        // The dynamic-dispatch call site is itself one boundary site.
+        boundary_sites.push(BoundarySiteRef::new(dynamic_link.kind, reference.clone(), anchor));
         outbound_calls.push(OutboundCallDependency::new(
             reference,
             anchor,
             OutboundCallee::Dynamic(dynamic_link.clone()),
-            vec![SummaryFacetKind::Result, SummaryFacetKind::Effect, SummaryFacetKind::Control],
+            vec![
+                SummaryFacetKind::Result,
+                SummaryFacetKind::Effect,
+                SummaryFacetKind::Exception,
+                SummaryFacetKind::Control,
+            ],
             CallResolution::UnresolvedTransitive,
         ));
     }
 }
 
-/// Outbound calls and dynamic boundaries joined from the canonical flat HIR
-/// items for one callable.
+/// Outbound joins from the canonical flat HIR items for one callable.
 struct OutboundJoin {
     /// Outbound call dependencies in item (source) order.
     calls: Vec<OutboundCallDependency>,
     /// Boundary links observed inside the callable (including dynamic-callee
     /// links); canonicalized by the envelope constructor.
     boundaries: Vec<BoundaryLink>,
-    /// Flat items visited for this callable (call + boundary items).
+    /// Every observed boundary site in source order — the per-site
+    /// provenance record behind `boundaries`.
+    boundary_sites: Vec<BoundarySiteRef>,
+    /// Loop-control transfers (`next`/`last`/`redo`, label `goto`) the
+    /// per-body PIR lowering does not model — declared Control evidence.
+    control_transfers: u32,
+    /// Flat items visited for this callable (call, boundary, and
+    /// control-transfer items).
     items_visited: u32,
 }
 
-/// Collect the outbound calls and dynamic boundaries one callable owns.
+/// Collect the outbound calls, dynamic boundaries, and control transfers one
+/// callable owns.
 ///
-/// The per-body PIR lowering does not model calls or dynamic boundaries;
-/// the flat HIR items do. Items are attributed to the innermost callable by
-/// scope identity and preserved in item (source) order.
+/// The per-body PIR lowering does not model calls, dynamic boundaries, or
+/// loop-control transfers; the flat HIR items carry them. Items are
+/// attributed to the innermost callable by scope identity and preserved in
+/// item (source) order.
 fn collect_outbound(
     file: &HirFile,
     ctx: &SummaryAssemblyContext,
@@ -490,9 +550,23 @@ fn collect_outbound(
 ) -> OutboundJoin {
     let mut calls: Vec<OutboundCallDependency> = Vec::new();
     let mut boundaries: Vec<BoundaryLink> = Vec::new();
+    let mut boundary_sites: Vec<BoundarySiteRef> = Vec::new();
+    let mut control_transfers = 0u32;
     let mut items_visited = 0u32;
     let dynamic_link = map_boundary_link(HirDynamicBoundaryKind::CoderefCall);
-    for item in &file.items {
+    // The named-call blocked set: an unresolved call can return anything,
+    // do anything, and throw anything — it is never "non-throwing".
+    const CALL_BLOCKS: [SummaryFacetKind; 3] =
+        [SummaryFacetKind::Result, SummaryFacetKind::Effect, SummaryFacetKind::Exception];
+    // The dynamic-call blocked set: a dynamic callee or frame-replacing
+    // transfer can additionally invalidate control.
+    const DYNAMIC_CALL_BLOCKS: [SummaryFacetKind; 4] = [
+        SummaryFacetKind::Result,
+        SummaryFacetKind::Effect,
+        SummaryFacetKind::Exception,
+        SummaryFacetKind::Control,
+    ];
+    for (item_idx, item) in file.items.iter().enumerate() {
         let attributed = item.scope_context.and_then(|scope| owning_callable_scope(file, scope))
             == Some(decl_scope);
         if !attributed {
@@ -509,23 +583,25 @@ fn collect_outbound(
                             reference,
                             anchor,
                             OutboundCallee::Named(call.name.clone()),
-                            vec![SummaryFacetKind::Result, SummaryFacetKind::Effect],
+                            CALL_BLOCKS.to_vec(),
                             CallResolution::UnresolvedTransitive,
                         ));
                     }
                     // Coderef/dynamic callee: the call can do anything,
-                    // including transferring control — Control is blocked
-                    // alongside Result/Effect.
+                    // including transferring control. The call site is one
+                    // boundary site — its HIR-emitted CoderefCall boundary
+                    // item is folded into this site (never double-counted).
                     _ => {
+                        boundary_sites.push(BoundarySiteRef::new(
+                            dynamic_link.kind,
+                            reference.clone(),
+                            anchor,
+                        ));
                         calls.push(OutboundCallDependency::new(
                             reference,
                             anchor,
                             OutboundCallee::Dynamic(dynamic_link.clone()),
-                            vec![
-                                SummaryFacetKind::Result,
-                                SummaryFacetKind::Effect,
-                                SummaryFacetKind::Control,
-                            ],
+                            DYNAMIC_CALL_BLOCKS.to_vec(),
                             CallResolution::UnresolvedTransitive,
                         ));
                     }
@@ -535,6 +611,7 @@ fn collect_outbound(
                 items_visited = items_visited.saturating_add(1);
                 push_method_call(
                     &mut calls,
+                    &mut boundary_sites,
                     reference,
                     anchor,
                     &call.method,
@@ -546,6 +623,7 @@ fn collect_outbound(
                 items_visited = items_visited.saturating_add(1);
                 push_method_call(
                     &mut calls,
+                    &mut boundary_sites,
                     reference,
                     anchor,
                     &call.method,
@@ -555,7 +633,52 @@ fn collect_outbound(
             }
             HirKind::DynamicBoundary(boundary) => {
                 items_visited = items_visited.saturating_add(1);
+                // A CoderefCall boundary item immediately followed by its
+                // coderef CallExpr (the HIR emission contract) is folded
+                // into that call's single site — skipped here, never
+                // double-counted, never silently dropped when unmatched.
+                let folded_into_call = boundary.kind == HirDynamicBoundaryKind::CoderefCall
+                    && file.items.get(item_idx + 1).is_some_and(|next| {
+                        let next_attributed =
+                            next.scope_context.and_then(|scope| owning_callable_scope(file, scope))
+                                == Some(decl_scope);
+                        next_attributed
+                            && matches!(&next.kind, HirKind::CallExpr(call)
+                                if call.form == perl_parser_core::hir::CallForm::Coderef)
+                            && normalize_range(next.range) == normalize_range(item.range)
+                    });
+                if !folded_into_call {
+                    boundary_sites.push(BoundarySiteRef::new(
+                        map_boundary_link(boundary.kind).kind,
+                        reference,
+                        anchor,
+                    ));
+                }
                 boundaries.push(map_boundary_link(boundary.kind));
+            }
+            HirKind::ControlTransfer(transfer) => {
+                items_visited = items_visited.saturating_add(1);
+                match transfer.kind {
+                    // `goto &sub` / `goto $expr` replaces the entire frame:
+                    // an outbound call whose target the ControlTransfer item
+                    // does not name (`label` records only bare-label gotos)
+                    // — Unknown, never dropped.
+                    perl_parser_core::hir::ControlTransferKind::Goto
+                        if transfer.label.is_none() =>
+                    {
+                        calls.push(OutboundCallDependency::new(
+                            reference,
+                            anchor,
+                            OutboundCallee::Unknown,
+                            DYNAMIC_CALL_BLOCKS.to_vec(),
+                            CallResolution::UnresolvedTransitive,
+                        ));
+                    }
+                    // Label `goto`, `next`, `last`, `redo`: not outbound
+                    // calls, but control evidence the per-body PIR lowering
+                    // does not model — declared against the Control facet.
+                    _ => control_transfers = control_transfers.saturating_add(1),
+                }
             }
             _ => {}
         }
@@ -567,7 +690,7 @@ fn collect_outbound(
             boundaries.push(link.clone());
         }
     }
-    OutboundJoin { calls, boundaries, items_visited }
+    OutboundJoin { calls, boundaries, boundary_sites, control_transfers, items_visited }
 }
 
 /// Build the packet for one callable whose body lowered to `nodes`.
@@ -579,6 +702,7 @@ fn build_packet(
     body: &HirBody,
     nodes: &[PirNode],
     outbound: OutboundJoin,
+    unmodeled: u32,
 ) -> CallableSemanticSummary {
     let body_idx_u32 = body_idx as u32;
     let op_ref = |node: &PirNode| CallableFactRef::PirOp {
@@ -668,14 +792,19 @@ fn build_packet(
     result_exits.push(ResultExitRef::new(ResultExitKind::ImplicitFallthrough, None, None));
 
     // ── Outbound calls and boundaries (joined by scope identity) ─────────
-    let OutboundJoin { calls: outbound_calls, boundaries, items_visited } = outbound;
+    let OutboundJoin {
+        calls: outbound_calls,
+        boundaries,
+        boundary_sites,
+        control_transfers,
+        items_visited,
+    } = outbound;
 
     // ── Facet ledger (completeness is facet-specific and declared) ───────
-    let unmodeled = count_unmodeled(body);
     let n_returns = result_exits.len().saturating_sub(1) as u32;
     let n_bindings = bindings.len() as u32;
     let n_effects = effects.len() as u32;
-    let n_boundaries = boundaries.len() as u32;
+    let n_sites = boundary_sites.len() as u32;
     let n_outbound = outbound_calls.len() as u32;
     let blocking = |facet: SummaryFacetKind| {
         outbound_calls
@@ -683,7 +812,7 @@ fn build_packet(
             .filter(|dependency| dependency.blocked_facets.contains(&facet))
             .count() as u32
     };
-    let has_boundary = !boundaries.is_empty();
+    let has_boundary = !boundary_sites.is_empty();
     let limited = SummaryFacetStatus::Limited;
     let complete = SummaryFacetStatus::Complete;
 
@@ -785,16 +914,17 @@ fn build_packet(
             blocking(SummaryFacetKind::Exception),
         ),
         // Branch/Loop conditions are populated by later control-flow
-        // lowering; no CFG exists, so Control is always Limited with the gap
-        // declared.
+        // lowering; no CFG exists, and loop-control transfers
+        // (next/last/redo/label-goto) are unmodeled by the per-body PIR
+        // lowering — Control is always Limited with both gaps declared.
         FacetCompleteness::new(
             SummaryFacetKind::Control,
             limited,
-            branch_loop_ops,
+            branch_loop_ops.saturating_add(control_transfers),
             modeled_conditions,
             0,
             u32::from(branch_loop_ops == 0),
-            branch_loop_ops.saturating_sub(modeled_conditions),
+            branch_loop_ops.saturating_sub(modeled_conditions).saturating_add(control_transfers),
             blocking(SummaryFacetKind::Control),
         ),
         // Every admitted callable is a runtime callable: phase blocks own no
@@ -810,13 +940,14 @@ fn build_packet(
             0,
             0,
         ),
-        // Every observed boundary item is represented in the packet.
+        // Every observed boundary site is represented in the packet; the
+        // ledger counts the site record, never the deduped link set.
         FacetCompleteness::new(
             SummaryFacetKind::Boundary,
             complete,
-            n_boundaries,
-            n_boundaries,
-            n_boundaries,
+            n_sites,
+            n_sites,
+            n_sites,
             0,
             0,
             0,
@@ -836,9 +967,16 @@ fn build_packet(
     ];
 
     // ── Envelope and packet ──────────────────────────────────────────────
-    // Visited operations: per-body PIR nodes plus the attributed flat
-    // call/boundary items (the work law counts both).
-    let visited_ops = (nodes.len() as u32).saturating_add(items_visited);
+    // Work accounting: planned operations are the body's statement and
+    // expression arena nodes plus the attributed flat items (everything the
+    // lowering set out to model); visited operations are the PIR nodes
+    // emitted, the flat items joined, and the unmodeled expressions walked
+    // and declared missing. Dropped expressions show up as visited <
+    // planned — planned is never fabricated equal to visited.
+    let planned_ops = (body.exprs.len() as u32)
+        .saturating_add(body.stmts.len() as u32)
+        .saturating_add(items_visited);
+    let visited_ops = (nodes.len() as u32).saturating_add(items_visited).saturating_add(unmodeled);
     let all_complete = facets.iter().all(|entry| entry.status == SummaryFacetStatus::Complete);
     let currentness = if ctx.source_generation.is_known() {
         SummaryCurrentness::Fresh(ctx.source_generation.clone())
@@ -863,7 +1001,7 @@ fn build_packet(
     let mut packet = CallableSemanticSummary::new(
         entity,
         decl.name.clone(),
-        body_identity(ctx, body_idx, nodes),
+        body_identity(ctx, body_idx, nodes, &outbound_calls, &boundary_sites),
         ctx.source_generation.clone(),
         to_anchor(decl_range, ctx.document),
         summary_ref,
@@ -872,7 +1010,8 @@ fn build_packet(
         bindings,
         effects,
         outbound_calls,
-        SummaryWorkLedger::new(1, 1, visited_ops, visited_ops, visited_ops, 0),
+        boundary_sites,
+        SummaryWorkLedger::new(1, 1, planned_ops, visited_ops, visited_ops, 0),
     );
     // Canonical byte size of the packet (serialized with a zero ledger
     // field, then recorded — the field documents its own zero-filled

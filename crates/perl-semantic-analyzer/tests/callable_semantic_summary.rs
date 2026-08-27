@@ -406,3 +406,142 @@ fn callable_semantic_summary_parse_failure_is_an_explicit_error() -> TestResult 
     }
     Ok(())
 }
+
+/// `goto &sub` replaces the frame: it is an outbound dependency, never a
+/// pure/complete callable (R1).
+#[test]
+fn callable_semantic_summary_goto_is_an_outbound_dependency() -> TestResult {
+    let assembly = assemble("sub f { my $x = 1; goto &g; }", "gen-1")?;
+    let packet = only_summary(&assembly)?;
+    packet.validate().map_err(|v| format!("packet must validate: {v:?}"))?;
+
+    assert!(
+        !packet.outbound_calls.is_empty(),
+        "goto &g must be recorded as an outbound dependency"
+    );
+    let goto = &packet.outbound_calls[0];
+    // The ControlTransfer item does not name the `&sub` target — Unknown,
+    // never dropped, never guessed.
+    assert_eq!(goto.callee, OutboundCallee::Unknown);
+    assert_eq!(goto.resolution, CallResolution::UnresolvedTransitive);
+    for facet in [SummaryFacetKind::Result, SummaryFacetKind::Effect, SummaryFacetKind::Control] {
+        assert!(
+            goto.blocked_facets.contains(&facet),
+            "a frame-replacing goto must block {facet:?}: {:?}",
+            goto.blocked_facets
+        );
+        assert_ne!(
+            facet_status(packet, facet)?,
+            SummaryFacetStatus::Complete,
+            "{facet:?} must not be Complete while a goto blocks it"
+        );
+    }
+    let outbound_facet = packet
+        .facets
+        .iter()
+        .find(|entry| entry.facet == SummaryFacetKind::OutboundCall)
+        .ok_or("OutboundCall facet missing")?;
+    assert!(outbound_facet.selected >= 1, "the goto is counted in the OutboundCall facet");
+    Ok(())
+}
+
+/// Loop-control transfers are declared Control evidence, never silently
+/// control-complete (R1, second half).
+#[test]
+fn callable_semantic_summary_loop_control_is_declared_control_evidence() -> TestResult {
+    let assembly = assemble("sub f { for (1) { last; } }", "gen-1")?;
+    let packet = only_summary(&assembly)?;
+    packet.validate().map_err(|v| format!("packet must validate: {v:?}"))?;
+    let control = packet
+        .facets
+        .iter()
+        .find(|entry| entry.facet == SummaryFacetKind::Control)
+        .ok_or("Control facet missing")?;
+    assert_eq!(control.status, SummaryFacetStatus::Limited);
+    assert!(control.missing >= 1, "the `last` transfer must be declared missing evidence");
+    Ok(())
+}
+
+/// A signature-default anonymous sub has no body of its own; it must not
+/// shift the pairing of a later anonymous sub onto a false blocker (R2).
+#[test]
+fn callable_semantic_summary_signature_default_does_not_poison_pairing() -> TestResult {
+    let assembly = assemble("sub f ($g = sub { 1 }) { 2 } my $h = sub { 3 };", "gen-1")?;
+    assert_eq!(assembly.summaries.len(), 2, "f and the $h anonymous sub: {assembly:?}");
+    assert_eq!(assembly.blockers.len(), 1, "the signature-default anon gets an honest blocker");
+    assert!(
+        assembly.blockers[0].reason.contains("no lowerable body"),
+        "blocker names the missing body: {}",
+        assembly.blockers[0].reason
+    );
+    assert_eq!(assembly.blockers[0].callable_name, None);
+
+    let f = assembly
+        .summaries
+        .iter()
+        .find(|packet| packet.callable_name.as_deref() == Some("f"))
+        .ok_or("f must be summarized")?;
+    f.validate().map_err(|v| format!("f packet must validate: {v:?}"))?;
+    // f has a signature: parameter binding is Limited (declared), not
+    // NotProven.
+    assert_eq!(facet_status(f, SummaryFacetKind::ParameterBinding)?, SummaryFacetStatus::Limited);
+
+    let anon = assembly
+        .summaries
+        .iter()
+        .find(|packet| packet.callable_name.is_none())
+        .ok_or("the $h anonymous sub must be summarized")?;
+    anon.validate().map_err(|v| format!("anon packet must validate: {v:?}"))?;
+    Ok(())
+}
+
+/// Two `eval` sites keep two provenance records with distinct anchors even
+/// though the envelope dedups their boundary identity to one link (R3).
+#[test]
+fn callable_semantic_summary_boundary_sites_keep_provenance() -> TestResult {
+    let assembly = assemble("sub f { my $x = 1; eval \"a\"; eval \"b\"; }", "gen-1")?;
+    let packet = only_summary(&assembly)?;
+    packet.validate().map_err(|v| format!("packet must validate: {v:?}"))?;
+
+    assert_eq!(packet.boundary_sites.len(), 2, "each eval site keeps its provenance edge");
+    let first = &packet.boundary_sites[0];
+    let second = &packet.boundary_sites[1];
+    assert_ne!(
+        first.anchor, second.anchor,
+        "distinct sites carry distinct anchors: {first:?} vs {second:?}"
+    );
+    assert!(matches!(first.source, CallableFactRef::HirItem(_)));
+    // The Boundary facet counts sites, not deduped links.
+    let boundary = packet
+        .facets
+        .iter()
+        .find(|entry| entry.facet == SummaryFacetKind::Boundary)
+        .ok_or("Boundary facet missing")?;
+    assert_eq!(boundary.selected, 2);
+    // The envelope still dedups by semantic boundary identity — correct,
+    // and now visibly distinct from the site record.
+    assert_eq!(packet.summary_ref.referenced_boundaries.len(), 1);
+    Ok(())
+}
+
+/// Body identity is content-sensitive: a changed call target or a changed
+/// boundary-site set is a different body (R4).
+#[test]
+fn callable_semantic_summary_body_identity_is_content_sensitive() -> TestResult {
+    let g = only_summary(&assemble("sub f { g(1) }", "gen-1")?)?.body.clone();
+    let h = only_summary(&assemble("sub f { h(1) }", "gen-1")?)?.body.clone();
+    assert_ne!(g, h, "a changed call target is a different body");
+
+    let one_eval =
+        only_summary(&assemble("sub f { my $x = 1; eval \"a\"; }", "gen-1")?)?.body.clone();
+    let two_evals =
+        only_summary(&assemble("sub f { my $x = 1; eval \"a\"; eval \"b\"; }", "gen-1")?)?
+            .body
+            .clone();
+    assert_ne!(one_eval, two_evals, "a changed boundary-site set is a different body");
+
+    // Control: identical input keeps an identical body identity.
+    let g_again = only_summary(&assemble("sub f { g(1) }", "gen-1")?)?.body.clone();
+    assert_eq!(g, g_again);
+    Ok(())
+}
