@@ -137,36 +137,61 @@ fn public_api_job_runs(section: &str, event: &str, labels: &[&str]) -> bool {
     }
 }
 
-fn pull_request_labeled_trigger_is_configured(workflow: &str) -> bool {
+fn pull_request_activity_types(workflow: &str) -> Option<Vec<&str>> {
     let Some(on) = workflow.split_once("\non:").map(|(_, rest)| rest) else {
-        return false;
+        return None;
     };
     let Some((pull_request, _)) = on.split_once("\n  schedule:") else {
-        return false;
+        return None;
     };
-    pull_request.lines().any(|line| {
+    pull_request.lines().find_map(|line| {
         let trimmed = line.trim();
         let Some(values) = trimmed.strip_prefix("types:").map(str::trim) else {
-            return false;
+            return None;
         };
         let Some(values) = values.strip_prefix('[').and_then(|values| values.strip_suffix(']'))
         else {
-            return false;
+            return None;
         };
-        values
-            .split(',')
-            .map(str::trim)
-            .map(|value| value.trim_matches(['\'', '"']))
-            .any(|value| value == "labeled")
+        Some(
+            values.split(',').map(str::trim).map(|value| value.trim_matches(['\'', '"'])).collect(),
+        )
     })
 }
+
+const PUBLIC_API_POLICY_INPUTS: [&str; 7] = [
+    "justfile",
+    "docs/ci/labels.md",
+    ".github/ci-config.yml",
+    "scripts/gh/ensure-labels.sh",
+    "scripts/tests/test-public-api-ratchet.sh",
+    "scripts/tests/test-public-api-label.sh",
+    "xtask/tests/public_api_pr_gating_workflow.rs",
+];
 
 fn workflow_policy_covers_public_api_inputs(workflow: &str) -> bool {
     workflow.matches("  pull_request:").count() == 1
         && workflow.matches("  push:").count() == 1
-        && workflow.matches("      - 'justfile'").count() == 2
-        && workflow.matches("      - 'docs/ci/labels.md'").count() == 2
-        && workflow.matches("      - 'scripts/tests/test-public-api-ratchet.sh'").count() == 2
+        && PUBLIC_API_POLICY_INPUTS
+            .iter()
+            .all(|path| workflow.matches(&format!("      - '{path}'")).count() == 2)
+        && workflow.matches("name: Install just for executable recipe proofs").count() == 1
+        && workflow.matches("uses: taiki-e/install-action@").count() == 1
+        && workflow.matches("name: Public API trigger label contract").count() == 1
+        && workflow
+            .matches("run: cargo test -p xtask --test public_api_pr_gating_workflow --locked")
+            .count()
+            == 1
+        && workflow.matches("name: Public API label reconciliation stub proof").count() == 1
+        && workflow.matches("run: bash scripts/tests/test-public-api-label.sh").count() == 1
+        && workflow.matches("name: Public API ratchet executable proof").count() == 1
+        && workflow.matches("run: bash scripts/tests/test-public-api-ratchet.sh").count() == 1
+}
+
+fn job_timeout_minutes(section: &str) -> Option<u64> {
+    section
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("timeout-minutes:")?.trim().parse().ok())
 }
 
 #[test]
@@ -403,27 +428,61 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
 {
     let root = project_root()?;
     let nightly = read(&root, ".github/workflows/ci-nightly.yml")?;
-    assert!(
-        pull_request_labeled_trigger_is_configured(&nightly),
-        "label application must dispatch the pull-request workflow"
-    );
+    let activities = pull_request_activity_types(&nightly)
+        .ok_or("ci-nightly.yml must declare pull_request activity types")?;
+    let expected_activities = ["opened", "synchronize", "reopened", "ready_for_review", "labeled"];
+    if activities != expected_activities {
+        return Err(format!(
+            "public API label authorization must use the bounded activity set; got {activities:?}"
+        )
+        .into());
+    }
+    if !nightly.contains(
+        "group: ci-nightly-${{ github.event.pull_request.number || github.ref }}",
+    ) || !nightly.contains(
+        "cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}",
+    ) {
+        return Err(
+            "nightly concurrency must bind one PR and cancel stale-head work only on synchronize"
+                .into(),
+        );
+    }
+    if !nightly.contains("\npermissions:\n  contents: read\n") {
+        return Err("the label-triggered workflow must not inherit label-write authority".into());
+    }
     let without_labeled = nightly.replace(", labeled", "");
-    assert!(
-        !pull_request_labeled_trigger_is_configured(&without_labeled),
-        "removing labeled activity must fail the dispatch contract"
-    );
+    let without_labeled_activities = pull_request_activity_types(&without_labeled)
+        .ok_or("labeled-removal fixture must retain a pull_request activity list")?;
+    if without_labeled_activities.iter().any(|activity| *activity == "labeled") {
+        return Err("removing labeled activity must fail the dispatch contract".into());
+    }
     for false_positive in ["unlabeled", "labeled-extra"] {
         let fixture =
             format!("\n  pull_request:\n    types: [opened, {false_positive}]\n  schedule:\n");
-        assert!(
-            !pull_request_labeled_trigger_is_configured(&fixture),
-            "{false_positive} must not satisfy the exact labeled activity contract"
-        );
+        let fixture_activities = pull_request_activity_types(&fixture)
+            .ok_or("false-positive fixture must retain a pull_request activity list")?;
+        if fixture_activities.iter().any(|activity| *activity == "labeled") {
+            return Err(format!(
+                "{false_positive} must not satisfy the exact labeled activity contract"
+            )
+            .into());
+        }
     }
     let public_api = job_section(&nightly, "public-api-check")
         .ok_or("ci-nightly.yml must define the public-api-check job")?;
     let label = pull_request_label_gate(public_api)
         .ok_or("public-api-check must expose its pull-request label gate")?;
+    let timeout = job_timeout_minutes(public_api)
+        .ok_or("public-api-check must declare a numeric timeout-minutes")?;
+    if !public_api.contains("uses: actions/checkout@")
+        || !public_api.contains("persist-credentials: false")
+        || public_api.contains("\n          ref:")
+    {
+        return Err(
+            "public-api-check must read the immutable event SHA without credential persistence"
+                .into(),
+        );
+    }
 
     assert_eq!(label, "ci:public-api", "the public API lane owns one stable trigger label");
     assert!(public_api.contains("github.event_name == 'workflow_dispatch' ||"));
@@ -443,10 +502,14 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
         .lines()
         .find(|line| line.contains(&format!("`{label}`")))
         .ok_or_else(|| format!("{label} must be present in docs/ci/labels.md"))?;
-    assert!(
-        governed_row.contains("20-minute") && governed_row.contains("fail-closed"),
-        "the governed row must state the lane cost cap and proof intent"
-    );
+    if timeout != 20
+        || !governed_row.contains(&format!("{timeout}-minute"))
+        || !governed_row.contains("fail-closed")
+    {
+        return Err(
+            "the governed row must match the job's 20-minute cap and fail-closed intent".into()
+        );
+    }
 
     let config = read(&root, ".github/ci-config.yml")?;
     let metadata = config
@@ -475,19 +538,36 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
     );
 
     let policy = read(&root, ".github/workflows/workflow-policy.yml")?;
-    assert!(workflow_policy_covers_public_api_inputs(&policy));
-    assert!(
-        policy.contains("name: Install just for executable recipe proofs")
-            && policy.contains("uses: taiki-e/install-action@")
-            && policy.contains("name: Public API ratchet executable proof")
-            && policy.contains("run: bash scripts/tests/test-public-api-ratchet.sh"),
-        "workflow policy must execute the ratchet fixture with its required just installation"
-    );
-    let without_justfile = policy.replace("      - 'justfile'\n", "");
-    assert!(
-        !workflow_policy_covers_public_api_inputs(&without_justfile),
-        "removing justfile coverage must fail the recurrence contract"
-    );
+    if !workflow_policy_covers_public_api_inputs(&policy) {
+        return Err(
+            "workflow policy must cover and execute every public API authority input".into()
+        );
+    }
+    for input in PUBLIC_API_POLICY_INPUTS {
+        let without_input = policy.replace(&format!("      - '{input}'\n"), "");
+        if workflow_policy_covers_public_api_inputs(&without_input) {
+            return Err(
+                format!("removing {input} coverage must fail the recurrence contract").into()
+            );
+        }
+    }
+    for executable_proof in [
+        "      - name: Install just for executable recipe proofs\n",
+        "        uses: taiki-e/install-action@",
+        "      - name: Public API trigger label contract\n",
+        "        run: cargo test -p xtask --test public_api_pr_gating_workflow --locked\n",
+        "      - name: Public API label reconciliation stub proof\n",
+        "        run: bash scripts/tests/test-public-api-label.sh\n",
+        "      - name: Public API ratchet executable proof\n",
+        "        run: bash scripts/tests/test-public-api-ratchet.sh\n",
+    ] {
+        let without_proof = policy.replace(executable_proof, "");
+        if workflow_policy_covers_public_api_inputs(&without_proof) {
+            return Err(
+                "removing an executable proof step must fail the recurrence contract".into()
+            );
+        }
+    }
 
     Ok(())
 }

@@ -23,11 +23,26 @@ case "${1:-}:${2:-}" in
     exit 0
     ;;
   label:list)
-    if [[ "${FAKE_GH_MODE:-existing}" == "missing" ]]; then
-      exit 0
-    fi
-    # The existing label is intentionally stale; the script must edit it.
-    printf 'ci:public-api\n'
+    case "${FAKE_GH_MODE:-existing}" in
+      missing)
+        exit 0
+        ;;
+      api-failure)
+        printf 'simulated label API failure\n' >&2
+        exit 41
+        ;;
+      malformed)
+        printf 'simulated malformed label response\n' >&2
+        exit 42
+        ;;
+      existing)
+        # The existing label is intentionally stale; the script must edit it.
+        printf 'ci:public-api\n'
+        ;;
+      *)
+        exit 43
+        ;;
+    esac
     ;;
   label:edit)
     [[ "${3:-}" == "ci:public-api" ]] || exit 2
@@ -79,3 +94,20 @@ if [[ -e "${STATE}" ]]; then
 fi
 
 echo 'PASS missing public API label is created with governed metadata'
+
+for mode in api-failure malformed; do
+  rm -f "${LOG}" "${STATE}"
+  if PATH="${FAKE_BIN}:${PATH}" \
+    FAKE_GH_LOG="${LOG}" \
+    FAKE_GH_STATE="${STATE}" \
+    FAKE_GH_MODE="${mode}" \
+    bash "${REPO_ROOT}/scripts/gh/ensure-labels.sh" >/dev/null 2>&1; then
+    echo "FAIL ${mode} unexpectedly allowed label reconciliation" >&2
+    exit 1
+  fi
+  if [[ -e "${LOG}" || -e "${STATE}" ]]; then
+    echo "FAIL ${mode} mutated label state after unavailable evidence" >&2
+    exit 1
+  fi
+  echo "PASS ${mode} keeps label reconciliation fail-closed"
+done

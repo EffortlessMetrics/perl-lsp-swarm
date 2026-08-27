@@ -35,6 +35,13 @@ existing `ci:*` labels already used in some workflows.
 | `ci:security` / `security-audit` | Force audit / deny / Trivy lane. |
 | `release-check` | Run release/package dry-run lanes. |
 
+Label-triggered lanes use GitHub's repository label-write permission as the
+authorization boundary. A label remains authorization across `synchronize`,
+`reopened`, and `ready_for_review` activity until it is removed. Removing a label
+prevents later activity from selecting that lane, but does not cancel a run that
+already started for an earlier event; workflow concurrency cancels stale-head work
+only on `synchronize`.
+
 Coverage is not PR-label triggered. Use the scheduled/manual coverage workflow
 when coverage diagnostics are needed.
 
