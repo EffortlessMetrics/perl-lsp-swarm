@@ -844,7 +844,7 @@ async function runExtensionActivation(
       return lifecycle.serverPath;
     },
     reinstallServerBinary: () => reinstallServerBinary(context),
-    restartServer: () => restartServer(context),
+    restartServer: () => restartServerFromExplicitRecovery(context),
     showBinaryIdentity: createBinaryIdentityCommand(
       () => client ?? languageClientLifecycle?.client,
       (context.extension.packageJSON.version as string) ?? 'unknown',
@@ -2791,6 +2791,11 @@ async function restartServer(_context: vscode.ExtensionContext) {
   }
 }
 
+async function restartServerFromExplicitRecovery(context: vscode.ExtensionContext): Promise<void> {
+  crashRecoveryArbiter.resetForExplicitRecovery();
+  await restartServer(context);
+}
+
 function shouldFormatOnSave(document: vscode.TextDocument): boolean {
   if (document.languageId !== 'perl') {
     return false;
@@ -3315,8 +3320,7 @@ async function reportCrashBudgetExhausted(): Promise<void> {
     // A manual restart is an explicit user restart (#7845): it resets the
     // automatic crash-recovery budget without ever having consumed it.
     // restartServer never rejects; it surfaces its own failure dialogs.
-    crashRecoveryArbiter.resetForExplicitRecovery();
-    await restartServer(context);
+    await restartServerFromExplicitRecovery(context);
   } else if (selection === 'Run Health Check') {
     const serverPath = currentServerPath ?? undefined;
     await vscode.commands.executeCommand('perl-lsp.runHealthCheck', serverPath);
