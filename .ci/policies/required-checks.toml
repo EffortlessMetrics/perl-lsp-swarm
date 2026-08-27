@@ -191,7 +191,7 @@ required = false
 policy_role = "advisory"
 applicability = "always-or-scoped-noop"
 enforcement = "neither"
-reason = "#12911 hardens this established aggregate as an always-emitted required-promotion candidate; it remains advisory until ruleset 16664791 registration and read-back."
+reason = "#12911 hardens this candidate-controlled aggregate for advisory diagnostics only; trusted enforcement requires the separate organization-ruleset workflow plan."
 
 [[checks]]
 name = "Gate Enforcement Contract"

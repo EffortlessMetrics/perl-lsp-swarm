@@ -1147,11 +1147,12 @@ jobs:
           SHARD_NAME: ${{ matrix.name }}
 
   # ── CI Gate aggregate: roll up the deterministic shard + guard lanes ──
-  # This established context is being hardened for required promotion under
-  # #12911, but remains advisory until ruleset 16664791 is updated and read back.
-  # Keep the exact historical name during that transaction: renaming it would
-  # leave already-open PR heads waiting for a context they cannot emit.
-  # `.ci/policies/required-checks.toml` records the current advisory truth.
+  # This established context is hardened under #12911 but remains advisory.
+  # Candidate-controlled pull-request workflow results are not trusted required
+  # authority, so do not register this context in ruleset 16664791. The trusted
+  # organization-ruleset workflow is a separate follow-up. Keep the exact
+  # historical name for continuity with existing advisory consumers.
+  # `.ci/policies/required-checks.toml` records this advisory truth.
   # `pr-smoke` remains intentionally outside `needs`: it is advisory, flaky, and
   # redundant with the deterministic shard base (see the pr-smoke job).
   merge-gate:

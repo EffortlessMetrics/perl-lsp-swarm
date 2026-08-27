@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""Focused falsifiers for the required-ready CI Gate aggregate."""
+"""Focused falsifiers for the advisory CI Gate aggregate."""
 
 from __future__ import annotations
 
 import importlib.util
+import io
+import os
 import re
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).with_name("evaluate_ci_gate.py")
 SPEC = importlib.util.spec_from_file_location("evaluate_ci_gate", SCRIPT)
-assert SPEC and SPEC.loader
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError(f"cannot load aggregate evaluator from {SCRIPT}")
 gate = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = gate
 SPEC.loader.exec_module(gate)
@@ -43,7 +48,7 @@ class AggregateClassifierTests(unittest.TestCase):
         self.assertEqual((), verdict.blockers)
 
     def test_non_success_shard_cannot_report_green(self) -> None:
-        for result in ("failure", "cancelled", "skipped"):
+        for result in ("failure", "cancelled", "skipped", "neutral", "pending"):
             with self.subTest(result=result):
                 verdict = gate.evaluate(applicable_needs(shard_result=result))
                 self.assertEqual("failure", verdict.status)
@@ -58,6 +63,14 @@ class AggregateClassifierTests(unittest.TestCase):
         verdict = gate.evaluate(needs)
         self.assertEqual("failure", verdict.status)
         self.assertEqual(("merge-gate-shards=missing",), verdict.blockers)
+
+    def test_malformed_needs_json_cannot_report_green(self) -> None:
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, {"NEEDS_JSON": "not-json"}, clear=True):
+            with redirect_stdout(output):
+                status = gate.main()
+        self.assertEqual(1, status)
+        self.assertIn("aggregate input was malformed", output.getvalue())
 
     def test_new_non_success_dependency_cannot_be_ignored(self) -> None:
         needs = applicable_needs()
@@ -179,7 +192,7 @@ class AggregateWiringTests(unittest.TestCase):
         )
         self.assertEqual(gate.EXPECTED_DEPENDENCIES, actual)
 
-    def test_policy_records_promotion_candidate_without_claiming_live_enforcement(self) -> None:
+    def test_policy_records_advisory_hardening_without_claiming_live_enforcement(self) -> None:
         policy = (ROOT / ".ci/policies/required-checks.toml").read_text(
             encoding="utf-8"
         )
@@ -192,6 +205,7 @@ class AggregateWiringTests(unittest.TestCase):
         self.assertIn('policy_role = "advisory"', row)
         self.assertIn('enforcement = "neither"', row)
         self.assertIn("#12911", row)
+        self.assertNotIn("required-promotion", row)
 
 
 if __name__ == "__main__":
