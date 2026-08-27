@@ -222,6 +222,58 @@ fn metric_from_result(result: Result<String, String>) -> BinaryMetric {
     }
 }
 
+fn scopes_for_frame(session: &mut DapWorkflowSession, frame_id: i64) -> Result<Vec<Value>, String> {
+    let response = session.request("scopes", Some(json!({ "frameId": frame_id })));
+    let body = session.expect_success(&response, "scopes")?.ok_or("scopes response had no body")?;
+    body.get("scopes")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or("scopes response body missing `scopes` array".to_string())
+}
+
+fn locals_scope_ref_with_authority(
+    session: &mut DapWorkflowSession,
+    thread_id: i64,
+    frame_id: i64,
+) -> Result<i64, String> {
+    let scopes = scopes_for_frame(session, frame_id)?;
+    if let Some(scope) = scopes.iter().find(|scope| {
+        scope.get("presentationHint").and_then(Value::as_str) == Some("locals")
+            || scope.get("name").and_then(Value::as_str) == Some("Locals")
+    }) {
+        return scope
+            .get("variablesReference")
+            .and_then(Value::as_i64)
+            .ok_or("Locals scope missing `variablesReference`".to_string());
+    }
+
+    let current_stack = match session.stack_trace(thread_id) {
+        Ok((current_id, source, line)) => {
+            format!("frame_id={current_id}, source={source:?}, line={line}")
+        }
+        Err(error) => format!("unavailable ({error})"),
+    };
+    Err(format!(
+        "No Locals scope for requested stopped frame_id={frame_id}; current stack authority: {current_stack}; scopes response: {scopes:?}"
+    ))
+}
+
+fn assert_wrong_frame_has_no_scopes(
+    session: &mut DapWorkflowSession,
+    frame_id: i64,
+) -> Result<(), String> {
+    let wrong_frame_id = frame_id
+        .checked_add(1)
+        .ok_or_else(|| format!("cannot construct wrong frame id after {frame_id}"))?;
+    let scopes = scopes_for_frame(session, wrong_frame_id)?;
+    if !scopes.is_empty() {
+        return Err(format!(
+            "wrong/stale frame_id={wrong_frame_id} returned scopes instead of an honest empty list: {scopes:?}"
+        ));
+    }
+    Ok(())
+}
+
 /// Assert the attach success-rate threshold on a receipt. Shared by the live
 /// and skipped paths because attach probes run in both.
 fn assert_attach_rate(receipt: &ScorecardReceipt) {
@@ -259,14 +311,23 @@ print "marker=$marker\n";
 
     let mut session = DapWorkflowSession::new(workflow_timeout())?;
     session.launch_pinned(perl_binary, script_str)?;
-    session.set_breakpoints(script_str, &[6])?;
+    let resolved_lines = session.set_breakpoints_checked(script_str, &[6])?;
     session.configuration_done()?;
 
     let stop = session.wait_stopped()?;
-    let (frame_id, _, _) = session.stack_trace(stop.thread_id)?;
+    let (frame_id, source_path, frame_line) = session.stack_trace(stop.thread_id)?;
+    let expected_line =
+        resolved_lines.first().copied().ok_or("setBreakpoints returned no resolved lines")?;
+    if frame_line != expected_line {
+        return Err(format!(
+            "stopped frame is not the admitted breakpoint: thread_id={}, frame_id={}, source={source_path:?}, line={frame_line}, expected_line={expected_line}",
+            stop.thread_id, frame_id
+        ));
+    }
     // #10563: a live frame advertises Locals (plus Arguments); Globals is not
     // advertised, so the session metrics measure the Locals enumeration.
-    let locals_ref = session.scopes_locals_ref(frame_id)?;
+    assert_wrong_frame_has_no_scopes(&mut session, frame_id)?;
+    let locals_ref = locals_scope_ref_with_authority(&mut session, stop.thread_id, frame_id)?;
     let locals = session.variables(locals_ref)?;
 
     let vars_metric = metric_from_result((|| {
