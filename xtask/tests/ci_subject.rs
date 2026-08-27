@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use assert_cmd::cargo::cargo_bin_cmd;
-use color_eyre::eyre::{Context, Result, bail, ensure};
+use color_eyre::eyre::{Context, ContextCompat, Result, bail, ensure};
 use serde_json::{Value, json};
 
 const REPOSITORY: &str = "EffortlessMetrics/perl-lsp-swarm";

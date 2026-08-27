@@ -145,8 +145,8 @@ struct SubjectInput {
 }
 
 pub fn run(config: CiSubjectConfig) -> Result<()> {
-    let root = match config.root {
-        Some(root) => root,
+    let root = match config.root.as_ref() {
+        Some(root) => root.clone(),
         None => crate::utils::project_root()?,
     };
     let resolution = (|| -> SubjectResult<ResolvedCiSubject> {
