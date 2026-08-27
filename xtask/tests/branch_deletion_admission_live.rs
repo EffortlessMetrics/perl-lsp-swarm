@@ -142,14 +142,14 @@ fn repository_identity_comes_from_the_remote() -> Result<(), Box<dyn std::error:
 fn remote_identity_is_verified_not_merely_named() {
     let commands = healthy();
     let expected = parse_remote_identity("https://github.com/EffortlessMetrics/perl-lsp-swarm.git")
-        .unwrap_or_else(|| unreachable_identity());
+        .unwrap_or_else(unreachable_identity);
     assert!(
         verify_remote_identity(&commands, "origin", &expected).is_ok(),
         "the matching repository must verify",
     );
 
     let other = parse_remote_identity("https://github.com/SomeoneElse/perl-lsp-swarm.git")
-        .unwrap_or_else(|| unreachable_identity());
+        .unwrap_or_else(unreachable_identity);
     assert!(
         verify_remote_identity(&commands, "origin", &other).is_err(),
         "a different repository must be refused, not accepted",
@@ -159,7 +159,7 @@ fn remote_identity_is_verified_not_merely_named() {
     // verify. Comparing only owner/name would accept this.
     let impostor =
         parse_remote_identity("https://evil.example.com/EffortlessMetrics/perl-lsp-swarm.git")
-            .unwrap_or_else(|| unreachable_identity());
+            .unwrap_or_else(unreachable_identity);
     assert_eq!(
         impostor.repository.render(),
         expected.repository.render(),
@@ -197,7 +197,7 @@ fn remote_identity_keeps_the_host_and_normalises_it() {
         ("https://evil.example.com/O/R", "evil.example.com", "O/R"),
     ];
     for (url, host, repository) in cases {
-        let identity = parse_remote_identity(url).unwrap_or_else(|| unreachable_identity());
+        let identity = parse_remote_identity(url).unwrap_or_else(unreachable_identity);
         assert_eq!(identity.host, host, "host for {url}");
         assert_eq!(identity.repository.render(), repository, "repository for {url}");
     }
@@ -463,7 +463,7 @@ fn the_deletion_path_reverifies_remote_identity() -> Result<(), Box<dyn std::err
     let bound = collect_request(&healthy(), 7799, "origin")?.remote_identity;
     let result = execute_admitted_deletion(&moved_remote, &deleter, &outcome, &bound);
     assert!(result.is_err(), "a repository mismatch must refuse the deletion");
-    assert!(deleter.invocations.borrow().is_empty(), "nothing may be executed once identity fails",);
+    assert!(deleter.invocations.borrow().is_empty(), "nothing may be executed once identity fails");
     Ok(())
 }
 

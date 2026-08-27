@@ -20,10 +20,11 @@
 # branch is restored with one `git worktree add`; the branch, the PR, and the
 # review all survive removal. Keeping it only preserves a build cache.
 #
-# Branch deletion is separate and strictly narrower: a local branch is deleted
-# only when it is contained in the base branch. Squash merges are detected via
-# the merged PR, not by ancestry, because a squashed branch is never an ancestor
-# of its base.
+# This sweep does not delete local branches. If a branch-deletion action is
+# added, it must call scripts/branch-deletion-admission (plan --pr <number>)
+# after the worktree is gone and treat every non-zero result as retention.
+# The shared admission is bound to the exact parent PR, repository, branch tip,
+# live child graph, and #3957 worktree ownership.
 #
 # --dry-run is an inspection front door and is strictly read-only: it performs no
 # fetch, no `git worktree prune`, no worktree removal, no branch deletion, and no

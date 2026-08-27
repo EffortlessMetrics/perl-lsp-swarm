@@ -93,6 +93,41 @@ function Quote-BashArgument {
     return "'" + ($Value -replace "'", "'\''") + "'"
 }
 
+function Test-BranchDeletionAdmission {
+    param(
+        [int]$PullRequest,
+        [string]$Repository
+    )
+
+    $admissionScript = Join-Path $Repository 'scripts\branch-deletion-admission'
+    if (-not (Test-Path -Path $admissionScript -PathType Leaf)) {
+        Write-Host "branch not deleted because shared admission is unavailable: $admissionScript"
+        return $false
+    }
+
+    $bash = Get-Command bash -ErrorAction SilentlyContinue
+    if ($null -ne $bash) {
+        $admissionOutput = & bash (Convert-ToBashPath $admissionScript) plan --pr $PullRequest --remote origin 2>&1
+    }
+    else {
+        Push-Location $Repository
+        try {
+            $admissionOutput = & cargo run --quiet --locked -p xtask --bin branch-deletion-admission -- plan --pr $PullRequest --remote origin 2>&1
+        }
+        finally {
+            Pop-Location
+        }
+    }
+
+    $admissionExitCode = $LASTEXITCODE
+    if ($admissionExitCode -eq 0) {
+        return $true
+    }
+
+    Write-Host "branch not deleted because branch-deletion admission retained it (exit $admissionExitCode): $($admissionOutput -join ' ')"
+    return $false
+}
+
 if ($Slug -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or $Slug -match '[\\/]') {
     Fail "Slug must be a path-safe token, not '$Slug'."
 }
@@ -171,8 +206,10 @@ if (-not [string]::IsNullOrWhiteSpace($Branch) -and -not $Abandoned) {
         }
 
         if ($mergedBranches -contains $Branch -or $verifiedMergedPr) {
-            if ($PSCmdlet.ShouldProcess($Branch, $branchDeleteAction)) {
-                Invoke-Git -Repository $canonical -GitArgs $branchDeleteArgs | Out-Null
+            if (Test-BranchDeletionAdmission -PullRequest $PrNumber -Repository $canonical) {
+                if ($PSCmdlet.ShouldProcess($Branch, $branchDeleteAction)) {
+                    Invoke-Git -Repository $canonical -GitArgs $branchDeleteArgs | Out-Null
+                }
             }
         }
         else {

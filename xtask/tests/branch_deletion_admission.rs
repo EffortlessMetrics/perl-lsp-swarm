@@ -153,7 +153,7 @@ fn a_fork_parent_retains_even_when_the_name_resolves_here() {
     // SAFE_TO_DELETE.
     let outcome = evaluate(&request);
     assert_eq!(outcome.admission, DeletionAdmission::RetainBranchMoved, "{}", outcome.detail);
-    assert!(outcome.detail.contains("fork"), "the detail must name the reason: {}", outcome.detail,);
+    assert!(outcome.detail.contains("fork"), "the detail must name the reason: {}", outcome.detail);
     assert_eq!(branch_deletion_command(&outcome), None);
 }
 
@@ -468,7 +468,8 @@ fn the_retained_packet_renders_every_field_a_reconciler_needs() {
 /// into a shape a hand-written or truncated request could plausibly carry.
 #[test]
 fn a_malformed_request_cannot_reach_safe_to_delete() {
-    let cases: Vec<(&str, Box<dyn Fn(&mut AdmissionRequest)>)> = vec![
+    type RequestMutation = Box<dyn Fn(&mut AdmissionRequest)>;
+    let cases: Vec<(&str, RequestMutation)> = vec![
         (
             "empty reviewed sha",
             Box::new(|r: &mut AdmissionRequest| {
@@ -692,7 +693,7 @@ fn no_executable_path_merges_with_delete_branch() -> Result<(), Box<dyn std::err
         }
     }
 
-    assert!(scanned_files > 0, "the recurrence scan read no files; it would pass vacuously",);
+    assert!(scanned_files > 0, "the recurrence scan read no files; it would pass vacuously");
     assert!(
         offenders.is_empty(),
         "merge-and-delete is not an admissible integration path (#12885). \
