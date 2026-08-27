@@ -1803,6 +1803,74 @@ impl WorkspaceConfig {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) const SYSTEM_INC_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Thread-local widening of [`SYSTEM_INC_PROBE_TIMEOUT`], test builds only.
+///
+/// `get_system_inc_reuses_cached_probe_without_relaunching` owns a
+/// *memoization* claim ("the second lookup reuses the first probe outcome")
+/// and can only state it against one live, successful probe. That makes it a
+/// hostage of host scheduler weather: interpreter spawn and initialization
+/// count against the same 1 s deadline, so a `CreateProcess` stall or a cold
+/// DLL/antivirus scan turns a memoization proof into a spurious
+/// [`SystemIncProbeOutcome::TimedOut`] (#12902 — 6/10 failures when isolated
+/// on a Windows host, per-run wall time swinging 0.04 s..14.7 s).
+///
+/// The override is thread-local on purpose. A widened deadline is visible
+/// only to the thread that installed it, so a concurrent sibling that reaches
+/// the probe through `for_startup_inc_probe` still gets the production 1 s
+/// value — `get_system_inc_does_not_stall_on_slow_interpreter` asserts the
+/// bound actually fires and runs unchanged alongside a widened test.
+/// (`output_with_timeout_kills_long_running_subprocess` passes its own
+/// explicit 250 ms and never reads this seam at all.)
+///
+/// Downstream crates compile this crate without `cfg(test)`, so the seam does
+/// not exist in any shipped build.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    static SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The startup `@INC` probe deadline the calling thread must honour.
+///
+/// Always [`SYSTEM_INC_PROBE_TIMEOUT`] outside this crate's own test build.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn effective_system_inc_probe_timeout() -> Duration {
+    #[cfg(test)]
+    {
+        if let Some(widened) = SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(std::cell::Cell::get) {
+            return widened;
+        }
+    }
+
+    SYSTEM_INC_PROBE_TIMEOUT
+}
+
+/// RAII widening of this thread's startup `@INC` probe deadline.
+///
+/// Restores the previous value on drop, including across nesting, so one
+/// test cannot leak a widened bound into the next test scheduled on the
+/// same libtest worker thread.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) struct SystemIncProbeTimeoutOverride {
+    previous: Option<Duration>,
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl SystemIncProbeTimeoutOverride {
+    /// Widen the calling thread's probe deadline until the guard is dropped.
+    pub(crate) fn widen_to(timeout: Duration) -> Self {
+        let previous = SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(|slot| slot.replace(Some(timeout)));
+        Self { previous }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl Drop for SystemIncProbeTimeoutOverride {
+    fn drop(&mut self) {
+        SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(|slot| slot.set(self.previous));
+    }
+}
+
 /// Run `command` with a wall-clock timeout, killing the child if it exceeds
 /// `timeout`. Returns `io::Error` with kind `TimedOut` on timeout. Used by
 /// `fetch_perl_inc` so a hanging or slow `perl` interpreter cannot stall
@@ -5142,6 +5210,15 @@ profile = "recommended"
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn get_system_inc_reuses_cached_probe_without_relaunching() -> TestResult {
+        // This test's claim is memoization, not latency. It still needs one
+        // live successful probe to have a `Paths` outcome worth reusing, and
+        // the production 1 s deadline also has to cover interpreter spawn —
+        // which is host weather, not this crate's behaviour (#12902). Widen
+        // only this thread's deadline; a concurrently running
+        // `get_system_inc_does_not_stall_on_slow_interpreter` keeps the
+        // production bound (see `SystemIncProbeTimeoutOverride`).
+        let _probe_deadline = SystemIncProbeTimeoutOverride::widen_to(Duration::from_secs(60));
+
         let perl_path = match resolve_perl_path_with_toolchain() {
             Ok(path) => path,
             Err(_) => return Ok(()),
@@ -5184,6 +5261,170 @@ profile = "recommended"
         let reused = config.get_system_inc_probe_outcome();
         assert_eq!(reused, cached, "second lookup must reuse the cached outcome");
         assert_eq!(config.get_system_inc().to_vec(), cached_paths);
+        Ok(())
+    }
+
+    /// Absent an explicit widening, every thread — and therefore every
+    /// shipped build, which has no widening seam at all — sees exactly the
+    /// production probe deadline.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn system_inc_probe_deadline_defaults_to_the_production_bound() {
+        assert_eq!(
+            effective_system_inc_probe_timeout(),
+            SYSTEM_INC_PROBE_TIMEOUT,
+            "an un-widened thread must see the production deadline"
+        );
+    }
+
+    /// The widening seam must not leak: not across threads (so a concurrent
+    /// `get_system_inc_does_not_stall_on_slow_interpreter` keeps the 1 s
+    /// bound it asserts), not out of a nested
+    /// scope, and not past the guard's own lifetime into the next test
+    /// scheduled on this libtest worker thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn system_inc_probe_deadline_widening_is_thread_local_and_restores() -> TestResult {
+        let widened = Duration::from_secs(60);
+        let nested = Duration::from_secs(5);
+
+        {
+            let _outer = SystemIncProbeTimeoutOverride::widen_to(widened);
+            assert_eq!(effective_system_inc_probe_timeout(), widened);
+
+            // A sibling thread — the shape of any other test reaching the
+            // probe concurrently — must still see the production bound.
+            let observed_elsewhere =
+                std::thread::spawn(effective_system_inc_probe_timeout).join().map_err(|_| {
+                    "sibling thread panicked while reading the probe deadline".to_string()
+                })?;
+            assert_eq!(
+                observed_elsewhere, SYSTEM_INC_PROBE_TIMEOUT,
+                "widening must not escape the thread that installed it"
+            );
+
+            {
+                let _inner = SystemIncProbeTimeoutOverride::widen_to(nested);
+                assert_eq!(effective_system_inc_probe_timeout(), nested);
+            }
+            assert_eq!(
+                effective_system_inc_probe_timeout(),
+                widened,
+                "dropping a nested guard must restore the enclosing widening"
+            );
+        }
+
+        assert_eq!(
+            effective_system_inc_probe_timeout(),
+            SYSTEM_INC_PROBE_TIMEOUT,
+            "dropping the outermost guard must restore the production deadline"
+        );
+        Ok(())
+    }
+
+    /// The failure signature #12902 reports is a probe that would have
+    /// succeeded given a little more wall clock. Reproduce that directly:
+    /// one interpreter program that deliberately outlives the production
+    /// deadline, run twice on the same thread. Under the production bound it
+    /// must land in `TimedOut` — the exact spurious class the flake reports;
+    /// under a widened bound the identical program must produce `Paths`.
+    ///
+    /// This is the host-independent statement of the repair. It does not
+    /// depend on reproducing the Windows scheduler weather that surfaced the
+    /// flake, only on the deadline being the thing that decides the outcome.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn widening_the_deadline_converts_a_spurious_timeout_into_a_successful_probe() -> TestResult {
+        let perl_path = match resolve_perl_path_with_toolchain() {
+            Ok(path) => path,
+            Err(_) => return Ok(()),
+        };
+
+        // Sleeps past the 1 s production deadline, then emits a sentinel on
+        // its own line. `Time::HiRes` is core; the trailing semicolon is
+        // load-bearing because `fetch_perl_inc` concatenates its own `-e`
+        // block onto this one.
+        let slow_probe = || WorkspaceConfig {
+            use_system_inc: true,
+            perl_path: Some(perl_path.to_string_lossy().into_owned()),
+            perl_args: vec![
+                "-MTime::HiRes=sleep".into(),
+                "-e".into(),
+                "sleep(1.5); print(qq(slow-sentinel).chr(10));".into(),
+            ],
+            ..WorkspaceConfig::default()
+        };
+
+        let widened = {
+            let _deadline = SystemIncProbeTimeoutOverride::widen_to(Duration::from_secs(30));
+            slow_probe().get_system_inc_probe_outcome()
+        };
+
+        // A timeout on the WIDENED leg means the widening never reached the
+        // probe — the seam is unwired, which is the defect this test exists
+        // to catch. It must never be mistaken for an unsupported interpreter.
+        assert_ne!(
+            widened,
+            SystemIncProbeOutcome::TimedOut,
+            "a 30s deadline must not time out on a 1.5s program; the widening did not reach the probe"
+        );
+
+        // Any other non-`Paths` class means this interpreter cannot run the
+        // slow program at all (no Time::HiRes, shimmed perl). There is then
+        // no deadline claim to make here, and the seam's wiring stays pinned
+        // by `startup_inc_probe_oracle_reads_the_effective_deadline`.
+        let SystemIncProbeOutcome::Paths(paths) = &widened else {
+            return Ok(());
+        };
+        if !paths.iter().any(|path| path == Path::new("slow-sentinel")) {
+            return Ok(());
+        }
+
+        // Same program, same thread, production deadline: the only thing that
+        // changed is the bound, so the only honest outcome is the timeout.
+        let under_production_bound = slow_probe().get_system_inc_probe_outcome();
+        assert_eq!(
+            under_production_bound,
+            SystemIncProbeOutcome::TimedOut,
+            "a probe proven runnable above must time out under the 1s production bound"
+        );
+        Ok(())
+    }
+
+    /// The seam is only useful if the startup `@INC` oracle actually reads it.
+    /// Unwiring `for_startup_inc_probe` back to the bare constant must fail
+    /// here rather than silently restoring the flake.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn startup_inc_probe_oracle_reads_the_effective_deadline() -> TestResult {
+        let perl_path = match resolve_perl_path_with_toolchain() {
+            Ok(path) => path,
+            Err(_) => return Ok(()),
+        };
+        let config = WorkspaceConfig {
+            use_system_inc: true,
+            perl_path: Some(perl_path.to_string_lossy().into_owned()),
+            ..WorkspaceConfig::default()
+        };
+
+        let production = PerlOracleEnv::for_startup_inc_probe(&config)
+            .ok_or("startup @INC oracle must resolve with an explicit perl_path")?;
+        assert_eq!(production.timeout, SYSTEM_INC_PROBE_TIMEOUT);
+
+        let widened = Duration::from_secs(60);
+        let _deadline = SystemIncProbeTimeoutOverride::widen_to(widened);
+        let observed = PerlOracleEnv::for_startup_inc_probe(&config)
+            .ok_or("startup @INC oracle must resolve with an explicit perl_path")?;
+        assert_eq!(
+            observed.timeout, widened,
+            "for_startup_inc_probe must read the effective deadline, not the raw constant"
+        );
+
+        // `for_module_resolution` delegates to the startup constructor, so it
+        // inherits the same deadline.
+        let via_module_resolution = PerlOracleEnv::for_module_resolution(&config)
+            .ok_or("module-resolution oracle must resolve when use_system_inc is set")?;
+        assert_eq!(via_module_resolution.timeout, widened);
         Ok(())
     }
 
