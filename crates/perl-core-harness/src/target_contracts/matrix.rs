@@ -618,17 +618,28 @@ fn validate_matrix_part_path(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+// #7725 intake law, restated locally because this file is included verbatim
+// by several crate roots (lib, runner-plan binary, integration proof); the
+// canonical definition lives in the library root next to `validate_digest`.
+fn is_lower_case_hex_byte(byte: u8) -> bool {
+    byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')
+}
+
 fn validate_sha256(value: &str, label: &str) -> Result<(), String> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        Err(format!("{label} must be a 64-character hexadecimal digest: {value}"))
+    if !(value.len() == 64 && value.bytes().all(is_lower_case_hex_byte)) {
+        Err(format!(
+            "{label} must be a 64-character hexadecimal digest ([0-9a-f] lower-case): {value}"
+        ))
     } else {
         Ok(())
     }
 }
 
 fn validate_git_sha(value: &str, label: &str) -> Result<(), String> {
-    if value.len() != 40 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        Err(format!("{label} must be a 40-character hexadecimal SHA: {value}"))
+    if value.len() != 40 || !value.bytes().all(is_lower_case_hex_byte) {
+        Err(format!(
+            "{label} must be a 40-character hexadecimal SHA ([0-9a-f] lower-case): {value}"
+        ))
     } else {
         Ok(())
     }

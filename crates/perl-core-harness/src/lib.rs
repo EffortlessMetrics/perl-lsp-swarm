@@ -1139,10 +1139,21 @@ fn validate_publication_paths(paths: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// One nibble of a canonically serialized hexadecimal identity (#7725):
+/// lower-case ASCII digits and `a`-`f` only, so every load-bearing
+/// content-addressed receipt carries exactly one spelling per digest.
+pub(crate) fn is_lower_case_hex_byte(byte: u8) -> bool {
+    byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')
+}
+
+/// A 64-character SHA-256 identity in its one canonical serialized form.
+pub(crate) fn is_canonical_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(is_lower_case_hex_byte)
+}
+
 fn validate_git_sha(value: &str, label: &str) -> Result<()> {
-    if value.len() != 40 && value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        bail!("{label} must be a 40- or 64-character hexadecimal SHA");
+    if !(value.len() == 40 || value.len() == 64) || !value.bytes().all(is_lower_case_hex_byte) {
+        bail!("{label} must be a 40- or 64-character hexadecimal SHA ([0-9a-f] lower-case)");
     }
     Ok(())
 }
@@ -1199,8 +1210,8 @@ fn validate_digest(value: &str, label: &str) -> Result<()> {
     let Some(hex) = value.strip_prefix("sha256:") else {
         bail!("{label} must use the sha256:<hex> format");
     };
-    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("{label} must contain 64 hexadecimal characters");
+    if !is_canonical_sha256_hex(hex) {
+        bail!("{label} must contain 64 hexadecimal characters ([0-9a-f] lower-case)");
     }
     Ok(())
 }

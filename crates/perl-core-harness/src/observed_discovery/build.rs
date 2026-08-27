@@ -327,7 +327,7 @@ pub(crate) fn validate_reference(
         return Err(format!("{label} must be {min_len}-{max_len} characters"));
     }
     if lowercase_hex {
-        if !value.bytes().all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')) {
+        if !value.bytes().all(crate::is_lower_case_hex_byte) {
             return Err(format!("{label} must be lower-case hexadecimal"));
         }
         return Ok(());
@@ -359,8 +359,10 @@ fn validate_environment_value(value: &str) -> Result<(), String> {
 }
 
 pub(crate) fn validate_sha256_field(value: &str, label: &str) -> Result<(), String> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!("{label} must be a 64-character hexadecimal digest: {value}"));
+    if !crate::is_canonical_sha256_hex(value) {
+        return Err(format!(
+            "{label} must be a 64-character hexadecimal digest ([0-9a-f] lower-case): {value}"
+        ));
     }
     Ok(())
 }
