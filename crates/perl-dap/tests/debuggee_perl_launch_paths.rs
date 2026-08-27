@@ -83,6 +83,30 @@ fn observe_pin_for_path(
     session.evaluate_expression("$^X", stopped.frame_id).map(|(value, _)| value)
 }
 
+fn observe_configured_pin_for_path(
+    launch_path: &str,
+    script: &str,
+    cwd: &str,
+) -> Result<String, String> {
+    let mut session = DapWorkflowSession::new(workflow_timeout())?;
+    match launch_path {
+        "launch" => {
+            session.launch(script)?;
+            session.set_breakpoints_checked(script, &[4])?;
+            session.configuration_done()?;
+        }
+        "launch_with_stop_on_entry" => session.launch_with_stop_on_entry(script, true)?,
+        "launch_with_cwd" => {
+            session.launch_with_cwd(script, cwd)?;
+            session.set_breakpoints_checked(script, &[4])?;
+            session.configuration_done()?;
+        }
+        other => return Err(format!("unknown launch path {other}")),
+    }
+    let stopped = session.wait_stopped_with_frame()?;
+    session.evaluate_expression("$^X", stopped.frame_id).map(|(value, _)| value)
+}
+
 #[test]
 #[serial(dap_debuggee_environment)]
 #[allow(clippy::print_stderr)]
@@ -137,20 +161,17 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
     }
 
     let _pin_guard = EnvGuard::set(DEBUGGEE_PERL_OVERRIDE_ENV, pinned.as_os_str());
-    let mut configured_session = DapWorkflowSession::new(workflow_timeout())?;
-    configured_session.launch(&script_text)?;
-    configured_session.set_breakpoints_checked(&script_text, &[4])?;
-    configured_session.configuration_done()?;
-    let stopped = configured_session.wait_stopped_with_frame()?;
-    let (configured_identity, _) = configured_session
-        .evaluate_expression("$^X", stopped.frame_id)
-        .map_err(|error| format!("configured-pin convenience launch failed: {error}"))?;
-    let configured_identity_lower = configured_identity.to_ascii_lowercase();
-    assert!(
-        configured_identity_lower.contains("pinned-perl")
-            && !configured_identity_lower.contains("\\perl.exe")
-            && !configured_identity_lower.contains("/perl\n"),
-        "configured pin was dropped by DapWorkflowSession::new: {configured_identity}"
-    );
+    for launch_path in ["launch", "launch_with_stop_on_entry", "launch_with_cwd"] {
+        let configured_identity = observe_configured_pin_for_path(launch_path, &script_text, &cwd)
+            .map_err(|error| format!("configured {launch_path} failed: {error}"))?;
+        let configured_identity_lower = configured_identity.to_ascii_lowercase();
+        assert!(
+            configured_identity_lower.contains("pinned-perl")
+                && !configured_identity_lower.contains("\\perl.exe")
+                && !configured_identity_lower.contains("/perl\n"),
+            "configured pin was dropped by DapWorkflowSession::new for {launch_path}: \
+             {configured_identity}"
+        );
+    }
     Ok(())
 }
