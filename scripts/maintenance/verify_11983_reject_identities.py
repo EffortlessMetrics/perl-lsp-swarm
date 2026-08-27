@@ -92,7 +92,10 @@ EXPECTED_REJECT_IDENTITIES: dict[str, tuple[RejectIdentity, ...]] = {
         ),
     ),
     "docs/specs/lsp-318-conformance-matrix.md": (
-        RejectIdentity("@@ -19,7 +19,7 @@ Status vocabulary:", "| Multi-range formatting | LSP 3.18 |"),
+        RejectIdentity(
+            "@@ -19,7 +19,7 @@ Status vocabulary:",
+            "| Multi-range formatting | LSP 3.18 | range-formatting client support | `documentRangeFormattingProvider.rangesSupport` | `textDocument/rangesFormatting` | implemented+tested+documented | `lsp_caps_contract_shapes`; `lsp_disabled_features_tests`; `lsp_formatting_e2e`; `lsp_capabilities_snapshot`; `lsp_cap_snap` | `crates/perl-lsp-rs/src/runtime/language/formatting.rs`; `crates/perl-lsp-rs-core/src/protocol/capabilities.rs` | P0 | `documentRangesFormattingProvider` is not a valid capability and remains forbidden. |",
+        ),
     ),
     "features.toml": (
         RejectIdentity('@@ -172,30 +172,30 @@ id = "lsp.range_formatting"', "advertised = true"),
@@ -265,11 +268,11 @@ def validate_manifest(
         actual = []
         for segment in reject_segments:
             identity = identity_for(segment)
-            old_lines = set(identity.old_anchor.splitlines())
+            old_lines = {line.strip() for line in identity.old_anchor.splitlines()}
             matches = [
                 candidate
                 for candidate in expected
-                if candidate.hunk == identity.hunk and candidate.old_anchor in old_lines
+                if candidate.hunk == identity.hunk and candidate.old_anchor.strip() in old_lines
             ]
             if len(matches) != 1:
                 _retain(

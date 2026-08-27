@@ -89,7 +89,10 @@ FIXTURE_IDENTITIES: dict[str, tuple[tuple[str, str], ...]] = {
         ("@@ -205,23 +227,9 @@ sub third{my$c=3;return$c;}", "let edits ="),
     ),
     "docs/specs/lsp-318-conformance-matrix.md": (
-        ('@@ -19,7 +19,7 @@ Status vocabulary:', "| Multi-range formatting | LSP 3.18 |"),
+        (
+            '@@ -19,7 +19,7 @@ Status vocabulary:',
+            "| Multi-range formatting | LSP 3.18 | range-formatting client support | `documentRangeFormattingProvider.rangesSupport` | `textDocument/rangesFormatting` | implemented+tested+documented | `lsp_caps_contract_shapes`; `lsp_disabled_features_tests`; `lsp_formatting_e2e`; `lsp_capabilities_snapshot`; `lsp_cap_snap` | `crates/perl-lsp-rs/src/runtime/language/formatting.rs`; `crates/perl-lsp-rs-core/src/protocol/capabilities.rs` | P0 | `documentRangesFormattingProvider` is not a valid capability and remains forbidden. |",
+        ),
     ),
     "features.toml": (
         ('@@ -172,30 +172,30 @@ id = "lsp.range_formatting"', "advertised = true"),
