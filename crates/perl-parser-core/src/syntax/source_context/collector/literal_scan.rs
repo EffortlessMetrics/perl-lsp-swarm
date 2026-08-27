@@ -1991,6 +1991,15 @@ mod tests {
             (None, Some(b'"')),
             "the opener line reports no heredoc and carries the open quote"
         );
+        // #12934 CodeRabbit (Merge Risk, moderate): the marker on a *later*
+        // line of the same string, not the opening one. Verified against perl
+        // 5.38.2: `syntax OK`, and `$s` is an ordinary 25-character string.
+        let later = "my $s = \"start\nstill string <<EOF\n\";\nprint $s;\n";
+        assert!(
+            scan_heredoc_regions(later).is_empty(),
+            "a marker on a continuation line must not open a region: {:?}",
+            scan_heredoc_regions(later)
+        );
         // ...and the continuation line inherits it, so its content is not code.
         assert_eq!(
             super::heredoc_opener_on_line_from("still <<AGAIN string", Some(b'"')),
