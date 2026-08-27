@@ -545,7 +545,7 @@ pub fn unix_args_match_serving_server(args: &str, normalized_needle: &str) -> bo
     let tokens: Vec<&str> = args.split_whitespace().collect();
     match tokens.first() {
         Some(argv0) if argv0.to_lowercase().replace('\\', "/") == normalized_needle => {
-            tokens.iter().any(|token| *token == "--stdio")
+            tokens.contains(&"--stdio")
         }
         _ => false,
     }
