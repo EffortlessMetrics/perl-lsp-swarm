@@ -289,23 +289,38 @@ pub fn collect_request(
         Ok(listing) => match serde_json::from_str::<Vec<GhChild>>(&listing) {
             Ok(rows) => {
                 let truncated = rows.len() >= CHILD_PAGE_LIMIT;
-                let pull_requests = rows
-                    .into_iter()
-                    .filter_map(|row| {
-                        child_state(&row.state).map(|state| ObservedPullRequest {
-                            repository: repository.clone(),
-                            number: row.number,
-                            head_ref: row.head_ref_name,
-                            base_ref: row.base_ref_name,
-                            state,
-                            draft: row.is_draft,
-                            mergeable: child_mergeability(&row.mergeable),
-                            // The host does not report this; absent is not "no".
-                            mergeability_changed_by_parent_merge: None,
-                        })
-                    })
-                    .collect();
-                let completeness = if truncated {
+                let mut unreadable: Vec<String> = Vec::new();
+                let mut pull_requests: Vec<ObservedPullRequest> = Vec::new();
+                for row in rows {
+                    // A state this build does not recognise is not "not a
+                    // child" — it is a child whose state could not be read.
+                    // Dropping the row would shrink the graph and let a
+                    // malformed or newer listing look complete, which is the
+                    // exact permissive read #12885 forbids.
+                    let Some(state) = child_state(&row.state) else {
+                        unreadable.push(format!("#{} state `{}`", row.number, row.state));
+                        continue;
+                    };
+                    pull_requests.push(ObservedPullRequest {
+                        repository: repository.clone(),
+                        number: row.number,
+                        head_ref: row.head_ref_name,
+                        base_ref: row.base_ref_name,
+                        state,
+                        draft: row.is_draft,
+                        mergeable: child_mergeability(&row.mergeable),
+                        // The host does not report this; absent is not "no".
+                        mergeability_changed_by_parent_merge: None,
+                    });
+                }
+                let completeness = if !unreadable.is_empty() {
+                    GraphCompleteness::Unavailable {
+                        detail: format!(
+                            "open-child listing carried unreadable states: {}",
+                            unreadable.join(", ")
+                        ),
+                    }
+                } else if truncated {
                     GraphCompleteness::Truncated {
                         detail: format!(
                             "listing returned the {CHILD_PAGE_LIMIT}-row page limit; more children may exist"

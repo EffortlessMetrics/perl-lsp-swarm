@@ -246,6 +246,51 @@ fn a_page_limit_listing_is_reported_as_truncated() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+/// A child row whose state this build cannot read must retain, not vanish.
+///
+/// Dropping the row would shrink the graph while it still reported `Complete`,
+/// so a malformed or newer `gh` listing could reach `SAFE_TO_DELETE` with an
+/// unseen child. The row deliberately targets an unrelated base: a row that
+/// parsed would not retain on its own, so only the unreadable-state signal can
+/// produce retention here. That makes the test fail if the drop is restored.
+#[test]
+fn an_unreadable_child_state_retains_rather_than_vanishing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let unknown_state = healthy().on(
+        "gh pr list",
+        r#"[{"number":8123,"state":"QUEUED","isDraft":false,"headRefName":"h8123","baseRefName":"other","mergeable":"MERGEABLE"}]"#,
+    );
+    let outcome = evaluate(&collect_request(&unknown_state, 7799, "origin")?.request);
+    assert_eq!(
+        outcome.admission,
+        DeletionAdmission::RetainGraphNotProven,
+        "an unreadable child state must not be dropped: {}",
+        outcome.detail,
+    );
+    assert!(
+        outcome.detail.contains("8123") && outcome.detail.contains("QUEUED"),
+        "the detail must name the row it could not read: {}",
+        outcome.detail,
+    );
+    assert_eq!(branch_deletion_command(&outcome), None);
+
+    // Positive control: the same listing with a readable state on the same
+    // unrelated base admits, proving the retention above comes from the
+    // unreadable state and not from the row merely being present.
+    let readable = healthy().on(
+        "gh pr list",
+        r#"[{"number":8123,"state":"OPEN","isDraft":false,"headRefName":"h8123","baseRefName":"other","mergeable":"MERGEABLE"}]"#,
+    );
+    let outcome = evaluate(&collect_request(&readable, 7799, "origin")?.request);
+    assert_eq!(
+        outcome.admission,
+        DeletionAdmission::SafeToDelete,
+        "a readable child on an unrelated base must not retain: {}",
+        outcome.detail,
+    );
+    Ok(())
+}
+
 /// A live open child on the parent's branch retains, carrying the identity a
 /// reconciler needs.
 #[test]
