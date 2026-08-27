@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 import tempfile
@@ -17,6 +18,17 @@ if SPEC is None or SPEC.loader is None:
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+
+def load_rebuild_import_helper():
+    script = (ROOT / "scripts/maintenance/rebuild_11983_current_main.sh").read_text(encoding="utf-8")
+    start = script.index("python3 - <<'PY'\n") + len("python3 - <<'PY'\n")
+    end = script.index("\nPY\n", start)
+    module = ast.parse(script[start:end])
+    function = next(node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == "replace_stale_import")
+    namespace = {"Path": Path}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(ROOT), "exec"), namespace)
+    return namespace["replace_stale_import"]
 
 
 # Independent oracle for the artifacts reproduced from d174ec1e9 on current
@@ -167,11 +179,40 @@ def main() -> None:
     if actual_hunk_count != EXPECTED_HUNK_COUNT:
         raise RuntimeError("independent fixture hunk count drifted")
 
+    replace_stale_import = load_rebuild_import_helper()
+    with tempfile.TemporaryDirectory(prefix="rebuild-11983-imports-") as directory:
+        path = Path(directory) / "text_sync.rs"
+        old = "old import\n"
+        new = "new import\n"
+        current = "already current import\n"
+        path.write_text(current, encoding="utf-8")
+        replace_stale_import(str(path), old, new, "CodeFormatter", current)
+        if path.read_text(encoding="utf-8") != current:
+            raise RuntimeError("exact already-current import was not preserved")
+        path.write_text("arbitrary marker-free state\n", encoding="utf-8")
+        try:
+            replace_stale_import(str(path), old, new, "CodeFormatter", current)
+        except SystemExit as error:
+            if "exact already-current import" not in str(error):
+                raise RuntimeError(f"unexpected import-helper rejection: {error}") from error
+        else:
+            raise RuntimeError("arbitrary marker-free import state was accepted")
+
     with tempfile.TemporaryDirectory(prefix="rebuild-11983-identities-") as directory:
         root = Path(directory)
         positive = root / "positive"
+        positive_manifest = write_manifest(positive)
+        positive_rejects = list(positive.rglob("*.rej"))
+        if len(positive_rejects) != EXPECTED_FILE_COUNT:
+            raise RuntimeError("positive fixture artifact count drifted")
+        positive_hunks = sum(
+            len(MODULE.hunk_segments(path.read_text(encoding="utf-8")))
+            for path in positive_rejects
+        )
+        if positive_hunks != EXPECTED_HUNK_COUNT:
+            raise RuntimeError("positive fixture hunk count drifted")
         MODULE.validate_manifest(
-            write_manifest(positive),
+            positive_manifest,
             positive / "evidence",
             reject_scope=positive,
             delete_verified=True,
@@ -184,6 +225,20 @@ def main() -> None:
             root / "mismatch" / "evidence",
             "absent from or ambiguous",
         )
+        table_mismatch = write_manifest(root / "table-mismatch")
+        table_path = "crates/perl-dap/features_sot.toml"
+        authored = MODULE.EXPECTED_REJECT_IDENTITIES[table_path]
+        MODULE.EXPECTED_REJECT_IDENTITIES[table_path] = (
+            MODULE.RejectIdentity(authored[0].hunk, "advertised = false"),
+        )
+        try:
+            expect_rejection(
+                table_mismatch,
+                root / "table-mismatch" / "evidence",
+                "hunk identity omitted or reused",
+            )
+        finally:
+            MODULE.EXPECTED_REJECT_IDENTITIES[table_path] = authored
         expect_rejection(
             write_manifest(root / "omission", mutation="omission"),
             root / "omission" / "evidence",

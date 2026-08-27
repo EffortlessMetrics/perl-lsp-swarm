@@ -6,6 +6,7 @@ set -euo pipefail
 first_commit="d174ec1e9845056b8e1a193001ce88a2ea9eaebe"
 first_parent="470277161c18cd5cfa00e31ea6545e2e7baee461"
 second_commit="0f6a4334eb5a53df54a5ed40103659a63578b6f5"
+first_commit_noop=false
 
 # Identity gate (#12045 review): prove this lane executed exactly the triggering
 # pull-request revision before any local reconstruction mutates the workspace.
@@ -108,16 +109,22 @@ def replace_exact(path: str, old: str, new: str) -> None:
     file.write_text(text.replace(old, new), encoding="utf-8")
 
 
-def replace_stale_import(path: str, old: str, new: str, stale_marker: str) -> None:
+def replace_stale_import(
+    path: str,
+    old: str,
+    new: str,
+    stale_marker: str,
+    already_current: str,
+) -> None:
     file = Path(path)
     text = file.read_text(encoding="utf-8")
     count = text.count(old)
     if count == 1:
         file.write_text(text.replace(old, new), encoding="utf-8")
         return
-    if count == 0 and stale_marker not in text:
+    if count == 0 and stale_marker not in text and text.count(already_current) == 1:
         return
-    raise SystemExit(f"{path}: expected one stale import or an already-current import")
+    raise SystemExit(f"{path}: expected one stale import or the exact already-current import")
 
 
 text_sync = "crates/perl-lsp-rs/src/runtime/text_sync.rs"
@@ -128,6 +135,13 @@ replace_stale_import(
     "    Arc, AtomicBool, AtomicU32, DocumentState, HashMap, JsonRpcError, LspServer, Mutex,\n"
     "    Node, NonZeroU32, Ordering, Parser, Value,\n",
     "CodeFormatter",
+    "use super::{\n"
+    "    Arc, AtomicBool, AtomicU32, DocumentState, HashMap, JsonRpcError, LspServer, Mutex, Node,\n"
+    "    NonZeroU32, Ordering, Parser, Value,\n"
+    "    diagnostics_sink::{PushDiagnosticIdentity, PushDiagnosticsDisposition},\n"
+    "    document_symbols_sink::DocumentSymbolIdentity as SymbolsIdentity,\n"
+    "    json, parse_worker, source_path_from_uri,\n"
+    "};",
 )
 
 lifecycle = "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs"
@@ -138,6 +152,10 @@ replace_stale_import(
     "    Arc, AtomicU32, JsonRpcError, LspServer, NonZeroU32, Value, invalid_params, json,\n"
     "    source_path_from_uri,\n",
     "CodeFormatter",
+    "use super::{\n"
+    "    Arc, AtomicU32, JsonRpcError, LspServer, NonZeroU32, Value, invalid_params, json,\n"
+    "    source_path_from_uri,\n"
+    "};",
 )
 
 e2e = Path("crates/perl-lsp-rs/tests/lsp_batteries_e2e_workflow_test.rs")
@@ -160,7 +178,23 @@ PY
   fi
 
   git add -- "${conflicts[@]}"
-  git cherry-pick --continue
+  continue_output=""
+  if continue_output="$(git cherry-pick --continue 2>&1)"; then
+    printf '%s\n' "$continue_output"
+  else
+    continue_status=$?
+    printf '%s\n' "$continue_output" >&2
+    if [ "$continue_status" -ne 1 ] || ! grep -qi "empty cherry-pick" <<<"$continue_output"; then
+      echo "cherry-pick --continue failed for a non-empty-cherry-pick reason; refusing no-op skip." >&2
+      exit 1
+    fi
+    if [ -n "$(git diff --cached --name-only)" ] || [ -n "$(git diff --name-only --diff-filter=U)" ] || ! git diff --quiet; then
+      echo "cherry-pick became non-empty or left unresolved state; refusing no-op skip." >&2
+      exit 1
+    fi
+    git cherry-pick --skip
+    first_commit_noop=true
+  fi
 fi
 
 git cherry-pick "$second_commit"
@@ -310,6 +344,9 @@ worktree_status="$(git status --porcelain=v1)"
 {
   echo "event-head: $REBUILD_EVENT_HEAD_SHA"
   echo "reconstructed-head: $(git rev-parse HEAD)"
+  if [ "$first_commit_noop" = true ]; then
+    echo "first-commit: already-current-empty-cherry-pick-skipped"
+  fi
   printf '%s\n' "$worktree_status"
 } > "$evidence_dir/reconstruction-summary.txt"
 if [ -n "$worktree_status" ]; then
