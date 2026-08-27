@@ -215,7 +215,9 @@ impl LspServer {
                     );
                     if !subtests.is_empty() {
                         perl_lsp_rs_core::providers::testing::subtest::nest_subtest_symbols_in_outline(
-                            &mut outline, &subtests,
+                            &mut outline,
+                            &subtests,
+                            &doc.text,
                         );
                     }
                     let mut document_symbols = document_symbols_to_json(outline);

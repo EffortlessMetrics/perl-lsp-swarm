@@ -94,9 +94,10 @@ pub fn subtest_document_symbols(subtests: &[DiscoveredSubtest]) -> Vec<DocumentS
 pub fn nest_subtest_symbols_in_outline(
     outline: &mut Vec<DocumentSymbol>,
     subtests: &[DiscoveredSubtest],
+    source: &str,
 ) {
     for symbol in subtest_document_symbols(subtests) {
-        let Some(path) = find_owner_path(outline, &symbol.range) else {
+        let Some(path) = find_owner_path(outline, &symbol.range, source) else {
             insert_by_source_position(outline, symbol);
             continue;
         };
@@ -111,7 +112,7 @@ pub fn nest_subtest_symbols_in_outline(
 /// Outline node kinds that can lexically own a subtest: packages/classes and
 /// their module/namespace aliases (these display only their declaration line
 /// while owning trailing members), plus subroutine-shaped scopes.
-const OWNER_KIND_MODULE_FAMILY: [u32; 4] = [2, 3, 4, 5];
+const OWNER_KIND_MODULE_FAMILY: [u32; 5] = [2, 3, 4, 5, 8];
 const OWNER_KIND_CALLABLE: [u32; 2] = [12, 6];
 
 /// Depth-first selection of the closest owner of `target`, mirroring how the
@@ -126,7 +127,11 @@ const OWNER_KIND_CALLABLE: [u32; 2] = [12, 6];
 /// 3. otherwise there is no owner and the subtest stays at its level.
 ///
 /// Returns the child-index path to the winning node.
-fn find_owner_path(nodes: &[DocumentSymbol], target: &WireRange) -> Option<Vec<usize>> {
+fn find_owner_path(
+    nodes: &[DocumentSymbol],
+    target: &WireRange,
+    source: &str,
+) -> Option<Vec<usize>> {
     struct Hits {
         strict: Option<((u32, u32), usize, Vec<usize>)>,
         modules: Vec<((u32, u32), Vec<usize>)>,
@@ -135,6 +140,7 @@ fn find_owner_path(nodes: &[DocumentSymbol], target: &WireRange) -> Option<Vec<u
     fn visit(
         nodes: &[DocumentSymbol],
         target: &WireRange,
+        source: &str,
         prefix: &mut Vec<usize>,
         hits: &mut Hits,
     ) {
@@ -159,40 +165,90 @@ fn find_owner_path(nodes: &[DocumentSymbol], target: &WireRange) -> Option<Vec<u
                 }
             }
             if OWNER_KIND_MODULE_FAMILY.contains(&node.kind)
-                && start_key <= (target.start.line, target.start.character)
+                && module_region_contains(node, target, source)
             {
                 hits.modules.push((start_key, prefix.clone()));
             }
-            visit(&node.children, target, prefix, hits);
+            visit(&node.children, target, source, prefix, hits);
             prefix.pop();
         }
     }
 
     let mut prefix = Vec::new();
     let mut hits = Hits { strict: None, modules: Vec::new() };
-    visit(nodes, target, &mut prefix, &mut hits);
+    visit(nodes, target, source, &mut prefix, &mut hits);
 
     if let Some((_, _, path)) = hits.strict {
         return Some(path);
     }
 
-    // Module-family regions run from the owner's start until the next
-    // same-family start; every collected module starts at or before the
-    // target, so the largest start owns the surrounding member region.
+    // Statement-scoped package regions run until the next package-family
+    // start. Block-scoped package/class/role regions are admitted only while
+    // the target remains inside their source range, so a later root-level
+    // subtest cannot leak back into a completed `package Inner { ... }` block.
     hits.modules.sort_by_key(|(start_key, _)| *start_key);
     let (_, path) = hits.modules.last()?;
     Some(path.clone())
+}
+
+/// Return whether a namespace symbol owns the target's source region.
+///
+/// The compiler outline uses the declaration range for both forms of Perl
+/// package declaration. A statement-scoped `package Foo;` owns the remainder
+/// of the current package, while `package Foo { ... }`, `class Foo { ... }`,
+/// and equivalent role blocks end at their closing brace. The source is the
+/// only reliable discriminator because the wire symbol deliberately exposes
+/// the same source-backed range shape for both namespace families.
+fn module_region_contains(node: &DocumentSymbol, target: &WireRange, source: &str) -> bool {
+    let target_start = target.start.to_byte_offset(source);
+    let node_start = node.range.start.to_byte_offset(source);
+    if target_start < node_start {
+        return false;
+    }
+
+    let target_end = target.end.to_byte_offset(source);
+    let node_end = node.range.end.to_byte_offset(source);
+    if target_end <= node_end {
+        return true;
+    }
+
+    let Some(declaration) = source.get(node_start..node_end) else {
+        return false;
+    };
+
+    // A brace before the declaration's first semicolon identifies the
+    // self-contained block form (`package Foo { ... }`). This also accepts a
+    // trailing semicolon after the closing brace without treating the block
+    // as an open-ended statement package.
+    let Some(open_brace) = declaration.find('{') else {
+        return true;
+    };
+    declaration[..open_brace].contains(';')
 }
 
 /// Insert keeping existing siblings in place and positioning the new symbol
 /// after same-start entries but before anything that starts later in source
 /// order.
 fn insert_by_source_position(children: &mut Vec<DocumentSymbol>, symbol: DocumentSymbol) {
-    let start_key = (symbol.range.start.line, symbol.range.start.character);
-    let position = children.partition_point(|child| {
-        (child.range.start.line, child.range.start.character) <= start_key
-    });
+    let sort_key = document_symbol_sort_key(&symbol);
+    let position = children.partition_point(|child| document_symbol_sort_key(child) <= sort_key);
     children.insert(position, symbol);
+}
+
+/// Mirror the priority used by the compiler document-symbol assembler.
+///
+/// Subtests are LSP functions, so they share the callable priority rather than
+/// being inserted by source position across properties, namespaces, or
+/// variables that the assembler intentionally groups separately.
+fn document_symbol_sort_key(symbol: &DocumentSymbol) -> (u8, u32, u32, u32) {
+    let priority = match symbol.kind {
+        7 => 0,                 // scalar `has` property
+        2 | 3 | 4 | 5 | 8 => 1, // package/class/role namespace family
+        18 | 19 => 2,           // array/hash `has` properties
+        6 | 12 => 3,            // methods/functions, including subtests
+        _ => 4,
+    };
+    (priority, symbol.range.start.line, symbol.range.start.character, symbol.range.end.line)
 }
 
 /// Find the innermost subtest whose range contains the 0-based `line`.

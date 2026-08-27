@@ -154,7 +154,7 @@ fn nested_outline(source: &str) -> Vec<DocumentSymbol> {
     let mut outline = core_result.symbols;
     let subtests = discover_subtests(&ast, source);
     if !subtests.is_empty() {
-        nest_subtest_symbols_in_outline(&mut outline, &subtests);
+        nest_subtest_symbols_in_outline(&mut outline, &subtests, source);
     }
     outline
 }
@@ -240,4 +240,81 @@ fn two_sibling_subtests_keep_source_order_inside_their_sub() {
     let both = find_named(&outline, "both").expect("both symbol missing");
     let names: Vec<&str> = both.children.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, vec!["alpha", "beta"]);
+}
+
+#[test]
+fn role_and_statement_package_regions_own_only_their_lexical_members() {
+    let source = "package Before;
+        subtest 'before' => sub { ok(1); };
+        package My::Role;
+        use Moo::Role;
+        subtest 'role test' => sub { ok(1); };
+        package Inner {
+            subtest 'inner test' => sub { ok(1); };
+        }
+        subtest 'after inner' => sub { ok(1); };
+";
+    let outline = nested_outline(source);
+
+    let role = find_named_deep(&outline, "My::Role").expect("role symbol missing");
+    assert_eq!(role.kind, 8, "Moo::Role must retain the LSP role kind");
+    assert_eq!(
+        role.children.iter().map(|child| child.name.as_str()).collect::<Vec<_>>(),
+        vec!["role test", "after inner"]
+    );
+
+    let inner = find_named_deep(&outline, "Inner").expect("block package symbol missing");
+
+    let before = find_named_deep(&outline, "Before").expect("statement package symbol missing");
+    assert_eq!(
+        before
+            .children
+            .iter()
+            .filter(|child| child.detail == "subtest")
+            .map(|child| child.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["before"]
+    );
+    assert!(
+        !inner.children.iter().any(|child| child.name == "after inner"),
+        "a subtest after a block package must not remain under that package"
+    );
+    assert_eq!(
+        outline.iter().filter(|symbol| symbol.detail == "subtest").count(),
+        0,
+        "all package-owned subtests should be nested"
+    );
+}
+
+#[test]
+fn dynamic_nested_names_preserve_cardinality_and_source_order() {
+    let source = "package Dynamic;
+        my $name = 'runtime';
+        subtest $name => sub {
+            subtest 'literal' => sub { ok(1); };
+            subtest \"case $name\" => sub { ok(1); };
+        };
+";
+    let outline = nested_outline(source);
+    let package = find_named_deep(&outline, "Dynamic").expect("package symbol missing");
+    let outer =
+        find_named(&package.children, "subtest (dynamic)").expect("dynamic subtest missing");
+    assert_eq!(outer.children.len(), 2);
+    assert_eq!(
+        outer.children.iter().map(|child| child.name.as_str()).collect::<Vec<_>>(),
+        vec!["literal", "subtest (dynamic)"]
+    );
+}
+
+#[test]
+fn new_subtest_keeps_compiler_priority_order_with_mixed_siblings() {
+    let source = "package Mixed;
+        my $value = 1;
+        subtest 'middle' => sub { ok(1); };
+        sub later { return 1; }
+";
+    let outline = nested_outline(source);
+    let package = find_named_deep(&outline, "Mixed").expect("package symbol missing");
+    let names: Vec<&str> = package.children.iter().map(|child| child.name.as_str()).collect();
+    assert_eq!(names, vec!["middle", "later", "$value"]);
 }
