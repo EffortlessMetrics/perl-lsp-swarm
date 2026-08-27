@@ -226,18 +226,41 @@ if (-not [string]::IsNullOrWhiteSpace($Branch) -and -not $Abandoned) {
     $localBranches = @(Invoke-Git -Repository $canonical -GitArgs @('branch', '--format', '%(refname:short)', '--list', $Branch))
     if ($localBranches -contains $Branch) {
         $mergedBranches = @(Invoke-Git -Repository $canonical -GitArgs @('branch', '--merged', 'origin/main', '--format', '%(refname:short)'))
-        $branchDeleteArgs = @('branch', '-d', $Branch)
         $branchDeleteAction = 'delete merged local branch'
-
         if ($mergedBranches -notcontains $Branch -and $verifiedMergedPr) {
-            $branchDeleteArgs = @('branch', '-D', $Branch)
             $branchDeleteAction = 'delete squash-merged local branch'
         }
 
         if ($mergedBranches -contains $Branch -or $verifiedMergedPr) {
             if (Test-BranchDeletionAdmission -PullRequest $PrNumber -Repository $canonical) {
-                if ($PSCmdlet.ShouldProcess($Branch, $branchDeleteAction)) {
-                    Invoke-Git -Repository $canonical -GitArgs $branchDeleteArgs | Out-Null
+                # The admission covers the REMOTE branch. Deleting the local ref
+                # is a separate act, so prove the local tip is the admitted
+                # remote tip first; unpushed commits are unsalvaged work no
+                # admission authorized.
+                $localTip = (& git -C $canonical rev-parse --verify --quiet "refs/heads/$Branch" 2>$null)
+                $remoteTip = (& git -C $canonical ls-remote origin "refs/heads/$Branch" 2>$null)
+                if (-not [string]::IsNullOrWhiteSpace($remoteTip)) {
+                    $remoteTip = ([string]$remoteTip).Split()[0]
+                }
+                else {
+                    $remoteTip = (& git -C $canonical rev-parse --verify --quiet "refs/remotes/origin/$Branch" 2>$null)
+                }
+
+                if ([string]::IsNullOrWhiteSpace($localTip) -or [string]::IsNullOrWhiteSpace($remoteTip)) {
+                    Write-Host "branch not deleted because its tip could not be read on both sides: $Branch"
+                }
+                elseif (([string]$localTip).Trim() -ne ([string]$remoteTip).Trim()) {
+                    Write-Host "branch not deleted because the local tip is not the admitted remote tip: $Branch"
+                }
+                elseif ($PSCmdlet.ShouldProcess($Branch, $branchDeleteAction)) {
+                    # Atomic compare-and-delete on the admitted tip. `branch -D`
+                    # deletes whatever the ref points at now, so a ref that
+                    # advanced between the check above and here would lose that
+                    # work; `update-ref -d <ref> <old-oid>` fails closed instead.
+                    & git -C $canonical update-ref -d "refs/heads/$Branch" ([string]$localTip).Trim() 2>$null
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Host "branch not deleted because it moved between admission and deletion: $Branch"
+                    }
                 }
             }
         }

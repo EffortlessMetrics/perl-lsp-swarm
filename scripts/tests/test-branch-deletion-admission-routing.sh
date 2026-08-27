@@ -191,4 +191,53 @@ if git -C "$TMP/insync" show-ref --verify --quiet refs/heads/feature/insync; the
 fi
 pass 'an admitted branch already at the origin tip is deleted'
 
+# The deletion must be a compare-and-delete on the admitted tip, so a ref that
+# advances between the tip check and the delete is preserved rather than
+# discarded. `git branch -D` cannot do this — it deletes whatever the ref points
+# at now. `git update-ref -d <ref> <expected-old-oid>` fails closed instead.
+#
+# Verified directly here rather than only through the helpers, because this is
+# the mechanism an earlier revision of this PR wrongly claimed did not exist.
+CAS="$TMP/cas"
+git init -q -b main "$CAS"
+git -C "$CAS" config user.email test@example.invalid
+git -C "$CAS" config user.name test
+printf 'init\n' > "$CAS/file"
+git -C "$CAS" add file
+git -C "$CAS" commit -qm init
+git -C "$CAS" branch feature/cas
+STALE_OID="$(git -C "$CAS" rev-parse refs/heads/feature/cas)"
+git -C "$CAS" checkout -q feature/cas
+printf 'advanced\n' >> "$CAS/file"
+git -C "$CAS" add file
+git -C "$CAS" commit -qm 'advanced after the tip was read'
+git -C "$CAS" checkout -q main
+
+if git -C "$CAS" update-ref -d refs/heads/feature/cas "$STALE_OID" 2>/dev/null; then
+    fail 'compare-and-delete accepted a stale expected oid'
+fi
+git -C "$CAS" show-ref --verify --quiet refs/heads/feature/cas \
+    || fail 'a ref that advanced between check and delete was destroyed'
+pass 'compare-and-delete preserves a ref that advanced after the tip was read'
+
+CURRENT_OID="$(git -C "$CAS" rev-parse refs/heads/feature/cas)"
+git -C "$CAS" update-ref -d refs/heads/feature/cas "$CURRENT_OID" \
+    || fail 'compare-and-delete refused the current oid'
+if git -C "$CAS" show-ref --verify --quiet refs/heads/feature/cas; then
+    fail 'positive control: compare-and-delete left the ref in place at its current oid'
+fi
+pass 'compare-and-delete removes the ref at its admitted oid'
+
+# Both shell helpers must use that mechanism, not `branch -D`.
+for file in scripts/swarm-clean scripts/cleanup-completed-worktrees.sh; do
+    grep -qF 'update-ref -d' "$ROOT/$file" \
+        || fail "$file does not delete with a compare-and-delete on the admitted oid"
+    # Ignore comments, as the Rust recurrence scan does: prose explaining why
+    # `branch -D` is wrong is not a call to it.
+    if grep -vE '^[[:space:]]*#' "$ROOT/$file" | grep -qE 'branch +-D'; then
+        fail "$file still deletes with branch -D, which ignores the admitted oid"
+    fi
+done
+pass 'both shell helpers delete with a compare-and-delete, not branch -D'
+
 printf 'All branch-deletion admission routing checks passed.\n'

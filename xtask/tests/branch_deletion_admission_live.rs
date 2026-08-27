@@ -92,6 +92,12 @@ fn healthy() -> FakeCommands {
             "git remote get-url origin",
             "https://github.com/EffortlessMetrics/perl-lsp-swarm.git\n",
         )
+        // The deletion travels over the PUSH endpoint, which git reports
+        // separately; collection reads both and requires them to agree.
+        .on(
+            "git remote get-url --push origin",
+            "https://github.com/EffortlessMetrics/perl-lsp-swarm.git\n",
+        )
         .on("gh pr view 7799", &merged_parent_json())
         .on("gh pr list", "[]")
         .on("git ls-remote origin", &format!("{HEAD_SHA}\trefs/heads/{BRANCH}\n"))
@@ -558,13 +564,64 @@ fn the_deletion_path_reverifies_remote_identity() -> Result<(), Box<dyn std::err
     let outcome = evaluate(&collect_request(&healthy(), 7799, "origin")?.request);
     assert_eq!(outcome.admission, DeletionAdmission::SafeToDelete);
 
-    let moved_remote =
-        healthy().on("git remote get-url origin", "https://github.com/SomeoneElse/other.git\n");
+    let moved_remote = healthy()
+        .on("git remote get-url origin", "https://github.com/SomeoneElse/other.git\n")
+        .on("git remote get-url --push origin", "https://github.com/SomeoneElse/other.git\n");
     let deleter = RecordingDeleter::default();
     let bound = collect_request(&healthy(), 7799, "origin")?.remote_identity;
     let result = execute_admitted_deletion(&moved_remote, &deleter, &outcome, &bound);
     assert!(result.is_err(), "a repository mismatch must refuse the deletion");
     assert!(deleter.invocations.borrow().is_empty(), "nothing may be executed once identity fails");
+    Ok(())
+}
+
+/// A remote whose push URL differs from its fetch URL must not be admitted.
+///
+/// `git remote get-url <remote>` reads the FETCH url, but `git push` honors
+/// `remote.<name>.pushurl`. Verified against real git 2.43.0: a remote can
+/// report `github.com/EffortlessMetrics/perl-lsp-swarm` for fetch and an
+/// entirely different endpoint for push. Binding only the fetch URL would let
+/// collection, the child graph, the branch tip and the identity re-check all
+/// verify against endpoint A while the leased deletion is delivered to
+/// endpoint B — the one thing the whole admission exists to prevent.
+#[test]
+fn a_divergent_push_url_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+    // Positive control first: the fixture is only meaningful if the SAME pair
+    // admits, so a refusal below cannot come from the fetch URL alone.
+    assert_eq!(
+        evaluate(&collect_request(&healthy(), 7799, "origin")?.request).admission,
+        DeletionAdmission::SafeToDelete,
+        "agreeing fetch and push endpoints must still admit",
+    );
+
+    let divergent = healthy()
+        .on("git remote get-url --push origin", "https://evil.example.com/Other/Repo.git\n");
+    let collected = collect_request(&divergent, 7799, "origin");
+    let error = collected.err().ok_or("a divergent push URL must refuse collection")?;
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("pushes to") && rendered.contains("evil.example.com"),
+        "the refusal must name the endpoint the deletion would have reached: {rendered}",
+    );
+
+    // The re-check immediately before deleting must refuse it too, not only
+    // collection: pushurl can be reconfigured inside the window.
+    let bound = collect_request(&healthy(), 7799, "origin")?.remote_identity;
+    assert!(
+        verify_remote_identity(&divergent, "origin", &bound).is_err(),
+        "re-verification must refuse a remote whose push endpoint diverged",
+    );
+
+    let outcome = evaluate(&collect_request(&healthy(), 7799, "origin")?.request);
+    let deleter = RecordingDeleter::default();
+    assert!(
+        execute_admitted_deletion(&divergent, &deleter, &outcome, &bound).is_err(),
+        "the deletion path must refuse a divergent push endpoint",
+    );
+    assert!(
+        deleter.invocations.borrow().is_empty(),
+        "nothing may be executed once the push endpoint fails to verify",
+    );
     Ok(())
 }
 

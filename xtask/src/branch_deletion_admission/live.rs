@@ -298,12 +298,10 @@ pub fn collect_request(
     // Repository identity comes from the remote itself, so the admission is
     // bound to the repository the deletion would actually target rather than
     // to a caller-supplied label.
-    let remote_url = commands
-        .capture("git", &["remote", "get-url", remote])
-        .map_err(|error| eyre!("reading the URL of remote {remote}: {error}"))?;
-    let remote_identity = parse_remote_identity(&remote_url).ok_or_else(|| {
-        eyre!("remote {remote} URL {:?} is not host/owner/name shaped", remote_url.trim())
-    })?;
+    // Both the fetch and push URLs are read here: the deletion travels over the
+    // push endpoint, so admitting against the fetch endpoint alone would bind
+    // the wrong thing. A divergence refuses collection outright.
+    let remote_identity = resolve_remote_endpoint(commands, remote)?;
     let repository = remote_identity.repository.clone();
 
     let parent_json = commands.capture(
@@ -437,15 +435,55 @@ pub struct LiveCollection {
 ///
 /// `remote_verification_command` only *names* this check; this runs it. A
 /// mismatch or an unreadable remote is an error, never a pass.
+/// Resolve a remote to one endpoint, requiring its fetch and push URLs to agree.
+///
+/// `git remote get-url <remote>` reads the **fetch** URL, but `git push` honors
+/// `remote.<name>.pushurl` when it is configured. Verified against real git
+/// 2.43.0: a remote can report `github.com/Owner/Repo` for fetch and an
+/// entirely different endpoint for push. Binding only the fetch URL would let
+/// collection, the child graph, the branch tip and identity all verify against
+/// endpoint A while the leased deletion is delivered to endpoint B.
+///
+/// So both are read and required to be the same endpoint. A divergence is
+/// refused rather than resolved in favour of either: the caller's intent is
+/// unknowable and only one of the two was ever admitted.
+fn resolve_remote_endpoint(
+    commands: &dyn ReadOnlyCommands,
+    remote: &str,
+) -> Result<RemoteIdentity> {
+    let fetch_url = commands
+        .capture("git", &["remote", "get-url", remote])
+        .map_err(|error| eyre!("reading the fetch URL of remote {remote}: {error}"))?;
+    let fetch = parse_remote_identity(&fetch_url).ok_or_else(|| {
+        eyre!(
+            "remote {remote} fetch URL {:?} is not an endpoint/owner/name shape",
+            fetch_url.trim()
+        )
+    })?;
+
+    let push_url = commands
+        .capture("git", &["remote", "get-url", "--push", remote])
+        .map_err(|error| eyre!("reading the push URL of remote {remote}: {error}"))?;
+    let push = parse_remote_identity(&push_url).ok_or_else(|| {
+        eyre!("remote {remote} push URL {:?} is not an endpoint/owner/name shape", push_url.trim())
+    })?;
+
+    if fetch != push {
+        return Err(eyre!(
+            "remote {remote} fetches from {} but pushes to {}; a deletion would be delivered to an endpoint the admission never covered",
+            fetch.render(),
+            push.render()
+        ));
+    }
+    Ok(push)
+}
+
 pub fn verify_remote_identity(
     commands: &dyn ReadOnlyCommands,
     remote: &str,
     expected: &RemoteIdentity,
 ) -> Result<()> {
-    let url = commands.capture("git", &["remote", "get-url", remote])?;
-    let observed = parse_remote_identity(&url).ok_or_else(|| {
-        eyre!("remote {remote} URL {:?} is not host/owner/name shaped", url.trim())
-    })?;
+    let observed = resolve_remote_endpoint(commands, remote)?;
     if &observed != expected {
         return Err(eyre!(
             "remote {remote} resolves to {} but the admission was granted against {}",

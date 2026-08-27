@@ -173,6 +173,28 @@ local_tip_is_admitted() {
     [[ "$local_sha" == "$remote_sha" ]]
 }
 
+# Delete the local ref with an atomic compare-and-delete on its admitted tip.
+#
+# `git branch -D` deletes whatever the ref points at NOW, so a ref that advanced
+# between the tip check and the delete loses that work. git does provide a
+# compare-and-delete: `git update-ref -d <ref> <expected-old-oid>` fails with
+# "cannot lock ref ... is at X but expected Y" and preserves the ref when the
+# oid is stale (verified against real git 2.43.0: stale exits 1 and the branch
+# survives; current exits 0 and it is deleted). An earlier revision of this PR
+# claimed no such lease existed; that was wrong.
+delete_branch_at_admitted_tip() {
+    local branch="$1" expected
+
+    expected="$(git -C "$REPO_ROOT" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)"
+    if [[ -z "$expected" ]]; then
+        echo "    -> retaining local branch $branch: its tip became unreadable" >&2
+        return 0
+    fi
+    if ! git -C "$REPO_ROOT" update-ref -d "refs/heads/$branch" "$expected" 2>/dev/null; then
+        echo "    -> retaining local branch $branch: it moved between admission and deletion" >&2
+    fi
+}
+
 # Remove a worktree. Uses git worktree remove (no --force) so git's own dirty-check
 # remains as a second safety net even though we've already classified the worktree clean.
 # Never falls back to raw rm -rf (spec requirement).
@@ -191,7 +213,7 @@ remove_worktree() {
             # when it is the same tip, so unpushed local commits are never
             # discarded under a remote-scoped authorization.
             if local_tip_is_admitted "$branch"; then
-                git -C "$REPO_ROOT" branch -D "$branch" 2>/dev/null || true
+                delete_branch_at_admitted_tip "$branch"
             else
                 echo "    -> retaining local branch $branch: local tip is not the admitted remote tip" >&2
             fi

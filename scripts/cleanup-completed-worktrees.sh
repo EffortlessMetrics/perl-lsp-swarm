@@ -200,7 +200,18 @@ delete_branch() {
             "$branch" >&2
         return 0
     fi
-    git_out git -C "$REPO_ROOT" branch -D "$branch" || true
+    local expected
+    expected="$(git -C "$REPO_ROOT" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)"
+    if [[ -z "$expected" ]]; then
+        printf '    -> retaining local branch %s: its tip became unreadable\n' "$branch" >&2
+        return 0
+    fi
+    # Atomic compare-and-delete on the admitted tip: a ref that advanced between
+    # the check above and this deletion is preserved, not discarded.
+    if ! git_out git -C "$REPO_ROOT" update-ref -d "refs/heads/$branch" "$expected"; then
+        printf '    -> retaining local branch %s: it moved between admission and deletion\n' \
+            "$branch" >&2
+    fi
 }
 
 branch_landed_via_pr() {
