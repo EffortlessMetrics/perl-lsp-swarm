@@ -5142,6 +5142,12 @@ profile = "recommended"
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn get_system_inc_reuses_cached_probe_without_relaunching() -> TestResult {
+        // A successful first probe is the test's input, not the production
+        // latency contract. Keep the production one-second bound while
+        // giving this live-process cache test enough room for cold-start and
+        // host-scheduler variance on Windows.
+        let _probe_timeout =
+            perl_oracle_env::widen_startup_inc_probe_timeout(Duration::from_secs(30));
         let perl_path = match resolve_perl_path_with_toolchain() {
             Ok(path) => path,
             Err(_) => return Ok(()),
