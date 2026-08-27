@@ -28,6 +28,8 @@
 //! }
 //! ```
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use std::cell::Cell;
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::BTreeMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -40,6 +42,43 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use super::SYSTEM_INC_PROBE_TIMEOUT;
 use super::WorkspaceConfig;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    static STARTUP_INC_PROBE_TIMEOUT_OVERRIDE: Cell<Option<Duration>> = const { Cell::new(None) };
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+struct StartupIncProbeTimeoutGuard {
+    previous: Option<Duration>,
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl Drop for StartupIncProbeTimeoutGuard {
+    fn drop(&mut self) {
+        STARTUP_INC_PROBE_TIMEOUT_OVERRIDE.with(|timeout| timeout.set(self.previous));
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn widen_startup_inc_probe_timeout(timeout: Duration) -> StartupIncProbeTimeoutGuard {
+    let previous = STARTUP_INC_PROBE_TIMEOUT_OVERRIDE.with(|current| {
+        let previous = current.get();
+        current.set(Some(timeout));
+        previous
+    });
+    StartupIncProbeTimeoutGuard { previous }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn startup_inc_probe_timeout() -> Duration {
+    STARTUP_INC_PROBE_TIMEOUT_OVERRIDE.with(Cell::get).unwrap_or(SYSTEM_INC_PROBE_TIMEOUT)
+}
+
+#[cfg(not(all(test, not(target_arch = "wasm32"))))]
+fn startup_inc_probe_timeout() -> Duration {
+    SYSTEM_INC_PROBE_TIMEOUT
+}
 
 #[cfg(all(not(target_arch = "wasm32"), windows))]
 const PERLDOC_EXECUTABLE_CANDIDATES: &[&str] =
@@ -232,7 +271,7 @@ impl PerlOracleEnv {
         Some(Self {
             perl_binary,
             cwd,
-            timeout: SYSTEM_INC_PROBE_TIMEOUT,
+            timeout: startup_inc_probe_timeout(),
             allow_perl5lib: config.use_perl5lib,
             allow_perl5opt: false,
             allow_local_lib: false,
