@@ -789,13 +789,13 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
         match node.product_context.as_str() {
             "completion_item" => completion_rows += 1,
             "code_action" => action_rows += 1,
-            "internal_plan" => {
-                if !spine_seen.insert((node.product_context.as_str(), node.role.as_str())) {
-                    bail!(
-                        "add_missing context collapse: two internal-plan rows share role {} and collapse stages",
-                        node.role
-                    );
-                }
+            "internal_plan"
+                if !spine_seen.insert((node.product_context.as_str(), node.role.as_str())) =>
+            {
+                bail!(
+                    "add_missing context collapse: two internal-plan rows share role {} and collapse stages",
+                    node.role
+                );
             }
             _ => {}
         }
@@ -1160,26 +1160,24 @@ fn application_cap_for_role(role: &str) -> &'static str {
 
 fn wire_coherence(node: &TrainNode) -> Result<()> {
     match node.wire_kind.as_str() {
-        "workspace_edit" => {
+        "workspace_edit"
             if !matches!(
                 node.product_context.as_str(),
                 "code_action" | "all_contexts" | "external_compatibility"
-            ) {
-                bail!(
-                    "WorkspaceEdit payload outside a compatible context at {} ({})",
-                    node.node_id,
-                    node.product_context
-                );
-            }
+            ) =>
+        {
+            bail!(
+                "WorkspaceEdit payload outside a compatible context at {} ({})",
+                node.node_id,
+                node.product_context
+            );
         }
-        "completion_item" => {
-            if node.product_context != "completion_item" {
-                bail!(
-                    "CompletionItem payload requires the completion_item context at {} ({})",
-                    node.node_id,
-                    node.product_context
-                );
-            }
+        "completion_item" if node.product_context != "completion_item" => {
+            bail!(
+                "CompletionItem payload requires the completion_item context at {} ({})",
+                node.node_id,
+                node.product_context
+            );
         }
         _ => {}
     }

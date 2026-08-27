@@ -343,10 +343,8 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
         match ch {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
-            ')' | ']' | '}' => {
-                if stack.pop().is_none() {
-                    return idx.saturating_sub(start);
-                }
+            ')' | ']' | '}' if stack.pop().is_none() => {
+                return idx.saturating_sub(start);
             }
             ',' | ';' if stack.is_empty() => return idx.saturating_sub(start),
             _ => {}

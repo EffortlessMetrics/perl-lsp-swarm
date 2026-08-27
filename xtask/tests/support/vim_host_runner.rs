@@ -1641,10 +1641,8 @@ fn walk_wire_value(
                             evidence.publish_diagnostics_batches.push(batch);
                         }
                     }
-                    "textDocument/didChange" => {
-                        if evidence.did_change_line.is_none() {
-                            evidence.did_change_line = Some(line_index);
-                        }
+                    "textDocument/didChange" if evidence.did_change_line.is_none() => {
+                        evidence.did_change_line = Some(line_index);
                     }
                     _ => {}
                 }
