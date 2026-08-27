@@ -229,11 +229,14 @@ fn starts_heredoc_label(rest: &str) -> bool {
 /// its depth, because wrongly *skipping* a real opener is as much a defect as
 /// wrongly taking one.
 ///
-/// One signal sends the line to [`legacy_heredoc_marker`], which answers
-/// exactly as the pre-#5456 code did: a quote-like operator or bare regex
-/// starting on the line. Its delimiters are not modelled here, so any quote
-/// inside it is misread — `qr/it's/` looks like an opening `'`. Detecting the
-/// *construct* rather than counting quotes is what makes this sound: on
+/// One signal sends the *rest* of the line to [`legacy_heredoc_marker`],
+/// which answers as the pre-#5456 code did: a quote-like operator or bare
+/// regex starting on the line. Its delimiters are not modelled here, so any
+/// quote inside it is misread — `qr/it's/` looks like an opening `'`. Only the
+/// tail is surrendered, because the prefix was read correctly and giving it
+/// back to a whole-line `line.find("<<")` would reintroduce #5456 on
+/// `my $s = "a <<FAKE"; my $r = qr/x/;`. Detecting the *construct* rather than
+/// counting quotes is what makes this sound: on
 /// `my $r = qr/it's/; print <<END if qr/don't/;` the two stray apostrophes
 /// cancel and the line finishes balanced, so end-of-line balance alone would
 /// have wrongly certified it and hidden a real opener.
@@ -269,10 +272,14 @@ fn unquoted_heredoc_marker(line: &str, open_string: Option<u8>) -> (Option<usize
             }
             None => {
                 if starts_unmodelled_quote_like(bytes, index) {
-                    // Answer this line by the legacy rule. Reached only from
-                    // the `None` arm, so there is no open delimiter to carry
-                    // and the next line starts from a clean slate either way.
-                    return (legacy_heredoc_marker(line), None);
+                    // Answer the rest of this line by the legacy rule. Reached
+                    // only from the `None` arm, so there is no open delimiter
+                    // to carry and the next line starts from a clean slate
+                    // either way. The window starts at `index`: the prefix was
+                    // modelled and is already known to hold no unquoted `<<`
+                    // or `#`, so anything `<<`-shaped back there is string
+                    // content and must not be resurrected.
+                    return (legacy_heredoc_marker(line, index), None);
                 }
                 match byte {
                     b'\'' | b'"' | b'`' => active = Some(byte),
@@ -306,16 +313,24 @@ fn starts_unmodelled_quote_like(bytes: &[u8], index: usize) -> bool {
     }
 }
 
-/// The pre-#5456 marker rule: the first `<<` on the line, unless an unquoted
-/// `#` precedes it.
+/// The pre-#5456 marker rule applied to the tail of the line the simple
+/// machine cannot read: the first `<<` at or after `from`, unless an unquoted
+/// `#` separates them.
 ///
-/// Reachable only when [`unquoted_heredoc_marker`] ends the line inside a
-/// quote. It is retained verbatim so such a line — a genuine multi-line string,
-/// or a construct the simple machine cannot read — keeps its previous
-/// classification instead of acquiring a new failure mode.
-fn legacy_heredoc_marker(line: &str) -> Option<usize> {
-    let marker = line.find("<<")?;
-    if prefix_has_unquoted_comment(&line[..marker]) {
+/// `from` is where an unmodelled quote-like construct starts. Everything
+/// before it *was* fully modelled, and [`unquoted_heredoc_marker`] only
+/// reaches here having already returned for an unquoted `<<` or `#` in that
+/// prefix. So the prefix provably contains neither: every `<<` in it is string
+/// content. Searching the whole line would resurrect exactly those — the #5456
+/// defect this pass exists to remove — which is why the window starts at
+/// `from` rather than at 0.
+///
+/// Within the tail the legacy rule is retained verbatim, holes included, so a
+/// construct the machine cannot read keeps its previous classification instead
+/// of acquiring a new failure mode.
+fn legacy_heredoc_marker(line: &str, from: usize) -> Option<usize> {
+    let marker = from + line.get(from..)?.find("<<")?;
+    if prefix_has_unquoted_comment(&line[from..marker]) {
         return None;
     }
     Some(marker)
@@ -1926,6 +1941,34 @@ mod tests {
             super::heredoc_opener_on_line("my $r = qr/it's fine/; print <<EOF;"),
             Some(("EOF".to_string(), false)),
             "an unmodelled construct must not hide a real opener"
+        );
+    }
+
+    #[test]
+    fn quoted_marker_before_an_unmodelled_construct_opens_no_heredoc() {
+        // #12934 review (CHANGES_REQUIRED): the fallback searched the *whole*
+        // line, so a `<<` the scan had already proven to be string content was
+        // resurrected as soon as any quote-like construct appeared later on
+        // the line. Verified against perl 5.38.2: `syntax OK`, no heredoc.
+        assert_eq!(
+            super::heredoc_opener_on_line("my $s = \"a <<FAKE\"; my $r = qr/x/;"),
+            None,
+            "a quoted marker must stay quoted when a later construct forces the fallback"
+        );
+        // The other direction still holds: a real opener *after* the construct
+        // is found. Falling back must narrow the search window, not abandon it.
+        assert_eq!(
+            super::heredoc_opener_on_line("my $s = \"a <<FAKE\"; my $r = qr/x/; print <<EOF;"),
+            Some(("EOF".to_string(), false)),
+            "narrowing the fallback window must not hide a real opener"
+        );
+        // Region-level consequence of the first case: no phantom body, so the
+        // rest of the file stays `Code`.
+        let source = "my $s = \"a <<FAKE\"; my $r = qr/x/;\ncode();\n";
+        assert!(
+            scan_heredoc_regions(source).is_empty(),
+            "a quoted marker must open no region: {:?}",
+            scan_heredoc_regions(source)
         );
     }
 
