@@ -69,6 +69,7 @@ pub struct DapWorkflowSession {
     pub timeout: Duration,
     seq: i64,
     perl_path: Option<PathBuf>,
+    resolve_perl_on_launch: bool,
 }
 
 // Shared workflow-test helpers are consumed incrementally by DAP scenarios.
@@ -76,7 +77,14 @@ pub struct DapWorkflowSession {
 impl DapWorkflowSession {
     #[cfg(test)]
     pub fn with_receiver_for_test(rx: Receiver<DapMessage>, timeout: Duration) -> Self {
-        Self { adapter: DebugAdapter::new(), rx, timeout, seq: 0, perl_path: None }
+        Self {
+            adapter: DebugAdapter::new(),
+            rx,
+            timeout,
+            seq: 0,
+            perl_path: None,
+            resolve_perl_on_launch: false,
+        }
     }
 
     /// Create a new session and send `initialize`.
@@ -84,19 +92,32 @@ impl DapWorkflowSession {
     /// Returns an error if initialization fails or the `initialized` event is
     /// not received within `timeout`.
     pub fn new(timeout: Duration) -> Result<Self, String> {
-        let perl_path = resolve_launch_perl_path()?;
-        Self::new_with_perl(timeout, perl_path.as_deref())
+        Self::new_initialized(timeout, None, true)
     }
 
     /// Create a session and make every convenience launch helper use the
     /// supplied interpreter path verbatim.
     pub fn new_with_perl(timeout: Duration, perl_path: Option<&Path>) -> Result<Self, String> {
+        Self::new_initialized(timeout, perl_path, false)
+    }
+
+    fn new_initialized(
+        timeout: Duration,
+        perl_path: Option<&Path>,
+        resolve_perl_on_launch: bool,
+    ) -> Result<Self, String> {
         let mut adapter = DebugAdapter::new();
         let (tx, rx) = sync_channel(64);
         adapter.set_event_sender(tx);
 
-        let mut session =
-            Self { adapter, rx, timeout, seq: 0, perl_path: perl_path.map(Path::to_path_buf) };
+        let mut session = Self {
+            adapter,
+            rx,
+            timeout,
+            seq: 0,
+            perl_path: perl_path.map(Path::to_path_buf),
+            resolve_perl_on_launch,
+        };
 
         let resp = session.request("initialize", None);
         session.expect_success(&resp, "initialize")?;
@@ -168,7 +189,8 @@ impl DapWorkflowSession {
         // Gated callers use this helper after `perl_available()`. Resolve the
         // same pinned identity here as well so a valid pin controls the live
         // process, even when the caller uses the legacy convenience method.
-        let args = launch_arguments(script_path, None, stop_on_entry, self.perl_path.as_deref());
+        let perl_path = self.perl_path_for_launch()?;
+        let args = launch_arguments(script_path, None, stop_on_entry, perl_path.as_deref());
         let resp = self.request("launch", Some(args));
         self.expect_success(&resp, "launch")?;
         Ok(())
@@ -181,10 +203,19 @@ impl DapWorkflowSession {
     pub fn launch_with_cwd(&mut self, script_path: &str, cwd: &str) -> Result<(), String> {
         // Keep the explicit cwd path under the same pin-propagating contract
         // as `launch`; this is a gated live-session consumer too.
-        let args = launch_arguments(script_path, Some(cwd), false, self.perl_path.as_deref());
+        let perl_path = self.perl_path_for_launch()?;
+        let args = launch_arguments(script_path, Some(cwd), false, perl_path.as_deref());
         let resp = self.request("launch", Some(args));
         self.expect_success(&resp, "launch")?;
         Ok(())
+    }
+
+    fn perl_path_for_launch(&mut self) -> Result<Option<PathBuf>, String> {
+        if self.resolve_perl_on_launch {
+            self.perl_path = resolve_launch_perl_path()?;
+            self.resolve_perl_on_launch = false;
+        }
+        Ok(self.perl_path.clone())
     }
 
     /// Attach to a running process with optional stopOnEntry.
@@ -1362,15 +1393,54 @@ fn probe_debuggee_perl_with_options(
         // dropping `stdin` afterwards delivers EOF exactly like an editor closing
         // its side of the session.
         let stdin_pipe = child.stdin.take();
-        let writer = std::thread::spawn(move || {
-            if let Some(mut stdin) = stdin_pipe {
-                let _ = stdin.write_all(b"c\nq\n");
-                let _ = stdin.flush();
+        let writer = match std::thread::Builder::new()
+            .name("perl-dap-probe-stdin".to_string())
+            .spawn(move || {
+                if let Some(mut stdin) = stdin_pipe {
+                    let _ = stdin.write_all(b"c\nq\n");
+                    let _ = stdin.flush();
+                }
+            }) {
+            Ok(writer) => writer,
+            Err(error) => {
+                let cleanup =
+                    terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
+                return Err(fail(format!(
+                    "cannot spawn probe stdin writer: {error}{}",
+                    cleanup
+                        .err()
+                        .map_or_else(String::new, |error| { format!("; cleanup failed: {error}") })
+                )));
             }
-        });
+        };
 
-        let stdout_chunks = drain_pipe(stdout_pipe);
-        let stderr_chunks = drain_pipe(stderr_pipe);
+        let stdout_chunks = match drain_pipe(stdout_pipe) {
+            Ok(stdout_chunks) => stdout_chunks,
+            Err(error) => {
+                let cleanup =
+                    terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
+                let writer_result =
+                    writer.join().map_err(|_| "probe stdin writer thread panicked".to_string());
+                return Err(fail(format!(
+                    "cannot spawn probe stdout reader: {error}{}",
+                    cleanup_failure_suffix(cleanup, writer_result, Ok(()), Ok(()))
+                )));
+            }
+        };
+        let stderr_chunks = match drain_pipe(stderr_pipe) {
+            Ok(stderr_chunks) => stderr_chunks,
+            Err(error) => {
+                let cleanup =
+                    terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
+                let writer_result =
+                    writer.join().map_err(|_| "probe stdin writer thread panicked".to_string());
+                let stdout_result = join_pipe_reader(stdout_chunks);
+                return Err(fail(format!(
+                    "cannot spawn probe stderr reader: {error}{}",
+                    cleanup_failure_suffix(cleanup, writer_result, stdout_result, Ok(()))
+                )));
+            }
+        };
 
         // The injected wait error is test-only. Give a controlled descendant a
         // scheduling window to start before exercising that immediate error path;
@@ -1749,7 +1819,7 @@ impl ProbePipe for ChildStderr {
 /// Drain `pipe` to EOF on a background thread, forwarding chunks to the
 /// returned receiver. The join handle remains owned by the probe so cleanup
 /// cannot silently return while a detached reader is still blocked on a pipe.
-fn drain_pipe<R>(pipe: R) -> PipeDrain
+fn drain_pipe<R>(pipe: R) -> Result<PipeDrain, String>
 where
     R: ProbePipe,
 {
@@ -1758,42 +1828,51 @@ where
     let thread_cancel = Arc::clone(&cancel);
     #[cfg(test)]
     ACTIVE_PROBE_READERS.fetch_add(1, Ordering::AcqRel);
-    let thread = std::thread::spawn(move || -> Result<(), String> {
-        #[cfg(test)]
-        struct ReaderActivity;
-        #[cfg(test)]
-        impl Drop for ReaderActivity {
-            fn drop(&mut self) {
-                ACTIVE_PROBE_READERS.fetch_sub(1, Ordering::AcqRel);
-            }
-        }
-        #[cfg(test)]
-        let _activity = ReaderActivity;
-        let mut pipe = pipe;
-        let mut buf = [0u8; 4096];
-        loop {
-            if thread_cancel.load(Ordering::Acquire) {
-                return Ok(());
-            }
-            match pipe.has_data() {
-                Some(true) => match pipe.read(&mut buf) {
-                    Ok(0) => return Ok(()),
-                    Err(error) => return Err(format!("pipe read failed: {error}")),
-                    Ok(n) => {
-                        if tx.send(buf[..n].to_vec()).is_err() {
-                            return Ok(());
-                        }
-                    }
-                },
-                Some(false) => {
-                    std::thread::sleep(Duration::from_millis(10));
-                    continue;
+    let thread = match std::thread::Builder::new().name("perl-dap-probe-pipe".to_string()).spawn(
+        move || -> Result<(), String> {
+            #[cfg(test)]
+            struct ReaderActivity;
+            #[cfg(test)]
+            impl Drop for ReaderActivity {
+                fn drop(&mut self) {
+                    ACTIVE_PROBE_READERS.fetch_sub(1, Ordering::AcqRel);
                 }
-                None => return Err("pipe readiness probe failed".to_string()),
             }
+            #[cfg(test)]
+            let _activity = ReaderActivity;
+            let mut pipe = pipe;
+            let mut buf = [0u8; 4096];
+            loop {
+                if thread_cancel.load(Ordering::Acquire) {
+                    return Ok(());
+                }
+                match pipe.has_data() {
+                    Some(true) => match pipe.read(&mut buf) {
+                        Ok(0) => return Ok(()),
+                        Err(error) => return Err(format!("pipe read failed: {error}")),
+                        Ok(n) => {
+                            if tx.send(buf[..n].to_vec()).is_err() {
+                                return Ok(());
+                            }
+                        }
+                    },
+                    Some(false) => {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    None => return Err("pipe readiness probe failed".to_string()),
+                }
+            }
+        },
+    ) {
+        Ok(thread) => thread,
+        Err(error) => {
+            #[cfg(test)]
+            ACTIVE_PROBE_READERS.fetch_sub(1, Ordering::AcqRel);
+            return Err(format!("cannot spawn probe pipe reader: {error}"));
         }
-    });
-    PipeDrain { receiver: rx, thread, cancel }
+    };
+    Ok(PipeDrain { receiver: rx, thread, cancel })
 }
 
 /// Collect drained chunks into a string, bounded well inside the probe budget.

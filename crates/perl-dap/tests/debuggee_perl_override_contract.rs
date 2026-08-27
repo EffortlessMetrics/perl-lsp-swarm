@@ -27,7 +27,11 @@
 
 mod common;
 
-use common::{DEBUGGEE_PERL_OVERRIDE_ENV, REQUIRE_PERL_ENV, perl_available};
+use common::{
+    DEBUGGEE_PERL_OVERRIDE_ENV, DapWorkflowSession, REQUIRE_PERL_ENV, perl_available,
+    workflow_timeout,
+};
+use serial_test::serial;
 use std::error::Error;
 use std::fs;
 use std::panic;
@@ -99,6 +103,7 @@ fn fake_path_perl() -> Result<tempfile::TempDir, Box<dyn Error>> {
 }
 
 #[test]
+#[serial(dap_debuggee_environment)]
 fn debuggee_pin_is_the_single_availability_source_of_truth() -> Result<(), Box<dyn Error>> {
     let fake_path_perl = fake_path_perl()?;
 
@@ -198,5 +203,22 @@ fn debuggee_pin_is_the_single_availability_source_of_truth() -> Result<(), Box<d
         );
     }
 
+    Ok(())
+}
+
+#[test]
+#[serial(dap_debuggee_environment)]
+fn attach_does_not_resolve_launch_pin_during_initialization() -> Result<(), Box<dyn Error>> {
+    let _guard = EnvGuard::capture(GUARDED_KEYS);
+    EnvGuard::set(DEBUGGEE_PERL_OVERRIDE_ENV, BOGUS_PIN);
+
+    // Attach is independent of launch-interpreter selection. A rejected launch
+    // pin must therefore not prevent initialize/attach from reaching the real
+    // adapter; resolution belongs to the first launch helper that needs it.
+    let mut session = DapWorkflowSession::new(workflow_timeout())?;
+    session.attach(std::process::id(), false)?;
+    let stopped = session.wait_stopped()?;
+    assert_eq!(stopped.reason, "attach");
+    session.disconnect()?;
     Ok(())
 }

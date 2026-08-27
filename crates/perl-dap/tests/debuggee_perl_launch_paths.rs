@@ -41,7 +41,21 @@ impl Drop for EnvGuard {
     }
 }
 
-fn find_pipe_usable_path_perl() -> Result<Option<PathBuf>, Box<dyn Error>> {
+fn find_configured_or_path_pipe_perl() -> Result<Option<PathBuf>, Box<dyn Error>> {
+    if let Some(configured) = env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV) {
+        let candidate = PathBuf::from(configured);
+        if !candidate.is_file() {
+            return Err(format!(
+                "{DEBUGGEE_PERL_OVERRIDE_ENV} names a missing interpreter: {}",
+                candidate.display()
+            )
+            .into());
+        }
+        probe_debuggee_perl_for_test(&candidate, Duration::from_secs(10), false)
+            .map_err(|reason| format!("configured interpreter is not pipe-usable: {reason}"))?;
+        return Ok(Some(candidate));
+    }
+
     let locator = if cfg!(windows) { "where.exe" } else { "which" };
     let output = Command::new(locator).arg("perl").output()?;
     if !output.status.success() {
@@ -111,7 +125,7 @@ fn observe_configured_pin_for_path(
 #[serial(dap_debuggee_environment)]
 #[allow(clippy::print_stderr)]
 fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box<dyn Error>> {
-    let Some(source_perl) = find_pipe_usable_path_perl()? else {
+    let Some(source_perl) = find_configured_or_path_pipe_perl()? else {
         eprintln!(
             "SKIP all_convenience_launch_paths_reach_the_pinned_interpreter: Perl unavailable"
         );
