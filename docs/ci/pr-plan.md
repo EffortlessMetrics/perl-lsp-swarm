@@ -31,8 +31,9 @@ Suppression detection therefore lives **outside** the suppressed event, in
 [`.github/workflows/pr-plan-head-name-guard.yml`](../../.github/workflows/pr-plan-head-name-guard.yml)
 (#6238):
 
-- It runs on the unsuppressed `pull_request` event, so it fires exactly where
-  `pull_request_target` may not.
+- It runs on the `pull_request` event, so it fires wherever GitHub actually
+  emits that event for `pull_request_target`-suppressed head names — with one
+  documented exception below.
 - It classifies only the event payload string `pull_request.head.ref`, reached
   through an env-indirect expression (never inline `github.event.*` inside run
   syntax). No checkout of any ref, no actions, no scripts executed from any
@@ -40,15 +41,22 @@ Suppression detection therefore lives **outside** the suppressed event, in
 - It holds single-producer discipline: it never writes plan artifacts or
   conclusions; PR Plan remains the only `ci-plan.json` producer.
 - Its own `branches:` filter also selects the base branch and does not rescue
-  anything by itself — the guard works because its *event* is unsuppressed.
+  anything by itself — the guard works because its *event* fires in place of
+  the suppressed one.
+- Accepted silence boundary: `pull_request` workflows do not run while a pull
+  request has a merge conflict. In the combined case (SHA-like head name and a
+  conflicted pull request) both PR Plan and this guard stay silent; this residue
+  stands until the branch-naming ruleset closes the class (#6238 follow-up).
 - The classifier over-approximates the class with
   `^[0-9a-fA-F]{7,40}$` (7–40 hex characters). Since the real matcher is
   unknown, the sentinel fails closed loud: an over-approximated hit produces a
   red check with rename guidance even when GitHub would in fact have run PR
   Plan. Prefixed names like `agent/parser-fix` are unaffected.
-- Rename-only repairs fire no events (branch renames produce no event), so the
-  guidance explicitly says **rename, then push**; the subsequent push re-runs
-  both workflows.
+- Rename-only repairs fire no events (branch renames produce no event), and a
+  push of an unchanged tip is a `synchronize`-less no-op, so the guidance
+  explicitly says **rename, then land a new commit** — an empty
+  `git commit --allow-empty` suffices — or close and reopen the pull request;
+  that event re-runs both workflows.
 - Like PR Plan, the guard is advisory: it owns no required check and gates no
   merge. Per-PR concurrency mirrors `pr-plan.yml`'s grouping semantics.
 
