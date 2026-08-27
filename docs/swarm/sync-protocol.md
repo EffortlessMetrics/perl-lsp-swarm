@@ -1,7 +1,10 @@
 # perl-lsp publication sync protocol
 
-`perl-lsp-swarm` is the active development and release-preparation authority.
-`perl-lsp` is the publication repository: it owns public release lineage and
+`perl-lsp-swarm` is the active development source of truth.
+It owns active product implementation, proof, release preparation, and the
+current sync protocol.
+`perl-lsp` is the release, history, and canonical package-lineage repo.
+It is the publication repository and owns public release lineage and
 publication-specific governance.
 
 This document is the canonical stable contract for history-preserving
@@ -20,8 +23,8 @@ stable protocol.
 
 | Repository | Authority |
 | --- | --- |
-| `perl-lsp-swarm/main` | Active product implementation, tests, compiler/LSP/DAP work, proof, freeze, release preparation, and current sync protocol |
-| `perl-lsp/master` | Public release lineage, publication-specific workflows/policy, public package lineage, and bounded emergency release fixes |
+| `perl-lsp-swarm/main` | Active development; product implementation, tests, compiler/LSP/DAP work, proof, freeze, release preparation, and current sync protocol |
+| `perl-lsp/master` | Release lineage; publication-specific workflows/policy, public package lineage, and bounded emergency release fixes |
 
 Normal product work starts and converges in swarm. Do not maintain parallel
 implementation queues in both repositories.
@@ -120,6 +123,8 @@ retains `J0` and `J`.
 
 ## Complete-tree rule
 
+#### Mechanics: history-preserving complete-tree merge
+
 The publication product tree starts from the complete prepared swarm tree.
 Do not use a normal recursive/per-file merge as the product projection.
 
@@ -130,6 +135,14 @@ records both parents while replacing the merge tree with the complete prepared
 swarm tree before applying publication-specific projection.
 
 Conceptually:
+
+```bash
+git merge -s ours --no-commit swarm/main
+git read-tree -u --reset swarm/main
+```
+
+These stable topology markers use `swarm/main` to name the development source;
+an actual release transaction replaces that moving ref with the pinned `S`:
 
 ```bash
 git switch -c release/sync-vX.Y.Z "$R"
