@@ -115,7 +115,12 @@ function parseVersion(value: string): ParsedVersion | null {
 }
 
 function compareVersion(left: ParsedVersion, right: ParsedVersion): number {
-  for (const [a, b] of [[left.major, right.major], [left.minor, right.minor], [left.patch, right.patch]]) {
+  const numericParts: Array<[number, number]> = [
+    [left.major, right.major],
+    [left.minor, right.minor],
+    [left.patch, right.patch],
+  ];
+  for (const [a, b] of numericParts) {
     if (a !== b) return a < b ? -1 : 1;
   }
   if (left.prerelease.length === 0 || right.prerelease.length === 0) {
@@ -246,6 +251,7 @@ export function safeMigrationRuntimeSnapshot(
     canonical_key_or_authority: runtime.canonical_key_or_authority,
     reason_code: runtime.reason_code,
     notice_required: runtime.notice_required,
+    post_expiry_disposition: runtime.post_expiry_disposition,
   };
 }
 
