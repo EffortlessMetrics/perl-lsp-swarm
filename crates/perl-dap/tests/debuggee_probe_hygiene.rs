@@ -255,9 +255,45 @@ fn main() {
         Err(error) => error,
     };
     assert!(
-        forced_cleanup_error.contains("process-tree cleanup failed")
-            && forced_cleanup_error.contains("pipe reader cleanup failed"),
+        forced_cleanup_error.contains("termination command failed")
+            && forced_cleanup_error.contains("child wait/reap failed")
+            && forced_cleanup_error.contains("pipe reader thread"),
         "cleanup failure must remain explicit: {forced_cleanup_error}"
+    );
+
+    let termination_failure = common::probe_debuggee_perl_for_test_with_termination_failure(
+        &success,
+        Duration::from_secs(2),
+    );
+    let termination_error = match termination_failure {
+        Ok(_) => return Err(io::Error::other("termination-command failure was accepted")),
+        Err(error) => error,
+    };
+    assert!(
+        termination_error.contains("termination command failed"),
+        "termination command failure must be explicit: {termination_error}"
+    );
+
+    let reap_failure =
+        common::probe_debuggee_perl_for_test_with_reap_failure(&success, Duration::from_secs(2));
+    let reap_error = match reap_failure {
+        Ok(_) => return Err(io::Error::other("reap failure was accepted")),
+        Err(error) => error,
+    };
+    assert!(
+        reap_error.contains("child wait/reap failed"),
+        "reap failure must be explicit: {reap_error}"
+    );
+
+    let reader_failure =
+        common::probe_debuggee_perl_for_test_with_reader_panic(&success, Duration::from_secs(2));
+    let reader_error = match reader_failure {
+        Ok(_) => return Err(io::Error::other("reader-thread failure was accepted")),
+        Err(error) => error,
+    };
+    assert!(
+        reader_error.contains("pipe reader thread panicked"),
+        "reader-thread failure must be explicit: {reader_error}"
     );
 
     {
