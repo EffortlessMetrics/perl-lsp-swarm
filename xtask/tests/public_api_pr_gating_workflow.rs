@@ -193,8 +193,8 @@ fn registry_records_the_new_advisory_contexts() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-fn nightly_label_gates_and_baseline_ratchet_survive_unchanged(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn nightly_label_gates_and_baseline_ratchet_survive_unchanged()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let nightly = read(&root, ".github/workflows/ci-nightly.yml")?;
     assert!(
