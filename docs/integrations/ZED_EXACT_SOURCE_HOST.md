@@ -22,6 +22,10 @@ binary_route = binary_override | worktree_path
 ```
 
 `binary_override` writes the exact binary into `lsp.perllsp.binary.path`.
+Current Zed consumes that setting above the extension and gates the launch on
+its own worktree-trust prompt, so the override executes through the host
+boundary; the staged extension refuses to grant the same value a second time
+from unproven merged-settings provenance (#11041).
 `worktree_path` omits that override so the staged extension resolves the
 server itself through `worktree.which("perllsp")`; preparation and launch both
 reject the route unless the session PATH resolves `perllsp` to the exact

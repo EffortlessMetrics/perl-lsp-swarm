@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 MODULE_PATH = Path(__file__).with_name("rustfmt_check.py")
@@ -310,6 +312,113 @@ raise SystemExit(64)
         self.assertEqual(receipt["findings"][0]["path"], "pkg-a/src/lib.rs")
         self.assertEqual(receipt["findings"][0]["line"], 1)
 
+    def test_indented_context_decoy_does_not_become_instrument_failure(self) -> None:
+        source = self.root / "pkg-a/src/lib.rs"
+        self.set_fmt(
+            {
+                "pkg-a/Cargo.toml": {
+                    "exit": 1,
+                    "stdout": (
+                        f"Diff in {source}:1:\n"
+                        " Diff in /outside.rs:1:\n"
+                        "-old\n+new"
+                    ),
+                }
+            }
+        )
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        receipt = self.read_receipt()
+        self.assertEqual(receipt["result"], "format_failure", receipt)
+        self.assertEqual(receipt["instrument_failures"], [])
+        self.assertEqual(receipt["findings"][0]["path"], "pkg-a/src/lib.rs")
+
+    def test_colon_header_with_at_line_in_path_is_format_failure(self) -> None:
+        source = self.root / "pkg-a/src/dir at line 7/lib.rs"
+        self.set_fmt(
+            {
+                "pkg-a/Cargo.toml": {
+                    "exit": 1,
+                    "stdout": f"Diff in {source}:1:\n-old\n+new",
+                }
+            }
+        )
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        receipt = self.read_receipt()
+        self.assertEqual(receipt["result"], "format_failure", receipt)
+        self.assertEqual(receipt["instrument_failures"], [])
+        self.assertEqual(receipt["findings"][0]["path"], "pkg-a/src/dir at line 7/lib.rs")
+        self.assertEqual(receipt["findings"][0]["line"], 1)
+
+    def test_verbose_diff_header_is_a_format_failure(self) -> None:
+        source = self.root / "pkg-a/src/lib.rs"
+        self.set_fmt(
+            {
+                "pkg-a/Cargo.toml": {
+                    "exit": 1,
+                    "stdout": f"Diff in {source} at line 12:\n-old\n+new",
+                }
+            }
+        )
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        receipt = self.read_receipt()
+        self.assertEqual(receipt["result"], "format_failure", receipt)
+        self.assertEqual(receipt["instrument_failures"], [])
+        self.assertEqual(receipt["findings"][0]["path"], "pkg-a/src/lib.rs")
+        self.assertEqual(receipt["findings"][0]["line"], 12)
+
+    def test_parse_diff_locations_accepts_verbose_and_colon_headers(self) -> None:
+        output = (
+            f"Diff in {self.root / 'pkg-a/src/lib.rs'} at line 7:\n-old\n+new\n"
+            f"Diff in {self.root / 'xtask/src/main.rs'}:3:\n-old\n+new\n"
+        )
+        locations = rustfmt_check.parse_diff_locations(output, self.root)
+        self.assertEqual(
+            locations,
+            [("pkg-a/src/lib.rs", 7), ("xtask/src/main.rs", 3)],
+        )
+
+    def test_parse_diff_header_ignores_non_headers_and_untrusted_verbose_tails(self) -> None:
+        self.assertIsNone(rustfmt_check.parse_diff_header("rustfmt crashed"))
+        self.assertIsNone(rustfmt_check.parse_diff_header("Diff in nowhere at line nope:"))
+        self.assertIsNone(rustfmt_check.parse_diff_header("Diff in  at line 12:"))
+        self.assertIsNone(rustfmt_check.parse_diff_header("Diff in nowhere:"))
+        parsed = rustfmt_check.parse_diff_header(
+            f"Diff in {self.root / 'pkg-a/src/lib.rs'} at line 4:"
+        )
+        self.assertEqual(parsed, (str(self.root / "pkg-a/src/lib.rs"), 4))
+
+    def test_parse_diff_header_ignores_indented_context_decoys(self) -> None:
+        """rustfmt context lines indent the source; they are not headers."""
+        self.assertIsNone(rustfmt_check.parse_diff_header(" Diff in /outside.rs:1:"))
+        self.assertIsNone(rustfmt_check.parse_diff_header("\tDiff in /outside.rs at line 3:"))
+        source = self.root / "pkg-a/src/lib.rs"
+        output = f" Diff in /outside.rs:1:\nDiff in {source}:3:\n-old\n+new\n"
+        locations = rustfmt_check.parse_diff_locations(output, self.root)
+        self.assertEqual(locations, [("pkg-a/src/lib.rs", 3)])
+
+    def test_parse_diff_header_falls_through_when_path_contains_at_line(self) -> None:
+        """Colon-form headers must still parse when a path contains `` at line ``."""
+        source = self.root / "pkg-a/src/dir at line 7/lib.rs"
+        parsed = rustfmt_check.parse_diff_header(f"Diff in {source}:1:")
+        self.assertEqual(parsed, (str(source), 1))
+        locations = rustfmt_check.parse_diff_locations(
+            f"Diff in {source}:1:\n-old\n+new\n", self.root
+        )
+        self.assertEqual(locations, [("pkg-a/src/dir at line 7/lib.rs", 1)])
+
+    def test_producer_rejects_changed_file_narrowing_flags(self) -> None:
+        for argv in (
+            ["--changed-files", "src/lib.rs"],
+            ["--files", "src/lib.rs"],
+            ["--paths", "crates/perl-parser-core"],
+        ):
+            with redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    rustfmt_check.parse_args(argv)
+
     def test_unformatted_xtask_integration_test_is_in_scope(self) -> None:
         self.set_fmt(
             {
@@ -462,6 +571,10 @@ raise SystemExit(64)
             link.symlink_to(self.root / "pkg-a/Cargo.toml")
         except OSError as error:
             self.skipTest(f"symbolic links unavailable: {error}")
+        self._git("add", "linked-manifest.toml")
+        self._git("commit", "-m", "symlink manifest")
+        self.candidate_sha = self._git("rev-parse", "HEAD").stdout.strip()
+        self.tree_sha = self._git("rev-parse", "HEAD^{tree}").stdout.strip()
         self._write_metadata(manifest_override=str(link))
         result = self.run_check()
         self.assertEqual(result.returncode, 2, result.stderr)

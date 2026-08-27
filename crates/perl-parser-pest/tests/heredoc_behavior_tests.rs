@@ -10,6 +10,7 @@
 //! preserves its marker/indent/quote flags, but does not slurp the body into
 //! the node (the content field is empty). The assertions below deliberately
 //! pin only what the parser actually produces today, not idealized semantics.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_parser_pest::PureRustPerlParser;
 use perl_tdd_support::{must, must_err};

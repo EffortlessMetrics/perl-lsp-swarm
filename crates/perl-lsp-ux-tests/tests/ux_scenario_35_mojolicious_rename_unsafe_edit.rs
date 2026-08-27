@@ -191,10 +191,10 @@ fn source_for_edit<'a>(
     override_file: Option<&str>,
     override_content: Option<&'a str>,
 ) -> Result<&'a str> {
-    if override_file == Some(relative_path) {
-        if let Some(content) = override_content {
-            return Ok(content);
-        }
+    if override_file == Some(relative_path)
+        && let Some(content) = override_content
+    {
+        return Ok(content);
     }
     fixture_content(files, relative_path)
 }

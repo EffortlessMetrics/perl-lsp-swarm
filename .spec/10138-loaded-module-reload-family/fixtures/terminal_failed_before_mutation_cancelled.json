@@ -1,0 +1,20 @@
+{
+  "schema": "perl_dap.loaded_module_reload_family.vector.v1",
+  "name": "terminal_failed_before_mutation_cancelled",
+  "description": "Cancellation honored before the boundary is a clean pre-mutation failure; the same outcome after the boundary could never be reported this way.",
+  "outcome": { "kind": "failed_before_mutation", "phase": "prepare", "cause": "cancelled_before_mutation_began" },
+  "generation_before": 5,
+  "expect": {
+    "kind": "failed_before_mutation",
+    "phase": "prepare",
+    "cause": "cancelled_before_mutation_began",
+    "success": false,
+    "possibly_applied": false,
+    "generation": { "previous": 5, "current": 5, "advanced": false },
+    "reconciliation": {
+      "loaded_source_refresh": "deferred",
+      "inspection_invalidation": "deferred",
+      "breakpoint_reconciliation": "deferred"
+    }
+  }
+}

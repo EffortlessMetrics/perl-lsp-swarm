@@ -8,6 +8,10 @@ pub mod callable_exit;
 pub mod class_model;
 /// Registry-backed Dancer2 activation-site extraction (#8914).
 pub mod dancer2_activation;
+pub mod dancer2_handler_targets;
+pub mod dancer2_hooks;
+/// Dancer2 route-declaration extraction (#8918).
+pub mod dancer2_routes;
 /// Go-to-declaration support and parent map construction.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod declaration;
@@ -23,6 +27,8 @@ pub mod import_extractor;
 /// Lightweight workspace symbol index.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod index;
+/// Registry-backed Mojo::Base activation-site extraction (#9681).
+pub mod mojo_base_activation;
 /// Package graph edge extraction from inheritance and role-composition patterns.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod package_graph_extractor;

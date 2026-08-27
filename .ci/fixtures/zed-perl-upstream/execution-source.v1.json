@@ -1,0 +1,57 @@
+{
+  "schema_version": "perllsp_execution_source.v1",
+  "issue": 11041,
+  "programme": 7759,
+  "server_id": "perllsp",
+  "policy": {
+    "name": "fail_closed_execution_source",
+    "rule": "classify the executable-selection route and its authority before any binary lookup, command construction, download, or process start; a route whose authority cannot be proven is refused, never silently executed",
+    "authority_identity_separation": "route authority is typed independently of canonical binary identity (#10340): identity proves what was selected, never that the selecting source was authorized"
+  },
+  "routes": [
+    {
+      "route": "binary_override",
+      "surface": "lsp.perllsp.binary.path in merged LspSettings",
+      "provenance": "unprovable_merged_settings",
+      "extension_authority": "refused",
+      "extension_execution": false,
+      "host_behavior": "current Zed consumes settings-binary overrides above the extension and gates them on its own worktree-trust boundary (crates/project/src/lsp_store.rs get_language_server_binary)",
+      "extension_disposition": "duplicate grant refused with a typed error naming the host mechanism and the remaining authorized routes; the refused value is never echoed"
+    },
+    {
+      "route": "worktree_path",
+      "surface": "worktree.which(\"perllsp\") over the worktree shell environment",
+      "provenance": "zed_defined_worktree_environment",
+      "extension_authority": "authorized_worktree_environment",
+      "extension_execution": true,
+      "limitations": [
+        "no extension-checkable host trust fact exists for a PATH hit; retention rests on Zed's product-level worktree-environment model, not on an in-extension proof",
+        "direnv/shell/project hooks may alter PATH resolution and a project-controlled entry can shadow other candidates within this cell",
+        "this cell is visibly distinct from managed release identity: a PATH-selected binary never flows through the selection-manifest digest binding and is never presented as release-backed evidence"
+      ]
+    },
+    {
+      "route": "managed_download",
+      "surface": "canonical EffortlessMetrics/perl-lsp release artifact selected by the offline-first startup route (#11308)",
+      "provenance": "canonical_public_release",
+      "extension_authority": "authorized_release_identity",
+      "extension_execution": true,
+      "identity_binding": "#10340 binary identity + #10530 archive integrity + sha256 selection manifest"
+    }
+  ],
+  "invariants": [
+    "unknown or merged-away provenance cannot silently authorize execution",
+    "project/resource inputs cannot gain stronger execution authority merely through precedence",
+    "settings-supplied environment overrides cannot load code into the launched process: dynamic-loader injection keys (LD_PRELOAD/LD_AUDIT/LD_LIBRARY_PATH and DYLD_* counterparts) are dropped from the unproven override layer",
+    "structured path/argv identities only; no shell command string or interpolation is introduced",
+    "source authority and binary identity remain independently required",
+    "explicit, worktree-PATH, and managed routes remain separate support/evidence cells",
+    "missing Zed provenance narrows the candidate instead of weakening the policy",
+    "receipts and logs disclose route/authority without private values"
+  ],
+  "claim_boundary": {
+    "static_contract": "enforced_by_extension_and_contract_tests",
+    "real_host_trust_receipt": "not_run",
+    "public_zed_support": "not_proven"
+  }
+}

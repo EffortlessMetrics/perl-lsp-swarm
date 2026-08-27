@@ -52,6 +52,8 @@ use crate::protocol::ValueFormat;
 use crate::types::Variable;
 use crate::value::PerlValue;
 use crate::variables::PerlVariableRenderer;
+#[cfg(test)]
+use perl_tdd_support::must_err;
 
 /// The typed presentation policy distilled from a `ValueFormat` request option.
 ///
@@ -178,7 +180,7 @@ mod tests {
     #[test]
     fn unknown_format_property_fails_deserialization() {
         let raw = json!({ "hex": true, "decimal": true });
-        let err = serde_json::from_value::<ValueFormat>(raw).unwrap_err();
+        let err = must_err(serde_json::from_value::<ValueFormat>(raw));
         assert!(err.to_string().contains("unknown field"), "got: {err}");
     }
 

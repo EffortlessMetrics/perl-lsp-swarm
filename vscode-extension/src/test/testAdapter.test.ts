@@ -236,7 +236,7 @@ describe('bounded prove process execution', () => {
     );
 
     expect(result.outcome).toBe('output_limit');
-    expect(result.stderr).toBe('\\ufffd');
+    expect(result.stderr).toBe('\ufffd');
     expect(result.capturedOutputBytes).toBe(1);
   }, 30_000);
 

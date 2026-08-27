@@ -84,13 +84,14 @@ lsp-compat = []
 ai-provider = ["dep:ureq"]
 
 [dev-dependencies]
+perl-test-must.workspace = true
 perl-tdd-support.workspace = true
 sha2.workspace = true
 serde_json.workspace = true
 perl-lsp-rs.workspace = true
 perl-subprocess-runtime.workspace = true
 tempfile.workspace = true
-insta = { version = "1.47.2", features = ["yaml"] }
+insta = { workspace = true, features = ["yaml"] }
 proptest.workspace = true
 
 [package.metadata.docs.rs]

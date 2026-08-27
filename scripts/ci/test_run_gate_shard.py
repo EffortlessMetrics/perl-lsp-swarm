@@ -1418,6 +1418,112 @@ class GateShardTests(unittest.TestCase):
         self.assertEqual(1, status)
         self.assertEqual("instrument_failure", summary["gates"][0]["result"])
 
+    def test_cache_restored_foreign_receipts_are_swept_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = root / "receipts"
+            receipts.mkdir()
+            (receipts / "foreign_other_sha.json").write_text(
+                json.dumps(receipt_payload("alpha", "pass", sha="b" * 40)),
+                encoding="utf-8",
+            )
+            (receipts / "leftover.log").write_text(
+                "restored from an unrelated SHA\n", encoding="utf-8"
+            )
+            nested = receipts / "nested"
+            nested.mkdir()
+            nested_file = nested / "keep.txt"
+            nested_file.write_text("not shard-owned output\n", encoding="utf-8")
+            status, summary, _, _ = run_direct(
+                root,
+                {"alpha": {"status": "pass", "exit": 0}},
+                ["alpha"],
+            )
+            survivors = sorted(entry.name for entry in receipts.iterdir())
+            fresh_receipt = json.loads(
+                (receipts / "alpha.json").read_text(encoding="utf-8")
+            )
+            nested_file_survived = nested_file.exists()
+        self.assertEqual(0, status)
+        self.assertEqual("success", summary["gates"][0]["result"])
+        self.assertEqual(["alpha.json", "nested"], survivors)
+        self.assertEqual(SUBJECT, fresh_receipt["metadata"]["git_sha"])
+        self.assertTrue(nested_file_survived)
+        self.assertNotIn(
+            str(receipts / "foreign_other_sha.json"),
+            [row["receipt_path"] for row in summary["gates"]],
+        )
+
+    def test_receipt_clearance_failure_fails_closed_under_set_plus_e(self) -> None:
+        """A failed pre-shard receipt clearance must abort the step (#12085).
+
+        The runner step executes under `set +e`, so an unguarded `rm -rf` of
+        the cache-restored receipt surfaces would have its failure status
+        silently overwritten by the following `mkdir`/shard commands.  Only
+        `shards/*.json` and `shard-summaries/*.json` carry SHA bindings that
+        verify_gate_receipt_freshness.py can reject; `logs/*.log` and
+        `artifacts/*` have no binding, so a partial clearance could upload
+        stale auxiliary evidence alongside fresh receipts.
+        """
+        workflow = REPO_ROOT / ".github/workflows/ci.yml"
+        if not workflow.is_file():
+            self.skipTest("ci.yml not present in this checkout")
+        text = workflow.read_text(encoding="utf-8")
+        runner_step = extract_gate_shard_runner_step(text)
+        self.assertIn("set +e", runner_step)
+        clearance = runner_step[
+            runner_step.index("rm -rf target/receipts/") :
+            runner_step.index("mkdir -p target/receipts/")
+        ]
+        for surface in ("shards", "shard-summaries", "logs", "artifacts"):
+            self.assertIn(
+                f"target/receipts/{surface}",
+                clearance,
+                f"clearance must cover the uploaded {surface} surface",
+            )
+        self.assertIn("||", clearance, "clearance rm must be failure-guarded")
+        self.assertIn("exit 1", clearance, "clearance failure must abort the step")
+        self._assert_clearance_fails_closed_in_shell(clearance)
+
+    def _assert_clearance_fails_closed_in_shell(self, clearance: str) -> None:
+        """Execute the workflow's own clearance fragment with a failing rm.
+
+        Under `set +e`, the guarded fragment must exit nonzero instead of
+        reaching the trailing survival probe.  The structural assertions
+        above make this behavioral kernel self-updating: it runs whatever
+        clearance text the workflow currently ships.
+        """
+        if os.name == "nt":
+            self.skipTest("POSIX shell behavioral kernel")
+        with tempfile.TemporaryDirectory() as tmp:
+            stub_bin = Path(tmp) / "stub-bin"
+            stub_bin.mkdir()
+            stub_rm = stub_bin / "rm"
+            with open(stub_rm, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write("#!/bin/sh\nexit 1\n")
+            os.chmod(stub_rm, 0o755)
+            harness = f"set +e\n{clearance}\necho clearance-survived $?\nexit 0\n"
+            env = dict(os.environ)
+            env["PATH"] = str(stub_bin) + os.pathsep + env.get("PATH", "")
+            completed = subprocess.run(
+                ["bash", "-c", harness],
+                cwd=tmp,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(
+            0,
+            completed.returncode,
+            "a failed clearance rm must abort the step even under `set +e`"
+            f" (stdout={completed.stdout!r}, stderr={completed.stderr!r})",
+        )
+        self.assertNotIn(
+            "clearance-survived",
+            completed.stdout,
+            "control flow must not continue past a failed clearance",
+        )
+
     @unittest.skipUnless(
         os.name != "nt" and hasattr(os, "killpg"),
         "POSIX process-group integration test",
