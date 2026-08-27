@@ -197,6 +197,10 @@ export function interpretLegacyConfiguration(
   registry: ConfigurationMigrationRegistry,
   input: MigrationRuntimeInput,
 ): MigrationRuntimeResult {
+  if (!input.legacy_value_present) {
+    return result(input, null, 'not_applicable');
+  }
+
   const candidate: unknown = registry;
   if (!isSupportedMigrationRegistry(candidate)) {
     return result(
@@ -207,9 +211,6 @@ export function interpretLegacyConfiguration(
       true,
       INVALID_REASON_CODES.registry_invalid,
     );
-  }
-  if (!input.legacy_value_present) {
-    return result(input, null, 'not_applicable');
   }
 
   const selection = selectMigrationRow(registry, input);
