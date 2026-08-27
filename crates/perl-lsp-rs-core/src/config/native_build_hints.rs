@@ -7,10 +7,18 @@
 //! not execute Perl and does not model full build metadata.
 //!
 //! Only literal quoted strings and literal arrays of quoted strings are
-//! understood. Anything else — barewords, `q()` forms, function calls,
-//! unterminated strings, arrays containing code — fails closed: the offending
-//! occurrence contributes no hint values and is reported through a named
-//! [`NativeBuildHintDiagnostic`] so callers can see why hints stayed empty.
+//! understood, and a scalar value must end the assignment (`,` `;` `)` `]`
+//! `}`, end-of-line/file, or a trailing comment). Interpolating double-quoted
+//! strings (`"..."$var`, `"@list"`), concatenations such as `'a' . 'b'`,
+//! barewords, `q()` forms on the right-hand side, function calls,
+//! unterminated strings, and arrays containing non-literals all fail closed:
+//! the offending occurrence contributes no hint values and is reported through
+//! a named [`NativeBuildHintDiagnostic`] so callers can see why hints stayed
+//! empty. Key-shaped text inside Perl quote-like operators (`q()`, `qw()`,
+//! `s///`, ...) is skipped as string content, never treated as an assignment.
+//!
+//! Residual limitation: heredoc bodies and POD paragraphs are not modeled;
+//! key-shaped text inside them can still be read as an assignment.
 
 use std::fs;
 use std::path::Path;
@@ -212,17 +220,14 @@ fn hint_tokens(key: &str, value: &str) -> Vec<String> {
 }
 
 fn tokenize_flags(value: &str) -> Vec<String> {
+    // Quote characters group tokens across spaces; every other character,
+    // including backslashes, is preserved verbatim so Windows separators such
+    // as `C:\vendor\foo.lib` survive unchanged.
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut quote = None;
-    let mut escaped = false;
     for ch in value.chars() {
-        if escaped {
-            current.push(ch);
-            escaped = false;
-        } else if ch == '\\' && quote.is_some() {
-            escaped = true;
-        } else if let Some(active) = quote {
+        if let Some(active) = quote {
             if ch == active {
                 quote = None;
             } else {
@@ -237,9 +242,6 @@ fn tokenize_flags(value: &str) -> Vec<String> {
         } else {
             current.push(ch);
         }
-    }
-    if escaped {
-        current.push('\\');
     }
     if !current.is_empty() {
         tokens.push(current);
@@ -415,6 +417,14 @@ fn find_key_assignment(bytes: &[u8], key: &str, start: usize) -> Option<(usize, 
             _ => {}
         }
 
+        // Skip the complete body of Perl quote-like operators (`q`, `qq`,
+        // `qw`, `qr`, `m`, `s///`, `tr///`, `y///`): key-shaped text inside
+        // those string bodies is literal content, never an assignment.
+        if let Some(after) = quote_like_op_span(bytes, idx) {
+            idx = after;
+            continue;
+        }
+
         if !bytes[idx..].starts_with(key_bytes) {
             idx += 1;
             continue;
@@ -439,6 +449,105 @@ fn find_key_assignment(bytes: &[u8], key: &str, start: usize) -> Option<(usize, 
         value_idx += 2;
         skip_ws_and_comments(bytes, &mut value_idx);
         return Some((key_pos, value_idx));
+    }
+
+    None
+}
+
+/// If `bytes[idx..]` starts a Perl quote-like operator invocation, return the
+/// index just past its full expression so the scanner can jump over literal
+/// string bodies that may contain key-shaped text.
+///
+/// Recognizes single-pattern operators (`q`, `qq`, `qw`, `qr`, `m`) and
+/// double-pattern operators (`s`, `tr`, `y`), each followed by a non-word
+/// delimiter — paired (`()[]{}<>`) or repeated. Returns `None` on any shape it
+/// does not confidently recognize; scanning then continues normally, which is
+/// the conservative failure direction.
+fn quote_like_op_span(bytes: &[u8], idx: usize) -> Option<usize> {
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    // Word-boundary guard: never fire in the middle of an identifier.
+    if idx > 0 && bytes.get(idx - 1).is_some_and(|b| is_ident(*b)) {
+        return None;
+    }
+
+    const TWO_PATTERN_WORDS: [&[u8]; 3] = [b"s", b"tr", b"y"];
+    const ONE_PATTERN_WORDS: [&[u8]; 5] = [b"qw", b"qq", b"qr", b"q", b"m"];
+
+    let mut after_word = None;
+    for word in ONE_PATTERN_WORDS.iter().chain(TWO_PATTERN_WORDS.iter()) {
+        if bytes[idx..].starts_with(word)
+            && bytes.get(idx + word.len()).is_none_or(|b| !is_ident(*b))
+        {
+            after_word = Some((word.len(), TWO_PATTERN_WORDS.contains(word)));
+            break;
+        }
+    }
+    let (word_len, two_patterns) = after_word?;
+
+    let mut cursor = idx + word_len;
+    skip_ws_and_comments(bytes, &mut cursor);
+    let open = *bytes.get(cursor)?;
+    if is_ident(open) || matches!(open, b'=' | b'>' | b':' | b'-') {
+        return None;
+    }
+    let close = match open {
+        b'(' => b')',
+        b'[' => b']',
+        b'{' => b'}',
+        b'<' => b'>',
+        other => other,
+    };
+
+    let mut end = quote_like_body_end(bytes, cursor, open, close)?;
+
+    if two_patterns {
+        let mut second = end;
+        skip_ws_and_comments(bytes, &mut second);
+        let open2 = *bytes.get(second)?;
+        if is_ident(open2) || matches!(open2, b'=' | b'>' | b':' | b'-') {
+            return None;
+        }
+        let close2 = match open2 {
+            b'(' => b')',
+            b'[' => b']',
+            b'{' => b'}',
+            b'<' => b'>',
+            other => other,
+        };
+        end = quote_like_body_end(bytes, second, open2, close2)?;
+    }
+
+    Some(end)
+}
+
+/// Scan one delimited pattern body, honoring backslash escapes and nesting
+/// for paired delimiters. Returns the index just past the closing delimiter.
+fn quote_like_body_end(
+    bytes: &[u8],
+    open_at: usize,
+    open_delim: u8,
+    close_delim: u8,
+) -> Option<usize> {
+    // Start past the opening delimiter so it is never counted toward nesting.
+    let mut idx = open_at.saturating_add(1);
+    let paired = open_delim != close_delim;
+    let mut depth = 0usize;
+
+    while idx < bytes.len() {
+        let byte = bytes[idx];
+        if byte == b'\\' {
+            idx += 2;
+            continue;
+        }
+        if paired && byte == open_delim {
+            depth += 1;
+        } else if byte == close_delim {
+            if depth == 0 {
+                return Some(idx + 1);
+            }
+            depth = depth.saturating_sub(1);
+        }
+        idx += 1;
     }
 
     None
@@ -481,17 +590,52 @@ fn parse_literal_value(
     let bytes = source.as_bytes();
     match bytes.get(start) {
         Some(b'\'' | b'"') => {
-            let (value, consumed) = parse_quoted_string(source, start)
+            let (value, consumed, interpolating) = parse_quoted_string(source, start)
                 .ok_or(NativeBuildHintParseReason::UnterminatedStringLiteral)?;
+            // An interpolated string is not a static literal: its build-time
+            // value cannot be resolved without executing Perl, so it fails
+            // closed instead of emitting unverifiable flags.
+            if interpolating {
+                return Err(NativeBuildHintParseReason::UnsupportedValueForm);
+            }
+            ensure_value_is_whole(source, start + consumed)
+                .ok_or(NativeBuildHintParseReason::UnsupportedValueForm)?;
             Ok((vec![value], consumed))
         }
-        Some(b'[') => parse_quoted_string_array(source, start)
-            .ok_or(NativeBuildHintParseReason::MalformedArrayLiteral),
+        Some(b'[') => parse_quoted_string_array(source, start),
         _ => Err(NativeBuildHintParseReason::UnsupportedValueForm),
     }
 }
 
-fn parse_quoted_string(source: &str, start: usize) -> Option<(String, usize)> {
+/// Verify the byte just past a fully consumed scalar value closes the
+/// assignment (`,`, `;`, a bracket closer, end of line/file, or a trailing
+/// comment). Anything else — concatenation operators, arithmetic, further
+/// terms — means the RHS was only a partial expression and must be rejected.
+fn ensure_value_is_whole(source: &str, after_end: usize) -> Option<()> {
+    let bytes = source.as_bytes();
+    let mut idx = after_end;
+    while let Some(&b) = bytes.get(idx) {
+        match b {
+            b' ' | b'\t' | b'\r' => idx += 1,
+            b'#' => {
+                while idx < bytes.len() && bytes[idx] != b'\n' {
+                    idx += 1;
+                }
+            }
+            _ => break,
+        }
+    }
+    match bytes.get(idx) {
+        None | Some(b'\n') => Some(()),
+        Some(b',' | b';' | b')' | b']' | b'}') => Some(()),
+        _ => None,
+    }
+}
+
+/// Returns `(value, consumed, is_interpolating)`. Double-quoted strings that
+/// reference `$` or `@` interpolate at Perl runtime; single-quoted strings are
+/// always verbatim.
+fn parse_quoted_string(source: &str, start: usize) -> Option<(String, usize, bool)> {
     let bytes = source.as_bytes();
     let quote = *bytes.get(start)?;
     if quote != b'\'' && quote != b'"' {
@@ -501,6 +645,7 @@ fn parse_quoted_string(source: &str, start: usize) -> Option<(String, usize)> {
     let mut value = String::new();
     let mut idx = start + 1;
     let mut escaped = false;
+    let mut interpolating = false;
 
     while idx < bytes.len() {
         let ch = source[idx..].chars().next()?;
@@ -527,11 +672,15 @@ fn parse_quoted_string(source: &str, start: usize) -> Option<(String, usize)> {
         }
 
         if ch as u8 == quote {
-            return Some((value, idx - start));
+            return Some((value, idx - start, interpolating));
         }
 
         if ch == '\n' {
             return None;
+        }
+
+        if quote == b'"' && (ch == '$' || ch == '@') {
+            interpolating = true;
         }
 
         value.push(ch);
@@ -540,10 +689,13 @@ fn parse_quoted_string(source: &str, start: usize) -> Option<(String, usize)> {
     None
 }
 
-fn parse_quoted_string_array(source: &str, start: usize) -> Option<(Vec<String>, usize)> {
+fn parse_quoted_string_array(
+    source: &str,
+    start: usize,
+) -> Result<(Vec<String>, usize), NativeBuildHintParseReason> {
     let bytes = source.as_bytes();
     if bytes.get(start) != Some(&b'[') {
-        return None;
+        return Err(NativeBuildHintParseReason::MalformedArrayLiteral);
     }
 
     let mut idx = start + 1;
@@ -551,22 +703,27 @@ fn parse_quoted_string_array(source: &str, start: usize) -> Option<(Vec<String>,
 
     loop {
         skip_ws_and_comments(bytes, &mut idx);
-        match bytes.get(idx).copied()? {
-            b']' => return Some((values, idx + 1 - start)),
-            b'\'' | b'"' => {
-                let (value, consumed) = parse_quoted_string(source, idx)?;
+        match bytes.get(idx) {
+            None => return Err(NativeBuildHintParseReason::MalformedArrayLiteral),
+            Some(b']') => return Ok((values, idx + 1 - start)),
+            Some(b'\'' | b'"') => {
+                let (value, consumed, interpolating) = parse_quoted_string(source, idx)
+                    .ok_or(NativeBuildHintParseReason::MalformedArrayLiteral)?;
+                if interpolating {
+                    return Err(NativeBuildHintParseReason::UnsupportedValueForm);
+                }
                 values.push(value);
                 idx += consumed;
                 skip_ws_and_comments(bytes, &mut idx);
-                match bytes.get(idx).copied()? {
-                    b',' => {
+                match bytes.get(idx) {
+                    Some(b',') => {
                         idx += 1;
                     }
-                    b']' => {}
-                    _ => return None,
+                    Some(b']') => {}
+                    _ => return Err(NativeBuildHintParseReason::MalformedArrayLiteral),
                 }
             }
-            _ => return None,
+            _ => return Err(NativeBuildHintParseReason::MalformedArrayLiteral),
         }
     }
 }
@@ -934,6 +1091,77 @@ Module::Build->new(
             hints.libs_alternatives,
             vec![vec!["-lgdbm".to_string()], vec!["-ldbm".to_string(), "-lfoo".to_string()]]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn windows_backslashes_survive_inside_quoted_segments() -> TestResult {
+        let root = HintRoot::new()?;
+        root.write_makefile(r#"WriteMakefile(LIBS => '-L"C:\Program Files\SDK\lib" -lfoo');"#)?;
+
+        let hints = root.hints();
+
+        assert_eq!(
+            hints.libs_flags,
+            vec![r"-LC:\Program Files\SDK\lib".to_string(), "-lfoo".to_string()]
+        );
+        assert!(hints.diagnostics.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn interpolated_double_quoted_rhs_fails_closed() -> TestResult {
+        let root = HintRoot::new()?;
+        root.write_makefile("WriteMakefile(LIBS => \"-l$libname\");")?;
+
+        let hints = root.hints();
+
+        assert!(hints.libs_flags.is_empty());
+        assert_eq!(
+            hints.diagnostics,
+            vec![diagnostic(
+                NativeBuildScript::MakefilePl,
+                "LIBS",
+                NativeBuildHintParseReason::UnsupportedValueForm,
+            )]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn concatenated_rhs_fails_closed_without_partial_capture() -> TestResult {
+        let root = HintRoot::new()?;
+        root.write_makefile("WriteMakefile(LIBS => '-lfoo' . '-lbar');")?;
+
+        let hints = root.hints();
+
+        assert!(hints.libs_flags.is_empty());
+        assert_eq!(hints.diagnostics.len(), 1);
+        assert_eq!(hints.diagnostics[0].reason, NativeBuildHintParseReason::UnsupportedValueForm);
+        // The rejected span must not be rescanned into a second occurrence.
+        assert!(
+            !hints
+                .libs_alternatives
+                .iter()
+                .any(|candidate| candidate == &vec!["-lbar".to_string()])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn quote_like_string_content_is_not_an_assignment() -> TestResult {
+        let root = HintRoot::new()?;
+        root.write_makefile(
+            "my $doc = q(LIBS => '-levil');\n\
+             WriteMakefile(LIBS => ['-lreal']);\n",
+        )?;
+
+        let hints = root.hints();
+
+        // The real assignment survives; the q()-embedded text yields nothing.
+        assert_eq!(hints.libs_flags, vec!["-lreal".to_string()]);
+        assert_eq!(hints.libs_alternatives, vec![vec!["-lreal".to_string()]]);
+        assert!(hints.diagnostics.is_empty());
         Ok(())
     }
 }
