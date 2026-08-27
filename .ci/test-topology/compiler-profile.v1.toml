@@ -37,8 +37,9 @@ status = "active"
 candidate_profiles = ["pr_focused", "merge_required", "local_reproduce"]
 subjects = ["xtask/src/compiler_profile_contract.rs", "docs/compiler/profiles/"]
 # 20 lib tests currently answer the `compiler_profile_contract` filter.
+# Budgets cover the full routed run including cold cargo driver overhead.
 min_work_items = 20
-budget_seconds = 120
+budget_seconds = 900
 
 [row.execution.cargo_test]
 package = "xtask"
@@ -57,7 +58,7 @@ candidate_profiles = ["pr_focused", "merge_required", "local_reproduce"]
 subjects = ["xtask/src/compiler_profile_initial_rows.rs"]
 # 22 lib tests currently answer the `compiler_profile_initial_rows` filter.
 min_work_items = 22
-budget_seconds = 120
+budget_seconds = 900
 
 [row.execution.cargo_test]
 package = "xtask"
@@ -76,7 +77,7 @@ candidate_profiles = ["pr_focused", "merge_required", "local_reproduce"]
 subjects = ["xtask/src/compiler_profile_observation.rs"]
 # 19 lib tests currently answer the `compiler_profile_observation` filter.
 min_work_items = 19
-budget_seconds = 120
+budget_seconds = 900
 
 [row.execution.cargo_test]
 package = "xtask"
@@ -96,7 +97,7 @@ subjects = ["xtask/src/test_topology/", ".ci/test-topology/"]
 # The whole integration binary answers with one item per law: five
 # register-self checks plus fifteen issue falsifiers plus four engine laws.
 min_work_items = 24
-budget_seconds = 180
+budget_seconds = 600
 
 [row.execution.cargo_test]
 package = "xtask"
@@ -116,7 +117,7 @@ candidate_profiles = ["pr_focused", "local_reproduce"]
 subjects = ["xtask/src/test_topology/model.rs", "xtask/src/test_topology/receipts.rs"]
 # Five `compiler_profile_test_topology_register_self_*` laws in that binary.
 min_work_items = 5
-budget_seconds = 120
+budget_seconds = 600
 
 [row.execution.cargo_test]
 package = "xtask"

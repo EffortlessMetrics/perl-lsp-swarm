@@ -81,8 +81,12 @@ impl ScopeNamespace {
 
 /// Typed verdict of one routed run. Only [`ReceiptVerdict::Pass`] is green;
 /// every other variant names the exact reason the route stayed open.
+///
+/// Externally tagged (default) so receipts nest it under their `verdict` key
+/// as `{"timed_out": {"budget_seconds": ...}}`; serde flattening is avoided
+/// because it is incompatible with `deny_unknown_fields` on the receipt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "verdict")]
+#[serde(rename_all = "snake_case")]
 pub enum ReceiptVerdict {
     /// Exit zero with executed work at or above the row minimum.
     Pass,
@@ -200,7 +204,11 @@ pub fn parse_libtest_summaries(output: &str) -> Option<LibTestSummary> {
                     "ignored" => counts.ignored += value,
                     _ => counts.failed += value,
                 }
-            } else if !body.starts_with("finished in") && !body.starts_with("measured") {
+            } else if let Some(measured) = body.strip_suffix("measured") {
+                // Bench counters carry no useful proof work; presence must
+                // still parse or the capture is malformed.
+                measured.trim().parse::<u32>().ok()?;
+            } else if !body.starts_with("finished in") {
                 return None;
             }
         }
@@ -316,8 +324,7 @@ pub struct TestTopologyReceipt {
     pub budget_seconds: u64,
     /// Retry counter; structurally pinned to zero by the runner API.
     pub retries: u32,
-    /// Typed verdict.
-    #[serde(flatten)]
+    /// Typed verdict, nested under its own key.
     pub verdict: ReceiptVerdict,
 }
 
@@ -356,8 +363,7 @@ pub struct FanInEntry {
     pub route_class: String,
     /// Parsed work counters.
     pub work: LibTestCounters,
-    /// Typed verdict.
-    #[serde(flatten)]
+    /// Typed verdict, nested under its own key.
     pub verdict: ReceiptVerdict,
     /// Retry counter (must be zero).
     pub retries: u32,

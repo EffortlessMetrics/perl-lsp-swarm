@@ -314,7 +314,7 @@ fn falsifier_02_zero_filter_selection_stays_non_green() -> Result<(), Box<dyn st
     let output = "\
 running 0 tests
 
-test result: FAILED. 0 passed; 0 failed; 0 ignored; 6 filtered out; finished in 0.01s\n";
+test result: FAILED. 0 passed; 0 failed; 0 ignored; 6 filtered out; 0 measured; finished in 0.01s\n";
     let verdict = evaluate_run(&row, output, true, false, None);
     assert!(matches!(verdict, ReceiptVerdict::ZeroSelection));
     assert!(!verdict.clone().is_green());
@@ -323,7 +323,7 @@ test result: FAILED. 0 passed; 0 failed; 0 ignored; 6 filtered out; finished in 
     let exit_zero_output = "\
 running 0 tests
 
-test result: ok. 0 passed; 0 failed; 0 ignored; 9 filtered out; finished in 0.00s\n";
+test result: ok. 0 passed; 0 failed; 0 ignored; 9 filtered out; 0 measured; finished in 0.00s\n";
     let verdict = evaluate_run(&row, exit_zero_output, true, false, None);
     assert!(matches!(verdict, ReceiptVerdict::ZeroSelection));
     assert!(!verdict.is_green());
@@ -376,7 +376,7 @@ fn falsifier_04_skipped_as_pass_is_structurally_impossible()
     let output = "\
 running 8 tests
 
-test result: ok. 5 passed; 0 failed; 3 ignored; 0 filtered out; finished in 0.02s\n";
+test result: ok. 5 passed; 0 failed; 3 ignored; 0 filtered out; 0 measured; finished in 0.02s\n";
     let verdict = evaluate_run(&row, output, true, false, None);
     match &verdict {
         ReceiptVerdict::IgnoredOrSkippedPresent { count } => assert_eq!(*count, 3),
@@ -584,7 +584,7 @@ fn falsifier_10_cancel_timeout_and_instrument_failure_stay_non_green()
     let healthy_output = "\
 running 3 tests
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.30s\n";
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 filtered out; 0 measured; finished in 0.30s\n";
 
     let timed_out = evaluate_run(&row, healthy_output, false, true, None);
     match &timed_out {
@@ -708,7 +708,7 @@ fn falsifier_13_workflow_state_is_not_semantic_evidence() -> Result<(), Box<dyn 
     let real = "\
 running 1 test
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s\n";
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; 0 measured; finished in 0.01s\n";
     let verdict = evaluate_run(&row, real, true, false, None);
     assert!(matches!(verdict, ReceiptVerdict::Pass));
     Ok(())
@@ -786,7 +786,7 @@ fn falsifier_work_shortfall_blocks_minimum_evasion() -> Result<(), Box<dyn std::
     let output = "\
 running 4 tests
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 2 filtered out; finished in 0.04s\n";
+test result: ok. 4 passed; 0 failed; 0 ignored; 2 filtered out; 0 measured; finished in 0.04s\n";
     let verdict = evaluate_run(&row, output, true, false, None);
     match &verdict {
         ReceiptVerdict::WorkShortfall { executed, minimum } => {
@@ -885,7 +885,7 @@ fn falsifier_summary_arithmetic_counts_only_executing_items()
 -> Result<(), Box<dyn std::error::Error>> {
     let parsed = parse_libtest_summaries(
         "test result: ok. 2 passed; 0 failed; 0 ignored; 1 filtered out; finished in 0.01s\n\
-         test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 filtered out; finished in 0.02s\n",
+         test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 filtered out; 0 measured; finished in 0.02s\n",
     )
     .ok_or("summaries must parse")?;
     assert_eq!(parsed, LibTestSummary { passed: 2, failed: 3, ignored: 0, filtered_out: 1 });
