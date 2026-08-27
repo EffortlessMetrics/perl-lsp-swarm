@@ -397,7 +397,11 @@ fn word_at(chars: &[char], pos: usize, word: &str) -> bool {
 
 /// Index just past the next `;` at or after `from`, or end of input.
 fn semicolon_end(chars: &[char], from: usize) -> usize {
-    (from..).find(|&probe| chars.get(probe) == Some(&';')).map_or(chars.len(), |found| found + 1)
+    let mut probe = from;
+    while probe < chars.len() && chars[probe] != ';' {
+        probe += 1;
+    }
+    if probe < chars.len() { probe + 1 } else { chars.len() }
 }
 
 /// Whether `name` is already a known or newly collected facade alias.
