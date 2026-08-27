@@ -343,10 +343,8 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
         match ch {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
-            ')' | ']' | '}' => {
-                if stack.pop().is_none() {
-                    return idx.saturating_sub(start);
-                }
+            ')' | ']' | '}' if stack.pop().is_none() => {
+                return idx.saturating_sub(start);
             }
             ',' | ';' if stack.is_empty() => return idx.saturating_sub(start),
             _ => {}
@@ -1052,6 +1050,44 @@ Module::Build->new(
 
         assert!(hints.libs_flags.is_empty());
         assert_eq!(hints.diagnostics.len(), 1);
+        Ok(())
+    }
+
+    /// `rejected_value_len` bounds how far the key scan skips past a value
+    /// that failed to parse. Only an *unmatched* closing delimiter ends the
+    /// skip — that one terminates the enclosing call, not the value — while a
+    /// balanced pair inside the value is consumed whole. Reading those two
+    /// cases the other way round would resume the scan inside rejected text.
+    #[test]
+    fn rejected_value_len_stops_at_the_enclosing_call_terminator() -> TestResult {
+        // Balanced `q(...)` pairs belong to the value; the skip ends at
+        // `WriteMakefile`'s own unmatched `)`.
+        let source = "WriteMakefile(LIBS => q(a) . q(b));";
+        let start = source.find("q(a)").ok_or("value start not found")?;
+        assert_eq!(
+            &source[start..start + rejected_value_len(source, start)],
+            "q(a) . q(b)",
+            "a balanced pair inside the value must not end the skip",
+        );
+
+        // A separator at the value's own nesting level ends the skip earlier.
+        let source = "WriteMakefile(LIBS => q(a), OBJECT => 'x.o');";
+        let start = source.find("q(a)").ok_or("value start not found")?;
+        assert_eq!(
+            &source[start..start + rejected_value_len(source, start)],
+            "q(a)",
+            "a top-level separator must end the skip",
+        );
+
+        // Delimiters inside quotes are literal text, so the unmatched `)` that
+        // ends the skip is still the call's own terminator.
+        let source = "WriteMakefile(LIBS => q('), OBJECT' . b));";
+        let start = source.find("q('").ok_or("value start not found")?;
+        assert_eq!(
+            &source[start..start + rejected_value_len(source, start)],
+            "q('), OBJECT' . b)",
+            "quoted delimiters must not end the skip",
+        );
         Ok(())
     }
 
