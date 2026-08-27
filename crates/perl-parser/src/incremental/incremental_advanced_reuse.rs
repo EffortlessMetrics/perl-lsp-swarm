@@ -529,21 +529,21 @@ impl AdvancedReuseAnalyzer {
                 }
             }
 
-            if let Some((best_pos, confidence)) = best_match {
-                if confidence >= config.min_confidence * 0.7 {
-                    // Final threshold check
-                    reuse_map.insert(
-                        *old_pos,
-                        ReuseStrategy {
-                            target_position: best_pos,
-                            reuse_type: ReuseType::StructuralEquivalent,
-                            confidence_score: confidence,
-                            position_adjustment: (best_pos as isize) - (*old_pos as isize),
-                        },
-                    );
-                    used_target_positions.insert(best_pos);
-                    self.analysis_stats.reuse_candidates_found += 1;
-                }
+            if let Some((best_pos, confidence)) = best_match
+                && confidence >= config.min_confidence * 0.7
+            {
+                // Final threshold check
+                reuse_map.insert(
+                    *old_pos,
+                    ReuseStrategy {
+                        target_position: best_pos,
+                        reuse_type: ReuseType::StructuralEquivalent,
+                        confidence_score: confidence,
+                        position_adjustment: (best_pos as isize) - (*old_pos as isize),
+                    },
+                );
+                used_target_positions.insert(best_pos);
+                self.analysis_stats.reuse_candidates_found += 1;
             }
         }
     }
