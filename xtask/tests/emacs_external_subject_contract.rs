@@ -857,10 +857,26 @@ fn checked_manifest_pins_the_audited_external_eglot_subjects() -> Result<()> {
         "the released row's ref is the archive-attested source commit"
     );
     ensure!(
-        package.minimum_emacs == "26.3"
-            && package.package_requires.iter().any(|entry| entry == "emacs 26.3")
-            && package.package_requires.len() == 8,
-        "the released row carries the audited dependency metadata (emacs floor included)"
+        package.minimum_emacs == "26.3",
+        "the released row pins the audited minimum Emacs floor"
+    );
+    // Pin the complete audited dependency list, not a count plus one entry
+    // (same review finding as the lsp-mode rows): a silently swapped
+    // dependency must fail this assertion.
+    let audited_requires = [
+        "emacs 26.3",
+        "eldoc 1.16.0",
+        "external-completion 0.1",
+        "flymake 1.4.5",
+        "jsonrpc 1.0.29",
+        "project 0.11.2",
+        "seq 2.23",
+        "xref 1.7.0",
+    ];
+    ensure!(
+        package.package_requires.iter().map(String::as_str).collect::<Vec<_>>() == audited_requires,
+        "the released row must pin the exact audited dependency list in audit order: {:?}",
+        package.package_requires
     );
     ensure!(released.source_tree.is_none());
 
@@ -1106,13 +1122,13 @@ fn declared_external_identity_changes_make_the_cache_entry_stale() -> Result<()>
     Ok(())
 }
 
-/// A source-subject launch is refused at the host-run boundary with a typed
-/// error, not a driver crash: the released adapter unconditionally requires
-/// the declared package input, so until a package-free source adapter
-/// exists the launch is unsupported (review finding on the initial
-/// candidate).
+/// A source-subject launch proceeds past the host-run adapter boundary
+/// (#8776's external adapter services the subject package-free): the run
+/// no longer refuses with the missing-adapter reason and instead fails on
+/// the next typed boundary — the candidate commit identity of the
+/// nonexistent repository — never skipping past exact-input validation.
 #[test]
-fn source_subject_launches_are_refused_at_the_host_run_boundary() {
+fn source_subject_launch_proceeds_past_the_adapter_boundary() {
     let subject = EmacsClientSubject::from_id("source_eglot_emacs_c1ad9d27").expect("registry row");
     let run = emacs_host_run::EmacsHostRunInputs {
         emacs_executable: PathBuf::from("/nonexistent/emacs"),
@@ -1124,13 +1140,13 @@ fn source_subject_launches_are_refused_at_the_host_run_boundary() {
     };
     let error = emacs_host_run::host_run(Path::new("/nonexistent/repo"), subject, &run)
         .err()
-        .expect("a source-subject launch must refuse before any launch step");
+        .expect("the nonexistent exact inputs must still fail the run");
     assert!(
-        error.to_string().contains("no driver adapter yet"),
-        "the refusal must name the missing-adapter boundary: {error}"
+        !error.to_string().contains("no driver adapter yet"),
+        "the source subject no longer refuses at the adapter boundary: {error}"
     );
     assert!(
-        !error.to_string().contains("driver entrypoint"),
-        "the refusal happens before any driver machinery runs: {error}"
+        error.to_string().contains("candidate identity"),
+        "the failure must come from the next typed boundary (commit identity probe): {error}"
     );
 }

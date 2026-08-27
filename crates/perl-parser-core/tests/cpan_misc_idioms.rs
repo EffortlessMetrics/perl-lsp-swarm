@@ -404,19 +404,21 @@ mod dollar_dollar_scalar_deref {
     #[test]
     fn scalar_deref_keeps_referenced_variable_name() {
         // $$sv is an unbraced scalar dereference — equivalent to ${$sv}.
-        // After the unbraced-deref fix it produces (unary_${} (variable $ sv)),
+        // After the unbraced-deref fix it produces (unary_${} (variable (sigil $) (name sv))),
         // NOT the old buggy form (variable $ $sv).
         let sexp = sexp("my $x = $$sv;");
         assert!(
-            sexp.contains("(unary_${} (variable $ sv))"),
+            sexp.contains("(unary_${} (op ${}) (operand (variable (sigil $) (name sv))))"),
             "expected $$sv to parse as unary_${{}} deref, got: {sexp}"
         );
         assert!(
-            !sexp.contains("(variable $ $sv)"),
+            !sexp.contains("(variable (sigil $) (name $sv))"),
             "$$sv must NOT produce a variable with name $sv (old buggy form), got: {sexp}"
         );
         assert!(
-            !sexp.contains("(my_declaration (variable $ x)(variable $ $))"),
+            !sexp.contains(
+                "(my_declaration (variable (sigil $) (name x))(variable (sigil $) (name $)))"
+            ),
             "expected $$sv not to collapse to the bare $$ PID variable, got: {sexp}"
         );
     }
@@ -428,11 +430,11 @@ mod dollar_dollar_scalar_deref {
         assert_clean_parse(source);
         let sexp = sexp(source);
         assert!(
-            sexp.contains("(unary_${} (variable $ default))"),
+            sexp.contains("(unary_${} (op ${}) (operand (variable (sigil $) (name default))))"),
             "expected $$default to parse as unary_${{}} deref, got: {sexp}"
         );
         assert!(
-            !sexp.contains("(variable $ $default)"),
+            !sexp.contains("(variable (sigil $) (name $default))"),
             "$$default must NOT produce a variable with name $default (old buggy form), got: {sexp}"
         );
     }
@@ -441,7 +443,7 @@ mod dollar_dollar_scalar_deref {
     fn bare_pid_special_variable_still_parses_as_pid() {
         let sexp = sexp("my $pid = $$;");
         assert!(
-            sexp.contains("(variable $ $)"),
+            sexp.contains("(variable (sigil $) (name $))"),
             "expected bare $$ to stay the PID special variable, got: {sexp}"
         );
     }
@@ -455,11 +457,12 @@ my $s = sprintf("%s #%d %s", class($sv), $$sv, $specialsv_name[$$sv]);
 "#,
         );
         assert!(
-            sexp.matches("(unary_${} (variable $ sv))").count() >= 2,
+            sexp.matches("(unary_${} (op ${}) (operand (variable (sigil $) (name sv))))").count()
+                >= 2,
             "expected both $$sv uses to parse as unary_${{}} deref nodes, got: {sexp}"
         );
         assert!(
-            !sexp.contains("(variable $ $sv)"),
+            !sexp.contains("(variable (sigil $) (name $sv))"),
             "neither $$sv use should produce the old buggy Variable form, got: {sexp}"
         );
     }

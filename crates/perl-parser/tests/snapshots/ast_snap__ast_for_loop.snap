@@ -1,5 +1,5 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"for my $i (1..10) { print \\\"$i\\\\n\\\"; }\")"
 ---
-(source_file (foreach (my_declaration (variable $ i)) (binary_.. (number 1) (number 10)) (block (expression_statement (call print ((string_interpolated "\"$i\\n\"")))))))
+(source_file (statements (foreach (variable (my_declaration (declarator my) (variable (variable (sigil $) (name i))))) (list (binary_.. (op ..) (left (number (value 1))) (right (number (value 10))))) (body (block (statements (expression_statement (expression (call (name print) (args (string_interpolated (value "\"$i\\n\"") (interpolated true))))))))))))

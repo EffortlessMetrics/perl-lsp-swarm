@@ -30,7 +30,7 @@ mod parser;
 mod renderer;
 
 pub use crate::value::PerlValue;
-pub use parser::{VariableParseError, VariableParser};
+pub use parser::{FixedOriginVariableParseError, VariableParseError, VariableParser};
 pub use renderer::{
     PerlVariableRenderer, RenderedVariable, VariablePresentationHint, VariableRenderer,
 };

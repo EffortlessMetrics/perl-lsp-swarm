@@ -39,6 +39,7 @@ pub mod ci_pr_summary;
 pub mod ci_route;
 pub mod ci_scope;
 pub mod clean;
+pub mod clippy_cost_measure;
 pub mod command_evidence;
 #[path = "commit_checks_facade.rs"]
 pub mod commit_checks;
@@ -113,6 +114,7 @@ pub mod module_train;
 pub mod module_train_live;
 pub mod native_critic;
 pub mod native_format;
+pub mod native_neovim_train;
 pub mod native_product_surface;
 pub mod native_tooling;
 pub mod oracle_fixture_manifest;

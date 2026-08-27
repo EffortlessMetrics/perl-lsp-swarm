@@ -8,6 +8,7 @@
 //! Snapshot content intentionally differs from `tree-sitter-perl-rs` — the C grammar
 //! produces different node kinds (upstream tree-sitter grammar vs. native v3 AST).
 //! Both sets of snapshots together form the cross-backend comparison baseline.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::error::Error;
 

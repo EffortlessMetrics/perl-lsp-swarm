@@ -1677,6 +1677,7 @@ dependencies = [
  "perl-ast-v2",
  "perl-position-tracking",
  "perl-token",
+ "sha2",
  "strum",
 ]
 
@@ -2074,8 +2075,12 @@ dependencies = [
  "pest_derive",
  "regex",
  "serde",
+ "serde_json",
+ "sha2",
  "stacker",
+ "tempfile",
  "thiserror",
+ "toml",
 ]
 
 [[package]]
@@ -2193,11 +2198,13 @@ dependencies = [
 name = "perl-tdd-support"
 version = "0.17.0"
 dependencies = [
+ "anyhow",
  "lsp-types",
  "perl-parser-core",
  "perl-test-must",
  "serde",
  "serde_json",
+ "tempfile",
  "url",
 ]
 

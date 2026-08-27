@@ -601,6 +601,107 @@ function validateChildSmokeReceipt({
   return violations.length > 0 ? { ok: false, violations } : { ok: true, receipt };
 }
 
+/** Must match `HOST_RESOLUTION_FAILURE_RECEIPT_NAME` in vscodeHostResolution.ts. */
+const HOST_RESOLUTION_FAILURE_RECEIPT = 'vscode_host_resolution_failure.json';
+
+function hostResolutionFailurePath(root = receiptsRoot()) {
+  return path.join(root, HOST_RESOLUTION_FAILURE_RECEIPT);
+}
+
+/**
+ * @param {string} [root]
+ * @param {{
+ *   exists?: ((file: string) => boolean) | undefined,
+ *   readFile?: ((file: string) => string) | undefined,
+ * }} [io]
+ * @returns {{ kind: 'absent' } | { kind: 'invalid' } | { kind: 'present', receipt: Record<string, unknown> }}
+ */
+function readHostResolutionFailureReceipt(
+  root = receiptsRoot(),
+  {
+    exists = (file) => fs.existsSync(file),
+    readFile = (file) => fs.readFileSync(file, 'utf8'),
+  } = {},
+) {
+  const receiptFile = hostResolutionFailurePath(root);
+  if (!exists(receiptFile)) {
+    return { kind: 'absent' };
+  }
+  try {
+    const receipt = JSON.parse(readFile(receiptFile));
+    if (receipt && typeof receipt === 'object') {
+      return { kind: 'present', receipt: /** @type {Record<string, unknown>} */ (receipt) };
+    }
+  } catch {
+    // Invalid JSON is still a host-resolution boundary: do not relabel as product smoke.
+  }
+  return { kind: 'invalid' };
+}
+
+/**
+ * A failed VS Code host-version resolution is not a product smoke failure.
+ * The structured receipt is the visible boundary; `published_extension_smoke_failed`
+ * is reserved for journeys that actually reached the extension host.
+ *
+ * @param {{
+ *   status?: number | null,
+ *   spawnError?: Error | undefined,
+ *   receiptsRoot?: string,
+ *   exists?: ((file: string) => boolean) | undefined,
+ *   readFile?: ((file: string) => string) | undefined,
+ * }} input
+ * @returns {{
+ *   status: string,
+ *   exit_code: number | null,
+ *   reason: string,
+ *   host_resolution?: Record<string, unknown>,
+ * }}
+ */
+function interpretBehavioralSmokeExit({
+  status = null,
+  spawnError,
+  receiptsRoot: root = receiptsRoot(),
+  exists,
+  readFile,
+}) {
+  const hostFailure = readHostResolutionFailureReceipt(root, { exists, readFile });
+  if (hostFailure.kind === 'present') {
+    const rawDisposition = hostFailure.receipt.disposition;
+    const disposition =
+      rawDisposition === 'unavailable' ||
+      rawDisposition === 'network' ||
+      rawDisposition === 'cache' ||
+      rawDisposition === 'runner'
+        ? rawDisposition
+        : 'runner';
+    return {
+      status: disposition === 'unavailable' ? 'not_proven' : 'failed',
+      exit_code: status ?? null,
+      reason: `vscode_host_resolution_${disposition}`,
+      host_resolution: hostFailure.receipt,
+    };
+  }
+  if (hostFailure.kind === 'invalid') {
+    return {
+      status: 'not_proven',
+      exit_code: status ?? null,
+      reason: 'vscode_host_resolution_receipt_invalid',
+    };
+  }
+  if (spawnError) {
+    return {
+      status: 'not_proven',
+      exit_code: null,
+      reason: spawnError.message,
+    };
+  }
+  return {
+    status: 'failed',
+    exit_code: status ?? null,
+    reason: 'published_extension_smoke_failed',
+  };
+}
+
 function exitCodeFor(overall) {
   if (overall === 'pass') {
     return 0;
@@ -934,11 +1035,11 @@ function composeCrashRecoveryReceipt({
     background_restart_after_exhaustion: backgroundAfterExhaustion,
     explicit_retry: explicitRetryRow,
     budget:
-      typeof breakerObservations.automatic_budget === 'number'
+      breakerBound && typeof breakerObservations.automatic_budget === 'number'
         ? breakerObservations.automatic_budget
         : null,
     action_required_dialog_observable:
-      breakerObservations.action_required_dialog?.observable === true,
+      breakerBound && breakerObservations.action_required_dialog?.observable === true,
   };
 
   const exhaustedRow = !breakerBound
@@ -965,7 +1066,7 @@ function composeCrashRecoveryReceipt({
       : null,
     replacement_servers_never_overlapped: childrenBound
       ? Number(transientObservations.recovery_samples?.max_simultaneous_server_processes ?? 0) <=
-          1 && episodes.every((episode) => (episode.max_simultaneous_server_processes ?? 0) <= 1)
+          1 && episodes.every((episode) => (episode?.max_simultaneous_server_processes ?? 0) <= 1)
       : null,
     budget_exhaustion_spawned_no_background_server: childrenBound
       ? backgroundAfterExhaustion === false
@@ -1690,6 +1791,18 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
   writeJsonAtomic(joinedReceiptFile, joined);
 
   if (legExitCodes.transient !== 0 || legExitCodes.breaker !== 0) {
+    if (joined.verdict === 'failed') {
+      // A leg that recorded observed product failures and then exited nonzero
+      // produced evidence of a real regression; downgrading that to
+      // instrumentation uncertainty would hide it. Only exits without a
+      // bound failure verdict are integrity gaps.
+      return {
+        status: 'failed',
+        exit_codes: legExitCodes,
+        reason: 'crash_recovery_journey_leg_observed_failure',
+        recovery_verdict: joined.verdict,
+      };
+    }
     // Aligned with the composer: a leg that did not exit cleanly is an
     // execution-integrity gap (not_proven), not an observed product failure.
     return {
@@ -1925,6 +2038,7 @@ function main() {
         const childReceiptFile = childReceiptPath();
         try {
           fs.rmSync(childReceiptFile, { force: true });
+          fs.rmSync(hostResolutionFailurePath(), { force: true });
         } catch (error) {
           receipt.stages.behavioral_smoke = {
             status: 'not_proven',
@@ -1938,12 +2052,12 @@ function main() {
         }
 
         const smokeResult = runNpm(['run', 'test:published'], smokeEnv);
-        if (smokeResult.error) {
-          receipt.stages.behavioral_smoke = {
-            status: 'not_proven',
-            exit_code: null,
-            reason: smokeResult.error.message,
-          };
+        if (smokeResult.error || smokeResult.status !== 0) {
+          receipt.stages.behavioral_smoke = interpretBehavioralSmokeExit({
+            status: smokeResult.status,
+            spawnError: smokeResult.error,
+            receiptsRoot: receiptsRoot(),
+          });
         } else if (smokeResult.status === 0) {
           const childReceipt = validateChildSmokeReceipt({
             receiptFile: childReceiptFile,
@@ -1963,12 +2077,6 @@ function main() {
                 reason: 'child_receipt_did_not_bind_this_run',
                 violations: childReceipt.violations,
               };
-        } else {
-          receipt.stages.behavioral_smoke = {
-            status: 'failed',
-            exit_code: smokeResult.status ?? null,
-            reason: 'published_extension_smoke_failed',
-          };
         }
       } else {
         receipt.stages.behavioral_smoke = {
@@ -2057,7 +2165,9 @@ module.exports = {
   crashRecoveryLegEnv,
   finalizeSmokeRun,
   initialReceipt,
+  interpretBehavioralSmokeExit,
   interpretTransitionResult,
+  readHostResolutionFailureReceipt,
   receiptPath,
   scanBundledServerProcesses,
   shouldRunActivationFailureJourney,
