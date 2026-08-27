@@ -90,7 +90,11 @@ fn active_lints_cannot_leave_cargo_unratcheted() -> Result<()> {
     let Err(error) = result else {
         bail!("active lint without a Cargo.toml activation should fail");
     };
-    assert!(error.to_string().contains("clippy::collapsible_if lint is missing from Cargo.toml"));
+    // The validator names the lint status first (#10135); the assertion must
+    // match the status-first message contract (#12772).
+    assert!(
+        error.to_string().contains("active lint clippy::collapsible_if is missing from Cargo.toml")
+    );
     Ok(())
 }
 

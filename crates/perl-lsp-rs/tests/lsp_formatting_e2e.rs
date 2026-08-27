@@ -1,5 +1,3 @@
-#![allow(clippy::collapsible_if)]
-
 use serde_json::json;
 
 mod support;

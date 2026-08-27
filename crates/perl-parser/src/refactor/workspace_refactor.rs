@@ -269,10 +269,10 @@ impl WorkspaceRefactor {
 
         // Always try to include the definition explicitly
         let def_loc = self._index.find_def(&key);
-        if let Some(def) = def_loc {
-            if !locations.iter().any(|loc| loc.uri == def.uri && loc.range == def.range) {
-                locations.push(def);
-            }
+        if let Some(def) = def_loc
+            && !locations.iter().any(|loc| loc.uri == def.uri && loc.range == def.range)
+        {
+            locations.push(def);
         }
 
         let store = self._index.document_store();
@@ -858,11 +858,10 @@ impl WorkspaceRefactor {
 
         let mut all_locations = self._index.find_refs(&key);
 
-        if let Some(def_loc) = self._index.find_def(&key) {
-            if !all_locations.iter().any(|loc| loc.uri == def_loc.uri && loc.range == def_loc.range)
-            {
-                all_locations.push(def_loc);
-            }
+        if let Some(def_loc) = self._index.find_def(&key)
+            && !all_locations.iter().any(|loc| loc.uri == def_loc.uri && loc.range == def_loc.range)
+        {
+            all_locations.push(def_loc);
         }
 
         if all_locations.is_empty() {
