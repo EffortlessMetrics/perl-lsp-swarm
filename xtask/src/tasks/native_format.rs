@@ -708,7 +708,7 @@ fn read_expected_diagnostic_codes(path: &Path) -> Result<Vec<String>> {
 fn parses_cleanly(source: &str) -> bool {
     let mut parser = perl_parser_core::Parser::new(source);
     let output = parser.parse_with_recovery();
-    !output.terminated_early && output.diagnostics.is_empty()
+    !output.terminated_early() && output.diagnostics.is_empty()
 }
 
 fn has_parse_preservation_diagnostic(

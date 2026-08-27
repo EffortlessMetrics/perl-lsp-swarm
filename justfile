@@ -17,6 +17,10 @@ devplane-init:
 storage-doctor:
     ./scripts/storage-doctor
 
+# Dry-run report of stale repo-local target/ dirs (default 30d; --days=N, --apply to delete).
+target-gc *args:
+    ./scripts/target-gc.sh {{args}}
+
 agent-preflight: storage-doctor
     @echo "agent preflight ok"
 
@@ -35,6 +39,12 @@ agent-nextest:
 
 agent-pr-fast:
     {{cargo_safe}} xtask gates --tier pr-fast --receipt
+
+# Run any cargo command with shared multi-worktree build caching (devplane
+# target dir, sccache, build flock, disk gate). Documented default for local
+# multi-worktree development — see docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md.
+cached *args:
+    {{cargo_safe}} {{args}}
 
 # M4b (#3763): assert review/audit agents are mechanically read-only
 # (no Edit/Write/NotebookEdit/Agent in their tools: allowlist).
@@ -93,6 +103,8 @@ check-all-targets:
     cargo check --workspace --all-targets --locked
     @echo "Compiling all targets (all features) — deep verification check..."
     cargo check --workspace --all-targets --all-features --locked
+    @echo "Compiling example test modules — cargo check --all-targets checks examples as non-test targets only, so their #[cfg(test)] code bit-rots unseen (#12650)..."
+    cargo test --workspace --examples --locked --no-run
     @echo "All targets compile clean."
 
 # Scan every tracked file for committed git conflict marker lines.
@@ -375,6 +387,12 @@ mutation-regression:
 # Bounded fuzz run (quick fuzzing for CI/nightly)
 fuzz-bounded:
     @./scripts/fuzz-bounded --duration 60
+
+# Parser panic-free invariant: corpus regression plus a focused bounded fuzz run.
+# Parse errors are acceptable; a panic is a hard failure of the invariant.
+parser-panic-free-invariant:
+    @cargo test -p perl-parser --test parser_panic_free_invariant --locked
+    @./scripts/fuzz-bounded --duration 30 -- parser_integration
 
 # `bench` is the canonical benchmark target; keep this as a compatibility alias.
 benchmarks: bench

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 7856,
-  "reason": "#7856 adds the harness-gated packaged activation-failure seam to activate() (out/extension.js 1516689->1519372 archive-measured on top of the #11983 package.json withdrawal) and the packaged cleanup/retry journey plus its changelog entry (changelog.md 22224->23221 after the vsce markdown processor). No file added, removed, or loosened; total recomputed ->1695683.",
-  "base_baseline_file_sha256": "a4f9360c51a5d263c45628c1b4ec2da9e6861a7a4d8912aa55e7e66e57dbc6b5",
-  "candidate_baseline_file_sha256": "4a662d41a6f80249245b526e89b6b706d1b847195c16231fe0d303cbd44a5011",
-  "base_inventory_sha256": "d70d8236a4363008fab2965595c2add0b79a5161c705017283141a44d9fe1521",
-  "candidate_inventory_sha256": "3087c97c983e74fbc5d814d8739e985dbacc26a54e7ad32c43f1e3f9dae7c19e"
+  "owner_issue": 6116,
+  "reason": "Repairs the grammar regression from #6116's landed change (2a0497a8a): the trailing-comma fix leaves the grammar at 13660 bytes (was recorded 13346 from the broken state) and the vsix baseline reconciles to total 1711981 (1711667 + 314 + total_bytes correction). Size-only delta: no file added, removed, or loosened; out/extension.js unchanged; grammar scope fixes restore #6116's intended anchoring. Composed on top of the accepted #7845/#9842/#11985 baselines.",
+  "base_baseline_file_sha256": "5c173b406230338b16676a0795ad19242ae3817f96b7d390c60d23300f5b96e9",
+  "candidate_baseline_file_sha256": "18c71611c572f227fff586fed8e8a8f85f9cedabd7c9f5febe72464c09e6f7f5",
+  "base_inventory_sha256": "3e26c061c62287bf6bb97092be08fe450d0ed6bd1a347141c3acccd40c806d3f",
+  "candidate_inventory_sha256": "124e8ae60936f4b50e724e0d6341bb662818dc3324c3790cb08e03bac854b655"
 }

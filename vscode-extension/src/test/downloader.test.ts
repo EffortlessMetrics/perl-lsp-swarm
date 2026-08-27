@@ -1707,17 +1707,35 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
   }
 
   let downloader: TestDownloader;
+  let restoreProcessHost: (() => void) | undefined;
 
   beforeEach(() => {
     downloader = new BinaryDownloader(
       makeContext(),
       makeOutputChannel(),
     ) as unknown as TestDownloader;
-    // Fixtures name x86_64-unknown-linux-gnu assets; pin the host target so
-    // these controls are independent of the machine running the suite.
+    // Fixtures name x86_64-unknown-linux-gnu .tar.gz assets; pin the host so
+    // these controls are independent of the machine running the suite. The
+    // target mock alone is not enough: getLatestRelease also derives the
+    // archive extension and the ARM64 emulation check from process.platform
+    // and process.arch, so a Windows runner would match .zip asset names
+    // against these .tar.gz fixtures and every selection control would
+    // refuse for a reason the fixture never chose.
     jest
       .spyOn(downloader as unknown as { getPlatformTarget: () => string }, 'getPlatformTarget')
       .mockReturnValue('x86_64-unknown-linux-gnu');
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    const archDescriptor = Object.getOwnPropertyDescriptor(process, 'arch');
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
+    restoreProcessHost = () => {
+      if (platformDescriptor) {
+        Object.defineProperty(process, 'platform', platformDescriptor);
+      }
+      if (archDescriptor) {
+        Object.defineProperty(process, 'arch', archDescriptor);
+      }
+    };
     const vscode = require('vscode');
     vscode.workspace.getConfiguration.mockReturnValue({
       get: jest.fn((key: string, defaultValue?: unknown) => {
@@ -1734,6 +1752,8 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
   });
 
   afterEach(() => {
+    restoreProcessHost?.();
+    restoreProcessHost = undefined;
     jest.restoreAllMocks();
   });
 

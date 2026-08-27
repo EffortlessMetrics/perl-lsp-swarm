@@ -2,7 +2,7 @@
   "schema_version": "zed_codex_train.v1",
   "programme_issue": 7759,
   "status": "planned_not_proven",
-  "updated": "2026-08-16",
+  "updated": "2026-08-24",
   "rules": {
     "branch_from_current_main_after_dependencies": true,
     "one_semantic_increment_per_pr": true,
@@ -20,9 +20,7 @@
       "P09",
       "C01"
     ],
-    "current_dap_frontier": [
-      "D01"
-    ]
+    "current_dap_frontier": []
   },
   "stages": [
     {
@@ -449,10 +447,10 @@
           "id": "D01",
           "issue": 9485,
           "phase": "debug_adapter_authority",
-          "pull_request": null,
+          "pull_request": 12271,
           "actor": "codex",
           "kind": "authority",
-          "state": "ready",
+          "state": "authority_merged_execution_not_proven",
           "depends_on_core": [
             "P00"
           ],
@@ -464,10 +462,10 @@
           "id": "DA01",
           "issue": 9516,
           "phase": "public_perl_dap_asset_receipts",
-          "pull_request": null,
+          "pull_request": 12333,
           "actor": "codex",
           "kind": "evidence",
-          "state": "blocked_on_dependencies",
+          "state": "evidence_merged_matching_host_only",
           "depends_on_core": [],
           "depends_on_sidecar": [
             "D01"

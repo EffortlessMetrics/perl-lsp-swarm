@@ -157,10 +157,10 @@ fn validate_entries(entries: &[Entry]) -> Vec<String> {
                 errors.push(format!("{} has a backslash path", entry.id));
             }
         }
-        if let Some(pattern) = entry.glob.as_deref() {
-            if Pattern::new(pattern).is_err() {
-                errors.push(format!("{} has an invalid glob", entry.id));
-            }
+        if let Some(pattern) = entry.glob.as_deref()
+            && Pattern::new(pattern).is_err()
+        {
+            errors.push(format!("{} has an invalid glob", entry.id));
         }
         for value in [&entry.id, &entry.kind, &entry.generated_by, &entry.owner, &entry.reason] {
             if value.is_empty() {
@@ -251,26 +251,43 @@ mod tests {
 
     #[test]
     fn matching_is_exact_or_glob_based() {
-        let exact = Entry {
-            id: "exact".into(),
-            path: Some("Cargo.lock".into()),
-            glob: None,
-            kind: "lockfile".into(),
-            generated_by: "cargo".into(),
-            regenerate: Some("cargo update".into()),
-            owner: "deps".into(),
-            reason: "pins deps".into(),
-            covered_by: vec![],
-            created: "2026-01-01".into(),
-            review_after: "2026-02-01".into(),
-            broad_glob_reason: None,
-        };
-        assert!(entry_matches(&exact, "Cargo.lock"));
-        assert!(!entry_matches(&exact, "flake.lock"));
-        let mut glob = exact.clone();
-        glob.path = None;
-        glob.glob = Some("docs/project/status/**.md".into());
-        assert!(entry_matches(&glob, "docs/project/status/ci.md"));
+        let root = crate::utils::project_root().expect("project root");
+        let files = tracked_files(&root).expect("tracked files");
+        let policy = load_policy(&root, &root.join("policy/generated-allowlist.toml"))
+            .expect("generated allowlist");
+
+        let exact = policy
+            .allow
+            .iter()
+            .find(|entry| entry.id == "generated-cargo-lock")
+            .expect("generated-cargo-lock allowlist entry");
+        assert_eq!(exact.path.as_deref(), Some("Cargo.lock"));
+        assert!(files.iter().any(|path| path == "Cargo.lock"), "Cargo.lock must stay tracked");
+        assert!(entry_matches(exact, "Cargo.lock"));
+        assert!(!entry_matches(exact, "flake.lock"));
+
+        let status = policy
+            .allow
+            .iter()
+            .find(|entry| entry.id == "generated-status-pages")
+            .expect("generated-status-pages allowlist entry");
+        let live_glob = status.glob.as_deref().expect("generated-status-pages glob");
+        assert_eq!(
+            live_glob, "docs/project/status/**/*.md",
+            "live status glob must stay the repaired **/*.md form; the prior **.md spelling is invalid for the glob crate and silently matched zero files (#12566)"
+        );
+        assert!(
+            Pattern::new(live_glob).is_ok(),
+            "live generated-status-pages glob must be valid for the glob crate"
+        );
+
+        const SAMPLE: &str = "docs/project/status/dap.md";
+        assert!(
+            files.iter().any(|path| path == SAMPLE),
+            "status glob sample {SAMPLE} must stay tracked"
+        );
+        assert!(entry_matches(status, SAMPLE), "live glob must match a tracked status page");
+        assert!(!entry_matches(status, "docs/project/ROADMAP.md"));
     }
 
     #[test]

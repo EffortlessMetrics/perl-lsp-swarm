@@ -67,6 +67,8 @@ export interface WorkspaceExperienceSnapshot {
 
 /** Optional status-bar telemetry that is additive to the workspace state. */
 export interface WorkspaceExperienceTelemetry {
+  /** Self-reported server identity from the initialize handshake (#12705). */
+  readonly name?: string | undefined;
   readonly version?: string | undefined;
   readonly fileCount?: number | undefined;
   readonly errorCount?: number | undefined;
@@ -114,7 +116,10 @@ function countLabel(count: number, singular: string): string {
 }
 
 function readyLabel(telemetry: WorkspaceExperienceTelemetry): string {
-  const label = telemetry.version ? `perl-lsp v${telemetry.version}` : 'perl-lsp';
+  // The server's self-reported name wins when present (#12705); the built-in
+  // product identity remains the fallback so existing behavior is unchanged.
+  const product = telemetry.name ?? 'perl-lsp';
+  const label = telemetry.version ? `${product} v${telemetry.version}` : product;
   const parts: string[] = [];
   if (telemetry.fileCount !== undefined) {
     parts.push(countLabel(telemetry.fileCount, 'file'));
@@ -251,10 +256,11 @@ export function presentWorkspaceExperience(
       };
     }
     case 'ready_limited': {
+      const product = telemetry.name ?? 'perl-lsp';
       const version = telemetry.version ? ` v${telemetry.version}` : '';
       return {
         mode: 'running',
-        text: `$(warning) perl-lsp${version}: ready (limited)`,
+        text: `$(warning) ${product}${version}: ready (limited)`,
         tooltip: detailTooltip(
           snapshot,
           'Perl Language Server is ready with bounded workspace coverage',

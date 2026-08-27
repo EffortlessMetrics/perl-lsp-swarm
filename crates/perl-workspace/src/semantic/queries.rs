@@ -702,23 +702,23 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
         // ── Block on generated-member entities ──
         // Generated members (Moo/Moose accessors) cannot be safely renamed
         // without a generator-specific edit plan (Req 17.6).
-        if let Some(ref info) = entity_info {
-            if info.kind == EntityKind::GeneratedMember {
-                blockers.push(PlanBlocker::new(
-                    PlanBlockerReason::GeneratedMember,
-                    info.anchor_id,
-                    "Cannot rename generated member without a generator-specific edit plan."
-                        .to_string(),
-                ));
-                return RenamePlan::new(
-                    entity_id,
-                    old_name,
-                    new_name.to_string(),
-                    edits,
-                    blockers,
-                    warnings,
-                );
-            }
+        if let Some(ref info) = entity_info
+            && info.kind == EntityKind::GeneratedMember
+        {
+            blockers.push(PlanBlocker::new(
+                PlanBlockerReason::GeneratedMember,
+                info.anchor_id,
+                "Cannot rename generated member without a generator-specific edit plan."
+                    .to_string(),
+            ));
+            return RenamePlan::new(
+                entity_id,
+                old_name,
+                new_name.to_string(),
+                edits,
+                blockers,
+                warnings,
+            );
         }
 
         // ── Collect definition occurrences ──
@@ -950,16 +950,16 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
         // ── Block on generated-member entities (Req 17.7) ──
         // Generated members (Moo/Moose accessors) cannot be safely deleted
         // without a generator-specific delete plan.
-        if let Some(ref info) = entity_info {
-            if info.kind == EntityKind::GeneratedMember {
-                blockers.push(PlanBlocker::new(
-                    PlanBlockerReason::GeneratedMember,
-                    info.anchor_id,
-                    "Cannot delete generated member without a generator-specific delete plan."
-                        .to_string(),
-                ));
-                return SafeDeletePlan::new(entity_id, name, blockers, warnings);
-            }
+        if let Some(ref info) = entity_info
+            && info.kind == EntityKind::GeneratedMember
+        {
+            blockers.push(PlanBlocker::new(
+                PlanBlockerReason::GeneratedMember,
+                info.anchor_id,
+                "Cannot delete generated member without a generator-specific delete plan."
+                    .to_string(),
+            ));
+            return SafeDeletePlan::new(entity_id, name, blockers, warnings);
         }
 
         let bare = bare_name(&name);
@@ -1107,19 +1107,19 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
             // Symbol filter: if a symbol name is requested, it must match the
             // entity associated with this occurrence (when known). When the
             // entity_id is None the boundary is fully dynamic (any symbol).
-            if let Some(sym) = symbol {
-                if let Some(entity_id) = occurrence.entity_id {
-                    // Resolve the entity to check name match.
-                    let entity_matches = shard.entities.iter().any(|e| {
-                        e.id == entity_id
-                            && (e.canonical_name == sym || bare_name(&e.canonical_name) == sym)
-                    });
-                    if !entity_matches {
-                        continue;
-                    }
+            if let Some(sym) = symbol
+                && let Some(entity_id) = occurrence.entity_id
+            {
+                // Resolve the entity to check name match.
+                let entity_matches = shard.entities.iter().any(|e| {
+                    e.id == entity_id
+                        && (e.canonical_name == sym || bare_name(&e.canonical_name) == sym)
+                });
+                if !entity_matches {
+                    continue;
                 }
-                // entity_id is None → fully dynamic, any symbol is plausible.
             }
+            // entity_id is None → fully dynamic, any symbol is plausible.
 
             return Some(occurrence.clone());
         }

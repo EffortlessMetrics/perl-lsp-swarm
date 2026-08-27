@@ -9,6 +9,7 @@
 use super::super::{
     CachedVariable, DebugAdapter, HashSet, PerlVariableRenderer, VariableParser, VariableRenderer,
 };
+use crate::parse_origin::{DebuggerOutputOrigin, OriginatedParseInput, ParseIdentity};
 use crate::value::PerlValue;
 
 const MAX_CACHED_CHILDREN: usize = 1024;
@@ -18,7 +19,12 @@ const MAX_CACHED_CHILDREN: usize = 1024;
 ///
 /// Returns a vec built in reverse-iteration order (most-recent-first).
 /// [`sort_and_paginate`] reverses it before sorting to restore chronological order.
-pub(super) fn parse_assignments(lines: &[String], scope_type: i32) -> Vec<(String, PerlValue)> {
+pub(super) fn parse_assignments(
+    lines: &[String],
+    scope_type: i32,
+    origin: DebuggerOutputOrigin,
+    identity: ParseIdentity,
+) -> Vec<(String, PerlValue)> {
     let parser = VariableParser::new();
     let mut seen = HashSet::new();
     let mut parsed = Vec::new();
@@ -29,7 +35,8 @@ pub(super) fn parse_assignments(lines: &[String], scope_type: i32) -> Vec<(Strin
         if text.is_empty() {
             continue;
         }
-        if let Ok((name, value)) = parser.parse_assignment(text) {
+        let input = OriginatedParseInput::new(origin, identity, text);
+        if let Ok((name, value)) = parser.parse_assignment_originated(input) {
             if !DebugAdapter::scope_allows_variable_name(scope_type, &name) {
                 continue;
             }

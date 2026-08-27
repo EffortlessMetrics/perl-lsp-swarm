@@ -389,7 +389,7 @@ fn symbolic_string_reference_is_a_dynamic_boundary() {
 #[test]
 fn ordinary_runtime_reference_is_not_a_dynamic_boundary() {
     let graph = lower("no strict 'refs'; my $v = ${$name};");
-    assert!(graph.receipt.dynamic_boundary_counts.get("SymbolicReference").is_none());
+    assert!(!graph.receipt.dynamic_boundary_counts.contains_key("SymbolicReference"));
 }
 
 #[test]

@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/standalone_install_transition.v1.schema.json",
+  "title": "standalone_install_transition.v1",
+  "description": "Closed transition record for one install, repair, update, or rollback attempt against the standalone candidate model (#11179). Product transition, cleanup, process/startup, and PATH outcomes are four independent dimensions that a later platform implementation cannot compress into one boolean. Selection may commit before PATH and fresh-process proof; those remain separate results.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "route_mode",
+    "operation",
+    "transaction_id",
+    "attempt_id",
+    "disposition",
+    "candidate_id",
+    "prior_current_candidate_id",
+    "outcome_dimensions",
+    "bounded_reason"
+  ],
+  "properties": {
+    "schema_version": { "const": "standalone_install_transition.v1" },
+    "route_mode": { "enum": ["first_party_posix", "first_party_powershell"] },
+    "operation": { "enum": ["install", "repair", "update", "rollback"] },
+    "transaction_id": { "$ref": "#/$defs/bounded_id" },
+    "attempt_id": { "$ref": "#/$defs/bounded_id" },
+    "disposition": {
+      "enum": [
+        "candidate_verified",
+        "candidate_published_unselected",
+        "selection_committed",
+        "selection_unchanged",
+        "rollback_committed",
+        "failed_preserved_current",
+        "cancelled_preserved_current",
+        "not_proven_preserved_current"
+      ]
+    },
+    "candidate_id": {
+      "oneOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "prior_current_candidate_id": {
+      "oneOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ],
+      "description": "For preserved-current dispositions this must equal the prior selection's candidate; preservation is semantic before any platform implementation."
+    },
+    "outcome_dimensions": { "$ref": "#/$defs/outcome_dimensions" },
+    "bounded_reason": { "type": "string", "minLength": 1, "maxLength": 512 }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+    "bounded_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "outcome_dimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product_units", "cleanup", "process_startup", "path_persistence"],
+      "properties": {
+        "product_units": {
+          "enum": ["installed", "repaired", "updated", "rolled_back", "unchanged", "preserved_prior", "not_applicable"]
+        },
+        "cleanup": {
+          "enum": ["completed", "deferred", "failed_preserved", "not_proven", "not_applicable"]
+        },
+        "process_startup": {
+          "enum": ["verified", "unproven", "failed", "not_applicable"],
+          "description": "Fresh-process observation remains a separate result from selection commit."
+        },
+        "path_persistence": {
+          "enum": ["persisted", "unchanged", "failed", "not_applicable"]
+        }
+      }
+    }
+  }
+}

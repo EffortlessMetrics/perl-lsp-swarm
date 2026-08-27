@@ -52,6 +52,8 @@
 //! All arithmetic uses saturating operations. Extreme inputs (i32::MAX, u32::MAX)
 //! saturate rather than panic or overflow.
 
+#[cfg(test)]
+use perl_tdd_support::must_some;
 use std::fmt;
 
 /// Error type for `TryFrom<i32>` on `ScopeKind`.
@@ -300,7 +302,7 @@ mod codec_unit_tests {
     #[test]
     fn scope_encode_decode_basic() {
         let s = VariableReference::Scope { frame_id: 5000, kind: ScopeKind::Locals };
-        let wire = s.encode().expect("frame_id=5000 is in [0,99_999]");
+        let wire = must_some(s.encode());
         assert_eq!(wire, 50_001);
         assert_eq!(VariableReference::decode(50_001), Some(s));
     }
@@ -330,7 +332,7 @@ mod codec_unit_tests {
     fn scope_frame_id_max_boundary() {
         // frame_id=99_999 is valid; wire = 999_993 (Locals)
         let s_max = VariableReference::Scope { frame_id: 99_999, kind: ScopeKind::Locals };
-        let wire = s_max.encode().expect("frame_id=99_999 is the max valid frame_id");
+        let wire = must_some(s_max.encode());
         assert_eq!(wire, 999_991);
         assert_eq!(VariableReference::decode(wire), Some(s_max));
     }

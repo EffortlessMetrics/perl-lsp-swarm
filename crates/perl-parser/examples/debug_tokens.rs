@@ -9,10 +9,10 @@ fn main() {
         let mut stream = TokenStream::new(test);
 
         while let Ok(token) = stream.next() {
-            if matches!(token.kind, TokenKind::Eof) {
+            if matches!(token.kind(), TokenKind::Eof) {
                 break;
             }
-            println!("  Token: {:?} = {:?}", token.kind, token.text);
+            println!("  Token: {:?} = {:?}", token.kind(), token.text);
         }
     }
 }
