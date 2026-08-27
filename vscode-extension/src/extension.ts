@@ -1737,9 +1737,14 @@ function createLanguageClientLifecycle(
       );
       await finalizeStartedLanguageClient(context, startedClient, latestLanguageClientGeneration);
     },
-    onFailed: () => {
+    onFailed: (snapshot) => {
       languageClientStartupMetrics.finishServerStart('error');
       languageClientStartupMetrics.finishInitialize('error');
+      const message =
+        snapshot.error instanceof Error ? snapshot.error.message : String(snapshot.error);
+      outputChannel.error(
+        `[lifecycle] Language client failed to start (generation ${snapshot.generation}): ${message}`,
+      );
     },
     onStateChange: (snapshot) => {
       languageClientStartupMetrics.setLifecycleState(snapshot.state);
@@ -1791,7 +1796,17 @@ async function finalizeStartedLanguageClient(
   // kept open while the previous client was stopped. Rehydrate those documents
   // before providers issue requests against the new server.
   if (generation > 1) {
-    await synchronizeOpenPerlDocuments(startedClient);
+    // Give the freshly started client a moment to finish its `initialized`
+    // handshake before replaying didOpen: the server's `textDocument/didOpen`
+    // handler is only ready after `initialized`, and a tight replay can be
+    // dropped on a loaded hosted runner (#12757).
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    try {
+      await synchronizeOpenPerlDocuments(startedClient);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      outputChannel?.warn(`[lifecycle] didOpen replay failed: ${message}`);
+    }
   }
 
   // This hook is part of the lifecycle controller so initial startup and
@@ -1832,14 +1847,21 @@ async function synchronizeOpenPerlDocuments(client: LanguageClient): Promise<voi
       continue;
     }
 
-    await client.sendNotification('textDocument/didOpen', {
-      textDocument: {
-        uri: document.uri.toString(),
-        languageId: document.languageId,
-        version: document.version,
-        text: document.getText(),
-      },
-    });
+    try {
+      await client.sendNotification('textDocument/didOpen', {
+        textDocument: {
+          uri: document.uri.toString(),
+          languageId: document.languageId,
+          version: document.version,
+          text: document.getText(),
+        },
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      outputChannel?.warn(
+        `[lifecycle] didOpen replay for ${document.uri.toString()} failed: ${message}`,
+      );
+    }
   }
 }
 
@@ -1967,6 +1989,9 @@ function createLanguageClient(serverPath: string): LanguageClient {
     traceOutputChannel: outputChannel,
     middleware: {
       provideCompletionItem: async (document, position, context, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
         try {
           const result = await next(document, position, context, token);
           recordLspProviderOutcome('Completion', document, result);
@@ -1976,6 +2001,9 @@ function createLanguageClient(serverPath: string): LanguageClient {
         }
       },
       provideDefinition: async (document, position, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
         try {
           const result = await next(document, position, token);
           recordLspProviderOutcome('Definition', document, result);
@@ -1985,6 +2013,9 @@ function createLanguageClient(serverPath: string): LanguageClient {
         }
       },
       provideHover: async (document, position, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
         try {
           const result = await next(document, position, token);
           recordLspProviderOutcome('Hover', document, result);
@@ -1994,6 +2025,9 @@ function createLanguageClient(serverPath: string): LanguageClient {
         }
       },
       provideReferences: async (document, position, options, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
         try {
           const result = await next(document, position, options, token);
           recordLspProviderOutcome('References', document, result);
@@ -2003,6 +2037,9 @@ function createLanguageClient(serverPath: string): LanguageClient {
         }
       },
       provideDocumentSymbols: async (document, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
         try {
           const result = await next(document, token);
           recordLspProviderOutcome('Symbols', document, result);
@@ -2012,6 +2049,9 @@ function createLanguageClient(serverPath: string): LanguageClient {
         }
       },
       provideRenameEdits: async (document, position, newName, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
         try {
           const result = await next(document, position, newName, token);
           recordLspProviderOutcome('Rename', document, result, 'safe_refusal');
@@ -2021,14 +2061,47 @@ function createLanguageClient(serverPath: string): LanguageClient {
         }
       },
       provideCodeLenses: async (document, token, next) => {
-        const lenses = await next(document, token);
-        return lenses?.map(rewriteTestLensCommand);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return [];
+        }
+        try {
+          const lenses = await next(document, token);
+          return lenses?.map(rewriteTestLensCommand);
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return [];
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return [];
+          }
+          outputChannel?.warn(`[provider] CodeLens failed: ${message}`);
+          return [];
+        }
       },
       resolveCodeLens: async (codeLens, token, next) => {
-        const resolved = await next(codeLens, token);
-        return rewriteTestLensCommand(resolved ?? codeLens);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return rewriteTestLensCommand(codeLens);
+        }
+        try {
+          const resolved = await next(codeLens, token);
+          return rewriteTestLensCommand(resolved ?? codeLens);
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return rewriteTestLensCommand(codeLens);
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return rewriteTestLensCommand(codeLens);
+          }
+          outputChannel?.warn(`[provider] CodeLens resolve failed: ${message}`);
+          return rewriteTestLensCommand(codeLens);
+        }
       },
       provideDocumentFormattingEdits: async (document, options, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
         try {
           const edits = await next(document, options, token);
           const presentation = presentFormattingProviderOutcome(edits?.length ?? 0);
@@ -2050,6 +2123,9 @@ function createLanguageClient(serverPath: string): LanguageClient {
         }
       },
       provideDocumentRangeFormattingEdits: async (document, range, options, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
         try {
           const edits = await next(document, range, options, token);
           const presentation = presentFormattingProviderOutcome(edits?.length ?? 0, true);
@@ -2128,6 +2204,9 @@ function handleLspProviderError(label: string, error: unknown): null {
     return null;
   }
   const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('Client got disposed')) {
+    return null;
+  }
   const presentation = presentLspProviderError(label, message);
   healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
   outputChannel?.warn(`[provider] ${label} failed: ${message}`);
