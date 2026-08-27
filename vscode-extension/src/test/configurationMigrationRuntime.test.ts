@@ -215,6 +215,17 @@ describe('configuration migration runtime', () => {
       interpretLegacyConfiguration(futureRegistry, {
         old_key: 'perl-lsp.oldSetting',
         source_scope: 'resource',
+        legacy_value_present: false,
+        legacy_value: null,
+        current_value_present: false,
+        current_value: null,
+      }),
+    ).toMatchObject({ status: 'not_applicable' });
+
+    expect(
+      interpretLegacyConfiguration(futureRegistry, {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
         legacy_value_present: true,
         legacy_value: 'legacy',
         current_value_present: false,
