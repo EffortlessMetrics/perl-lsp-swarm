@@ -481,37 +481,47 @@ fn test_explain_provider_decision_bounds_echo_fields_not_transport_input()
 }
 
 #[test]
-fn test_explain_provider_decision_rejects_non_canonical_identifier_vocabulary()
+fn test_explain_provider_decision_preserves_uri_and_digest_identifier_shapes()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = ExecuteCommandProvider::new();
 
-    // A space never appears in any tracked receipt or scenario label; control,
-    // markup, and non-ASCII characters are likewise outside the canonical
-    // identifier vocabulary (#2758).
-    for (field, hostile_value) in [
-        ("receipt_id", "semantic shadow compare"),
-        ("receipt_id", "receipt<script>alert(1)</script>"),
-        ("receipt_id", ""),
-        ("scenario", "mojolicious\u{7f}safe-delete"),
+    // The v1 schema preserves caller-supplied strings. In particular, digest
+    // and URI-like identifiers may contain punctuation outside the old
+    // implementation vocabulary and must round-trip unchanged (#2758).
+    for (field, value) in [
+        ("receipt_id", "sha256:0123456789abcdef0123456789abcdef"),
+        ("receipt_id", "urn:perl-lsp:receipt/2026-08-27?kind=provider"),
+        ("scenario", "release/v0.18?mode=explain&host=vim"),
         ("scenario", "résumé-navigation"),
     ] {
         let mut request = json!({ "provider": "rename" });
-        request[field] = json!(hostile_value);
-        let result = provider.execute_command("perl.explainProviderDecision", vec![request]);
-        let error = match result {
-            Ok(value) => {
-                return Err(format!(
-                    "non-canonical {field} {hostile_value:?} should reject the request: {value}"
-                )
-                .into());
-            }
-            Err(error) => error,
-        };
-        assert!(
-            error.contains(field),
-            "error should name the offending field {field}, got: {error}"
+        request[field] = json!(value);
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request])?;
+        assert_eq!(
+            result.get(field).and_then(Value::as_str),
+            Some(value),
+            "schema-compatible {field} must round-trip unchanged"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_rejects_empty_identifier()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+    let result = provider.execute_command(
+        "perl.explainProviderDecision",
+        vec![json!({
+            "provider": "rename",
+            "receipt_id": ""
+        })],
+    );
+    let error = match result {
+        Ok(value) => return Err(format!("empty receipt_id should reject: {value}").into()),
+        Err(error) => error,
+    };
+    assert!(error.contains("receipt_id") && error.contains("must not be empty"), "{error}");
     Ok(())
 }
 
@@ -564,7 +574,7 @@ fn test_explain_provider_decision_accepts_identifier_bound_at_limit()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = ExecuteCommandProvider::new();
 
-    // A label of exactly MAX_EXPLANATION_LABEL_LENGTH bytes is canonical;
+    // An echo field of exactly MAX_EXPLANATION_ECHO_LENGTH bytes is accepted;
     // one more byte fails closed with the named-field diagnostic (#2758).
     let at_limit = "a".repeat(1024);
     let result = provider.execute_command(
