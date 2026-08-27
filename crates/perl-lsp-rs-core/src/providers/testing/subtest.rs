@@ -246,17 +246,12 @@ fn insert_by_source_position(children: &mut Vec<DocumentSymbol>, symbol: Documen
     children.insert(position, symbol);
 }
 
-/// Mirror the priority used by the compiler document-symbol assembler.
-///
-/// Subtests are LSP functions, so they share the callable priority rather than
-/// being inserted by source position across properties, namespaces, or
-/// variables that the assembler intentionally groups separately.
 fn document_symbol_sort_key(symbol: &DocumentSymbol) -> (u8, u32, u32, u32) {
     let priority = match symbol.kind {
-        7 => 0,                 // scalar `has` property
+        7 => 0,                  // scalar `has` property
         2 | 3 | 4 | 5 | 8 => 1, // package/class/role namespace family
-        18 | 19 => 2,           // array/hash `has` properties
-        6 | 12 => 3,            // methods/functions, including subtests
+        18 | 19 => 2,            // array/hash `has` properties
+        6 | 12 => 3,             // methods/functions, including subtests
         _ => 4,
     };
     (priority, symbol.range.start.line, symbol.range.start.character, symbol.range.end.line)
