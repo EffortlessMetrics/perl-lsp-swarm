@@ -34,7 +34,10 @@ pub use metadata_dependencies::{
     extract_makefile_pl_requirements, extract_meta_json_requirements,
     extract_meta_yml_requirements,
 };
-pub use native_build_hints::{NativeBuildHints, detect_native_build_hints};
+pub use native_build_hints::{
+    NativeBuildHintDiagnostic, NativeBuildHintParseReason, NativeBuildHints, NativeBuildScript,
+    detect_native_build_hints,
+};
 pub use perl_lsp_perltidy::FormatterMode;
 #[cfg(not(target_arch = "wasm32"))]
 pub use perl_oracle_env::PerlOracleEnv;
