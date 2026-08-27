@@ -10,12 +10,12 @@ mod common;
 
 #[cfg(feature = "dap-phase2")]
 mod cleanup_tests {
-    use anyhow::Result;
+    use anyhow::{Result, anyhow};
     use perl_dap::{DapMessage, DebugAdapter};
     use serde_json::json;
     use std::sync::mpsc::sync_channel;
 
-    use crate::common::perl_available;
+    use crate::common::{perl_available, resolve_launch_perl_path};
 
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -119,6 +119,12 @@ mod cleanup_tests {
         script.write_all(b"my $x = 1;\nmy $y = 2;\nprint $y;\n")?;
         script.flush()?;
         let path = script.path().to_string_lossy().to_string();
+        let perl_path =
+            resolve_launch_perl_path().map_err(anyhow::Error::msg)?.ok_or_else(|| {
+                anyhow!(
+                    "perl_available reported an interpreter, but the launch resolver returned none"
+                )
+            })?;
 
         let (mut adapter, rx) = make_adapter();
         let _ = adapter.handle_request(1, "initialize", None);
@@ -126,18 +132,24 @@ mod cleanup_tests {
         // Drain initialized event.
         let _ = rx.recv_timeout(std::time::Duration::from_millis(200));
 
-        // Attempt launch — may succeed or fail depending on env, but either
-        // way drop must not panic or block.
-        let _launch = adapter.handle_request(
-            2,
-            "launch",
-            Some(json!({
-                "program": path,
-                "stopOnEntry": true
-            })),
+        // Carry the same resolved identity that satisfied perl_available into
+        // the raw launch request; otherwise a valid pin can be bypassed by
+        // ambient interpreter resolution.
+        let launch_args = json!({
+            "program": path,
+            "stopOnEntry": true,
+            "perlPath": perl_path,
+        });
+        assert_eq!(
+            launch_args.get("perlPath").and_then(|value| value.as_str()),
+            perl_path.to_str(),
+            "cleanup launch must use the resolved pinned interpreter identity"
         );
+        let _launch = adapter.handle_request(2, "launch", Some(launch_args));
 
-        drop(adapter); // Drop must complete promptly — no zombie child.
+        // Drop must complete promptly — no zombie child, regardless of the
+        // launch response.
+        drop(adapter);
         Ok(())
     }
 
