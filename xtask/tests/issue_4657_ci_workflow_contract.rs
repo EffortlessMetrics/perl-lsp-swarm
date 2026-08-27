@@ -260,11 +260,23 @@ fn rust_small_scoped_noop_is_base_owned_exact_and_fail_closed()
     }
     if !classifier.contains("previous_filename")
         || !classifier.contains("rename_or_unknown_file_status")
+        || !classifier.contains("_nested(observation, \"base\", \"repo\", \"full_name\")")
+        || !classifier.contains("_nested(observation, \"head\", \"repo\", \"full_name\")")
+        || !classifier.contains("type(observation.get(\"changed_files\")) is not int")
     {
-        return Err("narrative scope classifier must fail closed on renames".into());
+        return Err(
+            "narrative scope classifier must fail closed on renames and incoherent REST identities"
+                .into(),
+        );
     }
-    if workflow.matches("needs.route-rust-small.outputs.scope_decision == 'run'").count() != 4 {
-        return Err("every Rust Small implementation/fallback job must require typed run".into());
+    for job_name in
+        ["rust-small-cx53", "rust-small-cx43", "rust-small-github", "rust-small-fallback"]
+    {
+        let job = job_block(&workflow, job_name)
+            .ok_or_else(|| format!("Rust Small workflow is missing `{job_name}`"))?;
+        if !job.contains("needs.route-rust-small.outputs.scope_decision == 'run'") {
+            return Err(format!("Rust Small job `{job_name}` does not require typed run").into());
+        }
     }
     for required in [
         "name: Perl LSP Rust Small Result",
@@ -272,6 +284,11 @@ fn rust_small_scoped_noop_is_base_owned_exact_and_fail_closed()
         "[ \"$SCOPE_FILE_COUNT\" != \"1\" ]",
         "[ \"$SCOPE_BASE_SHA\" != \"$EXPECTED_BASE_SHA\" ]",
         "[ \"$SCOPE_HEAD_SHA\" != \"$EXPECTED_HEAD_SHA\" ]",
+        "[ \"$SCOPE_FILE_DIGEST\" != \"794d5f956c9b3140e585d22c2d57e2d858bf571128598e641b39ab72e17d23ad\" ]",
+        "[ \"$SCOPE_POLICY_DIGEST\" = \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\" ]",
+        "[ \"$SCOPE_POLICY_DIGEST\" = \"0000000000000000000000000000000000000000000000000000000000000000\" ]",
+        "[ \"$SCOPE_CLASSIFIER_DIGEST\" = \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\" ]",
+        "[ \"$SCOPE_CLASSIFIER_DIGEST\" = \"0000000000000000000000000000000000000000000000000000000000000000\" ]",
         "scoped_noop requires every Rust implementation job to skip",
         "if [ \"$SCOPE_DECISION\" != \"run\" ]; then",
     ] {

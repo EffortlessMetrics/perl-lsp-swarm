@@ -5,6 +5,8 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -31,6 +33,12 @@ POLICY = {
     "classifier_identity": "classify-narrative-docs-scope.py:v1",
     "allowed_paths": [ALLOWED],
 }
+FILE_DIGEST = "794d5f956c9b3140e585d22c2d57e2d858bf571128598e641b39ab72e17d23ad"
+BASH = (
+    Path(r"C:\Program Files\Git\bin\bash.exe")
+    if Path(r"C:\Program Files\Git\bin\bash.exe").is_file()
+    else (Path(shutil.which("bash")) if shutil.which("bash") else None)
+)
 
 
 def event(paths: list[str], *, event_name: str = "pull_request", fork: bool = False) -> dict:
@@ -40,7 +48,7 @@ def event(paths: list[str], *, event_name: str = "pull_request", fork: bool = Fa
         "repository": {"full_name": REPOSITORY},
         "pull_request": {
             "changed_files": len(paths),
-            "base": {"sha": BASE_SHA},
+            "base": {"sha": BASE_SHA, "repo": {"full_name": REPOSITORY}},
             "head": {
                 "sha": HEAD_SHA,
                 "repo": {"full_name": "someone/fork" if fork else REPOSITORY},
@@ -49,11 +57,14 @@ def event(paths: list[str], *, event_name: str = "pull_request", fork: bool = Fa
     }
 
 
-def observation(paths: list[str]) -> dict:
+def observation(paths: list[str], *, fork: bool = False) -> dict:
     return {
         "number": 12987,
-        "base": {"sha": BASE_SHA},
-        "head": {"sha": HEAD_SHA},
+        "base": {"sha": BASE_SHA, "repo": {"full_name": REPOSITORY}},
+        "head": {
+            "sha": HEAD_SHA,
+            "repo": {"full_name": "someone/fork" if fork else REPOSITORY},
+        },
         "changed_files": len(paths),
     }
 
@@ -64,8 +75,47 @@ def pages(paths: list[str]) -> list[list[dict[str, str]]]:
 
 def classify(paths: list[str], **event_options: object) -> dict:
     subject = event(paths, **event_options)
-    observed = observation(paths)
+    observed = observation(paths, fork=bool(event_options.get("fork", False)))
     return CLASSIFIER.classify(subject, copy.deepcopy(POLICY), observed, pages(paths), observed)
+
+
+def workflow_run_step(path: Path, name: str) -> str:
+    lines = path.read_text(encoding="utf-8").replace("\r\n", "\n").splitlines()
+    step_header = f"      - name: {name}"
+    start = lines.index(step_header)
+    run_line = next(index for index in range(start, len(lines)) if lines[index] == "        run: |")
+    body: list[str] = []
+    for line in lines[run_line + 1 :]:
+        if not line:
+            body.append("")
+            continue
+        if not line.startswith("          "):
+            break
+        body.append(line[10:])
+    if not body:
+        raise RuntimeError(f"workflow step {name!r} has no run body")
+    return "\n".join(body) + "\n"
+
+
+def execute_bash(script: str, environment: dict[str, str]) -> subprocess.CompletedProcess[bytes]:
+    if BASH is None:
+        raise RuntimeError("bash is unavailable")
+    exports = "\n".join(
+        f"export {key}={shlex.quote(value)}" for key, value in environment.items()
+    )
+    if "PATH_PREFIX" in environment:
+        exports += '\nexport PATH="$PATH_PREFIX:$PATH"'
+    return subprocess.run(
+        [str(BASH), "-s"], input=f"{exports}\n{script}".encode(), capture_output=True
+    )
+
+
+def output_map(path: Path) -> dict[str, str]:
+    return dict(
+        line.split("=", 1)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
 
 
 class NarrativeDocsScopeTests(unittest.TestCase):
@@ -78,7 +128,7 @@ class NarrativeDocsScopeTests(unittest.TestCase):
         self.assertRegex(result["file_digest"], r"^[0-9a-f]{64}$")
         self.assertEqual(
             result["file_digest"],
-            "794d5f956c9b3140e585d22c2d57e2d858bf571128598e641b39ab72e17d23ad",
+            FILE_DIGEST,
         )
         self.assertEqual(result["base_sha"], BASE_SHA)
         self.assertEqual(result["head_sha"], HEAD_SHA)
@@ -139,6 +189,56 @@ class NarrativeDocsScopeTests(unittest.TestCase):
                     result = CLASSIFIER.classify(subject, POLICY, before, pages([ALLOWED]), after)
                     self.assertEqual(result["decision"], "run")
                     self.assertEqual(result["reason"], f"stale_pr_{position}_observation")
+
+    def test_event_and_observation_repository_identity_must_be_complete_and_coherent(self) -> None:
+        for fork in [False, True]:
+            subject = event([ALLOWED], fork=fork)
+            current = observation([ALLOWED], fork=fork)
+            expected_head_repository = "someone/fork" if fork else REPOSITORY
+            self.assertEqual(
+                CLASSIFIER.classify(subject, POLICY, current, pages([ALLOWED]), current)["decision"],
+                "scoped_noop",
+            )
+
+            for side in ["base", "head"]:
+                with self.subTest(location="event", fork=fork, side=side):
+                    missing = copy.deepcopy(subject)
+                    del missing["pull_request"][side]["repo"]
+                    result = CLASSIFIER.classify(missing, POLICY, current, pages([ALLOWED]), current)
+                    self.assertEqual(result["decision"], "run")
+
+            for position in ["before", "after"]:
+                for side, mismatch in [
+                    ("base", "other/base"),
+                    ("head", "other/head" if expected_head_repository != "other/head" else "third/head"),
+                ]:
+                    with self.subTest(position=position, fork=fork, side=side):
+                        incoherent = copy.deepcopy(current)
+                        incoherent[side]["repo"]["full_name"] = mismatch
+                        before = incoherent if position == "before" else current
+                        after = incoherent if position == "after" else current
+                        result = CLASSIFIER.classify(subject, POLICY, before, pages([ALLOWED]), after)
+                        self.assertEqual(result["decision"], "run")
+                        self.assertEqual(result["reason"], f"stale_pr_{position}_observation")
+
+                with self.subTest(position=position, fork=fork, side="head-missing"):
+                    incomplete = copy.deepcopy(current)
+                    del incomplete["head"]["repo"]
+                    before = incomplete if position == "before" else current
+                    after = incomplete if position == "after" else current
+                    result = CLASSIFIER.classify(subject, POLICY, before, pages([ALLOWED]), after)
+                    self.assertEqual(result["decision"], "run")
+
+                with self.subTest(position=position, fork=fork, field="boolean-changed-files"):
+                    malformed_count = copy.deepcopy(current)
+                    malformed_count["changed_files"] = True
+                    before = malformed_count if position == "before" else current
+                    after = malformed_count if position == "after" else current
+                    result = CLASSIFIER.classify(subject, POLICY, before, pages([ALLOWED]), after)
+                    self.assertEqual(
+                        (result["decision"], result["reason"]),
+                        ("run", f"stale_pr_{position}_observation"),
+                    )
 
     def test_count_pagination_empty_duplicate_and_malformed_paths_fail_closed(self) -> None:
         subject = event([ALLOWED])
@@ -317,6 +417,196 @@ class NarrativeDocsScopeTests(unittest.TestCase):
             )
             self.assertNotEqual(result["policy_digest"], CLASSIFIER.EMPTY_DIGEST)
             self.assertNotEqual(result["classifier_digest"], CLASSIFIER.EMPTY_DIGEST)
+
+    @unittest.skipIf(BASH is None, "bash is required to execute workflow aggregates")
+    def test_aggregates_reject_arbitrary_and_sentinel_digests(self) -> None:
+        base_environment = {
+            "GITHUB_STEP_SUMMARY": "/dev/null",
+            "ROUTE_RESULT": "success",
+            "ROUTER_TARGET": "scoped_noop",
+            "ROUTER_REASON": "audited_narrative_docs_only",
+            "ROUTER_ERROR": "false",
+            "ROUTER_FALLBACK_ALLOWED": "false",
+            "SCOPE_DECISION": "scoped_noop",
+            "SCOPE_REASON": "audited_narrative_docs_only",
+            "SCOPE_SUBJECT": "pull_request",
+            "SCOPE_FILE_COUNT": "1",
+            "SCOPE_FILE_DIGEST": FILE_DIGEST,
+            "SCOPE_BASE_SHA": BASE_SHA,
+            "SCOPE_HEAD_SHA": HEAD_SHA,
+            "SCOPE_POLICY_IDENTITY": POLICY["policy_identity"],
+            "SCOPE_CLASSIFIER_IDENTITY": POLICY["classifier_identity"],
+            "SCOPE_POLICY_DIGEST": "a" * 64,
+            "SCOPE_CLASSIFIER_DIGEST": "b" * 64,
+            "EXPECTED_BASE_SHA": BASE_SHA,
+            "EXPECTED_HEAD_SHA": HEAD_SHA,
+            "EXPECTED_CHANGED_FILES": "1",
+            "CX53_RESULT": "skipped",
+            "CX43_RESULT": "skipped",
+            "GITHUB_RESULT": "skipped",
+            "FALLBACK_RESULT": "skipped",
+        }
+        scripts = [
+            workflow_run_step(ROOT / ".github" / "workflows" / "em-ci-routed-rust.yml", "Evaluate routed result"),
+            workflow_run_step(ROOT / ".github" / "workflows" / "ripr.yml", "Evaluate routed result"),
+        ]
+        mutations = [
+            {"SCOPE_FILE_DIGEST": "f" * 64},
+            {"SCOPE_POLICY_DIGEST": "0" * 64},
+            {"SCOPE_POLICY_DIGEST": CLASSIFIER.EMPTY_DIGEST},
+            {"SCOPE_CLASSIFIER_DIGEST": "0" * 64},
+            {"SCOPE_CLASSIFIER_DIGEST": CLASSIFIER.EMPTY_DIGEST},
+        ]
+        for script in scripts:
+            valid = execute_bash(script, base_environment)
+            self.assertEqual(valid.returncode, 0, valid.stderr.decode(errors="replace"))
+            for mutation in mutations:
+                with self.subTest(mutation=mutation):
+                    mutated_environment = {**base_environment, **mutation}
+                    rejected = execute_bash(script, mutated_environment)
+                    self.assertNotEqual(rejected.returncode, 0)
+
+    @unittest.skipIf(BASH is None, "bash is required to execute workflow routers")
+    def test_routers_fail_closed_across_bootstrap_api_drift_and_output_failures(self) -> None:
+        mock_gh = r"""gh() {
+local request="$*"
+if [[ "$request" == *"/contents/scripts/ci/classify-narrative-docs-scope.py"* ]]; then
+  [ "${MOCK_FAILURE:-}" != "bootstrap" ] || return 1
+  cat "$MOCK_CLASSIFIER_RESPONSE"
+elif [[ "$request" == *"/contents/policy/ci-narrative-docs-scope.toml"* ]]; then
+  [ "${MOCK_FAILURE:-}" != "bootstrap" ] || return 1
+  cat "$MOCK_POLICY_RESPONSE"
+elif [[ "$request" == *"/files?per_page=100"* ]]; then
+  [ "${MOCK_FAILURE:-}" != "files" ] || return 1
+  cat "$MOCK_FILES"
+elif [[ "$request" == *"/pulls/12987"* ]]; then
+  calls=0
+  [ ! -f "$MOCK_COUNTER" ] || calls="$(cat "$MOCK_COUNTER")"
+  calls=$((calls + 1))
+  printf '%s' "$calls" > "$MOCK_COUNTER"
+  if [ "$calls" -eq 1 ]; then
+    [ "${MOCK_FAILURE:-}" != "before" ] || return 1
+    cat "$MOCK_BEFORE"
+  else
+    [ "${MOCK_FAILURE:-}" != "after" ] || return 1
+    cat "$MOCK_AFTER"
+  fi
+else
+  return 64
+fi
+}
+base64() {
+  tr -d '\r' | command base64 "$@"
+}
+"""
+
+        def content_response(contents: bytes) -> dict[str, str]:
+            import base64
+
+            return {
+                "type": "file",
+                "content": base64.b64encode(contents).decode("ascii"),
+            }
+
+        scripts = [
+            workflow_run_step(
+                ROOT / ".github" / "workflows" / "em-ci-routed-rust.yml",
+                "Decide target runner",
+            ),
+            workflow_run_step(
+                ROOT / ".github" / "workflows" / "ripr.yml", "Decide target runner"
+            ),
+        ]
+        cases = [
+            ("", False, "scoped_noop", "audited_narrative_docs_only"),
+            ("bootstrap", False, "run", "trusted_scope_artifacts_unavailable"),
+            ("before", False, "run", "pr_before_api_error"),
+            ("files", False, "run", "files_api_error"),
+            ("after", False, "run", "pr_after_api_error"),
+            ("", True, "run", "stale_pr_after_observation"),
+            ("malformed-output", False, "run", "malformed_classifier_output"),
+        ]
+
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            root = Path(temp)
+            event_path = root / "event.json"
+            before_path = root / "before.json"
+            after_path = root / "after.json"
+            files_path = root / "files.json"
+            policy_response = root / "policy-response.json"
+            classifier_response = root / "classifier-response.json"
+            malformed_classifier_response = root / "malformed-classifier-response.json"
+            event_path.write_text(json.dumps(event([ALLOWED], fork=True)), encoding="utf-8")
+            before_path.write_text(
+                json.dumps(observation([ALLOWED], fork=True)), encoding="utf-8"
+            )
+            files_path.write_text(json.dumps(pages([ALLOWED])), encoding="utf-8")
+            policy_response.write_text(
+                json.dumps(content_response(POLICY_PATH.read_bytes())), encoding="utf-8"
+            )
+            classifier_response.write_text(
+                json.dumps(content_response(CLASSIFIER_PATH.read_bytes())), encoding="utf-8"
+            )
+            malformed_classifier_response.write_text(
+                json.dumps(content_response(b"print('{}')\n")), encoding="utf-8"
+            )
+
+            for script in scripts:
+                for failure, drift, expected_decision, expected_reason in cases:
+                    with self.subTest(failure=failure, drift=drift):
+                        after = observation([ALLOWED], fork=True)
+                        if drift:
+                            after["head"]["sha"] = "3" * 40
+                        after_path.write_text(json.dumps(after), encoding="utf-8")
+                        output_path = root / "output.txt"
+                        summary_path = root / "summary.txt"
+                        counter_path = root / "counter.txt"
+                        for path in [output_path, summary_path, counter_path]:
+                            path.unlink(missing_ok=True)
+                        environment = {
+                            "GH_TOKEN": "fixture-token",
+                            "RUNNER_TOKEN": "",
+                            "ORG": "EffortlessMetrics",
+                            "REPOSITORY": REPOSITORY,
+                            "EVENT_NAME": "pull_request",
+                            "PR_NUMBER": "12987",
+                            "EVENT_BASE_SHA": BASE_SHA,
+                            "EVENT_HEAD_SHA": HEAD_SHA,
+                            "EVENT_CHANGED_FILES": "1",
+                            "FORCE_TARGET": "auto",
+                            "IS_PULL_REQUEST": "true",
+                            "IS_FORK_PR": "true",
+                            "PR_AUTHOR_LOGIN": "fixture-user",
+                            "PR_AUTHOR_TYPE": "User",
+                            "GITHUB_EVENT_PATH": event_path.as_posix(),
+                            "GITHUB_OUTPUT": output_path.as_posix(),
+                            "GITHUB_STEP_SUMMARY": summary_path.as_posix(),
+                            "MOCK_FAILURE": failure if failure != "malformed-output" else "",
+                            "MOCK_COUNTER": counter_path.as_posix(),
+                            "MOCK_BEFORE": before_path.as_posix(),
+                            "MOCK_AFTER": after_path.as_posix(),
+                            "MOCK_FILES": files_path.as_posix(),
+                            "MOCK_POLICY_RESPONSE": policy_response.as_posix(),
+                            "MOCK_CLASSIFIER_RESPONSE": (
+                                malformed_classifier_response.as_posix()
+                                if failure == "malformed-output"
+                                else classifier_response.as_posix()
+                            ),
+                        }
+                        completed = execute_bash(f"{mock_gh}\n{script}", environment)
+                        self.assertEqual(
+                            completed.returncode,
+                            0,
+                            completed.stderr.decode(errors="replace"),
+                        )
+                        outputs = output_map(output_path)
+                        diagnostic = completed.stderr.decode(errors="replace")
+                        self.assertEqual(outputs["scope_decision"], expected_decision, diagnostic)
+                        self.assertEqual(outputs["scope_reason"], expected_reason, diagnostic)
+                        self.assertEqual(
+                            outputs["target"],
+                            "scoped_noop" if expected_decision == "scoped_noop" else "github",
+                        )
 
 
 if __name__ == "__main__":

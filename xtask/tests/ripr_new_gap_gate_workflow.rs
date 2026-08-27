@@ -10,6 +10,21 @@ fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
         .to_path_buf())
 }
 
+fn workflow_job<'a>(workflow: &'a str, job: &str) -> Option<&'a str> {
+    let header = format!("\n  {job}:\n");
+    let start = workflow.find(&header)? + 1;
+    let rest = &workflow[start..];
+    let body_offset = rest.find('\n')? + 1;
+    let end = rest[body_offset..]
+        .match_indices('\n')
+        .find(|(idx, _)| {
+            let line = &rest[body_offset + idx + 1..];
+            line.starts_with("  ") && !line.starts_with("   ") && !line.starts_with("  #")
+        })
+        .map_or(rest.len(), |(idx, _)| body_offset + idx + 1);
+    Some(&rest[..end])
+}
+
 #[test]
 fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -474,6 +489,11 @@ fn ripr_scoped_noop_keeps_the_required_context_and_skips_only_on_typed_identity(
         "scope_classifier_digest",
         "if [ \"$ROUTER_TARGET\" = \"scoped_noop\" ]; then",
         "[ \"$SCOPE_FILE_COUNT\" != \"$EXPECTED_CHANGED_FILES\" ]",
+        "[ \"$SCOPE_FILE_DIGEST\" != \"794d5f956c9b3140e585d22c2d57e2d858bf571128598e641b39ab72e17d23ad\" ]",
+        "[ \"$SCOPE_POLICY_DIGEST\" = \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\" ]",
+        "[ \"$SCOPE_POLICY_DIGEST\" = \"0000000000000000000000000000000000000000000000000000000000000000\" ]",
+        "[ \"$SCOPE_CLASSIFIER_DIGEST\" = \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\" ]",
+        "[ \"$SCOPE_CLASSIFIER_DIGEST\" = \"0000000000000000000000000000000000000000000000000000000000000000\" ]",
         "scoped_noop requires every RIPR implementation job to skip",
         "if [ \"$SCOPE_DECISION\" != \"run\" ]; then",
     ] {
@@ -481,8 +501,12 @@ fn ripr_scoped_noop_keeps_the_required_context_and_skips_only_on_typed_identity(
             return Err(format!("RIPR scoped-noop contract is missing `{required}`").into());
         }
     }
-    if workflow.matches("needs.route-ripr.outputs.scope_decision == 'run'").count() != 4 {
-        return Err("every RIPR implementation/fallback job must require typed run".into());
+    for job_name in ["ripr-cx53", "ripr-cx43", "ripr-github", "ripr-fallback"] {
+        let job = workflow_job(&workflow, job_name)
+            .ok_or_else(|| format!("RIPR workflow is missing `{job_name}`"))?;
+        if !job.contains("needs.route-ripr.outputs.scope_decision == 'run'") {
+            return Err(format!("RIPR job `{job_name}` does not require typed run").into());
+        }
     }
     for required in [
         "docs/project/status/release.md",

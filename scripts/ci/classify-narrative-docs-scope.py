@@ -127,6 +127,7 @@ def classify(
 
     base_sha = _nested(pull_request, "base", "sha")
     head_sha = _nested(pull_request, "head", "sha")
+    base_repository = _nested(pull_request, "base", "repo", "full_name")
     head_repository = _nested(pull_request, "head", "repo", "full_name")
     number = event.get("number")
     expected_count = pull_request.get("changed_files")
@@ -139,6 +140,7 @@ def classify(
         or number <= 0
         or type(expected_count) is not int
         or expected_count <= 0
+        or base_repository != repository
     ):
         return _decision(event, decision="run", reason="invalid_event_identity")
     if not isinstance(head_repository, str) or not head_repository:
@@ -185,9 +187,13 @@ def classify(
                 classifier_digest=classifier_digest,
             )
         if (
-            observation.get("number") != number
+            type(observation.get("number")) is not int
+            or observation.get("number") != number
             or _nested(observation, "base", "sha") != base_sha
             or _nested(observation, "head", "sha") != head_sha
+            or _nested(observation, "base", "repo", "full_name") != base_repository
+            or _nested(observation, "head", "repo", "full_name") != head_repository
+            or type(observation.get("changed_files")) is not int
             or observation.get("changed_files") != expected_count
         ):
             return _decision(

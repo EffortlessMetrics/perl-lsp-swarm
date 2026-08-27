@@ -1327,7 +1327,7 @@ jobs:
                [ "$SCOPE_SUBJECT" != "pull_request" ] ||
                [ "$SCOPE_FILE_COUNT" != "1" ] ||
                [ "$SCOPE_FILE_COUNT" != "$EXPECTED_CHANGED_FILES" ] ||
-               ! [[ "$SCOPE_FILE_DIGEST" =~ ^[0-9a-f]{64}$ ]] ||
+               [ "$SCOPE_FILE_DIGEST" != "794d5f956c9b3140e585d22c2d57e2d858bf571128598e641b39ab72e17d23ad" ] ||
                ! [[ "$SCOPE_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] ||
                ! [[ "$SCOPE_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] ||
                [ "$SCOPE_BASE_SHA" != "$EXPECTED_BASE_SHA" ] ||
@@ -1335,7 +1335,11 @@ jobs:
                [ "$SCOPE_POLICY_IDENTITY" != "ci-narrative-docs-scope:v1" ] ||
                [ "$SCOPE_CLASSIFIER_IDENTITY" != "classify-narrative-docs-scope.py:v1" ] ||
                ! [[ "$SCOPE_POLICY_DIGEST" =~ ^[0-9a-f]{64}$ ]] ||
-               ! [[ "$SCOPE_CLASSIFIER_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+               [ "$SCOPE_POLICY_DIGEST" = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ] ||
+               [ "$SCOPE_POLICY_DIGEST" = "0000000000000000000000000000000000000000000000000000000000000000" ] ||
+               ! [[ "$SCOPE_CLASSIFIER_DIGEST" =~ ^[0-9a-f]{64}$ ]] ||
+               [ "$SCOPE_CLASSIFIER_DIGEST" = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ] ||
+               [ "$SCOPE_CLASSIFIER_DIGEST" = "0000000000000000000000000000000000000000000000000000000000000000" ]; then
               echo "RIPR_GATE_VERDICT=invalid-scoped-noop"
               echo "::error::scoped_noop is missing its exact typed subject and trusted artifact identity"
               exit 1

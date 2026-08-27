@@ -83,16 +83,20 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 
 - Before runner selection, the router reads the exact PR base/head and changed
   file count, downloads the classifier and allowlist from that exact base SHA,
-  reads all file pages, and re-reads the PR identity. API errors, missing
-  bootstrap artifacts, movement, count mismatch, malformed/duplicate paths,
-  renames, or an unknown policy field select full proof. Merge-group, manual,
-  scheduled cache seed, and other non-PR subjects always run full proof.
+  reads all file pages, and re-reads the PR identity. The event and both API
+  observations must agree on base and head repository identities, including a
+  fork's distinct head repository. API errors, missing bootstrap artifacts,
+  movement, count mismatch, malformed/duplicate paths, renames, or an unknown
+  policy field select full proof. Merge-group, manual, scheduled cache seed,
+  and other non-PR subjects always run full proof.
 - A `scoped_noop` result records subject, base/head SHAs, file count and digest,
   policy/classifier identities, and both base-artifact SHA-256 digests. The
   aggregate accepts it only when every RIPR implementation and fallback job is
   skipped. The path digest uses sorted compact-JSON UTF-8 encoding; the single
   allowed path has digest
   `794d5f956c9b3140e585d22c2d57e2d858bf571128598e641b39ab72e17d23ad`.
+  The aggregate requires that exact path digest and rejects empty-file or
+  all-zero sentinels for the policy and classifier digests.
 
 - When a ripr evidence lane is killed by platform runner teardown instead of
   failing on findings (#6807, #12563, #12771), the gate classifies the lane log
