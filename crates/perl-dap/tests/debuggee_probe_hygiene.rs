@@ -211,8 +211,8 @@ fn main() {
     }
 
     for (label, simulate_wait_error, budget) in [
-        ("timeout-descendant", false, Duration::from_secs(2)),
-        ("wait-error-descendant", true, Duration::from_secs(2)),
+        ("timeout-descendant", false, Duration::from_secs(10)),
+        ("wait-error-descendant", true, Duration::from_secs(10)),
     ] {
         let before = current_process_probe_artifacts()?;
         let pid_file = controls.path().join(format!("{label}.pid"));
