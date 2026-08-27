@@ -176,8 +176,9 @@ fn starts_heredoc_label(rest: &str) -> bool {
 ///
 /// # Trusting the quote state
 ///
-/// The machine is deliberately small: `'`/`"` pairs plus backslash escapes
-/// inside them. It therefore has to know when it is out of its depth, because
+/// The machine is deliberately small: `'`, `"`, and `` ` `` pairs plus
+/// backslash escapes inside them. It therefore has to know when it is out of
+/// its depth, because
 /// wrongly *skipping* a real opener is as much a defect as wrongly taking one.
 /// Two signals send the line to [`legacy_heredoc_marker`], which answers
 /// exactly as the pre-#5456 code did:
@@ -199,33 +200,43 @@ fn starts_heredoc_label(rest: &str) -> bool {
 /// swallowed as `Heredoc` — and is pinned by test.
 fn unquoted_heredoc_marker(line: &str) -> Option<usize> {
     let bytes = line.as_bytes();
-    let mut in_single = false;
-    let mut in_double = false;
+    // The active string delimiter, if the scan is inside one. Perl's three
+    // literal quotes behave identically for this purpose: each is closed only
+    // by its own delimiter, so a `'` inside `"..."` or a `"` inside a backtick
+    // command is ordinary text.
+    let mut active: Option<u8> = None;
     let mut index = 0;
     while index < bytes.len() {
         let byte = bytes[index];
-        if byte == b'\\' && (in_single || in_double) {
+        if byte == b'\\' && active.is_some() {
             index += 2; // skip escaped char
             continue;
         }
-        if !in_single && !in_double && starts_unmodelled_quote_like(bytes, index) {
-            return legacy_heredoc_marker(line);
-        }
-        match byte {
-            b'\'' if !in_double => in_single = !in_single,
-            b'"' if !in_single => in_double = !in_double,
-            // Reached with every quote closed, so the tracking above is sound
-            // here: the rest of the line is a comment and owns no opener.
-            b'#' if !in_single && !in_double => return None,
-            b'<' if !in_single && !in_double && bytes.get(index + 1) == Some(&b'<') => {
-                return Some(index);
+        match active {
+            Some(delimiter) => {
+                if byte == delimiter {
+                    active = None;
+                }
             }
-            _ => {}
+            None => {
+                if starts_unmodelled_quote_like(bytes, index) {
+                    return legacy_heredoc_marker(line);
+                }
+                match byte {
+                    b'\'' | b'"' | b'`' => active = Some(byte),
+                    // Reached with every quote closed, so the tracking above is
+                    // sound here: the rest of the line is a comment and owns no
+                    // opener.
+                    b'#' => return None,
+                    b'<' if bytes.get(index + 1) == Some(&b'<') => return Some(index),
+                    _ => {}
+                }
+            }
         }
         index += 1;
     }
 
-    if in_single || in_double {
+    if active.is_some() {
         return legacy_heredoc_marker(line);
     }
     None
@@ -1777,6 +1788,34 @@ mod tests {
             super::heredoc_opener_on_line("$x =~ /a#b/; print <<EOF;"),
             None,
             "falling back inherits the legacy rule exactly, including its holes"
+        );
+    }
+
+    #[test]
+    fn backtick_command_string_is_not_a_heredoc_opener() {
+        // #12934 review: `` ` `` is a third Perl string delimiter, and before
+        // it was tracked a `<<` inside one produced a phantom opener — the
+        // same defect class as #5456 itself, reached through backticks rather
+        // than quotes. Verified against perl: the first line is `syntax OK`
+        // with no heredoc.
+        assert_eq!(
+            super::heredoc_opener_on_line("my $s = `echo a << EOF b`;"),
+            None,
+            "`<<` inside a backtick command string is not a heredoc opener"
+        );
+        // The opposite direction: a real opener after a closed backtick string
+        // must still be found, so the fix cannot be a blanket suppression.
+        assert_eq!(
+            super::heredoc_opener_on_line("my $s = `echo x`; print <<EOF;"),
+            Some(("EOF".to_string(), false)),
+            "a real opener after a backtick string is still found"
+        );
+        // Delimiters do not cross-close: a backtick inside a double-quoted
+        // string is ordinary text, so the `<<` after it stays quoted.
+        assert_eq!(
+            super::heredoc_opener_on_line("my $s = \"a ` b << EOF\";"),
+            None,
+            "a backtick inside a double-quoted string must not end it"
         );
     }
 
