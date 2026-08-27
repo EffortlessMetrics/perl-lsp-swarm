@@ -32,22 +32,51 @@ pub fn merge_command(pull_number: u64, head_sha: &str) -> Vec<String> {
 ///
 /// This is the only sanctioned way to turn an admission into a deletion: a
 /// caller that cannot get a command back has nothing to run. Every `RETAIN_*`
-/// outcome yields `None`.
+/// outcome yields `None`, and so does a `SAFE_TO_DELETE` carrying no admitted
+/// SHA — there would be nothing to lease against.
+///
+/// The deletion is **leased** on the admitted tip. `evaluate` reads the branch
+/// SHA at snapshot time, but a writer can advance the branch between that read
+/// and this command running; a plain `git push origin --delete` would then
+/// delete the *new* tip, silently defeating `RETAIN_BRANCH_MOVED` and
+/// destroying unsalvaged work. `--force-with-lease=<refname>:<expect>` makes
+/// git reject the deletion as `stale info` instead, so branch movement fails
+/// closed at execution rather than only at evaluation.
+///
+/// # Residual
+///
+/// The lease binds the *branch tip*, not the child graph. A pull request opened
+/// against this branch after `evaluate` read the graph and before this command
+/// runs is still auto-closed by the deletion, because opening a PR does not
+/// move the tip and GitHub offers no lock that prevents a new dependency edge.
+/// That window cannot be closed here; it is narrowed by re-reading the graph
+/// immediately before deleting (#12885's contract step 5) and is recorded as a
+/// known residual rather than claimed away.
 pub fn branch_deletion_command(outcome: &AdmissionOutcome) -> Option<Vec<String>> {
     if !outcome.admission.admits_deletion() {
         return None;
     }
 
+    // Fail closed: an admission with no admitted tip cannot be leased, so it
+    // does not get a command.
+    let admitted_sha = outcome.admitted_sha.as_deref()?;
+
     Some(vec![
         "git".to_string(),
         "push".to_string(),
         "origin".to_string(),
+        format!("--force-with-lease=refs/heads/{}:{admitted_sha}", outcome.branch),
         "--delete".to_string(),
         outcome.branch.clone(),
     ])
 }
 
-/// Human-readable one-line disposition, for logs and PR comments.
+/// Human-readable disposition, for logs and PR comments.
+///
+/// For an admitted outcome this also prints the exact leased command to run.
+/// Emitting it is the point: a caller who hand-rolls
+/// `git push origin --delete` reintroduces the unleased deletion this module
+/// exists to prevent, so the safe form is the one placed in front of them.
 pub fn render_disposition(outcome: &AdmissionOutcome) -> String {
     let mut rendered = format!(
         "{} {} (#{}) — {}",
@@ -73,6 +102,10 @@ pub fn render_disposition(outcome: &AdmissionOutcome) -> String {
             },
             child.next_owner.as_str(),
         ));
+    }
+
+    if let Some(command) = branch_deletion_command(outcome) {
+        rendered.push_str(&format!("\n  run: {}", command.join(" ")));
     }
 
     debug_assert!(

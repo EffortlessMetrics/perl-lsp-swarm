@@ -58,16 +58,77 @@ fn a_merged_unencumbered_branch_with_a_proven_empty_graph_is_admitted() {
     let outcome = evaluate(&admissible_request());
     assert_eq!(outcome.admission, DeletionAdmission::SafeToDelete, "{}", outcome.detail);
     assert!(outcome.retained_children.is_empty());
+    assert_eq!(outcome.admitted_sha.as_deref(), Some(REVIEWED_SHA));
     assert_eq!(
         branch_deletion_command(&outcome),
         Some(vec![
             "git".to_string(),
             "push".to_string(),
             "origin".to_string(),
+            format!("--force-with-lease=refs/heads/{PARENT_BRANCH}:{REVIEWED_SHA}"),
             "--delete".to_string(),
             PARENT_BRANCH.to_string(),
         ]),
+        "deletion must be leased on the admitted tip",
     );
+}
+
+/// The deletion must be leased on the admitted tip, not merely issued.
+///
+/// `evaluate` reads the branch SHA at snapshot time; a writer can advance the
+/// branch before the command runs. Verified against real git 2.43.0 in a
+/// scratch repository: with the branch advanced past the admitted SHA, the
+/// leased form is rejected as `! [rejected] (delete) -> feature (stale info)`
+/// and the branch survives, while a plain `git push origin --delete` deletes
+/// the advanced tip and exits 0. Without the lease, `RETAIN_BRANCH_MOVED` is
+/// enforced only at evaluation and unsalvaged work can still be destroyed.
+#[test]
+fn deletion_is_leased_on_the_admitted_tip() {
+    let outcome = evaluate(&admissible_request());
+    let command = branch_deletion_command(&outcome).unwrap_or_default();
+
+    let lease = command
+        .iter()
+        .find(|argument| argument.starts_with("--force-with-lease="))
+        .map(String::as_str)
+        .unwrap_or_default();
+    assert_eq!(
+        lease,
+        format!("--force-with-lease=refs/heads/{PARENT_BRANCH}:{REVIEWED_SHA}"),
+        "the lease must name the branch ref and the exact admitted SHA",
+    );
+    assert!(
+        command.iter().any(|argument| argument == "--delete"),
+        "the command must still be a deletion: {command:?}",
+    );
+}
+
+/// Fail closed on a `SAFE_TO_DELETE` carrying no admitted tip: there is
+/// nothing to lease against, so no command is produced rather than an
+/// unleased deletion being emitted.
+#[test]
+fn an_admission_without_an_admitted_tip_yields_no_command() {
+    let mut outcome = evaluate(&admissible_request());
+    assert_eq!(outcome.admission, DeletionAdmission::SafeToDelete);
+    outcome.admitted_sha = None;
+    assert_eq!(
+        branch_deletion_command(&outcome),
+        None,
+        "an unleasable admission must not produce a deletion command",
+    );
+}
+
+/// No retaining outcome carries an admitted tip — the lease target exists
+/// only where deletion was actually admitted.
+#[test]
+fn retaining_outcomes_carry_no_admitted_tip() {
+    let mut retained = admissible_request();
+    retained.graph.pull_requests = vec![child(7810, false, Mergeability::Clean)];
+    assert_eq!(evaluate(&retained).admitted_sha, None);
+
+    let mut moved = admissible_request();
+    moved.branch.current_sha = Some("2222222222222222222222222222222222222222".to_string());
+    assert_eq!(evaluate(&moved).admitted_sha, None);
 }
 
 /// Falsifier 1 — parent with two open children: the generated merge command

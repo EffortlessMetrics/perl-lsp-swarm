@@ -69,9 +69,15 @@ fn run(args: Args) -> Result<()> {
             let outcome = evaluate(&parsed);
 
             let rendered = if json {
+                // Envelope so a JSON consumer gets the leased command too,
+                // rather than composing an unleased deletion of its own.
+                let envelope = serde_json::json!({
+                    "outcome": &outcome,
+                    "deletion_command": branch_deletion_command(&outcome),
+                });
                 format!(
                     "{}\n",
-                    serde_json::to_string_pretty(&outcome)
+                    serde_json::to_string_pretty(&envelope)
                         .wrap_err("serializing the admission outcome")?
                 )
             } else {

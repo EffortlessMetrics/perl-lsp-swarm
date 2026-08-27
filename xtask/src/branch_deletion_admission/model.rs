@@ -253,4 +253,13 @@ pub struct AdmissionOutcome {
     /// Why this outcome was reached, in terms a reconciler can act on.
     pub detail: String,
     pub retained_children: Vec<RetainedChild>,
+    /// The branch tip this admission was granted against, present only for
+    /// `SAFE_TO_DELETE`.
+    ///
+    /// Deletion is executed under a lease on this exact value, so a writer
+    /// advancing the branch between evaluation and execution makes the
+    /// deletion fail rather than destroy the new tip. Without it there is no
+    /// admitted subject to lease against and no command is produced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admitted_sha: Option<String>,
 }

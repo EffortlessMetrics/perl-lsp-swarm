@@ -45,6 +45,7 @@ pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
         admission,
         detail,
         retained_children,
+        admitted_sha: None,
     };
 
     // 1. The parent must have reached the terminal state this route expects.
@@ -173,14 +174,18 @@ pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
         }
     }
 
-    outcome(
+    // Step 4 proved the tip equals the reviewed subject, so that is the
+    // admitted SHA the deletion will be leased against.
+    let mut admitted = outcome(
         DeletionAdmission::SafeToDelete,
         format!(
             "#{} is merged, no open pull request uses {} as a base, the branch still points at {}, and no local writer owns it",
             parent.number, parent.head_ref, parent.reviewed_head_sha
         ),
         Vec::new(),
-    )
+    );
+    admitted.admitted_sha = Some(parent.reviewed_head_sha.clone());
+    admitted
 }
 
 /// Build the retained-child packet, proposing a next owner from what the graph
