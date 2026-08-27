@@ -17,6 +17,10 @@ devplane-init:
 storage-doctor:
     ./scripts/storage-doctor
 
+# Dry-run report of stale repo-local target/ dirs (default 30d; --days=N, --apply to delete).
+target-gc *args:
+    ./scripts/target-gc.sh {{args}}
+
 agent-preflight: storage-doctor
     @echo "agent preflight ok"
 

@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12090 |
-| Rust-family files | 3694 |
-| Non-Rust files | 8396 |
-| Allowlisted | 6150 |
+| Total tracked files | 12119 |
+| Rust-family files | 3711 |
+| Non-Rust files | 8408 |
+| Allowlisted | 6162 |
 | Unclassified | 2246 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 441 |
-| documentation | 2745 |
+| config | 443 |
+| documentation | 2748 |
 | generated | 2 |
 | production | 328 |
-| test | 2020 |
-| tooling | 614 |
+| test | 2026 |
+| tooling | 615 |
 | unclassified | 2246 |
 
 ## Unclassified files
@@ -2284,6 +2284,7 @@
 | `.agents/skills/address-review-comments/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/build-candidate/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/build-from-proof/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.agents/skills/ci-failure-triage/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/compile-spec/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/deliver-goal/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.agents/skills/deliver-pr/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -2344,6 +2345,7 @@
 | `.changes/unreleased/product-12641-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12765-Changed-154500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12806-Added-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2700,6 +2702,7 @@
 | `.ci/release/evidence.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/risk-tags.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/agent-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/schemas/ci-route-plan.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-ux.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/generated-status-cell.schema.json` | config | `non-rust-ci-config` | release/ci |
@@ -2753,6 +2756,7 @@
 | `.claude/skills/address-review-comments/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/build-candidate/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/build-from-proof/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.claude/skills/ci-failure-triage/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/compile-spec/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/deliver-goal/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/skills/deliver-pr/SKILL.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3858,6 +3862,7 @@
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__printf_mismatch_too_few_args.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__printf_mismatch_too_many_args.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__script_happy_path.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
+| `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__security_sql_injection.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__security_string_eval.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__suspicious_regex_and_tainted_system_call.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-lsp-rs-core/tests/snapshots/diag_snap__syntax_error_with_follow_on_statement.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
@@ -6227,6 +6232,7 @@
 | `policy/review-surfaces.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ripr-suppressions.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/semantic-token-classes.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/skill-provider-parity.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/standalone-archive-safety.v1.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/trust-lanes.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ub-review.toml` | config | `non-rust-policy-ledgers` | release/ci |
@@ -6581,6 +6587,7 @@
 | `scripts/swarm-clean` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/swarm-doctor` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/swarm-summary.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/target-gc.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test-agent-preflight.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test-capped.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test-control-plane-lock.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -8410,6 +8417,11 @@
 | `xtask/lsp_test/advanced_features.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `xtask/lsp_test/test_features.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `xtask/lsp_test/test_suite.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `xtask/tests/fixtures/ci-route-plan/digests.json` | test | `non-rust-ci-route-plan-golden-digests` | ci/route-plan |
+| `xtask/tests/fixtures/ci-route-plan/generate_golden.py` | test | `non-rust-ci-route-plan-golden-generator` | ci/route-plan |
+| `xtask/tests/fixtures/ci-route-plan/payload-baseline.json` | test | `non-rust-ci-route-plan-golden-payload` | ci/route-plan |
+| `xtask/tests/fixtures/ci-route-plan/semantic-baseline.json` | test | `non-rust-ci-route-plan-golden-vectors` | ci/route-plan |
+| `xtask/tests/fixtures/ci-route-plan/semantic-escaping.json` | test | `non-rust-ci-route-plan-golden-escaping` | ci/route-plan |
 | `xtask/tests/fixtures/compiler_lexical_cutline/invalid-continuation-token.json` | test | `non-rust-compiler-lexical-cutline-fixtures` | compiler |
 | `xtask/tests/fixtures/compiler_lexical_cutline/invalid-schema-version.json` | test | `non-rust-compiler-lexical-cutline-fixtures` | compiler |
 | `xtask/tests/fixtures/dependency-hygiene/machete-findings.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
