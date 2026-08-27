@@ -203,10 +203,12 @@ jobs:
       # scripts/ci/scope_cache_key.py (sorted deduped crate names, SHA-256):
       # force-pushes that move neither lockfile nor set keep a byte-identical
       # key, and unrelated scopes never invalidate each other's entries.
-      # rust-cache's automatic restore-key falls back within the same scope +
-      # manifest state; legacy workspace-wide entries are orphaned once, then
-      # each set re-warms itself on its first post-landing run (saves are not
-      # master-gated here). Ready-tier lanes keep their workspace-wide keys.
+      # rust-cache's restore prefix keeps the explicit Cargo.lock and scope
+      # hashes together with its runner, Rust, and environment identity. Its
+      # automatic manifest digest is not part of that fallback prefix, so this
+      # does not claim identical Cargo.toml state. PRs restore only; main and
+      # master pushes may save the scoped entry. Ready-tier lanes keep their
+      # workspace-wide keys.
       - name: Derive scope-aware cache key component
         id: windows-scope-key
         shell: bash
@@ -215,7 +217,7 @@ jobs:
         run: |
           set -euo pipefail
           python_bin="$(command -v python3 || command -v python)"
-          scope_hash="$("$python_bin" scripts/ci/scope_cache_key.py --package-args "$WINDOWS_TEST_CRATES")"
+          scope_hash="$("$python_bin" scripts/ci/scope_cache_key.py --require-non-empty --package-args "$WINDOWS_TEST_CRATES")"
           echo "scope-hash=$scope_hash" >> "$GITHUB_OUTPUT"
           echo "windows scope crates: ${WINDOWS_TEST_CRATES:-<none>}"
           echo "windows scope cache-key hash: $scope_hash"
@@ -225,6 +227,7 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ci-windows-platform-${{ hashFiles('Cargo.lock') }}-${{ steps.windows-scope-key.outputs.scope-hash }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
       - name: Run Windows portability smoke
         shell: bash
         env:

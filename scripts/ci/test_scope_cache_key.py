@@ -160,6 +160,29 @@ class CliTests(unittest.TestCase):
         self.assertEqual(2, status)
         self.assertIn("error:", stderr.getvalue())
 
+    def test_main_requires_a_non_empty_scope_when_the_consumer_requests_it(self) -> None:
+        for package_args in ("", "   \t"):
+            with self.subTest(package_args=package_args):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    status = scope_key.main(
+                        ["--require-non-empty", "--package-args", package_args]
+                    )
+                self.assertEqual(2, status)
+                self.assertIn("must not be empty", stderr.getvalue())
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = scope_key.main(
+                [
+                    "--require-non-empty",
+                    "--package-args",
+                    "-p perl-uri",
+                ]
+            )
+        self.assertEqual(0, status)
+        self.assertRegex(stdout.getvalue().strip(), r"^[0-9a-f]{16}$")
+
     def test_workflow_invocation_shape_is_supported(self) -> None:
         """The exact invocation ci.yml uses must parse and print one hex line."""
         buffer = io.StringIO()
@@ -190,6 +213,7 @@ class WorkflowContractTests(unittest.TestCase):
         text = self.WORKFLOW.read_text(encoding="utf-8")
         derive_index = text.index("Derive scope-aware cache key component")
         cache_index = text.index("Cache cargo dependencies", derive_index)
+        derive_segment = text[derive_index:cache_index]
         shared_key_segment = text[cache_index : cache_index + 600]
         self.assertIn(
             "steps.windows-scope-key.outputs.scope-hash",
@@ -202,14 +226,31 @@ class WorkflowContractTests(unittest.TestCase):
             "the lockfile component must remain part of the scoped key",
         )
         self.assertIn(
-            "scripts/ci/scope_cache_key.py --package-args",
-            text[derive_index:cache_index],
-            "the derivation step must call the canonical helper",
+            "scripts/ci/scope_cache_key.py --require-non-empty --package-args",
+            derive_segment,
+            "the derivation step must call the canonical helper fail-closed",
+        )
+        self.assertIn(
+            "save-if: ${{ github.ref == 'refs/heads/master' || "
+            "github.ref == 'refs/heads/main' }}",
+            shared_key_segment,
+            "the scoped cache must remain restore-only on pull requests",
         )
         self.assertLess(
             derive_index,
             cache_index,
             "the scope hash must exist before rust-cache consumes it",
+        )
+
+    def test_windows_lane_rejects_a_missing_or_empty_scope_before_hashing(self) -> None:
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        derive_index = text.index("Derive scope-aware cache key component")
+        cache_index = text.index("Cache cargo dependencies", derive_index)
+        derive_segment = text[derive_index:cache_index]
+        self.assertIn(
+            "scripts/ci/scope_cache_key.py --require-non-empty --package-args",
+            derive_segment,
+            "the Windows helper invocation must require a non-empty scope",
         )
 
     def test_platform_overrides_exports_the_crate_set_its_consumers_read(self) -> None:

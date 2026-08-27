@@ -15,7 +15,8 @@ component so each distinct crate set owns its own cache lane:
 
 Composition: the crate names are validated, deduplicated, sorted, joined with
 newlines, encoded UTF-8, hashed with SHA-256, hex-encoded, and truncated to
-``--length`` characters. The empty set is a valid deterministic input.
+``--length`` characters. The empty set is a valid deterministic input unless
+the workflow boundary selects ``--require-non-empty``.
 """
 
 from __future__ import annotations
@@ -65,7 +66,12 @@ def canonical_crate_set(names: list[str]) -> str:
     return "\n".join(sorted(set(names)))
 
 
-def scope_cache_key(package_args: str, length: int = DEFAULT_HASH_LENGTH) -> str:
+def scope_cache_key(
+    package_args: str,
+    length: int = DEFAULT_HASH_LENGTH,
+    *,
+    require_non_empty: bool = False,
+) -> str:
     """Hash the canonical crate set into the cache-key component."""
     if not MIN_HASH_LENGTH <= length <= MAX_HASH_LENGTH:
         raise ValueError(
@@ -73,6 +79,8 @@ def scope_cache_key(package_args: str, length: int = DEFAULT_HASH_LENGTH) -> str
             f"got {length}"
         )
     names = parse_package_args(package_args)
+    if require_non_empty and not names:
+        raise ValueError("the selected crate scope must not be empty")
     canonical = canonical_crate_set(names)
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return digest[:length]
@@ -93,6 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--require-non-empty",
+        action="store_true",
+        help="reject a missing, empty, or whitespace-only selected crate scope",
+    )
+    parser.add_argument(
         "--length",
         type=int,
         default=DEFAULT_HASH_LENGTH,
@@ -107,7 +120,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        print(scope_cache_key(args.package_args, args.length))
+        print(
+            scope_cache_key(
+                args.package_args,
+                args.length,
+                require_non_empty=args.require_non_empty,
+            )
+        )
     except ValueError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
