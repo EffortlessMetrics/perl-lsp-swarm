@@ -681,4 +681,3 @@ fn lsp_smoke_is_atomic_bounded_and_independently_terminal() -> Result<(), Box<dy
 
     Ok(())
 }
-
