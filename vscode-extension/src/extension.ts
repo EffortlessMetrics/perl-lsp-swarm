@@ -2710,6 +2710,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
     !client &&
     !currentServerPath &&
     !lifecycle.hasPendingServerPathOverride &&
+    lifecycle.snapshot.generation === 0 &&
     lifecycle.snapshot.state === 'stopped'
   ) {
     if (!serverDemand) {
