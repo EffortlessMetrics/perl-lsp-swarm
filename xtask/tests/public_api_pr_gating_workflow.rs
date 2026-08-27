@@ -96,6 +96,43 @@ fn pull_request_label_gate_ignores_commented_examples() {
 }
 
 #[test]
+fn pull_request_public_api_gate_is_default_deny_with_named_bypasses() {
+    let section = r#"
+  public-api-check:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'ci:public-api'))
+    steps: []
+"#;
+
+    assert_eq!(pull_request_label_gate(section), Some("ci:public-api"));
+    assert!(section.contains("github.event_name == 'workflow_dispatch'"));
+    assert!(section.contains("github.event_name == 'schedule'"));
+    assert!(section.contains("github.event_name == 'pull_request' &&"));
+
+    let wrong_label = section.replace("ci:public-api", "ci:not-public-api");
+    assert_ne!(
+        pull_request_label_gate(&wrong_label),
+        Some("ci:public-api"),
+        "a different label must not activate the public API PR route"
+    );
+
+    let commented_only = section
+        .replace(
+            "contains(github.event.pull_request.labels.*.name, 'ci:public-api')",
+            "# contains(github.event.pull_request.labels.*.name, 'ci:public-api')",
+        )
+        .replace("github.event_name == 'pull_request' &&", "github.event_name == 'pull_request'");
+    assert_eq!(
+        pull_request_label_gate(&commented_only),
+        None,
+        "a commented label example must not satisfy the active PR gate"
+    );
+}
+
+#[test]
 fn ci_yml_runs_both_compatibility_rails_on_pull_requests() -> Result<(), Box<dyn std::error::Error>>
 {
     let root = project_root()?;
