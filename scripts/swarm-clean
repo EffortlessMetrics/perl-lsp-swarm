@@ -145,7 +145,13 @@ remove_worktree() {
         # shared #3957 ownership read does not retain the worktree we just
         # removed. Every refusal retains the branch and reports why.
         if branch_deletion_admitted "$branch"; then
-            git -C "$REPO_ROOT" branch -D "$branch" 2>/dev/null || true
+            # Try the safe form first so git's own merged-check stays live, the
+            # same belt-and-suspenders the worktree removal above relies on.
+            # Only escalate to -D once the admission has already established a
+            # merged parent PR, matching agent-cleanup.ps1's -d/-D ladder.
+            if ! git -C "$REPO_ROOT" branch -d "$branch" 2>/dev/null; then
+                git -C "$REPO_ROOT" branch -D "$branch" 2>/dev/null || true
+            fi
         else
             echo "    -> retaining local branch $branch: branch-deletion admission refused" >&2
         fi

@@ -164,6 +164,14 @@ if ($PrNumber -gt 0) {
     if ([string]::IsNullOrWhiteSpace($Branch)) {
         $Branch = [string]$pr.headRefName
     }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$pr.headRefName) -and
+            $Branch -ne [string]$pr.headRefName) {
+        # The admission is granted for this PR's head branch. Deleting a
+        # different branch the caller named would apply an authorization for
+        # branch A to branch B. Refuse rather than coerce to headRefName: a
+        # caller who named another branch holds a belief worth surfacing.
+        Fail "-Branch '$Branch' is not PR #$PrNumber's head branch '$($pr.headRefName)'. Refusing: the admission would be granted for a different branch than the one deleted."
+    }
 }
 
 if (Test-Path -Path $worktreePath -PathType Container) {

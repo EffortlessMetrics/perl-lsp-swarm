@@ -7,6 +7,10 @@
 
 set -euo pipefail
 
+# This wrapper invokes cargo, so it is a cargo entrypoint and must refuse a
+# stale toolchain like every other one (#12593).
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 

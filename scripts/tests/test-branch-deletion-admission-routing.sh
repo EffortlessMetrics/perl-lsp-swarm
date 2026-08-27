@@ -16,6 +16,17 @@ for file in scripts/swarm-clean scripts/cleanup-completed-worktrees.sh scripts/a
     pass "$file names the shared branch-deletion admission"
 done
 
+# The admission is granted for a PR's head branch, so agent-cleanup.ps1 must
+# refuse an explicitly supplied -Branch that is not that head; otherwise an
+# authorization for branch A is applied to branch B. Static assertion only:
+# no pwsh is available in this harness, so this pins that the refusal exists
+# and is wired to headRefName, not that it executes correctly.
+if ! grep -qF 'is not PR #$PrNumber' "$ROOT/scripts/agent-cleanup.ps1" ||
+   ! grep -qF 'headRefName' "$ROOT/scripts/agent-cleanup.ps1"; then
+    fail 'agent-cleanup.ps1 binds an explicit -Branch to the merged PR head'
+fi
+pass 'agent-cleanup.ps1 binds an explicit -Branch to the merged PR head'
+
 if grep -nE 'git(-C [^ ]+)? branch -[dD]' "$ROOT/scripts/cleanup-completed-worktrees.sh" >/dev/null; then
     fail 'cleanup-completed-worktrees has an unguarded local branch delete'
 fi
@@ -47,6 +58,14 @@ chmod +x "$TMP/bin/gh"
 cat > "$TMP/bin/cargo" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
+# The shared wrapper runs the #12593 toolchain guard before any build work,
+# and the guard probes `cargo --version`. Answer that probe like a modern
+# rustup cargo so the guard passes and the ROUTED invocation is what lands in
+# the log; otherwise the probe clobbers it and the guard refuses at exit 78.
+if [[ "$*" == "--version" ]]; then
+  printf 'cargo 1.95.0 (0000000000 2026-01-01)\n'
+  exit 0
+fi
 printf '%s\n' "$*" > "${ADMISSION_LOG}"
 exit 3
 STUB
