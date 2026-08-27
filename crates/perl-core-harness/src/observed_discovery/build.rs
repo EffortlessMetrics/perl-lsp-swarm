@@ -305,7 +305,7 @@ fn looks_absolute(value: &str) -> bool {
             && bytes.get(1) == Some(&b':'))
 }
 
-fn validate_target_id(target_id: &str) -> Result<(), String> {
+pub(crate) fn validate_target_id(target_id: &str) -> Result<(), String> {
     if target_id.is_empty()
         || !target_id
             .bytes()
@@ -316,7 +316,7 @@ fn validate_target_id(target_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_reference(
+pub(crate) fn validate_reference(
     value: &str,
     label: &str,
     min_len: usize,
@@ -358,7 +358,7 @@ fn validate_environment_value(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_sha256_field(value: &str, label: &str) -> Result<(), String> {
+pub(crate) fn validate_sha256_field(value: &str, label: &str) -> Result<(), String> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(format!("{label} must be a 64-character hexadecimal digest: {value}"));
     }
