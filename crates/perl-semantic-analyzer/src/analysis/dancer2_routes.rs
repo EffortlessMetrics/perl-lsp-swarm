@@ -958,7 +958,7 @@ fn unquote(raw: &str) -> Option<String> {
 /// operands stay typed boundaries — the extractor never guesses the decoded
 /// value — while escape-free interiors map 1:1 onto the source bytes after
 /// the opening quote, keeping parameter anchors exact.
-enum StaticString {
+pub(crate) enum StaticString {
     /// Exact runtime value, byte-for-byte the unquoted token interior.
     Exact(String),
     /// Empty string operand.
@@ -967,7 +967,7 @@ enum StaticString {
     Escaped,
 }
 
-fn static_string(raw: &str) -> StaticString {
+pub(crate) fn static_string(raw: &str) -> StaticString {
     let Some(unquoted) = unquote(raw) else {
         return StaticString::Empty;
     };

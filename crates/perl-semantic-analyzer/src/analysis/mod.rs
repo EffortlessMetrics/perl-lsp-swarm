@@ -10,6 +10,8 @@ pub mod class_model;
 pub mod dancer2_activation;
 pub mod dancer2_handler_targets;
 pub mod dancer2_hooks;
+/// Dancer2 named-route reference occurrences (#8931).
+pub mod dancer2_name_refs;
 /// Dancer2 route-declaration extraction (#8918).
 pub mod dancer2_routes;
 /// Go-to-declaration support and parent map construction.
