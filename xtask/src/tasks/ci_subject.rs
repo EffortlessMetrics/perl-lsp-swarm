@@ -864,11 +864,11 @@ mod tests {
         receipt.subject_digest = subject_digest(&receipt);
         ensure!(
             receipt.changed_input_digest
-                == "640ca83a1729a85773a5a61602e1527eb20f4499820183b60f6f3a8b22e48bcd"
+                == "16adfbd99a3a87bce90dd3da112bb07da467f19e76996dbdc672788cbee83d44"
         );
         ensure!(
             receipt.subject_digest
-                == "737db65ffff118fbb500fc488fddd8fb08f89f1930fe8861402b297386e2f075"
+                == "4fe1debc2ac5123e83f393b8f2e6e570ee1ca7c0b80164ecd10ef1a54f30dbb5"
         );
         let bytes = serde_json::to_vec_pretty(&receipt)?;
         ensure!(bytes.len() < 2048, "resolved receipt grew with the changed-input corpus");
