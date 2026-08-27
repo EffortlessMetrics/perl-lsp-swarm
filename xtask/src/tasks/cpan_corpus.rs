@@ -79,7 +79,16 @@ impl InstallBudget {
 /// Machine-readable completion marker consumed by the CI warm lane
 /// (`corpus-warm-full`) to decide whether the corpus ratchet leg may run.
 fn complete_marker(complete: bool) -> String {
-    format!("CPAN_CORPUS_INSTALL_COMPLETE={}", if complete { "true" } else { "false" })
+    format!("CPAN_CORPUS_INSTALL_COMPLETE={complete}")
+}
+
+/// Whether this pass reached every distribution and therefore may report
+/// `CPAN_CORPUS_INSTALL_COMPLETE=true`. Conservative on purpose: any explicit
+/// budget stop OR a deadline found expired at plan end forces "incomplete",
+/// because partial state banked under the canonical key would silently narrow
+/// the corpus the ratchet enforces against (#12823).
+fn plan_complete(budget_stopped: bool, budget: &InstallBudget) -> bool {
+    !budget_stopped && !budget.expired()
 }
 
 /// Return the workspace root path, anchored at compile time to the xtask
@@ -391,7 +400,15 @@ pub fn install(config: &CpanCorpusConfig) -> Result<()> {
     } else {
         println!("\nInstall complete: {installed} installed, {install_items} requested");
     }
-    if budget_stopped {
+    // Conservative truth guard (review finding on the retry path): if the
+    // budget expired anywhere in this pass — including inside the final
+    // batch's individual retries, where no loop guard runs again — the plan
+    // may not have reached every distribution. Only a pass that provably
+    // stopped on its own terms may claim completion; expiry forces the
+    // incomplete marker so partial state can never be banked under the
+    // canonical key (#12823 CRW-004/008).
+    let complete = plan_complete(budget_stopped, &budget);
+    if !complete {
         println!(
             "\nInstall stopped inside its time budget before finishing the distribution list; \
              remaining distributions stay queued for the next incremental pass"
@@ -399,7 +416,7 @@ pub fn install(config: &CpanCorpusConfig) -> Result<()> {
     }
 
     // Machine-readable completion status for the CI warm lane.
-    println!("{}", complete_marker(!budget_stopped));
+    println!("{}", complete_marker(complete));
 
     // Write inventory of installed .pm files
     let lib_perl5 = local_lib.join("lib/perl5");
@@ -1080,6 +1097,36 @@ mod tests {
     fn complete_marker_reflects_batch_plan_outcome() {
         // CRW-004: markers consumed by the workflow output capture.
         assert_eq!(complete_marker(true), "CPAN_CORPUS_INSTALL_COMPLETE=true");
+    }
+
+    #[test]
+    fn budget_expiry_at_plan_end_forces_incomplete_marker() {
+        // Regression pin for the review finding on the individual-retry path:
+        // when the final batch's retries consume the remaining budget, no
+        // loop guard runs again — so plan end itself must treat an expired
+        // deadline as incomplete, or a partially-attempted corpus would be
+        // banked under the canonical key and enforced by the ratchet.
+        let expired = InstallBudget { deadline: Some(Instant::now() - Duration::from_secs(1)) };
+        assert!(expired.expired());
+        assert!(!plan_complete(false, &expired), "post-hoc expiry must force incomplete");
+        assert!(!plan_complete(true, &expired), "explicit stop must force incomplete");
+        assert_eq!(
+            complete_marker(plan_complete(false, &expired)),
+            "CPAN_CORPUS_INSTALL_COMPLETE=false"
+        );
+
+        let live = InstallBudget { deadline: Some(Instant::now() + Duration::from_secs(600)) };
+        assert!(plan_complete(false, &live), "a finished pass inside its budget is complete");
+    }
+
+    #[test]
+    fn unbudgeted_pass_completion_never_reads_a_deadline() {
+        // CRW-009 seam: with no budget configured the deadline arm is inert —
+        // legacy byte-for-byte behavior reports a clean pass as complete, and
+        // only an explicit stop flag can make it incomplete.
+        let none = InstallBudget::from_option(None);
+        assert!(plan_complete(false, &none));
+        assert!(!plan_complete(true, &none), "an explicit stop is incomplete regardless of budget");
     }
 
     #[test]
