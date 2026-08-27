@@ -81,6 +81,22 @@ fn pull_request_label_gate(section: &str) -> Option<&str> {
     None
 }
 
+fn public_api_job_runs(section: &str, event: &str, labels: &[&str]) -> bool {
+    let Some(label) = pull_request_label_gate(section) else {
+        return false;
+    };
+
+    match event {
+        "workflow_dispatch" => section.contains("github.event_name == 'workflow_dispatch'"),
+        "schedule" => section.contains("github.event_name == 'schedule'"),
+        "pull_request" => {
+            section.contains("github.event_name == 'pull_request' &&")
+                && labels.iter().any(|candidate| *candidate == label)
+        }
+        _ => false,
+    }
+}
+
 #[test]
 fn pull_request_label_gate_ignores_commented_examples() {
     let section = r#"
@@ -303,6 +319,17 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
         .ok_or("public-api-check must expose its pull-request label gate")?;
 
     assert_eq!(label, "ci:public-api", "the public API lane owns one stable trigger label");
+    assert!(public_api.contains("github.event_name == 'workflow_dispatch' ||"));
+    assert!(public_api.contains("github.event_name == 'schedule' ||"));
+    assert!(!public_api.contains("github.event_name == 'pull_request' ||"));
+    assert!(!public_api.contains("github.event_name == 'push'"));
+    assert!(public_api_job_runs(public_api, "workflow_dispatch", &[]));
+    assert!(public_api_job_runs(public_api, "schedule", &[]));
+    assert!(public_api_job_runs(public_api, "pull_request", &["ci:public-api"]));
+    assert!(!public_api_job_runs(public_api, "pull_request", &[]));
+    assert!(!public_api_job_runs(public_api, "pull_request", &["ci:not-public-api"]));
+    assert!(!public_api_job_runs(public_api, "pull_request", &["ci:public-api-extra"]));
+    assert!(!public_api_job_runs(public_api, "push", &["ci:public-api"]));
 
     let docs = read(&root, "docs/ci/labels.md")?;
     let governed_row = docs
@@ -314,13 +341,22 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
         "the governed row must state the lane cost cap and proof intent"
     );
 
+    let config = read(&root, ".github/ci-config.yml")?;
+    let description = config
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix(&format!("{label}: '"))
+                .and_then(|value| value.strip_suffix('\''))
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| format!("{label} must have canonical metadata in .github/ci-config.yml"))?;
+
     let provisioning = read(&root, "scripts/gh/ensure-labels.sh")?;
-    let expected = format!("ensure \"{label}\" \"0052cc\" \"Run public API surface validation\"");
+    let expected = format!("ensure_reconciled \"{label}\" \"0052cc\" \"{description}\"");
     assert!(
-        provisioning
-            .lines()
-            .any(|line| { line.trim() == expected.replace("ensure ", "ensure_reconciled ") }),
-        "the workflow label must use the governed provisioning metadata"
+        provisioning.lines().any(|line| line.trim() == expected),
+        "the provisioning metadata must join the canonical ci-config value"
     );
     assert!(
         provisioning.contains("gh label edit \"$name\""),
