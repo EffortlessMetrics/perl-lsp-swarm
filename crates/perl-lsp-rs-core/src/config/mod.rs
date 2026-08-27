@@ -1637,6 +1637,20 @@ impl WorkspaceConfig {
     }
 
     fn ensure_system_inc_probe(&mut self) {
+        self.ensure_system_inc_probe_with(Self::fetch_perl_inc);
+    }
+
+    /// `ensure_system_inc_probe` with the probe itself supplied by the caller.
+    ///
+    /// Production has exactly one caller, which supplies `fetch_perl_inc`.
+    /// Taking the probe as a parameter lets the memoization contract — run the
+    /// probe at most once, cache exactly what it returned — be proven against a
+    /// counted in-process probe instead of a live interpreter racing
+    /// `SYSTEM_INC_PROBE_TIMEOUT` (#12902).
+    fn ensure_system_inc_probe_with(
+        &mut self,
+        fetch: impl FnOnce(&WorkspaceConfig, &[String]) -> SystemIncProbeOutcome,
+    ) {
         if self.system_inc_cache.is_some() {
             return;
         }
@@ -1644,7 +1658,7 @@ impl WorkspaceConfig {
         // Snapshot the fields needed by the oracle constructor before the
         // mutable borrow below.
         let perl_args = self.perl_args.clone();
-        let result = Self::fetch_perl_inc(self, &perl_args);
+        let result = fetch(self, &perl_args);
         self.system_inc_cache = Some(result);
     }
 
@@ -5146,9 +5160,9 @@ profile = "recommended"
     /// (`Unavailable`/`IoFailed`) or some other interpreter's real `@INC` —
     /// never the sentinel — so this test still fails loudly on a broken
     /// memoization while no longer depending on a live subprocess completing
-    /// inside `SYSTEM_INC_PROBE_TIMEOUT` (#12902). The live half of the
-    /// contract is covered by
-    /// `live_probe_success_populates_the_system_inc_cache`.
+    /// inside `SYSTEM_INC_PROBE_TIMEOUT` (#12902). Probe-to-cache population
+    /// is proven separately, and equally deterministically, by
+    /// `probe_runs_once_and_the_cache_holds_exactly_its_outcome`.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn get_system_inc_reuses_cached_probe_without_relaunching() -> TestResult {
@@ -5174,23 +5188,76 @@ profile = "recommended"
         Ok(())
     }
 
-    /// A successful live probe must land in the typed cache, so the
-    /// short-circuit proven by
-    /// `get_system_inc_reuses_cached_probe_without_relaunching` has something
-    /// real to short-circuit on.
+    /// The probe-to-cache wiring — run the probe at most once, cache exactly
+    /// what it returned — must be provable without a subprocess.
     ///
-    /// The probe is bounded by `SYSTEM_INC_PROBE_TIMEOUT` (1s) and that budget
-    /// covers `CreateProcess` plus interpreter initialization, so a host under
-    /// cold-DLL, antivirus-scan, or full-suite spawn contention can exceed it
-    /// through no fault of the code under test (#12902). Retry that one
-    /// transient class on a fresh config — the populated cache would otherwise
-    /// short-circuit the retry — and treat a host that stays hostile the same
-    /// way this test already treats a host with no resolvable interpreter: as
-    /// an unavailable environment, reported on stderr. Every other outcome
-    /// fails loudly and the sentinel assertions stay strict.
+    /// This is the deterministic replacement for the live-probe half of
+    /// #12902. Its oracle is a call count, which is strictly stronger than
+    /// anything a live sentinel can show: a sentinel proves only that *some*
+    /// cached value survived, whereas this fails if the probe runs twice, if
+    /// the cache stores something other than the probe's own outcome, or if a
+    /// later lookup overwrites it. No interpreter is spawned, so
+    /// `SYSTEM_INC_PROBE_TIMEOUT` cannot influence the result.
+    #[test]
+    fn probe_runs_once_and_the_cache_holds_exactly_its_outcome() {
+        let probes = std::cell::Cell::new(0u32);
+        let produced = SystemIncProbeOutcome::Paths(vec![PathBuf::from("/fetched/by/probe")]);
+        let mut config = WorkspaceConfig { use_system_inc: true, ..WorkspaceConfig::default() };
+
+        config.ensure_system_inc_probe_with(|_, _| {
+            probes.set(probes.get() + 1);
+            produced.clone()
+        });
+        assert_eq!(probes.get(), 1, "the first lookup must run the probe exactly once");
+        assert_eq!(
+            config.system_inc_cache.as_ref(),
+            Some(&produced),
+            "the cache must hold exactly the outcome the probe returned",
+        );
+
+        // A second lookup offering a *different* outcome: if the short-circuit
+        // is missing, both the call count and the cached value change.
+        config.ensure_system_inc_probe_with(|_, _| {
+            probes.set(probes.get() + 1);
+            SystemIncProbeOutcome::Unavailable
+        });
+        assert_eq!(probes.get(), 1, "a populated cache must not run the probe again");
+        assert_eq!(
+            config.system_inc_cache.as_ref(),
+            Some(&produced),
+            "a second lookup must not overwrite the cached outcome",
+        );
+
+        // The public views read that same cached outcome.
+        assert_eq!(config.get_system_inc_probe_outcome(), produced);
+        assert_eq!(config.get_system_inc().to_vec(), vec![PathBuf::from("/fetched/by/probe")]);
+        assert_eq!(probes.get(), 1, "the public views must not run the probe again either");
+    }
+
+    /// Best-effort corroboration that a *real* interpreter drives the same
+    /// path the deterministic tests prove in process.
+    ///
+    /// This test carries no claim of its own. The memoization contract is
+    /// proven unconditionally by `probe_runs_once_and_the_cache_holds_exactly_
+    /// its_outcome` and `get_system_inc_reuses_cached_probe_without_
+    /// relaunching`; output classification is proven by
+    /// `system_inc_probe_outcome_preserves_execution_classes`; the bounded
+    /// failure path is proven by `get_system_inc_does_not_stall_on_slow_
+    /// interpreter`. What remains here is only the live subprocess, and it
+    /// cannot be made deterministic: `SYSTEM_INC_PROBE_TIMEOUT` (1s) also
+    /// covers `CreateProcess` and interpreter initialization, so a host under
+    /// cold-DLL, antivirus-scan, or full-suite spawn contention exceeds it
+    /// through no fault of the code under test (#12902).
+    ///
+    /// So the transient `TimedOut` class is retried on a fresh config — a
+    /// populated cache would short-circuit the retry — and a host that stays
+    /// hostile is reported on stderr and skipped. **A skip here is absent
+    /// evidence, not verification**, exactly as when no interpreter resolves
+    /// at all; no claim above depends on it. Every other outcome fails loudly
+    /// and the sentinel assertions stay strict.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn live_probe_success_populates_the_system_inc_cache() -> TestResult {
+    fn live_interpreter_probe_corroborates_the_cached_paths() -> TestResult {
         let perl_path = match resolve_perl_path_with_toolchain() {
             Ok(path) => path,
             Err(_) => return Ok(()),
@@ -5239,7 +5306,7 @@ profile = "recommended"
             assert_eq!(
                 config.system_inc_cache.as_ref(),
                 Some(&SystemIncProbeOutcome::Paths(paths.clone())),
-                "a successful live probe must populate the typed cache",
+                "a live probe's outcome must reach the typed cache unchanged",
             );
             assert_eq!(
                 config.get_system_inc().to_vec(),
@@ -5250,8 +5317,10 @@ profile = "recommended"
         }
 
         eprintln!(
-            "skipping live @INC sentinel probe: host could not start perl within \
-             SYSTEM_INC_PROBE_TIMEOUT in {ATTEMPTS} attempts"
+            "skipping live @INC sentinel corroboration: host could not start perl \
+             within SYSTEM_INC_PROBE_TIMEOUT in {ATTEMPTS} attempts. This is absent \
+             evidence, not verification; the memoization claim is proven by the \
+             in-process tests."
         );
         Ok(())
     }
