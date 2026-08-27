@@ -5188,18 +5188,21 @@ profile = "recommended"
                     "successful probe must contain the sentinel, got {paths:?}",
                 );
             }
-            // A bounded live-probe failure is still a discriminating baseline:
-            // the reprobe against `missing_perl` spawns and fails immediately,
-            // so it cannot reproduce any of these classes.
-            SystemIncProbeOutcome::TimedOut
-            | SystemIncProbeOutcome::NonZeroExit
-            | SystemIncProbeOutcome::SuccessfulEmpty => {}
-            // `IoFailed` is exactly the reprobe signature so it cannot
+            // A bounded live-probe *failure* is still a discriminating
+            // baseline: the reprobe against `missing_perl` spawns and fails
+            // immediately, so it cannot reproduce either class.
+            SystemIncProbeOutcome::TimedOut | SystemIncProbeOutcome::NonZeroExit => {}
+            // Everything else fails loudly. `SuccessfulEmpty` is deliberately
+            // NOT accepted: the interpreter exited zero while producing
+            // nothing this test recognises, which is the signature of a probe
+            // that stopped passing `perl_args` or a parser that filtered the
+            // sentinel away — exactly the regression the sentinel exists to
+            // catch. `IoFailed` is the reprobe signature itself so it cannot
             // discriminate, and `Unavailable`/`Disabled` mean no interpreter
             // ran at all even though the toolchain resolved one above.
             other => {
                 return Err(format!(
-                    "first probe landed in a non-discriminating outcome: {other:?}"
+                    "first probe must produce the sentinel or a bounded failure, got {other:?}"
                 )
                 .into());
             }
