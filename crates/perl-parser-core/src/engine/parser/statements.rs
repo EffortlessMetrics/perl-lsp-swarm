@@ -929,45 +929,19 @@ impl<'a> Parser<'a> {
         None
     }
 
-    /// Return the byte after a quote-like expression beginning at `index`.
-    ///
-    /// This is deliberately a source scanner rather than a parser-level
-    /// expression check: its only job is to keep `<<TAG` inside quote-like
-    /// bodies from being mistaken for a heredoc introducer. Paired delimiters
-    /// are balanced, escapes are skipped, and substitution-like operators
-    /// consume both bodies.
-    #[expect(
-        clippy::question_mark,
-        reason = "policy:ripr-quote-like-body: intentional let-else return None so RIPR None-oracles observe the miss path (#5838)"
-    )]
+    /// Test-only flat form of [`quote_like_body_skip`] (end index only).
+    #[cfg(test)]
     fn quote_like_body_end(span: &[u8], index: usize) -> Option<usize> {
-        const OPERATORS: &[&[u8]] = &[b"tr", b"qq", b"qx", b"qr", b"qw", b"m", b"s", b"y", b"q"];
-
-        if index > 0 && matches!(span[index - 1], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'$') {
-            return None;
-        }
-
-        // Prefer an explicit miss-return over `find(...)?`. RIPR classifies the
-        // Option-`?` form as an error_path sink that existing `None` oracles do
-        // not observe; `return None` is the same control flow and is already
-        // covered by the non-operator prefix discriminators below.
-        let Some(operator) = OPERATORS.iter().find(|operator| {
-            span.get(index..index + operator.len()) == Some(**operator)
-        }) else {
-            return None;
-        };
-        let Some(operator) = OPERATORS.iter().find(|operator| {
-            span.get(index..index + operator.len()) == Some(**operator)
-        }) else {
-            return None;
-        };
-        let _ = operator;
         Self::quote_like_body_skip(span, index).map(|(end, _)| end)
     }
 
     /// Body-skip result for a quote-like expression: the index just past the
     /// expression, plus the replacement-body start when the expression is an
     /// `s///e` substitution whose replacement is evaluated code.
+    #[expect(
+        clippy::question_mark,
+        reason = "policy:ripr-quote-like-body: intentional let-else return None so RIPR None-oracles observe the miss path (#5838)"
+    )]
     fn quote_like_body_skip(span: &[u8], index: usize) -> Option<(usize, Option<usize>)> {
         const OPERATORS: &[&[u8]] = &[b"tr", b"qq", b"qx", b"qr", b"qw", b"m", b"s", b"y", b"q"];
 
