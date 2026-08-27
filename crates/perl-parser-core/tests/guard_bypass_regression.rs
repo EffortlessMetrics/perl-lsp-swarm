@@ -18,8 +18,16 @@ fn is_recursion_guard_error(error: &ParseError) -> bool {
     matches!(error, ParseError::RecursionDepthExhausted { depth: 129, max_depth: 128 })
 }
 
+fn is_recursion_guard_family(error: &ParseError) -> bool {
+    matches!(error, ParseError::RecursionDepthExhausted { .. })
+}
+
 fn is_structural_nesting_error(error: &ParseError) -> bool {
     matches!(error, ParseError::NestingTooDeep { depth: 513, max_depth: 512 })
+}
+
+fn is_structural_nesting_family(error: &ParseError) -> bool {
+    matches!(error, ParseError::NestingTooDeep { .. })
 }
 
 fn parse_fails_with(
@@ -43,9 +51,20 @@ fn has_exclusive_error_family(
     has_expected && !has_forbidden
 }
 
+fn has_exclusive_diagnostic_family(
+    diagnostics: &[ParseError],
+    expected: fn(&ParseError) -> bool,
+    forbidden: fn(&ParseError) -> bool,
+) -> bool {
+    diagnostics.iter().any(expected) && !diagnostics.iter().any(forbidden)
+}
+
 fn has_recursion_guard_diagnostic(output: &ParseOutput) -> bool {
-    output.diagnostics.iter().any(is_recursion_guard_error)
-        && !output.diagnostics.iter().any(is_structural_nesting_error)
+    has_exclusive_diagnostic_family(
+        &output.diagnostics,
+        is_recursion_guard_error,
+        is_structural_nesting_family,
+    )
 }
 
 fn has_recursion_stop_cause(output: &ParseOutput) -> bool {
@@ -60,6 +79,55 @@ fn has_structural_nesting_stop_cause(output: &ParseOutput) -> bool {
         output.stop_cause(),
         Some(ParseStopCause::NestingOrDepthBudgetExhausted { limit: 512, usage: 513 })
     )
+}
+
+#[test]
+fn parse_error_oracle_rejects_swapped_field_direct_recorded_contradictions() {
+    let recursion = ParseError::RecursionDepthExhausted { depth: 129, max_depth: 128 };
+    let structural_with_recursion_fields =
+        ParseError::NestingTooDeep { depth: 129, max_depth: 128 };
+    assert!(!has_exclusive_error_family(
+        Some(&recursion),
+        &[structural_with_recursion_fields],
+        is_recursion_guard_error,
+        is_structural_nesting_family
+    ));
+
+    let structural = ParseError::NestingTooDeep { depth: 513, max_depth: 512 };
+    let recursion_with_structural_fields =
+        ParseError::RecursionDepthExhausted { depth: 513, max_depth: 512 };
+    assert!(!has_exclusive_error_family(
+        Some(&structural),
+        &[recursion_with_structural_fields],
+        is_structural_nesting_error,
+        is_recursion_guard_family
+    ));
+}
+
+#[test]
+fn recovery_oracle_rejects_swapped_structural_fields() {
+    let diagnostics = [
+        ParseError::RecursionDepthExhausted { depth: 129, max_depth: 128 },
+        ParseError::NestingTooDeep { depth: 129, max_depth: 128 },
+    ];
+    assert!(!has_exclusive_diagnostic_family(
+        &diagnostics,
+        is_recursion_guard_error,
+        is_structural_nesting_family
+    ));
+}
+
+#[test]
+fn recovery_oracle_rejects_swapped_recursion_fields() {
+    let diagnostics = [
+        ParseError::NestingTooDeep { depth: 513, max_depth: 512 },
+        ParseError::RecursionDepthExhausted { depth: 513, max_depth: 512 },
+    ];
+    assert!(!has_exclusive_diagnostic_family(
+        &diagnostics,
+        is_structural_nesting_error,
+        is_recursion_guard_family
+    ));
 }
 
 #[test]
