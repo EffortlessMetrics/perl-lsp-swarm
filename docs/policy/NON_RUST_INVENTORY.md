@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12258 |
-| Rust-family files | 3743 |
-| Non-Rust files | 8515 |
-| Allowlisted | 6262 |
-| Unclassified | 2253 |
+| Total tracked files | 12264 |
+| Rust-family files | 3744 |
+| Non-Rust files | 8520 |
+| Allowlisted | 6266 |
+| Unclassified | 2254 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 480 |
+| config | 481 |
 | documentation | 2770 |
 | generated | 2 |
 | production | 331 |
 | test | 2032 |
-| tooling | 647 |
-| unclassified | 2253 |
+| tooling | 650 |
+| unclassified | 2254 |
 
 ## Unclassified files
 
@@ -62,6 +62,7 @@
 | `.typos.toml` | `toml` |
 | `aqua.yaml` | `yaml` |
 | `book/book.toml` | `toml` |
+| `clients/lite-xl/tests/init_document_symbol_identity_test.lua` | `lua` |
 | `contracts/actual_host_receipt.v1.schema.json` | `json` |
 | `crates/perl-corpus/fixtures/differential_oracle/manifest.json` | `json` |
 | `crates/perl-corpus/fixtures/parser_accuracy/manifest.json` | `json` |
@@ -2894,6 +2895,7 @@
 | `.github/workflows/dap-protocol-authority.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dap-scorecard.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dependency-review.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/discover-11983-current-main.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dist-shadow.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/docker-publish.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/docs-deploy.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -6541,6 +6543,7 @@
 | `scripts/ci/run_gate_shard.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/run_parser_integration.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/rustfmt_check.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/scope_cache_key.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/security_reconciliation_io.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/security_reconciliation_model.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_aggregate_lane_history.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6568,6 +6571,7 @@
 | `scripts/ci/test_run_parser_integration.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_rustfmt_check.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_rustfmt_required_workflow.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_scope_cache_key.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_cargo_lock_conflict_policy.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_gate_enforcement_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_gate_lane_mapping.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6641,6 +6645,7 @@
 | `scripts/lite_xl_replay/public_replay.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/llvm.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/lsp-smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/maintenance/rebuild_11983_current_main.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/marketing/check-demo-assets.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/marketing/render-walkthrough-gif.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/migrate-legacy-authority-banners.py` | tooling | `non-rust-legacy-authority-banner-migrator` | release/ci |
