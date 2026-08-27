@@ -32,6 +32,10 @@
 //!
 //! Enabling Windows Developer Mode (or running elevated) opts the machine
 //! out of these skips entirely; it is opt-in, never a requirement.
+//!
+//! This module — and the crate-root re-export of its two helpers — exists
+//! only on Windows targets; Unix callers use `std::os::unix::fs::symlink`
+//! directly under `#[cfg(unix)]`.
 
 use std::io;
 use std::path::Path;
