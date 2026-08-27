@@ -343,11 +343,7 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
         match ch {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
-            ')' | ']' | '}' => {
-                if stack.pop().is_none() {
-                    return idx.saturating_sub(start);
-                }
-            }
+            ')' | ']' | '}' if stack.pop().is_none() => return idx.saturating_sub(start),
             ',' | ';' if stack.is_empty() => return idx.saturating_sub(start),
             _ => {}
         }
@@ -1041,6 +1037,30 @@ Module::Build->new(
     fn diagnostic_script_reports_workspace_file_names() {
         assert_eq!(NativeBuildScript::MakefilePl.file_name(), "Makefile.PL");
         assert_eq!(NativeBuildScript::BuildPl.file_name(), "Build.PL");
+    }
+
+    /// `rejected_value_len` must end the recovery scan at the first
+    /// **unbalanced** closer — the end of the enclosing call — while
+    /// consuming balanced groups whole. Ending at a balanced closer instead
+    /// would resume the key search too early, and skipping the unbalanced one
+    /// would run the scan past the call and swallow the next key assignment.
+    #[test]
+    fn rejected_value_len_ends_at_the_first_unbalanced_closer() {
+        // A rejected value holding a balanced group, then the closer of the
+        // WriteMakefile argument list, then the key that must stay findable.
+        let source = "build(1, 2) trailing) OBJECT => 'later.o'";
+        let consumed = rejected_value_len(source, 0);
+
+        assert_eq!(
+            &source[..consumed],
+            "build(1, 2) trailing",
+            "recovery must consume the balanced group and stop at the unbalanced closer",
+        );
+        assert_eq!(
+            source.as_bytes().get(consumed).copied(),
+            Some(b')'),
+            "the scan must resume exactly on the unbalanced closer",
+        );
     }
 
     #[test]
