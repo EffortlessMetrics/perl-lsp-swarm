@@ -18,6 +18,9 @@ if [ "$checked_out_head" != "$REBUILD_EVENT_HEAD_SHA" ]; then
 fi
 
 # Local-only reconstruction identity for throwaway cherry-pick commits.
+evidence_dir="target/receipts/rebuild-11983"
+mkdir -p "$evidence_dir"
+
 git config user.name EffortlessSteven
 git config user.email git@effortlesssteven.com
 
@@ -38,7 +41,16 @@ if ! git cherry-pick "$first_commit"; then
     crates/perl-lsp-rs/tests/lsp_batteries_e2e_workflow_test.rs
   )
   mapfile -t expected_sorted < <(printf '%s\n' "${expected[@]}" | sort)
-  diff -u <(printf '%s\n' "${expected_sorted[@]}") <(printf '%s\n' "${conflicts[@]}")
+  if ! diff -u \
+    <(printf '%s\n' "${expected_sorted[@]}") \
+    <(printf '%s\n' "${conflicts[@]}") > "$evidence_dir/conflict-denominator.diff"; then
+    echo "current-main moved: conflict denominator diverged from the reviewed set." >&2
+    echo "No hunks were resolved, deleted, or committed; nothing below is trusted." >&2
+    cat "$evidence_dir/conflict-denominator.diff" >&2
+    printf 'BLOCKER: re-discovery required; reviewed conflict set must be re-owned.\n' \
+      > "$evidence_dir/reconstruction-summary.txt"
+    exit 1
+  fi
 
   reject_manifest="$(mktemp)"
   export REBUILD_REJECT_MANIFEST="$reject_manifest"
@@ -319,8 +331,6 @@ git diff --check
 # It reconstructs and proves locally, records durable evidence as an artifact,
 # and never mutates repository refs from untrusted candidate code. Candidate
 # refs are published only by an explicitly authorized writer from trusted code.
-evidence_dir="target/receipts/rebuild-11983"
-mkdir -p "$evidence_dir"
 worktree_status="$(git status --porcelain=v1)"
 {
   echo "event-head: $REBUILD_EVENT_HEAD_SHA"
