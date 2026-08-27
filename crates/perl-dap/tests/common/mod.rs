@@ -1027,9 +1027,16 @@ pub(crate) fn active_probe_reader_count() -> usize {
 pub(crate) fn probe_debuggee_perl_for_test_with_job_assignment_failure(
     binary: &Path,
     budget: Duration,
+    descendant_pid_file: &Path,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(binary, budget, false, None, CleanupFault::JobAssignment)
-        .map_err(|failure| failure.reason)
+    probe_debuggee_perl_with_options(
+        binary,
+        budget,
+        false,
+        Some(descendant_pid_file),
+        CleanupFault::JobAssignment,
+    )
+    .map_err(|failure| failure.reason)
 }
 
 #[cfg(windows)]
@@ -1144,6 +1151,10 @@ fn probe_debuggee_perl_with_options(
     } {
         Ok(job) => job,
         Err(error) => {
+            #[cfg(test)]
+            if cleanup_fault.assignment_failed() {
+                std::thread::sleep(Duration::from_millis(250));
+            }
             let tree_kill = Command::new("taskkill")
                 .args(["/PID", &child.id().to_string(), "/T", "/F"])
                 .status();

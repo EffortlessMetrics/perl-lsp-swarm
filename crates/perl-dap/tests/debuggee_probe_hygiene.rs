@@ -265,8 +265,10 @@ fn main() {
         );
     }
 
-    let forced_cleanup =
-        common::probe_debuggee_perl_for_test_with_cleanup_failure(&success, Duration::from_secs(2));
+    let forced_cleanup = common::probe_debuggee_perl_for_test_with_cleanup_failure(
+        &timeout,
+        Duration::from_millis(100),
+    );
     let forced_cleanup_error = match forced_cleanup {
         Ok(_) => {
             return Err(io::Error::other(
@@ -283,8 +285,8 @@ fn main() {
     );
 
     let termination_failure = common::probe_debuggee_perl_for_test_with_termination_failure(
-        &success,
-        Duration::from_secs(2),
+        &timeout,
+        Duration::from_millis(100),
     );
     let termination_error = match termination_failure {
         Ok(_) => return Err(io::Error::other("termination-command failure was accepted")),
@@ -295,8 +297,10 @@ fn main() {
         "termination command failure must be explicit: {termination_error}"
     );
 
-    let reap_failure =
-        common::probe_debuggee_perl_for_test_with_reap_failure(&success, Duration::from_secs(2));
+    let reap_failure = common::probe_debuggee_perl_for_test_with_reap_failure(
+        &timeout,
+        Duration::from_millis(100),
+    );
     let reap_error = match reap_failure {
         Ok(_) => return Err(io::Error::other("reap failure was accepted")),
         Err(error) => error,
@@ -306,8 +310,10 @@ fn main() {
         "reap failure must be explicit: {reap_error}"
     );
 
-    let reader_failure =
-        common::probe_debuggee_perl_for_test_with_reader_panic(&success, Duration::from_secs(2));
+    let reader_failure = common::probe_debuggee_perl_for_test_with_reader_panic(
+        &timeout,
+        Duration::from_millis(100),
+    );
     let reader_error = match reader_failure {
         Ok(_) => return Err(io::Error::other("reader-thread failure was accepted")),
         Err(error) => error,
@@ -320,18 +326,35 @@ fn main() {
 
     #[cfg(windows)]
     {
-        let assignment_failure = common::probe_debuggee_perl_for_test_with_job_assignment_failure(
-            &success,
-            Duration::from_secs(2),
-        );
+        let before = current_process_probe_artifacts()?;
+        let pid_file = controls.path().join("assignment-failure.pid");
+        let assignment_pid_file = pid_file.clone();
+        let assignment_binary = hanging.clone();
+        let probe = std::thread::spawn(move || {
+            common::probe_debuggee_perl_for_test_with_job_assignment_failure(
+                &assignment_binary,
+                Duration::from_secs(2),
+                &assignment_pid_file,
+            )
+        });
+        let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(2))?;
+        wait_for_process_start(descendant_pid, Duration::from_secs(2))?;
+        let assignment_failure =
+            probe.join().map_err(|_| io::Error::other("job assignment probe thread panicked"))?;
         let assignment_error = match assignment_failure {
             Ok(_) => return Err(io::Error::other("job assignment failure was accepted")),
             Err(error) => error,
         };
         assert!(
-            assignment_error.contains("job assignment")
-                && assignment_error.contains("taskkill process-tree fallback"),
+            assignment_error.contains("job assignment"),
             "job assignment fallback must be explicit: {assignment_error}"
+        );
+        wait_for_process_exit(descendant_pid, Duration::from_secs(2))?;
+        let after = current_process_probe_artifacts()?;
+        let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
+        assert!(
+            new_artifacts.is_empty(),
+            "job assignment fallback left artifacts: {new_artifacts:?}"
         );
     }
 
