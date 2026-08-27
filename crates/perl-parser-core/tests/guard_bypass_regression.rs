@@ -6,22 +6,44 @@
 //   - 200  nested `!` operators   → stack overflow in parse_unary
 //
 // After the fix both sites are wrapped in with_recursion_guard() so deeply
-// nested input returns a depth-guard error instead of crashing.
+// nested input returns a recursion-depth error instead of crashing. Structural
+// block nesting remains a separate NestingTooDeep proof below.
 
 mod cpan_test_helpers;
 use cpan_test_helpers::*;
 
-use perl_parser_core::{ParseError, Parser};
+use perl_parser_core::{ParseError, ParseOutput, ParseStopCause, Parser};
 
-fn is_depth_guard_error(error: &ParseError) -> bool {
-    matches!(error, ParseError::RecursionDepthExhausted { .. } | ParseError::NestingTooDeep { .. })
+fn is_recursion_guard_error(error: &ParseError) -> bool {
+    matches!(error, ParseError::RecursionDepthExhausted { depth: 129, max_depth: 128 })
 }
 
-fn fails_gracefully(code: &str) -> bool {
+fn is_structural_nesting_error(error: &ParseError) -> bool {
+    matches!(error, ParseError::NestingTooDeep { depth: 513, max_depth: 512 })
+}
+
+fn parse_fails_with(code: &str, expected: fn(&ParseError) -> bool) -> bool {
     let mut parser = Parser::new(code);
     let result = parser.parse();
-    result.as_ref().err().is_some_and(is_depth_guard_error)
-        || parser.errors().iter().any(is_depth_guard_error)
+    result.as_ref().err().is_some_and(expected) || parser.errors().iter().any(expected)
+}
+
+fn has_recursion_guard_diagnostic(output: &ParseOutput) -> bool {
+    output.diagnostics.iter().any(is_recursion_guard_error)
+}
+
+fn has_recursion_stop_cause(output: &ParseOutput) -> bool {
+    matches!(
+        output.stop_cause(),
+        Some(ParseStopCause::RecursionBudgetExhausted { limit: Some(128), usage: Some(129) })
+    )
+}
+
+fn has_structural_nesting_stop_cause(output: &ParseOutput) -> bool {
+    matches!(
+        output.stop_cause(),
+        Some(ParseStopCause::NestingOrDepthBudgetExhausted { limit: 512, usage: 513 })
+    )
 }
 
 // --- parse_word_not_expr (precedence.rs) ---
@@ -32,8 +54,8 @@ fn word_not_5000_deep_does_not_sigsegv() {
     // Before fix: SIGSEGV at ~5000 due to unguarded self-recursion.
     let code = "not ".repeat(5000) + "1";
     assert!(
-        fails_gracefully(&code),
-        "5000-deep `not` chain should fail with the depth guard, not crash"
+        parse_fails_with(&code, is_recursion_guard_error),
+        "5000-deep `not` chain should fail with the recursion guard, not crash"
     );
 }
 
@@ -41,14 +63,20 @@ fn word_not_5000_deep_does_not_sigsegv() {
 fn word_not_depth_130_hits_limit() {
     // 130 levels is just above MAX_RECURSION_DEPTH (128).
     let code = "not ".repeat(130) + "1";
-    assert!(fails_gracefully(&code), "130-deep `not` chain should hit the recursion guard");
+    assert!(
+        parse_fails_with(&code, is_recursion_guard_error),
+        "130-deep `not` chain should hit the recursion guard"
+    );
 }
 
 #[test]
 fn word_not_depth_128_hits_limit() {
     // Exactly at the limit — the 129th call should trip the guard.
     let code = "not ".repeat(129) + "1";
-    assert!(fails_gracefully(&code), "129-deep `not` chain should hit the recursion guard");
+    assert!(
+        parse_fails_with(&code, is_recursion_guard_error),
+        "129-deep `not` chain should hit the recursion guard"
+    );
 }
 
 // --- parse_unary (unary.rs) ---
@@ -59,15 +87,18 @@ fn bang_200_deep_does_not_sigsegv() {
     // Before fix: stack overflow in parse_unary at ~200 levels.
     let code = "!".repeat(200) + "1";
     assert!(
-        fails_gracefully(&code),
-        "200-deep `!` chain should fail with NestingTooDeep, not crash"
+        parse_fails_with(&code, is_recursion_guard_error),
+        "200-deep `!` chain should fail with RecursionDepthExhausted, not crash"
     );
 }
 
 #[test]
 fn bang_depth_130_hits_limit() {
     let code = "!".repeat(130) + "1";
-    assert!(fails_gracefully(&code), "130-deep `!` chain should hit the recursion guard");
+    assert!(
+        parse_fails_with(&code, is_recursion_guard_error),
+        "130-deep `!` chain should hit the recursion guard"
+    );
 }
 
 #[test]
@@ -76,22 +107,28 @@ fn unary_minus_depth_hits_limit() {
     // Use 300 dashes: even if the lexer collapses pairs into Decrement tokens
     // (giving 150 recursion levels), that still exceeds MAX_RECURSION_DEPTH=128.
     let code = "-".repeat(300) + "1";
-    assert!(fails_gracefully(&code), "300-deep unary-minus chain should hit the recursion guard");
+    assert!(
+        parse_fails_with(&code, is_recursion_guard_error),
+        "300-deep unary-minus chain should hit the recursion guard"
+    );
 }
 
 #[test]
 fn increment_depth_130_hits_limit() {
     // Pre-increment also recurses through parse_unary.
     let code = "++".repeat(130) + "$x";
-    assert!(fails_gracefully(&code), "130-deep `++` chain should hit the recursion guard");
+    assert!(
+        parse_fails_with(&code, is_recursion_guard_error),
+        "130-deep `++` chain should hit the recursion guard"
+    );
 }
 
 #[test]
 fn power_chain_depth_hits_limit() {
     let code = "1 ** ".repeat(130) + "1";
     assert!(
-        fails_gracefully(&code),
-        "130-deep power chain should fail with the depth guard, not overflow the stack"
+        parse_fails_with(&code, is_recursion_guard_error),
+        "130-deep power chain should fail with the recursion guard, not overflow the stack"
     );
 }
 
@@ -101,8 +138,13 @@ fn deep_power_chain_recovery_surfaces_nesting_diagnostic() {
     let mut parser = Parser::new(&code);
     let output = parser.parse_with_recovery();
     assert!(
-        output.diagnostics.iter().any(is_depth_guard_error),
-        "parse_with_recovery should surface a depth-guard diagnostic for a deep power chain"
+        has_recursion_guard_diagnostic(&output),
+        "parse_with_recovery should surface RecursionDepthExhausted for a deep power chain"
+    );
+    assert!(
+        has_recursion_stop_cause(&output),
+        "parse_with_recovery should preserve the recursion stop cause, got {:?}",
+        output.stop_cause()
     );
 }
 
@@ -154,7 +196,10 @@ fn mixed_not_and_bang_nesting_hits_limit() {
     // If the guard is global and shared, even fewer nesting levels trip it.
     let inner = "not ".repeat(100) + "1";
     let code = "!".repeat(100) + "(" + &inner + ")";
-    assert!(fails_gracefully(&code), "mixed !/not nesting should hit the recursion guard");
+    assert!(
+        parse_fails_with(&code, is_recursion_guard_error),
+        "mixed !/not nesting should hit the recursion guard"
+    );
 }
 
 // --- Test 2: LSP-facing path (parse_with_recovery) ---
@@ -167,8 +212,13 @@ fn deep_nesting_recovers_with_nesting_diagnostic_on_lsp_path() {
     let mut parser = Parser::new(&code);
     let output = parser.parse_with_recovery();
     assert!(
-        output.diagnostics.iter().any(is_depth_guard_error),
-        "parse_with_recovery should surface a depth-guard diagnostic for deep nesting"
+        has_recursion_guard_diagnostic(&output),
+        "parse_with_recovery should surface RecursionDepthExhausted for deep nesting"
+    );
+    assert!(
+        has_recursion_stop_cause(&output),
+        "parse_with_recovery should preserve the recursion stop cause, got {:?}",
+        output.stop_cause()
     );
 }
 
@@ -181,7 +231,21 @@ fn comp_parser_pl_lex_brackstack_block_depth_parses() {
 #[test]
 fn pathological_block_depth_still_hits_limit() {
     let code = nested_eval_blocks(600);
-    assert!(fails_gracefully(&code), "600-deep bare blocks should still hit the block guard");
+    let mut parser = Parser::new(&code);
+    let output = parser.parse_with_recovery();
+    assert!(
+        has_structural_nesting_error(&output),
+        "600-deep bare blocks should still hit the structural nesting guard"
+    );
+    assert!(
+        has_structural_nesting_stop_cause(&output),
+        "structural block nesting should preserve its stop cause, got {:?}",
+        output.stop_cause()
+    );
+}
+
+fn has_structural_nesting_error(output: &ParseOutput) -> bool {
+    output.diagnostics.iter().any(is_structural_nesting_error)
 }
 
 fn nested_eval_blocks(depth: usize) -> String {
