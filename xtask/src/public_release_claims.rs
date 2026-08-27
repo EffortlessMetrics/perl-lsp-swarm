@@ -16,11 +16,7 @@
 
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
-use std::{
-    fmt,
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{fmt, fs, path::Path};
 
 pub const DOC_PATH: &str = "docs/distribution/INSTALL_CLAIM_SURFACES.md";
 pub const SCHEMA_PATH: &str = "schemas/public_release_claims.v2.schema.json";
@@ -29,28 +25,20 @@ pub const SCHEMA_VERSION: &str = "public_release_claims.v2";
 pub const GENERATOR_COMMAND: &str = "cargo xtask public-release-claims-v2 build --write";
 
 /// Complete surface denominator from the landed inventory.
-const EXPECTED_SURFACES: [&str; 13] = [
-    "S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10", "S11", "S12", "S13",
-];
+const EXPECTED_SURFACES: [&str; 13] =
+    ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10", "S11", "S12", "S13"];
 
 /// Complete claim-row denominator. A missing or renamed inventory row fails
 /// the check (missing-producer-omits-route falsifier); adding rows upstream is
 /// a sanctioned regeneration, not a silent pass.
 const EXPECTED_CLAIM_IDS: [&str; 70] = [
-    "C101", "C102", "C103", "C104", "C105", "C106", "C107", "C108",
-    "C201", "C202", "C203", "C204", "C205", "C206", "C207", "C208", "C209", "C210", "C211",
-    "C212", "C213", "C214", "C215", "C216",
-    "C301", "C302", "C303",
-    "C401", "C402", "C403", "C404", "C405", "C406",
-    "C501", "C502", "C503",
-    "C601",
-    "C701", "C702", "C703",
-    "C801",
-    "C901", "C902",
-    "C1001", "C1002", "C1003", "C1004", "C1005", "C1006", "C1007", "C1008",
-    "C1101", "C1102",
-    "C1201", "C1202", "C1203", "C1204", "C1205", "C1206", "C1207", "C1208",
-    "C1301", "C1302", "C1303", "C1304", "C1305", "C1306", "C1307", "C1308", "C1309",
+    "C101", "C102", "C103", "C104", "C105", "C106", "C107", "C108", "C201", "C202", "C203", "C204",
+    "C205", "C206", "C207", "C208", "C209", "C210", "C211", "C212", "C213", "C214", "C215", "C216",
+    "C301", "C302", "C303", "C401", "C402", "C403", "C404", "C405", "C406", "C501", "C502", "C503",
+    "C601", "C701", "C702", "C703", "C801", "C901", "C902", "C1001", "C1002", "C1003", "C1004",
+    "C1005", "C1006", "C1007", "C1008", "C1101", "C1102", "C1201", "C1202", "C1203", "C1204",
+    "C1205", "C1206", "C1207", "C1208", "C1301", "C1302", "C1303", "C1304", "C1305", "C1306",
+    "C1307", "C1308", "C1309",
 ];
 
 const DRIFT_STATUSES: [&str; 8] = [
@@ -129,7 +117,8 @@ pub struct ParsedInventory {
 }
 
 fn read_repo_bytes(root: &Path, rel: &str) -> Result<Vec<u8>, CatalogError> {
-    fs::read(root.join(rel)).map_err(|error| CatalogError::new(format!("{rel}: cannot read: {error}")))
+    fs::read(root.join(rel))
+        .map_err(|error| CatalogError::new(format!("{rel}: cannot read: {error}")))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -142,8 +131,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn canonical_bytes(value: &Value) -> Result<Vec<u8>, CatalogError> {
-    let mut text = serde_json::to_string_pretty(value)
-        .map_err(|error| CatalogError::new(format!("catalog: cannot serialize canonical form: {error}")))?;
+    let mut text = serde_json::to_string_pretty(value).map_err(|error| {
+        CatalogError::new(format!("catalog: cannot serialize canonical form: {error}"))
+    })?;
     text.push('\n');
     Ok(text.into_bytes())
 }
@@ -153,10 +143,7 @@ fn take_while_digits(text: &[u8], start: usize) -> (String, usize) {
     while end < text.len() && text[end].is_ascii_digit() {
         end += 1;
     }
-    (
-        String::from_utf8_lossy(&text[start..end]).into_owned(),
-        end,
-    )
+    (String::from_utf8_lossy(&text[start..end]).into_owned(), end)
 }
 
 /// Extract every `FND-N` reference (1..=12) from a raw table row line.
@@ -223,11 +210,12 @@ pub fn parse_inventory(doc: &str) -> Result<ParsedInventory, CatalogError> {
             "{DOC_PATH}: could not locate the audit date next to the audited commit"
         )));
     }
-    let release_anchor = parse_release_anchor_after_marker(&joined, "**Drift anchor:**").ok_or_else(|| {
-        CatalogError::new(format!(
-            "{DOC_PATH}: could not locate the drift-anchor release receipt"
-        ))
-    })?;
+    let release_anchor = parse_release_anchor_after_marker(&joined, "**Drift anchor:**")
+        .ok_or_else(|| {
+            CatalogError::new(format!(
+                "{DOC_PATH}: could not locate the drift-anchor release receipt"
+            ))
+        })?;
 
     for line in doc.lines() {
         let trimmed = line.trim();
@@ -238,7 +226,8 @@ pub fn parse_inventory(doc: &str) -> Result<ParsedInventory, CatalogError> {
         if trimmed.starts_with("### ") {
             let heading = trimmed.trim_start_matches("### ").trim();
             current_section = heading
-                .split(|c: char| c == ' ' || c == '—' || c == '-').next()
+                .split([' ', '\u{2014}', '-'])
+                .next()
                 .filter(|token| token.len() == 3 && token.starts_with('S'))
                 .map(str::to_string);
             continue;
@@ -246,21 +235,19 @@ pub fn parse_inventory(doc: &str) -> Result<ParsedInventory, CatalogError> {
 
         if in_surface_index {
             if trimmed.starts_with("| S") {
-                if let Some(surface) = parse_surface_row(trimmed)? {
-                    surfaces.push(surface);
-                }
+                surfaces.extend(parse_surface_row(trimmed)?);
             }
             continue;
         }
         if trimmed.starts_with("| C") {
-            if let Some(claim) = parse_claim_row(trimmed, current_section.as_deref())? {
-                claims.push(claim);
-            }
+            claims.extend(parse_claim_row(trimmed, current_section.as_deref())?);
         }
     }
 
     surfaces.sort_by(|left, right| left.surface_id.cmp(&right.surface_id));
-    claims.sort_by(|left, right| numeric_claim_key(&left.claim_id).cmp(&numeric_claim_key(&right.claim_id)));
+    claims.sort_by(|left, right| {
+        numeric_claim_key(&left.claim_id).cmp(&numeric_claim_key(&right.claim_id))
+    });
 
     let finding_titles = parse_finding_titles(doc);
     for finding_id in FINDING_IDS {
@@ -367,8 +354,10 @@ fn parse_release_anchor_after_marker(text: &str, marker: &str) -> Option<String>
             let candidate = &text[index..end];
             let numeric_parts = candidate.trim_start_matches('v');
             let parts: Vec<&str> = numeric_parts.split('.').collect();
-            let shaped =
-                parts.len() == 3 && parts.iter().all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
+            let shaped = parts.len() == 3
+                && parts
+                    .iter()
+                    .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
             if shaped {
                 return Some(candidate.to_string());
             }
@@ -421,9 +410,13 @@ fn parse_claim_row(row: &str, section: Option<&str>) -> Result<Option<ParsedClai
     if !claim_id.starts_with('C') {
         return Ok(None);
     }
-    let surface_id = section.ok_or_else(|| CatalogError::new(format!(
-        "{DOC_PATH}: claim row {claim_id} appeared before any `### Sxx` heading"
-    )))?.to_string();
+    let surface_id = section
+        .ok_or_else(|| {
+            CatalogError::new(format!(
+                "{DOC_PATH}: claim row {claim_id} appeared before any `### Sxx` heading"
+            ))
+        })?
+        .to_string();
     let notes = cells.get(4).cloned().unwrap_or_default();
     Ok(Some(ParsedClaim {
         claim_id,
@@ -437,10 +430,7 @@ fn parse_claim_row(row: &str, section: Option<&str>) -> Result<Option<ParsedClai
 }
 
 fn numeric_claim_key(claim_id: &str) -> u32 {
-    claim_id
-        .trim_start_matches('C')
-        .parse()
-        .unwrap_or(u32::MAX)
+    claim_id.trim_start_matches('C').parse().unwrap_or(u32::MAX)
 }
 
 /// Curated annotations sourced from the inventory's own Family handoff notes;
@@ -601,7 +591,7 @@ pub fn build_catalog_value(inventory: &ParsedInventory) -> Value {
                 .iter()
                 .find(|(id, _)| id == finding_id)
                 .map(|(_, title)| title.clone())
-                .unwrap_or_else(|| format!("{finding_id}"));
+                .unwrap_or_else(|| finding_id.to_string());
             json!({
                 "finding_id": finding_id,
                 "title": title,
@@ -636,7 +626,8 @@ pub fn build_catalog_value(inventory: &ParsedInventory) -> Value {
     })
 }
 
-fn merge_dim_refs(dimension: &Value, refs: &mut Vec<String>) {    if let Some(list) = dimension.get("finding_refs").and_then(Value::as_array) {
+fn merge_dim_refs(dimension: &Value, refs: &mut Vec<String>) {
+    if let Some(list) = dimension.get("finding_refs").and_then(Value::as_array) {
         for value in list {
             if let Some(reference) = value.as_str() {
                 refs.push(reference.to_string());
@@ -665,12 +656,7 @@ pub fn generate_artifact_bytes(root: &Path) -> Result<Vec<u8>, CatalogError> {
     validate_denominator(&inventory)?;
 
     let mut catalog = build_catalog_value(&inventory);
-    catalog = with_input_digests(
-        &catalog,
-        &sha256_hex(&doc_bytes),
-        &sha256_hex(&schema_bytes),
-    );
-    catalog["source_inventory"]["release_anchor"] = Value::String(inventory.release_anchor.clone());
+    catalog = with_input_digests(&catalog, &sha256_hex(&doc_bytes), &sha256_hex(&schema_bytes));
     canonical_bytes(&catalog)
 }
 
@@ -699,11 +685,8 @@ fn validate_denominator(inventory: &ParsedInventory) -> Result<(), CatalogError>
         }
     }
     if claim_ids.len() != EXPECTED_CLAIM_IDS.len() {
-        let extras: Vec<&str> = claim_ids
-            .iter()
-            .copied()
-            .filter(|id| !EXPECTED_CLAIM_IDS.contains(id))
-            .collect();
+        let extras: Vec<&str> =
+            claim_ids.iter().copied().filter(|id| !EXPECTED_CLAIM_IDS.contains(id)).collect();
         return Err(CatalogError::new(format!(
             "{DOC_PATH}: {} claim row(s) outside the recorded denominator \
              (sanctioned regen required, never a silent pass): {extras:?}",
@@ -755,9 +738,7 @@ pub fn validate_artifact_bytes(bytes: &[u8]) -> Result<CatalogStats, CatalogErro
 }
 
 fn validate_catalog_value(value: &Value) -> Result<CatalogStats, CatalogError> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| CatalogError::new("catalog: expected object"))?;
+    let object = value.as_object().ok_or_else(|| CatalogError::new("catalog: expected object"))?;
 
     let version = object
         .get("schema_version")
@@ -792,12 +773,31 @@ fn validate_catalog_value(value: &Value) -> Result<CatalogStats, CatalogError> {
         }
     }
     let findings = count_array(value, "findings", "catalog.findings")?;
-    Ok(CatalogStats {
-        surfaces,
-        claims: claims_array.len(),
-        findings,
-        dimensioned_rows,
-    })
+    // Hard denominator guard: works even when only the artifact (not the
+    // source document) is tampered with, so a dropped row can never read as a
+    // clean pass.
+    if claims_array.len() != EXPECTED_CLAIM_IDS.len() {
+        return Err(CatalogError::new(format!(
+            "catalog.claims: {} row(s) but the denominator holds {}",
+            claims_array.len(),
+            EXPECTED_CLAIM_IDS.len()
+        )));
+    }
+    if surfaces != EXPECTED_SURFACES.len() {
+        return Err(CatalogError::new(format!(
+            "catalog.surfaces: {} row(s) but the denominator holds {}",
+            surfaces,
+            EXPECTED_SURFACES.len()
+        )));
+    }
+    if findings != FINDING_IDS.len() {
+        return Err(CatalogError::new(format!(
+            "catalog.findings: {} row(s) but the denominator holds {}",
+            findings,
+            FINDING_IDS.len()
+        )));
+    }
+    Ok(CatalogStats { surfaces, claims: claims_array.len(), findings, dimensioned_rows })
 }
 
 fn count_array(value: &Value, key: &str, name: &str) -> Result<usize, CatalogError> {
@@ -845,18 +845,7 @@ pub fn validate_repository_catalog(root: &Path) -> Result<CatalogStats, CatalogE
     if let Some(first) = violations.first() {
         return Err(CatalogError::new(first.clone()));
     }
-    if stats.claims != EXPECTED_CLAIM_IDS.len() {
-        return Err(CatalogError::new(format!(
-            "catalog claims shrunk or grew to {} but the denominator holds {} rows",
-            stats.claims,
-            EXPECTED_CLAIM_IDS.len()
-        )));
-    }
     Ok(stats)
-}
-
-pub struct RepoPaths {
-    pub root: PathBuf,
 }
 
 /// List stable claim IDs in catalog order.
@@ -881,4 +870,250 @@ pub fn explain_claim(manifest: &Value, claim_id: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo_root() -> std::path::PathBuf {
+        // Mirrors `crate::utils::project_root`, which lives in the binary-only
+        // module; the manifest-dir parent is the repository root either way.
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("test: xtask lives in a subdirectory")
+            .to_path_buf()
+    }
+
+    fn artifact_bytes(root: &Path) -> Vec<u8> {
+        read_repo_bytes(root, ARTIFACT_PATH).expect("test: committed artifact readable")
+    }
+
+    /// Falsifier 15: a second generation changes no bytes.
+    #[test]
+    fn generation_is_byte_stable_across_runs() {
+        let root = repo_root();
+        let first = generate_artifact_bytes(&root).expect("first generation");
+        let second = generate_artifact_bytes(&root).expect("second generation");
+        assert_eq!(first, second);
+    }
+
+    /// The committed artifact is exactly what the landed document generates.
+    #[test]
+    fn committed_artifact_matches_regeneration() {
+        let root = repo_root();
+        let regenerated = generate_artifact_bytes(&root).expect("regeneration");
+        assert_eq!(artifact_bytes(&root), regenerated);
+    }
+
+    #[test]
+    fn parsed_anchors_match_the_landed_inventory() {
+        let root = repo_root();
+        let doc_bytes = read_repo_bytes(&root, DOC_PATH).expect("inventory doc");
+        let doc = std::str::from_utf8(&doc_bytes).expect("UTF-8 inventory");
+        let inventory = parse_inventory(doc).expect("parse");
+        assert_eq!(inventory.audited_commit, "20174d50c");
+        assert_eq!(inventory.audited_date, "2026-08-26");
+        assert_eq!(inventory.release_anchor, "v0.17.0");
+        assert_eq!(inventory.surfaces.len(), EXPECTED_SURFACES.len());
+        assert_eq!(inventory.claims.len(), EXPECTED_CLAIM_IDS.len());
+    }
+
+    #[test]
+    fn claim_rows_carry_conjunctive_dimensions_without_collapse() {
+        let root = repo_root();
+        let value: Value = serde_json::from_slice(&artifact_bytes(&root)).expect("artifact JSON");
+        let claims = value.get("claims").and_then(Value::as_array).expect("claims array");
+
+        let by_id = |id: &str| {
+            claims
+                .iter()
+                .find(|claim| claim.get("claim_id").and_then(Value::as_str) == Some(id))
+                .unwrap_or_else(|| panic!("test: {id} present"))
+                .clone()
+        };
+
+        // (a) Windows ARM64 three-way split stays independent per field.
+        let c210 = by_id("C210");
+        let arm210 = c210
+            .pointer("/dimensions/windows_arm64")
+            .cloned()
+            .expect("C210 windows_arm64 dimension");
+        assert_eq!(
+            arm210.get("user_prose").and_then(Value::as_str),
+            Some("x64_fallback_build_from_source")
+        );
+        assert_eq!(arm210.get("tracked_source").and_then(Value::as_str), Some("built"));
+        assert_eq!(
+            arm210.get("published_receipt_v0_17_0").and_then(Value::as_str),
+            Some("present")
+        );
+        let c501 = by_id("C501");
+        assert_eq!(
+            c501.pointer("/dimensions/windows_arm64/published_receipt_v0_17_0")
+                .and_then(Value::as_str),
+            Some("absent")
+        );
+
+        // (b) checksum enforcement mode conflict stays visible on both rows.
+        assert_eq!(
+            by_id("C207")
+                .pointer("/dimensions/sha256sums_enforcement/mode")
+                .and_then(Value::as_str),
+            Some("fail_closed_required")
+        );
+        assert_eq!(
+            by_id("C1005")
+                .pointer("/dimensions/sha256sums_enforcement/mode")
+                .and_then(Value::as_str),
+            Some("fail_open_conditional")
+        );
+
+        // (c) product-unit membership under BUILD_FROM_SOURCE stays server-only
+        // while the tracked-installer divergence is recorded, not merged in.
+        assert_eq!(
+            by_id("C208")
+                .pointer("/dimensions/product_units/build_from_source_units")
+                .and_then(|v| v.as_array())
+                .map(|units| units.len()),
+            Some(1)
+        );
+        assert_eq!(
+            by_id("C210")
+                .pointer("/dimensions/product_units/tracked_installer_ships_adapter")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            by_id("C209").pointer("/dimensions/product_units/tracked_installer_ships_adapter"),
+            None,
+            "unrecorded cells stay absent instead of inventing a direction"
+        );
+    }
+
+    #[test]
+    fn caveat_omissions_are_explicit_rows_not_prose_loss() {
+        let root = repo_root();
+        let value: Value = serde_json::from_slice(&artifact_bytes(&root)).expect("artifact JSON");
+        let claims = value.get("claims").and_then(Value::as_array).expect("claims");
+        let find = |id: &str| {
+            claims.iter().find(|c| c.get("claim_id").and_then(Value::as_str) == Some(id)).cloned()
+        };
+        for id in ["C1304", "C1305"] {
+            let claim = find(id).unwrap_or_else(|| panic!("test: {id} present"));
+            let caveats = claim.get("omitted_caveats").and_then(Value::as_array).expect("caveats");
+            assert!(caveats.iter().any(|v| v.as_str() == Some("homebrew_tap_version_unproven")));
+        }
+        // Restatement groups keep the dedup join without choosing a fragment.
+        assert_eq!(
+            find("C204").expect("C204").get("restatement_group").and_then(Value::as_str),
+            Some("bootstrap_identity")
+        );
+        assert_eq!(
+            find("C801").expect("C801").get("restatement_group").and_then(Value::as_str),
+            Some("verification_probes")
+        );
+    }
+
+    /// Tamper rejection. A single flipped character must fail the gate:
+    /// * formatting-preserving value changes are caught only by the
+    ///   regenerate-and-compare path (`validate_repository_catalog`), which is
+    ///   why that comparison, not shape checks alone, is load-bearing;
+    /// * raw byte damage (broken JSON/non-canonical spacing) is caught by
+    ///   `validate_artifact_bytes` before regeneration even runs.
+    #[test]
+    fn tampered_artifact_is_rejected() {
+        let root = repo_root();
+        let mut bytes = artifact_bytes(&root);
+        let marker = b"volatile_number";
+        let position = bytes
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .expect("marker present");
+        // Formatting-preserving drift: same length, same canonical shape.
+        bytes[position + 2] = if bytes[position + 2] == b'o' { b'0' } else { b'X' };
+        let regenerated = generate_artifact_bytes(&root).expect("regeneration");
+        assert_ne!(bytes, regenerated, "gate compares artifact bytes to regeneration");
+        validate_artifact_bytes(&bytes)
+            .expect("shape checks alone cannot see a re-encoded value — by design");
+
+        // Raw damage: same-length reindentation stays valid JSON but must fail
+        // the canonical-form check immediately.
+        let mut indented = bytes.clone();
+        let start = indented
+            .windows(2)
+            .position(|window| window == b"  ")
+            .expect("pretty indentation present");
+        indented[start] = b'\t';
+        let error = validate_artifact_bytes(&indented).err().expect("non-canonical form rejected");
+        assert!(format!("{error}").contains("canonical form"), "{error}");
+    }
+
+    /// Unknown-field rejection and structural authority of the closed schema.
+    #[test]
+    fn unknown_top_level_field_fails_schema_validation() {
+        let root = repo_root();
+        let mut value: Value =
+            serde_json::from_slice(&artifact_bytes(&root)).expect("artifact JSON");
+        value["rogue_dimension"] = serde_json::json!(true);
+        let bytes = canonical_bytes(&value).expect("re-serialize");
+
+        // Structure/count guards alone still hold; only the closed schema sees
+        // the unknown field. That is exactly why both layers run in the gate.
+        validate_artifact_bytes(&bytes).expect("structure consistent");
+
+        let schema_text = fs::read_to_string(root.join(SCHEMA_PATH)).expect("schema readable");
+        let schema: Value = serde_json::from_str(&schema_text).expect("schema json");
+        let validator = jsonschema::validator_for(&schema).expect("schema compiles");
+        let catalog: Value = serde_json::from_slice(&bytes).expect("valid json");
+        let violations: Vec<String> =
+            validator.iter_errors(&catalog).map(|error| error.to_string()).collect();
+        assert!(
+            violations.iter().any(|violation| violation.contains("rogue_dimension")),
+            "closed schema must reject unknown fields, got {violations:?}"
+        );
+    }
+
+    /// Dropping a row from the artifact alone cannot produce a clean pass.
+    #[test]
+    fn shrunk_catalog_fails_even_when_canonical() {
+        let root = repo_root();
+        let mut value: Value =
+            serde_json::from_slice(&artifact_bytes(&root)).expect("artifact JSON");
+        let claims = value.get_mut("claims").and_then(Value::as_array_mut).expect("claims array");
+        claims.pop();
+        let bytes = canonical_bytes(&value).expect("canonical re-serialize");
+        let error = validate_artifact_bytes(&bytes).err().expect("shrink rejected");
+        assert!(format!("{error}").contains("denominator holds"), "{error}");
+    }
+
+    /// A v1-shaped document is refused with the coexistence pointer intact.
+    #[test]
+    fn v1_document_directs_to_v1_validator() {
+        let v1 = serde_json::json!({
+            "schema_version": "public_release_claims.v1",
+            "release": "0.18.0",
+            "track": "public-beta",
+            "subject_sha": "0".repeat(40),
+            "topology_digest": format!("sha256:{}", "0".repeat(64)),
+            "claims": [{"id": "install.x"}],
+        });
+        let error = validate_catalog_value(&v1).err().expect("v1 rejected");
+        let message = format!("{error}");
+        assert!(message.contains("public_release_claims.v1"), "{message}");
+        assert!(message.contains("v1 validator"), "{message}");
+    }
+
+    #[test]
+    fn list_and_explain_surface_stable_ids() {
+        let root = repo_root();
+        let manifest: Value =
+            serde_json::from_slice(&artifact_bytes(&root)).expect("artifact JSON");
+        let ids = list_claim_ids(&manifest);
+        assert_eq!(ids.first().map(String::as_str), Some("C101"));
+        assert_eq!(ids.last().map(String::as_str), Some("C1309"));
+        let explained = explain_claim(&manifest, "C207").expect("C207 exists");
+        assert!(explained.contains("\"claim_id\": \"C207\""));
+        assert!(explain_claim(&manifest, "C9999").is_none());
+    }
 }

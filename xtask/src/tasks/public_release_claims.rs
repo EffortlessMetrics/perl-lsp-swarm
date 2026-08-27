@@ -1,11 +1,11 @@
 //! `cargo xtask public-release-claims-v2` — build, check, list, and explain the
 //! deterministic install-claim catalog `public_release_claims.v2` (#11548).
 
-use xtask::public_release_claims as claims;
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, eyre};
 use serde_json::Value;
 use std::fs;
+use xtask::public_release_claims as claims;
 
 #[derive(clap::Subcommand, Debug)]
 pub enum PublicReleaseClaimsV2Subcommand {

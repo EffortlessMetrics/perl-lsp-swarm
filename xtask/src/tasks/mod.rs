@@ -47,7 +47,6 @@ pub mod compare;
 #[cfg(feature = "parser-tasks")]
 pub mod compare_parsers;
 pub mod compiler_lexical_cutline;
-pub mod public_release_claims;
 pub mod compiler_oracle;
 pub mod compiler_profile;
 #[cfg(feature = "legacy")]
@@ -139,6 +138,7 @@ pub mod product_identity_workspace;
 pub mod protocol_type_substrate_matrix;
 pub mod provider_confidence_matrix;
 pub mod provider_promotion_ledger;
+pub mod public_release_claims;
 pub mod publication_facts;
 pub mod publish;
 pub mod publish_closure;

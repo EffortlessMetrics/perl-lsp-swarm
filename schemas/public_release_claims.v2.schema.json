@@ -29,7 +29,6 @@
     "surfaces": {
       "type": "array",
       "minItems": 1,
-      "uniqueItems": false,
       "items": {"$ref": "#/$defs/surface"}
     },
     "claims": {

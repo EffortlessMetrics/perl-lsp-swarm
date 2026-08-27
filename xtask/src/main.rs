@@ -4641,9 +4641,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
-        Commands::PublicReleaseClaimsV2 { command } => {
-            tasks::public_release_claims::run(command)
-        }
+        Commands::PublicReleaseClaimsV2 { command } => tasks::public_release_claims::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
         Commands::CheckProductHealthRailContract => product_health_rail_contract::run(),

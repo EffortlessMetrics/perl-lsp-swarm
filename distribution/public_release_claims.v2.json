@@ -1048,7 +1048,7 @@
   "generator": "cargo xtask public-release-claims-v2 build --write",
   "input_digests": {
     "inventory_document": "sha256:dd698d3438891119b1f087de1cab3baf47a8db19dd6b2c3a4aa2eb2eb4c67157",
-    "schema": "sha256:a82caffcac2d2e7deca4d8b7ae20f9788029df5522b0b48454e394b976caf6d1"
+    "schema": "sha256:4f33a1bdd44d2acd754f6ba120f5d55df6c0fd739cc1323780132892ed7ebf37"
   },
   "issue": 11548,
   "schema_version": "public_release_claims.v2",

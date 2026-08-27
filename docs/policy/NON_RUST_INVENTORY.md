@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12119 |
-| Rust-family files | 3711 |
-| Non-Rust files | 8408 |
+| Total tracked files | 12124 |
+| Rust-family files | 3714 |
+| Non-Rust files | 8410 |
 | Allowlisted | 6174 |
-| Unclassified | 2234 |
+| Unclassified | 2236 |
 
 ## Non-Rust files by category
 
@@ -22,7 +22,7 @@
 | production | 329 |
 | test | 2026 |
 | tooling | 616 |
-| unclassified | 2234 |
+| unclassified | 2236 |
 
 ## Unclassified files
 
@@ -120,6 +120,7 @@
 | `distribution/linux/dnf/perl-lsp.spec.in` | `in` |
 | `distribution/linux/package-metadata.toml` | `toml` |
 | `distribution/linux/pacman/PKGBUILD.in` | `in` |
+| `distribution/public_release_claims.v2.json` | `json` |
 | `distribution/scoop/perl-lsp.json` | `json` |
 | `distribution/test-release.sh` | `sh` |
 | `distribution/windows/update-manifests.ps1` | `ps1` |
@@ -1928,6 +1929,7 @@
 | `schemas/provider_decision.v1.schema.json` | `json` |
 | `schemas/public_beta_experience.v1.schema.json` | `json` |
 | `schemas/public_release_claims.v1.schema.json` | `json` |
+| `schemas/public_release_claims.v2.schema.json` | `json` |
 | `schemas/publication_drift.v1.schema.json` | `json` |
 | `schemas/publication_drift_receipt.v1.schema.json` | `json` |
 | `schemas/publication_manifest.v1.schema.json` | `json` |
