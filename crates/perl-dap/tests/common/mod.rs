@@ -5,6 +5,11 @@
 //! required to drive a real `perl -d` debug session in tests.
 
 #![allow(dead_code)]
+// Shared helpers; each integration target uses a subset.
+// Typed SKIP/diagnostic helpers print to stderr (see `debuggee_perl_or_typed_skip`);
+// the shared module opt-out is inherited by every including test binary, matching
+// the file-level pattern used across crates/perl-dap/tests.
+#![allow(clippy::print_stderr)]
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
@@ -14,7 +19,6 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel, sync_channel};
 use std::time::{Duration, Instant};
 
@@ -111,30 +115,6 @@ impl DapWorkflowSession {
     /// honors verbatim.
     pub fn launch_pinned(&mut self, perl_binary: &Path, script_path: &str) -> Result<(), String> {
         let args = launch_arguments(script_path, None, false, Some(perl_binary));
-        let resp = self.request("launch", Some(args));
-        self.expect_success(&resp, "launch")?;
-        Ok(())
-    }
-
-    /// Launch a pinned script with a conflicting PATH, keeping the proof on
-    /// the real DAP launch boundary.
-    #[cfg(test)]
-    pub fn launch_pinned_with_env(
-        &mut self,
-        perl_binary: &Path,
-        script_path: &str,
-        env_overrides: &Value,
-    ) -> Result<(), String> {
-        let mut args = launch_arguments(script_path, None, true, Some(perl_binary));
-        let launch_env = args
-            .get_mut("env")
-            .and_then(Value::as_object_mut)
-            .ok_or("launch arguments missing env object")?;
-        if let Some(env) = env_overrides.as_object() {
-            for (key, value) in env {
-                launch_env.insert(key.clone(), value.clone());
-            }
-        }
         let resp = self.request("launch", Some(args));
         self.expect_success(&resp, "launch")?;
         Ok(())
@@ -805,8 +785,6 @@ struct DebuggeePerlResolution {
 }
 
 static DEBUGGEE_PERL: OnceLock<DebuggeePerlResolution> = OnceLock::new();
-#[cfg(test)]
-static LAST_PROBE_PID: AtomicU32 = AtomicU32::new(0);
 
 fn debuggee_perl_candidates() -> Vec<PathBuf> {
     if let Some(pinned) = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV) {
@@ -872,7 +850,7 @@ fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
 
 /// Test-only entry point for exercising every child/workspace exit path with a
 /// short deadline and a deterministic `try_wait` failure injection. The
-/// production resolver always uses `probe_debuggee_perl` above, so this seam
+/// production resolver always uses [`probe_debuggee_perl`] above, so this seam
 /// cannot alter shipped adapter behavior.
 #[cfg(test)]
 pub(crate) fn probe_debuggee_perl_for_test(
@@ -882,14 +860,6 @@ pub(crate) fn probe_debuggee_perl_for_test(
 ) -> Result<DebuggeePerl, String> {
     probe_debuggee_perl_with_options(binary, budget, simulate_wait_error)
         .map_err(|failure| failure.reason)
-}
-
-#[cfg(test)]
-pub(crate) fn last_probe_pid_for_test() -> Option<u32> {
-    match LAST_PROBE_PID.load(Ordering::Acquire) {
-        0 => None,
-        pid => Some(pid),
-    }
 }
 
 fn probe_debuggee_perl_with_options(
@@ -928,18 +898,24 @@ fn probe_debuggee_perl_with_options(
         .env("TZ", "UTC")
         .spawn()
         .map_err(|e| fail(format!("cannot spawn: {e}")))?;
-    #[cfg(test)]
-    LAST_PROBE_PID.store(child.id(), Ordering::Release);
 
     let Some(stdout_pipe) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(fail("stdout pipe unavailable".to_string()));
+        let kill_error = child.kill().err();
+        let wait_error = child.wait().err();
+        return Err(fail(format!(
+            "stdout pipe unavailable{}{}",
+            kill_error.map_or(String::new(), |error| format!("; kill failed: {error}")),
+            wait_error.map_or(String::new(), |error| format!("; wait failed: {error}")),
+        )));
     };
     let Some(stderr_pipe) = child.stderr.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(fail("stderr pipe unavailable".to_string()));
+        let kill_error = child.kill().err();
+        let wait_error = child.wait().err();
+        return Err(fail(format!(
+            "stderr pipe unavailable{}{}",
+            kill_error.map_or(String::new(), |error| format!("; kill failed: {error}")),
+            wait_error.map_or(String::new(), |error| format!("; wait failed: {error}")),
+        )));
     };
 
     // Feed the scripted debugger commands through the REAL pipe write end. The
@@ -960,6 +936,16 @@ fn probe_debuggee_perl_with_options(
     let deadline = Instant::now() + probe_budget;
     let status = loop {
         let wait_result = if simulate_wait_error {
+            // The hygiene test supplies this marker when it needs to prove
+            // that the injected error owns a still-live child. Waiting for
+            // the control to publish its PID makes that test deterministic;
+            // ordinary production probes do not set this test-only variable.
+            if let Some(marker) = std::env::var_os("PERL_LSP_DAP_PROBE_PID_FILE") {
+                let marker = PathBuf::from(marker);
+                while !marker.is_file() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
             simulate_wait_error = false;
             Err(io::Error::other("injected probe wait failure"))
         } else {
@@ -969,13 +955,24 @@ fn probe_debuggee_perl_with_options(
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = writer.join();
+                    let kill_error = child.kill().err();
+                    let wait_error = child.wait().err();
+                    let writer_error = writer.join().err();
+                    if let Some(error) = wait_error {
+                        return Err(fail(format!("probe timeout cleanup wait failed: {error}")));
+                    }
+                    if writer_error.is_some() {
+                        return Err(fail(
+                            "probe timeout cleanup writer thread panicked".to_string(),
+                        ));
+                    }
                     return Err(ProbeFailure {
                         reason: format!(
-                            "no exit within {}s — perl5db cannot bootstrap over piped stdio",
-                            probe_budget.as_secs()
+                            "no exit within {}s — perl5db cannot bootstrap over piped stdio{}",
+                            probe_budget.as_secs(),
+                            kill_error.map_or(String::new(), |error| {
+                                format!("; kill reported: {error}")
+                            })
                         ),
                         transient: true,
                     });
@@ -988,14 +985,26 @@ fn probe_debuggee_perl_with_options(
                 // process, and join the small stdin writer after the child
                 // closes the pipe. The TempDir guard then removes the script
                 // workspace on this path as well.
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = writer.join();
+                let _kill_error = child.kill().err();
+                let wait_error = child.wait().err();
+                let writer_error = writer.join().err();
+                if let Some(error) = wait_error {
+                    return Err(fail(format!(
+                        "probe wait failed ({e}); cleanup wait failed: {error}"
+                    )));
+                }
+                if writer_error.is_some() {
+                    return Err(fail(format!(
+                        "probe wait failed ({e}); cleanup writer thread panicked"
+                    )));
+                }
                 return Err(fail(format!("probe wait failed: {e}")));
             }
         }
     };
-    let _ = writer.join();
+    if writer.join().is_err() {
+        return Err(fail("probe success cleanup writer thread panicked".to_string()));
+    }
 
     // The child has exited, so its pipe write ends are closing and the reader
     // threads reach EOF almost immediately; the bounded collector exists only
@@ -1138,10 +1147,6 @@ fn resolved_debuggee_perl_or_reason() -> Result<&'static DebuggeePerl, String> {
 /// diagnostics) when no pipe-capable interpreter can be resolved. Under
 /// [`REQUIRE_PERL_ENV`] strict mode an unresolved debuggee perl is a hard
 /// failure instead of a skip, matching [`perl_available`].
-#[expect(
-    clippy::print_stderr,
-    reason = "Typed integration-test skip diagnostics belong on stderr."
-)]
 pub fn debuggee_perl_or_typed_skip(test_name: &str) -> Option<&'static DebuggeePerl> {
     match resolved_debuggee_perl_or_reason() {
         Ok(perl) => Some(perl),

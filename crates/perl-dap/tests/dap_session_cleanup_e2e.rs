@@ -13,9 +13,11 @@ mod cleanup_tests {
     use anyhow::{Result, anyhow};
     use perl_dap::{DapMessage, DebugAdapter};
     use serde_json::json;
+    use std::process::Command;
     use std::sync::mpsc::sync_channel;
+    use std::time::{Duration, Instant};
 
-    use crate::common::{perl_available, resolve_launch_perl_path};
+    use crate::common::{debuggee_perl_or_typed_skip, resolve_launch_perl_path};
 
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -28,6 +30,40 @@ mod cleanup_tests {
 
     fn is_success(msg: DapMessage) -> bool {
         matches!(msg, DapMessage::Response { success: true, .. })
+    }
+
+    fn process_is_alive(pid: u32) -> Result<bool> {
+        let pid_text = pid.to_string();
+        #[cfg(unix)]
+        {
+            return Ok(Command::new("kill").args(["-0", &pid_text]).status()?.success());
+        }
+        #[cfg(windows)]
+        {
+            let output = Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid_text}"), "/NH"])
+                .output()?;
+            return Ok(output.status.success()
+                && String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .any(|line| line.split_whitespace().nth(1) == Some(pid_text.as_str())));
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = pid;
+            Err(anyhow!("process liveness is unsupported on this platform"))
+        }
+    }
+
+    fn wait_for_process_exit(pid: u32) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process_is_alive(pid)? {
+            if Instant::now() >= deadline {
+                return Err(anyhow!("launched Perl child {pid} remained alive after Drop"));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Ok(())
     }
 
     // ── Non-Perl tests (no `perl` binary required) ────────────────────────────
@@ -108,7 +144,7 @@ mod cleanup_tests {
     /// leaking it as a zombie.
     #[tokio::test]
     async fn test_drop_reaps_launched_perl_process() -> Result<()> {
-        if !perl_available() {
+        if debuggee_perl_or_typed_skip("test_drop_reaps_launched_perl_process").is_none() {
             return Ok(());
         }
 
@@ -116,7 +152,7 @@ mod cleanup_tests {
         use tempfile::NamedTempFile;
 
         let mut script = NamedTempFile::with_suffix(".pl")?;
-        script.write_all(b"my $x = 1;\nmy $y = 2;\nprint $y;\n")?;
+        script.write_all(b"my $x = 1;\nmy $y = 2;\nsleep 60;\nprint $y;\n")?;
         script.flush()?;
         let path = script.path().to_string_lossy().to_string();
         let perl_path =
@@ -138,18 +174,35 @@ mod cleanup_tests {
         let launch_args = json!({
             "program": path,
             "stopOnEntry": true,
-            "perlPath": perl_path,
+            "perlPath": perl_path.to_string_lossy(),
         });
-        assert_eq!(
-            launch_args.get("perlPath").and_then(|value| value.as_str()),
-            perl_path.to_str(),
-            "cleanup launch must use the resolved pinned interpreter identity"
+        let launch_started = std::time::Instant::now();
+        let launch = adapter.handle_request(2, "launch", Some(launch_args));
+        assert!(
+            matches!(&launch, DapMessage::Response { success: true, .. }),
+            "cleanup proof requires a successful adapter-owned launch, got: {launch:?}"
         );
-        let _launch = adapter.handle_request(2, "launch", Some(launch_args));
+        let child_pid = adapter.active_process_id_for_test().ok_or_else(|| {
+            anyhow!("successful launch did not leave an adapter-owned process session")
+        })?;
+        assert!(
+            process_is_alive(child_pid)?,
+            "cleanup proof requires the adapter-owned Perl child {child_pid} to be alive before Drop"
+        );
 
-        // Drop must complete promptly — no zombie child, regardless of the
-        // launch response.
+        // Drop must complete promptly — the adapter owns the child and must
+        // terminate/reap it on this path rather than merely dropping handles.
+        let drop_started = std::time::Instant::now();
         drop(adapter);
+        assert!(
+            drop_started.elapsed() < std::time::Duration::from_secs(5),
+            "dropping an active adapter exceeded the bounded cleanup budget"
+        );
+        wait_for_process_exit(child_pid)?;
+        assert!(
+            launch_started.elapsed() < std::time::Duration::from_secs(10),
+            "launch setup exceeded its bounded test budget"
+        );
         Ok(())
     }
 
@@ -157,7 +210,7 @@ mod cleanup_tests {
     /// under Perl-session conditions).
     #[tokio::test]
     async fn test_disconnect_then_drop_idempotent_with_perl() -> Result<()> {
-        if !perl_available() {
+        if debuggee_perl_or_typed_skip("test_disconnect_then_drop_idempotent_with_perl").is_none() {
             return Ok(());
         }
 
