@@ -22,7 +22,7 @@ use common::{reset_sigkill_escalation_observation, sigkill_escalation_was_observ
 
 use common::{
     DEBUGGEE_PERL_OVERRIDE_ENV, probe_debuggee_perl_for_test_with_descendant_pid,
-    probe_debuggee_perl_for_test_with_workspace_cleanup_failure, resolve_debuggee_perl,
+    resolve_debuggee_perl,
 };
 use std::fs;
 use std::io;
@@ -113,12 +113,12 @@ fn main() {
             .spawn();
         #[cfg(windows)]
         let descendant = {
-            let Ok(executable) = env::current_exe() else { return };
-            Command::new(executable)
-                .env_remove("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE")
-                .spawn()
+            Command::new("ping").args(["127.0.0.1", "-n", "61"]).spawn()
         };
         let Ok(descendant) = descendant else { return };
+        if let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE") {
+            let _ = fs::write(ready_file, "ready");
+        }
         let _ = fs::write(pid_file, descendant.id().to_string());
     }
     thread::sleep(Duration::from_secs(60));
@@ -147,12 +147,12 @@ fn main() {
             .spawn();
         #[cfg(windows)]
         let descendant = {
-            let Ok(executable) = env::current_exe() else { return };
-            Command::new(executable)
-                .env_remove("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE")
-                .spawn()
+            Command::new("ping").args(["127.0.0.1", "-n", "61"]).spawn()
         };
         let Ok(descendant) = descendant else { return };
+        if let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE") {
+            let _ = fs::write(ready_file, "ready");
+        }
         let _ = fs::write(pid_file, descendant.id().to_string());
         println!("15");
         return;
@@ -224,7 +224,7 @@ fn main() {
         let result =
             probe.join().map_err(|_| io::Error::other(format!("{label} probe thread panicked")))?;
         assert!(result.is_err(), "{label} probe must fail through its cleanup path");
-        wait_for_process_exit(descendant_pid, Duration::from_secs(5))?;
+        wait_for_process_exit(label, descendant_pid, Duration::from_secs(5))?;
 
         let after = current_process_probe_artifacts()?;
         let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
@@ -266,7 +266,7 @@ fn main() {
             .join()
             .map_err(|_| io::Error::other("successful-parent probe thread panicked"))?;
         assert!(result.is_ok(), "successful-parent probe must report success: {result:?}");
-        wait_for_process_exit(descendant_pid, Duration::from_secs(5))?;
+        wait_for_process_exit("success-descendant", descendant_pid, Duration::from_secs(5))?;
 
         let after = current_process_probe_artifacts()?;
         let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
@@ -349,7 +349,7 @@ fn main() {
             assignment_error.contains("job assignment"),
             "job assignment fallback must be explicit: {assignment_error}"
         );
-        wait_for_process_exit(descendant_pid, Duration::from_secs(5))?;
+        wait_for_process_exit("job-assignment", descendant_pid, Duration::from_secs(5))?;
         let after = current_process_probe_artifacts()?;
         let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
         assert!(
@@ -443,13 +443,13 @@ fn wait_for_marker_file(path: &Path, timeout: Duration) -> io::Result<()> {
     Ok(())
 }
 
-fn wait_for_process_exit(pid: u32, timeout: Duration) -> io::Result<()> {
+fn wait_for_process_exit(label: &str, pid: u32, timeout: Duration) -> io::Result<()> {
     let deadline = std::time::Instant::now() + timeout;
     while process_exists(pid)? {
         if std::time::Instant::now() >= deadline {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                format!("descendant process {pid} survived probe cleanup"),
+                format!("{label}: descendant process {pid} survived probe cleanup"),
             ));
         }
         std::thread::sleep(Duration::from_millis(25));

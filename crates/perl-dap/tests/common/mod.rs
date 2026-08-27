@@ -711,10 +711,26 @@ fn normalize_explicit_debuggee_pin(path: &Path) -> Result<PathBuf, String> {
     };
     let canonical = fs::canonicalize(&absolute)
         .map_err(|error| format!("cannot resolve the pinned interpreter path: {error}"))?;
+    #[cfg(windows)]
+    let canonical = normalize_windows_path_prefix(canonical);
     if canonical.to_str().is_none() {
         return Err("the resolved pinned interpreter path is not valid UTF-8".to_string());
     }
     Ok(canonical)
+}
+
+#[cfg(windows)]
+fn normalize_windows_path_prefix(path: PathBuf) -> PathBuf {
+    let Some(path_text) = path.to_str() else {
+        return path;
+    };
+    if let Some(unc_path) = path_text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{unc_path}"))
+    } else if let Some(drive_path) = path_text.strip_prefix(r"\\?\") {
+        PathBuf::from(drive_path)
+    } else {
+        path
+    }
 }
 
 #[cfg(test)]
@@ -723,10 +739,11 @@ mod explicit_pin_tests {
     use std::path::Path;
 
     #[test]
-    fn relative_pin_is_resolved_before_launch() {
+    fn relative_pin_is_resolved_before_launch() -> Result<(), String> {
         let resolved = normalize_explicit_debuggee_pin(Path::new("."))
-            .expect("the current directory should canonicalize");
+            .map_err(|error| format!("the current directory should canonicalize: {error}"))?;
         assert!(resolved.is_absolute());
+        Ok(())
     }
 
     #[cfg(unix)]
@@ -1218,6 +1235,7 @@ fn probe_debuggee_perl_with_options(
                     std::thread::sleep(Duration::from_secs(3));
                 }
                 let tree_kill = taskkill_process_tree(child.id());
+                let native_tree_kill = terminate_windows_process_tree(child.id());
                 let kill = child.kill();
                 let wait = wait_for_child_reap(&mut child, CLEANUP_REAP_BUDGET);
                 let mut cleanup = vec![format!(
@@ -1231,6 +1249,9 @@ fn probe_debuggee_perl_with_options(
                             |status| format!("non-success status: {status}")
                         )
                     ));
+                }
+                if let Err(error) = native_tree_kill {
+                    cleanup.push(format!("native process-tree fallback failed: {error}"));
                 }
                 if let Err(error) = kill {
                     cleanup.push(format!("direct child kill failed: {error}"));
@@ -1526,6 +1547,99 @@ fn taskkill_process_tree(pid: u32) -> Result<std::process::ExitStatus, String> {
     )
 }
 
+#[cfg(windows)]
+fn terminate_windows_process_tree(root_pid: u32) -> Result<(), String> {
+    use std::collections::HashSet;
+    use std::mem::size_of;
+    use winapi::shared::minwindef::DWORD;
+    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+    use winapi::um::processthreadsapi::{OpenProcess, TerminateProcess};
+    use winapi::um::tlhelp32::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+    use winapi::um::winnt::PROCESS_TERMINATE;
+
+    // SAFETY: The API receives only the documented process-snapshot flags and
+    // does not dereference any caller-provided pointer.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(format!("cannot snapshot process tree: {}", io::Error::last_os_error()));
+    }
+
+    let result = (|| {
+        // SAFETY: PROCESSENTRY32W is a plain Windows data structure whose
+        // fields are initialized by Process32FirstW after dwSize is set.
+        let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+        entry.dwSize = size_of::<PROCESSENTRY32W>() as DWORD;
+        // SAFETY: snapshot is a valid process-snapshot handle and entry points
+        // to the initialized structure owned by this stack frame.
+        let first = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+        if !first {
+            return Err(format!("cannot enumerate process tree: {}", io::Error::last_os_error()));
+        }
+
+        let mut processes = Vec::new();
+        loop {
+            processes.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            // SAFETY: snapshot remains valid and entry is the same initialized
+            // structure used by Process32FirstW.
+            if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
+                break;
+            }
+        }
+
+        let root_present = processes.iter().any(|&(pid, _)| pid == root_pid);
+        let mut tree = if root_present { vec![root_pid] } else { Vec::new() };
+        let mut frontier = vec![root_pid];
+        let mut seen = HashSet::from([root_pid]);
+        let mut index = 0;
+        while index < frontier.len() {
+            let parent = frontier[index];
+            for &(pid, parent_pid) in &processes {
+                if parent_pid == parent && seen.insert(pid) {
+                    frontier.push(pid);
+                    tree.push(pid);
+                }
+            }
+            index += 1;
+        }
+
+        let mut failures = Vec::new();
+        for pid in tree.into_iter().rev() {
+            // SAFETY: pid came from the current process snapshot, and the API
+            // takes a scalar PID plus documented access flags.
+            let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+            if handle.is_null() {
+                failures.push(format!("cannot open process {pid}: {}", io::Error::last_os_error()));
+                continue;
+            }
+            // SAFETY: handle was returned by OpenProcess and is not used after
+            // this termination call.
+            let terminated = unsafe { TerminateProcess(handle, 1) } != 0;
+            // SAFETY: handle is the valid process handle opened above.
+            let close = unsafe { CloseHandle(handle) } != 0;
+            if !terminated {
+                failures.push(format!(
+                    "cannot terminate process {pid}: {}",
+                    io::Error::last_os_error()
+                ));
+            }
+            if !close {
+                failures.push(format!(
+                    "cannot close process handle {pid}: {}",
+                    io::Error::last_os_error()
+                ));
+            }
+        }
+        if failures.is_empty() { Ok(()) } else { Err(failures.join("; ")) }
+    })();
+    // SAFETY: snapshot is the valid handle created at the start of this
+    // function and has not been closed on any path inside the closure.
+    unsafe { CloseHandle(snapshot) };
+    result
+}
+
 #[cfg(unix)]
 fn termination_failure_command() -> Command {
     let mut command = Command::new("sleep");
@@ -1751,6 +1865,9 @@ fn terminate_probe_process_tree(
                     )
                 ));
             }
+        }
+        if child_running && let Err(error) = terminate_windows_process_tree(pid) {
+            failures.push(format!("native process-tree cleanup failed: {error}"));
         }
     }
     #[cfg(unix)]
