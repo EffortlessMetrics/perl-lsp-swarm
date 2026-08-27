@@ -344,7 +344,12 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
             ')' | ']' | '}' => {
-                if stack.pop().is_none() {
+                // Bind the pop before testing it. A mutating call reads as a
+                // pure condition inside a match guard, so #12910 asks for the
+                // `let` at every side-effecting site: the pop must happen
+                // exactly once per closer whether or not the walk ends here.
+                let closed_an_open_group = stack.pop().is_some();
+                if !closed_an_open_group {
                     return idx.saturating_sub(start);
                 }
             }
@@ -733,6 +738,17 @@ mod tests {
     use super::*;
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    fn ensure_eq<T>(actual: T, expected: T, context: &str) -> TestResult
+    where
+        T: std::fmt::Debug + PartialEq,
+    {
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(format!("{context}: expected {expected:?}, got {actual:?}").into())
+        }
+    }
 
     /// Fresh temporary workspace root accepting optional build scripts.
     struct HintRoot {
@@ -1162,6 +1178,86 @@ Module::Build->new(
         assert_eq!(hints.libs_flags, vec!["-lreal".to_string()]);
         assert_eq!(hints.libs_alternatives, vec![vec!["-lreal".to_string()]]);
         assert!(hints.diagnostics.is_empty());
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------
+    // `rejected_value_len` delimiter walk (#12910)
+    //
+    // These pin every exit of the scanner that advances `search_from` past a
+    // value the literal parser rejected. They are characterization tests:
+    // written against the pre-collapse nested `if`, so the guarded-arm
+    // rewrite is proven behavior-preserving rather than assumed. The
+    // `stack.pop()` inside the closer arm is a side effect, which is exactly
+    // what makes the collapse worth pinning — a guard that tested
+    // `stack.is_empty()` without popping would leave the stack undrained.
+    // ---------------------------------------------------------------------
+
+    /// An unbalanced closer at depth zero ends the value at its own offset.
+    #[test]
+    fn rejected_value_len_stops_at_an_unmatched_closer() -> TestResult {
+        ensure_eq(rejected_value_len(")rest", 0), 0, "parenthesis closer offset")?;
+        ensure_eq(rejected_value_len("ab]rest", 0), 2, "bracket closer offset")?;
+        ensure_eq(rejected_value_len("ab}rest", 0), 2, "brace closer offset")?;
+        Ok(())
+    }
+
+    /// A balanced group is consumed whole; the walk ends at the first
+    /// top-level separator AFTER it. This is the discriminator for the pop
+    /// side effect: without the pop the stack never drains, the trailing
+    /// separator is never seen at depth zero, and the walk runs to the end.
+    #[test]
+    fn rejected_value_len_drains_balanced_groups_before_the_separator() -> TestResult {
+        ensure_eq(rejected_value_len("(a), b", 0), 3, "parenthesis group length")?;
+        ensure_eq(rejected_value_len("[a]; b", 0), 3, "bracket group length")?;
+        ensure_eq(rejected_value_len("{[()]}, b", 0), 6, "nested group length")?;
+        Ok(())
+    }
+
+    /// Separators nested inside a group do not end the value.
+    #[test]
+    fn rejected_value_len_ignores_separators_inside_groups() -> TestResult {
+        ensure_eq(rejected_value_len("(a, b); tail", 0), 6, "nested comma length")?;
+        ensure_eq(rejected_value_len("[a; b], tail", 0), 6, "nested semicolon length")?;
+        Ok(())
+    }
+
+    /// A closer that merely returns the walk to depth zero does not end it —
+    /// only a closer with nothing left on the stack does.
+    #[test]
+    fn rejected_value_len_ends_only_on_the_extra_closer() -> TestResult {
+        // Two openers, three closers: the walk survives the first two and
+        // stops exactly at the third.
+        ensure_eq(rejected_value_len("([a])) tail", 0), 5, "extra closer offset")?;
+        Ok(())
+    }
+
+    /// Delimiters and separators inside quotes are inert, and a backslash
+    /// escapes the closing quote.
+    #[test]
+    fn rejected_value_len_treats_quoted_delimiters_as_inert() -> TestResult {
+        ensure_eq(rejected_value_len("')', x", 0), 3, "quoted closer length")?;
+        ensure_eq(rejected_value_len("\"a,b\", tail", 0), 5, "quoted comma length")?;
+        ensure_eq(rejected_value_len("'a\\'b)', tail", 0), 7, "escaped quote length")?;
+        Ok(())
+    }
+
+    /// With no closer and no separator the walk consumes the remainder.
+    #[test]
+    fn rejected_value_len_consumes_the_remainder_when_unterminated() -> TestResult {
+        ensure_eq(rejected_value_len("abc", 0), 3, "plain remainder length")?;
+        ensure_eq(rejected_value_len("(a, b", 0), 5, "unclosed group length")?;
+        ensure_eq(rejected_value_len("'unclosed", 0), 9, "unclosed quote length")?;
+        Ok(())
+    }
+
+    /// The returned length is relative to `start`, not to the buffer.
+    #[test]
+    fn rejected_value_len_is_relative_to_the_start_offset() -> TestResult {
+        //            0123456789
+        let source = "KEY => a, b";
+        ensure_eq(rejected_value_len(source, 7), 1, "relative value length")?;
+        ensure_eq(rejected_value_len(source, 0), 8, "full-prefix value length")?;
         Ok(())
     }
 }
