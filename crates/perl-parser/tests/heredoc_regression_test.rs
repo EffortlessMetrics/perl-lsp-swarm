@@ -16,8 +16,8 @@ say 1;"#;
     let sexp = tree.to_sexp();
 
     // Should NOT contain "hello" or "world" as identifiers
-    assert!(!sexp.contains("(identifier hello)"));
-    assert!(!sexp.contains("(identifier world)"));
+    assert!(!sexp.contains("(identifier (name hello))"));
+    assert!(!sexp.contains("(identifier (name world))"));
     assert!(sexp.contains("say"));
     Ok(())
 }
@@ -37,12 +37,12 @@ say "done";"#;
     let sexp = tree.to_sexp();
 
     // Bodies should be consumed, not parsed as identifiers
-    assert!(!sexp.contains("(identifier body)"));
-    assert!(!sexp.contains("(identifier of)"));
-    assert!(!sexp.contains("(identifier first)"));
-    assert!(!sexp.contains("(identifier second)"));
+    assert!(!sexp.contains("(identifier (name body))"));
+    assert!(!sexp.contains("(identifier (name of))"));
+    assert!(!sexp.contains("(identifier (name first))"));
+    assert!(!sexp.contains("(identifier (name second))"));
     // The 'say "done"' statement should be parsed as a function call
-    assert!(sexp.contains("(call say"));
+    assert!(sexp.contains("(call (name say)"));
     assert!(sexp.contains("string_interpolated"));
     Ok(())
 }
@@ -63,9 +63,9 @@ say 1;"#;
     let sexp = tree.to_sexp();
 
     // All three bodies should be consumed
-    assert!(!sexp.contains("(identifier aaa)"));
-    assert!(!sexp.contains("(identifier bbb)"));
-    assert!(!sexp.contains("(identifier ccc)"));
+    assert!(!sexp.contains("(identifier (name aaa))"));
+    assert!(!sexp.contains("(identifier (name bbb))"));
+    assert!(!sexp.contains("(identifier (name ccc))"));
     assert!(sexp.contains("say"));
     Ok(())
 }
@@ -84,8 +84,8 @@ say 1;"#;
     let sexp = tree.to_sexp();
 
     // Body should be consumed
-    assert!(!sexp.contains("(identifier hello)"));
-    assert!(!sexp.contains("(identifier world)"));
+    assert!(!sexp.contains("(identifier (name hello))"));
+    assert!(!sexp.contains("(identifier (name world))"));
     assert!(sexp.contains("say"));
     Ok(())
 }
@@ -105,9 +105,9 @@ say 1;"#;
     let sexp = tree.to_sexp();
 
     // Bodies should be consumed
-    assert!(!sexp.contains("(identifier not)"));
-    assert!(!sexp.contains("(identifier indented)"));
-    assert!(!sexp.contains("(identifier content)"));
+    assert!(!sexp.contains("(identifier (name not))"));
+    assert!(!sexp.contains("(identifier (name indented))"));
+    assert!(!sexp.contains("(identifier (name content))"));
     assert!(sexp.contains("say"));
     Ok(())
 }
@@ -128,8 +128,11 @@ real data"#;
     let sexp = tree.to_sexp();
 
     // Fake __DATA__ in heredoc should be consumed
-    assert!(!sexp.contains("(identifier not)"));
-    assert!(!sexp.contains("(identifier real)"), "Should not parse 'real' from heredoc body");
+    assert!(!sexp.contains("(identifier (name not))"));
+    assert!(
+        !sexp.contains("(identifier (name real))"),
+        "Should not parse 'real' from heredoc body"
+    );
     // Real __DATA__ section should exist
     assert!(sexp.contains("data_section"));
     Ok(())
@@ -164,7 +167,7 @@ say 1;"#;
     let sexp = tree.to_sexp();
 
     // Body should be consumed
-    assert!(!sexp.contains("(identifier foo)"));
+    assert!(!sexp.contains("(identifier (name foo))"));
     assert!(sexp.contains("say"));
     Ok(())
 }
@@ -181,7 +184,7 @@ say 1;"#;
     let sexp = tree.to_sexp();
 
     // Body consumed, no interpolation check needed at lexer level
-    assert!(!sexp.contains("(identifier var)"));
+    assert!(!sexp.contains("(identifier (name var))"));
     assert!(sexp.contains("say"));
     Ok(())
 }
@@ -198,7 +201,7 @@ say 1;"#;
     let sexp = tree.to_sexp();
 
     // Body should be consumed
-    assert!(!sexp.contains("(identifier hello)"));
+    assert!(!sexp.contains("(identifier (name hello))"));
     assert!(sexp.contains("say"));
     Ok(())
 }
@@ -212,7 +215,7 @@ fn test_crlf_line_endings() -> TestResult {
     let sexp = tree.to_sexp();
 
     // Should work identically to LF endings
-    assert!(!sexp.contains("(identifier hello)"));
+    assert!(!sexp.contains("(identifier (name hello))"));
     assert!(sexp.contains("say"));
     Ok(())
 }
@@ -226,7 +229,7 @@ fn test_tab_indented_tilde_heredoc() -> TestResult {
     let sexp = tree.to_sexp();
 
     // Tab-indented terminator should work with <<~
-    assert!(!sexp.contains("(identifier hello)"));
+    assert!(!sexp.contains("(identifier (name hello))"));
     assert!(sexp.contains("say"));
     Ok(())
 }
@@ -262,9 +265,9 @@ say 1;"#;
     let sexp = tree.to_sexp();
 
     // Both bodies should be consumed
-    assert!(!sexp.contains("(identifier regular)"));
-    assert!(!sexp.contains("(identifier indented)"));
-    assert!(!sexp.contains("(identifier content)"));
+    assert!(!sexp.contains("(identifier (name regular))"));
+    assert!(!sexp.contains("(identifier (name indented))"));
+    assert!(!sexp.contains("(identifier (name content))"));
     assert!(sexp.contains("say"));
     Ok(())
 }
@@ -283,7 +286,7 @@ say 1;"#;
     let sexp = tree.to_sexp();
 
     // Heredoc should still work after large regex
-    assert!(!sexp.contains("(identifier hello)"));
+    assert!(!sexp.contains("(identifier (name hello))"));
     assert!(sexp.contains("say"));
     Ok(())
 }
@@ -298,7 +301,7 @@ fn test_bom_at_file_start() -> TestResult {
     let sexp = tree.to_sexp();
 
     // BOM should be skipped, heredoc should work
-    assert!(!sexp.contains("(identifier hello)"));
+    assert!(!sexp.contains("(identifier (name hello))"));
     assert!(sexp.contains("say"));
     Ok(())
 }

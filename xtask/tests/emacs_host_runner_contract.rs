@@ -703,7 +703,7 @@ fn released_adapter_defines_entrypoint_and_declared_package_resolution() -> Resu
         "the resolved library must be proven to be the declared package file"
     );
     assert!(
-        adapter.contains("did not resolve to the declared package file"),
+        adapter.contains("did not resolve to the declared client file"),
         "a foreign resolution must fail the run with a typed reason"
     );
     // Released identity requires the version header, not just the digest.
@@ -738,7 +738,7 @@ fn released_adapter_defines_entrypoint_and_declared_package_resolution() -> Resu
         "digests must be computed over raw bytes, including the binary package archive"
     );
     assert!(
-        adapter.contains("released Eglot library did not resolve after require"),
+        adapter.contains("external Eglot library did not resolve after require"),
         "an unresolvable library must fail with a typed reason, not a nil file-truename error"
     );
     Ok(())

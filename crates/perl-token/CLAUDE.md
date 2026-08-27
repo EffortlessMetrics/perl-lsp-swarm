@@ -68,4 +68,5 @@ match tok.kind() {
 - Keep enum variants organized by category with doc comments
 - `Token.text` uses `Arc<str>` for cheap cloning during lookahead and buffering
 - Byte geometry is private. `kind()` is a read accessor so empty-span policy cannot be bypassed by assignment; use `with_kind` to change kind. External crates use `start()` / `end()` and checked constructors; reversed spans are rejected rather than clamped
-- Empty spans are allowed only for `Eof` and `Unknown`
+- Empty spans are allowed only for `Eof` and `Unknown`, and those empty tokens must still have empty text
+- `text.len()` must equal `end - start`; constructors reject source-inconsistent tokens rather than storing mismatched text and span width

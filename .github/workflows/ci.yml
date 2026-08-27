@@ -1133,8 +1133,14 @@ jobs:
   check-all-targets:
     name: Compile All Targets (bit-rot guard)
     runs-on: ubuntu-24.04
-    # +5m headroom for the focused emacs docs contract after workspace check.
-    timeout-minutes: 15
+    # The default+all-features double workspace check now costs ~14m on this
+    # base (#12650/#12712 grew the compiled target surface), leaving the four
+    # xtask merge-surface contract tests no budget. Three consecutive runs
+    # cancelled inside the emacs docs contract step at the 15m ceiling with
+    # the compile step itself green (jobs 98281594104, 98291003739,
+    # 98300685210); 25m restores measured headroom for the contracts.
+    # Same shape as #5425: raise the knob when runners/base outgrow it.
+    timeout-minutes: 25
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:

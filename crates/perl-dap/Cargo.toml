@@ -380,6 +380,11 @@ path = "tests/error_class_fixed_origin.rs"
 # #8739: exhaustive ErrorClass matrix for fixed-origin DAP operational errors
 
 [[test]]
+name = "debugger_output_origin"
+path = "tests/debugger_output_origin.rs"
+# #8746: originated stack/variable parse classification by caller-supplied origin
+
+[[test]]
 name = "wave_h_security_edge_cases"
 path = "tests/wave_h_security_edge_cases.rs"
 # Green TDD: edge cases and boundary conditions for security module
