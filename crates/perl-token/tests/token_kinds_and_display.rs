@@ -1052,12 +1052,12 @@ fn token_equality_considers_all_fields() {
     let diff_text = Token::new_checked(TokenKind::Number, "43", 10, 12).expect("valid token");
     assert_ne!(base, diff_text);
 
-    // Different start
-    let diff_start = Token::new_checked(TokenKind::Number, "42", 11, 12).expect("valid token");
+    // Different start (same text width, shifted span)
+    let diff_start = Token::new_checked(TokenKind::Number, "42", 11, 13).expect("valid token");
     assert_ne!(base, diff_start);
 
-    // Different end
-    let diff_end = Token::new_checked(TokenKind::Number, "42", 10, 13).expect("valid token");
+    // Different end (same start, matching wider text)
+    let diff_end = Token::new_checked(TokenKind::Number, "421", 10, 13).expect("valid token");
     assert_ne!(base, diff_end);
 }
 
