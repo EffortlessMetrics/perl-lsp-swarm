@@ -37,7 +37,7 @@ use std::process::Command;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(test)))]
 use super::SYSTEM_INC_PROBE_TIMEOUT;
 use super::WorkspaceConfig;
 
@@ -229,10 +229,21 @@ impl PerlOracleEnv {
         // it so any stable directory is fine.
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
+        let timeout = {
+            #[cfg(test)]
+            {
+                super::effective_system_inc_probe_timeout()
+            }
+            #[cfg(not(test))]
+            {
+                SYSTEM_INC_PROBE_TIMEOUT
+            }
+        };
+
         Some(Self {
             perl_binary,
             cwd,
-            timeout: SYSTEM_INC_PROBE_TIMEOUT,
+            timeout,
             allow_perl5lib: config.use_perl5lib,
             allow_perl5opt: false,
             allow_local_lib: false,

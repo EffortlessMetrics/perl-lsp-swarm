@@ -1803,6 +1803,47 @@ impl WorkspaceConfig {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) const SYSTEM_INC_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
+#[cfg(test)]
+std::thread_local! {
+    static SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Return the startup `@INC` probe deadline for the current execution context.
+///
+/// Production always uses [`SYSTEM_INC_PROBE_TIMEOUT`]. Tests that need to
+/// exercise a successful live probe may widen the deadline for their thread
+/// only, keeping scheduler and process-startup jitter from changing the
+/// result while leaving the production latency contract untouched.
+#[cfg(test)]
+pub(crate) fn effective_system_inc_probe_timeout() -> Duration {
+    SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE
+        .with(|timeout| timeout.get())
+        .unwrap_or(SYSTEM_INC_PROBE_TIMEOUT)
+}
+
+#[cfg(test)]
+pub(crate) struct SystemIncProbeTimeoutGuard {
+    previous: Option<Duration>,
+}
+
+#[cfg(test)]
+impl Drop for SystemIncProbeTimeoutGuard {
+    fn drop(&mut self) {
+        SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(|timeout| timeout.set(self.previous));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn override_system_inc_probe_timeout(timeout: Duration) -> SystemIncProbeTimeoutGuard {
+    let previous = SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE.with(|current| {
+        let previous = current.get();
+        current.set(Some(timeout));
+        previous
+    });
+    SystemIncProbeTimeoutGuard { previous }
+}
+
 /// Run `command` with a wall-clock timeout, killing the child if it exceeds
 /// `timeout`. Returns `io::Error` with kind `TimedOut` on timeout. Used by
 /// `fetch_perl_inc` so a hanging or slow `perl` interpreter cannot stall
@@ -5142,6 +5183,12 @@ profile = "recommended"
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn get_system_inc_reuses_cached_probe_without_relaunching() -> TestResult {
+        // A real interpreter launch is required for the first lookup, but
+        // host process startup can exceed the production one-second bound
+        // under Windows antivirus/cold-DLL pressure. Widen only this test's
+        // thread-local deadline so the assertion remains about memoization,
+        // not scheduler weather.
+        let _timeout = override_system_inc_probe_timeout(Duration::from_secs(30));
         let perl_path = match resolve_perl_path_with_toolchain() {
             Ok(path) => path,
             Err(_) => return Ok(()),
