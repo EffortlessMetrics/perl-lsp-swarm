@@ -510,18 +510,16 @@ fn test_explain_provider_decision_preserves_uri_and_digest_identifier_shapes()
 fn test_explain_provider_decision_rejects_empty_identifier()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = ExecuteCommandProvider::new();
-    let result = provider.execute_command(
-        "perl.explainProviderDecision",
-        vec![json!({
-            "provider": "rename",
-            "receipt_id": ""
-        })],
-    );
-    let error = match result {
-        Ok(value) => return Err(format!("empty receipt_id should reject: {value}").into()),
-        Err(error) => error,
-    };
-    assert!(error.contains("receipt_id") && error.contains("must not be empty"), "{error}");
+    for field in ["receipt_id", "scenario"] {
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!("");
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request]);
+        let error = match result {
+            Ok(value) => return Err(format!("empty {field} should reject: {value}").into()),
+            Err(error) => error,
+        };
+        assert!(error.contains(field) && error.contains("must not be empty"), "{error}");
+    }
     Ok(())
 }
 
@@ -574,40 +572,74 @@ fn test_explain_provider_decision_accepts_identifier_bound_at_limit()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = ExecuteCommandProvider::new();
 
-    // An echo field of exactly MAX_EXPLANATION_ECHO_LENGTH bytes is accepted;
-    // one more byte fails closed with the named-field diagnostic (#2758).
-    let at_limit = "a".repeat(1024);
-    let result = provider.execute_command(
-        "perl.explainProviderDecision",
-        vec![json!({
-            "provider": "rename",
-            "receipt_id": at_limit,
-        })],
-    )?;
-    assert_eq!(
-        result.get("receipt_id").and_then(Value::as_str).map(str::len),
-        Some(1024),
-        "identifier at the explanation-field bound must round-trip unchanged"
-    );
+    // An echo field of exactly 1024 bytes is accepted; one more byte fails
+    // closed with the named-field diagnostic for either field (#2758).
+    for field in ["receipt_id", "scenario"] {
+        let at_limit = "a".repeat(1024);
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!(at_limit);
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request])?;
+        assert_eq!(
+            result.get(field).and_then(Value::as_str).map(str::len),
+            Some(1024),
+            "{field} at the explanation-field bound must round-trip unchanged"
+        );
 
-    let over_limit = "a".repeat(1025);
-    let result = provider.execute_command(
-        "perl.explainProviderDecision",
-        vec![json!({
-            "provider": "rename",
-            "receipt_id": over_limit,
-        })],
-    );
-    let error = match result {
-        Ok(value) => {
-            return Err(format!("receipt_id over the bound should reject: {value}").into());
-        }
-        Err(error) => error,
-    };
-    assert!(
-        error.contains("receipt_id") && error.contains("too long"),
-        "error should name receipt_id and the length bound, got: {error}"
-    );
+        let over_limit = "a".repeat(1025);
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!(over_limit);
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request]);
+        let error = match result {
+            Ok(value) => {
+                return Err(format!("{field} over the bound should reject: {value}").into());
+            }
+            Err(error) => error,
+        };
+        assert!(
+            error.contains(field) && error.contains("too long"),
+            "error should name {field} and the length bound, got: {error}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_bounds_multibyte_identifiers_by_bytes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+
+    // U+00E9 occupies two UTF-8 bytes: 512 repetitions are exactly 1024
+    // bytes, while 513 repetitions are 1026 bytes. This rejects a
+    // character-count implementation of the byte bound (#2758).
+    for field in ["receipt_id", "scenario"] {
+        let at_limit = "é".repeat(512);
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!(at_limit);
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request])?;
+        assert_eq!(
+            result.get(field).and_then(Value::as_str).map(str::len),
+            Some(1024),
+            "{field} at the multibyte byte bound must round-trip unchanged"
+        );
+
+        let over_limit = "é".repeat(513);
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!(over_limit);
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request]);
+        let error = match result {
+            Ok(value) => {
+                return Err(format!(
+                    "multibyte {field} over the byte bound should reject: {value}"
+                )
+                .into());
+            }
+            Err(error) => error,
+        };
+        assert!(
+            error.contains(field) && error.contains("too long"),
+            "error should name {field} and the byte length bound, got: {error}"
+        );
+    }
     Ok(())
 }
 
