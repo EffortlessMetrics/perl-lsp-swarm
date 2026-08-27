@@ -75,9 +75,9 @@ use crate::editor_client_compat::{
 use crate::vim_host_run::vim_host_runner;
 use crate::vim_host_run::{BoundHostPlan, VimHostRunInputs, bind_host_run_plan};
 use vim_host_runner::{
-    DriverEventKind, HermeticVimLayout, ProcessObservation, VimHostRunPlan, WireEvidence,
-    build_vim_command_with_extras, probe_process_table, run_owned_process,
-    validate_receipt_binding,
+    DriverEventKind, HermeticVimLayout, ProcessObservation, ProcessProbeLine, VimHostRunPlan,
+    WireEvidence, build_vim_command_with_extras, parse_process_snapshot, probe_process_table,
+    run_owned_process, validate_receipt_binding,
 };
 
 pub const LIFECYCLE_JOURNEY_SELECTOR: &str = "vim_vim_lsp_host_reopen_lifecycle.v1";
@@ -466,6 +466,19 @@ pub fn host_lifecycle_run(
     let driver = repo_root.join("scripts/test/vim-host-lifecycle-driver.vim");
     let fixture_root = materialize_lifecycle_fixture(&run.out_root.join("fixture"))?;
 
+    // The ambient process baseline captured before the first host spawns. The
+    // settle probe diffs every late snapshot against it (never an empty
+    // baseline): the supervisor's own `--candidate <abs-path>` argument would
+    // otherwise present as a perpetual survivor (CI run 33036254312), and any
+    // needle-matching live process at settle time that was already running
+    // before this journey must not be attributed to it either. A missing or
+    // unparseable baseline is an instrument gap: forced-shape settles stay
+    // honestly `not_proven`, never zero.
+    let ambient_baseline: Option<Vec<ProcessProbeLine>> = match probe_process_table() {
+        Some(Ok(text)) => parse_process_snapshot(&text).ok(),
+        _ => None,
+    };
+
     let sessions = match variant {
         LifecycleFixtureVariant::Canonical => {
             let roles = [
@@ -484,6 +497,7 @@ pub fn host_lifecycle_run(
                     index + 1,
                     role,
                     variant,
+                    ambient_baseline.as_deref(),
                 )?);
             }
             sessions
@@ -496,6 +510,7 @@ pub fn host_lifecycle_run(
             1,
             "server_restart_relabel_session",
             variant,
+            ambient_baseline.as_deref(),
         )?],
     };
 
@@ -564,6 +579,7 @@ fn run_host_session(
     index: usize,
     role: &str,
     variant: LifecycleFixtureVariant,
+    ambient_baseline: Option<&[ProcessProbeLine]>,
 ) -> Result<HostSessionRecord> {
     let host_root = journey_run.out_root.join(format!("host-{index}"));
     crate::vim_host_run::ensure_fresh_output_root(&host_root)?;
@@ -606,7 +622,7 @@ fn run_host_session(
     // owned server child settles on stdin EOF; cleanup is judged from the
     // settled process set, never from the transient immediately after the
     // kill. Retained next to the substrate's own snapshots.
-    let settled_probe_clean = settle_probe(&plan, &layout)?;
+    let settled_probe_clean = settle_probe(&plan, &layout, ambient_baseline)?;
     let ledger = fs::read_to_string(layout.artifact_directory.join("vim/process-ledger.json"))
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok());
@@ -628,7 +644,15 @@ fn run_host_session(
 /// bounded settle window closes. Returns `None` when the probe is
 /// unavailable on this platform (honest not-proven), `Some(false)` when owned
 /// candidate processes survive the settled window.
-fn settle_probe(plan: &VimHostRunPlan, layout: &HermeticVimLayout) -> Result<Option<bool>> {
+fn settle_probe(
+    plan: &VimHostRunPlan,
+    layout: &HermeticVimLayout,
+    ambient_baseline: Option<&[ProcessProbeLine]>,
+) -> Result<Option<bool>> {
+    // A missing or unparseable journey-level baseline is an instrument gap:
+    // the survivor diff below cannot attribute ownership, so the settle stays
+    // `not_proven` instead of silently comparing against an empty baseline.
+    let Some(ambient_baseline) = ambient_baseline else { return Ok(None) };
     let needle = if cfg!(windows) {
         plan.paths
             .candidate_executable
@@ -650,7 +674,12 @@ fn settle_probe(plan: &VimHostRunPlan, layout: &HermeticVimLayout) -> Result<Opt
             vim_host_runner::parse_process_snapshot(&settled)
         };
         let survivors = match parsed {
-            Ok(lines) => vim_host_runner::surviving_processes(&[], &lines, &needle),
+            // Same law as the substrate's comparison: a late snapshot line is
+            // a survivor only when it matches the candidate needle AND was
+            // not already running in the ambient baseline. This keeps the
+            // supervisor's own argument vector (which contains the absolute
+            // candidate path) from masquerading as an owned leak.
+            Ok(lines) => vim_host_runner::surviving_processes(ambient_baseline, &lines, &needle),
             Err(_) => return Ok(None),
         };
         if survivors.is_empty() {
