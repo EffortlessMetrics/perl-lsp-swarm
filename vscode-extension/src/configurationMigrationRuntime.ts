@@ -10,6 +10,7 @@ import {
   isSupportedMigrationRegistry,
   isValidCompatibilityWindow,
   parseMigrationVersion,
+  validateMigrationRegistry,
 } from './configurationMigrationRegistry';
 
 export type MigrationRuntimeStatus =
@@ -203,6 +204,17 @@ export function interpretLegacyConfiguration(
 
   const candidate: unknown = registry;
   if (!isSupportedMigrationRegistry(candidate)) {
+    return result(
+      input,
+      null,
+      'invalid',
+      MISSING_VALUE,
+      true,
+      INVALID_REASON_CODES.registry_invalid,
+    );
+  }
+
+  if (validateMigrationRegistry(registry).length > 0) {
     return result(
       input,
       null,

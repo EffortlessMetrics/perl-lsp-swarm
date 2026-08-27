@@ -147,6 +147,15 @@ describe('public-beta configuration migration registry', () => {
     },
   );
 
+  test('rejects malformed rows without dereferencing their fields', () => {
+    const registry = cloneRegistry();
+    registry.rows = [null as never];
+
+    expect(validateMigrationRegistry(registry)).toEqual([
+      'migration row is missing required fields',
+    ]);
+  });
+
   test('orders rows by code point rather than host collation', () => {
     // localeCompare is host-dependent: Swedish collation orders 'ä' after 'z',
     // English does not. A locale-sensitive sort would serialize the same registry

@@ -114,6 +114,30 @@ export function isSupportedMigrationRegistry(
   );
 }
 
+function isMigrationRowShape(value: unknown): value is ConfigurationMigrationRow {
+  if (typeof value !== 'object' || value === null) return false;
+  const row = value as Record<string, unknown>;
+  return (
+    typeof row.migration_id === 'string' &&
+    typeof row.old_key === 'string' &&
+    typeof row.old_value_shape === 'string' &&
+    typeof row.introduced_version === 'string' &&
+    typeof row.last_supported_version === 'string' &&
+    (typeof row.new_key_or_authority === 'string' || row.new_key_or_authority === null) &&
+    typeof row.old_scope === 'string' &&
+    (typeof row.new_scope === 'string' || row.new_scope === null) &&
+    typeof row.migration_disposition === 'string' &&
+    typeof row.automatic_read_compatibility === 'boolean' &&
+    typeof row.explicit_write_allowed === 'boolean' &&
+    typeof row.old_plus_new_conflict_policy === 'string' &&
+    typeof row.security_trust_class === 'string' &&
+    typeof row.warning_reason_code === 'string' &&
+    'compatibility_window' in row &&
+    (typeof row.expiry_owner_issue === 'number' || row.expiry_owner_issue === null) &&
+    typeof row.installed_proof_requirement === 'string'
+  );
+}
+
 /// Dispositions under which a setting keeps no configuration authority at all,
 /// and a null `new_scope` is therefore the truthful value rather than an omission.
 const AUTHORITY_RETIRING_DISPOSITIONS: ReadonlySet<MigrationDisposition> = new Set([
@@ -194,7 +218,12 @@ export function validateMigrationRegistry(registry: ConfigurationMigrationRegist
     return errors;
   }
 
-  for (const row of registry.rows) {
+  for (const candidateRow of registry.rows as unknown[]) {
+    if (!isMigrationRowShape(candidateRow)) {
+      errors.push('migration row is missing required fields');
+      continue;
+    }
+    const row = candidateRow;
     if (migrationIds.has(row.migration_id)) {
       errors.push(`duplicate migration_id: ${row.migration_id}`);
     }

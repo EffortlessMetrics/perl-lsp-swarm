@@ -91,6 +91,31 @@ describe('configuration migration runtime', () => {
     }
   });
 
+  test.each([
+    ['0.18.0-rc.2', 'compatible_legacy'],
+    ['0.18.0-rc.10', 'expired'],
+    ['0.18.0-rc.11', 'expired'],
+  ] as const)('orders numeric prerelease identifiers at %s', (extensionVersion, status) => {
+    const result = interpretLegacyConfiguration(
+      expiringRegistry({
+        kind: 'through_extension_version',
+        version: '0.18.0-rc.10',
+        post_expiry_disposition: 'action_required',
+      }),
+      {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'legacy',
+        current_value_present: false,
+        current_value: null,
+        extension_version: extensionVersion,
+      },
+    );
+
+    expect(result.status).toBe(status);
+  });
+
   test('current configuration remains authoritative after compatibility expiry', () => {
     const result = interpretLegacyConfiguration(
       expiringRegistry({
@@ -203,6 +228,26 @@ describe('configuration migration runtime', () => {
       canonical_value_present: false,
     });
     expect(JSON.stringify(safeMigrationRuntimeSnapshot(result))).not.toContain('secret legacy');
+  });
+
+  test('malformed rows fail closed before selection', () => {
+    const registry = compatibleRegistry();
+    registry.rows = [null as never];
+
+    expect(
+      interpretLegacyConfiguration(registry, {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'secret legacy value',
+        current_value_present: false,
+        current_value: null,
+      }),
+    ).toMatchObject({
+      status: 'invalid',
+      reason_code: 'legacy_registry_invalid',
+      canonical_value_present: false,
+    });
   });
 
   test('missing or future registry envelopes fail closed', () => {
