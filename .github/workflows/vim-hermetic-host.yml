@@ -311,10 +311,12 @@ jobs:
           echo "host-reopen-lifecycle result: ${result} (cleanup: ${cleanup})"
           [ "${result}" = "pass" ]
           [ "${cleanup}" = "pass" ]
+          # Seven actionable cells must pass; the workspace/session cell stays
+          # truthfully `unsupported` (`client_not_exposed`) for this subject
+          # and must never be relabeled into a pass.
           for cell in \
             vim.vim_lsp.lifecycle.buffer_reopen \
             vim.vim_lsp.lifecycle.host_reopen \
-            vim.vim_lsp.lifecycle.workspace_or_session_reopen \
             vim.vim_lsp.lifecycle.cancellation \
             vim.vim_lsp.lifecycle.late_result_rejected \
             vim.vim_lsp.lifecycle.repeated_sessions \
@@ -324,6 +326,9 @@ jobs:
             echo "cell ${cell}: ${observed}"
             [ "${observed}" = "pass" ]
           done
+          workspace_observed="$(jq -r --arg id "vim.vim_lsp.lifecycle.workspace_or_session_reopen" '.journey[] | select(.id == $id) | .result' "${receipt}")"
+          echo "cell vim.vim_lsp.lifecycle.workspace_or_session_reopen: ${workspace_observed}"
+          [ "${workspace_observed}" = "unsupported" ]
           [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-canonical/host-1/hermetic/raw/vim-lsp-client.log" ]
 
       - name: Lifecycle negative control — server restart must fail typed
