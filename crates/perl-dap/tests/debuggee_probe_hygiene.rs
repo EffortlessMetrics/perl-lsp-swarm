@@ -22,7 +22,7 @@ use common::{reset_sigkill_escalation_observation, sigkill_escalation_was_observ
 
 use common::{
     DEBUGGEE_PERL_OVERRIDE_ENV, probe_debuggee_perl_for_test_with_descendant_pid,
-    resolve_debuggee_perl,
+    probe_debuggee_perl_for_test_with_workspace_cleanup_failure, resolve_debuggee_perl,
 };
 use std::fs;
 use std::io;
@@ -301,6 +301,27 @@ fn main() {
     assert!(
         termination_error.contains("termination command failed"),
         "termination command failure must be explicit: {termination_error}"
+    );
+
+    let before = current_process_probe_artifacts()?;
+    let workspace_cleanup_failure =
+        common::probe_debuggee_perl_for_test_with_workspace_cleanup_failure(
+            &success,
+            Duration::from_secs(2),
+        );
+    let workspace_cleanup_error = match workspace_cleanup_failure {
+        Ok(_) => return Err(io::Error::other("workspace cleanup failure was accepted")),
+        Err(error) => error,
+    };
+    assert!(
+        workspace_cleanup_error.contains("probe workspace cleanup failed"),
+        "workspace cleanup failure must be explicit: {workspace_cleanup_error}"
+    );
+    let after = current_process_probe_artifacts()?;
+    let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
+    assert!(
+        new_artifacts.is_empty(),
+        "workspace cleanup failure control left newly created workspaces: {new_artifacts:?}"
     );
 
     #[cfg(windows)]
