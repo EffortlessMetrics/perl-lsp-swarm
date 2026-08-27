@@ -170,6 +170,7 @@ fn find_owner_path(nodes: &[DocumentSymbol], target: &WireRange) -> Option<Vec<u
             }
             if OWNER_KIND_MODULE_FAMILY.contains(&node.kind)
                 && start_key <= (target.start.line, target.start.character)
+                && module_region_contains_target(node, target)
             {
                 hits.modules.push((start_key, prefix.clone()));
             }
@@ -194,15 +195,43 @@ fn find_owner_path(nodes: &[DocumentSymbol], target: &WireRange) -> Option<Vec<u
     Some(path.clone())
 }
 
+fn module_region_contains_target(node: &DocumentSymbol, target: &WireRange) -> bool {
+    // Declaration-form packages/classes own the following member region even
+    // though their displayed range ends on the declaration line. Block-form
+    // packages/classes have a closed multi-line range and must not reclaim
+    // symbols after their closing brace.
+    node.range.end.line == node.range.start.line
+        || (target.end.line, target.end.character)
+            <= (node.range.end.line, node.range.end.character)
+}
+
 /// Insert keeping existing siblings in place and positioning the new symbol
-/// after same-start entries but before anything that starts later in source
-/// order.
+/// inside the established priority group, then by source position. The source
+/// document-symbol assembler sorts children by semantic priority first; a
+/// source-only partition point is not valid for that vector.
 fn insert_by_source_position(children: &mut Vec<DocumentSymbol>, symbol: DocumentSymbol) {
     let start_key = (symbol.range.start.line, symbol.range.start.character);
+    let priority = outline_symbol_priority(&symbol);
     let position = children.partition_point(|child| {
-        (child.range.start.line, child.range.start.character) <= start_key
+        let child_priority = outline_symbol_priority(child);
+        child_priority < priority
+            || (child_priority == priority
+                && (child.range.start.line, child.range.start.character) <= start_key)
     });
     children.insert(position, symbol);
+}
+
+fn outline_symbol_priority(symbol: &DocumentSymbol) -> u8 {
+    if OWNER_KIND_MODULE_FAMILY.contains(&symbol.kind) {
+        1
+    } else if OWNER_KIND_CALLABLE.contains(&symbol.kind) {
+        3
+    } else {
+        // Variables and other leaf symbols are the lower-priority group in
+        // the source-backed assembler. Subtests are callable-shaped and must
+        // remain ahead of this group.
+        4
+    }
 }
 
 /// Find the innermost subtest whose range contains the 0-based `line`.
