@@ -20,10 +20,30 @@ fn read(root: &Path, rel: &str) -> Result<String, Box<dyn std::error::Error>> {
 }
 
 fn job_section<'a>(workflow: &'a str, job_id: &str) -> Option<&'a str> {
-    let start = workflow.find(&format!("\n  {job_id}:"))?;
-    let tail = &workflow[start..];
-    let end = tail[1..].find("\n  ").map(|i| i + 1).unwrap_or(tail.len());
-    Some(&tail[..end])
+    // Job entries sit at exactly two-space indent; nested job fields and step
+    // keys live deeper, so boundaries are the following 2-space "key:" line.
+    let anchor = format!("\n  {job_id}:");
+    let start = workflow.find(&anchor)?;
+    let body_start = start + anchor.len();
+    let rest = &workflow[body_start..];
+    let mut end = rest.len();
+    for (offset, line) in rest.split('\n').enumerate() {
+        if offset == 0 {
+            continue;
+        }
+        let nested = line.starts_with("  ")
+            && !line.starts_with("   ")
+            && line
+                .trim_end()
+                .chars()
+                .nth(2)
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if nested {
+            end = rest[..].split('\n').take(offset).map(|l| l.len() + 1).sum();
+            break;
+        }
+    }
+    Some(&workflow[start..body_start + end])
 }
 
 #[test]
@@ -103,10 +123,7 @@ fn scope_selection_is_job_level_and_never_label_gated() -> Result<(), Box<dyn st
         ".ci/public-api-baselines/",
     ];
     for facade_path in trigger_facade_paths {
-        assert!(
-            workflow.contains(facade_path),
-            "scope selector must cover {facade_path}"
-        );
+        assert!(workflow.contains(facade_path), "scope selector must cover {facade_path}");
     }
     assert!(
         workflow.contains("api_scope=true") && workflow.contains("api_scope=false"),
@@ -136,9 +153,13 @@ fn registry_records_the_new_advisory_contexts() -> Result<(), Box<dyn std::error
             row.contains("required = false"),
             "{context} starts advisory; ruleset promotion is a separate owner act"
         );
+        // Contract-model classification: both rails are preconditioned jobs
+        // (event + preflight + run_ci), so applicability is "conditional" per
+        // validate_gate_enforcement_contract.py; scoped-noop green settlement
+        // happens at the step level inside each job.
         assert!(
-            row.contains("applicability = \"always-or-scoped-noop\""),
-            "{context} follows the scoped-noop applicability convention"
+            row.contains("applicability = \"conditional\""),
+            "{context} follows the prerequisite-selected applicability convention"
         );
     }
 
