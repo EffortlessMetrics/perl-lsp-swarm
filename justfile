@@ -17,6 +17,11 @@ devplane-init:
 storage-doctor:
     ./scripts/storage-doctor
 
+# Prune stale target artifacts from repo-local and devplane target dirs.
+# Dry-run by default — pass --apply to delete (see scripts/target-gc).
+target-gc *args:
+    ./scripts/target-gc {{args}}
+
 agent-preflight: storage-doctor
     @echo "agent preflight ok"
 

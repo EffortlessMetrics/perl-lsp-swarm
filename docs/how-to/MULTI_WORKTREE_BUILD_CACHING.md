@@ -112,6 +112,21 @@ strangely across a version move, clean the shared root once:
 cargo clean --target-dir "$DEVPLANE/target"
 ```
 
+Between full cleans, reclaim the slower-growing cruft — superseded
+metadata-hash artifacts, abandoned incremental state, artifacts from work that
+moved elsewhere — with the mtime-based sweep:
+
+```bash
+just target-gc            # dry-run: shows roots and what is reclaimable
+just target-gc --apply    # delete candidates (default window: idle > 14 days)
+```
+
+`scripts/target-gc` never touches lockfiles or the cargo registry, refuses to
+run while the devplane build flock is held, and everything a fresh build just
+touched is immune by construction. Artifacts idle longer than the threshold are
+removed even if still referenced; the next build needing them pays a one-time
+rebuild.
+
 ### Lock serialization
 
 Concurrent builds against one shared `CARGO_TARGET_DIR` serialize. Cargo's
