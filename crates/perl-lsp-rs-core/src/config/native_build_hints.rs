@@ -343,11 +343,12 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
         match ch {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
-            ')' | ']' | '}' => {
-                if stack.pop().is_none() {
-                    return idx.saturating_sub(start);
-                }
-            }
+            // The guard is where the pop happens, exactly as the collapsed
+            // `if` did: a guard runs only after its pattern matches, and only
+            // once, so a balanced closer still pops and falls through to the
+            // wildcard arm.
+            ')' | ']' | '}' if stack.pop().is_none() => return idx.saturating_sub(start),
+            ')' | ']' | '}' => {}
             ',' | ';' if stack.is_empty() => return idx.saturating_sub(start),
             _ => {}
         }
@@ -1163,5 +1164,30 @@ Module::Build->new(
         assert_eq!(hints.libs_alternatives, vec![vec!["-lreal".to_string()]]);
         assert!(hints.diagnostics.is_empty());
         Ok(())
+    }
+
+    /// `rejected_value_len` decides how far the scanner skips past a value it
+    /// could not parse, so an off-by-one here silently re-scans or swallows the
+    /// next assignment. The closer arm carries a side-effecting `stack.pop()`;
+    /// these cases pin each of its outcomes so a future restructuring of that
+    /// arm cannot change the span it reports.
+    #[test]
+    fn rejected_value_len_bounds_the_skip_at_each_closer_outcome() {
+        // Unbalanced closer at index 0: the span is empty, and the caller's
+        // `.max(1)` is what keeps the outer scan advancing.
+        assert_eq!(rejected_value_len(") rest", 0), 0);
+        // Balanced closer: the pop succeeds, scanning continues, and the span
+        // ends at the following top-level separator.
+        assert_eq!(rejected_value_len("(a, b), tail", 0), 6);
+        // A closer that unbalances mid-value ends the span exactly there.
+        assert_eq!(rejected_value_len("(a)) tail", 0), 3);
+        // Separators nested inside brackets do not end the span.
+        assert_eq!(rejected_value_len("[a, b; c] ; tail", 0), 10);
+        // Quoted brackets and separators are inert, escapes included.
+        assert_eq!(rejected_value_len("'a, )b\\'', tail", 0), 9);
+        // No terminator at all: the span runs to end of input.
+        assert_eq!(rejected_value_len("(a", 0), 2);
+        // The span is measured from `start`, not from index 0.
+        assert_eq!(rejected_value_len("skip me: a, tail", 9), 1);
     }
 }
