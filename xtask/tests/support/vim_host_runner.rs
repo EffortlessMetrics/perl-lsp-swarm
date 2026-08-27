@@ -1642,9 +1642,10 @@ fn walk_wire_value(
                         }
                     }
                     "textDocument/didChange" => {
-                        if evidence.did_change_line.is_none() {
-                            evidence.did_change_line = Some(line_index);
-                        }
+                        // Set-once: record the FIRST didChange line and leave
+                        // it alone thereafter. `get_or_insert` states that
+                        // directly instead of a nested `is_none()` test.
+                        evidence.did_change_line.get_or_insert(line_index);
                     }
                     _ => {}
                 }

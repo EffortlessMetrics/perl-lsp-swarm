@@ -1005,25 +1005,20 @@ fn validate_packet_old_paths(root: &Map<String, Value>, violations: &mut Vec<Vio
         let disposition = string_field(entry, "disposition");
         match disposition {
             Some(value) if OLD_PATH_DISPOSITIONS.contains(&value) => match value {
-                "compatibility_projection" => {
+                "compatibility_projection"
                     if string_field(entry, "owner").is_none()
-                        || string_field(entry, "exit").is_none()
-                    {
-                        violations.push(Violation::new(
-                            "compatibility_projection_unowned",
-                            format!("old_paths: compatibility projection for {seam:?} needs an owner and an exit"),
-                        ));
-                    }
+                        || string_field(entry, "exit").is_none() =>
+                {
+                    violations.push(Violation::new(
+                        "compatibility_projection_unowned",
+                        format!("old_paths: compatibility projection for {seam:?} needs an owner and an exit"),
+                    ));
                 }
-                "still_live_independent" => {
-                    if string_field(entry, "owner").is_none() {
-                        violations.push(Violation::new(
-                            "still_live_unowned",
-                            format!(
-                                "old_paths: still-live independent seam {seam:?} needs an owner"
-                            ),
-                        ));
-                    }
+                "still_live_independent" if string_field(entry, "owner").is_none() => {
+                    violations.push(Violation::new(
+                        "still_live_unowned",
+                        format!("old_paths: still-live independent seam {seam:?} needs an owner"),
+                    ));
                 }
                 _ => {}
             },
@@ -1573,25 +1568,19 @@ fn validate_closure(root: &Map<String, Value>, doc: &Value, violations: &mut Vec
             );
             match string_field(entry, "state") {
                 Some(state) if ROLE_STATES.contains(&state) => match state {
-                    "terminal" => {
-                        if string_field(entry, "reference").is_none() {
-                            violations.push(Violation::new(
-                                "missing_role_reference",
-                                format!(
-                                    "review_state.roles: terminal role {role:?} must reference its individual review"
-                                ),
-                            ));
-                        }
+                    "terminal" if string_field(entry, "reference").is_none() => {
+                        violations.push(Violation::new(
+                            "missing_role_reference",
+                            format!(
+                                "review_state.roles: terminal role {role:?} must reference its individual review"
+                            ),
+                        ));
                     }
-                    "not_applicable" => {
-                        if string_field(entry, "reason").is_none() {
-                            violations.push(Violation::new(
-                                "role_not_applicable_unjustified",
-                                format!(
-                                    "review_state.roles: role {role:?} skipped without a reason"
-                                ),
-                            ));
-                        }
+                    "not_applicable" if string_field(entry, "reason").is_none() => {
+                        violations.push(Violation::new(
+                            "role_not_applicable_unjustified",
+                            format!("review_state.roles: role {role:?} skipped without a reason"),
+                        ));
                     }
                     _ => {}
                 },
@@ -3049,6 +3038,7 @@ pub fn run(update_golden: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::eyre;
 
     type TestResult<T = ()> = Result<T>;
 
@@ -3137,6 +3127,52 @@ mod tests {
         assert!(has(&mutation, "control_not_load_bearing"));
         let alternate = invalid_fixture("weak_discriminator.json")?;
         assert!(has(&alternate, "weak_discriminator"));
+        Ok(())
+    }
+
+    /// #6113's `collapsible_match` deny turned four `arm => { if COND {..} }`
+    /// bodies in this validator into guarded arms. Three of them already have
+    /// executed fall-through proof — a valid fixture carries an owned
+    /// `compatibility_projection`, a `terminal` role with a reference, and a
+    /// `not_applicable` role with a reason, so `valid_fixtures_validate`
+    /// fails if a guard stops falling through to the wildcard arm.
+    ///
+    /// `still_live_independent` had no fixture in either direction, so the one
+    /// guard whose collapse nothing executed is pinned here: an owned seam
+    /// must stay silent, and an unowned one must still be caught.
+    #[test]
+    fn still_live_independent_old_path_needs_an_owner() -> TestResult {
+        let mut doc = fixture("consumer_issue_controller_t07_shape.v1.json")?;
+        assert!(valid(&doc), "the baseline fixture must start clean");
+
+        let old_paths = doc
+            .get_mut("old_paths")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| eyre!("fixture lost its old_paths array"))?;
+
+        // Owned: the guard is false, so the arm must fall through to the
+        // wildcard exactly as the nested `if` did — no violation.
+        old_paths.push(serde_json::json!({
+            "seam": "still_live_seam",
+            "disposition": "still_live_independent",
+            "owner": "#12910",
+        }));
+        assert!(
+            !has(&doc, "still_live_unowned"),
+            "an owned still-live seam must not raise a violation",
+        );
+
+        // Unowned: the guard is true, so the arm still fires.
+        let old_paths = doc
+            .get_mut("old_paths")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| eyre!("fixture lost its old_paths array"))?;
+        old_paths
+            .last_mut()
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| eyre!("pushed entry vanished"))?
+            .remove("owner");
+        assert!(has(&doc, "still_live_unowned"), "an unowned still-live seam must be caught");
         Ok(())
     }
 
