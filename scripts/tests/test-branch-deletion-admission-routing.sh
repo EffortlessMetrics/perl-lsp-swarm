@@ -240,4 +240,30 @@ for file in scripts/swarm-clean scripts/cleanup-completed-worktrees.sh; do
 done
 pass 'both shell helpers delete with a compare-and-delete, not branch -D'
 
+# The CAS must use the oid that PASSED ADMISSION, never a fresh read.
+#
+# A deleter that re-reads the ref is atomic only against its own read: if the
+# ref advances after the equality check, the re-read makes the advanced oid the
+# expected value and the delete succeeds. That is the exact defect an earlier
+# revision shipped while believing the CAS had closed the window.
+#
+# Structural rather than behavioural: proving the window itself needs a hook
+# between the check and the delete that this harness cannot install. What is
+# asserted is that the deleting function cannot re-read — it resolves no ref of
+# its own — which is what makes the window unreachable.
+for file in scripts/swarm-clean scripts/cleanup-completed-worktrees.sh; do
+    body="$(awk '
+        /^(delete_branch_at_admitted_tip|delete_branch)[[:space:]]*\(\)[[:space:]]*\{/ { infn = 1 }
+        infn { print }
+        infn && /^\}/ { infn = 0 }
+    ' "$ROOT/$file")"
+    [[ -n "$body" ]] || fail "$file: could not locate the deleting function; this check would be vacuous"
+    if grep -q 'rev-parse' <<<"$body"; then
+        fail "$file: the deleting function re-reads the ref instead of using the admitted oid"
+    fi
+    grep -q 'update-ref -d' <<<"$body" \
+        || fail "$file: the deleting function does not compare-and-delete"
+    pass "$file deletes with the admitted oid and never re-reads the ref"
+done
+
 printf 'All branch-deletion admission routing checks passed.\n'

@@ -170,7 +170,9 @@ local_tip_is_admitted() {
     fi
     [[ -n "$remote_sha" ]] || return 1
 
-    [[ "$local_sha" == "$remote_sha" ]]
+    [[ "$local_sha" == "$remote_sha" ]] || return 1
+    # Emit the proven oid: the deletion must use THIS value, not a fresh read.
+    printf '%s\n' "$local_sha"
 }
 
 # Delete the local ref with an atomic compare-and-delete on its admitted tip.
@@ -183,11 +185,14 @@ local_tip_is_admitted() {
 # survives; current exits 0 and it is deleted). An earlier revision of this PR
 # claimed no such lease existed; that was wrong.
 delete_branch_at_admitted_tip() {
-    local branch="$1" expected
+    local branch="$1" expected="$2"
 
-    expected="$(git -C "$REPO_ROOT" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)"
+    # The oid is the caller's, proven equal to the admitted remote tip. Re-reading
+    # it here would defeat the whole point: a ref that advanced after the equality
+    # check would become the new expected value and be deleted successfully, so the
+    # CAS would be atomic only against its own read, never against admission.
     if [[ -z "$expected" ]]; then
-        echo "    -> retaining local branch $branch: its tip became unreadable" >&2
+        echo "    -> retaining local branch $branch: no admitted tip was carried" >&2
         return 0
     fi
     if ! git -C "$REPO_ROOT" update-ref -d "refs/heads/$branch" "$expected" 2>/dev/null; then
@@ -212,8 +217,9 @@ remove_worktree() {
             # The admission covers the remote branch. Delete the local ref only
             # when it is the same tip, so unpushed local commits are never
             # discarded under a remote-scoped authorization.
-            if local_tip_is_admitted "$branch"; then
-                delete_branch_at_admitted_tip "$branch"
+            local admitted_tip
+            if admitted_tip="$(local_tip_is_admitted "$branch")"; then
+                delete_branch_at_admitted_tip "$branch" "$admitted_tip"
             else
                 echo "    -> retaining local branch $branch: local tip is not the admitted remote tip" >&2
             fi

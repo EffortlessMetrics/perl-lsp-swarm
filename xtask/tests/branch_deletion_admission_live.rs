@@ -95,7 +95,7 @@ fn healthy() -> FakeCommands {
         // The deletion travels over the PUSH endpoint, which git reports
         // separately; collection reads both and requires them to agree.
         .on(
-            "git remote get-url --push origin",
+            "git remote get-url --push --all origin",
             "https://github.com/EffortlessMetrics/perl-lsp-swarm.git\n",
         )
         .on("gh pr view 7799", &merged_parent_json())
@@ -566,7 +566,7 @@ fn the_deletion_path_reverifies_remote_identity() -> Result<(), Box<dyn std::err
 
     let moved_remote = healthy()
         .on("git remote get-url origin", "https://github.com/SomeoneElse/other.git\n")
-        .on("git remote get-url --push origin", "https://github.com/SomeoneElse/other.git\n");
+        .on("git remote get-url --push --all origin", "https://github.com/SomeoneElse/other.git\n");
     let deleter = RecordingDeleter::default();
     let bound = collect_request(&healthy(), 7799, "origin")?.remote_identity;
     let result = execute_admitted_deletion(&moved_remote, &deleter, &outcome, &bound);
@@ -595,7 +595,7 @@ fn a_divergent_push_url_is_refused() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let divergent = healthy()
-        .on("git remote get-url --push origin", "https://evil.example.com/Other/Repo.git\n");
+        .on("git remote get-url --push --all origin", "https://evil.example.com/Other/Repo.git\n");
     let collected = collect_request(&divergent, 7799, "origin");
     let error = collected.err().ok_or("a divergent push URL must refuse collection")?;
     let rendered = error.to_string();
@@ -621,6 +621,66 @@ fn a_divergent_push_url_is_refused() -> Result<(), Box<dyn std::error::Error>> {
     assert!(
         deleter.invocations.borrow().is_empty(),
         "nothing may be executed once the push endpoint fails to verify",
+    );
+    Ok(())
+}
+
+/// Multiple push URLs must be refused, not silently reduced to the first.
+///
+/// git permits several `remote.<name>.pushurl` entries and `git push <remote>`
+/// delivers to EVERY one. Verified against real git 2.43.0 with two bare
+/// destinations: a single push created the ref in both, while
+/// `get-url --push` without `--all` named only the first. Reading one URL
+/// would therefore admit endpoint A while the deletion also reached an
+/// entirely unexamined endpoint B.
+#[test]
+fn a_fan_out_of_push_urls_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+    // Positive control: a single push URL matching fetch still admits, so a
+    // refusal below cannot come from the extra read itself.
+    assert_eq!(
+        evaluate(&collect_request(&healthy(), 7799, "origin")?.request).admission,
+        DeletionAdmission::SafeToDelete,
+        "one agreeing push URL must still admit",
+    );
+
+    // Two destinations, the FIRST of which is the legitimately admitted one —
+    // so a check that reads only the first would pass and delete on both.
+    let fan_out = healthy().on(
+        "git remote get-url --push --all origin",
+        "https://github.com/EffortlessMetrics/perl-lsp-swarm.git\nhttps://evil.example.com/Other/Repo.git\n",
+    );
+    let error = collect_request(&fan_out, 7799, "origin")
+        .err()
+        .ok_or("a push-URL fan-out must refuse collection")?;
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("2 push URLs") && rendered.contains("evil.example.com"),
+        "the refusal must name the count and the unexamined endpoint: {rendered}",
+    );
+
+    // A remote with no readable push URL is unreadable, never permissive.
+    let none = healthy().on("git remote get-url --push --all origin", "\n");
+    assert!(
+        collect_request(&none, 7799, "origin").is_err(),
+        "a remote with no push URL must refuse, not default to the fetch URL",
+    );
+
+    // The re-check before deleting must refuse the fan-out too: pushurl can be
+    // added inside the window between admission and deletion.
+    let bound = collect_request(&healthy(), 7799, "origin")?.remote_identity;
+    assert!(
+        verify_remote_identity(&fan_out, "origin", &bound).is_err(),
+        "re-verification must refuse a remote that gained a second push URL",
+    );
+    let outcome = evaluate(&collect_request(&healthy(), 7799, "origin")?.request);
+    let deleter = RecordingDeleter::default();
+    assert!(
+        execute_admitted_deletion(&fan_out, &deleter, &outcome, &bound).is_err(),
+        "the deletion path must refuse a push-URL fan-out",
+    );
+    assert!(
+        deleter.invocations.borrow().is_empty(),
+        "nothing may be executed once the push endpoints fail to verify",
     );
     Ok(())
 }

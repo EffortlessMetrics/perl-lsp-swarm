@@ -461,11 +461,28 @@ fn resolve_remote_endpoint(
         )
     })?;
 
-    let push_url = commands
-        .capture("git", &["remote", "get-url", "--push", remote])
-        .map_err(|error| eyre!("reading the push URL of remote {remote}: {error}"))?;
-    let push = parse_remote_identity(&push_url).ok_or_else(|| {
-        eyre!("remote {remote} push URL {:?} is not an endpoint/owner/name shape", push_url.trim())
+    // `--all`, because git permits MULTIPLE `remote.<name>.pushurl` entries and
+    // `git push <remote>` delivers to every one of them. Without `--all`,
+    // `get-url --push` reports only the first. Verified against real git 2.43.0
+    // with two bare destinations: one push created the ref in both, while the
+    // single-URL read named only one — so an admitted endpoint could coexist
+    // with an entirely unexamined deletion endpoint.
+    let push_urls = commands
+        .capture("git", &["remote", "get-url", "--push", "--all", remote])
+        .map_err(|error| eyre!("reading the push URLs of remote {remote}: {error}"))?;
+    let push_lines: Vec<&str> =
+        push_urls.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    let [push_url] = push_lines.as_slice() else {
+        // Zero is unreadable; more than one is a fan-out this admission cannot
+        // cover, and picking any single one of them would be a guess.
+        return Err(eyre!(
+            "remote {remote} has {} push URLs ({}); a deletion would be delivered to every one, and only a single admitted endpoint can be verified",
+            push_lines.len(),
+            push_lines.join(", ")
+        ));
+    };
+    let push = parse_remote_identity(push_url).ok_or_else(|| {
+        eyre!("remote {remote} push URL {push_url:?} is not an endpoint/owner/name shape")
     })?;
 
     if fetch != push {

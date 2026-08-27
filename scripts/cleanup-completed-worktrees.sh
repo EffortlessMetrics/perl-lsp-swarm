@@ -168,7 +168,9 @@ local_tip_is_admitted() {
     fi
     [[ -n "$remote_sha" ]] || return 1
 
-    [[ "$local_sha" == "$remote_sha" ]]
+    [[ "$local_sha" == "$remote_sha" ]] || return 1
+    # Emit the proven oid: the deletion must use THIS value, not a fresh read.
+    printf '%s\n' "$local_sha"
 }
 
 # Ask the shared live admission before deleting a local branch (#12885). No gh,
@@ -192,18 +194,21 @@ branch_deletion_admitted() {
     local_tip_is_admitted "$branch"
 }
 
+
 delete_branch() {
-    local branch="$1"
+    local branch="$1" admitted_tip
     $DRY_RUN && return 0
-    if ! branch_deletion_admitted "$branch"; then
+    if ! admitted_tip="$(branch_deletion_admitted "$branch")"; then
         printf '    -> retaining local branch %s: branch-deletion admission refused\n' \
             "$branch" >&2
         return 0
     fi
-    local expected
-    expected="$(git -C "$REPO_ROOT" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)"
+    # The oid comes from the admission check, not a fresh read. Re-reading would
+    # make the CAS atomic only against its own read: a ref that advanced after
+    # the equality check would become the new expected value and be deleted.
+    local expected="$admitted_tip"
     if [[ -z "$expected" ]]; then
-        printf '    -> retaining local branch %s: its tip became unreadable\n' "$branch" >&2
+        printf '    -> retaining local branch %s: no admitted tip was carried\n' "$branch" >&2
         return 0
     fi
     # Atomic compare-and-delete on the admitted tip: a ref that advanced between
