@@ -66,6 +66,17 @@ INVOCATION_MUTATIONS = (
     ("echo decoy", f'echo "{CANONICAL_INVOCATION}"'),
 )
 
+# The only cargo commands a lane may run besides the canonical invocation:
+# runner instrumentation and the fmt literal owned by
+# test_rustfmt_required_workflow.py. Anything else (an extra semantic test, a
+# second cargo run, a clippy/check/build side gate) would make the route
+# choice change what the required status means (#8408 negative control).
+ALLOWED_CARGO_COMMANDS = (
+    "cargo --version",
+    "cargo fmt --all -- --check",
+    CANONICAL_INVOCATION,
+)
+
 
 def load_workflow_text() -> str:
     return WORKFLOW_PATH.read_text(encoding="utf-8")
@@ -159,6 +170,17 @@ def validate_rust_small_route_contract(workflow_text: str) -> None:
                     "semantic Rust Small proof is owned by "
                     "`cargo xtask rust-small-proof`; fix the task, not a "
                     "per-route copy (#8407)."
+                )
+        for cargo_line in (
+            line.strip() for line in active_code_lines(body) if line.strip().startswith("cargo ")
+        ):
+            if cargo_line not in ALLOWED_CARGO_COMMANDS:
+                raise AssertionError(
+                    f"{job_id} (field: cargo-allowlist) runs unowned cargo "
+                    f"command {cargo_line!r}. A route may add only runner "
+                    "instrumentation around the canonical invocation; an extra "
+                    "semantic command makes the route choice change what the "
+                    "required status means (#8408 negative control)."
                 )
 
     result_job = jobs.get(RUST_SMALL_RESULT_JOB)
@@ -275,6 +297,31 @@ class RustSmallRouteContractTests(unittest.TestCase):
                         validate_rust_small_route_contract(broken)
                     message = str(context.exception)
                     self.assertIn(job_id, message, message)
+
+    def test_extra_semantic_cargo_command_in_any_lane_fails_named_site(self) -> None:
+        # #8408 negative control: a hosted route running an extra semantic
+        # test (or any unowned cargo command) must fail with the site named,
+        # not silently broaden what one route's green means.
+        extras = (
+            "cargo test --locked -p perl-lsp-rs --test route_parity_extra",
+            "cargo clippy --workspace --locked -- -D warnings",
+            "cargo run -p xtask --locked -- some-other-proof",
+        )
+        for job_id in RUST_SMALL_LANE_JOBS:
+            for extra in extras:
+                with self.subTest(site=job_id, field="cargo-allowlist", extra=extra[:50]):
+                    broken = mutate_first_in_job(
+                        self.workflow_text,
+                        job_id,
+                        CANONICAL_INVOCATION,
+                        f"{CANONICAL_INVOCATION}\n              {extra}",
+                    )
+                    with self.assertRaises(AssertionError) as context:
+                        validate_rust_small_route_contract(broken)
+                    message = str(context.exception)
+                    self.assertIn(job_id, message, message)
+                    self.assertIn("cargo-allowlist", message, message)
+                    self.assertIn(extra, message, message)
 
     def test_missing_lane_job_fails_closed(self) -> None:
         lines = [

@@ -21,9 +21,11 @@
 //! - The workflow yml configures `git config --global --add safe.directory`
 //!   before this command inside Docker lanes (ripr.yml-proven host-UID
 //!   boundary), because the diff-hygiene step below runs `git` there.
-//! - Typed step receipts and exact-subject artifact binding remain issue
-//!   #8408 (with #10064 doctrine); this command streams step outcomes and
-//!   fails closed without inventing a receipt schema.
+//! - Typed step receipts and exact-subject artifact binding remain open
+//!   #8407 acceptance (unclaimed here); #8408 is the route-parity consumer
+//!   that normalizes what each route may run around this command. This
+//!   command streams step outcomes and fails closed without inventing a
+//!   receipt schema.
 
 use color_eyre::eyre::{Result, bail, eyre};
 use std::process::Command;
@@ -133,8 +135,13 @@ pub fn run() -> Result<()> {
             )
         })?;
     if !census_output.status.success() {
+        // Nonzero census exit is a product/test failure (the scorecard target
+        // failed to build or run), kept distinct from the spawn-instrument
+        // failure above (#8407 acceptance: product vs instrument failure).
         bail!(
-            "[{done}/{total}] references scorecard census instrument failure: {}",
+            "[{done}/{total}] references scorecard census product/test failure \
+             (exit {:?}): {}",
+            census_output.status.code(),
             bounded_stderr(&census_output.stderr)
         );
     }
@@ -149,7 +156,7 @@ pub fn run() -> Result<()> {
     }
     done += 1;
 
-    run_cargo_with_env("references scorecard replay", SCORECARD_RUN_ARGS, SCORECARD_REPLAY_ENV)?;
+    run_step("cargo", "references scorecard replay", SCORECARD_RUN_ARGS, SCORECARD_REPLAY_ENV)?;
     done += 1;
 
     // Diff hygiene copied from the hosted contract so every route proves the
@@ -173,16 +180,20 @@ pub fn run() -> Result<()> {
 }
 
 fn run_cargo(name: &str, args: &[&str]) -> Result<()> {
-    run_cargo_with_env(name, args, [])
+    run_step("cargo", name, args, [])
 }
 
-fn run_cargo_with_env<const N: usize>(
+/// Run one lane step and classify every outcome: success, product/test
+/// failure (nonzero exit), not-completed (terminated without an exit code),
+/// or instrument spawn failure. Reporting-only is not gate success (#8407).
+fn run_step<const N: usize>(
+    program: &str,
     name: &str,
     args: &[&str],
     env: [(&str, &str); N],
 ) -> Result<()> {
-    println!("[rust-small-proof] $ cargo {}", args.join(" "));
-    let mut command = Command::new("cargo");
+    println!("[rust-small-proof] $ {program} {}", args.join(" "));
+    let mut command = Command::new(program);
     command.args(args);
     for (key, value) in env {
         command.env(key, value);
@@ -342,5 +353,39 @@ tests::gamma: test
         // keep the invocation anchored so removal is a reviewed change.
         let source = include_str!("rust_small_proof.rs");
         assert!(source.contains(r#"["diff", "--check"]"#));
+    }
+
+    #[test]
+    fn step_runner_propagates_success_nonzero_and_spawn_classification() {
+        // Runtime exercise of the run-level outcome classes (#8407: product
+        // failure vs instrument failure must stay distinct, and a nonzero
+        // step must fail the command).
+        let ok = run_step("git", "probe ok", &["--version"], []);
+        assert!(ok.is_ok(), "git --version must succeed: {ok:?}");
+
+        let nonzero = run_step("git", "probe nonzero", &["--no-such-flag-12972"], []);
+        let Err(nonzero) = nonzero else {
+            panic!("a failing step must propagate as an error");
+        };
+        let nonzero_text = format!("{nonzero:#}");
+        assert!(
+            nonzero_text.contains("product/test failure (exit code"),
+            "nonzero exit must classify as product/test failure: {nonzero_text}"
+        );
+
+        let spawn = run_step(
+            "definitely-not-a-real-binary-12972",
+            "probe spawn failure",
+            &["--version"],
+            [],
+        );
+        let Err(spawn) = spawn else {
+            panic!("a missing instrument must propagate as an error");
+        };
+        let spawn_text = format!("{spawn:#}");
+        assert!(
+            spawn_text.contains("instrument spawn error"),
+            "spawn failure must classify as instrument failure: {spawn_text}"
+        );
     }
 }
