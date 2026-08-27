@@ -71,6 +71,63 @@ static COMPLETION_ANALYSIS_STARTED_OBSERVER: std::sync::Mutex<
 // `COMPLETION_ANALYSIS_STARTED_OBSERVER`, which only `pub(crate)` in-crate test
 // code can reach), so under a plain `expose_lsp_test_api`-only build (no
 // `cfg(test)`) this would otherwise be genuinely unused (clippy::dead_code).
+
+/// Word prefix for the Dancer2 keyword gate (mirrors the core provider's
+/// `word_prefix` shape; kept local to avoid widening the core API).
+fn dancer2_word_prefix(source: &str, position: usize) -> (String, usize) {
+    let bounded = &source[..position.min(source.len())];
+    let start = bounded
+        .char_indices()
+        .rev()
+        .take_while(|(_, character)| character.is_alphanumeric() || *character == '_')
+        .last()
+        .map(|(index, _)| index)
+        .unwrap_or(position);
+    (bounded[start..].to_string(), start)
+}
+
+/// Whether the text before the cursor ends inside a quoted string.
+fn dancer2_line_starts_in_string(before_cursor: &str) -> bool {
+    let mut quote: Option<char> = None;
+    for character in before_cursor.chars() {
+        match quote {
+            Some(open) if character == open => quote = None,
+            Some(_) => {}
+            None if character == '\'' || character == '"' => quote = Some(character),
+            None => {}
+        }
+    }
+    quote.is_some()
+}
+
+/// `(package, name)` pairs of subroutine declarations in the file.
+///
+/// Shadowing is package-scoped: a `sub get` in one package does not own the
+/// name for a Dancer2-activated sibling package.
+pub(crate) fn dancer2_declared_sub_names(
+    node: &perl_parser::ast::Node,
+) -> std::collections::HashSet<(String, String)> {
+    let mut names = std::collections::HashSet::new();
+    fn walk(
+        node: &perl_parser::ast::Node,
+        package: &mut String,
+        names: &mut std::collections::HashSet<(String, String)>,
+    ) {
+        if let perl_parser::ast::NodeKind::Package { name, .. } = &node.kind {
+            *package = name.clone();
+        }
+        if let perl_parser::ast::NodeKind::Subroutine { name: Some(name), .. } = &node.kind {
+            names.insert((package.clone(), name.clone()));
+        }
+        for child in node.children() {
+            walk(child, package, names);
+        }
+    }
+    let mut package = "main".to_string();
+    walk(node, &mut package, &mut names);
+    names
+}
+
 #[cfg(test)]
 pub(crate) fn set_completion_analysis_started_observer(
     uri: &str,
@@ -862,6 +919,87 @@ impl LspServer {
                 text_edit_range: None,
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
+                label_details: None,
+            });
+        }
+    }
+
+    /// Adds canonical Dancer2 keyword completions (#8928).
+    ///
+    /// Offers imported default-DSL keywords from the canonical import facts
+    /// under exact activation only. Ranking keeps ordinary results ahead
+    /// (keyword items carry a trailing sort key), locally declared
+    /// subroutine names win over same-named keywords, and the slice stays
+    /// silent in member-access, string, and `use`/`require` contexts.
+    fn add_dancer2_keyword_completions(
+        &self,
+        completions: &mut Vec<crate::completion::CompletionItem>,
+        uri: &str,
+        text: &str,
+        offset: usize,
+        snapshot: &crate::state::ParsedSnapshot,
+        ast: &perl_parser::ast::Node,
+    ) {
+        use perl_lsp_rs_core::providers::dancer2::keyword_completion_candidates;
+        use std::borrow::Cow;
+
+        // Word prefix gating: keywords are offered only against a non-empty
+        // identifier prefix so an empty prefix page is never swamped.
+        let (prefix, token_start) = dancer2_word_prefix(text, offset);
+        if prefix.is_empty() {
+            return;
+        }
+        // No keywords in member-access position, module-import position, or
+        // string contexts.
+        if Self::is_member_subscript_completion_context(&text[..offset], token_start) {
+            return;
+        }
+        if Self::is_module_import_completion_context(text, offset) {
+            return;
+        }
+        if text[..offset].lines().next_back().is_some_and(dancer2_line_starts_in_string) {
+            return;
+        }
+        let Some((context, package)) =
+            self.dancer2_package_at(uri, text, snapshot.content_hash(), ast, offset)
+        else {
+            return;
+        };
+        let declared = dancer2_declared_sub_names(ast);
+        let candidates = keyword_completion_candidates(
+            &context.activations,
+            &context.facts,
+            &package,
+            offset,
+            &|name| declared.contains(&(package.clone(), name.to_string())),
+        );
+        for candidate in candidates {
+            if !candidate.label.starts_with(prefix.as_str()) {
+                continue;
+            }
+            completions.push(crate::completion::CompletionItem {
+                label: Cow::Owned(candidate.label.clone()),
+                kind: crate::completion::CompletionItemKind::Keyword,
+                detail: Some(Cow::Owned(candidate.detail.clone())),
+                documentation: Some(Cow::Owned(format!(
+                    "Dancer2 DSL keyword ({}); canonical import fact",
+                    match candidate.scope {
+                        perl_semantic_facts::framework_adapters::dancer2::DslKeywordScope::Global =>
+                            "global",
+                        perl_semantic_facts::framework_adapters::dancer2::DslKeywordScope::RouteHandlerOnly =>
+                            "route handler only",
+                        _ => "unknown",
+                    }
+                ))),
+                insert_text: None,
+                insert_text_format: crate::completion::InsertTextFormat::PlainText,
+                // Keywords sort after every ordinary result: the framework
+                // slice must never outrank lexical/workspace candidates.
+                sort_text: Some(Cow::Owned(format!("zzz-dancer2-{}", candidate.label))),
+                filter_text: None,
+                additional_edits: Vec::new(),
+                text_edit_range: None,
+                commit_characters: None,
                 label_details: None,
             });
         }
@@ -1924,6 +2062,22 @@ impl LspServer {
                         message: "Request cancelled during completion enrichment".to_string(),
                         data: None,
                     });
+                }
+
+                // Canonical Dancer2 keyword slice (#8928): imported
+                // default-DSL keywords under exact activation, ranked after
+                // ordinary results; zero framework output without activation.
+                if let Some(snapshot) = parsed.as_ref()
+                    && let Some(ast) = snapshot.ast()
+                {
+                    self.add_dancer2_keyword_completions(
+                        &mut completions,
+                        uri,
+                        &doc.text,
+                        offset,
+                        snapshot,
+                        ast,
+                    );
                 }
 
                 let (completions, is_incomplete) =
