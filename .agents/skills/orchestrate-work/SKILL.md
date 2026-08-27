@@ -181,15 +181,25 @@ one candidate.
 Salvage has a written procedure. Before returning `NOT_PROVEN` or reassigning a quiet
 lane:
 
-1. Survey the worktree and the remote head for unpushed state — uncommitted changes,
+1. Confirm the original writer cannot also write before any salvage mutation: verify
+   process-group/budget death through the task handle, or record an explicit
+   writer-authority transfer in the durable subject. Silence alone is not
+   confirmation.
+2. Survey the worktree and the remote head for unpushed state — uncommitted changes,
    unpushed commits, an armed-but-unfired auto-merge.
-2. Push salvaged work immediately: reuse the existing PR branch when one exists, or
-   push WIP to a named salvage branch and open its PR without waiting for polish.
-   Remote CI then becomes the verification of record — red salvage runs are repair
-   targets, not failures to hide.
-3. Order the relaunch inventory by dependency-gate priority, not by original launch
+3. Push salvaged work immediately. Prefer a fresh named salvage branch
+   (`salvage/<branch>`) over reusing the existing PR branch unless the writer stop is
+   confirmed; reuse means this lane assumes the single-writer role and says so in its
+   typed return. Open the salvage PR without waiting for polish — remote CI then
+   becomes the verification of record, and red salvage runs are repair targets, not
+   failures to hide. Never force-push over another head.
+4. Order the relaunch inventory by dependency-gate priority, not by original launch
    order.
-4. Return the result typed as synthesized/salvaged rather than `FAILED_NO_RETURN`.
+5. Return the lane result typed as synthesized/salvaged rather than
+   `FAILED_NO_RETURN` — that types the artifact's provenance, not the claim's state:
+   the claim itself remains exactly what the salvaged state proves (`NOT_PROVEN` or
+   `PARTIAL`) until affected proof and judgment catch up. A durable artifact is not a
+   completed claim.
 
 Silence is also not spare capacity and not completion. A lane holding a current wait
 condition is not stalled, and re-tasking it discards work in flight.

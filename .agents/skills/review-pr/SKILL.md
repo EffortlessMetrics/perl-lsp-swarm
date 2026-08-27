@@ -258,8 +258,12 @@ Scale the published record to the seam. The full template above plus a fresh
 irrevocable boundary. A mechanical, zero-substantive-thread lane may instead publish
 a bounded short record — two lines naming the proposition checked and its outcome,
 still inside one submitted `COMMENT` review that names an explicit substantive review
-result. This proportionality rule replaces one-mode ceremony; it never licenses an
-empty verdict.
+result. Where an enforced currentness consumer runs regardless —
+`scripts/pre-merge-check.sh` accepting only the checker's fully-marked
+`REVIEW_CURRENT`, or an ops merge asserting `semantic:v1` currency — the lane
+publishes the full marked record whatever its diff class. This proportionality rule
+replaces one-mode ceremony; it never licenses an empty verdict and never overrides
+an active gate.
 
 Do not submit only `LGTM`, `review complete`, reviewer identity, head SHA, check
 summary, or status line. A clean review is valid when it records what was examined,
