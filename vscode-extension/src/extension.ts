@@ -102,6 +102,11 @@ export { formatIssueDiagnosticInfo } from './supportCommands';
 import { ExtensionLanguageClientLifecycle } from './extensionComposition';
 import type { LifecycleState } from './languageClientLifecycle';
 import {
+  StaleDocumentReplayError,
+  replayOpenPerlDocumentsWhenReady,
+} from './languageClientDocumentSync';
+import { settleLspProviderCall } from './lspProviderCall';
+import {
   CrashRecoveryArbiter,
   type CrashObservationSource,
   type CrashRecoveryDecision,
@@ -216,7 +221,6 @@ export function createBinaryIdentityCommand(
 
 const languageClientStartupMetrics = new LanguageClientStartupMetrics();
 const activeDocumentReadiness = new ActiveDocumentReadiness();
-let latestLanguageClientGeneration = 0;
 const featureActivationMetrics = new FeatureActivationMetrics();
 
 export function getLanguageClientStartupMetrics(): LanguageClientStartupMetricsSnapshot {
@@ -1747,7 +1751,11 @@ function createLanguageClientLifecycle(
       languageClientStartupMetrics.setServerVersion(
         startedClient.initializeResult?.serverInfo?.version,
       );
-      await finalizeStartedLanguageClient(context, startedClient, latestLanguageClientGeneration);
+      const generation = languageClientLifecycle?.snapshot.generation;
+      if (generation === undefined) {
+        throw new Error('Language-client lifecycle is unavailable during startup finalization.');
+      }
+      await finalizeStartedLanguageClient(context, startedClient, generation);
     },
     onFailed: (snapshot) => {
       languageClientStartupMetrics.finishServerStart('error');
@@ -1799,53 +1807,39 @@ async function finalizeStartedLanguageClient(
   startedClient: LanguageClient,
   generation: number,
 ): Promise<void> {
+  const isCurrent = (): boolean =>
+    languageClientLifecycle?.controller.isCurrent(startedClient, generation) === true;
+  const assertCurrent = (): void => {
+    if (!isCurrent()) {
+      throw new StaleDocumentReplayError();
+    }
+  };
+
+  assertCurrent();
   // A LanguageClient restart does not replay didOpen for documents that VS Code
   // kept open while the previous client was stopped. Rehydrate those documents
   // before providers issue requests against the new server.
   if (generation > 1) {
-    // Readiness-gated replay (F4): the server's `textDocument/didOpen` handler
-    // is only ready after `initialized`. A fixed 100ms leased-time is not
-    // proof-gated. Gate on the authoritative lifecycle snapshot reaching
-    // `running` for this generation or the client reaching Running, bounded
-    // to 2s so a loaded hosted runner still converges. Keep a 100ms floor
-    // afterwards so a tight replay is not dropped even when already Running.
-    const readinessDeadline = Date.now() + 2000;
-    let gatedReady = false;
-    while (Date.now() < readinessDeadline) {
-      const clientRunning =
-        (startedClient as unknown as { state?: number }).state === LanguageClientState.Running;
-      const lifecycleRunning =
-        languageClientLifecycle?.snapshot.state === 'running' &&
-        languageClientLifecycle.snapshot.generation === generation;
-      if (clientRunning || lifecycleRunning) {
-        gatedReady = true;
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    if (!gatedReady) {
-      outputChannel?.warn(
-        `[lifecycle] didOpen replay proceeding without readiness gate (state: ${String(languageClientLifecycle?.snapshot.state ?? 'unknown')}, generation: ${String(languageClientLifecycle?.snapshot.generation ?? generation)}) — using fallback delay`,
-      );
-    }
-    // 100ms floor preserved as fallback even when already gated ready, so the
-    // server's didOpen handler has a moment to become ready on a loaded host.
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    try {
-      const replay = await synchronizeOpenPerlDocuments(startedClient);
-      if (replay.attempted > 0 && replay.succeeded === 0) {
-        outputChannel?.warn(
-          `[lifecycle] didOpen replay failed for all ${replay.attempted} document(s) — readiness will not converge; failures: ${replay.failures.join('; ')}`,
-        );
-      } else if (replay.failed > 0) {
-        outputChannel?.warn(
-          `[lifecycle] didOpen replay partially failed: ${replay.succeeded} succeeded, ${replay.failed} failed — ${replay.failures.join('; ')}`,
-        );
-      }
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      outputChannel?.warn(`[lifecycle] didOpen replay failed: ${message}`);
-    }
+    const openPerlDocuments = vscode.workspace.textDocuments
+      .filter(
+        (document) =>
+          document.languageId === 'perl' &&
+          (document.uri.scheme === 'file' || document.uri.scheme === 'untitled'),
+      )
+      .map((document) => ({
+        uri: document.uri.toString(),
+        languageId: document.languageId,
+        version: document.version,
+        text: document.getText(),
+      }));
+    await replayOpenPerlDocumentsWhenReady(
+      startedClient,
+      openPerlDocuments,
+      LanguageClientState.Running,
+      isCurrent,
+      2000,
+    );
+    assertCurrent();
   }
 
   // This hook is part of the lifecycle controller so initial startup and
@@ -1866,6 +1860,7 @@ async function finalizeStartedLanguageClient(
   });
 
   await refreshTestAdapter(context);
+  assertCurrent();
   refreshStreamingController(startedClient);
   try {
     await syncLanguageClientConfiguration(startedClient);
@@ -1873,46 +1868,9 @@ async function finalizeStartedLanguageClient(
     const message = error instanceof Error ? error.message : String(error);
     outputChannel.error(`[configuration] initial synchronization failed: ${message}`);
   }
+  assertCurrent();
   lastStartupDiagnosis = undefined;
   outputChannel.info('Perl Language Server started successfully');
-}
-
-async function synchronizeOpenPerlDocuments(
-  client: LanguageClient,
-): Promise<{ attempted: number; succeeded: number; failed: number; failures: string[] }> {
-  let attempted = 0;
-  let succeeded = 0;
-  let failed = 0;
-  const failures: string[] = [];
-  for (const document of vscode.workspace.textDocuments) {
-    if (
-      document.languageId !== 'perl' ||
-      (document.uri.scheme !== 'file' && document.uri.scheme !== 'untitled')
-    ) {
-      continue;
-    }
-    attempted += 1;
-    try {
-      await client.sendNotification('textDocument/didOpen', {
-        textDocument: {
-          uri: document.uri.toString(),
-          languageId: document.languageId,
-          version: document.version,
-          text: document.getText(),
-        },
-      });
-      succeeded += 1;
-    } catch (error: unknown) {
-      failed += 1;
-      const message = error instanceof Error ? error.message : String(error);
-      const entry = `${document.uri.toString()}: ${message}`;
-      failures.push(entry);
-      outputChannel?.warn(
-        `[lifecycle] didOpen replay for ${document.uri.toString()} failed: ${message}`,
-      );
-    }
-  }
-  return { attempted, succeeded, failed, failures };
 }
 
 async function initializeLanguageClient(context: vscode.ExtensionContext): Promise<boolean> {
@@ -2008,7 +1966,6 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
 
 function createLanguageClient(serverPath: string): LanguageClient {
   const generation = activeDocumentReadiness.beginGeneration();
-  latestLanguageClientGeneration = generation;
   healthWidget?.seedIndexReadinessState('building');
   const serverOptions: ServerOptions = {
     run: {
@@ -2042,73 +1999,85 @@ function createLanguageClient(serverPath: string): LanguageClient {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        try {
-          const result = await next(document, position, context, token);
-          recordLspProviderOutcome('Completion', document, result);
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('Completion', error);
-        }
+        return settleLspProviderCall(
+          async () => {
+            const result = await next(document, position, context, token);
+            recordLspProviderOutcome('Completion', document, result);
+            return result;
+          },
+          null,
+          (error) => handleLspProviderError('Completion', error),
+        );
       },
       provideDefinition: async (document, position, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        try {
-          const result = await next(document, position, token);
-          recordLspProviderOutcome('Definition', document, result);
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('Definition', error);
-        }
+        return settleLspProviderCall(
+          async () => {
+            const result = await next(document, position, token);
+            recordLspProviderOutcome('Definition', document, result);
+            return result;
+          },
+          null,
+          (error) => handleLspProviderError('Definition', error),
+        );
       },
       provideHover: async (document, position, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        try {
-          const result = await next(document, position, token);
-          recordLspProviderOutcome('Hover', document, result);
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('Hover', error);
-        }
+        return settleLspProviderCall(
+          async () => {
+            const result = await next(document, position, token);
+            recordLspProviderOutcome('Hover', document, result);
+            return result;
+          },
+          null,
+          (error) => handleLspProviderError('Hover', error),
+        );
       },
       provideReferences: async (document, position, options, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        try {
-          const result = await next(document, position, options, token);
-          recordLspProviderOutcome('References', document, result);
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('References', error);
-        }
+        return settleLspProviderCall(
+          async () => {
+            const result = await next(document, position, options, token);
+            recordLspProviderOutcome('References', document, result);
+            return result;
+          },
+          null,
+          (error) => handleLspProviderError('References', error),
+        );
       },
       provideDocumentSymbols: async (document, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        try {
-          const result = await next(document, token);
-          recordLspProviderOutcome('Symbols', document, result);
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('Symbols', error);
-        }
+        return settleLspProviderCall(
+          async () => {
+            const result = await next(document, token);
+            recordLspProviderOutcome('Symbols', document, result);
+            return result;
+          },
+          null,
+          (error) => handleLspProviderError('Symbols', error),
+        );
       },
       provideRenameEdits: async (document, position, newName, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        try {
-          const result = await next(document, position, newName, token);
-          recordLspProviderOutcome('Rename', document, result, 'safe_refusal');
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('Rename', error);
-        }
+        return settleLspProviderCall(
+          async () => {
+            const result = await next(document, position, newName, token);
+            recordLspProviderOutcome('Rename', document, result, 'safe_refusal');
+            return result;
+          },
+          null,
+          (error) => handleLspProviderError('Rename', error),
+        );
       },
       provideCodeLenses: async (document, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
@@ -2427,18 +2396,11 @@ function recordLspProviderOutcome(
   healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
 }
 
-function handleLspProviderError(label: string, error: unknown): null {
-  if (isRequestCancellation(error)) {
-    return null;
-  }
+function handleLspProviderError(label: string, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
-  if (message.includes('Client got disposed')) {
-    return null;
-  }
   const presentation = presentLspProviderError(label, message);
   healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
   outputChannel?.warn(`[provider] ${label} failed: ${message}`);
-  return null;
 }
 
 function isRequestCancellation(error: unknown): boolean {
