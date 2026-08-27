@@ -635,20 +635,23 @@ impl<'a> Parser<'a> {
             }
 
         // An unrecognised heredoc may leak its body and terminator into the
-        // token stream. Exempt only the exact delimiter line, not every lone
-        // identifier: `foo` followed by `print` is a real missing terminator.
-        if Self::is_bare_identifier_statement(stmt) {
-            let matches_recovery_tag = self.heredoc_recovery_tag.as_deref().is_some_and(|tag| {
-                let start = stmt.location.start.min(self.src_bytes.len());
-                let end = stmt.location.end.min(self.src_bytes.len());
-                std::str::from_utf8(&self.src_bytes[start..end])
-                    .map(|text| text.trim() == tag)
-                    .unwrap_or(false)
-            });
-            if matches_recovery_tag {
+        // token stream. While the recovery tag is armed, every statement
+        // before the exact delimiter line is body content, whatever shape it
+        // parses as — a multi-line leaked body must not read as a missing
+        // terminator (#12839). The delimiter line itself ends the body. A
+        // missing `;` between two statements written without a heredoc
+        // introducer (`foo` followed by `print`) still reports, because no
+        // tag is armed there.
+        if let Some(tag) = self.heredoc_recovery_tag.as_deref() {
+            let start = stmt.location.start.min(self.src_bytes.len());
+            let end = stmt.location.end.min(self.src_bytes.len());
+            let is_delimiter = std::str::from_utf8(&self.src_bytes[start..end])
+                .map(|text| text.trim() == tag)
+                .unwrap_or(false);
+            if is_delimiter {
                 self.heredoc_recovery_tag = None;
-                return Ok(());
             }
+            return Ok(());
         }
 
         // Only report when the leftover token begins a later line.
@@ -770,17 +773,6 @@ impl<'a> Parser<'a> {
                     | TokenKind::RightBracket
             )
         )
-    }
-
-    /// Whether the statement is a single bare identifier.
-    fn is_bare_identifier_statement(node: &Node) -> bool {
-        match &node.kind {
-            NodeKind::Identifier { .. } => true,
-            NodeKind::ExpressionStatement { expression } => {
-                matches!(expression.kind, NodeKind::Identifier { .. })
-            }
-            _ => false,
-        }
     }
 
     /// Whether the subtree declares a heredoc.
@@ -920,8 +912,13 @@ impl<'a> Parser<'a> {
                     continue;
                 }
                 _ => {
-                    if let Some(end) = Self::quote_like_body_end(span, index) {
-                        index = end;
+                    if let Some((end, rescan_start)) = Self::quote_like_body_skip(span, index) {
+                        // An s///e replacement is evaluated code, so a heredoc
+                        // introducer inside it is real: resume scanning at the
+                        // replacement body instead of skipping over it
+                        // (#12839). Every other quote-like body keeps hiding
+                        // `<<TAG` as ordinary text.
+                        index = rescan_start.unwrap_or(end);
                         continue;
                     }
                     index += 1;
@@ -959,6 +956,30 @@ impl<'a> Parser<'a> {
         }) else {
             return None;
         };
+        let Some(operator) = OPERATORS.iter().find(|operator| {
+            span.get(index..index + operator.len()) == Some(**operator)
+        }) else {
+            return None;
+        };
+        let _ = operator;
+        Self::quote_like_body_skip(span, index).map(|(end, _)| end)
+    }
+
+    /// Body-skip result for a quote-like expression: the index just past the
+    /// expression, plus the replacement-body start when the expression is an
+    /// `s///e` substitution whose replacement is evaluated code.
+    fn quote_like_body_skip(span: &[u8], index: usize) -> Option<(usize, Option<usize>)> {
+        const OPERATORS: &[&[u8]] = &[b"tr", b"qq", b"qx", b"qr", b"qw", b"m", b"s", b"y", b"q"];
+
+        if index > 0 && matches!(span[index - 1], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'$') {
+            return None;
+        }
+
+        let Some(operator) = OPERATORS.iter().find(|operator| {
+            span.get(index..index + operator.len()) == Some(**operator)
+        }) else {
+            return None;
+        };
         let mut delimiter_index = index + operator.len();
         while matches!(span.get(delimiter_index), Some(b' ' | b'\t' | b'\r' | b'\n')) {
             delimiter_index += 1;
@@ -978,7 +999,11 @@ impl<'a> Parser<'a> {
         let first_delimiter = span[delimiter_index];
         let paired = matches!(first_delimiter, b'(' | b'[' | b'{' | b'<');
         let mut cursor = delimiter_index;
+        let mut second_body_start = None;
         for part in 0..parts {
+            if part == 1 {
+                second_body_start = Some(cursor);
+            }
             cursor = if part == 0 || paired {
                 Self::quote_like_part_end(span, cursor)?
             } else {
@@ -990,7 +1015,21 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        Some(cursor)
+
+        // s///e evaluates its replacement as code: a `<<TAG` there is a real
+        // heredoc introducer, and the scan must see it rather than skip it.
+        let has_embedded_code = if *operator == b"s" {
+            let mut modifier_index = cursor;
+            while matches!(span.get(modifier_index), Some(byte) if byte.is_ascii_alphabetic())
+            {
+                modifier_index += 1;
+            }
+            span.get(cursor..modifier_index).is_some_and(|mods| mods.contains(&b'e'))
+        } else {
+            false
+        };
+        let rescan_start = if has_embedded_code { second_body_start } else { None };
+        Some((cursor, rescan_start))
     }
 
     fn quote_like_unpaired_end(span: &[u8], start: usize, delimiter: u8) -> Option<usize> {

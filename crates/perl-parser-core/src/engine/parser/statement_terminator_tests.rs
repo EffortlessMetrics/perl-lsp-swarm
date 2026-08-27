@@ -263,4 +263,44 @@ mod tests {
             "a genuine missing-semicolon must still be counted"
         );
     }
+
+    /// #12839: an unrecognised heredoc inside a substitution replacement
+    /// leaks its multi-line body into the token stream. Body lines before the
+    /// exact delimiter are heredoc content, not missing terminators — the
+    /// upstream `base/lex.t` case from the weekly perl-core-harness red.
+    #[test]
+    fn leaked_multi_line_heredoc_body_is_not_a_missing_semicolon() {
+        // Minimal reproduction from base/lex.t (5.42.2): the heredoc
+        // introducer sits inside `s/.../substr(<<EOF, 0, 0)/e` and the
+        // body line `Ignored` parses as a bare identifier statement.
+        let source = "$foo =~ s/^not /substr(<<EOF, 0, 0)/e;\n  Ignored\nEOF\nprint $foo;\n";
+        assert_eq!(
+            inferred_semicolons(source),
+            0,
+            "a leaked multi-line heredoc body must not report a missing semicolon"
+        );
+    }
+
+    /// The delimiter line ends the leaked body: a genuine missing terminator
+    /// AFTER it must still report.
+    #[test]
+    fn missing_semicolon_after_heredoc_delimiter_still_reports() {
+        // After `EOF` ends the body, `print $foo` and `print "hi"` on
+        // separate lines are two statements missing their separator.
+        let source =
+            "$foo =~ s/^not /substr(<<EOF, 0, 0)/e;\n  Ignored\nEOF\nprint $foo\nprint \"hi\";\n";
+        assert_eq!(
+            inferred_semicolons(source),
+            1,
+            "a missing semicolon after the heredoc delimiter must still report"
+        );
+    }
+
+    /// Without any heredoc introducer, adjacent statements on separate lines
+    /// remain a real missing terminator — the arming heuristic must not widen
+    /// into skipping ordinary statement sequences.
+    #[test]
+    fn adjacent_statements_without_heredoc_still_report() {
+        assert_eq!(inferred_semicolons("foo\nprint \"hi\";\n"), 1);
+    }
 }
