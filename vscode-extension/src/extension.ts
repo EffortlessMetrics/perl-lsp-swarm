@@ -1796,13 +1796,45 @@ async function finalizeStartedLanguageClient(
   // kept open while the previous client was stopped. Rehydrate those documents
   // before providers issue requests against the new server.
   if (generation > 1) {
-    // Give the freshly started client a moment to finish its `initialized`
-    // handshake before replaying didOpen: the server's `textDocument/didOpen`
-    // handler is only ready after `initialized`, and a tight replay can be
-    // dropped on a loaded hosted runner (#12757).
+    // Readiness-gated replay (F4): the server's `textDocument/didOpen` handler
+    // is only ready after `initialized`. A fixed 100ms leased-time is not
+    // proof-gated. Gate on the authoritative lifecycle snapshot reaching
+    // `running` for this generation or the client reaching Running, bounded
+    // to 2s so a loaded hosted runner still converges. Keep a 100ms floor
+    // afterwards so a tight replay is not dropped even when already Running.
+    const readinessDeadline = Date.now() + 2000;
+    let gatedReady = false;
+    while (Date.now() < readinessDeadline) {
+      const clientRunning =
+        (startedClient as unknown as { state?: number }).state === LanguageClientState.Running;
+      const lifecycleRunning =
+        languageClientLifecycle?.snapshot.state === 'running' &&
+        languageClientLifecycle.snapshot.generation === generation;
+      if (clientRunning || lifecycleRunning) {
+        gatedReady = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (!gatedReady) {
+      outputChannel?.warn(
+        `[lifecycle] didOpen replay proceeding without readiness gate (state: ${String(languageClientLifecycle?.snapshot.state ?? 'unknown')}, generation: ${String(languageClientLifecycle?.snapshot.generation ?? generation)}) — using fallback delay`,
+      );
+    }
+    // 100ms floor preserved as fallback even when already gated ready, so the
+    // server's didOpen handler has a moment to become ready on a loaded host.
     await new Promise((resolve) => setTimeout(resolve, 100));
     try {
-      await synchronizeOpenPerlDocuments(startedClient);
+      const replay = await synchronizeOpenPerlDocuments(startedClient);
+      if (replay.attempted > 0 && replay.succeeded === 0) {
+        outputChannel?.warn(
+          `[lifecycle] didOpen replay failed for all ${replay.attempted} document(s) — readiness will not converge; failures: ${replay.failures.join('; ')}`,
+        );
+      } else if (replay.failed > 0) {
+        outputChannel?.warn(
+          `[lifecycle] didOpen replay partially failed: ${replay.succeeded} succeeded, ${replay.failed} failed — ${replay.failures.join('; ')}`,
+        );
+      }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       outputChannel?.warn(`[lifecycle] didOpen replay failed: ${message}`);
@@ -1838,7 +1870,13 @@ async function finalizeStartedLanguageClient(
   outputChannel.info('Perl Language Server started successfully');
 }
 
-async function synchronizeOpenPerlDocuments(client: LanguageClient): Promise<void> {
+async function synchronizeOpenPerlDocuments(
+  client: LanguageClient,
+): Promise<{ attempted: number; succeeded: number; failed: number; failures: string[] }> {
+  let attempted = 0;
+  let succeeded = 0;
+  let failed = 0;
+  const failures: string[] = [];
   for (const document of vscode.workspace.textDocuments) {
     if (
       document.languageId !== 'perl' ||
@@ -1846,7 +1884,7 @@ async function synchronizeOpenPerlDocuments(client: LanguageClient): Promise<voi
     ) {
       continue;
     }
-
+    attempted += 1;
     try {
       await client.sendNotification('textDocument/didOpen', {
         textDocument: {
@@ -1856,13 +1894,18 @@ async function synchronizeOpenPerlDocuments(client: LanguageClient): Promise<voi
           text: document.getText(),
         },
       });
+      succeeded += 1;
     } catch (error: unknown) {
+      failed += 1;
       const message = error instanceof Error ? error.message : String(error);
+      const entry = `${document.uri.toString()}: ${message}`;
+      failures.push(entry);
       outputChannel?.warn(
         `[lifecycle] didOpen replay for ${document.uri.toString()} failed: ${message}`,
       );
     }
   }
+  return { attempted, succeeded, failed, failures };
 }
 
 async function initializeLanguageClient(context: vscode.ExtensionContext): Promise<boolean> {
@@ -2108,13 +2151,19 @@ function createLanguageClient(serverPath: string): LanguageClient {
           healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
           return edits;
         } catch (err: unknown) {
+          if (isRequestCancellation(err)) {
+            return null;
+          }
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('Client got disposed')) {
+            return null;
+          }
           const code =
             err && typeof err === 'object' && 'code' in err
               ? (err as { code: unknown }).code
               : undefined;
           // Do not notify for request cancellations (code -32800)
           if (code !== -32800) {
-            const msg = err instanceof Error ? err.message : String(err);
             handleFormattingError(msg, outputChannel);
             const presentation = presentFormattingProviderError(msg);
             healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
@@ -2132,17 +2181,189 @@ function createLanguageClient(serverPath: string): LanguageClient {
           healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
           return edits;
         } catch (err: unknown) {
+          if (isRequestCancellation(err)) {
+            return null;
+          }
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('Client got disposed')) {
+            return null;
+          }
           const code =
             err && typeof err === 'object' && 'code' in err
               ? (err as { code: unknown }).code
               : undefined;
           if (code !== -32800) {
-            const msg = err instanceof Error ? err.message : String(err);
             handleFormattingError(msg, outputChannel);
             const presentation = presentFormattingProviderError(msg, true);
             healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
           }
           return null;
+        }
+      },
+      provideFoldingRanges: async (document, context, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return [];
+        }
+        try {
+          const result = await next(document, context, token);
+          return result ?? [];
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return [];
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return [];
+          }
+          outputChannel?.warn(`[provider] FoldingRanges failed: ${message}`);
+          return [];
+        }
+      },
+      provideInlayHints: async (document, range, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return [];
+        }
+        try {
+          const result = await next(document, range, token);
+          return result ?? [];
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return [];
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return [];
+          }
+          outputChannel?.warn(`[provider] InlayHints failed: ${message}`);
+          return [];
+        }
+      },
+      provideDocumentSemanticTokens: async (document, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
+        try {
+          return (await next(document, token)) ?? null;
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return null;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return null;
+          }
+          outputChannel?.warn(`[provider] SemanticTokens failed: ${message}`);
+          return null;
+        }
+      },
+      provideDocumentRangeSemanticTokens: async (document, range, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
+        try {
+          return (await next(document, range, token)) ?? null;
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return null;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return null;
+          }
+          outputChannel?.warn(`[provider] RangeSemanticTokens failed: ${message}`);
+          return null;
+        }
+      },
+      provideDocumentSemanticTokensEdits: async (document, previousResultId, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
+        try {
+          return (await next(document, previousResultId, token)) ?? null;
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return null;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return null;
+          }
+          outputChannel?.warn(`[provider] SemanticTokensEdits failed: ${message}`);
+          return null;
+        }
+      },
+      provideCodeActions: async (document, range, context, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return [];
+        }
+        try {
+          const result = await next(document, range, context, token);
+          return result ?? [];
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return [];
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return [];
+          }
+          outputChannel?.warn(`[provider] CodeActions failed: ${message}`);
+          return [];
+        }
+      },
+      resolveCodeAction: async (item, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return item;
+        }
+        try {
+          return (await next(item, token)) ?? item;
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return item;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return item;
+          }
+          outputChannel?.warn(`[provider] CodeAction resolve failed: ${message}`);
+          return item;
+        }
+      },
+      provideDocumentLinks: async (document, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return [];
+        }
+        try {
+          const result = await next(document, token);
+          return result ?? [];
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return [];
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return [];
+          }
+          outputChannel?.warn(`[provider] DocumentLinks failed: ${message}`);
+          return [];
+        }
+      },
+      resolveDocumentLink: async (link, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return link;
+        }
+        try {
+          return (await next(link, token)) ?? link;
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return link;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return link;
+          }
+          outputChannel?.warn(`[provider] DocumentLink resolve failed: ${message}`);
+          return link;
         }
       },
       handleWorkDoneProgress: (token, params, next) => {
