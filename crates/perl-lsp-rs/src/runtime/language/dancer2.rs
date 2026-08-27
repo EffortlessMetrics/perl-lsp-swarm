@@ -183,7 +183,14 @@ impl LspServer {
             timeout,
         ) {
             perl_module::ModuleUriResolution::Resolved(resolved_uri) => Some(resolved_uri),
-            _ => None,
+            // Timeout parity with the shared resolver: a slow or networked
+            // root degrades to no observation, but the cause stays visible
+            // instead of silently reading as `NotFound`.
+            perl_module::ModuleUriResolution::TimedOut => {
+                tracing::warn!("Module resolution timeout for: Dancer2");
+                None
+            }
+            perl_module::ModuleUriResolution::NotFound => None,
         }
     }
 
