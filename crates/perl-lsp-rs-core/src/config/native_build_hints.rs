@@ -343,10 +343,10 @@ fn rejected_value_len(source: &str, start: usize) -> usize {
         match ch {
             '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => stack.push(ch),
-            ')' | ']' | '}' => {
-                if stack.pop().is_none() {
-                    return idx.saturating_sub(start);
-                }
+            // The pop *is* the balance check: an unmatched closer ends the
+            // value, a matched one just closes its group and scanning goes on.
+            ')' | ']' | '}' if stack.pop().is_none() => {
+                return idx.saturating_sub(start);
             }
             ',' | ';' if stack.is_empty() => return idx.saturating_sub(start),
             _ => {}
@@ -733,6 +733,30 @@ mod tests {
     use super::*;
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    /// `rejected_value_len` must span a *balanced* nested group and stop at
+    /// the first closer with no opener. Both directions matter: the balance
+    /// check lives in a match guard whose `stack.pop()` runs on every closer,
+    /// so an inverted or short-circuited check would either truncate the span
+    /// at the inner `)` or run past the end of the value.
+    #[test]
+    fn rejected_value_len_spans_balanced_groups_and_stops_at_an_unmatched_closer() {
+        let source = "LIBS => join(q(,), @libs), OBJECT => 'x.o'";
+        let start = source.find("join").unwrap_or(0);
+        let span = rejected_value_len(source, start);
+        assert_eq!(
+            &source[start..start + span],
+            "join(q(,), @libs)",
+            "a balanced nested group must not terminate the value",
+        );
+
+        let unmatched = "join(q(,), @libs)) => 1";
+        assert_eq!(
+            rejected_value_len(unmatched, 0),
+            "join(q(,), @libs)".len(),
+            "the first closer without an opener must end the value",
+        );
+    }
 
     /// Fresh temporary workspace root accepting optional build scripts.
     struct HintRoot {
