@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12151 |
-| Rust-family files | 3720 |
-| Non-Rust files | 8431 |
-| Allowlisted | 6197 |
+| Total tracked files | 12155 |
+| Rust-family files | 3721 |
+| Non-Rust files | 8434 |
+| Allowlisted | 6200 |
 | Unclassified | 2234 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 445 |
-| documentation | 2759 |
+| documentation | 2762 |
 | generated | 2 |
 | production | 329 |
 | test | 2026 |
@@ -3171,6 +3171,9 @@
 | `.spec/12330-compiler-profile-initial-rows/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12330-compiler-profile-initial-rows/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/12330-compiler-profile-initial-rows/inventory.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12823-corpus-cache-cycle/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12823-corpus-cache-cycle/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/12823-corpus-cache-cycle/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/context.md` | documentation | `non-rust-root-governance-docs` | docs |
