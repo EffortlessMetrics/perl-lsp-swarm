@@ -48,6 +48,7 @@ import {
   _spawnReplacementCrashGenerationForTest,
   _setLanguageClientLifecycleForTest,
   _handleLifecycleClientStateChangeForTest,
+  _languageClientConnectionOptionsForTest,
 } from '../extension';
 
 // vscode-languageclient State numeric values (Stopped=1, Running=2, Starting=3).
@@ -235,6 +236,10 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     showErrorMessage.mockResolvedValue(undefined);
     showWarningMessage.mockReset();
     showWarningMessage.mockResolvedValue(undefined);
+  });
+
+  test('delegates connection-close restart ownership exclusively to the lifecycle arbiter', () => {
+    expect(_languageClientConnectionOptionsForTest()).toEqual({ maxRestartCount: 0 });
   });
 
   test('unexpected Running → Stopped shows an error toast and captures the diagnosis', async () => {

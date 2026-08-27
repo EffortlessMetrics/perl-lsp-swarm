@@ -180,6 +180,10 @@ let streamingController: StreamingCompletionController | undefined;
 let languageClientLifecycle:
   | ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent>
   | undefined;
+// The extension lifecycle and CrashRecoveryArbiter are the sole restart owners.
+// Disable vscode-languageclient's independent connection-close restart loop so
+// one server crash cannot create overlapping replacement clients/processes.
+const LANGUAGE_CLIENT_CONNECTION_OPTIONS = Object.freeze({ maxRestartCount: 0 });
 /**
  * The single owner of "should perllsp be running?" (#8180). Extension
  * activation composes it; nothing else may start the language client directly.
@@ -411,6 +415,11 @@ export function _setLanguageClientLifecycleForTest(
   lifecycle: ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent> | undefined,
 ): void {
   languageClientLifecycle = lifecycle;
+}
+
+/** Test helper exposing the production connection-close ownership policy. */
+export function _languageClientConnectionOptionsForTest(): Readonly<{ maxRestartCount: number }> {
+  return LANGUAGE_CLIENT_CONNECTION_OPTIONS;
 }
 
 /**
@@ -1985,6 +1994,7 @@ function createLanguageClient(serverPath: string): LanguageClient {
   );
 
   const clientOptions: LanguageClientOptions = {
+    connectionOptions: LANGUAGE_CLIENT_CONNECTION_OPTIONS,
     documentSelector: [
       { scheme: 'file', language: 'perl' },
       { scheme: 'untitled', language: 'perl' },
