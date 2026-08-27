@@ -5148,9 +5148,10 @@ profile = "recommended"
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn output_with_timeout_kills_long_running_subprocess() -> TestResult {
-        let perl_path = match resolve_perl_path_with_toolchain() {
-            Ok(path) => path,
-            Err(_) => return Ok(()),
+        let Some(perl_path) =
+            live_probe_interpreter("output_with_timeout_kills_long_running_subprocess")
+        else {
+            return Ok(());
         };
 
         let mut command = Command::new(perl_path);
@@ -5255,7 +5256,7 @@ profile = "recommended"
         // only this thread's deadline; a concurrently running
         // `get_system_inc_does_not_stall_on_slow_interpreter` keeps the
         // production bound (see `SystemIncProbeTimeoutOverride`).
-        let _probe_deadline = SystemIncProbeTimeoutOverride::widen_to(Duration::from_secs(60));
+        let _probe_deadline = SystemIncProbeTimeoutOverride::widen_to(Duration::from_mins(1));
 
         let Some(perl_path) =
             live_probe_interpreter("get_system_inc_reuses_cached_probe_without_relaunching")
@@ -5324,7 +5325,7 @@ profile = "recommended"
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn system_inc_probe_deadline_widening_is_thread_local_and_restores() -> TestResult {
-        let widened = Duration::from_secs(60);
+        let widened = Duration::from_mins(1);
         let nested = Duration::from_secs(5);
 
         {
@@ -5401,7 +5402,7 @@ profile = "recommended"
         };
 
         let outcome = {
-            let _deadline = SystemIncProbeTimeoutOverride::widen_to(Duration::from_secs(60));
+            let _deadline = SystemIncProbeTimeoutOverride::widen_to(Duration::from_mins(1));
             config.get_system_inc_probe_outcome()
         };
 
@@ -5496,7 +5497,7 @@ profile = "recommended"
             .ok_or("startup @INC oracle must resolve from an explicit perl_path")?;
         assert_eq!(production.timeout, SYSTEM_INC_PROBE_TIMEOUT);
 
-        let widened = Duration::from_secs(60);
+        let widened = Duration::from_mins(1);
         let _deadline = SystemIncProbeTimeoutOverride::widen_to(widened);
         let observed = PerlOracleEnv::for_startup_inc_probe(&config)
             .ok_or("startup @INC oracle must resolve from an explicit perl_path")?;
