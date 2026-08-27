@@ -84,6 +84,8 @@ use perl_parser::{
     Parser,
     ast::{Node, NodeKind},
     declaration::ParentMap,
+};
+use perl_tdd_support::{
     tdd_basic::TestGenerator,
     test_runner::{TestKind, TestRunner},
 };

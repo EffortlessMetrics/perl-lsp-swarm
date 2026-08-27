@@ -86,10 +86,11 @@ mod tests {
     use crate::providers::dancer2::facts::canonical_file_facts;
     use perl_semantic_analyzer::Parser;
     use perl_semantic_facts::{FileId, SourceGeneration};
+    use perl_test_must::{must_some_with, must_with};
 
     fn setup(source: &'static str) -> (Dancer2FileActivations, CanonicalDancer2FileFacts) {
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("fixture must parse");
+        let ast = must_with(parser.parse(), "fixture must parse");
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
         let activations =
             file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
@@ -101,13 +102,19 @@ mod tests {
     fn route_definition_reaches_inline_handler_anchor() {
         let source = "use Dancer2;\nget '/x' => sub { 'body' };";
         let (activations, facts) = setup(source);
-        let keyword_offset = source.find("get").expect("keyword offset");
-        let target =
-            definition_target_at(&activations, &facts, keyword_offset).expect("definition target");
-        let Dancer2DefinitionTarget::Anchor { start, end, label } = target else {
-            panic!("expected anchor target");
-        };
-        let handler_start = source.find("sub").expect("handler start");
+        let keyword_offset = must_some_with(source.find("get"), "keyword offset");
+        let target = must_some_with(
+            definition_target_at(&activations, &facts, keyword_offset),
+            "definition target",
+        );
+        let (start, end, label) = must_some_with(
+            match target {
+                Dancer2DefinitionTarget::Anchor { start, end, label } => Some((start, end, label)),
+                Dancer2DefinitionTarget::TypedRefusal { .. } => None,
+            },
+            "expected anchor target",
+        );
+        let handler_start = must_some_with(source.find("sub"), "handler start");
         assert_eq!(start as usize, handler_start, "target must be the handler anchor");
         assert!(end as usize > handler_start);
         assert!(label.contains("handler"));
@@ -117,13 +124,20 @@ mod tests {
     fn coderef_definition_reaches_declaration_name() {
         let source = "use Dancer2;\nget '/x' => \\&do_it;\nsub do_it { 1 }";
         let (activations, facts) = setup(source);
-        let keyword_offset = source.find("get").expect("keyword offset");
-        let target =
-            definition_target_at(&activations, &facts, keyword_offset).expect("definition target");
-        let Dancer2DefinitionTarget::Anchor { start, .. } = target else {
-            panic!("expected anchor target");
-        };
-        let declaration_name = source.find("sub do_it").expect("declaration") + "sub ".len();
+        let keyword_offset = must_some_with(source.find("get"), "keyword offset");
+        let target = must_some_with(
+            definition_target_at(&activations, &facts, keyword_offset),
+            "definition target",
+        );
+        let start = must_some_with(
+            match target {
+                Dancer2DefinitionTarget::Anchor { start, .. } => Some(start),
+                Dancer2DefinitionTarget::TypedRefusal { .. } => None,
+            },
+            "expected anchor target",
+        );
+        let declaration_name =
+            must_some_with(source.find("sub do_it"), "declaration") + "sub ".len();
         assert_eq!(start as usize, declaration_name);
     }
 
@@ -131,17 +145,20 @@ mod tests {
     fn string_handler_has_no_definition_path() {
         let source = "use Dancer2;\nget '/x' => 'do_it';\nsub do_it { 1 }";
         let (activations, facts) = setup(source);
-        let keyword_offset = source.find("get").expect("keyword offset");
+        let keyword_offset = must_some_with(source.find("get"), "keyword offset");
         let target = definition_target_at(&activations, &facts, keyword_offset);
-        match target {
-            Some(Dancer2DefinitionTarget::Anchor { label, .. }) => {
-                assert!(
-                    label.contains("declaration"),
-                    "string handler falls back to the declaration anchor, never the sub: {label}"
-                );
-            }
-            other => panic!("expected declaration fallback, got {other:?}"),
-        }
+        let target_context = format!("expected declaration fallback, got {target:?}");
+        let label = must_some_with(
+            match target {
+                Some(Dancer2DefinitionTarget::Anchor { label, .. }) => Some(label),
+                Some(Dancer2DefinitionTarget::TypedRefusal { .. }) | None => None,
+            },
+            target_context,
+        );
+        assert!(
+            label.contains("declaration"),
+            "string handler falls back to the declaration anchor, never the sub: {label}"
+        );
     }
 
     #[test]

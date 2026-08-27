@@ -179,6 +179,13 @@ const XTASK_FILE_POLICY_PACK: ProofPack = ProofPack {
     ],
 };
 
+const XTASK_PARSER_TDD_FACADE_GUARD_PACK: ProofPack = ProofPack {
+    id: "xtask-parser-tdd-facade-guard",
+    commands: &[
+        "cargo test -p xtask --test parser_tdd_facade_consumers --profile agent --locked -- --nocapture",
+    ],
+};
+
 const COMPLETION_CORE_PACK: ProofPack = ProofPack {
     id: "completion-core",
     commands: &[
@@ -686,6 +693,12 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         route.add_surface("xtask-file-policy");
         route.add_pack(XTASK_FILE_POLICY_PACK);
         return route.add_coverage_pack("patch-coverage-xtask-file-policy");
+    }
+
+    if file == "xtask/tests/parser_tdd_facade_consumers.rs" {
+        route.add_surface("xtask-parser-tdd-facade-guard");
+        route.add_pack(XTASK_PARSER_TDD_FACADE_GUARD_PACK);
+        return route.add_coverage_pack("patch-coverage-xtask-parser-tdd-facade-guard");
     }
 
     if file.starts_with("crates/perl-lsp-rs-core/src/providers/completion/") {
@@ -1799,6 +1812,35 @@ mod tests {
         assert!(receipt.coverage_proof_packs.is_empty());
         assert_eq!(
             receipt.skipped_by_policy.get("patch-coverage-ci-policy").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_parser_tdd_facade_guard_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["xtask/tests/parser_tdd_facade_consumers.rs".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["xtask-parser-tdd-facade-guard"]);
+        assert!(proof_pack_ids(&receipt).contains(&"xtask-parser-tdd-facade-guard"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "xtask-parser-tdd-facade-guard"
+                && pack.commands.iter().any(|command| {
+                    command
+                        == "cargo test -p xtask --test parser_tdd_facade_consumers --profile agent --locked -- --nocapture"
+                })
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt
+                .skipped_by_policy
+                .get("patch-coverage-xtask-parser-tdd-facade-guard")
+                .map(String::as_str),
             Some(NON_LCOV_COVERAGE_SKIP_REASON)
         );
         Ok(())
@@ -3271,6 +3313,7 @@ mod tests {
                 "patch-coverage-completion-core",
                 "patch-coverage-ux-scenario",
                 "patch-coverage-ci-policy",
+                "patch-coverage-xtask-parser-tdd-facade-guard",
                 "patch-coverage-ci-route",
                 "patch-coverage-ci-actuals",
                 "patch-coverage-ripr-summary",
@@ -3340,6 +3383,7 @@ mod tests {
             "patch-coverage-completion-core",
             "patch-coverage-ux-scenario",
             "patch-coverage-ci-policy",
+            "patch-coverage-xtask-parser-tdd-facade-guard",
             "patch-coverage-ci-route",
             "patch-coverage-ci-actuals",
             "patch-coverage-ripr-summary",
@@ -3425,6 +3469,10 @@ mod tests {
         );
         assert_eq!(
             skipped.get("patch-coverage-ci-policy").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-xtask-parser-tdd-facade-guard").map(String::as_str),
             Some(NON_LCOV_COVERAGE_SKIP_REASON)
         );
         assert_eq!(

@@ -5142,49 +5142,52 @@ profile = "recommended"
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn get_system_inc_reuses_cached_probe_without_relaunching() -> TestResult {
-        let perl_path = match resolve_perl_path_with_toolchain() {
-            Ok(path) => path,
-            Err(_) => return Ok(()),
-        };
-        let missing_perl = tempfile::tempdir()?.path().join("missing-perl");
-        let mut config = WorkspaceConfig {
-            use_system_inc: true,
-            perl_path: Some(perl_path.to_string_lossy().into_owned()),
-            // Quote-, space-, and backslash-free program: the sentinel arg
-            // passes through the oracle's env-stripped command, where
-            // embedded double quotes broke arg quoting into a NonZeroExit,
-            // and msys perl on Windows ate the backslash of a qq newline
-            // escape. The trailing semicolon is load-bearing —
-            // `fetch_perl_inc` appends its own `-e` block and perl
-            // concatenates -e programs into ONE script, so without it the
-            // concatenation is a syntax error — and the chr(10) keeps the
-            // sentinel on its own line so it never fuses with the first
-            // @INC entry.
-            perl_args: vec!["-e".into(), "print(qq(cache-sentinel).chr(10));".into()],
-            ..WorkspaceConfig::default()
-        };
+        PerlOracleEnv::with_startup_inc_probe_timeout(Duration::from_secs(30), || {
+            let perl_path = match resolve_perl_path_with_toolchain() {
+                Ok(path) => path,
+                Err(_) => return Ok(()),
+            };
+            let missing_perl = tempfile::tempdir()?.path().join("missing-perl");
+            let mut config = WorkspaceConfig {
+                use_system_inc: true,
+                perl_path: Some(perl_path.to_string_lossy().into_owned()),
+                // Quote-, space-, and backslash-free program: the sentinel arg
+                // passes through the oracle's env-stripped command, where
+                // embedded double quotes broke arg quoting into a NonZeroExit,
+                // and msys perl on Windows ate the backslash of a qq newline
+                // escape. The trailing semicolon is load-bearing —
+                // `fetch_perl_inc` appends its own `-e` block and perl
+                // concatenates -e programs into ONE script, so without it the
+                // concatenation is a syntax error — and the chr(10) keeps the
+                // sentinel on its own line so it never fuses with the first
+                // @INC entry.
+                perl_args: vec!["-e".into(), "print(qq(cache-sentinel).chr(10));".into()],
+                ..WorkspaceConfig::default()
+            };
 
-        let cached = config.get_system_inc_probe_outcome();
-        let cached_paths = match &cached {
-            SystemIncProbeOutcome::Paths(paths)
-                if paths.iter().any(|path| path == Path::new("cache-sentinel")) =>
-            {
-                paths.clone()
-            }
-            other => {
-                return Err(
-                    format!("expected the sentinel probe to produce Paths, got {other:?}").into()
-                );
-            }
-        };
+            let cached = config.get_system_inc_probe_outcome();
+            let cached_paths = match &cached {
+                SystemIncProbeOutcome::Paths(paths)
+                    if paths.iter().any(|path| path == Path::new("cache-sentinel")) =>
+                {
+                    paths.clone()
+                }
+                other => {
+                    return Err(format!(
+                        "expected the sentinel probe to produce Paths, got {other:?}"
+                    )
+                    .into());
+                }
+            };
 
-        // Changing the public probe input after the first lookup is only a
-        // test discriminator; normal settings updates invalidate the cache.
-        config.perl_path = Some(missing_perl.to_string_lossy().into_owned());
-        let reused = config.get_system_inc_probe_outcome();
-        assert_eq!(reused, cached, "second lookup must reuse the cached outcome");
-        assert_eq!(config.get_system_inc().to_vec(), cached_paths);
-        Ok(())
+            // Changing the public probe input after the first lookup is only a
+            // test discriminator; normal settings updates invalidate the cache.
+            config.perl_path = Some(missing_perl.to_string_lossy().into_owned());
+            let reused = config.get_system_inc_probe_outcome();
+            assert_eq!(reused, cached, "second lookup must reuse the cached outcome");
+            assert_eq!(config.get_system_inc().to_vec(), cached_paths);
+            Ok(())
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
