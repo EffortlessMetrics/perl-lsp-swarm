@@ -29,10 +29,17 @@ fn parse_fails_with(
 ) -> bool {
     let mut parser = Parser::new(code);
     let result = parser.parse();
-    let has_expected =
-        result.as_ref().err().is_some_and(expected) || parser.errors().iter().any(expected);
-    let has_forbidden =
-        result.as_ref().err().is_some_and(forbidden) || parser.errors().iter().any(forbidden);
+    has_exclusive_error_family(result.as_ref().err(), parser.errors(), expected, forbidden)
+}
+
+fn has_exclusive_error_family(
+    direct: Option<&ParseError>,
+    recorded: &[ParseError],
+    expected: fn(&ParseError) -> bool,
+    forbidden: fn(&ParseError) -> bool,
+) -> bool {
+    let has_expected = direct.is_some_and(expected) || recorded.iter().any(expected);
+    let has_forbidden = direct.is_some_and(forbidden) || recorded.iter().any(forbidden);
     has_expected && !has_forbidden
 }
 
@@ -53,6 +60,47 @@ fn has_structural_nesting_stop_cause(output: &ParseOutput) -> bool {
         output.stop_cause(),
         Some(ParseStopCause::NestingOrDepthBudgetExhausted { limit: 512, usage: 513 })
     )
+}
+
+#[test]
+fn parse_error_oracle_rejects_contradictory_guard_families() {
+    let errors = [
+        ParseError::RecursionDepthExhausted { depth: 129, max_depth: 128 },
+        ParseError::NestingTooDeep { depth: 513, max_depth: 512 },
+    ];
+    assert!(!has_exclusive_error_family(
+        None,
+        &errors,
+        is_recursion_guard_error,
+        is_structural_nesting_error
+    ));
+    assert!(!has_exclusive_error_family(
+        Some(&errors[0]),
+        &errors[1..],
+        is_recursion_guard_error,
+        is_structural_nesting_error
+    ));
+    assert!(!has_exclusive_error_family(
+        Some(&errors[1]),
+        &errors[..1],
+        is_recursion_guard_error,
+        is_structural_nesting_error
+    ));
+}
+
+#[test]
+fn recursion_oracle_rejects_structural_guard_substitution() {
+    let code = nested_eval_blocks(600);
+    assert!(!parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_error));
+}
+
+#[test]
+fn recursion_oracle_rejects_lifted_limit_signature() {
+    let lifted_limit = ParseError::RecursionDepthExhausted { depth: 129, max_depth: 129 };
+    assert!(!is_recursion_guard_error(&lifted_limit));
+
+    let lifted_structural_limit = ParseError::NestingTooDeep { depth: 513, max_depth: 513 };
+    assert!(!is_structural_nesting_error(&lifted_structural_limit));
 }
 
 // --- parse_word_not_expr (precedence.rs) ---
