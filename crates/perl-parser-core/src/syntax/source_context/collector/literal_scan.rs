@@ -76,6 +76,10 @@ pub(super) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
     let mut regions = Vec::new();
     let mut active: Option<(usize, String, bool)> = None;
     let mut line_start = 0usize;
+    // Delimiter of a string literal left open by the previous *code* line. A
+    // heredoc body is not code, so this is deliberately frozen while one is
+    // being consumed.
+    let mut open_string: Option<u8> = None;
 
     for raw_line in source.split_inclusive('\n') {
         let line_end = line_start + raw_line.len();
@@ -99,8 +103,12 @@ pub(super) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
             } else {
                 active = Some((body_start, label, allow_indented));
             }
-        } else if let Some((label, allow_indented)) = heredoc_opener_on_line(line) {
-            active = Some((line_end, label, allow_indented));
+        } else {
+            let (opener, carry) = heredoc_opener_on_line_from(line, open_string);
+            open_string = carry;
+            if let Some((label, allow_indented)) = opener {
+                active = Some((line_end, label, allow_indented));
+            }
         }
 
         line_start = line_end;
@@ -113,8 +121,48 @@ pub(super) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
     regions
 }
 
+/// Opener on `line`, given the string delimiter (if any) left open by the
+/// previous code line, plus the delimiter left open for the next one.
+///
+/// Carrying that delimiter is what stops a *valid* multi-line string from
+/// producing a phantom opener: in
+///
+/// ```perl
+/// my $s = "start <<EOF
+/// still string
+/// ";
+/// ```
+///
+/// the `<<EOF` is string content, and scanning each line from a clean slate
+/// read it as an opener whose body then ran to EOF (#12934 review).
+///
+/// The carry is dropped — not propagated — whenever the line's own state
+/// becomes untrustworthy: an unmodelled quote-like construct, or an opener
+/// found on this line (whose next line is heredoc body, not code). That keeps
+/// a misread delimiter from poisoning the rest of the file.
+fn heredoc_opener_on_line_from(
+    line: &str,
+    open_string: Option<u8>,
+) -> (Option<(String, bool)>, Option<u8>) {
+    let (marker, carry) = unquoted_heredoc_marker(line, open_string);
+    let Some(marker) = marker else {
+        return (None, carry);
+    };
+    (heredoc_label_at(line, marker), None)
+}
+
+/// Single-line form: no inherited string state, and the carry discarded.
+///
+/// Every production caller threads the carry through
+/// [`heredoc_opener_on_line_from`]; this exists so the per-line contract stays
+/// directly testable.
+#[cfg(test)]
 fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
-    let marker = unquoted_heredoc_marker(line)?;
+    heredoc_opener_on_line_from(line, None).0
+}
+
+/// Parse the label and indent flag of an opener whose `<<` sits at `marker`.
+fn heredoc_label_at(line: &str, marker: usize) -> Option<(String, bool)> {
     let before = &line[..marker];
     if before.ends_with('<') {
         return None;
@@ -178,33 +226,34 @@ fn starts_heredoc_label(rest: &str) -> bool {
 ///
 /// The machine is deliberately small: `'`, `"`, and `` ` `` pairs plus
 /// backslash escapes inside them. It therefore has to know when it is out of
-/// its depth, because
-/// wrongly *skipping* a real opener is as much a defect as wrongly taking one.
-/// Two signals send the line to [`legacy_heredoc_marker`], which answers
-/// exactly as the pre-#5456 code did:
+/// its depth, because wrongly *skipping* a real opener is as much a defect as
+/// wrongly taking one.
 ///
-/// 1. A quote-like operator or bare regex starts on the line. Its delimiters
-///    are not modelled here, so any quote inside it is misread — `qr/it's/`
-///    looks like an opening `'`. Detecting the *construct* rather than
-///    counting quotes is what makes this sound: on
-///    `my $r = qr/it's/; print <<END if qr/don't/;` the two stray apostrophes
-///    cancel and the line finishes balanced, so end-of-line balance alone
-///    would have wrongly certified it and hidden a real opener.
-/// 2. The line ends inside a quote, which means either a genuine multi-line
-///    string or some other construct the machine cannot read.
+/// One signal sends the line to [`legacy_heredoc_marker`], which answers
+/// exactly as the pre-#5456 code did: a quote-like operator or bare regex
+/// starting on the line. Its delimiters are not modelled here, so any quote
+/// inside it is misread — `qr/it's/` looks like an opening `'`. Detecting the
+/// *construct* rather than counting quotes is what makes this sound: on
+/// `my $r = qr/it's/; print <<END if qr/don't/;` the two stray apostrophes
+/// cancel and the line finishes balanced, so end-of-line balance alone would
+/// have wrongly certified it and hidden a real opener.
+///
+/// A line that ends inside a quote is *not* such a signal: its open delimiter
+/// is handed to the next line instead, so a valid multi-line string stops
+/// producing phantom openers.
 ///
 /// What remains unmodelled is the deprecated `$pkg'var` package separator: an
 /// even number of those on one line still finishes balanced with no quote-like
 /// operator in play, and would hide a real opener. That failure is in the safe
 /// direction — a heredoc body classified as `Code` rather than the whole file
 /// swallowed as `Heredoc` — and is pinned by test.
-fn unquoted_heredoc_marker(line: &str) -> Option<usize> {
+fn unquoted_heredoc_marker(line: &str, open_string: Option<u8>) -> (Option<usize>, Option<u8>) {
     let bytes = line.as_bytes();
     // The active string delimiter, if the scan is inside one. Perl's three
     // literal quotes behave identically for this purpose: each is closed only
     // by its own delimiter, so a `'` inside `"..."` or a `"` inside a backtick
     // command is ordinary text.
-    let mut active: Option<u8> = None;
+    let mut active = open_string;
     let mut index = 0;
     while index < bytes.len() {
         let byte = bytes[index];
@@ -220,15 +269,18 @@ fn unquoted_heredoc_marker(line: &str) -> Option<usize> {
             }
             None => {
                 if starts_unmodelled_quote_like(bytes, index) {
-                    return legacy_heredoc_marker(line);
+                    // Answer this line by the legacy rule. Reached only from
+                    // the `None` arm, so there is no open delimiter to carry
+                    // and the next line starts from a clean slate either way.
+                    return (legacy_heredoc_marker(line), None);
                 }
                 match byte {
                     b'\'' | b'"' | b'`' => active = Some(byte),
                     // Reached with every quote closed, so the tracking above is
-                    // sound here: the rest of the line is a comment and owns no
-                    // opener.
-                    b'#' => return None,
-                    b'<' if bytes.get(index + 1) == Some(&b'<') => return Some(index),
+                    // sound here: the rest of the line is a comment, owns no
+                    // opener, and leaves no string open.
+                    b'#' => return (None, None),
+                    b'<' if bytes.get(index + 1) == Some(&b'<') => return (Some(index), None),
                     _ => {}
                 }
             }
@@ -236,10 +288,7 @@ fn unquoted_heredoc_marker(line: &str) -> Option<usize> {
         index += 1;
     }
 
-    if active.is_some() {
-        return legacy_heredoc_marker(line);
-    }
-    None
+    (None, active)
 }
 
 /// Whether a quote-like operator (`q`/`qq`/`qw`/`qx`/`qr`/`m`/`s`/`y`/`tr`) or
@@ -1868,23 +1917,82 @@ mod tests {
     }
 
     #[test]
-    fn unbalanced_quote_line_keeps_its_previous_marker_behavior() {
+    fn unmodelled_construct_falls_back_to_the_previous_marker_rule() {
         // The simple machine does not model `qr//`, so `it's` leaves an odd
-        // `'` behind. Deferring to the legacy rule keeps the real opener
-        // reachable instead of trading #5456 for a new miss.
+        // `'` behind. The quote-like detector catches the construct and defers
+        // to the legacy rule, keeping the real opener reachable instead of
+        // trading #5456 for a new miss.
         assert_eq!(
             super::heredoc_opener_on_line("my $r = qr/it's fine/; print <<EOF;"),
             Some(("EOF".to_string(), false)),
             "an unmodelled construct must not hide a real opener"
         );
-        // The other side of the same fallback: a line that ends inside a
-        // genuine multi-line string keeps its previous (unfixed) answer rather
-        // than acquiring a new one. Pinned so the boundary is reviewed, not
-        // accidental.
+    }
+
+    /// #12934 review: a `<<LABEL` inside a *valid* multi-line string used to
+    /// open a phantom heredoc whose body then ran to EOF, reclassifying the
+    /// rest of the file. Verified against perl: the fixture below is
+    /// `syntax OK` and `$s` is an ordinary 25-character string.
+    #[test]
+    fn multiline_string_containing_a_marker_opens_no_heredoc() {
+        let source = "my $s = \"start <<EOF\nstill string\n\";\ncode();\n";
+        assert!(
+            scan_heredoc_regions(source).is_empty(),
+            "a marker inside a multi-line string must not open a region: {:?}",
+            scan_heredoc_regions(source)
+        );
+        // Line-level view of the same fixture: the opening line leaves the
+        // string open rather than reporting an opener.
         assert_eq!(
-            super::heredoc_opener_on_line("my $s = \"start << EOF"),
-            Some(("EOF".to_string(), false)),
-            "an unterminated string keeps pre-#5456 behavior"
+            super::heredoc_opener_on_line_from("my $s = \"start <<EOF", None),
+            (None, Some(b'"')),
+            "the opener line reports no heredoc and carries the open quote"
+        );
+        // ...and the continuation line inherits it, so its content is not code.
+        assert_eq!(
+            super::heredoc_opener_on_line_from("still <<AGAIN string", Some(b'"')),
+            (None, Some(b'"')),
+            "a continuation line must not find an opener inside the string"
+        );
+    }
+
+    #[test]
+    fn a_real_opener_after_a_closed_multiline_string_is_still_found() {
+        // The opposite direction: once the string closes, code resumes and an
+        // opener on a later line must still be seen, so the carry cannot be a
+        // blanket suppression.
+        let source = "my $s = \"start\nend\";\nmy $x = <<REAL;\nbody\nREAL\ntail();\n";
+        let regions = scan_heredoc_regions(source);
+        assert_eq!(regions.len(), 1, "one heredoc body expected: {regions:?}");
+        assert!(
+            regions[0].end < source.len(),
+            "the body must close at REAL, not run to EOF: {regions:?}"
+        );
+    }
+
+    /// A continuation line is string *content*, so none of the code-level
+    /// machinery may run on it. This is the property that bounds the carry:
+    /// were the quote-like detector to fire inside a carried string, the line
+    /// would bail to the legacy rule and find the marker it is supposed to be
+    /// hiding.
+    #[test]
+    fn a_carried_string_suppresses_code_level_scanning() {
+        assert_eq!(
+            super::heredoc_opener_on_line_from("text qr/x/ more <<EOF", Some(b'"')),
+            (None, Some(b'"')),
+            "a continuation line is string content, not code"
+        );
+        assert_eq!(
+            super::heredoc_opener_on_line_from("text # <<EOF", Some(b'"')),
+            (None, Some(b'"')),
+            "a `#` inside a carried string is not a comment marker"
+        );
+        // ...and the delimiter that closes it hands control back to code, so
+        // an opener after it on the same line is found.
+        assert_eq!(
+            super::heredoc_opener_on_line_from("end\"; print <<EOF;", Some(b'"')),
+            (Some(("EOF".to_string(), false)), None),
+            "code resumes after the closing delimiter"
         );
     }
 
