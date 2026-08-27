@@ -23,7 +23,7 @@ use perl_parser_core::{
     edit::EditSet,
     position::{Position, Range},
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// Advanced node reuse analyzer with sophisticated matching algorithms
@@ -933,12 +933,13 @@ impl AdvancedReuseAnalyzer {
 /// Comprehensive analysis of a tree structure
 #[derive(Debug)]
 struct TreeAnalysis {
-    node_info: HashMap<usize, NodeAnalysisInfo>,
+    /// Ordered because greedy target reservation makes iteration order observable.
+    node_info: BTreeMap<usize, NodeAnalysisInfo>,
 }
 
 impl TreeAnalysis {
     fn new() -> Self {
-        TreeAnalysis { node_info: HashMap::new() }
+        TreeAnalysis { node_info: BTreeMap::new() }
     }
 
     fn add_node_info(&mut self, position: usize, info: NodeAnalysisInfo) {
@@ -1313,4 +1314,49 @@ mod tests {
         );
         assert_eq!(reuse_map.len(), 2);
     }
+    #[test]
+    fn matching_reservation_is_stable_for_duplicate_nodes() {
+        let old_tree = Node::new(
+            NodeKind::Program {
+                statements: vec![
+                    Node::new(
+                        NodeKind::Number { value: "10".to_string() },
+                        SourceLocation { start: 10, end: 12 },
+                    ),
+                    Node::new(
+                        NodeKind::Number { value: "10".to_string() },
+                        SourceLocation { start: 20, end: 22 },
+                    ),
+                ],
+            },
+            SourceLocation { start: 0, end: 22 },
+        );
+        let new_tree = Node::new(
+            NodeKind::Program {
+                statements: vec![
+                    Node::new(
+                        NodeKind::Number { value: "10".to_string() },
+                        SourceLocation { start: 100, end: 102 },
+                    ),
+                    Node::new(
+                        NodeKind::Number { value: "10".to_string() },
+                        SourceLocation { start: 110, end: 112 },
+                    ),
+                ],
+            },
+            SourceLocation { start: 0, end: 112 },
+        );
+
+        let mut analyzer = AdvancedReuseAnalyzer::new();
+        let result = analyzer.analyze_reuse_opportunities(
+            &old_tree,
+            &new_tree,
+            &EditSet::new(),
+            &ReuseConfig::default(),
+        );
+
+        assert_eq!(result.reuse_map.get(&10).map(|s| s.target_position), Some(100));
+        assert_eq!(result.reuse_map.get(&20).map(|s| s.target_position), Some(110));
+    }
+
 }
