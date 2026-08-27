@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12246 |
-| Rust-family files | 3743 |
-| Non-Rust files | 8503 |
-| Allowlisted | 6268 |
+| Total tracked files | 12249 |
+| Rust-family files | 3745 |
+| Non-Rust files | 8504 |
+| Allowlisted | 6269 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -21,7 +21,7 @@
 | generated | 2 |
 | production | 331 |
 | test | 2033 |
-| tooling | 650 |
+| tooling | 651 |
 | unclassified | 2235 |
 
 ## Unclassified files
@@ -6552,6 +6552,7 @@
 | `scripts/ci/test_route_codecov_packs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_run_gate_shard.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_run_parser_integration.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_rust_small_route_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_rustfmt_check.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_rustfmt_required_workflow.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_scope_cache_key.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
