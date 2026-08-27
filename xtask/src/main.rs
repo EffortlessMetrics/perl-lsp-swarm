@@ -2063,6 +2063,13 @@ enum Commands {
         command: SrpCommand,
     },
 
+    /// Canonical compiler-cohort test-topology routing and receipts (#12411).
+    #[command(name = "test-topology")]
+    TestTopology {
+        #[command(subcommand)]
+        command: TestTopologyCommand,
+    },
+
     /// Generate SRP microcrate inventory and split-candidate report.
     SrpMicrocrates {
         #[command(flatten)]
@@ -3767,6 +3774,97 @@ enum CompilerProfileCommand {
     List,
     /// Validate one profile document and print its stable identity.
     Check { path: PathBuf },
+}
+
+/// Namespace lane selector for canonical topology routing (#12411).
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum TopologyNamespaceArg {
+    /// Required affected PR lane.
+    PrFocused,
+    /// Merge-required integration lane.
+    MergeRequired,
+    /// Scheduled pressure lane.
+    ScheduledPressure,
+    /// Local reproduction lane.
+    LocalReproduce,
+    /// Explicit manual research operation.
+    ManualResearch,
+}
+
+impl From<TopologyNamespaceArg> for xtask::test_topology::ScopeNamespace {
+    fn from(value: TopologyNamespaceArg) -> Self {
+        match value {
+            TopologyNamespaceArg::PrFocused => Self::PrFocused,
+            TopologyNamespaceArg::MergeRequired => Self::MergeRequired,
+            TopologyNamespaceArg::ScheduledPressure => Self::ScheduledPressure,
+            TopologyNamespaceArg::LocalReproduce => Self::LocalReproduce,
+            TopologyNamespaceArg::ManualResearch => Self::ManualResearch,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum TestTopologyCommand {
+    /// List every registered row of one cohort with dormancy status.
+    List {
+        /// Cohort selector matching a `.ci/test-topology/<cohort>.v1.toml` register.
+        #[arg(long)]
+        cohort: String,
+        /// Emit the register as JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Route affected active rows for changed files and execute their proofs.
+    Route {
+        /// Cohort selector.
+        #[arg(long)]
+        cohort: String,
+        /// Changed repo-relative paths (repeatable; empty reads `git diff`).
+        #[arg(long = "changed")]
+        changed_files: Vec<String>,
+        /// Base SHA recorded on receipts (default: merge-base with origin/main).
+        #[arg(long)]
+        base_sha: Option<String>,
+        /// Head SHA recorded on receipts (default: current HEAD).
+        #[arg(long)]
+        head_sha: Option<String>,
+        /// Namespace lane this routing runs under.
+        #[arg(long, value_enum, default_value = "pr-focused")]
+        namespace: TopologyNamespaceArg,
+        /// Receipt artifact directory.
+        #[arg(long, default_value = "target/test-topology/receipts")]
+        receipts_dir: PathBuf,
+        /// Fan-in report output path.
+        #[arg(long, default_value = "target/test-topology/fan-in.json")]
+        output: PathBuf,
+        /// Print the selection without executing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Validate same-candidate fan-in of emitted route receipts.
+    Receipts {
+        /// Cohort selector.
+        #[arg(long)]
+        cohort: String,
+        /// Receipt artifact directory to validate.
+        #[arg(long, default_value = "target/test-topology/receipts")]
+        receipts_dir: PathBuf,
+        /// Candidate head SHA receipts must answer for (default: current HEAD).
+        #[arg(long)]
+        head_sha: Option<String>,
+        /// Base SHA carried on the report for diagnostics.
+        #[arg(long, default_value = "")]
+        base_sha: String,
+        /// Required selected target ids; empty derives them from `git diff`.
+        #[arg(long = "require")]
+        required_targets: Vec<String>,
+        /// Fan-in report output path.
+        #[arg(long, default_value = "target/test-topology/fan-in.json")]
+        output: PathBuf,
+        /// Namespace lane the required receipts must answer under.
+        #[arg(long, value_enum, default_value = "pr-focused")]
+        namespace: TopologyNamespaceArg,
+    },
 }
 
 #[derive(Subcommand)]
@@ -5901,6 +5999,49 @@ fn run_cli(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Commands::TestTopology { command } => match command {
+            TestTopologyCommand::List { cohort, json } => {
+                test_topology_list(&cohort, json).map_err(|error| eyre!(error.to_string()))
+            }
+            TestTopologyCommand::Route {
+                cohort,
+                changed_files,
+                base_sha,
+                head_sha,
+                namespace,
+                receipts_dir,
+                output,
+                dry_run,
+            } => test_topology_route(TestTopologyRouteRequest {
+                cohort,
+                changed_files,
+                base_sha,
+                head_sha,
+                namespace: namespace.into(),
+                receipts_dir,
+                output,
+                dry_run,
+            })
+            .map_err(|error| eyre!(error.to_string())),
+            TestTopologyCommand::Receipts {
+                cohort,
+                receipts_dir,
+                head_sha,
+                base_sha,
+                required_targets,
+                output,
+                namespace,
+            } => test_topology_receipts_check(TestTopologyReceiptsRequest {
+                cohort,
+                receipts_dir,
+                head_sha,
+                base_sha,
+                required_targets,
+                output,
+                namespace: namespace.into(),
+            })
+            .map_err(|error| eyre!(error.to_string())),
+        },
         Commands::Metrics { command } => match command {
             MetricsCommand::ParserStats { input, json } => metrics::parser_stats::run(input, json),
             MetricsCommand::ParserAccuracy {
@@ -6396,6 +6537,361 @@ fn convert_gate_receipts_format(format: GateReceiptsFormat) -> gate_receipts::Ou
         GateReceiptsFormat::Json => gate_receipts::OutputFormat::Json,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Canonical test-topology CLI handlers (#12411)
+// ---------------------------------------------------------------------------
+
+fn test_topology_register(
+    root: &std::path::Path,
+    cohort: &str,
+) -> Result<xtask::test_topology::TopologyRegister> {
+    if !cohort
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        color_eyre::eyre::bail!("cohort selector {cohort:?} must be a plain slug");
+    }
+    let path = root
+        .join(".ci")
+        .join("test-topology")
+        .join(format!("{cohort}.v1.toml"));
+    xtask::test_topology::TopologyRegister::load(&path).map_err(|error| eyre!(error.to_string()))
+}
+
+fn test_topology_git(root: &std::path::Path, args: &[&str]) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .map_err(|error| eyre!("git {:?} failed: {}", args, error))?;
+    if !output.status.success() {
+        color_eyre::eyre::bail!(
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn test_topology_list(cohort: &str, json: bool) -> Result<()> {
+    let root = utils::project_root()?;
+    let register = test_topology_register(&root, cohort)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&register)
+                .map_err(|error| eyre!(error.to_string()))?
+        );
+        return Ok(());
+    }
+    println!(
+        "register {} cohort {} rows {}",
+        register.cohort.register_id,
+        register.cohort.cohort,
+        register.rows().len()
+    );
+    for row in register.rows() {
+        let status = match row.status {
+            xtask::test_topology::TargetStatus::Active => "active",
+            xtask::test_topology::TargetStatus::DeclaredPending => "declared_pending",
+        };
+        let work = if row.min_work_items > 0 {
+            row.min_work_items.to_string()
+        } else {
+            "-".to_owned()
+        };
+        println!(
+            "{:<70} {:<16} {:<18} owner=#{:<6} min_work={:<5} {}",
+            row.target_id,
+            row.route_class.tag(),
+            status,
+            row.owner_issue,
+            work,
+            row.subject
+        );
+    }
+    Ok(())
+}
+
+struct TestTopologyRouteRequest {
+    cohort: String,
+    changed_files: Vec<String>,
+    base_sha: Option<String>,
+    head_sha: Option<String>,
+    namespace: xtask::test_topology::ScopeNamespace,
+    receipts_dir: PathBuf,
+    output: PathBuf,
+    dry_run: bool,
+}
+
+fn test_topology_topology_guard(
+    root: &std::path::Path,
+    register: &xtask::test_topology::TopologyRegister,
+) -> Vec<xtask::test_topology::DiscoveryViolation> {
+    let discovered = match xtask::test_topology::discover_workspace_test_targets(root) {
+        Ok(discovered) => discovered,
+        Err(error) => {
+            eprintln!("warning: topology discovery skipped: {error}");
+            return Vec::new();
+        }
+    };
+    xtask::test_topology::check_discovery_membership(register, &discovered)
+}
+
+fn test_topology_route(request: TestTopologyRouteRequest) -> Result<()> {
+    use xtask::test_topology as tt;
+
+    let root = utils::project_root()?;
+    let register = test_topology_register(&root, &request.cohort)?;
+    let head_sha = match &request.head_sha {
+        Some(sha) => sha.clone(),
+        None => test_topology_git(&root, &["rev-parse", "HEAD"])?,
+    };
+    let base_sha = match &request.base_sha {
+        Some(sha) => sha.clone(),
+        None => test_topology_git(&root, &["merge-base", "origin/main", "HEAD"])?,
+    };
+
+    let changed: Vec<PathBuf> = if request.changed_files.is_empty() {
+        test_topology_git(&root, &["diff", "--name-only", &base_sha, "HEAD"])?
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(PathBuf::from)
+            .collect()
+    } else {
+        request.changed_files.iter().map(PathBuf::from).collect()
+    };
+
+    // Omitted-new-target guard runs on every route decision.
+    let mut violations: Vec<tt::FanInViolation> =
+        test_topology_topology_guard(&root, &register)
+            .into_iter()
+            .map(|violation| match violation {
+                tt::DiscoveryViolation::OmittedNewTarget { package, target_name } => {
+                    tt::FanInViolation::UnregisteredTarget {
+                        target_id: format!("{package}::{target_name}"),
+                        observed_head: head_sha.clone(),
+                    }
+                }
+            })
+            .collect();
+
+    let selection = tt::select_active_scope(&register, &changed);
+    if !selection.dormant_selected.is_empty() {
+        color_eyre::eyre::bail!(
+            "affected routing hit declared_pending targets (dormant rows cannot be routed): {:?}",
+            selection.dormant_selected
+        );
+    }
+
+    let required_ids: Vec<String> = match &selection.decision {
+        tt::SelectionDecision::EmptyChangeSet => Vec::new(),
+        tt::SelectionDecision::ScopedNoop(_) => Vec::new(),
+        tt::SelectionDecision::Selected { target_ids, .. } => target_ids.clone(),
+    };
+
+    if request.dry_run {
+        println!("{}", serde_json::json!({
+            "cohort": register.cohort.cohort,
+            "head_sha": head_sha,
+            "base_sha": base_sha,
+            "namespace": request.namespace.tag(),
+            "required_selected": required_ids,
+            "decision": format!("{:?}", selection.decision),
+        }));
+        return Ok(());
+    }
+
+    let selected_rows: Vec<&xtask::test_topology::TopologyRow> = match &selection.decision {
+        tt::SelectionDecision::Selected { .. } => register
+            .rows()
+            .iter()
+            .filter(|row| required_ids.iter().any(|id| *id == row.target_id))
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    for row in &selected_rows {
+        if let Some(execution) = &row.execution {
+            if execution.render_argv().is_empty() {
+                color_eyre::eyre::bail!(
+                    "active row {} rendered an empty command",
+                    row.target_id
+                );
+            }
+        }
+    }
+
+    if !matches!(selection.decision, tt::SelectionDecision::ScopedNoop(_)) {
+        let _receipts = tt::run_selected_rows(
+            &root,
+            &register,
+            &selected_rows,
+            &head_sha,
+            &base_sha,
+            request.namespace,
+            &request.receipts_dir,
+        )
+        .map_err(|error| eyre!(error.to_string()))?;
+    }
+
+    let scoped_noops: Vec<tt::ScopedNoopProof> = match &selection.decision {
+        tt::SelectionDecision::ScopedNoop(proof) => {
+            let mut owned = proof.clone();
+            owned.head_sha = head_sha.clone();
+            Vec::from([owned])
+        }
+        _ => Vec::new(),
+    };
+
+    let (registered, unregistered) =
+        tt::load_receipts(&register, &request.receipts_dir)
+            .map_err(|error| eyre!(error.to_string()))?;
+    let report = tt::build_fan_in(
+        &register,
+        &base_sha,
+        &head_sha,
+        request.namespace,
+        &required_ids,
+        scoped_noops,
+        &registered,
+        &unregistered,
+    )
+    .map_err(|error| eyre!(error.to_string()))?;
+    violations.extend(report.violations.iter().cloned());
+
+    if let Some(parent) = request.output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(
+        &request.output,
+        serde_json::to_vec_pretty(&report).map_err(|error| eyre!(error.to_string()))?,
+    )?;
+
+    println!(
+        "topology route {}: required={} accepted={} auxiliary={} scoped_noops={} violations={} digest={} artifact={}",
+        register.cohort.cohort,
+        report.required_targets.len(),
+        report.accepted.len(),
+        report.auxiliary.len(),
+        report.scoped_noops.len(),
+        violations.len(),
+        report.digest,
+        request.output.display()
+    );
+    for violation in &violations {
+        println!(
+            "violation: {}",
+            serde_json::to_string(violation).unwrap_or_else(|_| format!("{violation:?}"))
+        );
+    }
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        color_eyre::eyre::bail!(
+            "compiler-profile route has {} unresolved receipt violation(s); see {}",
+            violations.len(),
+            request.output.display()
+        );
+    }
+}
+
+struct TestTopologyReceiptsRequest {
+    cohort: String,
+    receipts_dir: PathBuf,
+    head_sha: Option<String>,
+    base_sha: String,
+    required_targets: Vec<String>,
+    output: PathBuf,
+    namespace: xtask::test_topology::ScopeNamespace,
+}
+
+fn test_topology_receipts_check(request: TestTopologyReceiptsRequest) -> Result<()> {
+    use xtask::test_topology as tt;
+
+    let root = utils::project_root()?;
+    let register = test_topology_register(&root, &request.cohort)?;
+    let head_sha = match &request.head_sha {
+        Some(sha) => sha.clone(),
+        None => test_topology_git(&root, &["rev-parse", "HEAD"])?,
+    };
+
+    let (registered, unregistered) =
+        tt::load_receipts(&register, &request.receipts_dir)
+            .map_err(|error| eyre!(error.to_string()))?;
+
+    let required_ids = if request.required_targets.is_empty() {
+        let base_sha = if request.base_sha.is_empty() {
+            test_topology_git(&root, &["merge-base", "origin/main", "HEAD"])?
+        } else {
+            request.base_sha.clone()
+        };
+        let changed: Vec<PathBuf> =
+            test_topology_git(&root, &["diff", "--name-only", &base_sha, "HEAD"])?
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(PathBuf::from)
+                .collect();
+        tt::select_active_scope(&register, &changed)
+            .decision
+            .selected_target_ids()
+            .to_vec()
+    } else {
+        request.required_targets.clone()
+    };
+
+    let noop_proof = tt::ScopedNoopProof {
+        cohort: register.cohort.cohort.clone(),
+        classified_files: Vec::new(),
+        head_sha: head_sha.clone(),
+    };
+    let report = tt::build_fan_in(
+        &register,
+        &request.base_sha,
+        &head_sha,
+        request.namespace,
+        &required_ids,
+        Vec::from([noop_proof]),
+        &registered,
+        &unregistered,
+    )
+    .map_err(|error| eyre!(error.to_string()))?;
+
+    if let Some(parent) = request.output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(
+        &request.output,
+        serde_json::to_vec_pretty(&report).map_err(|error| eyre!(error.to_string()))?,
+    )?;
+
+    println!(
+        "receipts check {}: required={} accepted={} violations={} digest={}",
+        register.cohort.cohort,
+        report.required_targets.len(),
+        report.accepted.len(),
+        report.violations.len(),
+        report.digest
+    );
+    for violation in &report.violations {
+        println!(
+            "violation: {}",
+            serde_json::to_string(violation).unwrap_or_else(|_| format!("{violation:?}"))
+        );
+    }
+    if report.violations.is_empty() && unregistered.is_empty() {
+        Ok(())
+    } else {
+        color_eyre::eyre::bail!(
+            "fan-in rejected {} evidence problem(s); see {}",
+            report.violations.len(),
+            request.output.display()
+        );
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

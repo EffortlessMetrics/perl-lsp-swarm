@@ -1,0 +1,1155 @@
+# Canonical compiler-profile proof-target topology (#12411).
+#
+# Route authority train: #12125-#12129. This register is the checked
+# denominator consumed by `cargo xtask test-topology` routing and nonzero-work
+# receipts. One exact row per declared target; one receipt per routed row per
+# candidate head; aggregate counts never backfill an omitted target.
+#
+# `declared_pending` rows pin future leaf identities (owner issue) before the
+# leaf lands; they carry no execution and can never go green. The landing PR
+# flips its own row to `active` with exact execution fields plus
+# `min_work_items > 0`; activation is a review-visible diff.
+#
+# Dormancy is not evidence. Workflow YAML and check colour are not semantic
+# profile evidence. Live required-check or branch-protection mutation stays
+# outside this register's authority.
+
+schema_version = "test_topology_register.v1"
+cohort = "compiler-profile"
+register_id = "compiler-profile.v1"
+description = "Maintained compiler-profile proof targets: model, inventory, observation, evaluation, transition, history, retention, privacy, replay, residual, status, claim, succession, wake-event routing, V01-V11 verification, expansion cohorts, operational generations, oracle/transform/migration/compounding trains."
+
+watch_packages = ["xtask"]
+namespace_markers = ["compiler_profile"]
+
+# ---------------------------------------------------------------------------
+# Active control-plane targets on current main
+# ---------------------------------------------------------------------------
+
+[[row]]
+target_id = "compiler-profile/profile-model-contract"
+owner_issue = 12186
+subject = "maintained profile identity, row dispositions, imports, and closure laws"
+claim_boundary = "profile meaning and semantic identity cannot drift from the accepted #12186 vocabulary"
+proof_role = "profile model"
+route_class = "required_affected"
+status = "active"
+candidate_profiles = ["pr_focused", "merge_required", "local_reproduce"]
+subjects = ["xtask/src/compiler_profile_contract.rs", "docs/compiler/profiles/"]
+
+[row.execution.cargo_test]
+package = "xtask"
+filter = "compiler_profile_contract"
+feature_profile = "--locked"
+
+[[row]]
+target_id = "compiler-profile/initial-row-inventory"
+owner_issue = 12330
+subject = "pinned rows of lexical, static-project, bounded-execution, and maintained-code-intelligence profiles"
+claim_boundary = "row identity cannot reorder or retype without a new profile version and visible fingerprint change"
+proof_role = "manifest, index, and row inventory"
+route_class = "required_affected"
+status = "active"
+candidate_profiles = ["pr_focused", "merge_required", "local_reproduce"]
+subjects = ["xtask/src/compiler_profile_initial_rows.rs"]
+
+[row.execution.cargo_test]
+package = "xtask"
+filter = "compiler_profile_initial_rows"
+feature_profile = "--locked"
+
+[[row]]
+target_id = "compiler-profile/normalized-observation-registry"
+owner_issue = 12188
+subject = "private-safe evidence envelope and deterministic adapter registry"
+claim_boundary = "envelope states stay typed and independent; no host paths, issue colour, or log prose becomes evidence"
+proof_role = "normalized observation and adapter registry"
+route_class = "required_affected"
+status = "active"
+candidate_profiles = ["pr_focused", "merge_required", "local_reproduce"]
+subjects = ["xtask/src/compiler_profile_observation.rs"]
+
+[row.execution.cargo_test]
+package = "xtask"
+filter = "compiler_profile_observation"
+feature_profile = "--locked"
+
+[[row]]
+target_id = "test-topology/routing-falsifiers"
+owner_issue = 12411
+subject = "canonical topology selector, receipts, fan-in, and dormancy honesty"
+claim_boundary = "zero-work, skipped-as-pass, stale-head, dormant-green, aggregate-backfill, and advisory-as-required routes structurally fail"
+proof_role = "execution routing and same-candidate receipt fan-in"
+route_class = "required_affected"
+status = "active"
+candidate_profiles = ["pr_focused", "merge_required", "local_reproduce"]
+subjects = ["xtask/src/test_topology/", ".ci/test-topology/"]
+
+[row.execution.cargo_test]
+package = "xtask"
+test_target = "compiler_profile_test_topology"
+filter = ""
+feature_profile = "--locked"
+
+[[row]]
+target_id = "test-topology/register-self-consistency"
+owner_issue = 12411
+subject = "register parse, identity uniqueness, and dormant-row honesty laws"
+claim_boundary = "advisory evidence stays advisory; register structure itself is checked without becoming required satisfaction"
+proof_role = "independent register consistency proof"
+route_class = "advisory"
+status = "active"
+candidate_profiles = ["pr_focused", "local_reproduce"]
+subjects = ["xtask/src/test_topology/model.rs", "xtask/src/test_topology/receipts.rs"]
+
+[row.execution.cargo_test]
+package = "xtask"
+test_target = "compiler_profile_test_topology"
+filter = "compiler_profile_test_topology_register_self"
+feature_profile = "--locked"
+
+[[row]]
+target_id = "compiler-profile/scheduled-pressure-xtask-lib"
+owner_issue = 12411
+subject = "whole xtask library suite under scheduled pressure"
+claim_boundary = "scheduled pressure never satisfies a required affected row even when the semantic subject matches"
+proof_role = "scheduled pressure over the compiler-profile control-plane crate"
+route_class = "scheduled"
+status = "active"
+candidate_profiles = ["scheduled_pressure"]
+subjects = ["xtask/"]
+
+[row.execution.cargo_test]
+package = "xtask"
+filter = ""
+feature_profile = "--locked --profile agent"
+
+[[row]]
+target_id = "compiler-profile/manual-observation-research"
+owner_issue = 12411
+subject = "typed manual research invocation over the observation registry"
+claim_boundary = "manual results are explicit typed-input operations and never transfer into required or scheduled lanes"
+proof_role = "manual research exercise"
+route_class = "manual"
+status = "active"
+candidate_profiles = ["manual_research"]
+subjects = ["xtask/src/compiler_profile_observation.rs"]
+
+[row.execution.cargo_test]
+package = "xtask"
+filter = "compiler_profile_observation"
+feature_profile = "--locked"
+
+# ---------------------------------------------------------------------------
+# Declared evaluation-program leaves (parents)
+# ---------------------------------------------------------------------------
+
+[[row]]
+target_id = "compiler-profile/candidate-evaluation-program"
+owner_issue = 12177
+subject = "one exact candidate evaluated against one maintained operating profile"
+claim_boundary = "evaluation consumes registered observations and never mints its own evidence"
+proof_role = "candidate, source-plan, joins, and evidence-set assembly"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/src/compiler_profile_evaluator"]
+
+[[row]]
+target_id = "compiler-profile/health-claim-projections-program"
+owner_issue = 12179
+subject = "maintained-profile health and claim projections from evaluated candidates"
+claim_boundary = "projections read generated evaluation state only; wording cannot outrun the weakest row"
+proof_role = "status currentness and claim-bound proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/src/compiler_status_projection"]
+
+[[row]]
+target_id = "compiler-profile/joins-evidence-set-mutation-proof"
+owner_issue = 12382
+subject = "candidate joins and evidence-set completeness under independent mutation testing"
+claim_boundary = "one relation or work count cannot fill another join cell"
+proof_role = "independent assembly oracle"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/compiler-evidence-set"]
+
+[[row]]
+target_id = "compiler-profile/independent-evaluator-oracle"
+owner_issue = 12383
+subject = "row and profile verdicts verified against an independent evaluator oracle"
+claim_boundary = "the construction evaluator cannot be the only detection surface for verdicts"
+proof_role = "evaluator oracle"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/compiler-evaluator-oracle"]
+
+[[row]]
+target_id = "compiler-profile/v01-v11-independent-verification"
+owner_issue = 12379
+subject = "V01-V11 independently verified maintained-profile control plane checks"
+claim_boundary = "control-plane verification stays independent of construction-context identity"
+proof_role = "independent V01-V11 control-plane verification"
+route_class = "scheduled"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["book/src/compiler-profile-control-plane"]
+
+[[row]]
+target_id = "compiler-profile/end-to-end-maintained-loop"
+owner_issue = 12394
+subject = "independently verified end-to-end maintained-profile loop"
+claim_boundary = "aggregate end-to-end success cannot satisfy a missing lower route"
+proof_role = "independent end-to-end maintained-profile loop"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/compiler-profile-loop"]
+
+# ---------------------------------------------------------------------------
+# Declared profile-transition/history/retention/privacy leaves (#12400-#12410)
+# ---------------------------------------------------------------------------
+
+[[row]]
+target_id = "compiler-profile/transition-records-contract"
+owner_issue = 12400
+subject = "reviewed profile and row transition records"
+claim_boundary = "transitions record review identity; no silent denominator movement"
+proof_role = "profile transition records"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/src/compiler_profile_transition_records"]
+
+[[row]]
+target_id = "compiler-profile/denominator-anti-laundering-proof"
+owner_issue = 12401
+subject = "profile denominator transitions"
+claim_boundary = "missing or failed rows cannot launder through transitions"
+proof_role = "anti-laundering transition proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_profile_denominator_transitions"]
+
+[[row]]
+target_id = "compiler-profile/immutable-history-contract"
+owner_issue = 12402
+subject = "immutable evaluation history and supersession relations"
+claim_boundary = "history cannot rewrite; supersession names exact predecessors"
+proof_role = "immutable history contract"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/src/compiler_evaluation_history"]
+
+[[row]]
+target_id = "compiler-profile/history-replay-proof"
+owner_issue = 12403
+subject = "historical evaluation replay across authority movement"
+claim_boundary = "replay survives current-authority movement bit-exactly or fails loudly"
+proof_role = "historical replay determinism"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_history_replay"]
+
+[[row]]
+target_id = "compiler-profile/retention-governance-contract"
+owner_issue = 12404
+subject = "evidence retention, expiry, and deletion governance"
+claim_boundary = "deletion cannot erase current red or required history"
+proof_role = "retention governance contract"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["policy/compiler-retention.toml"]
+
+[[row]]
+target_id = "compiler-profile/isolated-cleanup-proof"
+owner_issue = 12405
+subject = "destructive cleanup over isolated stores"
+claim_boundary = "cleanup cannot erase current red or required history while pinned by owners"
+proof_role = "retention and isolated cleanup proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_isolated_cleanup"]
+
+[[row]]
+target_id = "compiler-profile/privacy-bounded-error-proof"
+owner_issue = 12406
+subject = "end-to-end privacy coverage and bounded-error invariants"
+claim_boundary = "bounded errors cannot leak unreviewed payload content into evidence"
+proof_role = "privacy and bounded-error proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_privacy_bounded_error"]
+
+[[row]]
+target_id = "compiler-profile/explain-replay-determinism-proof"
+owner_issue = 12407
+subject = "explain and replay surfaces"
+claim_boundary = "surfaces stay deterministic and source-bounded"
+proof_role = "explain and replay determinism"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_explain_replay_determinism"]
+
+[[row]]
+target_id = "compiler-profile/owner-wake-routing-proof"
+owner_issue = 12408
+subject = "owner and wake-event routing"
+claim_boundary = "routing reactivates exactly the blocked rows and nothing else"
+proof_role = "owner and wake-event routing"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_owner_wake_routing"]
+
+[[row]]
+target_id = "compiler-profile/source-adapter-succession-contract"
+owner_issue = 12409
+subject = "source-schema and adapter succession relations"
+claim_boundary = "succession names exact range contracts instead of loose compat claims"
+proof_role = "source and adapter succession"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/src/compiler_adapter_succession"]
+
+[[row]]
+target_id = "compiler-profile/source-adapter-migration-proof"
+owner_issue = 12410
+subject = "source and adapter migration continuity"
+claim_boundary = "migrations preserve evidence continuity without strengthening any recorded claim"
+proof_role = "source and adapter migration proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_adapter_migration"]
+
+[[row]]
+target_id = "compiler-profile/adapters-preserve-source-semantics"
+owner_issue = 12380
+subject = "adapter source semantics and claim ceilings"
+claim_boundary = "adapters preserve source semantics and claim ceilings exactly"
+proof_role = "adapter fidelity proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_adapter_fidelity"]
+
+[[row]]
+target_id = "compiler-profile/source-to-client-lineage-proof"
+owner_issue = 12381
+subject = "source-to-client lineage exactness"
+claim_boundary = "lineage is exact and non-transferable between sources"
+proof_role = "lineage exactness proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_source_lineage"]
+
+[[row]]
+target_id = "compiler-profile/residual-packets-proof"
+owner_issue = 12384
+subject = "residual packets routing, repair, revalidation, and fresh closeout"
+claim_boundary = "packets are exact, evidence-derived, and owner-routed"
+proof_role = "residual routing, repair, revalidation, and fresh closeout"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_residual_packets"]
+
+[[row]]
+target_id = "compiler-profile/repair-closeout-history-proof"
+owner_issue = 12388
+subject = "repair and closeout operations"
+claim_boundary = "cannot rewrite denominators or history"
+proof_role = "repair and closeout integrity proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_repair_closeout"]
+
+[[row]]
+target_id = "compiler-profile/legacy-exit-recurrence-proof"
+owner_issue = 12390
+subject = "legacy exits under absence, zero work, and recurrence"
+claim_boundary = "legacy exits require absence, zero work, and recurrence surveillance"
+proof_role = "legacy exit integrity proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_legacy_exits"]
+
+[[row]]
+target_id = "compiler-profile/authority-movement-invalidation-proof"
+owner_issue = 12391
+subject = "authority movement invalidation"
+claim_boundary = "movement invalidates only exact affected evidence"
+proof_role = "invalidation exactness proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_authority_invalidation"]
+
+[[row]]
+target_id = "compiler-status/stale-evidence-regression-proof"
+owner_issue = 12392
+subject = "machine and human status reads over stale evidence"
+claim_boundary = "stale evidence visibly regresses status; it cannot render green"
+proof_role = "status currentness proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_status_staleness"]
+
+[[row]]
+target_id = "compiler-claims/weakest-row-wording-proof"
+owner_issue = 12393
+subject = "generated claim wording against weakest row and limitation"
+claim_boundary = "generated wording cannot outrun the weakest row or limitation"
+proof_role = "claim-bound proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_claim_wording"]
+
+# ---------------------------------------------------------------------------
+# Expanded control cohort pairs (atomic generation/hermetic/resource/integrity/concurrency)
+# ---------------------------------------------------------------------------
+
+[[row]]
+target_id = "compiler-profile/atomic-generation-publication-contract"
+owner_issue = 12413
+subject = "atomic multi-artifact generation and current-pointer publication subjects"
+claim_boundary = "publication is atomic; partial visibility cannot become current"
+proof_role = "atomic generation subject contract"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["contracts/compiler/generation_publication"]
+
+[[row]]
+target_id = "compiler-profile/fault-injection-publication-proof"
+owner_issue = 12414
+subject = "atomic generation publication, rollback, and orphan cleanup under fault injection"
+claim_boundary = "faulted publications roll back or clean up; no orphan passes as current"
+proof_role = "fault injection proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_generation_faults"]
+
+[[row]]
+target_id = "compiler-profile/hermetic-input-proof"
+owner_issue = 12416
+subject = "hermetic isolated-store inputs for generation publication"
+claim_boundary = "results are hermetic to the declared inputs; host leakage cannot succeed a run"
+proof_role = "hermetic-input proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_hermetic_inputs"]
+
+[[row]]
+target_id = "compiler-profile/host-variation-proof"
+owner_issue = 12417
+subject = "host variation surfaces around hermetic input execution"
+claim_boundary = "identical inputs succeed identically across allowed host variation"
+proof_role = "host-variation proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_host_variation"]
+
+[[row]]
+target_id = "compiler-profile/resource-bound-proof"
+owner_issue = 12418
+subject = "resource-bounded execution envelopes"
+claim_boundary = "envelopes hold under resource bounds; exceeding bounds fails the route"
+proof_role = "resource-bound proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_resource_bounds"]
+
+[[row]]
+target_id = "compiler-profile/adversarial-termination-proof"
+owner_issue = 12419
+subject = "adversarial termination behavior"
+claim_boundary = "termination cannot leave half-published state accepted as current"
+proof_role = "adversarial termination proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_adversarial_termination"]
+
+[[row]]
+target_id = "compiler-profile/integrity-closure-proof"
+owner_issue = 12420
+subject = "generation integrity closure subjects"
+claim_boundary = "every stored artifact closes to its declared digest chain"
+proof_role = "integrity-closure proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_integrity_closure"]
+
+[[row]]
+target_id = "compiler-profile/tamper-mutation-proof"
+owner_issue = 12421
+subject = "tamper mutations over enrolled packets and stores"
+claim_boundary = "tampered bytes fail integrity closure; detection cannot be silenced"
+proof_role = "tamper mutation proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_tamper_mutations"]
+
+[[row]]
+target_id = "compiler-profile/concurrent-namespace-proof"
+owner_issue = 12422
+subject = "concurrent namespace operations over shared stores"
+claim_boundary = "namespaces partition concurrent writers; collisions fail closed"
+proof_role = "concurrent namespace proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_concurrent_namespaces"]
+
+[[row]]
+target_id = "compiler-profile/parallel-isolation-proof"
+owner_issue = 12423
+subject = "parallel lane isolation over disjoint stores"
+claim_boundary = "parallel claims observe their store partitions only"
+proof_role = "parallel isolation proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_parallel_isolation"]
+
+# ---------------------------------------------------------------------------
+# Production operationalization targets (#12429-#12432) and consumer links
+# ---------------------------------------------------------------------------
+
+[[row]]
+target_id = "compiler-operational/packet-enrollment"
+owner_issue = 12429
+subject = "packet enrollment into integrity-closure stores"
+claim_boundary = "enrollment produces integrity-closure members feeding #12421 tamper mutations"
+proof_role = "production packet enrollment implementation"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/compiler-generation-store/enrollment"]
+
+[[row]]
+target_id = "compiler-operational/execution-context"
+owner_issue = 12430
+subject = "production execution context feeding hermeticity, bounds, and concurrency proofs"
+claim_boundary = "context changes route #12417/#12418/#12422 successors exactly"
+proof_role = "production execution context implementation"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/compiler-execution-context"]
+
+[[row]]
+target_id = "compiler-operational/atomic-generation-store"
+owner_issue = 12431
+subject = "atomic generation store implementation"
+claim_boundary = "store changes must route the #12414 fault-publication successor exactly"
+proof_role = "production atomic generation store implementation"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/compiler-generation-store"]
+
+[[row]]
+target_id = "compiler-operational/retention-apply"
+owner_issue = 12432
+subject = "retention apply over enrolled histories"
+claim_boundary = "retention apply changes route the #12405 destructive-cleanup successor exactly"
+proof_role = "production retention apply implementation"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/compiler-retention/apply"]
+
+# ---------------------------------------------------------------------------
+# Operational topology family (#12437 program)
+# ---------------------------------------------------------------------------
+
+[[row]]
+target_id = "compiler-generations/product-tree-projection"
+owner_issue = 12450
+subject = "self-independent product-tree candidate projections"
+claim_boundary = "projections do not inherit authority from the products they project"
+proof_role = "product-tree projection contract"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["contracts/compiler/product_tree_projection"]
+
+[[row]]
+target_id = "compiler-generations/current-generation-read-view"
+owner_issue = 12438
+subject = "one coherent current-generation read view per profile"
+claim_boundary = "read views answer from one coherent generation, not mixed roots"
+proof_role = "per-profile current-generation view"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/compiler-current-view"]
+
+[[row]]
+target_id = "compiler-generations/indexed-root-set-view"
+owner_issue = 12448
+subject = "indexed root generation as coherent current profile-set view"
+claim_boundary = "index entries close to their root generation identity"
+proof_role = "indexed current root/set view"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/compiler-current-index"]
+
+[[row]]
+target_id = "compiler-generations/authority-movement-packets"
+owner_issue = 12458
+subject = "authority-movement derivation from current and target subjects"
+claim_boundary = "movement packets name exact affected closures"
+proof_role = "authority movement"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/compiler-authority-movement"]
+
+[[row]]
+target_id = "compiler-generations/revalidation-planning"
+owner_issue = 12439
+subject = "exact affected revalidation closure planning"
+claim_boundary = "plans cover exactly affected rows; unrelated denominators stay out"
+proof_role = "revalidation plan"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/compiler-revalidation/plan"]
+
+[[row]]
+target_id = "compiler-generations/targeted-revalidation-run"
+owner_issue = 12440
+subject = "targeted revalidation plans into terminal packet sets"
+claim_boundary = "terminal packets prove their plan identity and work"
+proof_role = "targeted run"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/compiler-revalidation/run"]
+
+[[row]]
+target_id = "compiler-generations/successor-generation-assembly"
+owner_issue = 12441
+subject = "successor generation assembly from changed and retained packets"
+claim_boundary = "assembled generations close changed plus retained provenance exactly"
+proof_role = "generation assembly"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/compiler-generations/assembly"]
+
+[[row]]
+target_id = "compiler-generations/publication-transaction"
+owner_issue = 12442
+subject = "transaction, check, apply, and resume across atomic publication"
+claim_boundary = "transactions publish atomically with resumable checkpoints or full rollback"
+proof_role = "transaction/check/apply/resume"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/compiler-generations/transaction"]
+
+[[row]]
+target_id = "compiler-generations/status-show-explain-diff-consumers"
+owner_issue = 12443
+subject = "status/show/explain/diff served from coherent generations"
+claim_boundary = "consumers cannot bypass generation-only currentness"
+proof_role = "current consumers"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/src/tasks/compiler_current_consumers"]
+
+[[row]]
+target_id = "compiler-generations/current-docs-docs-check"
+owner_issue = 12444
+subject = "current docs and docs-check bound to coherent current generations"
+claim_boundary = "docs health binds to current generation identity, not stale snapshots"
+proof_role = "current docs/docs-check"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["docs/src/compiler-generations"]
+
+[[row]]
+target_id = "compiler-generations/editor-product-health-adapters"
+owner_issue = 12445
+subject = "editor-intelligence and product-health joints over current generations"
+claim_boundary = "adapters consume coherent generations only"
+proof_role = "editor-intelligence/product-health adapters"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["clients/editor-current-adapters"]
+
+[[row]]
+target_id = "compiler-generations/current-read-inventory-ratchet"
+owner_issue = 12446
+subject = "loose current-packet read retirement and generation-only ratchet"
+claim_boundary = "no code path may read loose current packets after retirement"
+proof_role = "current-read inventory/ratchet"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["scripts/current_read_inventory"]
+
+[[row]]
+target_id = "compiler-generations/packet-history-migration"
+owner_issue = 12447
+subject = "existing canonical packets migrated into enrolled historical generations"
+claim_boundary = "migration preserves packet bytes and identity verbatim"
+proof_role = "migration/bootstrap (controlled manual publication)"
+route_class = "manual"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["scripts/packet_history_migration"]
+
+[[row]]
+target_id = "compiler-generations/local-lexical-seed"
+owner_issue = 12451
+subject = "first current local-lexical generation seed"
+claim_boundary = "bootstrap seeds are explicit controlled publications, never ordinary affected CI"
+proof_role = "bootstrap local seed"
+route_class = "manual"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["distribution/seeds/local_lexical"]
+
+[[row]]
+target_id = "compiler-generations/bounded-execution-seed"
+owner_issue = 12452
+subject = "first current bounded-execution generation seed"
+claim_boundary = "explicit controlled publication; no CI auto-commit"
+proof_role = "bootstrap bounded seed"
+route_class = "manual"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["distribution/seeds/bounded_execution"]
+
+[[row]]
+target_id = "compiler-generations/static-project-seed"
+owner_issue = 12454
+subject = "first current static-project generation seed"
+claim_boundary = "explicit controlled publication; no CI auto-commit"
+proof_role = "bootstrap static seed"
+route_class = "manual"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["distribution/seeds/static_project"]
+
+[[row]]
+target_id = "compiler-generations/maintained-root-seed"
+owner_issue = 12456
+subject = "first maintained-code-intelligence root generation seed"
+claim_boundary = "root seed publishes the coherent current profile set explicitly"
+proof_role = "bootstrap maintained root seed"
+route_class = "manual"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["distribution/seeds/maintained_root"]
+
+[[row]]
+target_id = "compiler-controls/required-affected-freshness"
+owner_issue = 12459
+subject = "prospective-generation freshness enforcement for affected rows"
+claim_boundary = "prospective execution is required affected work and never commits"
+proof_role = "ongoing control: required affected freshness"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = [".github/workflows/compiler-freshness.yml.disabled"]
+
+[[row]]
+target_id = "compiler-controls/scheduled-manual-maintenance"
+owner_issue = 12460
+subject = "scheduled currentness, expiry, integrity, and retention maintenance checks"
+claim_boundary = "scheduled maintenance cannot satisfy #12459 merely because the subject matches"
+proof_role = "ongoing control: scheduled/manual maintenance"
+route_class = "scheduled"
+status = "declared_pending"
+candidate_profiles = []
+subjects = [".github/workflows/compiler-maintenance.yml.disabled"]
+
+[[row]]
+target_id = "compiler-controls/real-corpus-lifecycle-proof"
+owner_issue = 12461
+subject = "real repository generation lifecycle end-to-end proof"
+claim_boundary = "lifecycle proof exercises real corpus stores without widening authority"
+proof_role = "real-corpus lifecycle verification"
+route_class = "scheduled"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_real_corpus_lifecycle"]
+
+[[row]]
+target_id = "compiler-controls/operator-runbook-examples"
+owner_issue = 12462
+subject = "operator runbook for revalidation, recovery, and retention"
+claim_boundary = "examples are generated and checked; unchecked prose cannot document commands"
+proof_role = "generated/checked operator runbook examples"
+route_class = "advisory"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["book/src/operator/runbook/generated"]
+
+# ---------------------------------------------------------------------------
+# Post-U19 capability cohorts
+# ---------------------------------------------------------------------------
+
+[[row]]
+target_id = "compiler-oracle/structural-subjects-contract"
+owner_issue = 12608
+subject = "version-bound Perl structural-observation subjects"
+claim_boundary = "optree/order/context rows stay distinct from other families"
+proof_role = "structural contracts"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["contracts/compiler-oracle/structural_subjects"]
+
+[[row]]
+target_id = "compiler-oracle/optree-order-context-observations"
+owner_issue = 12609
+subject = "bounded optree order and context observations"
+claim_boundary = "relation and work counts stay per-family"
+proof_role = "optree/order/context capture"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/perl-core-harness/optree_capture"]
+
+[[row]]
+target_id = "compiler-oracle/pad-binding-capture-observations"
+owner_issue = 12610
+subject = "bounded pad, binding, and closure observations"
+claim_boundary = "pad/binding/capture cells fill from pad-family work only"
+proof_role = "pad/binding/capture capture"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/perl-core-harness/pad_capture"]
+
+[[row]]
+target_id = "compiler-oracle/symbol-prototype-phase-warning-observations"
+owner_issue = 12611
+subject = "bounded symbol, prototype, phase, and warning observations"
+claim_boundary = "symbol-family cells fill from symbol-family work only"
+proof_role = "symbol/prototype/phase/warning capture"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/perl-core-harness/symbol_capture"]
+
+[[row]]
+target_id = "compiler-oracle/structural-concept-mapping"
+owner_issue = 12612
+subject = "mapping Perl structural observations to compiler concepts and proof cells"
+claim_boundary = "mapping identity is versioned and reversible at declared boundaries"
+proof_role = "mapping"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/perl-ripr-facts/oracle_mapping"]
+
+[[row]]
+target_id = "compiler-oracle/hir-pir-effects-eir-comparison"
+owner_issue = 12613
+subject = "comparison of structural observations with HIR, PIR-A, effects, and EIR"
+claim_boundary = "comparisons distinguish each intermediate representation"
+proof_role = "comparison"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/oracle_ir_comparison"]
+
+[[row]]
+target_id = "compiler-oracle/version-evolution-classification"
+owner_issue = 12614
+subject = "structural-observation profile and Perl-version evolution classification"
+claim_boundary = "evolution rows classify versions without collapsing platforms"
+proof_role = "evolution"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/oracle_evolution_classification"]
+
+[[row]]
+target_id = "compiler-oracle/independent-mutation-testing"
+owner_issue = 12615
+subject = "independent mutation testing of structural oracle profiles and comparisons"
+claim_boundary = "mutation testing stays independent of construction identity"
+proof_role = "independent mutation proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/oracle_mutation_testing"]
+
+[[row]]
+target_id = "compiler-oracle/affected-scheduled-route-implementation"
+owner_issue = 12635
+subject = "affected structural relations and scheduled Perl profile routes"
+claim_boundary = "#12411 owns route authority; this leaf consumes it rather than cloning selection"
+proof_role = "oracle route implementation"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = [".github/workflows/compiler-oracle.yml.disabled"]
+
+[[row]]
+target_id = "compiler-transform/plans-legality-contract"
+owner_issue = 12616
+subject = "transformation plans, legality, identity, and result semantics"
+claim_boundary = "plan identity separates legality from result semantics"
+proof_role = "transform contracts"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["contracts/compiler-transform/plans"]
+
+[[row]]
+target_id = "compiler-transform/transformation-laws-register"
+owner_issue = 12617
+subject = "reviewed Perl semantic transformation law register"
+claim_boundary = "each transform family keeps independent law validation"
+proof_role = "law validation"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/perl-transform/laws"]
+
+[[row]]
+target_id = "compiler-transform/value-propagation-folding"
+owner_issue = 12618
+subject = "value propagation and constant folding implementation"
+claim_boundary = "compile/packet/fallback work cannot satisfy transformation work"
+proof_role = "value transforms"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/perl-transform/value_fold"]
+
+[[row]]
+target_id = "compiler-transform/truth-definedness-pruning"
+owner_issue = 12619
+subject = "truth and definedness branch pruning implementation"
+claim_boundary = "branch pruning proves definedness before pruning"
+proof_role = "branch transforms"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/perl-transform/branch_prune"]
+
+[[row]]
+target_id = "compiler-transform/control-simplification"
+owner_issue = 12620
+subject = "effect-free unreachable control removal and PIR/EIR simplification"
+claim_boundary = "control simplification distinguishes effect-free proofs from value folds"
+proof_role = "control transforms"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/perl-transform/control_simplify"]
+
+[[row]]
+target_id = "compiler-transform/equivalence-proof"
+owner_issue = 12621
+subject = "equivalence across upstream, structural, and mutation evidence"
+claim_boundary = "equivalence needs all three evidence classes; none substitutes another"
+proof_role = "equivalence"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/transform_equivalence"]
+
+[[row]]
+target_id = "compiler-transform/internal-consumers-integration"
+owner_issue = 12622
+subject = "internal consumers using proven transforms in analysis, diagnostics, and execution"
+claim_boundary = "consumers bind to proven transform identity"
+proof_role = "internal consumer"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/perl-analysis/transform_consumer"]
+
+[[row]]
+target_id = "compiler-transform/source-plan-projection"
+owner_issue = 12623
+subject = "eligible transformations projected into exact source plans"
+claim_boundary = "source plans name eligible sites exactly"
+proof_role = "source projection"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/perl-transform/source_plan"]
+
+[[row]]
+target_id = "compiler-transform/performance-work-avoided"
+owner_issue = 12624
+subject = "transformation cost, avoided work, and incremental reuse measurement"
+claim_boundary = "performance rows measure cost without shrinking semantic denominators"
+proof_role = "performance"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["benchmarks/transform_cost"]
+
+[[row]]
+target_id = "compiler-transform/affected-scheduled-route-implementation"
+owner_issue = 12636
+subject = "affected laws and scheduled equivalence/performance routes"
+claim_boundary = "route implementation consumes #12411 authority; scheduled does not cross-satisfy required"
+proof_role = "transform route implementation"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = [".github/workflows/compiler-transform.yml.disabled"]
+
+[[row]]
+target_id = "compiler-migration/delta-subjects-contract"
+owner_issue = 12625
+subject = "exact reviewed Perl semantic-delta subjects"
+claim_boundary = "one project/version/platform cannot fill another delta cell"
+proof_role = "delta contract"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["contracts/compiler-migration/delta_subjects"]
+
+[[row]]
+target_id = "compiler-migration/candidate-delta-derivation"
+owner_issue = 12626
+subject = "candidate semantic deltas derived from upstream evolution"
+claim_boundary = "derivation marks candidates; reviewed deltas remain distinct"
+proof_role = "candidate derivation"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/perl-migration/candidate_delta"]
+
+[[row]]
+target_id = "compiler-migration/reviewed-delta-proof"
+owner_issue = 12627
+subject = "independent review and proof of Perl semantic deltas"
+claim_boundary = "review independence is separate from derivation"
+proof_role = "reviewed delta"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/migration_delta_review"]
+
+[[row]]
+target_id = "compiler-migration/project-impact-projection"
+owner_issue = 12628
+subject = "reviewed deltas projected through CompilerWorld"
+claim_boundary = "project impact stays per-project fact"
+proof_role = "project impact"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/compiler-world/migration_impact"]
+
+[[row]]
+target_id = "compiler-migration/findings-and-explanations"
+owner_issue = 12629
+subject = "exact version-migration findings and explanations"
+claim_boundary = "findings are exact, per-version outputs"
+proof_role = "findings"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/perl-migration/findings"]
+
+[[row]]
+target_id = "compiler-migration/migration-family-selection"
+owner_issue = 12630
+subject = "selected and frozen first safe Perl-version migration family"
+claim_boundary = "selection freezes scope; later rows cannot widen it silently"
+proof_role = "plan selection"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["policy/compiler-migration/family.toml"]
+
+[[row]]
+target_id = "compiler-migration/plan-generator-implementation"
+owner_issue = 12631
+subject = "Perl-version migration plan generator"
+claim_boundary = "generated plans are deterministic per selected family"
+proof_role = "plan generation"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/perl-migration/plan_generator"]
+
+[[row]]
+target_id = "compiler-migration/application-dual-version-proof"
+owner_issue = 12632
+subject = "application and verification across source and target Perl subjects"
+claim_boundary = "dual-version application proves both sides or neither"
+proof_role = "atomic application and dual-version proof"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/migration_dual_version_application"]
+
+[[row]]
+target_id = "compiler-migration/maintenance-route-implementation"
+owner_issue = 12633
+subject = "supported Perl-version deltas, impacts, and migration proof maintenance"
+claim_boundary = "maintenance keeps delta authorities current without reuse laundering"
+proof_role = "maintenance"
+route_class = "scheduled"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["scripts/compiler_migration_maintenance"]
+
+[[row]]
+target_id = "compiler-compounding/proof-chain-explanation"
+owner_issue = 12577
+subject = "upstream witnesses and compiler proof chains attached to canonical explanations"
+claim_boundary = "witnesses attach to existing explanation identity without inventing new claims"
+proof_role = "proof-chain explanation"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["crates/perl-diagnostics/proof_chain_witness"]
+
+[[row]]
+target_id = "compiler-compounding/terminal-independent-vertical"
+owner_issue = 12634
+subject = "structural oracle, transformation, migration, and proof-chain capabilities end to end"
+claim_boundary = "must execute useful work across every selected rail; never fills a missing lower route with aggregate or downstream failure"
+proof_role = "terminal independent vertical"
+route_class = "required_affected"
+status = "declared_pending"
+candidate_profiles = []
+subjects = ["xtask/tests/compiler_vertical_end_to_end"]
