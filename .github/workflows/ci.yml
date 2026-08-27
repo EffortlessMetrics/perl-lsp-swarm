@@ -274,6 +274,7 @@ jobs:
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     outputs:
       windows_runner: ${{ steps.scope.outputs.windows_runner }}
+      windows_test_crates: ${{ steps.scope.outputs.windows_test_crates }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -320,12 +321,40 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: 1.95.0
+      # #2908: this lane builds only the ci-scope-selected crate subset
+      # ($WINDOWS_TEST_CRATES) directly into the cached target tree, so its
+      # cache key must carry the scope-crate-set hash, not Cargo.lock alone —
+      # otherwise a 2-crate seam build and a 5-crate seam build restore and
+      # churn one workspace-wide entry. The hash is derived before rust-cache
+      # runs from the upstream platform-overrides output, canonicalized by
+      # scripts/ci/scope_cache_key.py (sorted deduped crate names, SHA-256):
+      # force-pushes that move neither lockfile nor set keep a byte-identical
+      # key, and unrelated scopes never invalidate each other's entries.
+      # rust-cache's restore prefix keeps the explicit Cargo.lock and scope
+      # hashes together with its runner, Rust, and environment identity. Its
+      # automatic manifest digest is not part of that fallback prefix, so this
+      # does not claim identical Cargo.toml state. PRs restore only; main and
+      # master pushes may save the scoped entry. Ready-tier lanes keep their
+      # workspace-wide keys.
+      - name: Derive scope-aware cache key component
+        id: windows-scope-key
+        shell: bash
+        env:
+          WINDOWS_TEST_CRATES: ${{ needs.platform-overrides.outputs.windows_test_crates }}
+        run: |
+          set -euo pipefail
+          python_bin="$(command -v python3 || command -v python)"
+          scope_hash="$("$python_bin" scripts/ci/scope_cache_key.py --require-non-empty --package-args "$WINDOWS_TEST_CRATES")"
+          echo "scope-hash=$scope_hash" >> "$GITHUB_OUTPUT"
+          echo "windows scope crates: ${WINDOWS_TEST_CRATES:-<none>}"
+          echo "windows scope cache-key hash: $scope_hash"
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           cache-all-crates: true
-          shared-key: ci-windows-platform-${{ hashFiles('Cargo.lock') }}
+          shared-key: ci-windows-platform-${{ hashFiles('Cargo.lock') }}-${{ steps.windows-scope-key.outputs.scope-hash }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
       - name: Run Windows portability smoke
         shell: bash
         env:
@@ -909,6 +938,10 @@ jobs:
       - name: Verify complete shard runner falsifiers
         if: matrix.name == 'meta'
         run: python3 -m unittest scripts/ci/test_run_gate_shard.py
+
+      - name: Verify scope cache key composition
+        if: matrix.name == 'meta'
+        run: python3 -m unittest scripts/ci/test_scope_cache_key.py
 
       - name: Run merge-gate shard with receipts
         shell: bash
