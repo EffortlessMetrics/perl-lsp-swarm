@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12264 |
-| Rust-family files | 3744 |
-| Non-Rust files | 8520 |
-| Allowlisted | 6266 |
-| Unclassified | 2254 |
+| Total tracked files | 12237 |
+| Rust-family files | 3741 |
+| Non-Rust files | 8496 |
+| Allowlisted | 6261 |
+| Unclassified | 2235 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 481 |
-| documentation | 2770 |
+| config | 479 |
+| documentation | 2769 |
 | generated | 2 |
 | production | 331 |
-| test | 2032 |
-| tooling | 650 |
-| unclassified | 2254 |
+| test | 2033 |
+| tooling | 647 |
+| unclassified | 2235 |
 
 ## Unclassified files
 
@@ -62,7 +62,6 @@
 | `.typos.toml` | `toml` |
 | `aqua.yaml` | `yaml` |
 | `book/book.toml` | `toml` |
-| `clients/lite-xl/tests/init_document_symbol_identity_test.lua` | `lua` |
 | `contracts/actual_host_receipt.v1.schema.json` | `json` |
 | `crates/perl-corpus/fixtures/differential_oracle/manifest.json` | `json` |
 | `crates/perl-corpus/fixtures/parser_accuracy/manifest.json` | `json` |
@@ -125,24 +124,6 @@
 | `distribution/test-release.sh` | `sh` |
 | `distribution/windows/update-manifests.ps1` | `ps1` |
 | `distribution/winget/perl-lsp.yaml` | `yaml` |
-| `fixtures/agent_packet_dogfood_core/analysis_train_synthetic_transfer.v1.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/golden/agent_packet_dogfood_core.advisory.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/invalid/chain_of_thought_in_payload.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/invalid/credential_in_payload.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/invalid/dangling_intervention_ref.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/invalid/expected_errors.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/invalid/machine_local_path_in_payload.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/invalid/missing_model_identity.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/invalid/missing_packet_digest.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/invalid/missing_scope_ceiling.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/invalid/missing_subject.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/invalid/oversized_event_excerpt.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/invalid/tampered_event_payload.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/invalid/tampered_packet_envelope.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/invalid/unknown_disposition.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/invalid/unknown_root_field.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/invalid/unsorted_event_sequences.json` | `json` |
-| `fixtures/agent_packet_dogfood_core/parser_p05_synthetic.v1.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A01-file-wide-suppression-carveout.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A02-dead-code-baseline-absorption.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A03-cfg-test-attr-general-carveout.json` | `json` |
@@ -2741,7 +2722,6 @@
 | `.ci/release/evidence.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/risk-tags.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/agent-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
-| `.ci/schemas/agent-packet-dogfood.core.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/ci-route-plan.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-ux.schema.json` | config | `non-rust-ci-config` | release/ci |
@@ -2895,7 +2875,6 @@
 | `.github/workflows/dap-protocol-authority.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dap-scorecard.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dependency-review.yml` | config | `non-rust-github-workflows` | release/ci |
-| `.github/workflows/discover-11983-current-main.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dist-shadow.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/docker-publish.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/docs-deploy.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3621,6 +3600,7 @@
 | `clients/lite-xl/tests/init_completion_resolve_test.lua` | test | `non-rust-litexl-init-completion-resolve-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_configuration_items_test.lua` | test | `non-rust-litexl-init-configuration-items-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_document_session_test.lua` | test | `non-rust-litexl-init-session-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/init_document_symbol_identity_test.lua` | test | `non-rust-litexl-init-document-symbol-identity-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_request_currentness_test.lua` | test | `non-rust-litexl-init-request-currentness-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_show_document_outcome_test.lua` | test | `non-rust-litexl-init-show-document-outcome-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/journey_session_test.lua` | test | `non-rust-litexl-journey-session-tests` | editor/lite-xl |
@@ -6107,7 +6087,6 @@
 | `fixtures/agent_implementation_packet/invalid/unconditional_profile_with_decision.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/live_observed_candidate.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/shuffled/bounded_leaf_offline_shuffled.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
-| `fixtures/agent_packet_dogfood_core/golden/agent_packet_dogfood_core.advisory.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `fixtures/agent_review_packet/challenger_service_marker.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/agent_review_packet/closure_open_finding.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/agent_review_packet/closure_service_marker_eligible.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
@@ -6543,7 +6522,6 @@
 | `scripts/ci/run_gate_shard.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/run_parser_integration.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/rustfmt_check.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
-| `scripts/ci/scope_cache_key.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/security_reconciliation_io.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/security_reconciliation_model.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_aggregate_lane_history.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6571,7 +6549,6 @@
 | `scripts/ci/test_run_parser_integration.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_rustfmt_check.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_rustfmt_required_workflow.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
-| `scripts/ci/test_scope_cache_key.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_cargo_lock_conflict_policy.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_gate_enforcement_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_gate_lane_mapping.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6645,7 +6622,6 @@
 | `scripts/lite_xl_replay/public_replay.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/llvm.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/lsp-smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
-| `scripts/maintenance/rebuild_11983_current_main.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/marketing/check-demo-assets.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/marketing/render-walkthrough-gif.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/migrate-legacy-authority-banners.py` | tooling | `non-rust-legacy-authority-banner-migrator` | release/ci |
