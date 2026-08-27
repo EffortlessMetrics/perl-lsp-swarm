@@ -40,7 +40,8 @@ authorization boundary. A label remains authorization across `synchronize`,
 `reopened`, and `ready_for_review` activity until it is removed. Removing a label
 prevents later activity from selecting that lane, but does not cancel a run that
 already started for an earlier event; workflow concurrency cancels stale-head work
-only on `synchronize`.
+only on `synchronize`. A `labeled` activity selects a lane only when that event added
+the lane's own label; adding an unrelated label does not retrigger an authorized lane.
 
 Coverage is not PR-label triggered. Use the scheduled/manual coverage workflow
 when coverage diagnostics are needed.

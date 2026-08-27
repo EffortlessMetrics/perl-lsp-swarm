@@ -19,31 +19,34 @@ fn read(root: &Path, rel: &str) -> Result<String, Box<dyn std::error::Error>> {
     Ok(fs::read_to_string(root.join(rel))?)
 }
 
-fn job_section<'a>(workflow: &'a str, job_id: &str) -> Option<&'a str> {
-    // Job entries sit at exactly two-space indent; nested job fields and step
-    // keys live deeper, so boundaries are the following 2-space "key:" line.
-    let anchor = format!("\n  {job_id}:");
-    let start = workflow.find(&anchor)?;
+fn mapping_section<'a>(document: &'a str, key: &str, indent: usize) -> Option<&'a str> {
+    let prefix = " ".repeat(indent);
+    let anchor = format!("\n{prefix}{key}:");
+    let start = document.find(&anchor)?;
     let body_start = start + anchor.len();
-    let rest = &workflow[body_start..];
+    let rest = &document[body_start..];
     let mut end = rest.len();
     for (offset, line) in rest.split('\n').enumerate() {
         if offset == 0 {
             continue;
         }
-        let nested = line.starts_with("  ")
-            && !line.starts_with("   ")
-            && line
-                .trim_end()
-                .chars()
-                .nth(2)
-                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-        if nested {
+        let trimmed = line.trim_start();
+        let line_indent = line.len() - trimmed.len();
+        if !trimmed.is_empty() && !trimmed.starts_with('#') && line_indent <= indent {
             end = rest[..].split('\n').take(offset).map(|l| l.len() + 1).sum();
             break;
         }
     }
-    Some(&workflow[start..body_start + end])
+    Some(&document[start..body_start + end])
+}
+
+fn job_section<'a>(workflow: &'a str, job_id: &str) -> Option<&'a str> {
+    mapping_section(workflow, job_id, 2)
+}
+
+fn event_section<'a>(workflow: &'a str, event: &str) -> Option<&'a str> {
+    let triggers = mapping_section(workflow, "on", 0)?;
+    mapping_section(triggers, event, 2)
 }
 
 fn pull_request_label_gate(section: &str) -> Option<&str> {
@@ -116,7 +119,13 @@ fn active_if_expression(section: &str) -> Option<String> {
     in_if.then(|| parts.join(" ").split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
-fn public_api_job_runs(section: &str, event: &str, labels: &[&str]) -> bool {
+fn public_api_job_runs(
+    section: &str,
+    event: &str,
+    action: Option<&str>,
+    event_label: Option<&str>,
+    labels: &[&str],
+) -> bool {
     let Some(label) = pull_request_label_gate(section) else {
         return false;
     };
@@ -124,7 +133,7 @@ fn public_api_job_runs(section: &str, event: &str, labels: &[&str]) -> bool {
         return false;
     };
     let expected = format!(
-        "github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, '{label}'))"
+        "github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, '{label}') && (github.event.action != 'labeled' || github.event.label.name == '{label}'))"
     );
     if expression != expected {
         return false;
@@ -132,20 +141,22 @@ fn public_api_job_runs(section: &str, event: &str, labels: &[&str]) -> bool {
 
     match event {
         "workflow_dispatch" | "schedule" => true,
-        "pull_request" => labels.iter().any(|candidate| *candidate == label),
+        "pull_request" if labels.iter().any(|candidate| *candidate == label) => match action {
+            Some("opened" | "synchronize" | "reopened" | "ready_for_review") => true,
+            Some("labeled") => event_label == Some(label),
+            _ => false,
+        },
         _ => false,
     }
 }
 
 fn pull_request_activity_types(workflow: &str) -> Option<Vec<&str>> {
-    let Some(on) = workflow.split_once("\non:").map(|(_, rest)| rest) else {
-        return None;
-    };
-    let Some((pull_request, _)) = on.split_once("\n  schedule:") else {
-        return None;
-    };
+    let pull_request = event_section(workflow, "pull_request")?;
     pull_request.lines().find_map(|line| {
         let trimmed = line.trim();
+        if line.len() - line.trim_start().len() != 4 {
+            return None;
+        }
         let Some(values) = trimmed.strip_prefix("types:").map(str::trim) else {
             return None;
         };
@@ -170,12 +181,16 @@ const PUBLIC_API_POLICY_INPUTS: [&str; 7] = [
 ];
 
 fn workflow_policy_covers_public_api_inputs(workflow: &str) -> bool {
-    workflow.matches("  pull_request:").count() == 1
-        && workflow.matches("  push:").count() == 1
-        && PUBLIC_API_POLICY_INPUTS
-            .iter()
-            .all(|path| workflow.matches(&format!("      - '{path}'")).count() == 2)
-        && workflow.matches("name: Install just for executable recipe proofs").count() == 1
+    let Some(pull_request) = event_section(workflow, "pull_request") else {
+        return false;
+    };
+    let Some(push) = event_section(workflow, "push") else {
+        return false;
+    };
+    PUBLIC_API_POLICY_INPUTS.iter().all(|path| {
+        let watched = format!("      - '{path}'");
+        pull_request.matches(&watched).count() == 1 && push.matches(&watched).count() == 1
+    }) && workflow.matches("name: Install just for executable recipe proofs").count() == 1
         && workflow.matches("uses: taiki-e/install-action@").count() == 1
         && workflow.matches("name: Public API trigger label contract").count() == 1
         && workflow
@@ -186,6 +201,32 @@ fn workflow_policy_covers_public_api_inputs(workflow: &str) -> bool {
         && workflow.matches("run: bash scripts/tests/test-public-api-label.sh").count() == 1
         && workflow.matches("name: Public API ratchet executable proof").count() == 1
         && workflow.matches("run: bash scripts/tests/test-public-api-ratchet.sh").count() == 1
+}
+
+fn permissions_are_contents_read(section: &str) -> bool {
+    let mut active =
+        section.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#'));
+    active.next() == Some("permissions:") && active.eq(["contents: read"])
+}
+
+fn job_has_effective_read_only_permissions(workflow: &str, job_id: &str) -> bool {
+    let Some(workflow_permissions) = mapping_section(workflow, "permissions", 0) else {
+        return false;
+    };
+    if !permissions_are_contents_read(workflow_permissions) {
+        return false;
+    }
+    let Some(job) = job_section(workflow, job_id) else {
+        return false;
+    };
+    mapping_section(job, "permissions", 4).is_none_or(permissions_are_contents_read)
+}
+
+fn job_binds_tested_candidate_sha(section: &str) -> bool {
+    let subject = "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}";
+    section.contains(&format!("ref: {subject}"))
+        && section.contains(&format!("TESTED_SHA: {subject}"))
+        && section.contains("test \"$(git rev-parse 'HEAD^{commit}')\" = \"$TESTED_SHA\"")
 }
 
 fn job_timeout_minutes(section: &str) -> Option<u64> {
@@ -216,7 +257,9 @@ fn pull_request_public_api_gate_is_default_deny_with_named_bypasses() {
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'ci:public-api'))
+       contains(github.event.pull_request.labels.*.name, 'ci:public-api') &&
+       (github.event.action != 'labeled' ||
+        github.event.label.name == 'ci:public-api'))
     steps: []
 "#;
 
@@ -250,7 +293,7 @@ fn pull_request_public_api_gate_is_default_deny_with_named_bypasses() {
         "       || (github.event_name == 'pull_request' &&\n       contains(github.event.pull_request.labels.*.name, 'ci:other'))\n    steps: []",
     );
     assert!(
-        !public_api_job_runs(&extra_pr_label, "pull_request", &["ci:other"]),
+        !public_api_job_runs(&extra_pr_label, "pull_request", Some("opened"), None, &["ci:other"],),
         "an extra active PR label disjunct must not pass the canonical gate"
     );
 
@@ -259,7 +302,7 @@ fn pull_request_public_api_gate_is_default_deny_with_named_bypasses() {
         "github.event_name == 'schedule' || github.event_name == 'push' ||",
     );
     assert!(
-        !public_api_job_runs(&extra_bypass, "push", &["ci:public-api"]),
+        !public_api_job_runs(&extra_bypass, "push", None, None, &["ci:public-api"]),
         "an extra active event bypass must not pass the canonical gate"
     );
 }
@@ -447,8 +490,21 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
                 .into(),
         );
     }
-    if !nightly.contains("\npermissions:\n  contents: read\n") {
-        return Err("the label-triggered workflow must not inherit label-write authority".into());
+    if !job_has_effective_read_only_permissions(&nightly, "public-api-check") {
+        return Err("public-api-check must have effective contents-read-only permissions".into());
+    }
+    let write_override = nightly.replacen(
+        "  public-api-check:\n",
+        "  public-api-check:\n    permissions:\n      issues: write\n",
+        1,
+    );
+    if job_has_effective_read_only_permissions(&write_override, "public-api-check") {
+        return Err("a job-level write-permission override must fail the authority oracle".into());
+    }
+    let workflow_write =
+        nightly.replacen("permissions:\n  contents: read", "permissions:\n  contents: write", 1);
+    if job_has_effective_read_only_permissions(&workflow_write, "public-api-check") {
+        return Err("a workflow-level write permission must fail the authority oracle".into());
     }
     let without_labeled = nightly.replace(", labeled", "");
     let without_labeled_activities = pull_request_activity_types(&without_labeled)
@@ -457,8 +513,9 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
         return Err("removing labeled activity must fail the dispatch contract".into());
     }
     for false_positive in ["unlabeled", "labeled-extra"] {
-        let fixture =
-            format!("\n  pull_request:\n    types: [opened, {false_positive}]\n  schedule:\n");
+        let fixture = format!(
+            "\nname: fixture\n\non:\n  pull_request:\n    types: [opened, {false_positive}]\n  schedule:\n"
+        );
         let fixture_activities = pull_request_activity_types(&fixture)
             .ok_or("false-positive fixture must retain a pull_request activity list")?;
         if fixture_activities.iter().any(|activity| *activity == "labeled") {
@@ -468,6 +525,14 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
             .into());
         }
     }
+    let missing_on_anchor = "\nname: fixture\n\n  pull_request:\n    types: [opened, synchronize, reopened, ready_for_review, labeled]\n  schedule:\n";
+    if pull_request_activity_types(missing_on_anchor).is_some() {
+        return Err("a pull_request-like mapping outside an on: block must not be accepted".into());
+    }
+    let misplaced_activities = "\nname: fixture\n\non:\n  pull_request:\n    branches: [main]\n  workflow_dispatch:\n    types: [opened, synchronize, reopened, ready_for_review, labeled]\n  schedule:\n";
+    if pull_request_activity_types(misplaced_activities).is_some() {
+        return Err("activity types from another event must not satisfy pull_request".into());
+    }
     let public_api = job_section(&nightly, "public-api-check")
         .ok_or("ci-nightly.yml must define the public-api-check job")?;
     let label = pull_request_label_gate(public_api)
@@ -476,12 +541,17 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
         .ok_or("public-api-check must declare a numeric timeout-minutes")?;
     if !public_api.contains("uses: actions/checkout@")
         || !public_api.contains("persist-credentials: false")
-        || public_api.contains("\n          ref:")
+        || !job_binds_tested_candidate_sha(public_api)
     {
         return Err(
-            "public-api-check must read the immutable event SHA without credential persistence"
-                .into(),
+            "public-api-check must checkout and verify the exact candidate head without credentials"
+                .into()
         );
+    }
+    let merge_sha_checkout =
+        public_api.replace("github.event.pull_request.head.sha || github.sha", "github.sha");
+    if job_binds_tested_candidate_sha(&merge_sha_checkout) {
+        return Err("merge-SHA checkout must not satisfy exact candidate-head proof".into());
     }
 
     assert_eq!(label, "ci:public-api", "the public API lane owns one stable trigger label");
@@ -489,13 +559,61 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
     assert!(public_api.contains("github.event_name == 'schedule' ||"));
     assert!(!public_api.contains("github.event_name == 'pull_request' ||"));
     assert!(!public_api.contains("github.event_name == 'push'"));
-    assert!(public_api_job_runs(public_api, "workflow_dispatch", &[]));
-    assert!(public_api_job_runs(public_api, "schedule", &[]));
-    assert!(public_api_job_runs(public_api, "pull_request", &["ci:public-api"]));
-    assert!(!public_api_job_runs(public_api, "pull_request", &[]));
-    assert!(!public_api_job_runs(public_api, "pull_request", &["ci:not-public-api"]));
-    assert!(!public_api_job_runs(public_api, "pull_request", &["ci:public-api-extra"]));
-    assert!(!public_api_job_runs(public_api, "push", &["ci:public-api"]));
+    assert!(public_api_job_runs(public_api, "workflow_dispatch", None, None, &[]));
+    assert!(public_api_job_runs(public_api, "schedule", None, None, &[]));
+    for action in ["opened", "synchronize", "reopened", "ready_for_review"] {
+        assert!(public_api_job_runs(
+            public_api,
+            "pull_request",
+            Some(action),
+            None,
+            &["ci:public-api"],
+        ));
+    }
+    assert!(public_api_job_runs(
+        public_api,
+        "pull_request",
+        Some("labeled"),
+        Some("ci:public-api"),
+        &["ci:public-api"],
+    ));
+    assert!(!public_api_job_runs(
+        public_api,
+        "pull_request",
+        Some("labeled"),
+        Some("ci:unrelated"),
+        &["ci:public-api", "ci:unrelated"],
+    ));
+    assert!(!public_api_job_runs(
+        public_api,
+        "pull_request",
+        Some("unlabeled"),
+        Some("ci:unrelated"),
+        &["ci:public-api"],
+    ));
+    assert!(!public_api_job_runs(
+        public_api,
+        "pull_request",
+        Some("labeled"),
+        None,
+        &["ci:public-api"],
+    ));
+    assert!(!public_api_job_runs(public_api, "pull_request", Some("opened"), None, &[],));
+    assert!(!public_api_job_runs(
+        public_api,
+        "pull_request",
+        Some("opened"),
+        None,
+        &["ci:not-public-api"],
+    ));
+    assert!(!public_api_job_runs(
+        public_api,
+        "pull_request",
+        Some("opened"),
+        None,
+        &["ci:public-api-extra"],
+    ));
+    assert!(!public_api_job_runs(public_api, "push", None, None, &["ci:public-api"],));
 
     let docs = read(&root, "docs/ci/labels.md")?;
     let governed_row = docs
@@ -550,6 +668,18 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
                 format!("removing {input} coverage must fail the recurrence contract").into()
             );
         }
+    }
+    let watched = "      - 'justfile'\n";
+    let push_section =
+        event_section(&policy, "push").ok_or("Workflow Policy must retain a push mapping")?;
+    let push_without_watched = push_section.replacen(watched, "", 1);
+    let unbalanced = policy.replacen(push_section, &push_without_watched, 1).replacen(
+        watched,
+        &format!("{watched}{watched}"),
+        1,
+    );
+    if workflow_policy_covers_public_api_inputs(&unbalanced) {
+        return Err("duplicate pull_request coverage must not replace missing push coverage".into());
     }
     for executable_proof in [
         "      - name: Install just for executable recipe proofs\n",
