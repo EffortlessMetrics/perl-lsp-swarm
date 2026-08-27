@@ -217,10 +217,7 @@ export function interpretLegacyConfiguration(
     // Expiry revokes only legacy-derived authority. A value already present at
     // the current key remains canonical, so downstream consumers never have to
     // choose between reporting the expired legacy row and preserving user data.
-    const currentValue =
-      input.current_value_present && row.new_key_or_authority !== null
-        ? input.current_value
-        : MISSING_VALUE;
+    const currentValue = input.current_value_present ? input.current_value : MISSING_VALUE;
     return result(input, row, 'expired', currentValue, true);
   }
   switch (row.migration_disposition) {

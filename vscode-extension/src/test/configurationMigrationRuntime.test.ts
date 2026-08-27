@@ -196,6 +196,32 @@ describe('configuration migration runtime', () => {
     });
   });
 
+  test('expiry preserves a current value even when canonical authority metadata is absent', () => {
+    const registry = expiringRegistry({
+      kind: 'through_extension_version',
+      version: '0.18.0',
+      post_expiry_disposition: 'action_required',
+    });
+    registry.rows = [{ ...registry.rows[0]!, new_key_or_authority: null }];
+    expect(validateMigrationRegistry(registry)).toEqual([]);
+
+    const result = interpretLegacyConfiguration(registry, {
+      old_key: 'perl-lsp.oldSetting',
+      source_scope: 'resource',
+      legacy_value_present: true,
+      legacy_value: 'legacy',
+      current_value_present: true,
+      current_value: 'current',
+      extension_version: '0.18.1',
+    });
+
+    expect(result).toMatchObject({
+      status: 'expired',
+      canonical_value_present: true,
+      canonical_value: 'current',
+    });
+  });
+
   test.each([
     ['migration_disposition', 'future_disposition'],
     ['old_scope', 'future_scope'],
