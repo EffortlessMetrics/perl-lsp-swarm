@@ -938,6 +938,8 @@ jobs:
       - name: Verify candidate meta self-tests
         if: matrix.name == 'meta'
         shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
         run: |
           set -euo pipefail
           meta_self_tests=(
@@ -947,6 +949,18 @@ jobs:
           )
           for self_test in "${meta_self_tests[@]}"; do
             if [[ ! -e "$self_test" && ! -L "$self_test" ]]; then
+              if [[ ! "$PR_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error title=Unclassifiable missing candidate meta self-test::$self_test is absent without an immutable PR base SHA"
+                exit 1
+              fi
+              if ! git cat-file -e "${PR_BASE_SHA}^{commit}" 2>/dev/null; then
+                echo "::error title=Unclassifiable missing candidate meta self-test::PR base $PR_BASE_SHA is unavailable; refusing to classify $self_test as stale"
+                exit 1
+              fi
+              if git cat-file -e "${PR_BASE_SHA}:${self_test}" 2>/dev/null; then
+                echo "::error title=Candidate meta self-test removed::$self_test exists in PR base $PR_BASE_SHA but is absent from the candidate"
+                exit 1
+              fi
               disposition="STALE_HEAD_SCOPED_NOOP: candidate path $self_test is absent"
               echo "::notice title=Authorized stale-head meta self-test no-op::$disposition"
               if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then

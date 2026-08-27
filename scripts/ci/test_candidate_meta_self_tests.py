@@ -77,6 +77,36 @@ def bash_executable() -> str:
     return executable
 
 
+def initialize_base(root: Path, files: dict[Path, str] | None = None) -> str:
+    """Create the immutable PR-base fixture and return its commit id."""
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "config", "user.name", "CI fixture"], cwd=root, check=True
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "ci-fixture@example.invalid"],
+        cwd=root,
+        check=True,
+    )
+    for relative, source in (files or {}).items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+    subprocess.run(["git", "add", "--all"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "base fixture"],
+        cwd=root,
+        check=True,
+    )
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
 class CandidateMetaSelfTestContract(unittest.TestCase):
     maxDiff = None
 
@@ -84,9 +114,20 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
         self,
         files: dict[Path, str] | None = None,
         directories: tuple[Path, ...] = (),
+        base_files: dict[Path, str] | None = None,
+        include_pr_base: bool = True,
+        pr_base_override: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], str]:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            base_sha = initialize_base(root, base_files)
+
+            for relative in SELF_TESTS:
+                path = root / relative
+                if path.is_symlink() or path.is_file():
+                    path.unlink()
+                elif path.is_dir():
+                    shutil.rmtree(path)
             for relative in directories:
                 (root / relative).mkdir(parents=True, exist_ok=True)
             for relative, source in (files or {}).items():
@@ -97,6 +138,11 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
             summary = root / "summary.md"
             environment = os.environ.copy()
             environment["GITHUB_STEP_SUMMARY"] = str(summary)
+            environment["PR_BASE_SHA"] = (
+                pr_base_override
+                if pr_base_override is not None
+                else base_sha if include_pr_base else ""
+            )
             result = subprocess.run(
                 [bash_executable(), "-c", candidate_self_test_script()],
                 cwd=root,
@@ -121,6 +167,36 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
             )
             self.assertIn(f"`{path.as_posix()}`", summary)
         self.assertEqual(summary.count("`STALE_HEAD_SCOPED_NOOP`"), len(SELF_TESTS))
+
+    def test_candidate_deletion_of_base_test_stays_red(self) -> None:
+        scope_test = Path("scripts/ci/test_scope_cache_key.py")
+        candidate_files = {path: passing_test() for path in SELF_TESTS}
+        candidate_files.pop(scope_test)
+
+        result, summary = self.run_workflow_script(
+            candidate_files,
+            base_files={scope_test: passing_test()},
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("exists in PR base", result.stdout)
+        self.assertNotIn(f"`{scope_test.as_posix()}`", summary)
+
+    def test_absent_test_without_pr_base_stays_red(self) -> None:
+        result, summary = self.run_workflow_script(include_pr_base=False)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("without an immutable PR base SHA", result.stdout)
+        self.assertEqual(summary, "")
+
+    def test_absent_test_with_unavailable_pr_base_stays_red(self) -> None:
+        result, summary = self.run_workflow_script(
+            pr_base_override="a" * 40,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("is unavailable", result.stdout)
+        self.assertEqual(summary, "")
 
     def test_present_candidate_tests_all_run_and_pass(self) -> None:
         result, summary = self.run_workflow_script(
@@ -173,6 +249,7 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
     def test_present_broken_symlink_candidate_test_stays_red(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            base_sha = initialize_base(root)
             for relative in SELF_TESTS:
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -186,6 +263,7 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
 
             environment = os.environ.copy()
             environment["GITHUB_STEP_SUMMARY"] = str(root / "summary.md")
+            environment["PR_BASE_SHA"] = base_sha
             result = subprocess.run(
                 [bash_executable(), "-c", candidate_self_test_script()],
                 cwd=root,
@@ -200,10 +278,26 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
 
     def test_workflow_uses_only_candidate_paths(self) -> None:
         script = candidate_self_test_script()
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        step = workflow.split(f"      - name: {STEP_NAME}", 1)[1].split(
+            "\n      - name:", 1
+        )[0]
 
         for path in SELF_TESTS:
             self.assertIn(path.as_posix(), script)
-        for forbidden in ("git show", "git checkout", "git fetch", "curl ", "wget "):
+        self.assertIn("        if: matrix.name == 'meta'", step)
+        self.assertIn("        shell: bash", step)
+        self.assertIn("          PR_BASE_SHA: ${{ github.event_name", step)
+        self.assertIn('git cat-file -e "${PR_BASE_SHA}^{commit}"', script)
+        self.assertIn('git cat-file -e "${PR_BASE_SHA}:${self_test}"', script)
+        for forbidden in (
+            "git show",
+            "git checkout",
+            "git fetch",
+            "origin/main",
+            "curl ",
+            "wget ",
+        ):
             self.assertNotIn(forbidden, script)
 
 
