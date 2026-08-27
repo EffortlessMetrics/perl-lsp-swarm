@@ -1822,8 +1822,10 @@ pub(crate) const SYSTEM_INC_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 /// (`output_with_timeout_kills_long_running_subprocess` passes its own
 /// explicit 250 ms and never reads this seam at all.)
 ///
-/// Downstream crates compile this crate without `cfg(test)`, so the seam does
-/// not exist in any shipped build.
+/// The seam exists only in this crate's own unit-test build. Downstream
+/// crates — and this crate's `tests/` integration targets, which link the
+/// library the same way — compile it without `cfg(test)`, so no shipped build
+/// and no integration target contains the override at all.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 thread_local! {
     static SYSTEM_INC_PROBE_TIMEOUT_OVERRIDE: std::cell::Cell<Option<Duration>> =

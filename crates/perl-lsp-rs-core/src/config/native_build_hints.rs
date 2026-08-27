@@ -750,6 +750,10 @@ mod tests {
         // Separators nested inside a group are not top-level terminators.
         assert_eq!(rejected_value_len("(a, b; c)", 0), 9);
 
+        // Nesting pins the pop count: each closer consumes exactly one
+        // opener, so the top-level ',' at index 5 is still the terminator.
+        assert_eq!(rejected_value_len("((a)), tail", 0), 5);
+
         // Closers inside a string literal never touch the stack.
         assert_eq!(rejected_value_len("'a)' , t", 0), 5);
 

@@ -212,8 +212,7 @@ impl PerlOracleEnv {
     ///   `@INC` probe contract).
     /// - `allow_local_lib`: always `false` for the startup probe; `local::lib`
     ///   activation is not part of the declared seam contract.
-    /// - `timeout`: [`SYSTEM_INC_PROBE_TIMEOUT`](super::SYSTEM_INC_PROBE_TIMEOUT)
-    ///   (1 second). Read through
+    /// - `timeout`: `SYSTEM_INC_PROBE_TIMEOUT` (1 second). Read through
     ///   `effective_system_inc_probe_timeout` so this crate's own memoization
     ///   tests can widen their own thread's deadline; every shipped build and
     ///   every other thread gets the constant.
