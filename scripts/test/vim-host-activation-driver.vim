@@ -409,7 +409,12 @@ if empty(s:failures)
     elseif !empty(get(s:row, 'manual_override', ''))
       " Bounded override: only here, only after the native observation was
       " retained, only a narrow exact-buffer rule shaped like a reviewed
-      " user equivalent. It is removed immediately after its observation.
+      " user equivalent. The pinned client activates on BufReadPost, which by
+      " registration order runs before this driver's later rule — so after the
+      " forced filetype binds, the read event is replayed (standard autocmd
+      " mechanics, no client internals), exactly what an editor-native user
+      " flow does after forcing a filetype on a loaded buffer. The rule is
+      " removed immediately after its observation.
       augroup perllsp_vim_host_row_override
         autocmd!
         execute 'autocmd BufRead ' . fnameescape(s:absolute) . ' setf perl'
@@ -423,6 +428,9 @@ if empty(s:failures)
             \ 'boundary': get(s:row, 'manual_override', ''),
             \ 'filetype_after': s:FiletypeToken(s:after),
             \ })
+      if s:after ==# 'perl'
+        silent! doautocmd BufReadPost
+      endif
       if s:after ==# 'perl' && s:WaitFor(
             \ 'g:perllsp_vim_host_buffer_enabled > ' . s:enable_before, s:budget)
         call s:Emit('activation_attachment_observed', {

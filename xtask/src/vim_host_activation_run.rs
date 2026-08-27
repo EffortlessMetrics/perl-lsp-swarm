@@ -1443,6 +1443,18 @@ mod tests {
     }
 
     #[test]
+    fn tmp_debug_parse_artifact_stream() {
+        if let Ok(path) = std::env::var("DEBUG_EV_FILE") {
+            let bytes = fs::read(&path).expect("read stream");
+            match vim_host_runner::parse_driver_events(&bytes, false) {
+                Ok(events) => println!("PARSED OK n={}", events.len()),
+                Err(error) => println!("PARSE ERR: {error:#}"),
+            }
+            panic!("debug probe done");
+        }
+    }
+
+    #[test]
     fn materialized_fixture_carries_every_denominator_document() {
         let scratch =
             std::env::temp_dir().join(format!("plsw-11403-fixture-{}", std::process::id()));
