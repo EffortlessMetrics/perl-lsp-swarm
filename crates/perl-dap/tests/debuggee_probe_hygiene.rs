@@ -135,11 +135,21 @@ fn main() {
         let _ = fs::write(ready_file, "ready");
     }
     if let Some(pid_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE") {
-        let Ok(executable) = env::current_exe() else { return };
-        let Ok(descendant) = Command::new(executable)
-            .env_remove("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE")
-            .spawn()
-        else { return };
+        #[cfg(unix)]
+        let descendant = Command::new("sh")
+            .args([
+                "-c",
+                "printf ready > \"$PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE\"; trap '' TERM; while :; do sleep 1; done",
+            ])
+            .spawn();
+        #[cfg(windows)]
+        let descendant = {
+            let Ok(executable) = env::current_exe() else { return };
+            Command::new(executable)
+                .env_remove("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE")
+                .spawn()
+        };
+        let Ok(descendant) = descendant else { return };
         let _ = fs::write(pid_file, descendant.id().to_string());
         println!("15");
         return;
