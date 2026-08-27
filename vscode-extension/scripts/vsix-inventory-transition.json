@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 12757,
-  "reason": "Reconciles the crash-recovery convergence bundle for #12757 after making the extension lifecycle arbiter the sole connection-close restart owner. Cumulative size-only delta: out/extension.js 1534537 -> 1548655 (+14118); no packaged file was added, removed, or loosened.",
+  "reason": "Reconciles the crash-recovery convergence bundle for #12757 after making the extension lifecycle arbiter the sole connection-close restart owner and retiring the dead client at circuit-breaker exhaustion. Cumulative size-only delta: out/extension.js 1534537 -> 1548696 (+14159); no packaged file was added, removed, or loosened.",
   "base_baseline_file_sha256": "18c71611c572f227fff586fed8e8a8f85f9cedabd7c9f5febe72464c09e6f7f5",
-  "candidate_baseline_file_sha256": "58d6be0f705d6a7e83598837de971f8fb8101e32bb0ee2fb8729e47999aee16a",
+  "candidate_baseline_file_sha256": "e610afa7eafa415f47efe377e17e08af54ae7ce933c0970a4198d1bb17fda1ea",
   "base_inventory_sha256": "124e8ae60936f4b50e724e0d6341bb662818dc3324c3790cb08e03bac854b655",
-  "candidate_inventory_sha256": "f25cd9a62c16c7f358a3a89f35a1a942765588d212de9c2789f996fbb1d34d63"
+  "candidate_inventory_sha256": "bf5c335424487ab9b39dc4eb19ad6ab156cc8a50f8c4aa34d42b315d8bf1eb9d"
 }

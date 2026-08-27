@@ -488,7 +488,7 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     await drain();
 
     expect(_autoRestartAttemptsForTest()).toBe(3);
-    expect(lifecycle.snapshot.state).toBe('failed');
+    expect(lifecycle.snapshot.state).toBe('stopped');
     const exhaustedToasts = showErrorMessage.mock.calls.filter((call) =>
       /could not be restarted automatically/i.test(String(call[0])),
     );

@@ -3177,6 +3177,11 @@ async function recoverFromObservedCrash(
   );
 
   if (decision.disposition === 'crash_budget_exhausted') {
+    // The raw client has stopped, but the lifecycle snapshot otherwise still
+    // advertises its last accepted `running` generation. Retire that dead
+    // client before presenting the manual-recovery boundary so exhaustion is
+    // observably terminal and an explicit retry starts from `stopped`.
+    await languageClientLifecycle?.stop();
     await reportCrashBudgetExhausted();
     return;
   }
