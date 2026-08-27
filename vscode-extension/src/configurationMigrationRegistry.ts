@@ -201,6 +201,22 @@ export function validateMigrationRegistry(registry: ConfigurationMigrationRegist
     ) {
       errors.push(`migration expiry version is not valid SemVer: ${row.migration_id}`);
     }
+    if (
+      row.migration_disposition === 'removed_inert' &&
+      row.compatibility_window.kind !== 'no_expiry' &&
+      row.compatibility_window.post_expiry_disposition !== 'inert'
+    ) {
+      errors.push(`removed_inert migration must remain inert after expiry: ${row.migration_id}`);
+    }
+    if (
+      row.migration_disposition === 'unsupported_legacy_value' &&
+      row.compatibility_window.kind !== 'no_expiry' &&
+      row.compatibility_window.post_expiry_disposition !== 'invalid'
+    ) {
+      errors.push(
+        `unsupported migration must remain invalid after expiry: ${row.migration_id}`,
+      );
+    }
     if (row.installed_proof_requirement.length === 0) {
       errors.push(`migration must define installed proof requirement: ${row.migration_id}`);
     }

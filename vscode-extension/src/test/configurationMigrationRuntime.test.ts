@@ -123,6 +123,62 @@ describe('configuration migration runtime', () => {
     );
   });
 
+  test('expiry ownership and network availability cannot affect runtime expiry', () => {
+    const first = expiringRegistry({
+      kind: 'through_extension_version',
+      version: '0.18.0',
+      post_expiry_disposition: 'action_required',
+    });
+    const second = {
+      ...first,
+      rows: [{ ...first.rows[0]!, expiry_owner_issue: 999999 }],
+    };
+    const input = {
+      old_key: 'perl-lsp.oldSetting',
+      source_scope: 'resource' as const,
+      legacy_value_present: true,
+      legacy_value: 'legacy',
+      current_value_present: false,
+      current_value: null,
+      extension_version: '0.18.0',
+    };
+
+    expect(interpretLegacyConfiguration(first, input)).toMatchObject({ status: 'expired' });
+    expect(interpretLegacyConfiguration(second, input)).toMatchObject({ status: 'expired' });
+  });
+
+  test('removed-inert expiry remains inert and unsupported expiry remains invalid', () => {
+    const base = compatibleRegistry().rows[0]!;
+    const inert = expiringRegistry({
+      kind: 'removed_in_extension_version',
+      version: '0.18.0',
+      post_expiry_disposition: 'inert',
+    });
+    inert.rows = [
+      {
+        ...base,
+        migration_disposition: 'removed_inert',
+        automatic_read_compatibility: false,
+        explicit_write_allowed: false,
+        new_key_or_authority: null,
+        new_scope: null,
+        old_plus_new_conflict_policy: 'not_applicable',
+        compatibility_window: inert.rows[0]!.compatibility_window,
+      },
+    ];
+    expect(
+      interpretLegacyConfiguration(inert, {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'secret',
+        current_value_present: false,
+        current_value: null,
+        extension_version: '0.18.0',
+      }),
+    ).toMatchObject({ status: 'expired', post_expiry_disposition: 'inert' });
+  });
+
   test('keeps removed MCP process-execution settings inert without carrying their value', () => {
     const secretLegacyValue = [
       { label: 'private', command: '/private/tool', env: { TOKEN: 'secret' } },

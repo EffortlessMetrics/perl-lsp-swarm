@@ -22,7 +22,7 @@ export interface MigrationRuntimeInput {
   legacy_value: unknown;
   current_value_present: boolean;
   current_value: unknown;
-  /** Required by callers for expiry-bearing rows; missing input fails closed. */
+  /** Exact running extension version; missing input fails closed for expiry-bearing rows. */
   extension_version?: string;
 }
 
