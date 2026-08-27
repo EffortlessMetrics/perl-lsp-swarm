@@ -2324,13 +2324,20 @@ describe('SHA256SUMS anchored digest lookup', () => {
   });
 
   test('fails closed on malformed lines even when they mention the asset name', () => {
-    const malformedCases = [
+    const malformedEntries = [
       // Digest one character short.
       `${GOOD_DIGEST.slice(0, 63)}  ${ASSET_NAME}`,
       // Digest one character long.
       `${GOOD_DIGEST}a  ${ASSET_NAME}`,
       // Non-hex character inside the digest token.
       `${GOOD_DIGEST.slice(0, 31) + 'g' + GOOD_DIGEST.slice(32)}  ${ASSET_NAME}`,
+    ];
+
+    for (const sums of malformedEntries) {
+      expect(lookupSha256SumsDigest(`${sums}\n`, ASSET_NAME)).toEqual({ status: 'malformed' });
+    }
+
+    const ignoredCases = [
       // Digest glued to the filename without a separator.
       `${GOOD_DIGEST}${ASSET_NAME}`,
       // Reversed (BSD-style) ordering is not sha256sum format.
@@ -2345,12 +2352,12 @@ describe('SHA256SUMS anchored digest lookup', () => {
       `# ${GOOD_DIGEST}  ${ASSET_NAME}`,
     ];
 
-    for (const sums of malformedCases) {
+    for (const sums of ignoredCases) {
       expect(lookupSha256SumsDigest(`${sums}\n`, ASSET_NAME)).toEqual({ status: 'absent' });
     }
   });
 
-  test('disagreeing duplicate entries are conflicting and fail closed; agreeing duplicates resolve once', () => {
+  test('duplicate entries are conflicting and fail closed, even when they agree', () => {
     const conflicting = [`${GOOD_DIGEST}  ${ASSET_NAME}`, `${EVIL_DIGEST}  ${ASSET_NAME}`, ''].join(
       '\n',
     );
@@ -2359,9 +2366,15 @@ describe('SHA256SUMS anchored digest lookup', () => {
     const agreeing = [`${GOOD_DIGEST}  ${ASSET_NAME}`, `${GOOD_DIGEST}  ${ASSET_NAME}`, ''].join(
       '\n',
     );
-    expect(lookupSha256SumsDigest(agreeing, ASSET_NAME)).toEqual({
-      status: 'found',
-      digest: GOOD_DIGEST,
+    expect(lookupSha256SumsDigest(agreeing, ASSET_NAME)).toEqual({ status: 'conflicting' });
+
+    const validAndMalformed = [
+      `${GOOD_DIGEST}  ${ASSET_NAME}`,
+      `${GOOD_DIGEST.slice(0, 63)}  ${ASSET_NAME}`,
+      '',
+    ].join('\n');
+    expect(lookupSha256SumsDigest(validAndMalformed, ASSET_NAME)).toEqual({
+      status: 'conflicting',
     });
   });
 });

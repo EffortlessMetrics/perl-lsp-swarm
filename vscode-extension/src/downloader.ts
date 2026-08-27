@@ -327,19 +327,21 @@ export function findReleaseAssetName(
 /**
  * Result of looking an asset up in a `sha256sum(1)`-format SHA256SUMS manifest
  * (#9839). `absent` means no well-formed entry names the requested asset;
- * `conflicting` means several well-formed entries name it with disagreeing
- * digests; both are fail-closed outcomes for the caller.
+ * `conflicting` means several well-formed entries name it; both are fail-closed
+ * outcomes for the caller.
  */
 export type Sha256SumsLookup =
   | { status: 'found'; digest: string }
   | { status: 'absent' }
+  | { status: 'malformed' }
   | { status: 'conflicting' };
 
 // A genuine `sha256sum` entry anchors the 64-hex digest at the start of the
 // line, requires whitespace between digest and file field, and optionally
 // carries coreutils' binary-mode marker (outside the file field). Anything
 // else never supplies a digest (#9839).
-const SHA256_SUMS_ENTRY = /^([0-9a-fA-F]{64})[ \t]+(?:\*?)(.*)$/;
+const SHA256_SUMS_ENTRY = /^(\S+)[ \t]+(?:\*?)(.*)$/;
+const SHA256_DIGEST = /^[0-9a-fA-F]{64}$/;
 
 /**
  * Resolve the expected SHA-256 digest for `assetName` from a SHA256SUMS text.
@@ -351,6 +353,8 @@ const SHA256_SUMS_ENTRY = /^([0-9a-fA-F]{64})[ \t]+(?:\*?)(.*)$/;
  */
 export function lookupSha256SumsDigest(checksums: string, assetName: string): Sha256SumsLookup {
   const digests = new Set<string>();
+  let matchingEntries = 0;
+  let malformedEntries = 0;
 
   for (const rawLine of checksums.split('\n')) {
     const line = rawLine.replace(/\r$/, '');
@@ -366,21 +370,27 @@ export function lookupSha256SumsDigest(checksums: string, assetName: string): Sh
       continue;
     }
 
+    matchingEntries += 1;
+    if (!SHA256_DIGEST.test(digestToken)) {
+      malformedEntries += 1;
+      continue;
+    }
     digests.add(digestToken.toLowerCase());
   }
 
-  if (digests.size === 0) {
+  if (matchingEntries === 0) {
     return { status: 'absent' };
   }
 
-  if (digests.size > 1) {
+  if (matchingEntries > 1) {
     return { status: 'conflicting' };
   }
 
-  let resolvedDigest: string | undefined;
-  for (const digest of digests) {
-    resolvedDigest = digest;
+  if (malformedEntries > 0) {
+    return { status: 'malformed' };
   }
+
+  const [resolvedDigest] = digests;
 
   if (!resolvedDigest) {
     return { status: 'absent' };
@@ -969,19 +979,24 @@ export class BinaryDownloader {
             assetName,
           );
 
-          if (sumsEntry.status === 'conflicting') {
-            throw new Error(
-              `Security check failed: Conflicting checksum entries for ${assetName} in SHA256SUMS.`,
-            );
+          let expectedChecksum: string;
+          switch (sumsEntry.status) {
+            case 'found':
+              expectedChecksum = sumsEntry.digest;
+              break;
+            case 'conflicting':
+              throw new Error(
+                `Security check failed: Conflicting checksum entries for ${assetName} in SHA256SUMS.`,
+              );
+            case 'malformed':
+              throw new Error(
+                `Security check failed: Malformed checksum entry for ${assetName} in SHA256SUMS.`,
+              );
+            case 'absent':
+              throw new Error(
+                `Security check failed: Checksum for ${assetName} not found in SHA256SUMS file.`,
+              );
           }
-
-          if (sumsEntry.status !== 'found') {
-            throw new Error(
-              `Security check failed: Checksum for ${assetName} not found in SHA256SUMS file.`,
-            );
-          }
-
-          const expectedChecksum = sumsEntry.digest;
           const actualChecksum = await this.calculateSHA256(archivePath);
 
           if (expectedChecksum !== actualChecksum) {
