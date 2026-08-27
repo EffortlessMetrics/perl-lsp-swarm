@@ -189,10 +189,9 @@ fn push_failures(
 /// static parser cannot resolve to the field's concrete input kind.
 fn hint_tokens(key: &str, value: &str) -> Vec<String> {
     match key {
-        "LIBS" => tokenize_flags(value)
-            .into_iter()
-            .filter(|token| is_library_link_input(token))
-            .collect(),
+        "LIBS" => {
+            tokenize_flags(value).into_iter().filter(|token| is_library_link_input(token)).collect()
+        }
         "DEFINE" => value
             .split_whitespace()
             .filter(|token| is_definition_flag(token))
