@@ -189,6 +189,16 @@ R=$(git rev-parse release/master)
 Stop direct product work in `perl-lsp` during the transaction. If `R` moves,
 re-run the affected final steps against the new base.
 
+The scaffold and check commands bind the ledger to the exact source, boundary,
+and target identities. If `SWARM_NOW`, `S`, or `R` changes after a preliminary
+scaffold, preserve the old ledger as an audit artifact and stop using it. The
+available `sync-divergence scaffold` command refuses to overwrite an existing
+ledger; create a new ledger at a new path with the final identities, then
+re-adjudicate every row before running the final check. There is no supported
+in-place refresh that preserves dispositions, so do not copy dispositions into
+a newly populated ledger without re-checking their evidence. If the rows cannot
+be re-adjudicated, the transaction remains `NOT_PROVEN`.
+
 Run the final exact comparison using prepared `S`:
 
 ```bash
@@ -410,13 +420,29 @@ gh pr merge <PR_NUMBER> \
 
 This expected-head check is a race guard. It is not a requirement to rewrite
 or re-review an otherwise unchanged candidate because another branch moved.
+It guards only `J`; this command does not atomically assert that the pinned
+release base `R` is still unchanged. Re-read `R` immediately before the merge
+request and rely on the publication repository's protected transaction gate to
+serialize that base, if one exists. If `R` moved after final reconciliation, or
+no such gate can establish the exact base, stop and rebuild the transaction;
+the merge is `NOT_PROVEN`.
 
 ## Phase 8 — record and verify M
 
 After GitHub creates wrapper merge `M`:
 
 ```bash
-M=$(gh api repos/EffortlessMetrics/perl-lsp/commits/master --jq .sha)
+M=$(gh pr view <PR_NUMBER> \
+  --repo EffortlessMetrics/perl-lsp \
+  --json mergeCommit \
+  --jq .mergeCommit.oid)
+```
+
+Read the mutable publication head separately for freshness; do not use it as
+the wrapper identity:
+
+```bash
+CURRENT_M=$(gh api repos/EffortlessMetrics/perl-lsp/commits/master --jq .sha)
 ```
 
 Run the repository-owned post-merge verifier:
