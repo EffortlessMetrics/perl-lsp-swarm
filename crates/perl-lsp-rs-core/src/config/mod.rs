@@ -5225,33 +5225,73 @@ profile = "recommended"
         // (CI red with NonZeroExit where the author saw TimedOut locally).
         // SuccessfulEmpty/Paths WOULD be failures here: the sleep program
         // must never produce paths.
-        assert!(
-            matches!(
-                outcome,
-                SystemIncProbeOutcome::TimedOut
-                    | SystemIncProbeOutcome::NonZeroExit
-                    | SystemIncProbeOutcome::IoFailed
-                    | SystemIncProbeOutcome::Unavailable
-            ),
-            "expected a bounded failure outcome, got {outcome:?}"
-        );
-        assert!(paths.is_empty(), "expected empty @INC on timeout, got {paths:?}");
+        if !matches!(
+            outcome,
+            SystemIncProbeOutcome::TimedOut
+                | SystemIncProbeOutcome::NonZeroExit
+                | SystemIncProbeOutcome::IoFailed
+                | SystemIncProbeOutcome::Unavailable
+        ) {
+            return Err(format!("expected a bounded failure outcome, got {outcome:?}").into());
+        }
+        if !paths.is_empty() {
+            return Err(format!("expected empty @INC on timeout, got {paths:?}").into());
+        }
         // Generous bound: SYSTEM_INC_PROBE_TIMEOUT (1s) + spawn + poll overhead.
-        assert!(
-            elapsed < Duration::from_secs(4),
-            "get_system_inc must return within timeout+overhead, took {elapsed:?}",
-        );
+        if elapsed >= Duration::from_secs(4) {
+            return Err(format!("get_system_inc exceeded timeout+overhead: {elapsed:?}").into());
+        }
 
         // Cached empty result — second call does not respawn perl.
         let start2 = Instant::now();
         let paths2 = config.get_system_inc().to_vec();
         let elapsed2 = start2.elapsed();
-        assert!(paths2.is_empty());
-        assert!(
-            elapsed2 < Duration::from_millis(50),
-            "cached lookup should be fast, took {elapsed2:?}",
-        );
+        if !paths2.is_empty() {
+            return Err("cached lookup returned paths after a failed probe".into());
+        }
+        if elapsed2 >= Duration::from_millis(50) {
+            return Err(format!("cached lookup should be fast, took {elapsed2:?}").into());
+        }
         Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn startup_inc_probe_widened_timeout_reaches_live_constructor() -> TestResult {
+        let perl_path = match resolve_perl_path_with_toolchain() {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!(
+                    "SKIP startup_inc_probe_widened_timeout_reaches_live_constructor: {error}"
+                );
+                return Ok(());
+            }
+        };
+        let config = WorkspaceConfig {
+            use_system_inc: true,
+            perl_path: Some(perl_path.to_string_lossy().into_owned()),
+            perl_args: vec!["-e".into(), "sleep 2; print(qq(startup-sentinel).chr(10));".into()],
+            ..WorkspaceConfig::default()
+        };
+
+        let production = config.clone().get_system_inc_probe_outcome();
+        if !matches!(production, SystemIncProbeOutcome::TimedOut) {
+            return Err(
+                format!("one-second production bound did not time out: {production:?}").into()
+            );
+        }
+
+        let widened = PerlOracleEnv::with_startup_inc_probe_timeout(Duration::from_secs(3), || {
+            config.clone().get_system_inc_probe_outcome()
+        });
+        match widened {
+            SystemIncProbeOutcome::Paths(paths)
+                if paths.iter().any(|path| path == Path::new("startup-sentinel")) =>
+            {
+                Ok(())
+            }
+            other => Err(format!("widened live probe missed startup sentinel: {other:?}").into()),
+        }
     }
 
     /// A second lookup must reuse the first probe result rather than launch a
@@ -5303,8 +5343,15 @@ profile = "recommended"
             // test discriminator; normal settings updates invalidate the cache.
             config.perl_path = Some(missing_perl.to_string_lossy().into_owned());
             let reused = config.get_system_inc_probe_outcome();
-            assert_eq!(reused, cached, "second lookup must reuse the cached outcome");
-            assert_eq!(config.get_system_inc().to_vec(), cached_paths);
+            if reused != cached {
+                return Err(format!(
+                    "second lookup changed cached outcome: {reused:?} vs {cached:?}"
+                )
+                .into());
+            }
+            if config.get_system_inc().to_vec() != cached_paths {
+                return Err("second lookup changed cached paths".into());
+            }
             Ok(())
         })
     }
