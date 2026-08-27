@@ -16,7 +16,7 @@ stdio. Those instructions were invented and have been removed rather than kept
 as deprecated steps.
 
 The [client support ledger](../project/status/lsp_clients.md) records this host
-as `custom_stdio_server` with tier `not_proven_unsupported`.
+as `no_documented_lsp_surface` with tier `not_proven_unsupported`.
 
 ## Current Codex host boundaries
 
