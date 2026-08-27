@@ -141,6 +141,15 @@ def _retain_rejects(
     evidence_dir: Path,
     reason: str,
 ) -> None:
+    _copy_rejects(rejects, reject_scope, evidence_dir)
+    raise ValueError(f"unverified rejected hunks retained under {evidence_dir}: {reason}")
+
+
+def _copy_rejects(
+    rejects: set[Path],
+    reject_scope: Path,
+    evidence_dir: Path,
+) -> None:
     evidence_dir.mkdir(parents=True, exist_ok=True)
     for reject in sorted(rejects):
         try:
@@ -150,7 +159,6 @@ def _retain_rejects(
         retained = evidence_dir / relative
         retained.parent.mkdir(parents=True, exist_ok=True)
         retained.write_bytes(reject.read_bytes())
-    raise ValueError(f"unverified rejected hunks retained under {evidence_dir}: {reason}")
 
 
 def _retain(
@@ -323,8 +331,26 @@ def validate_manifest(
         verified.append(reject)
 
     if delete_verified:
-        for reject in verified:
-            reject.unlink()
+        snapshots = {reject: reject.read_bytes() for reject in verified}
+        try:
+            for reject in verified:
+                reject.unlink()
+        except OSError as error:
+            for reject, contents in snapshots.items():
+                if not reject.exists():
+                    reject.write_bytes(contents)
+            _copy_rejects(set(verified), scope, evidence_dir)
+            raise ValueError(
+                f"verified reject cleanup failed; artifacts retained under {evidence_dir}"
+            ) from error
+        deletion_receipt = evidence_dir / "verified-deletions.txt"
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        deletion_receipt.write_text(
+            "verified reject artifacts deleted:\n"
+            + "\n".join(str(reject) for reject in verified)
+            + "\n",
+            encoding="utf-8",
+        )
 
 
 def main() -> int:

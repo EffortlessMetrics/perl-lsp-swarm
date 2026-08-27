@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from unittest import mock
 from pathlib import Path
 
 
@@ -286,19 +287,24 @@ def write_manifest(
             patch_segments[0] = patch_segments[0].replace("@@ -103,27", "@@ -104,27")
             reject_segments[0] = patch_segments[0]
         elif mutation == "duplicate" and index == 0:
-            reject_segments.append(reject_segments[0])
+            patch_segments.append(patch_segments[0])
 
         patch_path = "foreign/path" if mutation == "patch_path" and index == 0 else path
-        patch.write_text(
+        patch_text = (
             f"diff --git a/{patch_path} b/{patch_path}\n"
             f"--- a/{patch_path}\n"
             f"+++ b/{patch_path}\n"
-            + "\n".join(patch_segments),
-            encoding="utf-8",
+            + "\n".join(patch_segments)
         )
+        if mutation == "duplicate" and index == 0:
+            patch_text += "\n"
+        patch.write_text(patch_text, encoding="utf-8")
         reject.write_text("\n".join(reject_segments), encoding="utf-8")
-        log_count = len(reject_segments) if mutation == "duplicate" else len(patch_segments)
-        log_numbers = [1] * log_count if mutation == "duplicate" else list(range(1, log_count + 1))
+        log_numbers = (
+            [2]
+            if mutation == "duplicate" and index == 0
+            else list(range(1, len(patch_segments) + 1))
+        )
         if mutation == "ordinal_reorder" and index == 4:
             log_numbers.reverse()
         log.write_text(
@@ -306,6 +312,22 @@ def write_manifest(
             encoding="utf-8",
         )
         rows.append(f"{path}\t{patch}\t{log}\t{reject}\n")
+    if mutation == "missing_row":
+        rows.pop(0)
+    elif mutation == "extra_row":
+        patch = root / "extra.patch"
+        log = root / "extra.log"
+        reject = root / "extra.rej"
+        segment = "@@ -1,1 +1,1 @@\n forged\n"
+        patch.write_text(
+            "diff --git a/extra/path b/extra/path\n"
+            "--- a/extra/path\n+++ b/extra/path\n"
+            + segment,
+            encoding="utf-8",
+        )
+        log.write_text("Rejected hunk #1.\n", encoding="utf-8")
+        reject.write_text(segment, encoding="utf-8")
+        rows.append(f"extra/path\t{patch}\t{log}\t{reject}\n")
     manifest.write_text("".join(rows), encoding="utf-8")
     if extra_artifact:
         (root / "unlisted.rej").write_text("@@ -1,1 +1,1 @@\n forged\n", encoding="utf-8")
@@ -442,6 +464,12 @@ def main() -> None:
         )
         if list(positive.rglob("*.rej")):
             raise RuntimeError("verified reject artifacts were not deleted")
+        deletion_receipt = positive / "evidence" / "verified-deletions.txt"
+        receipt_text = deletion_receipt.read_text(encoding="utf-8")
+        if not receipt_text.startswith("verified reject artifacts deleted:\n"):
+            raise RuntimeError("verified deletion receipt has the wrong header")
+        if any(str(reject) not in receipt_text for reject in positive_rejects):
+            raise RuntimeError("verified deletion receipt omitted a deleted reject")
 
         expect_rejection(
             write_manifest(root / "mismatch", mutation="mismatch"),
@@ -517,6 +545,46 @@ def main() -> None:
             extra_evidence,
             "canonical artifact scope mismatch",
         )
+        expect_rejection(
+            write_manifest(root / "missing-row", mutation="missing_row"),
+            root / "missing-row" / "evidence",
+            "reject table coverage mismatch",
+        )
+        expect_rejection(
+            write_manifest(root / "extra-row", mutation="extra_row"),
+            root / "extra-row" / "evidence",
+            "reject table coverage mismatch",
+        )
+
+        deletion_failure = root / "deletion-failure"
+        deletion_manifest = write_manifest(deletion_failure)
+        original_unlink = Path.unlink
+        unlink_count = 0
+
+        def fail_second_unlink(path: Path, *args, **kwargs):
+            nonlocal unlink_count
+            unlink_count += 1
+            if unlink_count == 2:
+                raise OSError("controlled deletion failure")
+            return original_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", fail_second_unlink):
+            try:
+                MODULE.validate_manifest(
+                    deletion_manifest,
+                    deletion_failure / "evidence",
+                    reject_scope=deletion_failure,
+                    delete_verified=True,
+                )
+            except ValueError as error:
+                if "verified reject cleanup failed" not in str(error):
+                    raise RuntimeError(f"unexpected deletion failure: {error}") from error
+            else:
+                raise RuntimeError("controlled deletion failure unexpectedly passed")
+        if len(list(deletion_failure.glob("reject-*.rej"))) != EXPECTED_FILE_COUNT:
+            raise RuntimeError("transactional cleanup did not restore every reject artifact")
+        if len(list((deletion_failure / "evidence").rglob("*.rej"))) != EXPECTED_FILE_COUNT:
+            raise RuntimeError("deletion failure did not retain every reject artifact")
     print("11983 reject-identity fixtures passed")
 
 
