@@ -18,6 +18,10 @@ EXPECTED_DEPENDENCIES = (
     "merge-gate-shards",
 )
 
+SCOPED_NOOP_ALLOWED_SKIPS = frozenset(EXPECTED_DEPENDENCIES) - {
+    "draft-pr-check",
+}
+
 
 @dataclass(frozen=True)
 class Verdict:
@@ -48,6 +52,23 @@ def _output(needs: Mapping[str, Any], name: str, output: str) -> str:
     return result if isinstance(result, str) and result else "missing"
 
 
+def _observed_dependencies(needs: Mapping[str, Any]) -> tuple[str, ...]:
+    return tuple(sorted(set(EXPECTED_DEPENDENCIES) | set(needs)))
+
+
+def _scoped_noop_blockers(needs: Mapping[str, Any]) -> tuple[str, ...]:
+    """Reject unexpected outcomes even when a route is intentionally skipped."""
+    return tuple(
+        f"{name}={result}"
+        for name in _observed_dependencies(needs)
+        for result in (_result(needs, name),)
+        if result != "success"
+        and not (
+            result == "skipped" and name in SCOPED_NOOP_ALLOWED_SKIPS
+        )
+    )
+
+
 def evaluate(
     needs: Mapping[str, Any],
     *,
@@ -66,6 +87,13 @@ def evaluate(
     run_ci = _output(needs, "draft-pr-check", "run_ci")
     if run_ci == "false":
         if event_name == "pull_request" and pull_request_draft == "true":
+            blockers = _scoped_noop_blockers(needs)
+            if blockers:
+                return Verdict(
+                    "failure",
+                    "draft scoped-noop had an unexpected dependency outcome",
+                    blockers,
+                )
             return Verdict("scoped_noop", "draft pull request")
         return Verdict(
             "failure",
@@ -90,6 +118,13 @@ def evaluate(
     is_latest = _output(needs, "preflight-latest-check", "is_latest")
     if is_latest == "false":
         if event_name == "push":
+            blockers = _scoped_noop_blockers(needs)
+            if blockers:
+                return Verdict(
+                    "failure",
+                    "superseded scoped-noop had an unexpected dependency outcome",
+                    blockers,
+                )
             return Verdict("scoped_noop", "superseded push")
         return Verdict(
             "failure",
@@ -103,7 +138,7 @@ def evaluate(
             (f"preflight-latest-check.is_latest={is_latest}",),
         )
 
-    observed = tuple(sorted(set(EXPECTED_DEPENDENCIES) | set(needs)))
+    observed = _observed_dependencies(needs)
     blockers = tuple(
         f"{name}={_result(needs, name)}"
         for name in observed

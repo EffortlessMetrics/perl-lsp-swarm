@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -97,6 +98,25 @@ class AggregateClassifierTests(unittest.TestCase):
         self.assertEqual("scoped_noop", verdict.status)
         self.assertEqual("draft pull request", verdict.reason)
 
+    def test_draft_scoped_noop_fails_on_failure_cancelled_or_unknown_skip(self) -> None:
+        for name, result in (
+            ("conflict-markers", "failure"),
+            ("check-all-targets", "cancelled"),
+            ("future-required-input", "skipped"),
+        ):
+            with self.subTest(name=name, result=result):
+                needs = applicable_needs(shard_result="skipped")
+                needs["draft-pr-check"]["outputs"]["run_ci"] = "false"
+                needs["preflight-latest-check"] = {"result": "skipped", "outputs": {}}
+                needs[name] = {"result": result, "outputs": {}}
+                verdict = gate.evaluate(
+                    needs,
+                    event_name="pull_request",
+                    pull_request_draft="true",
+                )
+                self.assertEqual("failure", verdict.status)
+                self.assertIn(f"{name}={result}", verdict.blockers)
+
     def test_non_draft_route_cannot_claim_draft_scoped_noop(self) -> None:
         needs = applicable_needs(shard_result="skipped")
         needs["draft-pr-check"]["outputs"]["run_ci"] = "false"
@@ -125,6 +145,14 @@ class AggregateClassifierTests(unittest.TestCase):
             verdict.blockers,
         )
 
+    def test_superseded_scoped_noop_fails_on_downstream_failure(self) -> None:
+        needs = applicable_needs(shard_result="skipped")
+        needs["preflight-latest-check"]["outputs"]["is_latest"] = "false"
+        needs["merge-gate-shards"] = {"result": "failure", "outputs": {}}
+        verdict = gate.evaluate(needs, event_name="push")
+        self.assertEqual("failure", verdict.status)
+        self.assertEqual(("merge-gate-shards=failure",), verdict.blockers)
+
 
 class AggregateWiringTests(unittest.TestCase):
     def test_workflow_uses_one_unconditional_job_check(self) -> None:
@@ -139,6 +167,17 @@ class AggregateWiringTests(unittest.TestCase):
         self.assertNotIn("github.event.pull_request.head.sha", block)
         self.assertNotIn("statuses: write", block)
         self.assertNotIn("ci/merge-gate", block)
+
+        needs_match = re.search(
+            r"\n    needs:\n(?P<items>(?:      - [^\n]+\n)+)",
+            block,
+        )
+        self.assertIsNotNone(needs_match)
+        actual = tuple(
+            line.strip()[2:]
+            for line in needs_match.group("items").splitlines()
+        )
+        self.assertEqual(gate.EXPECTED_DEPENDENCIES, actual)
 
     def test_policy_records_promotion_candidate_without_claiming_live_enforcement(self) -> None:
         policy = (ROOT / ".ci/policies/required-checks.toml").read_text(
