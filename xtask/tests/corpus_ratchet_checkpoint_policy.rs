@@ -59,22 +59,50 @@ const FULL_JOB_GUARDS: &[(&str, &str)] = &[
     ),
 ];
 
-const BOUNDED_ACTION_STEPS: &[(&str, &str)] = &[
-    ("Checkout bounded analysis tree", "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"),
-    ("Install Rust toolchain", "dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772"),
-    ("Cache cargo dependencies", "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6"),
-    ("Install just", "taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1"),
+const BOUNDED_ACTION_STEPS: &[(&str, &str, &str)] = &[
+    (
+        "Checkout bounded analysis tree",
+        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        r#"fetch-depth: 1
+persist-credentials: false"#,
+    ),
+    (
+        "Install Rust toolchain",
+        "dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772",
+        "toolchain: 1.95.0",
+    ),
+    (
+        "Cache cargo dependencies",
+        "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+        r#"cache-on-failure: true
+shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}"#,
+    ),
+    (
+        "Install just",
+        "taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1",
+        "tool: just",
+    ),
     (
         "Restore CPAN corpus cache (bounded)",
         "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+        r#"path: target/cpan-corpus-bounded
+key: cpan-corpus-bounded-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-50-distributions.txt') }}
+restore-keys: |
+  cpan-corpus-bounded-${{ runner.os }}-"#,
     ),
     (
         "Save CPAN corpus cache (bounded)",
         "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+        r#"path: target/cpan-corpus-bounded
+key: cpan-corpus-bounded-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-50-distributions.txt') }}"#,
     ),
     (
         "Upload bounded corpus receipt",
         "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        r#"name: cpan-corpus-bounded-receipt-${{ github.sha }}
+path: target/corpus-receipts/bounded-sweep.json
+retention-days: 14
+if-no-files-found: warn"#,
     ),
 ];
 
@@ -282,7 +310,7 @@ fn ensure_bounded_top_50_is_safe_and_reachable(workflow: &Value) -> Result<()> {
         "bounded proof step inventory drifted: {actual_step_names:?}"
     );
 
-    for (name, expected) in BOUNDED_ACTION_STEPS {
+    for (name, expected_action, expected_inputs) in BOUNDED_ACTION_STEPS {
         let step = named_step(steps, name)?;
         ensure!(
             step.get("run").is_none(),
@@ -290,8 +318,13 @@ fn ensure_bounded_top_50_is_safe_and_reachable(workflow: &Value) -> Result<()> {
         );
         let actual = step.get("uses").and_then(Value::as_str);
         ensure!(
-            actual == Some(*expected),
-            "bounded action step `{name}` execution identity drifted: expected `{expected}`, found {actual:?}"
+            actual == Some(*expected_action),
+            "bounded action step `{name}` execution identity drifted: expected `{expected_action}`, found {actual:?}"
+        );
+        let expected_inputs = serde_yaml_ng::from_str::<Value>(expected_inputs)?;
+        ensure!(
+            step.get("with") == Some(&expected_inputs),
+            "bounded action step `{name}` inputs drifted"
         );
     }
     for (name, expected) in BOUNDED_RUN_STEPS {
@@ -493,6 +526,42 @@ fn bounded_control_rejects_different_pinned_external_action_with_known_name() ->
         error.to_string().contains("execution identity drifted"),
         "unexpected refusal: {error}"
     );
+    Ok(())
+}
+
+#[test]
+fn bounded_control_rejects_full_bank_cache_restore_inputs() -> Result<()> {
+    let mut candidate = workflow()?;
+    let bounded = candidate
+        .get_mut("jobs")
+        .and_then(Value::as_mapping_mut)
+        .and_then(|jobs| jobs.get_mut(Value::String(BOUNDED_JOB.into())))
+        .ok_or_else(|| anyhow!("bounded job must exist for the negative control"))?;
+    let restore = bounded
+        .get_mut("steps")
+        .and_then(Value::as_sequence_mut)
+        .and_then(|steps| {
+            steps.iter_mut().find(|step| {
+                step.get("name").and_then(Value::as_str)
+                    == Some("Restore CPAN corpus cache (bounded)")
+            })
+        })
+        .and_then(Value::as_mapping_mut)
+        .ok_or_else(|| anyhow!("bounded restore step must exist"))?;
+    restore.insert(
+        Value::String("with".into()),
+        serde_yaml_ng::from_str(
+            r#"path: ./target/cpan-corpus
+key: bounded-miss-${{ github.run_id }}
+restore-keys: |
+  cpan-corpus-${{ runner.os }}-"#,
+        )?,
+    );
+
+    let error = ensure_bounded_top_50_is_safe_and_reachable(&candidate)
+        .err()
+        .ok_or_else(|| anyhow!("full-bank restore inputs must fail bounded containment"))?;
+    ensure!(error.to_string().contains("inputs drifted"), "unexpected refusal: {error}");
     Ok(())
 }
 
