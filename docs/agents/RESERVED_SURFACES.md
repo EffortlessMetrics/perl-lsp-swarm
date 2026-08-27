@@ -54,11 +54,11 @@ the machine registry; this table is the fast index.
 | `session-warning-dedup-runtime` | #9769 | landed | extends merged cfg-gate strategy (#12367); removal fork (#12374) was superseded |
 | `xtask-gate-disposition-route-profile` | #10176, #10178 | landed | gate additions ride typed disposition and route-profile contracts (#12415, #12541) |
 | `vim-lsp-cell-catalog` | #11374 | landed | new cells extend the checked catalog API; no per-cell forks |
-| `vim-host-leaves` | #11396, #11372 | open | leaves share xtask trunk wiring; second leaf rebases onto first |
+| `vim-host-leaves` | #11396, #11372 | open | leaves share xtask trunk wiring and coordinate through their live issues |
 | `framework-adapters-canonical-facts` | #8928 | open | adapter additions cut to canonical facts under the closed parent #8910 |
 | `collapsible-if-suppression-sweep` | #12734, #12731, #12732 | open | deny policy (closed authority #6305) and clippy-debt ratchet are shared across per-crate sweep lanes |
-| `parser-consumers-facade-imports` | #11377, #11382, #11389 | open | three sweeps overlap on coverage packs, ci.yml, and perl-lsp-rs import sites |
-| `devex-shared-build-cache` | #12596 | open | one claim, candidate strategies reconcile on justfile/docs before landing |
+| `parser-consumers-facade-imports` | #11377, #11382, #11389 | open | sweeps overlap on coverage packs, ci.yml, and perl-lsp-rs import sites; drivers coordinate through their issues |
+| `devex-shared-build-cache` | #12596 | open | one reconciled semantic change per landing across justfile/docs surfaces |
 | `non-rust-inventory-manifest` | #12775 | open | regenerate from tooling; hand edits only outside contested sections |
 | `emacs-journey-host-runner` | #8824, #8825, #8830, #11719 | open | journey proofs vs packet tooling vs landed runner substrate (#7778) name their layer |
 
