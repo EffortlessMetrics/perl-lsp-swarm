@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! Contract, chunk-partition stability, and negative-control proof for the
 //! LF source-line scanner and immutable line-record table (#10574).
 //!

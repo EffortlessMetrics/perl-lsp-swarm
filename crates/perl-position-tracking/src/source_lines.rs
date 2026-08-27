@@ -441,6 +441,13 @@ impl Scanner {
         Ok(())
     }
 
+    #[expect(
+        clippy::map_err_ignore,
+        reason = "LineRecord::new cannot reject here by construction (invariants cr_at < offset \
+                  and separator_end == offset + 1 are established above); the mapped \
+                  ArithmeticOverflow class is the complete diagnostic — there is no payload in \
+                  the LineRecordError beyond the violated invariant, which cannot fire."
+    )]
     fn push_byte(&mut self, byte: u8) -> Result<(), SourceLineError> {
         if let Some(cr_at) = self.pending_cr_at.take()
             && byte == LF
