@@ -1296,7 +1296,6 @@ impl Drop for ProbeJob {
 
 #[cfg(windows)]
 fn resume_suspended_probe_process(child: &Child) -> io::Result<()> {
-    use winapi::shared::minwindef::MAXDWORD;
     use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
     use winapi::um::processthreadsapi::{OpenThread, ResumeThread};
     use winapi::um::tlhelp32::{
@@ -1319,7 +1318,7 @@ fn resume_suspended_probe_process(child: &Child) -> io::Result<()> {
                     return Err(io::Error::last_os_error());
                 }
                 let previous_count = unsafe { ResumeThread(thread) };
-                let resume_error = if previous_count == MAXDWORD {
+                let resume_error = if previous_count == u32::MAX {
                     Some(io::Error::last_os_error())
                 } else {
                     None
@@ -1505,7 +1504,7 @@ fn probe_debuggee_perl_with_options(
                 if let Err(error) = wait_for_spawn_failure_control(descendant_pid_file) {
                     let cleanup = terminate_probe_process_tree(
                         &mut child,
-                        descendant_pid_file,
+                        Some(descendant_pid_file),
                         cleanup_fault,
                     );
                     return Err(fail(format!(

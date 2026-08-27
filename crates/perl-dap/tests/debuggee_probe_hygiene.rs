@@ -491,7 +491,7 @@ fn main() {
 
 #[test]
 fn cleanup_command_wait_error_kills_and_reaps_helper() -> io::Result<()> {
-    let mut command = if cfg!(windows) {
+    let command = if cfg!(windows) {
         let mut command = Command::new("ping");
         command.args(["127.0.0.1", "-n", "31"]);
         command
