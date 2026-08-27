@@ -15,12 +15,13 @@ on:
   pull_request_target:
     branches: [main, master]
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - '.github/workflows/**'
-      - '.github/actions/**'
-      - '.ci/workflow-security-baseline.json'
-      - 'scripts/ci/workflow_security_ratchet.py'
-      - 'scripts/ci/test_workflow_security_ratchet.py'
+    # No `paths` filter on this event: scope is enforced inside the job instead,
+    # so a required check run is always reported (always-or-scoped-noop per
+    # .ci/policies/required-checks.toml) and non-workflow dependency PRs
+    # (Cargo.lock / npm manifests) resolve green immediately instead of facing a
+    # never-reported context if this job is ever ruleset-required (#10536).
+    # The `push` trigger below keeps its paths filter; main-redness channels
+    # are unchanged.
   push:
     branches: [main, master]
     paths:
@@ -95,6 +96,27 @@ jobs:
             exit 1
           fi
 
+          # always-or-scoped-noop applicability (.ci/policies/required-checks.toml):
+          # when none of the scanned control paths differ between the trusted
+          # base and the PR head, report a green no-op run so non-workflow
+          # dependency PRs (Cargo.lock / npm manifests) resolve immediately
+          # instead of never reporting a required context (#10536). No
+          # candidate bytes are materialized or evaluated on this path.
+          control_scope=(
+            .github/workflows
+            .github/actions
+            .ci/workflow-security-baseline.json
+            scripts/ci/workflow_security_ratchet.py
+            scripts/ci/test_workflow_security_ratchet.py
+          )
+          if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- "${control_scope[@]}"; then
+            printf 'workflow security scoped-noop: no control paths changed\n' \
+              >> "$GITHUB_STEP_SUMMARY"
+            printf 'SCOPED_NOOP=true\n' >> "$GITHUB_ENV"
+            printf '::notice::workflow security scoped-noop: no control paths changed; scan skipped\n'
+            exit 0
+          fi
+
           # Materialize ONLY the paths this control reads. Everything else in
           # the candidate tree — build scripts, manifests, action entrypoints —
           # is deliberately never written to disk, so there is nothing for a
@@ -124,9 +146,11 @@ jobs:
             "$BASE_SHA" "$HEAD_SHA"
 
       - name: Prove trusted evaluator before use
+        if: env.SCOPED_NOOP != 'true'
         run: python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
 
       - name: Reject new findings against the trusted base baseline
+        if: env.SCOPED_NOOP != 'true'
         run: |
           mkdir -p target/receipts
           python3 scripts/ci/workflow_security_ratchet.py check \
@@ -136,6 +160,7 @@ jobs:
             --report target/receipts/workflow-security-ratchet.json
 
       - name: Reject stale, pre-seeded, or tampered candidate baseline
+        if: env.SCOPED_NOOP != 'true'
         run: |
           python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
             --root candidate \
