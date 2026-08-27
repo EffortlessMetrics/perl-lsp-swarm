@@ -85,7 +85,10 @@ cargo fmt -p perl-lsp-perltidy -- --check
 cargo clippy -p perl-lsp-perltidy --all-targets --locked -- -D warnings
 cargo test -p perl-lsp-perltidy --all-targets --locked
 cargo test -p perl-lsp-perltidy --test native_pipeline_counters_tests -- --test-threads=1
+cargo test -p perl-lsp-rs-core --test native_pipeline_invocation_tests --locked
 cargo bench -p perl-lsp-perltidy --bench native_pipeline_benchmark -- --quick
+python3 benchmarks/scripts/test_extract_criterion.py -v
+python3 benchmarks/scripts/test_benchmark_guards.py -v
 ```
 
 Open residuals (owned by upstream issues, not silently dropped):
@@ -97,7 +100,12 @@ Open residuals (owned by upstream issues, not silently dropped):
       remains a separate real-oracle requirement
 - [ ] Keep #10302's allocation-count/allocated-byte requirement open and
       `NOT_PROVEN` until a real allocation oracle measures both on a supported
-      proof run; derived output/replacement/retained bytes never substitute
+      proof run; derived output/replacement/retained bytes never substitute.
+      The oracle proof must include controlled mutant
+      `allocation_oracle_rejects_extra_temporary_copy`: add one temporary
+      allocation/copy to the measured production path, demonstrate the
+      allocation canary turns red because count/bytes increase, then revert
+      the mutant and retain both receipts
 - [ ] Cross-environment timing comparisons remain out of scope permanently
       unless a reviewed policy changes the advisory posture (#3979/#5282)
 
