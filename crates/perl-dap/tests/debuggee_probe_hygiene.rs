@@ -13,10 +13,6 @@
 //! embed the creating pid (`perl-lsp-dap-debuggee-probe-<pid>-…`), so the
 //! scan cannot confuse artifacts from concurrently running suites.
 
-#![expect(
-    clippy::print_stderr,
-    reason = "Integration-test diagnostic output; tracing is not wired into test helpers."
-)]
 #![allow(unsafe_code)] // required for std::env::set_var/remove_var in Rust 2024 (unsafe fn)
 
 mod common;
@@ -24,7 +20,9 @@ mod common;
 use common::{DEBUGGEE_PERL_OVERRIDE_ENV, resolve_debuggee_perl};
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
 
 const PROBE_PREFIX: &str = "perl-lsp-dap-debuggee-probe-";
 
@@ -56,13 +54,89 @@ fn current_process_probe_artifacts() -> io::Result<Vec<PathBuf>> {
     Ok(artifacts)
 }
 
-#[test]
-fn no_probe_workspace_survives_resolution_sweeps() -> io::Result<()> {
-    let before = current_process_probe_artifacts()?;
+fn compile_probe_control(directory: &Path, label: &str, body: &str) -> io::Result<PathBuf> {
+    let source = directory.join(format!("{label}.rs"));
+    let binary =
+        directory.join(if cfg!(windows) { format!("{label}.exe") } else { label.to_string() });
+    fs::write(&source, body)?;
+    let output = Command::new("rustc")
+        .args(["--edition", "2024"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "failed to compile {label} probe control: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    Ok(binary)
+}
 
-    // One guaranteed failed sweep: a nonexistent pin fails at spawn after its
-    // workspace has been created, exercising cleanup on the error path that
-    // used to leak.
+#[test]
+fn probe_workspace_cleanup_covers_each_child_exit_path() -> io::Result<()> {
+    let controls = tempfile::tempdir()?;
+    let success = compile_probe_control(
+        controls.path(),
+        "probe_success",
+        "fn main() { println!(\"15\"); }\n",
+    )?;
+    let no_banner = compile_probe_control(controls.path(), "probe_no_banner", "fn main() {}\n")?;
+    let timeout = compile_probe_control(
+        controls.path(),
+        "probe_timeout",
+        "fn main() { std::thread::sleep(std::time::Duration::from_secs(60)); }\n",
+    )?;
+
+    // Seed a same-process artifact before taking the baseline. A proof that
+    // merely asserts the entire prefix is empty would confuse this legitimate
+    // stale entry with a leak; the production sweep must be judged by its
+    // baseline delta instead.
+    let stale_prefix = format!("{PROBE_PREFIX}{}-seeded-stale-control-", std::process::id());
+    let seeded_stale =
+        tempfile::Builder::new().prefix(&stale_prefix).tempdir_in(std::env::temp_dir())?;
+    let baseline = current_process_probe_artifacts()?;
+    assert!(
+        baseline.contains(&seeded_stale.path().to_path_buf()),
+        "seeded same-process stale artifact must be visible in the baseline"
+    );
+
+    // Run each production cleanup branch through the real probe implementation.
+    // The last argument injects a deterministic `try_wait` error after spawn;
+    // the short budget keeps the timeout case bounded without weakening the
+    // production ten-second deadline.
+    let cases = [
+        ("success", success.as_path(), Duration::from_secs(2), false, true),
+        ("no-banner", no_banner.as_path(), Duration::from_secs(2), false, false),
+        ("timeout", timeout.as_path(), Duration::from_millis(100), false, false),
+        ("wait-error", success.as_path(), Duration::from_secs(2), true, false),
+    ];
+    for (label, binary, budget, simulate_wait_error, should_succeed) in cases {
+        let before = current_process_probe_artifacts()?;
+        assert!(
+            before.iter().any(|path| path == seeded_stale.path()),
+            "{label} case lost the seeded stale baseline before probing"
+        );
+
+        let result = common::probe_debuggee_perl_for_test(binary, budget, simulate_wait_error);
+        assert_eq!(result.is_ok(), should_succeed, "unexpected {label} probe result: {result:?}");
+
+        let after = current_process_probe_artifacts()?;
+        let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
+        assert!(
+            new_artifacts.is_empty(),
+            "{label} probe left newly created workspaces: {new_artifacts:?}"
+        );
+        assert!(
+            after.iter().any(|path| path == seeded_stale.path()),
+            "{label} probe must not delete the pre-existing stale control"
+        );
+    }
+
+    // Keep the pin environment restoration proof from the original sweep: the
+    // helper above exercises the direct probe, while this final resolution
+    // path confirms the resolver still rejects an explicitly broken pin.
     {
         struct Guard(Option<std::ffi::OsString>);
         impl Drop for Guard {
@@ -77,25 +151,11 @@ fn no_probe_workspace_survives_resolution_sweeps() -> io::Result<()> {
         unsafe { std::env::set_var(DEBUGGEE_PERL_OVERRIDE_ENV, "/definitely/not/a/real/perl") };
 
         // Drive RESOLUTION directly (not the availability gate): candidates
-        // collapse to the bogus pin alone, its probe materializes a
-        // workspace, the spawn fails deterministically, and resolution must
-        // report none — on every host, pre- or post-repair.
+        // collapse to the bogus pin alone and resolution must report none.
         assert!(
             resolve_debuggee_perl().is_none(),
             "a nonexistent pinned interpreter must fail resolution outright"
         );
     }
-
-    let after = current_process_probe_artifacts()?;
-    let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
-
-    // The scan itself only means something if the baseline wasn't already
-    // contaminated by a prior same-pid run (practically impossible across
-    // processes since pids are not reused within a boot cycle, but assert the
-    // invariant we actually care about: OUR sweep added none).
-    assert!(
-        new_artifacts.is_empty(),
-        "this resolution sweep added surviving probe artifacts: {new_artifacts:?}"
-    );
     Ok(())
 }

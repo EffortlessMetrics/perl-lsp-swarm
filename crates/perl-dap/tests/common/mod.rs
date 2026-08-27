@@ -15,7 +15,7 @@ use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -134,7 +134,7 @@ impl DapWorkflowSession {
         // Gated callers use this helper after `perl_available()`. Resolve the
         // same pinned identity here as well so a valid pin controls the live
         // process, even when the caller uses the legacy convenience method.
-        let perl_binary = resolve_debuggee_perl().map(|perl| perl.binary.clone());
+        let perl_binary = resolve_launch_perl_path()?;
         let args = launch_arguments(script_path, None, stop_on_entry, perl_binary.as_deref());
         let resp = self.request("launch", Some(args));
         self.expect_success(&resp, "launch")?;
@@ -148,7 +148,7 @@ impl DapWorkflowSession {
     pub fn launch_with_cwd(&mut self, script_path: &str, cwd: &str) -> Result<(), String> {
         // Keep the explicit cwd path under the same pin-propagating contract
         // as `launch`; this is a gated live-session consumer too.
-        let perl_binary = resolve_debuggee_perl().map(|perl| perl.binary.clone());
+        let perl_binary = resolve_launch_perl_path()?;
         let args = launch_arguments(script_path, Some(cwd), false, perl_binary.as_deref());
         let resp = self.request("launch", Some(args));
         self.expect_success(&resp, "launch")?;
@@ -599,6 +599,29 @@ fn launch_arguments(
     args
 }
 
+/// Resolve the interpreter for a shared launch convenience.
+///
+/// An explicit debuggee pin is an identity constraint, not a preference. If
+/// its pipe-conformance probe fails, return the diagnostic instead of omitting
+/// `perlPath` and allowing the adapter to fall back to PATH/profile resolution.
+/// With no pin, retain the existing ambient fallback for callers that use these
+/// low-level helpers without the normal availability gate.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn resolve_launch_perl_path() -> Result<Option<PathBuf>, String> {
+    if std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some() {
+        return resolved_debuggee_perl_or_reason().map(|perl| Some(perl.binary.clone())).map_err(
+            |reason| {
+                format!(
+                    "{DEBUGGEE_PERL_OVERRIDE_ENV} is set but its pinned interpreter \
+                     cannot be used for a DAP launch: {reason}"
+                )
+            },
+        );
+    }
+
+    Ok(resolve_debuggee_perl().map(|perl| perl.binary.clone()))
+}
+
 const RECENT_EVENT_LIMIT: usize = 8;
 const DIAGNOSTIC_ATOM_LIMIT: usize = 64;
 
@@ -822,6 +845,28 @@ struct ProbeFailure {
 /// resolver retries once on a transient-class failure before caching a
 /// negative result ([`resolved_debuggee_perl_or_reason`]).
 fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
+    probe_debuggee_perl_with_options(binary, DEBUGGEE_PROBE_BUDGET, false)
+}
+
+/// Test-only entry point for exercising every child/workspace exit path with a
+/// short deadline and a deterministic `try_wait` failure injection. The
+/// production resolver always uses [`probe_debuggee_perl`] above, so this seam
+/// cannot alter shipped adapter behavior.
+#[cfg(test)]
+pub(crate) fn probe_debuggee_perl_for_test(
+    binary: &Path,
+    budget: Duration,
+    simulate_wait_error: bool,
+) -> Result<DebuggeePerl, String> {
+    probe_debuggee_perl_with_options(binary, budget, simulate_wait_error)
+        .map_err(|failure| failure.reason)
+}
+
+fn probe_debuggee_perl_with_options(
+    binary: &Path,
+    probe_budget: Duration,
+    mut simulate_wait_error: bool,
+) -> Result<DebuggeePerl, ProbeFailure> {
     let fail = |reason: String| ProbeFailure { reason, transient: false };
     // RAII workspace under the system temp directory: dropped — recursively
     // removed — on every exit path of this function (success, spawn error,
@@ -880,9 +925,15 @@ fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
     let stdout_chunks = drain_pipe(stdout_pipe);
     let stderr_chunks = drain_pipe(stderr_pipe);
 
-    let deadline = Instant::now() + DEBUGGEE_PROBE_BUDGET;
+    let deadline = Instant::now() + probe_budget;
     let status = loop {
-        match child.try_wait() {
+        let wait_result = if simulate_wait_error {
+            simulate_wait_error = false;
+            Err(io::Error::other("injected probe wait failure"))
+        } else {
+            child.try_wait()
+        };
+        match wait_result {
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if Instant::now() >= deadline {
@@ -892,7 +943,7 @@ fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
                     return Err(ProbeFailure {
                         reason: format!(
                             "no exit within {}s — perl5db cannot bootstrap over piped stdio",
-                            DEBUGGEE_PROBE_BUDGET.as_secs()
+                            probe_budget.as_secs()
                         ),
                         transient: true,
                     });
@@ -965,11 +1016,8 @@ fn drain_pipe<R: Read + Send + 'static>(pipe: R) -> Receiver<Vec<u8>> {
 fn collect_pipe_output(rx: Receiver<Vec<u8>>) -> String {
     let mut bytes = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(chunk) => bytes.extend_from_slice(&chunk),
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
-        }
+    while let Ok(chunk) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        bytes.extend_from_slice(&chunk);
     }
     String::from_utf8_lossy(&bytes).into_owned()
 }
