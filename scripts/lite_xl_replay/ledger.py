@@ -41,8 +41,12 @@ def load_ledger_inventory(path: Path) -> dict[str, Any]:
     for index, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith(BASELINE_HEADING):
+            if baseline_start is not None:
+                raise LedgerError(f"{path} repeats the baseline journey ledger heading")
             baseline_start = index + 1
         elif stripped.startswith(OPTIONAL_HEADING):
+            if optional_start is not None:
+                raise LedgerError(f"{path} repeats the optional-input heading")
             optional_start = index + 1
     if baseline_start is None:
         raise LedgerError(f"{path} lacks the baseline journey ledger heading")
@@ -63,6 +67,16 @@ def load_ledger_inventory(path: Path) -> dict[str, Any]:
     overlap = sorted(set(baseline) & set(optional))
     if overlap:
         raise LedgerError(f"{path} duplicates scenario IDs across regions: {overlap}")
+    repeated_baseline = sorted({cid for cid in baseline if baseline.count(cid) > 1})
+    if repeated_baseline:
+        raise LedgerError(
+            f"{path} repeats scenario IDs within the baseline ledger: {repeated_baseline[0]}"
+        )
+    repeated_optional = sorted({cid for cid in optional if optional.count(cid) > 1})
+    if repeated_optional:
+        raise LedgerError(
+            f"{path} repeats scenario IDs within the optional table: {repeated_optional[0]}"
+        )
     if not baseline:
         raise LedgerError(f"{path} carries no baseline scenarios")
     return {

@@ -72,14 +72,19 @@ FORBIDDEN_INSTALL_ROUTES = {
 # Entry-gate accounting retained with the receipt. Subject gates are
 # live-bound to the committed upstream-acceptance manifest; the exact-source
 # gate is live-bound to the committed receipts directory.
+EXACT_SOURCE_GATE_CELL = "exact_source_lite_xl_receipt"
 GATE_CELLS = [
-    "exact_source_lite_xl_receipt",
+    EXACT_SOURCE_GATE_CELL,
     "released_lite_xl_build",
     "public_lite_xl_lsp_package_release",
     "public_language_perl_package_release",
     "public_lsp_perl_package_release",
     "public_perllsp_release_asset",
 ]
+
+# Gates whose truth is live-bound to the committed acceptance manifest,
+# named explicitly so a GATE_CELLS reorder cannot change what binds where.
+SUBJECT_GATE_CELLS = [cell for cell in GATE_CELLS if cell != EXACT_SOURCE_GATE_CELL]
 
 GATE_STATES = {"absent", "stale", "current"}
 
@@ -345,11 +350,13 @@ def validate_public_replay_receipt(
             f"journey cell {unexpected[0]!r} is not in the landed #11178 ledger"
         )
 
-    if result == "blocked_external":
-        _validate_blocked_gates(receipt, manifest, receipts_dir)
-        return
     if result == "pass":
         _validate_pass(receipt, inventory, manifest, receipts_dir)
+        return
+    # Every non-passing result keeps the same live gate binding, so a
+    # relabeled result cannot escape the stale-subject check after the
+    # external subjects land.
+    _validate_blocked_gates(receipt, manifest, receipts_dir)
 
 
 def _validate_blocked_gates(
@@ -357,8 +364,7 @@ def _validate_blocked_gates(
 ) -> None:
     gates = _object(receipt.get("gates"), "gates")
     subject = upstream_subject(manifest)
-    surface_gates = GATE_CELLS[1:]
-    for cell in surface_gates:
+    for cell in SUBJECT_GATE_CELLS:
         state = gates.get(cell)
         if state not in GATE_STATES:
             raise ReceiptError(f"gate {cell!r} has an invalid state")
@@ -372,26 +378,26 @@ def _validate_blocked_gates(
                 "a merged-and-released subject"
             )
 
-    exact_gate = gates.get("exact_source_lite_xl_receipt")
+    exact_gate = gates.get(EXACT_SOURCE_GATE_CELL)
     if exact_gate not in GATE_STATES:
-        raise ReceiptError("gate 'exact_source_lite_xl_receipt' has an invalid state")
+        raise ReceiptError(f"gate {EXACT_SOURCE_GATE_CELL!r} has an invalid state")
     current_exact = exact_source_receipt_current(receipts_dir)
     if exact_gate == "current" and not current_exact:
         raise ReceiptError(
-            "gate 'exact_source_lite_xl_receipt' claims a pass but no committed fixture "
+            f"gate {EXACT_SOURCE_GATE_CELL!r} claims a pass but no committed fixture "
             "records one"
         )
     if exact_gate in ("absent", "stale") and current_exact:
         raise ReceiptError(
-            "gate 'exact_source_lite_xl_receipt' cannot deny it — a committed fixture "
+            f"gate {EXACT_SOURCE_GATE_CELL!r} cannot deny it — a committed fixture "
             "records a current exact-source pass"
         )
 
     blockers = gates.get("blockers")
     if not isinstance(blockers, list) or not all(isinstance(item, str) for item in blockers):
         raise ReceiptError("gates.blockers must be a list of strings")
-    absent_subjects = [cell for cell in surface_gates if not subject[cell]]
-    exact_absent = gates.get("exact_source_lite_xl_receipt") != "current"
+    absent_subjects = [cell for cell in SUBJECT_GATE_CELLS if not subject[cell]]
+    exact_absent = gates.get(EXACT_SOURCE_GATE_CELL) != "current"
     if (absent_subjects or exact_absent) and not blockers:
         raise ReceiptError("a blocked receipt must name its absent external subjects")
 
@@ -403,7 +409,7 @@ def _validate_pass(
     receipts_dir: Path,
 ) -> None:
     subject = upstream_subject(manifest)
-    missing_subjects = [cell for cell in GATE_CELLS[1:] if not subject[cell]]
+    missing_subjects = [cell for cell in SUBJECT_GATE_CELLS if not subject[cell]]
     if missing_subjects:
         raise ReceiptError(
             "a public replay pass requires an accepted merged-and-released upstream "
@@ -416,14 +422,14 @@ def _validate_pass(
         if state not in GATE_STATES:
             raise ReceiptError(f"gate {cell!r} has an invalid state")
     for cell in GATE_CELLS:
-        if cell == "exact_source_lite_xl_receipt":
+        if cell == EXACT_SOURCE_GATE_CELL:
             # A public pass cannot outrun an absent or stale entry gate: the
             # #9008-family exact-source prerequisite must itself be current.
             if gates[cell] != "current":
                 raise ReceiptError(f"gate {cell!r} cannot outrun an absent or stale entry gate")
             if not exact_source_receipt_current(receipts_dir):
                 raise ReceiptError(
-                    "gate 'exact_source_lite_xl_receipt' claims a pass but no committed "
+                    f"gate {EXACT_SOURCE_GATE_CELL!r} claims a pass but no committed "
                     "fixture records one"
                 )
             continue
@@ -475,7 +481,12 @@ def _validate_pass(
         )
     process_path = _nonempty(server.get("process_path"), "server.process_path")
     installed_path = _nonempty(server.get("installed_path"), "server.installed_path")
-    if not process_path.endswith(installed_path):
+    normalized = process_path.replace("\\", "/")
+    relative = installed_path.replace("\\", "/").lstrip("/")
+    # The comparison must respect path-component boundaries: a decoy root
+    # whose final component merely ends with installed_path's first component
+    # is exactly the wrong-root substitution this receipt rejects.
+    if normalized != relative and not normalized.endswith("/" + relative):
         raise ReceiptError(
             "server.process_path is not the managed public artifact resolved by the host"
         )

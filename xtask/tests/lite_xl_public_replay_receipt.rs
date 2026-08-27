@@ -133,6 +133,13 @@ fn assert_rejected(
         !output.status.success(),
         "{context} should have been rejected, but the command succeeded\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
+    // A bounded receipt failure exits 2 from the CLI's ReceiptError handler;
+    // an unhandled traceback would exit 1 instead.
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "{context} must fail with the bounded receipt-error status\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
     assert!(
         stderr.contains(expected_fragment),
         "{context} should have failed naming {expected_fragment:?}, but stderr was:\n{stderr}"
@@ -323,7 +330,7 @@ fn committed_receipt_is_an_honest_blocked_external_observation() -> Result<(), B
 #[test]
 fn blocked_gates_are_live_bound_to_the_current_surfaces() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let target = root.join("target/lite-xl-public-replay-tests");
+    let target = root.join("target/lite-xl-public-replay-tests/blocked-gates");
     fs::create_dir_all(&target)?;
     let committed = load_json(&root.join(RECEIPT))?;
     let real_manifest = root.join(ACCEPTANCE_MANIFEST);
@@ -419,13 +426,35 @@ fn blocked_gates_are_live_bound_to_the_current_surfaces() -> Result<(), Box<dyn 
     write_temp(&path, &serde_json::to_string_pretty(&overclaim)?)?;
     let output = run(&root, &path, &real_manifest)?;
     assert_rejected(&output, "blocked journey overclaim", "cannot claim a proven journey cell")?;
+
+    // A non-passing result cannot escape the live gate binding: relabeling
+    // the committed receipt to any other non-passing result keeps the
+    // stale-subject check, so a released upstream still invalidates it.
+    for relabeled_result in ["not_proven", "not_run", "fail", "instrument_failed", "contract_stale"]
+    {
+        let mut escaped = committed.clone();
+        escaped["result"] = json!(relabeled_result);
+        let path = target.join(format!("relabeled-{relabeled_result}.json"));
+        write_temp(&path, &serde_json::to_string_pretty(&escaped)?)?;
+        let output = run_with_receipts_dir(
+            &root,
+            &path,
+            &published,
+            current_receipts.to_string_lossy().as_ref(),
+        )?;
+        assert_rejected(
+            &output,
+            &format!("gate accounting after {relabeled_result} relabel"),
+            "cannot deny it",
+        )?;
+    }
     Ok(())
 }
 
 #[test]
 fn pass_journey_requires_an_accepted_upstream_subject() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let target = root.join("target/lite-xl-public-replay-tests");
+    let target = root.join("target/lite-xl-public-replay-tests/pass-control");
     fs::create_dir_all(&target)?;
     let committed = load_json(&root.join(RECEIPT))?;
     let control = pass_control(&committed)?;
@@ -495,7 +524,7 @@ fn pass_journey_requires_an_accepted_upstream_subject() -> Result<(), Box<dyn Er
 #[test]
 fn pass_mutations_fail_closed_naming_the_exact_defect() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let target = root.join("target/lite-xl-public-replay-tests");
+    let target = root.join("target/lite-xl-public-replay-tests/pass-mutations");
     fs::create_dir_all(&target)?;
     let committed = load_json(&root.join(RECEIPT))?;
     let control = pass_control(&committed)?;
@@ -561,6 +590,12 @@ fn pass_mutations_fail_closed_naming_the_exact_defect() -> Result<(), Box<dyn Er
         (
             "ambient PATH binary substitution".into(),
             json!("C:/Windows/system32/perllsp.exe"),
+            "/server/process_path",
+            "is not the managed public artifact resolved by the host",
+        ),
+        (
+            "decoy root without component boundary".into(),
+            json!("C:/tmp/decoyuser/packages/perllsp-9.9.9-test/perllsp.exe"),
             "/server/process_path",
             "is not the managed public artifact resolved by the host",
         ),
@@ -706,15 +741,14 @@ fn pass_mutations_fail_closed_naming_the_exact_defect() -> Result<(), Box<dyn Er
 
     for (label, value, pointer, fragment) in mutations {
         let mut mutated = control.clone();
-        match mutated.pointer_mut(pointer) {
-            Some(slot) => *slot = value,
-            None => {
-                if value.is_null() {
-                    remove_pointer(&mut mutated, pointer);
-                } else {
-                    insert_pointer(&mut mutated, pointer, value);
-                }
-            }
+        // A null mutation removes the key outright: the dropped-key and
+        // explicit-null shapes must both fail closed at the same seam.
+        if value.is_null() {
+            remove_pointer(&mut mutated, pointer);
+        } else if let Some(slot) = mutated.pointer_mut(pointer) {
+            *slot = value;
+        } else {
+            insert_pointer(&mut mutated, pointer, value);
         }
         let path = target.join(format!("pass-{}.json", label.replace([' ', '-'], "_")));
         write_temp(&path, &serde_json::to_string_pretty(&mutated)?)?;
@@ -772,41 +806,25 @@ fn implementation_keeps_the_stage_and_ledger_boundaries() -> Result<(), Box<dyn 
     let cli = read("scripts/lite_xl_replay/cli.py")?;
     let entry = read(SCRIPT)?;
 
-    // Stage separation is structural: exact-source and staged stages are
-    // named as never-satisfying, install routes enumerate the forbidden
-    // developer shortcuts, and the exact-source gate accounting scans the
-    // committed receipts rather than trusting prose.
-    assert!(public_replay.contains("exact_source_dev_extension"));
-    assert!(public_replay.contains("staged_managed_package"));
-    assert!(public_replay.contains("FORBIDDEN_INSTALL_ROUTES"));
-    assert!(public_replay.contains("candidate_source_checkout_absent"));
-    assert!(public_replay.contains("hand_populated_package_cache_absent"));
-    assert!(public_replay.contains("second_perl_server_absent"));
-    assert!(public_replay.contains("managed_row_not_satisfied_by_ambient_path"));
-
-    // The validator consumes the landed ledger through its own parser and
-    // never delegates to another editor family's module.
-    assert!(
-        public_replay.contains("from . import ledger as ledger_mod"),
-        "the public journey must derive its cells from the landed ledger bytes"
-    );
+    // Cross-family containment: the lite-xl validator never delegates to or
+    // binds another editor family's validators, contract modules, or
+    // fixtures. These are source-containment properties about the code, not
+    // behavior claims; every behavior boundary is proven by the mutation and
+    // live-binding suites above.
     assert!(
         !public_replay.contains("zed_assets"),
         "the lite-xl validator must not delegate to the zed validators"
     );
     assert!(
-        !public_replay.contains("from .dap_contract import") && !entry.contains("zed_assets"),
-        "the lite-xl validator must not bind zed fixtures"
+        !public_replay.contains(".dap_") && !cli.contains(".dap_") && !entry.contains("zed_assets"),
+        "the lite-xl replay surface must not bind zed fixtures or perllsp DAP contracts"
     );
 
     assert!(
         cli.contains("validate-public-replay-receipt"),
         "the CLI must expose the public journey validator"
     );
-    assert!(
-        entry.contains("validate-public-replay-receipt") || cli.contains("build_parser"),
-        "the entry script must reach the argparse surface"
-    );
+    assert!(entry.contains("cli import main"), "the entry script must reach the CLI");
 
     // The consumed landed surfaces stay byte-present authorities.
     assert!(root.join(LEDGER).is_file());
