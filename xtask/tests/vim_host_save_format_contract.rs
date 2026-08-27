@@ -962,8 +962,7 @@ fn duplicate_owner_control_fails_closed_when_the_falsifier_was_never_observed() 
     // requests and responses were actually observed; an unobserved wait is an
     // instrument failure with its own reason (#12763 thread 3864145196).
     let driver = save_format_driver_source()?;
-    let accepted_control_hits =
-        driver.matches("'duplicate_invocation_observed'").count();
+    let accepted_control_hits = driver.matches("'duplicate_invocation_observed'").count();
     ensure!(
         accepted_control_hits == 1,
         "the accepted negative-control reason must appear exactly once (observed branch), found \
@@ -1033,8 +1032,7 @@ fn exact_byte_digests_keep_trailing_blank_line_and_final_newline_states_distinct
     // Binary-mode reads encode the final-newline state as a trailing empty
     // item, so the file identity reconstructs the exact bytes from that item.
     ensure!(
-        adapter.contains("readfile(a:path, 'b')")
-            && adapter.contains(r#"join(l:lines, "\n")"#),
+        adapter.contains("readfile(a:path, 'b')") && adapter.contains(r#"join(l:lines, "\n")"#),
         "file digest must hash raw binary-mode bytes reconstructed exactly"
     );
     Ok(())
@@ -1045,10 +1043,8 @@ fn hermetic_host_ci_triggers_on_the_production_formatter_crate() -> Result<()> {
     // perl-lsp-rs-core depends on perl-lsp-perltidy and invokes its native
     // formatter, so a PR changing only the formatter crate must re-run the
     // end-to-end save proof (#12763 thread 3864145182).
-    let workflow = fs::read_to_string(
-        repo_root().join(".github/workflows/vim-hermetic-host.yml"),
-    )
-    .context("reading .github/workflows/vim-hermetic-host.yml")?;
+    let workflow = fs::read_to_string(repo_root().join(".github/workflows/vim-hermetic-host.yml"))
+        .context("reading .github/workflows/vim-hermetic-host.yml")?;
     ensure!(
         workflow.contains("\"crates/perl-lsp-perltidy/**\""),
         "the hermetic host workflow path filter must include crates/perl-lsp-perltidy/**"
