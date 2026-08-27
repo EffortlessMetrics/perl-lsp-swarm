@@ -77,6 +77,7 @@ Task-focused instructions for common workflows (goal-oriented).
 - [Contributing LSP Features](how-to/CONTRIBUTING_LSP.md)
 - [Threading Configuration Guide](how-to/THREADING_CONFIGURATION_GUIDE.md)
 - [Performance Tuning](how-to/PERFORMANCE_TUNING.md)
+- [Multi-Worktree Build Caching](how-to/MULTI_WORKTREE_BUILD_CACHING.md)
 - [Security Development Guide](how-to/SECURITY_DEVELOPMENT_GUIDE.md)
 
 ### Reference
