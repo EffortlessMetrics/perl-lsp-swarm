@@ -534,10 +534,28 @@ fn candidate_needle(candidate: &Path) -> String {
     vim_host_runner::vim_path(candidate).to_string_lossy().into_owned()
 }
 
-/// Find every running process whose command line carries the exact candidate
-/// needle. On unix the `ps` probe reports full command lines; on Windows the
-/// CommandLine is read through PowerShell (tasklist exposes only image
-/// names, which cannot disambiguate two checkouts' candidates).
+/// Whether one observed `ps`-style command line is the exact serving server
+/// process: its argv[0] IS the exact candidate path (as the registration
+/// delivers it) and its argv carries the canonical `--stdio` transport
+/// argument. A substring match is not enough here — the supervising
+/// `cargo run ... --candidate <path>` and the `xtask` harness itself carry
+/// the same path in their own command lines, and killing the supervisor
+/// would abort the run instead of stimulating the server.
+pub fn unix_args_match_serving_server(args: &str, normalized_needle: &str) -> bool {
+    let tokens: Vec<&str> = args.split_whitespace().collect();
+    match tokens.first() {
+        Some(argv0) if argv0.to_lowercase().replace('\\', "/") == normalized_needle => {
+            tokens.iter().any(|token| *token == "--stdio")
+        }
+        _ => false,
+    }
+}
+
+/// Find every running process that is the exact serving server: argv[0]
+/// equal to the exact candidate path plus the canonical `--stdio`
+/// transport. On unix the `ps` probe reports full command lines; on Windows
+/// the process set is first name-filtered to `perllsp.exe` (tasklist exposes
+/// only image names) and then the same serving-command binding applies.
 fn find_candidate_pids(needle: &str) -> Result<Vec<u32>> {
     let normalized_needle = needle.to_lowercase().replace('\\', "/");
     if cfg!(windows) {
@@ -554,8 +572,7 @@ fn find_candidate_pids(needle: &str) -> Result<Vec<u32>> {
         let mut pids = Vec::new();
         for line in text.lines() {
             let Some((pid, command)) = line.split_once('|') else { continue };
-            let normalized_command = command.to_lowercase().replace('\\', "/");
-            if normalized_command.contains(&normalized_needle)
+            if unix_args_match_serving_server(command, &normalized_needle)
                 && let Ok(pid) = pid.trim().parse::<u32>()
             {
                 pids.push(pid);
@@ -576,8 +593,7 @@ fn find_candidate_pids(needle: &str) -> Result<Vec<u32>> {
         for line in text.lines() {
             let trimmed = line.trim_start();
             let Some((pid, args)) = trimmed.split_once(char::is_whitespace) else { continue };
-            let normalized_args = args.trim().to_lowercase().replace('\\', "/");
-            if normalized_args.contains(&normalized_needle)
+            if unix_args_match_serving_server(args.trim(), &normalized_needle)
                 && let Ok(pid) = pid.parse::<u32>()
             {
                 pids.push(pid);

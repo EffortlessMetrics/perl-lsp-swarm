@@ -600,6 +600,51 @@ fn shutdown_pending_must_precede_the_shutdown_barriers() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Stimulus matcher laws
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_stimulus_matcher_binds_only_the_serving_server_process() -> Result<()> {
+    use xtask::vim_host_recovery_run::unix_args_match_serving_server;
+    let needle = "/ws/target/debug/perllsp".to_string();
+    // The serving server: argv[0] is the exact candidate, stdio transport.
+    ensure!(
+        unix_args_match_serving_server("/ws/target/debug/perllsp --stdio", &needle),
+        "the serving server must match"
+    );
+    // The supervising cargo run carries the same path as the --candidate
+    // argument: a substring match would kill the supervisor (bot P1,
+    // review #12831).
+    ensure!(
+        !unix_args_match_serving_server(
+            "cargo run --quiet --locked -p xtask -- editor-compat vim run --candidate              /ws/target/debug/perllsp --out /ws/out",
+            &needle
+        ),
+        "the supervising cargo command line must not match"
+    );
+    // The xtask harness itself carries the path too.
+    ensure!(
+        !unix_args_match_serving_server(
+            "/ws/target/debug/xtask editor-compat vim run --candidate /ws/target/debug/perllsp",
+            &needle
+        ),
+        "the harness command line must not match"
+    );
+    // Another checkout's candidate at a different path never matches.
+    ensure!(
+        !unix_args_match_serving_server("/other/checkout/target/debug/perllsp --stdio", &needle),
+        "another checkout's server must not match"
+    );
+    // The exact candidate without the stdio transport is not the serving
+    // registration command.
+    ensure!(
+        !unix_args_match_serving_server("/ws/target/debug/perllsp --tcp", &needle),
+        "a non-stdio launch of the candidate must not match"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Wire mining laws
 // ---------------------------------------------------------------------------
 
