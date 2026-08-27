@@ -988,7 +988,7 @@ This closeout remains historical.\n";
     }
 
     #[test]
-    fn sync_release_notes_rejects_anchor_under_shipped_closeout() {
+    fn sync_release_notes_rejects_anchor_under_shipped_closeout() -> Result<()> {
         let input = "**Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta\n\
 **Workspace version line**: `v0.17.0`\n\
 **Published crate surface**: 32 crates\n\
@@ -1001,6 +1001,7 @@ This closeout remains historical.\n";
         if !error.to_string().contains("must be under `## Active Blockers`") {
             bail!("misplaced anchor returned the wrong diagnostic: {error}");
         }
+        Ok(())
     }
 
     #[test]
