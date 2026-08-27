@@ -1027,7 +1027,9 @@ fn probe_debuggee_perl_with_options(
             }
         }
     };
-    let _ = writer.join();
+    if writer.join().is_err() {
+        return Err(fail("probe success cleanup writer thread panicked".to_string()));
+    }
 
     // The child has exited, so its pipe write ends are closing and the reader
     // threads reach EOF almost immediately; the bounded collector exists only

@@ -91,6 +91,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod common;
+
 type ProofResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 const EXPLICIT_DAP_BINARY_ENV: &str = "PERL_DAP_TEST_BINARY";

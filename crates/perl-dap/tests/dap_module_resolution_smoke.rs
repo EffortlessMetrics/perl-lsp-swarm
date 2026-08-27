@@ -189,6 +189,10 @@ fn test_module_breakpoint_hit_status_receipt() -> TestResult {
     response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
     let _initialized = wait_for_event(&rx, "initialized", timeout)?;
 
+    let perl_path = common::resolve_launch_perl_path()
+        .map_err(|reason| format!("could not resolve the launch interpreter: {reason}"))?
+        .ok_or("the availability gate resolved no pipe-capable launch interpreter")?;
+
     // Launch the script (stopOnEntry so we can set breakpoints before execution begins)
     response_success(
         adapter.handle_request(
