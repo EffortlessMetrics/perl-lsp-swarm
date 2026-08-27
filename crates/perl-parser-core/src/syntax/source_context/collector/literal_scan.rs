@@ -174,15 +174,29 @@ fn starts_heredoc_label(rest: &str) -> bool {
 /// still found. Stopping at the first `<<` there yields the label `b`, which
 /// never closes.
 ///
-/// The state machine is deliberately small — `'`/`"` pairs plus backslash
-/// escapes inside them. `q{}`/`qq{}`/`qw{}`, regex delimiters, and the
-/// deprecated `$pkg'var` separator are not modelled, so a construct like
-/// `qr/it's fine/` leaves an odd `'` behind and would hide a real opener later
-/// on the same line. Rather than trade one wrong answer for another, an
-/// unterminated quote at end of line marks the tracking untrustworthy for this
-/// line and defers to [`legacy_heredoc_marker`]. Lines whose quotes close
-/// cleanly — the case #5456 reports — get the guard; every other line keeps
-/// exactly the behaviour it had before, so the change is one-directional.
+/// # Trusting the quote state
+///
+/// The machine is deliberately small: `'`/`"` pairs plus backslash escapes
+/// inside them. It therefore has to know when it is out of its depth, because
+/// wrongly *skipping* a real opener is as much a defect as wrongly taking one.
+/// Two signals send the line to [`legacy_heredoc_marker`], which answers
+/// exactly as the pre-#5456 code did:
+///
+/// 1. A quote-like operator or bare regex starts on the line. Its delimiters
+///    are not modelled here, so any quote inside it is misread — `qr/it's/`
+///    looks like an opening `'`. Detecting the *construct* rather than
+///    counting quotes is what makes this sound: on
+///    `my $r = qr/it's/; print <<END if qr/don't/;` the two stray apostrophes
+///    cancel and the line finishes balanced, so end-of-line balance alone
+///    would have wrongly certified it and hidden a real opener.
+/// 2. The line ends inside a quote, which means either a genuine multi-line
+///    string or some other construct the machine cannot read.
+///
+/// What remains unmodelled is the deprecated `$pkg'var` package separator: an
+/// even number of those on one line still finishes balanced with no quote-like
+/// operator in play, and would hide a real opener. That failure is in the safe
+/// direction — a heredoc body classified as `Code` rather than the whole file
+/// swallowed as `Heredoc` — and is pinned by test.
 fn unquoted_heredoc_marker(line: &str) -> Option<usize> {
     let bytes = line.as_bytes();
     let mut in_single = false;
@@ -193,6 +207,9 @@ fn unquoted_heredoc_marker(line: &str) -> Option<usize> {
         if byte == b'\\' && (in_single || in_double) {
             index += 2; // skip escaped char
             continue;
+        }
+        if !in_single && !in_double && starts_unmodelled_quote_like(bytes, index) {
+            return legacy_heredoc_marker(line);
         }
         match byte {
             b'\'' if !in_double => in_single = !in_single,
@@ -212,6 +229,21 @@ fn unquoted_heredoc_marker(line: &str) -> Option<usize> {
         return legacy_heredoc_marker(line);
     }
     None
+}
+
+/// Whether a quote-like operator (`q`/`qq`/`qw`/`qx`/`qr`/`m`/`s`/`y`/`tr`) or
+/// a bare regex opens at `index`, using the same detectors the literal scan
+/// already relies on.
+///
+/// The byte pre-filter keeps this off the hot path: only those operator
+/// initials and `/` can start one, so ordinary source pays one comparison per
+/// byte rather than two lookaround probes.
+fn starts_unmodelled_quote_like(bytes: &[u8], index: usize) -> bool {
+    match bytes.get(index) {
+        Some(b'q' | b'm' | b's' | b'y' | b't') => quote_like_literal_start(bytes, index).is_some(),
+        Some(b'/') => slash_regex_literal_start(bytes, index).is_some(),
+        _ => false,
+    }
 }
 
 /// The pre-#5456 marker rule: the first `<<` on the line, unless an unquoted
@@ -1713,6 +1745,86 @@ mod tests {
             scan_heredoc_regions(source).is_empty(),
             "a quoted `<<` must not open a heredoc region: {:?}",
             scan_heredoc_regions(source)
+        );
+    }
+
+    #[test]
+    fn quote_like_construct_sends_the_line_to_the_legacy_rule() {
+        // #12934 review (P2): the two stray apostrophes in `it's` and `don't`
+        // cancel, so the line finishes *balanced* while the quote state was
+        // never trustworthy. End-of-line balance alone would certify it and
+        // hide a real opener. Verified against `perl`: this line does open a
+        // heredoc whose body is the next line.
+        assert_eq!(
+            super::heredoc_opener_on_line("my $r = qr/it's/; print <<END if qr/don't/;"),
+            Some(("END".to_string(), false)),
+            "an even number of stray quotes must not certify the line"
+        );
+        // The region-level consequence: the body must be a heredoc, not code.
+        let source = "my $r = qr/it's/; print <<END if qr/don't/;\nbody\nEND\ntail();\n";
+        let regions = scan_heredoc_regions(source);
+        assert_eq!(regions.len(), 1, "one heredoc body expected: {regions:?}");
+        assert!(
+            regions[0].end < source.len(),
+            "the body must close at END, not run to EOF: {regions:?}"
+        );
+        // A bare regex is detected the same way. Note what falling back really
+        // buys: the legacy rule, holes included. Here legacy reads the `#`
+        // inside the regex as a comment marker and suppresses the opener. That
+        // is the pre-#5456 answer, unchanged — this PR neither fixes nor
+        // worsens it.
+        assert_eq!(
+            super::heredoc_opener_on_line("$x =~ /a#b/; print <<EOF;"),
+            None,
+            "falling back inherits the legacy rule exactly, including its holes"
+        );
+    }
+
+    #[test]
+    fn quote_like_detection_does_not_fire_on_ordinary_code() {
+        // The fallback must stay narrow. `my`, `print`, `$s`, and a fat-comma
+        // `s` key all begin with bytes the pre-filter admits, so if any were
+        // mistaken for a quote-like operator the #5456 guard would silently
+        // stop applying and these would regress to phantom openers.
+        assert_eq!(
+            super::heredoc_opener_on_line("my $s = \"a << EOF\"; print 1;"),
+            None,
+            "`my`/`$s` must not be read as quote-like operators"
+        );
+        assert_eq!(
+            super::heredoc_opener_on_line("my %h = (s => 1, y => 2); print '<<END';"),
+            None,
+            "fat-comma barewords must not be read as quote-like operators"
+        );
+    }
+
+    /// The remaining unmodelled construct, pinned so it is a reviewed boundary
+    /// rather than an accident.
+    ///
+    /// The deprecated `$pkg'var` separator (still accepted by perl 5.38) is
+    /// not a quote-like operator, so nothing sends the line to the legacy
+    /// rule. When a real `<<` falls *between* two such separators it sits in a
+    /// spurious quote span and the line still finishes balanced, so the guard
+    /// applies and the opener is missed. Verified against `perl`: the first
+    /// line below does open a heredoc.
+    ///
+    /// The failure is in the safe direction — a body classified `Code` rather
+    /// than the whole file swallowed as `Heredoc` — which is why it is
+    /// recorded rather than patched with a heuristic that cannot distinguish
+    /// `$main'x` from `print'x'`.
+    #[test]
+    fn package_separator_apostrophes_remain_unmodelled() {
+        assert_eq!(
+            super::heredoc_opener_on_line("my $a = $main'v; print <<EOF if $main'w;"),
+            None,
+            "known boundary: an opener inside a spurious separator span is missed"
+        );
+        // Separators that both fall *before* the opener leave the state
+        // outside quotes again, so that shape is unaffected.
+        assert_eq!(
+            super::heredoc_opener_on_line("my $a = $main'x; my $b = $foo'z; print <<EOF;"),
+            Some(("EOF".to_string(), false)),
+            "an opener after a closed separator pair is still found"
         );
     }
 
