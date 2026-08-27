@@ -6,8 +6,10 @@
 //! SHAs, proof verdicts, readiness, assignees or leases, completion estimates,
 //! or model routing; those belong to #11698/#11699 projections keyed to this
 //! graph. Validation therefore fails closed on mutable-state leakage, unknown
-//! fields, unknown edge/profile semantics, incomplete or split fan-in
-//! denominators, unordered exclusive writers, hardened optional-live edges,
+//! fields, unknown edge/profile semantics, duplicate registry identities,
+//! artifact-owner or authority-input misbinding, incomplete or split fan-in
+//! denominators, unordered exclusive writers, scheduling cycles over the
+//! combined hard/parallel-after relation, hardened optional-live edges,
 //! retirement without a resolvable declared predecessor exit, and controllers
 //! outside the controller class, and normalizes deterministically to
 //! byte-identical output.
@@ -23,8 +25,13 @@
 //!
 //! Exit contract: 0 = valid (and projection current under `check`), 2 = typed
 //! rejection or projection drift, 3 = instrument failure (unreadable or
-//! syntactically malformed input never resolves to a valid graph; under
-//! `check` an instrument failure takes precedence over any typed rejection).
+//! syntactically malformed input never resolves to a valid graph). Every
+//! surface maps the two failure shapes explicitly: a well-formed document that
+//! violates schema or policy is a typed exit-2 rejection on `check`, `graph`,
+//! `explain`, and `normalized-manifest` alike; only read/syntax breakage is an
+//! instrument failure. Under `check` an instrument failure takes precedence
+//! over any typed rejection, and instrument failures never count as
+//! rejections.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -150,6 +157,10 @@ enum Code {
     StateLeakage,
     EmbeddedDomainPolicy,
     DuplicateNodeId,
+    DuplicateFalsifierId,
+    DuplicateEvidenceProfile,
+    DuplicateOperationProfile,
+    DuplicateRail,
     UnknownRail,
     ControllerReferenceUnknown,
     ControllerKindMismatch,
@@ -159,10 +170,11 @@ enum Code {
     LeafMissingFirstFalsifier,
     LeafMissingHandoff,
     UnknownProfile,
-    ArtifactOwnerUnknown,
+    ArtifactOwnerMismatch,
     ArtifactIdMultiOwner,
     AuthorityOutputMultiOwner,
     AuthorityInputUnowned,
+    AuthorityInputUnrelated,
     UnknownEdgeTarget,
     HandoffTargetUnknown,
     ConsumerWithoutAcceptedStore,
@@ -173,6 +185,7 @@ enum Code {
     PredecessorConsumerUnknown,
     OptionalEdgePromotedHard,
     ParallelExclusiveConflict,
+    ParallelScheduleCycle,
     HardDependencyCycle,
     ProjectionDrift,
 }
@@ -184,6 +197,10 @@ impl Code {
             Self::StateLeakage => "STATE_LEAKAGE",
             Self::EmbeddedDomainPolicy => "EMBEDDED_DOMAIN_POLICY",
             Self::DuplicateNodeId => "DUPLICATE_NODE_ID",
+            Self::DuplicateFalsifierId => "DUPLICATE_FALSIFIER_ID",
+            Self::DuplicateEvidenceProfile => "DUPLICATE_EVIDENCE_PROFILE",
+            Self::DuplicateOperationProfile => "DUPLICATE_OPERATION_PROFILE",
+            Self::DuplicateRail => "DUPLICATE_RAIL",
             Self::UnknownRail => "UNKNOWN_RAIL",
             Self::ControllerReferenceUnknown => "CONTROLLER_REFERENCE_UNKNOWN",
             Self::ControllerKindMismatch => "CONTROLLER_KIND_MISMATCH",
@@ -193,10 +210,11 @@ impl Code {
             Self::LeafMissingFirstFalsifier => "LEAF_MISSING_FIRST_FALSIFIER",
             Self::LeafMissingHandoff => "LEAF_MISSING_HANDOFF",
             Self::UnknownProfile => "UNKNOWN_PROFILE",
-            Self::ArtifactOwnerUnknown => "ARTIFACT_OWNER_UNKNOWN",
+            Self::ArtifactOwnerMismatch => "ARTIFACT_OWNER_MISMATCH",
             Self::ArtifactIdMultiOwner => "ARTIFACT_ID_MULTI_OWNER",
             Self::AuthorityOutputMultiOwner => "AUTHORITY_OUTPUT_MULTI_OWNER",
             Self::AuthorityInputUnowned => "AUTHORITY_INPUT_UNOWNED",
+            Self::AuthorityInputUnrelated => "AUTHORITY_INPUT_UNRELATED",
             Self::UnknownEdgeTarget => "UNKNOWN_EDGE_TARGET",
             Self::HandoffTargetUnknown => "HANDOFF_TARGET_UNKNOWN",
             Self::ConsumerWithoutAcceptedStore => "CONSUMER_WITHOUT_ACCEPTED_STORE",
@@ -209,6 +227,7 @@ impl Code {
             Self::PredecessorConsumerUnknown => "PREDECESSOR_CONSUMER_UNKNOWN",
             Self::OptionalEdgePromotedHard => "OPTIONAL_EDGE_PROMOTED_HARD",
             Self::ParallelExclusiveConflict => "PARALLEL_EXCLUSIVE_CONFLICT",
+            Self::ParallelScheduleCycle => "PARALLEL_SCHEDULE_CYCLE",
             Self::HardDependencyCycle => "HARD_DEPENDENCY_CYCLE",
             Self::ProjectionDrift => "PROJECTION_DRIFT",
         }
@@ -458,8 +477,39 @@ struct NormalizedPredecessorExit {
 
 fn main() {
     if let Err(error) = run_cli() {
-        eprintln!("INSTRUMENT_FAILURE authority-transfer-graph: {error}");
-        exit(EXIT_NOT_PROVEN);
+        match error.downcast::<CliRejection>() {
+            Ok(rejection) => {
+                report_rejections(&rejection.0);
+                exit(EXIT_REJECTED);
+            }
+            Err(error) => {
+                eprintln!("INSTRUMENT_FAILURE authority-transfer-graph: {error}");
+                exit(EXIT_NOT_PROVEN);
+            }
+        }
+    }
+}
+
+/// A well-formed graph document that violates schema or policy. This is a
+/// typed exit-2 rejection on every CLI surface, never an instrument failure.
+#[derive(Debug)]
+struct CliRejection(Vec<Violation>);
+
+impl std::fmt::Display for CliRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "rejected: {}",
+            self.0.iter().map(|v| v.code.as_str()).collect::<Vec<_>>().join(",")
+        )
+    }
+}
+
+impl std::error::Error for CliRejection {}
+
+fn report_rejections(violations: &[Violation]) {
+    for violation in violations {
+        eprintln!("{} {} {}", violation.code.as_str(), violation.subject, violation.detail);
     }
 }
 
@@ -476,16 +526,20 @@ fn run_cli() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         Command::Graph { manifest } => {
-            let graph =
-                load_graph(root.join(manifest.unwrap_or_else(|| PathBuf::from(DEFAULT_MANIFEST))))?;
-            reject_or_continue(&validate(&graph));
+            let path = root.join(manifest.unwrap_or_else(|| PathBuf::from(DEFAULT_MANIFEST)));
+            let graph = read_surface_graph(&path)?;
+            if report_if_rejected(&validate(&graph)) {
+                exit(EXIT_REJECTED);
+            }
             println!("{}", graph_summary(&normalize(&graph)));
             Ok(())
         }
         Command::Explain { node_id, manifest } => {
-            let graph =
-                load_graph(root.join(manifest.unwrap_or_else(|| PathBuf::from(DEFAULT_MANIFEST))))?;
-            reject_or_continue(&validate(&graph));
+            let path = root.join(manifest.unwrap_or_else(|| PathBuf::from(DEFAULT_MANIFEST)));
+            let graph = read_surface_graph(&path)?;
+            if report_if_rejected(&validate(&graph)) {
+                exit(EXIT_REJECTED);
+            }
             match render_explain(&graph, &node_id) {
                 Some(rendered) => {
                     println!("{rendered}");
@@ -498,23 +552,25 @@ fn run_cli() -> Result<(), Box<dyn Error>> {
             }
         }
         Command::NormalizedManifest { manifest } => {
-            let graph =
-                load_graph(root.join(manifest.unwrap_or_else(|| PathBuf::from(DEFAULT_MANIFEST))))?;
-            reject_or_continue(&validate(&graph));
+            let path = root.join(manifest.unwrap_or_else(|| PathBuf::from(DEFAULT_MANIFEST)));
+            let graph = read_surface_graph(&path)?;
+            if report_if_rejected(&validate(&graph)) {
+                exit(EXIT_REJECTED);
+            }
             print!("{}", normalized_json(&graph));
             Ok(())
         }
     }
 }
 
-fn reject_or_continue(violations: &[Violation]) {
+/// Reports typed violations on stderr. Returns true when the caller must exit
+/// with the typed-rejection status instead of continuing.
+fn report_if_rejected(violations: &[Violation]) -> bool {
     if violations.is_empty() {
-        return;
+        return false;
     }
-    for violation in violations {
-        eprintln!("{} {} {}", violation.code.as_str(), violation.subject, violation.detail);
-    }
-    exit(EXIT_REJECTED);
+    report_rejections(violations);
+    true
 }
 
 fn run_check(manifest: PathBuf, fixtures_dir: PathBuf, generated: PathBuf) {
@@ -524,7 +580,8 @@ fn run_check(manifest: PathBuf, fixtures_dir: PathBuf, generated: PathBuf) {
     match read_bounded(&manifest, MAX_GRAPH_BYTES, "stable programme graph") {
         Ok(raw) => match parse_graph_document(&raw) {
             Err(syntax_error) => {
-                rejected = true;
+                // Read/syntax breakage is an instrument failure, never a typed
+                // rejection; instrument failure takes precedence at exit.
                 instrument_failure = true;
                 println!(
                     "FAIL stable-programme-graph instrument failure: parsing {}: {syntax_error}",
@@ -561,7 +618,6 @@ fn run_check(manifest: PathBuf, fixtures_dir: PathBuf, generated: PathBuf) {
             }
         },
         Err(error) => {
-            rejected = true;
             instrument_failure = true;
             println!("FAIL stable-programme-graph instrument failure: {error}");
         }
@@ -577,7 +633,6 @@ fn run_check(manifest: PathBuf, fixtures_dir: PathBuf, generated: PathBuf) {
                         report_check_rows(&path.display().to_string(), &rows);
                     }
                     Err(FixtureError::Instrument(error)) => {
-                        rejected = true;
                         instrument_failure = true;
                         println!("FAIL {} instrument failure: {error}", path.display());
                     }
@@ -585,7 +640,6 @@ fn run_check(manifest: PathBuf, fixtures_dir: PathBuf, generated: PathBuf) {
             }
         }
         Err(error) => {
-            rejected = true;
             instrument_failure = true;
             println!("FAIL fixtures inventory: {error}");
         }
@@ -630,25 +684,36 @@ fn read_bounded(path: &Path, limit: u64, what: &str) -> Result<Vec<u8>, io::Erro
         .map_err(|error| io::Error::other(format!("reading {what} {}: {error}", path.display())))
 }
 
-fn load_graph(path: PathBuf) -> Result<ProgrammeGraph, Box<dyn Error>> {
-    load_graph_result(&path).map_err(Into::into)
+/// Failure shape for the read surfaces. Instrument covers unreadable or
+/// syntactically malformed input; Rejected covers a well-formed document that
+/// violates schema, state-leakage policy, or node-key policy.
+enum LoadFailure {
+    Instrument(io::Error),
+    Rejected(Vec<Violation>),
 }
 
-fn load_graph_result(path: &Path) -> Result<ProgrammeGraph, io::Error> {
-    let raw = read_bounded(path, MAX_GRAPH_BYTES, "stable programme graph")?;
-    parse_graph_document(&raw)
-        .map_err(|error| io::Error::other(format!("parsing {}: {error}", path.display())))?
-        .map_err(|violations| {
-            io::Error::other(format!(
-                "{} rejected: {}",
-                path.display(),
-                violations
-                    .iter()
-                    .map(|violation| violation.code.as_str())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ))
-        })
+/// Loads a graph for `graph` / `explain` / `normalized-manifest`, mapping a
+/// typed document rejection onto the exit-2 surface instead of erasing it
+/// into an instrument failure.
+fn read_surface_graph(path: &Path) -> Result<ProgrammeGraph, Box<dyn Error>> {
+    match load_graph_or_reject(path) {
+        Ok(graph) => Ok(graph),
+        Err(LoadFailure::Rejected(violations)) => Err(Box::new(CliRejection(violations))),
+        Err(LoadFailure::Instrument(error)) => Err(error.into()),
+    }
+}
+
+fn load_graph_or_reject(path: &Path) -> Result<ProgrammeGraph, LoadFailure> {
+    let raw = read_bounded(path, MAX_GRAPH_BYTES, "stable programme graph")
+        .map_err(LoadFailure::Instrument)?;
+    match parse_graph_document(&raw) {
+        Err(syntax_error) => Err(LoadFailure::Instrument(io::Error::other(format!(
+            "parsing {}: {syntax_error}",
+            path.display()
+        )))),
+        Ok(Ok(graph)) => Ok(graph),
+        Ok(Err(violations)) => Err(LoadFailure::Rejected(violations)),
+    }
 }
 
 /// Parse a stable graph document. Syntactic breakage is an instrument error;
@@ -773,6 +838,50 @@ fn validate(graph: &ProgrammeGraph) -> Vec<Violation> {
         ));
     }
 
+    // Registry IDs are canonical keys. Silent set-insertion would accept
+    // duplicate rails, profiles, and falsifier rows and let normalization
+    // keep whichever duplicate row appears last, so every registry identity
+    // must be unique before reference validation runs.
+    fn repeated<'a>(rows: impl Iterator<Item = &'a String>) -> Vec<&'a str> {
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for row in rows {
+            *counts.entry(row.as_str()).or_default() += 1;
+        }
+        counts.into_iter().filter(|(_, count)| *count > 1).map(|(id, _)| id).collect()
+    }
+
+    for rail in repeated(graph.rails.iter()) {
+        violations.push(Violation::new(
+            Code::DuplicateRail,
+            rail,
+            format!("rail `{rail}` is declared more than once"),
+        ));
+    }
+    for profile in repeated(graph.operation_profiles.iter()) {
+        violations.push(Violation::new(
+            Code::DuplicateOperationProfile,
+            profile,
+            format!("operation profile `{profile}` is registered more than once"),
+        ));
+    }
+    for profile in repeated(graph.evidence_profiles.iter()) {
+        violations.push(Violation::new(
+            Code::DuplicateEvidenceProfile,
+            profile,
+            format!("evidence profile `{profile}` is registered more than once"),
+        ));
+    }
+    for falsifier in repeated(graph.first_falsifiers.iter().map(|falsifier| &falsifier.id)) {
+        violations.push(Violation::new(
+            Code::DuplicateFalsifierId,
+            falsifier,
+            format!(
+                "first falsifier `{falsifier}` is registered with competing statements; \
+                 normalization would silently keep the last row"
+            ),
+        ));
+    }
+
     let mut artifact_owners: BTreeMap<&str, &str> = BTreeMap::new();
     let mut authority_owners: BTreeMap<&str, &str> = BTreeMap::new();
 
@@ -864,12 +973,15 @@ fn validate(graph: &ProgrammeGraph) -> Vec<Violation> {
         }
 
         for artifact in &node.artifacts {
-            if !known(artifact.owner.as_str()) {
+            // Ownership is indexed under the declaring node's stable ID, so a
+            // declaration naming any other node — known or not — would emit a
+            // normalized graph whose owner contradicts the uniqueness law.
+            if artifact.owner != id {
                 violations.push(Violation::new(
-                    Code::ArtifactOwnerUnknown,
+                    Code::ArtifactOwnerMismatch,
                     id,
                     format!(
-                        "artifact `{}` names undeclared owner `{}`",
+                        "artifact `{}` declares owner `{}`, but ownership binds to the declaring node",
                         artifact.id, artifact.owner
                     ),
                 ));
@@ -1011,14 +1123,38 @@ fn validate(graph: &ProgrammeGraph) -> Vec<Violation> {
         }
     }
 
-    // Every authority anybody consumes must have exactly one owner.
+    // Every authority anybody consumes must have exactly one owner, and the
+    // consumer must be joined to that owner through a dependency-carrying
+    // relationship (hard, evidence, or fan-in). Global existence alone would
+    // let the topology and the authority projection contradict each other.
+    // Optional edges are excluded because optional observation may never be a
+    // prerequisite, and parallel_after is pure ordering, not dependence. A
+    // node consuming its own output is exempt from the join requirement.
     for node in &graph.nodes {
         for input in &node.authority_inputs {
-            if !authority_owners.contains_key(input.as_str()) {
+            let Some(owner_id) = authority_owners.get(input.as_str()) else {
                 violations.push(Violation::new(
                     Code::AuthorityInputUnowned,
                     node.node_id.clone(),
                     format!("authority input `{input}` has no owning node"),
+                ));
+                continue;
+            };
+            let joined = *owner_id == node.node_id.as_str()
+                || node
+                    .edges
+                    .hard
+                    .iter()
+                    .chain(&node.edges.evidence)
+                    .chain(&node.edges.fan_in)
+                    .any(|target| target == owner_id);
+            if !joined {
+                violations.push(Violation::new(
+                    Code::AuthorityInputUnrelated,
+                    node.node_id.clone(),
+                    format!(
+                        "authority input `{input}` is owned by `{owner_id}`, but no hard/evidence/fan-in edge joins this node to it"
+                    ),
                 ));
             }
         }
@@ -1066,8 +1202,8 @@ fn validate(graph: &ProgrammeGraph) -> Vec<Violation> {
     }
 
     violations.extend(parallel_exclusive_conflicts(graph, &index, &duplicated));
-    if let Some((member, detail)) = hard_cycle(&graph.nodes) {
-        violations.push(Violation::new(Code::HardDependencyCycle, member, detail));
+    if let Some((code, member, detail)) = scheduling_cycle(&graph.nodes) {
+        violations.push(Violation::new(code, member, detail));
     }
 
     violations
@@ -1141,14 +1277,28 @@ fn reaches(adjacency: &BTreeMap<&str, BTreeSet<&str>>, from: &str, to: &str) -> 
     false
 }
 
-/// Iterative three-color cycle search over hard edges only.
-fn hard_cycle(nodes: &[Node]) -> Option<(String, String)> {
-    let mut adjacency: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+/// Iterative three-color cycle search over the combined scheduling relation
+/// used by `parallel_exclusive_conflicts`: hard dependencies plus
+/// parallel-after ordering. A cycle in either class — or across both —
+/// authorizes an impossible serialization schedule, so the closing edge's
+/// class selects the reported code.
+fn scheduling_cycle(nodes: &[Node]) -> Option<(Code, String, String)> {
+    #[derive(Clone, Copy)]
+    enum EdgeClass {
+        Hard,
+        ParallelAfter,
+    }
+
+    let mut adjacency: BTreeMap<&str, Vec<(&str, EdgeClass)>> = BTreeMap::new();
     for node in nodes {
-        adjacency
-            .entry(node.node_id.as_str())
-            .or_default()
-            .extend(node.edges.hard.iter().map(String::as_str));
+        let entry = adjacency.entry(node.node_id.as_str()).or_default();
+        entry.extend(node.edges.hard.iter().map(|target| (target.as_str(), EdgeClass::Hard)));
+        entry.extend(
+            node.edges
+                .parallel_after
+                .iter()
+                .map(|target| (target.as_str(), EdgeClass::ParallelAfter)),
+        );
     }
 
     #[derive(Clone, Copy, PartialEq)]
@@ -1169,16 +1319,23 @@ fn hard_cycle(nodes: &[Node]) -> Option<(String, String)> {
             let nexts = adjacency.get(current).cloned().unwrap_or_default();
             if position < nexts.len() {
                 stack.push((current, position + 1));
-                let next = nexts[position];
+                let (next, class) = nexts[position];
                 match color.get(next).copied().unwrap_or(Color::Black) {
                     Color::White => {
                         color.insert(next, Color::Grey);
                         stack.push((next, 0));
                     }
                     Color::Grey => {
+                        let (code, label) = match class {
+                            EdgeClass::Hard => (Code::HardDependencyCycle, "hard"),
+                            EdgeClass::ParallelAfter => {
+                                (Code::ParallelScheduleCycle, "parallel_after")
+                            }
+                        };
                         return Some((
+                            code,
                             next.to_string(),
-                            format!("hard edge back into `{current}`"),
+                            format!("{label} edge back into `{current}`"),
                         ));
                     }
                     Color::Black => {}
@@ -1519,12 +1676,15 @@ mod tests {
         }
     }
 
-    const INVALID_FIXTURES: [(&str, &str); 21] = [
-        ("invalid-artifact-unowned.json", "ARTIFACT_OWNER_UNKNOWN"),
+    const INVALID_FIXTURES: [(&str, &str); 25] = [
+        ("invalid-artifact-owner-foreign.json", "ARTIFACT_OWNER_MISMATCH"),
+        ("invalid-artifact-unowned.json", "ARTIFACT_OWNER_MISMATCH"),
+        ("invalid-authority-input-unrelated.json", "AUTHORITY_INPUT_UNRELATED"),
         ("invalid-consumer-before-accepted-store.json", "CONSUMER_WITHOUT_ACCEPTED_STORE"),
         ("invalid-controller-buildable.json", "CONTROLLER_MARKED_BUILDABLE"),
         ("invalid-controller-kind-mismatch.json", "CONTROLLER_KIND_MISMATCH"),
         ("invalid-current-state-leak.json", "STATE_LEAKAGE"),
+        ("invalid-duplicate-falsifier-reversed-order.json", "DUPLICATE_FALSIFIER_ID"),
         ("invalid-duplicate-node-id.json", "DUPLICATE_NODE_ID"),
         ("invalid-fanin-denominator-missing-consumer.json", "FANIN_DENOMINATOR_INCOMPLETE"),
         ("invalid-fanin-denominator-split.json", "FANIN_DENOMINATOR_INCOMPLETE"),
@@ -1534,6 +1694,7 @@ mod tests {
         ("invalid-live-without-advisory.json", "LIVE_ENFORCEMENT_BEFORE_ADVISORY_AUTHORITY"),
         ("invalid-multi-owner-authority.json", "AUTHORITY_OUTPUT_MULTI_OWNER"),
         ("invalid-optional-live-hardened.json", "OPTIONAL_EDGE_PROMOTED_HARD"),
+        ("invalid-parallel-after-cycle.json", "PARALLEL_SCHEDULE_CYCLE"),
         ("invalid-parallel-shared-catalog-writers.json", "PARALLEL_EXCLUSIVE_CONFLICT"),
         ("invalid-retirement-predecessor-unresolved.json", "PREDECESSOR_IDENTITY_UNRESOLVED"),
         ("invalid-retirement-without-exit.json", "RETIREMENT_WITHOUT_PREDECESSOR_EXIT"),
@@ -1542,6 +1703,19 @@ mod tests {
         ("invalid-unknown-schema-field.json", "SCHEMA_REJECTION"),
         ("invalid-unowned-authority-input.json", "AUTHORITY_INPUT_UNOWNED"),
     ];
+
+    /// External pin: each compile-time row must equal the envelope's own
+    /// expectation, otherwise updating a fixture's `expected_code` to whatever
+    /// the validator currently emits would silently pass this inventory.
+    #[test]
+    fn external_fixture_pins_match_envelope_expectations() -> Result<(), Box<dyn Error>> {
+        for (name, pinned) in INVALID_FIXTURES {
+            let raw = fs::read(fixture_path(name)?)?;
+            let envelope: FixtureEnvelope = serde_json::from_slice(&raw)?;
+            assert_eq!(envelope.expected_code, pinned, "external pin drift for fixture {name}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn every_shift_left_fixture_rejects_for_one_exact_typed_reason() -> Result<(), Box<dyn Error>> {
@@ -1628,6 +1802,51 @@ mod tests {
             parse_graph_document(truncated).is_err(),
             "syntactic breakage must be an instrument error, never a valid graph"
         );
+    }
+
+    /// Direct CLI control: syntactically broken JSON stays an instrument
+    /// failure (exit 3) and never becomes a typed rejection.
+    #[test]
+    fn read_surface_classifies_malformed_json_as_instrument_failure() -> Result<(), Box<dyn Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("malformed.v1.json");
+        fs::write(&path, b"{\"schema_version\": \"authority_transfer_pro")?;
+        match load_graph_or_reject(&path) {
+            Err(LoadFailure::Instrument(_)) => Ok(()),
+            Err(LoadFailure::Rejected(violations)) => Err(io::Error::other(format!(
+                "malformed JSON must not classify as rejection: {:?}",
+                violations.iter().map(|v| v.code.as_str()).collect::<Vec<_>>()
+            ))
+            .into()),
+            Ok(_) => Err(io::Error::other("malformed JSON resolved to a valid graph").into()),
+        }
+    }
+
+    /// Direct CLI control: a well-formed document that violates the schema is
+    /// a typed exit-2 rejection on the read surfaces, never an instrument
+    /// failure.
+    #[test]
+    fn read_surface_classifies_well_formed_rejection_as_typed() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("wrong-schema.v1.json");
+        fs::write(&path, br#"{"schema_version": "authority_transfer_programme_fixture.v1"}"#)?;
+        match load_graph_or_reject(&path) {
+            Err(LoadFailure::Rejected(violations)) => {
+                assert_eq!(violations.len(), 1);
+                assert_eq!(
+                    violations[0].code.as_str(),
+                    "SCHEMA_REJECTION",
+                    "well-formed wrong-schema documents must reject typed"
+                );
+                Ok(())
+            }
+            Err(LoadFailure::Instrument(error)) => {
+                Err(io::Error::other(format!("typed rejection erased as instrument: {error}"))
+                    .into())
+            }
+            Ok(_) => Err(io::Error::other("schema-violating document accepted").into()),
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 {
   "schema_version": "authority_transfer_programme_fixture.v1",
-  "description": "Shift-left defect: a consumer cutover carries no hard dependency on any accepted_store node (#11697 static rejection case). The cutover keeps an evidence-level join to the accepted store's owner, so the sole rejection reason stays CONSUMER_WITHOUT_ACCEPTED_STORE and the authority-input binding rule is exercised elsewhere.",
-  "expected_code": "CONSUMER_WITHOUT_ACCEPTED_STORE",
+  "description": "Static rejection: the consumed authority output has an owner, but the consuming node's dependency was swapped onto an unrelated third node, leaving topology and authority projection contradictory.",
+  "expected_code": "AUTHORITY_INPUT_UNRELATED",
   "graph": {
     "schema_version": "authority_transfer_programme_graph.v1",
     "programme_issue": 11696,
@@ -10,36 +10,16 @@
     ],
     "operation_profiles": [
       "op.programme-controller.v1",
-      "op.static-contract.v1",
-      "op.consumer-cutover.v1",
-      "op.fanin-integration.v1",
-      "op.store-publication.v1",
-      "op.advisory-preflight.v1",
-      "op.live-promotion.v1",
-      "op.retirement.v1",
-      "op.source-adapter.v1",
-      "op.compiler-implementation.v1"
+      "op.static-contract.v1"
     ],
     "evidence_profiles": [
       "ev.not-applicable.v1",
-      "ev.static-validator.v1",
-      "ev.consumer-denominator.v1",
-      "ev.exact-process-receipt.v1",
-      "ev.live-required-promotion.v1",
-      "ev.predecessor-retired.v1"
+      "ev.static-validator.v1"
     ],
     "first_falsifiers": [
       {
         "id": "FF02",
         "statement": "Governance becomes buildable."
-      },
-      {
-        "id": "FF05",
-        "statement": "Consumer denominator row lost."
-      },
-      {
-        "id": "FF07",
-        "statement": "Optional live edge hardened."
       },
       {
         "id": "FF08",
@@ -50,12 +30,8 @@
         "statement": "File-only serialization."
       },
       {
-        "id": "FF10",
-        "statement": "Retirement without exit."
-      },
-      {
         "id": "FF12",
-        "statement": "Artifact without owner."
+        "statement": "Artifact ownership decouples from the declaring node."
       }
     ],
     "nodes": [
@@ -83,7 +59,7 @@
           "exclusive": [],
           "shared": []
         },
-        "claim_ceiling": "One bounded proposition.",
+        "claim_ceiling": "Governance roof.",
         "non_claims": [
           "None beyond the claim ceiling."
         ],
@@ -91,15 +67,15 @@
         "artifacts": [],
         "predecessor_exit": null,
         "handoff": null,
-        "terminal_relation": "none"
+        "terminal_relation": "advance_controller"
       },
       {
-        "node_id": "AS",
-        "issue": 900002,
-        "controller": "K0",
+        "node_id": "OW1",
+        "issue": 930001,
+        "controller": null,
         "rail": "control_plane",
         "phase": "fixture",
-        "kind": "accepted_store",
+        "kind": "contract",
         "buildable": true,
         "observation_optional": false,
         "edges": {
@@ -114,107 +90,80 @@
         "authority_inputs": [],
         "authority_outputs": [
           {
-            "key": "m.store",
+            "key": "auth.k",
             "mode": "exclusive"
           }
         ],
         "conflicts": {
-          "exclusive": [
-            "m.store"
-          ],
+          "exclusive": [],
           "shared": []
         },
         "claim_ceiling": "One bounded proposition.",
         "non_claims": [
           "None beyond the claim ceiling."
         ],
-        "first_falsifier": "FF02",
-        "artifacts": [
-          {
-            "id": "m.store.pub",
-            "owner": "AS"
-          }
-        ],
+        "first_falsifier": "FF12",
+        "artifacts": [],
         "predecessor_exit": null,
-        "handoff": "CU",
+        "handoff": "K0",
         "terminal_relation": "close_leaf"
       },
       {
-        "node_id": "CU",
-        "issue": 900003,
-        "controller": "K0",
+        "node_id": "OTH3R",
+        "issue": 930002,
+        "controller": null,
         "rail": "control_plane",
         "phase": "fixture",
-        "kind": "consumer_cutover",
+        "kind": "contract",
         "buildable": true,
         "observation_optional": false,
         "edges": {
           "hard": [],
-          "evidence": [
-            "AS"
-          ],
+          "evidence": [],
           "optional": [],
           "parallel_after": [],
           "fan_in": []
         },
-        "operation_profile": "op.consumer-cutover.v1",
-        "evidence_profile": "ev.consumer-denominator.v1",
-        "authority_inputs": [
-          "m.store"
-        ],
-        "authority_outputs": [
-          {
-            "key": "m.consumer.x",
-            "mode": "exclusive"
-          }
-        ],
+        "operation_profile": "op.static-contract.v1",
+        "evidence_profile": "ev.static-validator.v1",
+        "authority_inputs": [],
+        "authority_outputs": [],
         "conflicts": {
-          "exclusive": [
-            "m.consumer.x"
-          ],
-          "shared": [
-            "m.store.read"
-          ]
+          "exclusive": [],
+          "shared": []
         },
         "claim_ceiling": "One bounded proposition.",
         "non_claims": [
           "None beyond the claim ceiling."
         ],
-        "first_falsifier": "FF05",
-        "artifacts": [
-          {
-            "id": "m.consumer.x.cutover",
-            "owner": "CU"
-          }
-        ],
+        "first_falsifier": "FF12",
+        "artifacts": [],
         "predecessor_exit": null,
-        "handoff": "FI",
+        "handoff": "K0",
         "terminal_relation": "close_leaf"
       },
       {
-        "node_id": "FI",
-        "issue": 900004,
-        "controller": "K0",
+        "node_id": "NC1",
+        "issue": 930003,
+        "controller": null,
         "rail": "control_plane",
         "phase": "fixture",
-        "kind": "exact_process_fanin",
-        "buildable": false,
+        "kind": "contract",
+        "buildable": true,
         "observation_optional": false,
         "edges": {
           "hard": [
-            "AS"
+            "OTH3R"
           ],
           "evidence": [],
           "optional": [],
           "parallel_after": [],
-          "fan_in": [
-            "CU"
-          ]
+          "fan_in": []
         },
-        "operation_profile": "op.fanin-integration.v1",
-        "evidence_profile": "ev.exact-process-receipt.v1",
+        "operation_profile": "op.static-contract.v1",
+        "evidence_profile": "ev.static-validator.v1",
         "authority_inputs": [
-          "m.store"
+          "auth.k"
         ],
         "authority_outputs": [],
         "conflicts": {
@@ -225,10 +174,10 @@
         "non_claims": [
           "None beyond the claim ceiling."
         ],
-        "first_falsifier": "FF02",
+        "first_falsifier": "FF12",
         "artifacts": [],
         "predecessor_exit": null,
-        "handoff": null,
+        "handoff": "K0",
         "terminal_relation": "close_leaf"
       }
     ]
