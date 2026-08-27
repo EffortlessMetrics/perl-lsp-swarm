@@ -189,9 +189,9 @@ workflow_result = "propagate"
 events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
 required = false
 policy_role = "advisory"
-applicability = "conditional"
+applicability = "always-or-scoped-noop"
 enforcement = "neither"
-reason = "Selected deterministic contexts are promoted separately from this advisory summary."
+reason = "#12911 hardens this candidate-controlled aggregate for advisory diagnostics only; trusted enforcement requires the separate organization-ruleset workflow plan."
 
 [[checks]]
 name = "Gate Enforcement Contract"
