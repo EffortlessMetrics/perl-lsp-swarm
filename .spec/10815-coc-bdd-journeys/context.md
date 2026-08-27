@@ -1,4 +1,4 @@
-# Context: #10815 — canonical Coc user journeys and evidence boundaries in the spec ledger
+# Context: #10815 — checked Coc user journeys and evidence boundaries in the spec ledger
 
 ## Problem
 
@@ -12,10 +12,11 @@ repository data, builders, fixture authors, host-driver authors, reviewers,
 receipt fan-in, and support projection each carry a private copy of "what the
 Coc journey means".
 
-This bundle encodes one checked normative baseline for the canonical Coc user
-journeys so downstream leaves bind stable scenario IDs instead of re-deriving
-meaning. It owns behavior wording, scenario identity, claim-profile
-membership, and evidence boundaries only.
+This bundle encodes one checked normative baseline for the Coc user journeys so
+downstream leaves bind stable scenario IDs instead of re-deriving meaning. It
+owns behavior wording, scenario identity, claim-profile membership, and
+evidence boundaries only. It is a packet-local Markdown contract, not a
+generated repository projection or executable behavior oracle.
 
 It owns two distinct host subjects, and host identity is load-bearing:
 
@@ -43,10 +44,13 @@ the `.spec/` packet system governed by
 (Vim + vim-lsp), `.spec/11178-lite-xl-bdd-journeys/`, and
 `.spec/11717-emacs-train-specs/specs.ledger.json` exercise exactly this shape.
 Per the issue's own evolution clause ("If command names have evolved, use
-current canonical equivalents and record them in the PR review map"), this
-packet projects the Gherkin-style Feature/Scenario organization into that
-existing spec-ledger system: features map to journey families, scenarios to
-stable-ID ledger rows, and step-level executable truth stays downstream.
+current equivalents and record them in the PR review map"), this packet
+projects the Gherkin-style Feature/Scenario organization into that existing
+spec-ledger system: features map to journey families, scenarios to stable-ID
+ledger rows, and step-level executable truth stays downstream. Because current
+main has no generator or status projection, this PR does not claim to satisfy
+the issue's generated-output acceptance; that remains an explicit follow-up or
+source-truth ruling.
 Introducing a new parallel `.feature` format or a feature-status generator
 here is out of scope.
 
@@ -209,7 +213,7 @@ Profile laws:
 
 ## Evidence boundaries and chain
 
-Each host rail binds its own chain following the issue's canonical stage
+Each host rail binds its own chain following the issue's declared stage
 mapping; each arrow is a different owner, and no owner may widen the
 proposition it receives:
 
@@ -339,7 +343,7 @@ readiness never enter these files.
 - `.spec/11178-lite-xl-bdd-journeys/` — Lite XL journey ledger; established
   the `<client-prefix>.bdd.<family>` namespace convention consumed here.
 - `.spec/11717-emacs-train-specs/specs.ledger.json` — Emacs spec-ledger
-  lineage; same checked-discipline projection pattern.
+  lineage; same checked-discipline ledger pattern.
 - `docs/EDITORS/COC_NEOVIM_SETUP.md` — setup prose consumed as documentation
   provenance; carries no normative scenario semantics.
 - `policy/lsp-client-support.toml` — registered support tiers; this packet

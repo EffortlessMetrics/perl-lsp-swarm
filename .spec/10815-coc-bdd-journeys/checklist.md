@@ -1,4 +1,4 @@
-# Implementation Checklist: #10815 — canonical Coc user journeys and evidence boundaries
+# Implementation Checklist: #10815 — checked Coc user journeys and evidence boundaries
 
 ## Change order
 
@@ -21,7 +21,7 @@ without building or executing any editor/host process.
 ### Step 2: Create the normative behavior ledger and falsifiers
 
 - **File:** `.spec/10815-coc-bdd-journeys/acceptance.md`
-- **Change:** include all canonical `SPEC_TEMPLATE.md` sections; §Behavior
+- **Change:** include all required `SPEC_TEMPLATE.md` sections; §Behavior
   carries both host-rail scenario ledgers (stable IDs, user-visible wording,
   profile/evidence-tag membership, per-row owner chains), the extension-boundary
   table, profile membership/laws, and the allowed non-pass outcome vocabulary;
@@ -46,7 +46,7 @@ feature-status generator on current main (recorded as the ledger evolution in
 `context.md`). Do not invent a generated receipt or claim a missing tool
 passed. From the candidate worktree, run the following PowerShell check twice
 after the files are complete. It enforces: the exact three files; required
-canonical headings; required contract terms (authority identities, registry
+required headings; required contract terms (authority identities, registry
 vocabulary, profile names, evidence-chain owners, schema/schema-path terms,
 outcome ladder terms); the exact forty-two host-qualified scenario IDs bound
 to their §Behavior ledger rows in fixed family order (Vim rail, then Neovim
@@ -58,17 +58,30 @@ that union to equal the exact three-file set.
 
 ```powershell
 function Get-SpecStatusPaths {
-  $statusFile = [IO.Path]::GetTempFileName()
+  $psi = New-Object Diagnostics.ProcessStartInfo
+  $psi.FileName = 'git'
+  $psi.Arguments = 'status --porcelain=v1 -z --untracked-files=all'
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $process = New-Object Diagnostics.Process
+  $process.StartInfo = $psi
+  if (-not $process.Start()) { throw 'git status process failed to start' }
+  $stream = New-Object IO.MemoryStream
   try {
-    & git status --porcelain=v1 -z --untracked-files=all > $statusFile 2>&1
-    if ($LASTEXITCODE -ne 0) { throw 'git status porcelain failed' }
-    $bytes = [IO.File]::ReadAllBytes($statusFile)
+    $process.StandardOutput.BaseStream.CopyTo($stream)
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) { throw "git status porcelain failed: $stderr" }
+    $bytes = $stream.ToArray()
     while ($bytes.Length -ge 1 -and ($bytes[$bytes.Length - 1] -eq 0x0A -or $bytes[$bytes.Length - 1] -eq 0x0D)) {
       if ($bytes.Length -gt 1) { $bytes = $bytes[0..($bytes.Length - 2)] } else { $bytes = [byte[]]::new(0) }
     }
     $raw = [Text.Encoding]::UTF8.GetString($bytes)
   } finally {
-    Remove-Item -LiteralPath $statusFile -Force -ErrorAction SilentlyContinue
+    $stream.Dispose()
+    $process.Dispose()
   }
   $records = @($raw -split [char]0 | Where-Object { $_ -ne '' })
   $found = [System.Collections.Generic.List[string]]::new()
@@ -103,7 +116,7 @@ $required = @(
   'reporting_failed', 'cleanup_failed'
 )
 $headings = @('§Behavior', '§Hazards', '§Contracts', '§API-Shape', '§Test-Grid', '§Blast-Radius', '§Coverage-Map')
-$text = @($paths | ForEach-Object { Get-Content -Raw $_ })
+$text = @($paths | ForEach-Object { [IO.File]::ReadAllText($_, [Text.Encoding]::UTF8) })
 if ($text.Count -ne 3) { throw 'expected exactly three spec files' }
 $contextText = $text[0]
 $acceptanceText = $text[1]
@@ -328,8 +341,10 @@ copied output; each invocation rereads the files and revalidates every table.
 - Deviation note: the controlling issue sketched Gherkin feature files plus
   generated status commands; neither exists on current main, so the journeys
   project into the shipped `.spec` ledger per the evolution record in
-  `context.md`, and the canonical generated projections reduce to the
-  two-run no-diff structural proof below.
+  `context.md`. This PR intentionally claims only the two-run no-diff
+  structural proof below; it does not claim generated BDD/status projections or
+  full #10815 acceptance. Keep that issue obligation open until current
+  authority defines and executes an equivalent projection path.
 
 ## Scope boundary
 

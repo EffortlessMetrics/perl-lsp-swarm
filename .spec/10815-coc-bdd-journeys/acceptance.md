@@ -1,6 +1,7 @@
-# Acceptance Criteria: #10815 — canonical Coc user journeys and evidence boundaries
+# Acceptance Criteria: #10815 — checked Coc user journeys and evidence boundaries
 
-This is a checked, declarative BDD/spec-ledger contract. It implements no
+This is a checked, declarative BDD/spec-ledger contract. It is a packet-local
+Markdown contract, not a generated repository status projection. It implements no
 fixture, host driver, provisioning, server/client behavior, receipt, support
 tier, or generated-status machinery. Executable truth for every row below is
 owned by the downstream leaves named in its evidence boundary.
@@ -185,7 +186,7 @@ with a recorded limitation — never relabeled into a pass downstream.
 
 | Contract | Authority consumed | How this bundle satisfies it |
 | --- | --- | --- |
-| Checked spec directory shape | [`SPEC_TEMPLATE.md`](../../docs/reference/SPEC_TEMPLATE.md), #3983 | canonical three-file packet; ledger evolution recorded in `context.md` |
+| Checked spec directory shape | [`SPEC_TEMPLATE.md`](../../docs/reference/SPEC_TEMPLATE.md), #3983 | three-file packet shape; ledger evolution recorded in `context.md` |
 | Exact subject/config/root contract | #8956 (open) consumed by reference; no digest recorded | attach rows name the binding authority without pre-stating pins |
 | Registered support tier substrate | `policy/lsp-client-support.toml` coc_nvim row via #6739 | configuration_documented tags reuse registry vocabulary; no tier changes here |
 | Executable identity law | #8956 command contract; setup prose `docs/EDITORS/COC_NEOVIM_SETUP.md` | attach.03 wording binds exact configured Coc service launching `perllsp --stdio` |
@@ -281,7 +282,7 @@ upstream surfaces.
 | False greens explicit across issue and family-brief sets | §Test-Grid rows 1–22 fixed order |
 | Baseline versus specialized/optional separation | extension-boundary table + profile laws + F1 |
 | Authorities/security boundaries named | §Contracts; security boundary section |
-| Generated outputs current/deterministic | `checklist.md` two-run structural proof (no generator exists; recorded) |
+| Checker-only packet proof | `checklist.md` two-run structural proof; no generated projection is produced or claimed |
 | No fixture/host/receipt/support claim created | scope boundary + blast radius + claim boundary below |
 
 ## Scope, rollback, and proof claims
@@ -295,7 +296,9 @@ upstream surfaces.
 - **Stop:** return to #10815 if a boundary above would need weakening to make
   a downstream check green, or current main contradicts a material decision.
 - **Claim boundary:** proves a durable checked journey/evidence contract and
-  deterministic structural inspection only. Proves no Coc behavior, host
-  execution, fixture correctness, receipt, support tier, public artifact, or
-  upstream state. All 42 scenarios remain `not_proven` as behavior until
+  deterministic structural inspection only. It does not claim the controlling
+  issue's generated BDD/status projections or full acceptance, because current
+  main provides no authoritative generator for them. It proves no Coc behavior,
+  host execution, fixture correctness, receipt, support tier, public artifact,
+  or upstream state. All 42 scenarios remain `not_proven` as behavior until
   their executable exact-host chains pass under their owning leaves.
