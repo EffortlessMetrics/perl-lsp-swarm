@@ -5304,21 +5304,40 @@ profile = "recommended"
         };
         // `perl_args` run before the appended `-e print join("\n", @INC)`
         // block, and perl concatenates `-e` programs into one script, so the
-        // trailing semicolon is load-bearing.
+        // trailing semicolons are load-bearing. The sentinel keeps the success
+        // oracle off the host's `@INC`: an interpreter whose effective `@INC`
+        // is empty or dot-only classifies as `SuccessfulEmpty`, so asserting
+        // `Paths` on the bare `sleep` program would have measured the runner's
+        // module path instead of the timeout seam (#12923 review). Quoting
+        // follows the memoization test's proven-portable form — no double
+        // quotes, no backslashes, `chr(10)` for the newline.
+        const SENTINEL: &str = "probe-budget-sentinel";
         let slow_program = |path: &Path| WorkspaceConfig {
             use_system_inc: true,
             perl_path: Some(path.to_string_lossy().into_owned()),
-            perl_args: vec!["-e".into(), "sleep 2;".into()],
+            perl_args: vec!["-e".into(), format!("sleep 2;print(qq({SENTINEL}).chr(10));")],
             ..WorkspaceConfig::default()
         };
+        let carries_sentinel = |outcome: &SystemIncProbeOutcome| match outcome {
+            SystemIncProbeOutcome::Paths(paths) => {
+                paths.iter().any(|path| path == Path::new(SENTINEL))
+            }
+            _ => false,
+        };
 
-        // The production budget is 1 s, so a 2 s program cannot produce paths.
-        // Which failure class the host reports varies (spawn shims, msys perl),
-        // and this leg only claims "not a successful probe".
+        // The production budget is 1 s, so a 2 s program cannot report success.
+        // Which failure class the host produces varies (spawn shims, msys perl),
+        // so this leg claims only "not a successful probe" — and because the
+        // program prints the sentinel, `SuccessfulEmpty` would itself mean perl
+        // exited 0 having printed nothing, which is a failure of this oracle
+        // rather than an empty-`@INC` host.
         let mut bounded = slow_program(&perl_path);
         let bounded_outcome = bounded.get_system_inc_probe_outcome();
         assert!(
-            !matches!(bounded_outcome, SystemIncProbeOutcome::Paths(_)),
+            !matches!(
+                bounded_outcome,
+                SystemIncProbeOutcome::Paths(_) | SystemIncProbeOutcome::SuccessfulEmpty
+            ),
             "the production budget must not admit a 2s probe, got {bounded_outcome:?}",
         );
 
@@ -5326,8 +5345,9 @@ profile = "recommended"
         let mut widened = slow_program(&perl_path);
         let widened_outcome = widened.get_system_inc_probe_outcome();
         assert!(
-            matches!(widened_outcome, SystemIncProbeOutcome::Paths(_)),
-            "the widened budget must let the same 2s probe finish, got {widened_outcome:?}",
+            carries_sentinel(&widened_outcome),
+            "the widened budget must let the same 2s probe finish and print {SENTINEL}, \
+             got {widened_outcome:?}",
         );
         Ok(())
     }
