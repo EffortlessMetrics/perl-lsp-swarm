@@ -8,9 +8,12 @@
 
 use std::collections::HashMap;
 
+use std::cell::RefCell;
+
 use xtask::branch_deletion_admission::{
-    DeletionAdmission, ReadOnlyCommands, branch_deletion_command, collect_request, evaluate,
-    repository_from_remote_url, verify_remote_identity,
+    DeletionAdmission, DeletionExecutor, ReadOnlyCommands, branch_deletion_command,
+    collect_request, evaluate, execute_admitted_deletion, repository_from_remote_url,
+    verify_remote_identity,
 };
 
 const BRANCH: &str = "agent/vim-activation-root-7762";
@@ -285,4 +288,127 @@ fn an_unreadable_subject_is_an_error_not_a_default() {
 
     let garbled_parent = healthy().on("gh pr view 7799", "{not json");
     assert!(collect_request(&garbled_parent, 7799, "origin").is_err());
+}
+
+/// Records what the deletion path would run, without running anything.
+#[derive(Default)]
+struct RecordingDeleter {
+    invocations: RefCell<Vec<Vec<String>>>,
+}
+
+impl DeletionExecutor for RecordingDeleter {
+    fn execute(&self, argv: &[String]) -> color_eyre::eyre::Result<()> {
+        self.invocations.borrow_mut().push(argv.to_vec());
+        Ok(())
+    }
+}
+
+/// The deletion path must refuse every retaining outcome, and must not reach
+/// the executor at all. This is the property the August 15 incident violated.
+#[test]
+fn the_deletion_path_refuses_every_retaining_outcome() -> Result<(), Box<dyn std::error::Error>> {
+    let retaining = [
+        healthy().on(
+            "gh pr list",
+            &format!(
+                r#"[{{"number":7810,"state":"OPEN","isDraft":false,"headRefName":"c","baseRefName":"{BRANCH}","mergeable":"MERGEABLE"}}]"#
+            ),
+        ),
+        healthy().failing("gh pr list", "api unreachable"),
+        healthy().failing("git ls-remote", "connection reset"),
+        healthy().on(
+            "gh pr view 7799",
+            &format!(
+                r#"{{"number":7799,"state":"OPEN","merged":false,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
+            ),
+        ),
+    ];
+
+    for commands in retaining {
+        let outcome = evaluate(&collect_request(&commands, 7799, "origin")?);
+        let deleter = RecordingDeleter::default();
+        let result = execute_admitted_deletion(&commands, &deleter, &outcome);
+        assert!(result.is_err(), "{:?} must refuse deletion", outcome.admission);
+        assert!(
+            deleter.invocations.borrow().is_empty(),
+            "a retaining outcome must never reach the executor: {:?}",
+            deleter.invocations.borrow(),
+        );
+    }
+    Ok(())
+}
+
+/// An admitted outcome runs exactly the leased argv — as a vector, never a
+/// shell string. A branch name carrying shell metacharacters must arrive as
+/// one argument rather than becoming a command.
+#[test]
+fn an_admitted_deletion_runs_the_leased_argv_without_a_shell()
+-> Result<(), Box<dyn std::error::Error>> {
+    let outcome = evaluate(&collect_request(&healthy(), 7799, "origin")?);
+    let deleter = RecordingDeleter::default();
+    execute_admitted_deletion(&healthy(), &deleter, &outcome)?;
+
+    let invocations = deleter.invocations.borrow();
+    assert_eq!(invocations.len(), 1, "exactly one deletion");
+    assert_eq!(
+        invocations[0],
+        branch_deletion_command(&outcome).unwrap_or_default(),
+        "the executed argv must be the leased command verbatim",
+    );
+    // argv, not a shell line: the vector has discrete arguments and no
+    // element is a concatenated command string.
+    assert!(invocations[0].len() >= 5, "{:?}", invocations[0]);
+    assert!(
+        !invocations[0].iter().any(|argument| argument.contains(' ')),
+        "no argument may be a packed shell string: {:?}",
+        invocations[0],
+    );
+    Ok(())
+}
+
+/// A branch whose name contains shell metacharacters must travel as a single
+/// argument. Under the previous `eval`-based design this was a command
+/// injection; here it is inert data.
+#[test]
+fn a_branch_name_with_shell_metacharacters_stays_one_argument()
+-> Result<(), Box<dyn std::error::Error>> {
+    let hostile = "agent/x;$(touch /tmp/pwned) rm -rf .";
+    let commands = healthy()
+        .on(
+            "gh pr view 7799",
+            &format!(
+                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{hostile}","headRefOid":"{HEAD_SHA}"}}"#
+            ),
+        )
+        .on("git ls-remote origin", &format!("{HEAD_SHA}\trefs/heads/{hostile}\n"));
+
+    let outcome = evaluate(&collect_request(&commands, 7799, "origin")?);
+    assert_eq!(outcome.admission, DeletionAdmission::SafeToDelete, "{}", outcome.detail);
+
+    let deleter = RecordingDeleter::default();
+    execute_admitted_deletion(&commands, &deleter, &outcome)?;
+    let invocations = deleter.invocations.borrow();
+    assert!(
+        invocations[0].contains(&hostile.to_string()),
+        "the branch must appear as one intact argument: {:?}",
+        invocations[0],
+    );
+    Ok(())
+}
+
+/// Identity is re-verified immediately before deleting, not merely at
+/// collection time: a remote that no longer resolves to the admitted
+/// repository must stop the deletion.
+#[test]
+fn the_deletion_path_reverifies_remote_identity() -> Result<(), Box<dyn std::error::Error>> {
+    let outcome = evaluate(&collect_request(&healthy(), 7799, "origin")?);
+    assert_eq!(outcome.admission, DeletionAdmission::SafeToDelete);
+
+    let moved_remote =
+        healthy().on("git remote get-url origin", "https://github.com/SomeoneElse/other.git\n");
+    let deleter = RecordingDeleter::default();
+    let result = execute_admitted_deletion(&moved_remote, &deleter, &outcome);
+    assert!(result.is_err(), "a repository mismatch must refuse the deletion");
+    assert!(deleter.invocations.borrow().is_empty(), "nothing may be executed once identity fails",);
+    Ok(())
 }

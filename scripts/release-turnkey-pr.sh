@@ -402,20 +402,15 @@ fi
 if [[ "$AUTO_MERGE" == "true" ]]; then
   log "Checking branch-deletion admission for ${BUMP_BRANCH}"
   admission_code=0
-  admission_plan="$(cargo run --quiet -p xtask --bin branch-deletion-admission -- \
-    plan --pr "$PR_NUMBER" --remote origin 2>&1)" || admission_code=$?
-  printf '%s\n' "$admission_plan"
+  # `cleanup` collects, evaluates, re-verifies the remote's identity and runs
+  # the leased deletion itself, as argv. Nothing is parsed out of its output
+  # and no shell evaluates a command built from remote data — a branch name
+  # containing shell metacharacters cannot reach a command line from here.
+  cargo run --quiet -p xtask --bin branch-deletion-admission -- \
+    cleanup --pr "$PR_NUMBER" --remote origin || admission_code=$?
   case "$admission_code" in
     0)
-      deletion_command="$(printf '%s\n' "$admission_plan" | sed -n 's/^  run: //p')"
-      if [[ -z "$deletion_command" ]]; then
-        warn "admission passed but emitted no deletion command; retaining ${BUMP_BRANCH}"
-      else
-        log "Deleting ${BUMP_BRANCH} under the admitted lease"
-        # The command carries --force-with-lease on the admitted tip, so a
-        # branch that moved since the admission fails closed here.
-        eval "$deletion_command" || warn "leased deletion refused; ${BUMP_BRANCH} retained"
-      fi
+      log "${BUMP_BRANCH} deleted under the admitted lease"
       ;;
     3)
       log "Retaining ${BUMP_BRANCH}: deletion was not admitted (see the disposition above)"

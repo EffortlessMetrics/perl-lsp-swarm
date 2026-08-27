@@ -16,8 +16,8 @@ mod route;
 
 pub use evaluate::evaluate;
 pub use live::{
-    ReadOnlyCommands, SystemCommands, collect_request, repository_from_remote_url,
-    verify_remote_identity,
+    DeletionExecutor, ReadOnlyCommands, SystemCommands, SystemDeletion, collect_request,
+    execute_admitted_deletion, repository_from_remote_url, verify_remote_identity,
 };
 pub use model::{
     AdmissionOutcome, AdmissionRequest, BRANCH_DELETION_ADMISSION_POLICY_VERSION,
@@ -70,6 +70,24 @@ enum BranchDeletionAdmissionCommand {
         json: bool,
     },
 
+    /// Collect live subjects, evaluate, and perform the admitted deletion.
+    ///
+    /// The only mutating entry point. It deletes exactly when `plan` would
+    /// report `SAFE_TO_DELETE`, re-verifies the remote's identity immediately
+    /// before deleting, and runs the leased command as argv — never through a
+    /// shell — so a branch name carrying shell metacharacters cannot become a
+    /// command. Exits `RETAIN_EXIT_CODE` and deletes nothing on any retaining
+    /// outcome.
+    Cleanup {
+        /// The merged parent pull request whose head branch is the subject.
+        #[arg(long)]
+        pr: u64,
+
+        /// Git remote the deletion would target.
+        #[arg(long, default_value = "origin")]
+        remote: String,
+    },
+
     /// Evaluate one admission request and report the typed outcome.
     Admit {
         /// Path to the JSON admission request, or `-` to read stdin.
@@ -106,6 +124,21 @@ fn run(args: Args) -> Result<()> {
             if !outcome.admission.admits_deletion() {
                 std::process::exit(RETAIN_EXIT_CODE);
             }
+            Ok(())
+        }
+        BranchDeletionAdmissionCommand::Cleanup { pr, remote } => {
+            let commands = SystemCommands;
+            // Collect and delete in one process: the window between the graph
+            // read and the deletion is as small as this design can make it.
+            // It cannot be zero — see the residual on `branch_deletion_command`.
+            let request = collect_request(&commands, pr, &remote)?;
+            let outcome = evaluate(&request);
+            emit(&outcome, false)?;
+
+            if !outcome.admission.admits_deletion() {
+                std::process::exit(RETAIN_EXIT_CODE);
+            }
+            execute_admitted_deletion(&commands, &SystemDeletion, &outcome)?;
             Ok(())
         }
         BranchDeletionAdmissionCommand::Admit { request, json } => {

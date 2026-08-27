@@ -323,3 +323,67 @@ pub fn verify_remote_identity(
     }
     Ok(())
 }
+
+/// The one mutating capability in this module, kept deliberately separate from
+/// [`ReadOnlyCommands`] so the collection surface stays provably read-only.
+///
+/// Implementations run an argv vector directly — never through a shell — so a
+/// branch name containing shell metacharacters cannot become a command.
+pub trait DeletionExecutor {
+    /// Run `argv` and return `Ok(())` only if it exited successfully.
+    fn execute(&self, argv: &[String]) -> Result<()>;
+}
+
+/// Runs the deletion for real, via `Command` argv. No shell is involved.
+pub struct SystemDeletion;
+
+impl DeletionExecutor for SystemDeletion {
+    fn execute(&self, argv: &[String]) -> Result<()> {
+        let (program, rest) = argv.split_first().ok_or_else(|| eyre!("empty deletion command"))?;
+        let status = Command::new(program)
+            .args(rest)
+            .status()
+            .map_err(|error| eyre!("running {program}: {error}"))?;
+        if !status.success() {
+            return Err(eyre!("{program} exited {:?}", status.code()));
+        }
+        Ok(())
+    }
+}
+
+/// Perform an admitted branch deletion, or refuse.
+///
+/// This is the only path that deletes anything, and it refuses unless *all* of
+/// the following hold on the outcome it was handed:
+///
+/// 1. the admission is `SAFE_TO_DELETE`;
+/// 2. the remote still resolves to the repository the admission was granted
+///    against — re-checked here, immediately before the deletion, not merely
+///    named for a human to run;
+/// 3. a leased deletion command exists (an admission with no admitted tip
+///    produces none).
+///
+/// The command is passed as argv, so shell quoting never enters the picture:
+/// there is no shell. This replaces an earlier design that parsed the rendered
+/// plan and ran it through `eval`, which would have executed a branch name
+/// containing shell metacharacters.
+pub fn execute_admitted_deletion(
+    reads: &dyn ReadOnlyCommands,
+    deleter: &dyn DeletionExecutor,
+    outcome: &super::model::AdmissionOutcome,
+) -> Result<()> {
+    if !outcome.admission.admits_deletion() {
+        return Err(eyre!(
+            "refusing to delete {}: admission is {}",
+            outcome.branch,
+            outcome.admission.as_str()
+        ));
+    }
+
+    verify_remote_identity(reads, &outcome.remote, &outcome.repository)?;
+
+    let argv = super::route::branch_deletion_command(outcome).ok_or_else(|| {
+        eyre!("admission for {} produced no leased deletion command", outcome.branch)
+    })?;
+    deleter.execute(&argv)
+}
