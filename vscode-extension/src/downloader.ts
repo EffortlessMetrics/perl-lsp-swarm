@@ -341,7 +341,7 @@ export type Sha256SumsLookup =
 // carries coreutils' binary-mode marker (outside the file field). Anything
 // else never supplies a digest (#9839).
 const SHA256_SUMS_ENTRY = /^(\S+)[ \t]+(?:\*?)(.*)$/;
-const SHA256_DIGEST = /^[0-9a-fA-F]{64}$/;
+const SHA256_DIGEST = /^[0-9a-f]{64}$/;
 
 /**
  * Resolve the expected SHA-256 digest for `assetName` from a SHA256SUMS text.

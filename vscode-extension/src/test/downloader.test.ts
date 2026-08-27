@@ -2292,13 +2292,7 @@ describe('SHA256SUMS anchored digest lookup', () => {
     });
   });
 
-  test('resolves genuine sha256sum entries across text/binary modes, tabs, CRLF, uppercase hex', () => {
-    const textMode = `0F2A5B7C9E1D3A4B6C8D0E2F4A6B8C9D0E2F4A6B8C9D0E2F4A6B8C9D0E2FABCD  ${ASSET_NAME}\r\n`;
-    expect(lookupSha256SumsDigest(textMode, ASSET_NAME)).toEqual({
-      status: 'found',
-      digest: '0f2a5b7c9e1d3a4b6c8d0e2f4a6b8c9d0e2f4a6b8c9d0e2f4a6b8c9d0e2fabcd',
-    });
-
+  test('resolves genuine sha256sum entries across binary modes, tabs, and CRLF', () => {
     const binaryMarker = `${GOOD_DIGEST} *${ASSET_NAME}\n`;
     expect(lookupSha256SumsDigest(binaryMarker, ASSET_NAME)).toEqual({
       status: 'found',
@@ -2321,6 +2315,13 @@ describe('SHA256SUMS anchored digest lookup', () => {
       status: 'found',
       digest: GOOD_DIGEST,
     });
+  });
+
+  test('rejects uppercase digest characters as non-canonical', () => {
+    const uppercaseDigest = GOOD_DIGEST.toUpperCase();
+    const sums = `${uppercaseDigest}  ${ASSET_NAME}\r\n`;
+
+    expect(lookupSha256SumsDigest(sums, ASSET_NAME)).toEqual({ status: 'malformed' });
   });
 
   test('fails closed on malformed lines even when they mention the asset name', () => {
