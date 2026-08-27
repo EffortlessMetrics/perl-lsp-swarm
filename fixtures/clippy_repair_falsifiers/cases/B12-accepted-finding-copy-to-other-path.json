@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "case_id": "B12-accepted-finding-copy-to-other-path",
+  "family": "count_identity_debt_substitution",
+  "purpose": "Copying an accepted suppression to another item/path/profile keeps counts equal while expanding unreviewed surface.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "runtime_user_lookup",
+      "copied onto unrelated hot path"
+    ],
+    "content": "// accepted narrow expectation copied onto unrelated hot path\n#[expect(\n    clippy::indexing_slicing,\n    reason = \"Generated table construction proves this index is in bounds.\"\n)]\nfn runtime_user_lookup(table: &[u8], index: usize) -> u8 {\n    table[index]\n}\n",
+    "sha256": "d84f1b7729a4eb55e1f0e3a52dcd96dd1576979b46cbabe899af5e3653cab5b9"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "file_contract",
+    "reference": "file:policy/clippy-debt.toml#No lint currently has accepted source-level debt"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "suppression_copy_expansion"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "generated_lookup"
+    ],
+    "note": "Expectation stays on the generated construction it names.",
+    "content": "#[expect(\n    clippy::indexing_slicing,\n    reason = \"Generated table construction proves this index is in bounds.\"\n)]\nfn generated_lookup(table: &[usize], index: usize) -> usize {\n    table[index]\n}\n",
+    "sha256": "90f52561f8653ae02a03223537ee6d5d049c28d0d60fb25f2e6c7387bc165227"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Ledger law binds each exception to its exact reviewed site; empty debt ledger means every new row is review-visible."
+}

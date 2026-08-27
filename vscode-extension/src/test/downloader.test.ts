@@ -33,6 +33,16 @@ import {
   managedNamespaceDir,
   managedUpdateCheckStateKey,
 } from '../managedStorageIdentity';
+import { buildManagedCandidateManifest } from '../managedCacheProtocol';
+import type { ManagedCandidateManifest, ManagedCandidateSubject } from '../managedCacheProtocol';
+import {
+  MANAGED_CANDIDATE_MANIFEST_FILE,
+  MANAGED_CURRENT_SELECTION_FILE,
+  acquireSessionManagedHostReference,
+  commitManagedCandidateSelection,
+  readManagedCurrentSelection,
+} from '../managedCandidateRuntime';
+import { env as vscodeEnv } from './__mocks__/vscode';
 
 /**
  * The compatibility key this test host resolves to. Managed state is namespaced
@@ -55,8 +65,12 @@ interface DownloaderPrivateSurface {
   getPlatformTarget(): string;
   getLocalBinaryPath(): string;
   buildVersionedInstallDirName(versionTag: string): string;
-  commitVersionedInstall(installDirName: string): void;
-  pruneOldVersionedInstalls(baseDir: string, currentName: string): void;
+  commitVersionedInstall(
+    installDirName: string,
+    compatibilityKey?: string,
+    manifest?: ManagedCandidateManifest | null,
+  ): void;
+  collectStaleManagedCandidates(baseDir: string): void;
   runEnsureBinary(forceDownload: boolean): Promise<string | null>;
   calculateSHA256(filePath: string): Promise<string>;
   findBinary(dir: string, name: string): string | null;
@@ -736,40 +750,375 @@ describe('Versioned managed install layout', () => {
     expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe('v0.13.4-stamp');
   });
 
-  test('pruneOldVersionedInstalls keeps current plus exactly one prior install', () => {
-    const names = ['v0.13.0-a', 'v0.13.1-b', 'v0.13.2-c', 'v0.13.3-d'];
-    names.forEach((name, idx) => {
-      const dir = path.join(baseDir, name);
-      fs.mkdirSync(dir);
-      // Older index → older mtime
-      const t = Date.now() / 1000 - (names.length - idx) * 60;
-      fs.utimesSync(dir, t, t);
+  test('collectStaleManagedCandidates keeps current plus prior and deletes proven-stale generations', () => {
+    // Digest seeds must stay hex so the minted candidate ids are canonical.
+    const candidateSubject = (seed: string): ManagedCandidateSubject => ({
+      release: 'v0.13.3',
+      version: `v0.13.3-${seed}`,
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: seed.repeat(64).slice(0, 64),
+      perllsp_digest: 'f'.repeat(64),
+      perl_dap_digest: null,
+    });
+    const installCandidateDir = (
+      dirName: string,
+      seed: string,
+      ageSeconds: number,
+    ): { dir: string; manifest: ManagedCandidateManifest } => {
+      const dir = path.join(baseDir, dirName);
+      fs.mkdirSync(dir, { recursive: true });
+      const manifest = buildManagedCandidateManifest(candidateSubject(seed));
+      fs.writeFileSync(path.join(dir, MANAGED_CANDIDATE_MANIFEST_FILE), JSON.stringify(manifest));
+      const stamp = Date.now() / 1000 - ageSeconds;
+      fs.utimesSync(dir, stamp, stamp);
+      return { dir, manifest };
+    };
+
+    const current = installCandidateDir('v0.13.3-d', 'a', 0);
+    const prior = installCandidateDir('v0.13.2-c', 'b', 60);
+    const stale1 = installCandidateDir('v0.13.1-b', 'c', 120);
+    const stale2 = installCandidateDir('v0.13.0-a', 'd', 180);
+    commitManagedCandidateSelection(baseDir, current.manifest, () => {
+      /* quiet */
     });
 
-    downloader.pruneOldVersionedInstalls(baseDir, 'v0.13.3-d');
+    downloader.collectStaleManagedCandidates(baseDir);
 
-    expect(fs.existsSync(path.join(baseDir, 'v0.13.3-d'))).toBe(true); // current
-    expect(fs.existsSync(path.join(baseDir, 'v0.13.2-c'))).toBe(true); // most recent prior
-    expect(fs.existsSync(path.join(baseDir, 'v0.13.1-b'))).toBe(false); // pruned
-    expect(fs.existsSync(path.join(baseDir, 'v0.13.0-a'))).toBe(false); // pruned
+    expect(fs.existsSync(current.dir)).toBe(true); // current_default
+    expect(fs.existsSync(prior.dir)).toBe(true); // previous-known-good fallback
+    expect(fs.existsSync(stale1.dir)).toBe(false); // stale_unreferenced
+    expect(fs.existsSync(stale2.dir)).toBe(false); // stale_unreferenced
   });
 
-  test('pruneOldVersionedInstalls preserves current when it is the only versioned dir', () => {
-    fs.mkdirSync(path.join(baseDir, 'v0.13.3-d'));
+  test('collectStaleManagedCandidates preserves current when it is the only versioned dir', () => {
+    const dir = path.join(baseDir, 'v0.13.3-d');
+    fs.mkdirSync(dir);
+    const manifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '1'.repeat(64),
+      perllsp_digest: '2'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(path.join(dir, MANAGED_CANDIDATE_MANIFEST_FILE), JSON.stringify(manifest));
+    commitManagedCandidateSelection(baseDir, manifest, () => {
+      /* quiet */
+    });
 
-    downloader.pruneOldVersionedInstalls(baseDir, 'v0.13.3-d');
+    downloader.collectStaleManagedCandidates(baseDir);
 
-    expect(fs.existsSync(path.join(baseDir, 'v0.13.3-d'))).toBe(true);
+    expect(fs.existsSync(dir)).toBe(true);
   });
 
-  test('pruneOldVersionedInstalls ignores files at base dir (legacy flat binaries survive)', () => {
+  test('collectStaleManagedCandidates ignores files at base dir (legacy flat binaries survive)', () => {
     const flatBin = path.join(baseDir, lspBinaryName);
     fs.writeFileSync(flatBin, 'legacy');
-    fs.mkdirSync(path.join(baseDir, 'v0.13.3-d'));
+    const dir = path.join(baseDir, 'v0.13.3-d');
+    fs.mkdirSync(dir);
+    const manifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '3'.repeat(64),
+      perllsp_digest: '4'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(path.join(dir, MANAGED_CANDIDATE_MANIFEST_FILE), JSON.stringify(manifest));
+    commitManagedCandidateSelection(baseDir, manifest, () => {
+      /* quiet */
+    });
 
-    downloader.pruneOldVersionedInstalls(baseDir, 'v0.13.3-d');
+    downloader.collectStaleManagedCandidates(baseDir);
 
     expect(fs.existsSync(flatBin)).toBe(true);
+  });
+
+  test('commitVersionedInstall also commits the policy selection record when given a manifest', () => {
+    const installDirName = 'v0.13.3-stamp';
+    fs.mkdirSync(path.join(baseDir, installDirName));
+    const manifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '5'.repeat(64),
+      perllsp_digest: '6'.repeat(64),
+      perl_dap_digest: null,
+    });
+
+    downloader.commitVersionedInstall(installDirName, undefined, manifest);
+
+    const pointer = path.join(baseDir, 'current');
+    expect(fs.readFileSync(pointer, 'utf8').trim()).toBe(installDirName);
+    expect(fs.existsSync(`${pointer}.tmp`)).toBe(false);
+    const selection = readManagedCurrentSelection(baseDir);
+    expect(selection?.selection_generation).toBe(1);
+    expect(selection?.candidate_id).toBe(manifest.candidate_id);
+    expect(fs.existsSync(`${path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE)}.tmp`)).toBe(false);
+  });
+
+  test('commitVersionedInstall without a manifest writes the pointer only (legacy shape unchanged)', () => {
+    const installDirName = 'v0.13.3-stamp';
+    fs.mkdirSync(path.join(baseDir, installDirName));
+
+    downloader.commitVersionedInstall(installDirName);
+
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(installDirName);
+    expect(fs.existsSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE))).toBe(false);
+  });
+
+  test('getLocalBinaryPath resolves the policy-governed current candidate', () => {
+    const currentName = 'v0.13.4-stamp';
+    const currentDir = path.join(baseDir, currentName);
+    fs.mkdirSync(currentDir);
+    fs.writeFileSync(path.join(currentDir, lspBinaryName), 'current bytes');
+    const manifest = buildManagedCandidateManifest({
+      release: 'v0.13.4',
+      version: 'v0.13.4',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '7'.repeat(64),
+      perllsp_digest: '8'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(currentDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(manifest),
+    );
+    commitManagedCandidateSelection(baseDir, manifest, () => {
+      /* quiet */
+    });
+    // No legacy `current` pointer at all: resolution must come from the
+    // policy-governed branch.
+
+    expect(downloader.getLocalBinaryPath()).toBe(path.join(currentDir, lspBinaryName));
+  });
+
+  test('getLocalBinaryPath stays bound to a live-referenced candidate after current moves', () => {
+    const previousSessionId = vscodeEnv.sessionId;
+    try {
+      vscodeEnv.sessionId = 'window-a';
+      const oldName = 'v0.13.3-old';
+      const oldDir = path.join(baseDir, oldName);
+      fs.mkdirSync(oldDir);
+      fs.writeFileSync(path.join(oldDir, lspBinaryName), 'old bytes');
+      const oldManifest = buildManagedCandidateManifest({
+        release: 'v0.13.3',
+        version: 'v0.13.3',
+        target: HOST_COMPATIBILITY_KEY,
+        topology_digest: '9'.repeat(64),
+        perllsp_digest: 'a'.repeat(64),
+        perl_dap_digest: null,
+      });
+      fs.writeFileSync(
+        path.join(oldDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+        JSON.stringify(oldManifest),
+      );
+      const oldStamp = Date.now() / 1000 - 120;
+      fs.utimesSync(oldDir, oldStamp, oldStamp);
+
+      const newName = 'v0.13.4-new';
+      const newDir = path.join(baseDir, newName);
+      fs.mkdirSync(newDir);
+      fs.writeFileSync(path.join(newDir, lspBinaryName), 'new bytes');
+      const newManifest = buildManagedCandidateManifest({
+        release: 'v0.13.4',
+        version: 'v0.13.4',
+        target: HOST_COMPATIBILITY_KEY,
+        topology_digest: 'b'.repeat(64),
+        perllsp_digest: 'c'.repeat(64),
+        perl_dap_digest: null,
+      });
+      fs.writeFileSync(
+        path.join(newDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+        JSON.stringify(newManifest),
+      );
+      commitManagedCandidateSelection(baseDir, newManifest, () => {
+        /* quiet */
+      });
+      // This session already launched the old candidate and holds a live
+      // reference: moving the default must not rebind it.
+      acquireSessionManagedHostReference(baseDir, 'window-a', oldManifest.candidate_id, () => {
+        /* quiet */
+      });
+
+      expect(downloader.getLocalBinaryPath()).toBe(path.join(oldDir, lspBinaryName));
+    } finally {
+      vscodeEnv.sessionId = previousSessionId;
+    }
+  });
+
+  test('a policy-governed namespace never falls back to the pointer after restart_required', () => {
+    const previousSessionId = vscodeEnv.sessionId;
+    try {
+      vscodeEnv.sessionId = 'window-stuck';
+      const currentName = 'v0.13.4-current';
+      const currentDir = path.join(baseDir, currentName);
+      fs.mkdirSync(currentDir);
+      fs.writeFileSync(path.join(currentDir, lspBinaryName), 'current bytes');
+      const currentManifest = buildManagedCandidateManifest({
+        release: 'v0.13.4',
+        version: 'v0.13.4',
+        target: HOST_COMPATIBILITY_KEY,
+        topology_digest: '1'.repeat(64),
+        perllsp_digest: '2'.repeat(64),
+        perl_dap_digest: null,
+      });
+      fs.writeFileSync(
+        path.join(currentDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+        JSON.stringify(currentManifest),
+      );
+      // The pointer would happily resolve the current dir...
+      fs.writeFileSync(path.join(baseDir, 'current'), `${currentName}\n`);
+      // ...but this session holds a live reference to a candidate that no
+      // longer exists in the catalog: policy says restart_required, and the
+      // pointer must not silently rebind the session instead.
+      const absentManifest = buildManagedCandidateManifest({
+        release: 'v0.13.0',
+        version: 'v0.13.0',
+        target: HOST_COMPATIBILITY_KEY,
+        topology_digest: '3'.repeat(64),
+        perllsp_digest: '4'.repeat(64),
+        perl_dap_digest: null,
+      });
+      commitManagedCandidateSelection(baseDir, currentManifest, () => {
+        /* quiet */
+      });
+      acquireSessionManagedHostReference(
+        baseDir,
+        'window-stuck',
+        absentManifest.candidate_id,
+        () => {
+          /* quiet */
+        },
+      );
+
+      // The namespace is refused, so resolution falls past it to the flat
+      // legacy layout rather than launching the pointer-named binary.
+      expect(downloader.getLocalBinaryPath()).toBe(path.join(baseDir, lspBinaryName));
+    } finally {
+      vscodeEnv.sessionId = previousSessionId;
+    }
+  });
+
+  test('a policy-governed namespace resolves current despite a structurally invalid sibling manifest', () => {
+    const currentName = 'v0.13.4-current';
+    const currentDir = path.join(baseDir, currentName);
+    fs.mkdirSync(currentDir);
+    fs.writeFileSync(path.join(currentDir, lspBinaryName), 'current bytes');
+    const currentManifest = buildManagedCandidateManifest({
+      release: 'v0.13.4',
+      version: 'v0.13.4',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '5'.repeat(64),
+      perllsp_digest: '6'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(currentDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(currentManifest),
+    );
+    fs.writeFileSync(path.join(baseDir, 'current'), `${currentName}\n`);
+    commitManagedCandidateSelection(baseDir, currentManifest, () => {
+      /* quiet */
+    });
+    // A structurally invalid manifest sibling is filtered by the landed
+    // host-selection policy (it poisons GC, not selection): resolution stays
+    // governed, the valid current wins on its own, and the pointer is not
+    // consulted.
+    const broken = path.join(baseDir, 'broken');
+    fs.mkdirSync(broken);
+    fs.writeFileSync(
+      path.join(broken, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify({ schema_version: 'managed_candidate_manifest.v1', candidate_id: 'nope' }),
+    );
+
+    expect(downloader.getLocalBinaryPath()).toBe(path.join(currentDir, lspBinaryName));
+  });
+
+  test('a refused selection commit leaves the activation pointer unmoved', () => {
+    const oldName = 'v0.13.3-old';
+    const oldDir = path.join(baseDir, oldName);
+    fs.mkdirSync(oldDir);
+    const oldManifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '7'.repeat(64),
+      perllsp_digest: '8'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(oldDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(oldManifest),
+    );
+    commitManagedCandidateSelection(baseDir, oldManifest, () => {
+      /* quiet */
+    });
+    downloader.commitVersionedInstall(oldName, undefined, oldManifest);
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+
+    // Corrupt the selection record into bytes this version cannot interpret
+    // the way a torn write would: the commit must refuse rather than reset
+    // the generation counter, and the pointer must not move past it.
+    fs.writeFileSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE), '{torn write');
+    const newName = 'v0.13.4-new';
+    fs.mkdirSync(path.join(baseDir, newName));
+    const newManifest = buildManagedCandidateManifest({
+      release: 'v0.13.4',
+      version: 'v0.13.4',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '9'.repeat(64),
+      perllsp_digest: 'a'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(baseDir, newName, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(newManifest),
+    );
+
+    downloader.commitVersionedInstall(newName, undefined, newManifest);
+
+    // The pointer must not claim an activation the policy record refutes,
+    // and the unreadable evidence is left exactly as it was found.
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+    expect(fs.readFileSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE), 'utf8')).toBe(
+      '{torn write',
+    );
+
+    // Recovery from unreadable selection evidence is an explicit repair
+    // (remove the torn record), never another commit over it; afterwards the
+    // commit lands coherently from a fresh generation.
+    fs.rmSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE));
+    downloader.commitVersionedInstall(newName, undefined, newManifest);
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(newName);
+    expect(readManagedCurrentSelection(baseDir)?.candidate_id).toBe(newManifest.candidate_id);
+  });
+
+  test('a null manifest refuses activation instead of moving the pointer past the policy', () => {
+    const oldName = 'v0.13.3-old';
+    const oldDir = path.join(baseDir, oldName);
+    fs.mkdirSync(oldDir);
+    const oldManifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: 'b'.repeat(64),
+      perllsp_digest: 'c'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(oldDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(oldManifest),
+    );
+    downloader.commitVersionedInstall(oldName, undefined, oldManifest);
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+
+    // A failed manifest mint is a null manifest: activating the install
+    // anyway would leave the pointer naming a dir the policy cannot see.
+    downloader.commitVersionedInstall('v0.13.4-orphan', undefined, null);
+
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+    expect(readManagedCurrentSelection(baseDir)?.candidate_id).toBe(oldManifest.candidate_id);
   });
 
   test('install lands side-by-side with a flat layout and the pointer activates it', () => {
@@ -1358,17 +1707,35 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
   }
 
   let downloader: TestDownloader;
+  let restoreProcessHost: (() => void) | undefined;
 
   beforeEach(() => {
     downloader = new BinaryDownloader(
       makeContext(),
       makeOutputChannel(),
     ) as unknown as TestDownloader;
-    // Fixtures name x86_64-unknown-linux-gnu assets; pin the host target so
-    // these controls are independent of the machine running the suite.
+    // Fixtures name x86_64-unknown-linux-gnu .tar.gz assets; pin the host so
+    // these controls are independent of the machine running the suite. The
+    // target mock alone is not enough: getLatestRelease also derives the
+    // archive extension and the ARM64 emulation check from process.platform
+    // and process.arch, so a Windows runner would match .zip asset names
+    // against these .tar.gz fixtures and every selection control would
+    // refuse for a reason the fixture never chose.
     jest
       .spyOn(downloader as unknown as { getPlatformTarget: () => string }, 'getPlatformTarget')
       .mockReturnValue('x86_64-unknown-linux-gnu');
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    const archDescriptor = Object.getOwnPropertyDescriptor(process, 'arch');
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
+    restoreProcessHost = () => {
+      if (platformDescriptor) {
+        Object.defineProperty(process, 'platform', platformDescriptor);
+      }
+      if (archDescriptor) {
+        Object.defineProperty(process, 'arch', archDescriptor);
+      }
+    };
     const vscode = require('vscode');
     vscode.workspace.getConfiguration.mockReturnValue({
       get: jest.fn((key: string, defaultValue?: unknown) => {
@@ -1385,6 +1752,8 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
   });
 
   afterEach(() => {
+    restoreProcessHost?.();
+    restoreProcessHost = undefined;
     jest.restoreAllMocks();
   });
 

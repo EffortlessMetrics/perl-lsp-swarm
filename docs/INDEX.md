@@ -44,6 +44,7 @@ Choose the path that matches what you are trying to do:
 | Add or audit public API documentation | [Missing Documentation Guide](reference/MISSING_DOCUMENTATION_GUIDE.md) |
 | Understand stability and compatibility | [Stability Policy](reference/STABILITY.md) |
 | Compare distribution channels and support tiers | [Distribution Matrix](project/DISTRIBUTION_MATRIX.md) |
+| Audit install claims and pin hazards across doc surfaces | [Install Claim Surface Inventory](distribution/INSTALL_CLAIM_SURFACES.md) |
 | Understand the native stack product policy | [Native Stack Product Policy](reference/NATIVE_STACK_POLICY.md) |
 | Read the historical analyses and launch material | [Articles and Research Notes](articles/README.md) |
 | Decide where a doc belongs in Diataxis | [Diataxis Authoring Guide](reference/DIATAXIS_GUIDE.md) |
@@ -77,6 +78,7 @@ Task-focused instructions for common workflows (goal-oriented).
 - [Contributing LSP Features](how-to/CONTRIBUTING_LSP.md)
 - [Threading Configuration Guide](how-to/THREADING_CONFIGURATION_GUIDE.md)
 - [Performance Tuning](how-to/PERFORMANCE_TUNING.md)
+- [Multi-Worktree Build Caching](how-to/MULTI_WORKTREE_BUILD_CACHING.md)
 - [Security Development Guide](how-to/SECURITY_DEVELOPMENT_GUIDE.md)
 
 ### Reference
@@ -108,6 +110,7 @@ Decision records, project status, and planning documents.
 - [ADR Index](adr/README.md) — chronological index plus a topic guide for parser, runtime, DAP, security, and swarm decisions
 - [Project Roadmap](project/ROADMAP.md)
 - [Distribution Matrix](project/DISTRIBUTION_MATRIX.md)
+- [Install Claim Surface Inventory](distribution/INSTALL_CLAIM_SURFACES.md)
 - [Compiler-Backed LSP Roadmap](project/COMPILER_BACKED_LSP_ROADMAP.md)
 - [Preview Before Edit ADR](adr/PLSP-ADR-0003-preview-before-edit.md)
 - [PR Semantic Incorporation and Disposition Spec](specs/PLSP-SPEC-0006-pr-queue-disposition.md)

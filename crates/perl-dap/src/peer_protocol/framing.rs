@@ -3,6 +3,8 @@
 //! protocol (decision D4).
 
 use perl_lsp_rs_core::transport::{ContentLengthFramer, FramingError, frame};
+#[cfg(test)]
+use perl_tdd_support::{must, must_err, must_some};
 
 use super::message::PeerMessage;
 
@@ -15,15 +17,6 @@ pub enum PeerFrameError {
     /// A complete frame body was not valid peer-protocol JSON.
     #[error("invalid peer message JSON: {0}")]
     Json(String),
-}
-
-impl perl_parser_core::ErrorClass for PeerFrameError {
-    fn error_class(&self) -> perl_parser_core::ErrorCategory {
-        // Both variants are wire-contract violations from the peer side.
-        match self {
-            Self::Framing(_) | Self::Json(_) => perl_parser_core::ErrorCategory::Protocol,
-        }
-    }
 }
 
 /// Encode a peer message into a Content-Length framed byte buffer ready to write
@@ -89,45 +82,43 @@ mod tests {
             command: command::HELLO.to_string(),
             arguments: Some(serde_json::json!({"peer": "Devel::ptkdb"})),
         });
-        let bytes = encode_message(&msg).expect("encode");
+        let bytes = must(encode_message(&msg));
         // The frame carries a Content-Length header.
         let header = String::from_utf8_lossy(&bytes[..40]);
         assert!(header.starts_with("Content-Length: "), "got: {header}");
 
         let mut dec = PeerFrameDecoder::new();
         dec.push(&bytes);
-        let out = dec.try_next().expect("decode").expect("one message");
+        let out = must_some(must(dec.try_next()));
         assert_eq!(out, msg);
     }
 
     #[test]
     fn decoder_handles_split_and_batched_frames() {
-        let a = encode_message(&PeerMessage::Event(PeerEvent {
+        let a = must(encode_message(&PeerMessage::Event(PeerEvent {
             seq: 1,
             event: event::STOPPED.to_string(),
             body: None,
-        }))
-        .expect("encode a");
-        let b = encode_message(&PeerMessage::Event(PeerEvent {
+        })));
+        let b = must(encode_message(&PeerMessage::Event(PeerEvent {
             seq: 2,
             event: event::CONTINUED.to_string(),
             body: None,
-        }))
-        .expect("encode b");
+        })));
 
         let mut dec = PeerFrameDecoder::new();
         // Feed the first frame in two chunks, then the second whole.
         let (head, tail) = a.split_at(5);
         dec.push(head);
-        assert!(dec.try_next().expect("partial").is_none());
+        assert!(must(dec.try_next()).is_none());
         dec.push(tail);
         dec.push(&b);
 
-        let m1 = dec.try_next().expect("m1").expect("present");
-        let m2 = dec.try_next().expect("m2").expect("present");
+        let m1 = must_some(must(dec.try_next()));
+        let m2 = must_some(must(dec.try_next()));
         assert_eq!(m1.seq(), 1);
         assert_eq!(m2.seq(), 2);
-        assert!(dec.try_next().expect("drained").is_none());
+        assert!(must(dec.try_next()).is_none());
     }
 
     #[test]
@@ -136,7 +127,7 @@ mod tests {
         let bytes = frame(b"{\"type\":\"bogus\"}");
         let mut dec = PeerFrameDecoder::new();
         dec.push(&bytes);
-        let err = dec.try_next().expect_err("should error");
+        let err = must_err(dec.try_next());
         assert!(matches!(err, PeerFrameError::Json(_)));
     }
 }

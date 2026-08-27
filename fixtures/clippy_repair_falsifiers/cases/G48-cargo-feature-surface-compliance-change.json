@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "G48-cargo-feature-surface-compliance-change",
+  "family": "documentation_cargo_test_proof_theater",
+  "purpose": "Renaming public features or removing dependencies from Cargo-lint evidence without compatibility owners.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "renamed to fast-parse",
+      "without a compatibility note"
+    ],
+    "content": "[features]\nincremental = []   # renamed to fast-parse without a compatibility note\n",
+    "sha256": "8e620926359795ab0ab165b259d88a8414e101049bdb5b16432cf3545d376845"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "file_contract",
+    "reference": "file:scripts/check_features_invariants.py#"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "cargo_surface_compliance_change"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "fast-parse = [\"incremental\"]",
+      "additive alias until downstream migrates"
+    ],
+    "note": "Feature graph evolves with invariants.",
+    "content": "[features]\nincremental = []\nfast-parse = [\"incremental\"]  # additive alias until downstream migrates\n",
+    "sha256": "43e2c31c83ca1772b730dd92c1f29a3467b6b1fb6a2df6c82fc7636784ac6fcd"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "features.toml + invariants script detect graph drift; naming-compat owners noted in #11222 scope."
+}

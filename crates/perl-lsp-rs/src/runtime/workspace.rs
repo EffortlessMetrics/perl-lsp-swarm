@@ -30,8 +30,8 @@ use perl_lsp_rs_core::config::{
     ExternalIncludePathAuthority, UnauthorizedExternalIncludePathSource,
     WorkspaceConfigUpdateContext,
 };
-use perl_module::path::file_path_to_module_name;
-use perl_module::rename::plan_module_rename_edits;
+use perl_module::file_path_to_module_name;
+use perl_module::plan_module_rename_edits;
 #[cfg(feature = "workspace")]
 use perl_parser::workspace_index::{
     DegradationReason, EarlyExitReason, IndexState, ResourceKind, SymbolKind,
@@ -429,9 +429,31 @@ impl LspServer {
                 tracing::debug!(
                     "Workspace symbol: skipping stale workspace index tier, using open-doc fallback"
                 );
-                return self.search_open_documents_for_symbols(query, cap);
+                // The canonical Dancer2 entries are computed from open
+                // documents' current snapshots, so they stay available on
+                // the stale-index fallback path (#8928).
+                let dancer2_entries = self.dancer2_workspace_symbols_typed(query, cap);
+                let fallback = self.search_open_documents_for_symbols(query, cap)?;
+                let merged = match fallback {
+                    Some(Value::Array(mut items)) => {
+                        for entry in dancer2_entries {
+                            if let Ok(value) = serde_json::to_value(&entry)
+                                && items.len() < cap
+                            {
+                                items.push(value);
+                            }
+                        }
+                        Some(Value::Array(items))
+                    }
+                    other => other,
+                };
+                return Ok(merged);
             }
 
+            // Canonical Dancer2 entries (#8928) are computed BEFORE the
+            // index coordinator guard is taken: the computation re-enters
+            // module resolution and readiness state internally.
+            let dancer2_entries = self.dancer2_workspace_symbols_typed(query, cap);
             let access_mode = route_index_access(self.coordinator());
 
             match access_mode {
@@ -448,6 +470,10 @@ impl LspServer {
                             Some(cap),
                         ),
                     );
+                    // Canonical Dancer2 route entries (#8928): labeled
+                    // framework projections from open-document canonical
+                    // facts, bounded by the same cap.
+                    symbols.extend(dancer2_entries);
 
                     // Convert to LSP format with cooperative yielding.
                     // No .take(cap) needed — the search functions already apply the cap.
@@ -971,6 +997,99 @@ impl LspServer {
         candidates
     }
 
+    /// Canonical Dancer2 workspace-symbol entries (#8928).
+    ///
+    /// Labeled `[Dancer2 route]` entries computed from the canonical facts
+    /// of each open document's current snapshot. This is the read-only
+    /// slice: index-side publication of canonical framework entities belongs
+    /// to the canonical shard seam, not to a provider-local second index.
+    /// Empty query returns no framework entries (browse behavior stays with
+    /// the source index).
+    #[cfg(feature = "workspace")]
+    fn dancer2_workspace_symbols_typed(
+        &self,
+        query: &str,
+        cap: usize,
+    ) -> Vec<perl_workspace::workspace_index::WorkspaceSymbol> {
+        use perl_lsp_rs_core::providers::dancer2::{
+            DANCER2_HOOK_LABEL, DANCER2_ROUTE_LABEL, dancer2_workspace_entities,
+        };
+        use perl_parser_core::position::{Position, Range as ByteRange};
+        use perl_symbol::SymbolKind;
+
+        if query.is_empty() || cap == 0 {
+            return Vec::new();
+        }
+        let lower_query = query.to_ascii_lowercase();
+        let docs: Vec<(String, std::sync::Arc<crate::state::ParsedSnapshot>, String)> = {
+            let documents = self.documents_guard();
+            documents
+                .iter()
+                .filter_map(|(uri, doc)| {
+                    doc.current_parsed()
+                        .map(|snapshot| (uri.clone(), snapshot, doc.text_arc.to_string()))
+                })
+                .collect()
+        };
+
+        let mut entries = Vec::new();
+        for (doc_uri, snapshot, text) in docs {
+            let Some(ast) = snapshot.ast() else { continue };
+            let context =
+                self.dancer2_request_context(&doc_uri, &text, snapshot.content_hash(), ast);
+            if !context.activations.has_exact() {
+                continue;
+            }
+            for entity in dancer2_workspace_entities(&context.facts) {
+                if !entity.bare_name.to_ascii_lowercase().contains(&lower_query) {
+                    continue;
+                }
+                let ((sl, sc), (el, ec)) = {
+                    let documents = self.documents_guard();
+                    self.get_document(&documents, &doc_uri)
+                        .map(|doc| {
+                            (
+                                self.offset_to_pos16(
+                                    doc,
+                                    usize::try_from(entity.start).unwrap_or(0),
+                                ),
+                                self.offset_to_pos16(doc, usize::try_from(entity.end).unwrap_or(0)),
+                            )
+                        })
+                        .unwrap_or(((0, 0), (0, 0)))
+                };
+                let package = entity
+                    .canonical_name
+                    .rsplit_once("::")
+                    .map(|(container, _)| container.to_string())
+                    .unwrap_or_else(|| "main".to_string());
+                let label = if entity.is_route { DANCER2_ROUTE_LABEL } else { DANCER2_HOOK_LABEL };
+                entries.push(perl_workspace::workspace_index::WorkspaceSymbol {
+                    name: format!("{} {label}", entity.bare_name),
+                    kind: SymbolKind::Subroutine,
+                    uri: doc_uri.clone(),
+                    range: ByteRange::new(
+                        Position::new(usize::try_from(entity.start).unwrap_or(0), sl, sc),
+                        Position::new(usize::try_from(entity.end).unwrap_or(0), el, ec),
+                    ),
+                    qualified_name: Some(entity.canonical_name.clone()),
+                    documentation: Some(
+                        "Canonical Dancer2 framework projection anchored to the source declaration; virtual entry, no generated body"
+                            .to_string(),
+                    ),
+                    container_name: Some(package),
+                    has_body: false,
+                    workspace_folder_uri: None,
+                    is_lexical: false,
+                });
+                if entries.len() >= cap {
+                    return entries;
+                }
+            }
+        }
+        entries
+    }
+
     /// Search open documents for symbols (non-workspace stub)
     #[cfg(not(feature = "workspace"))]
     fn search_open_documents_for_symbols(
@@ -1185,9 +1304,8 @@ impl LspServer {
                                     &sym.qualified_name,
                                 )
                             {
-                                resolved["containerName"] = json!(
-                                    perl_module::path::normalize_package_separator(container)
-                                );
+                                resolved["containerName"] =
+                                    json!(perl_module::normalize_package_separator(container));
                             }
 
                             return Ok(Some(json!(resolved)));
@@ -1219,6 +1337,11 @@ pub(crate) fn extract_perl_settings(settings: &Value) -> Option<&Value> {
 impl LspServer {
     /// Surface invalid enum values from editor-provided settings without changing
     /// the fail-safe configuration update behavior.
+    ///
+    /// Suppression identity lives in the bounded session-warning dedup store
+    /// (#9769): setting tag + value type + normalized value fingerprint, so
+    /// the raw editor-provided value is never retained. Wording and the
+    /// warn-once-per-setting/value policy are unchanged.
     fn warn_invalid_client_settings(&self, settings: &Value) {
         for invalid in
             perl_lsp_rs_core::config::ServerConfig::invalid_client_setting_values(settings)
@@ -1228,8 +1351,14 @@ impl LspServer {
             } else {
                 invalid.value.trim().to_ascii_lowercase()
             };
-            let key = format!("{}={}={normalized_value}", invalid.setting, invalid.value_type);
-            if !self.client_setting_warnings_sent.lock().insert(key) {
+            if matches!(
+                self.session_warning_dedup.note_client_setting(
+                    invalid.setting,
+                    invalid.value_type,
+                    &normalized_value
+                ),
+                super::session_warning_dedup::SessionWarningDecision::Suppress
+            ) {
                 continue;
             }
 
@@ -1315,7 +1444,8 @@ impl LspServer {
                 #[cfg(not(target_arch = "wasm32"))]
                 if critic_config_changed {
                     *self.critic_analyzer.lock() = None;
-                    self.critic_workspace_warnings_sent.lock().clear();
+                    self.session_warning_dedup
+                        .clear_family(super::session_warning_dedup::SessionWarningFamily::Critic);
                     self.pull_diagnostics_orchestrator.reset();
                 }
 
@@ -1414,7 +1544,8 @@ impl LspServer {
                 // A configuration notification starts a new user-visible
                 // configuration session; do not let an old auth failure
                 // suppress feedback after settings are changed or removed.
-                self.ai_backend_warnings_sent.lock().clear();
+                self.session_warning_dedup
+                    .clear_family(super::session_warning_dedup::SessionWarningFamily::AiBackend);
 
                 // Refresh AI backend when config changes (constructs or clears provider)
                 self.refresh_ai_backend();

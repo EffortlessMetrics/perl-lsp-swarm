@@ -1,0 +1,182 @@
+{
+  "schema": "agent_implementation_packet.v1",
+  "schema_version": 1,
+  "packet_id": "emacs-train/E06-P_hover_fixture_dogfood/2026-08-24T00:00:00Z",
+  "repository": {
+    "name": "perl-lsp-swarm",
+    "observed_tree": "fe2e8bb0d"
+  },
+  "programme": {
+    "name": "emacs-train",
+    "manifest": "emacs_train.v1",
+    "manifest_version": "55"
+  },
+  "work": {
+    "owning_issue": "#11719",
+    "node_id": "E06",
+    "proposition_id": "P_hover_fixture_dogfood",
+    "profile": "coding_agent_bounded",
+    "profile_conditional": true,
+    "profile_decision": {
+      "selecting_authority": "#11716-e00-architecture",
+      "selected_value": "shared_contract_consumed"
+    },
+    "node_kind": "bounded_implementation_leaf",
+    "result_sentence": "The Emacs hover fixture dogfood renders one shared builder packet without any Emacs-local packet schema.",
+    "claim_ceiling": "Adapter projection only: joins manifest, ledger, spec disposition, tree context, and supplied observation into agent_implementation_packet.v1; no Emacs packet schema, no model invocation, no GitHub mutation, no scheduling.",
+    "unproven": [
+      "live candidate observation beyond the supplied snapshot",
+      "strong-agent execution quality"
+    ],
+    "non_goals": [
+      "no Emacs-local packet ontology",
+      "no readiness evaluation inside the adapter",
+      "no label/body mutation"
+    ],
+    "successors": [
+      "E07"
+    ]
+  },
+  "actor": {
+    "role": "coding_agent_bounded",
+    "write_boundary": "repository_candidate_branch"
+  },
+  "frontier": {
+    "decision": "ready",
+    "digest": "frontier:emacs-train:55:ready:P_hover_fixture_dogfood:sha256:9a41",
+    "blocking_edges": []
+  },
+  "current_tree_probe": {
+    "subject": "emacs/train/packet_adapter.el",
+    "result": "absent-on-observed-tree",
+    "digest": "probe:emacs/train/packet_adapter.el:fe2e8bb0d:absent"
+  },
+  "authorities": {
+    "must_be_current": [
+      {
+        "ref": "#11716",
+        "subject": "E00 architecture row fixing the adapter boundary",
+        "proof_kind": "spec_disposition",
+        "proof_digest": "spec:11716:e00-adapter-row:accepted"
+      },
+      {
+        "ref": "#10918",
+        "subject": "E01 stable emacs_train.v1 graph (55 nodes)",
+        "proof_kind": "current_tree_probe",
+        "proof_tree": "fe2e8bb0d"
+      },
+      {
+        "ref": "#11770",
+        "subject": "E01R emacs_train_revision.v1 ledger",
+        "proof_kind": "frontier_digest",
+        "proof_digest": "ledger:emacs_train_revision.v1:fe2e8bb0d:current"
+      }
+    ],
+    "may_be_mined": [],
+    "must_not_be_reimplemented": [
+      {
+        "ref": "#10872",
+        "subject": "shared builder-packet contract this adapter projects into",
+        "proof_kind": "external_owner_note"
+      }
+    ],
+    "consumer_fan_in": [
+      {
+        "ref": "#11114",
+        "subject": "generic dogfood consumer",
+        "proof_kind": "external_owner_note"
+      }
+    ],
+    "external_manual_owner": [
+      {
+        "ref": "maintainer/merger",
+        "subject": "review and merge authority",
+        "proof_kind": "external_owner_note"
+      }
+    ]
+  },
+  "surfaces": {
+    "implementation_paths": [
+      "emacs/train/packet_adapter.el"
+    ],
+    "tests_fixtures": [
+      "tests/emacs/packet_adapter_spec.el"
+    ],
+    "generated_artifacts": [],
+    "docs_fragments": [],
+    "writer_slots": [
+      {
+        "key": "emacs-packet-adapter",
+        "paths": [
+          "emacs/train/packet_adapter.el",
+          "tests/emacs/packet_adapter_spec.el"
+        ]
+      }
+    ],
+    "forbidden_adjacent": [
+      "schemas/agent_implementation_packet.v1.schema.json",
+      "xtask/src/tasks/agent_implementation_packet.rs"
+    ]
+  },
+  "proof": {
+    "falsifiers": [
+      {
+        "id": "F_no_emacs_local_schema",
+        "stage": "unit",
+        "statement": "Any Emacs-local packet schema emitted by the adapter is a defect: the focused test asserts every rendered payload carries schema agent_implementation_packet.v1 and no Emacs-local schema id."
+      },
+      {
+        "id": "F_missing_input_fails_closed",
+        "stage": "unit",
+        "statement": "Composing a packet with a missing spec disposition must fail with the missing-input reason rather than rendering plausible prose."
+      }
+    ],
+    "positive_discriminator": "The adapter projects manifest+ledger+spec+tree joins into the shared schema fields; Emacs supplies fields only.",
+    "mutation_controls": [
+      "Renaming the shared schema const in the adapter must fail the no-local-schema falsifier.",
+      "Dropping the spec-disposition lookup must fail the fail-closed falsifier."
+    ],
+    "terminal_outcomes": [
+      "DELIVERED_REVIEWABLE_PR",
+      "BLOCKED_MISSING_INPUT",
+      "NOT_PROVEN"
+    ]
+  },
+  "verification": {
+    "steps": [
+      {
+        "command_id": "emacs.ert.packet_adapter",
+        "command": "make -C emacs test PACKET_ADAPTER=1",
+        "scope": "focused_proof"
+      },
+      {
+        "command_id": "git.diff_check",
+        "command": "git diff --check",
+        "scope": "diff_check"
+      }
+    ]
+  },
+  "delivery": {
+    "definition": "reviewable_draft_pr_and_handoff",
+    "branch_suggestion": "tooling/emacs-packet-adapter-e06",
+    "pr_title_suggestion": "tooling(emacs-train): project E06 into the shared builder packet",
+    "pr_body_fields": [
+      "change",
+      "proof",
+      "boundaries"
+    ],
+    "old_path_disposition": "none",
+    "limitations": [
+      "offline composition only until #10930 supplies live observation"
+    ],
+    "remaining_blocker_or_next": "wait for E02 #11717 and E04 #11718 before enabling generation for all nodes"
+  },
+  "stop": {
+    "conditions": [
+      "stop at the reviewable draft PR and handoff comment",
+      "no model invocation, GitHub mutation, or scheduling",
+      "candidate/collision state remains not observed until #10930 lands"
+    ],
+    "permitted_terminal_actions": []
+  }
+}

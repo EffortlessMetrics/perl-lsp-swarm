@@ -1,0 +1,55 @@
+{
+  "schema": "loaded_module_reload.contract.adaptations.v1",
+  "schema_version": 1,
+  "description": "Declared consumer-to-element adaptations binding the follow-on leaves of the #10095 reload train to this contract's typed surface. Consumers keep their own implementations; this table names which contract elements each may consume and the boundary that consumption must not cross. An unknown consumer or element fails closed: no leaf may silently widen the admitted cohort, advance generations for non-mutating outcomes, accept raw client input, or advertise a capability through presence alone.",
+  "contract_surface": [
+    "LoadedModuleSubject",
+    "LoadedModuleReloadEligibility",
+    "LoadedModuleReloadPlan",
+    "LoadedModuleReloadOutcome",
+    "RuntimeModuleGeneration",
+    "ReloadInvalidationPlan"
+  ],
+  "consumers": [
+    {
+      "issue": 10098,
+      "role": "runtime_mechanism_execution",
+      "consumes": [
+        "LoadedModuleSubject",
+        "LoadedModuleReloadPlan",
+        "LoadedModuleReloadOutcome",
+        "RuntimeModuleGeneration"
+      ],
+      "boundary": "Executes one private, serialized, stopped-state transaction. May add refusal classes for measured mechanism limits; may never widen the admitted cohort, never map compile success or prompt observation to reload success, and never leave an indeterminate outcome generation-static."
+    },
+    {
+      "issue": 10138,
+      "role": "wire_family_registration",
+      "consumes": [
+        "LoadedModuleReloadEligibility",
+        "LoadedModuleReloadPlan",
+        "LoadedModuleReloadOutcome"
+      ],
+      "boundary": "Registers the namespaced/versioned custom DAP family with mechanically synchronized Rust/TypeScript contracts. Owns the wire format only; must not accept raw paths, debugger commands, or Perl expressions, must not collide with standard DAP names or capabilities, and must stay unadvertised until the R04 proof."
+    },
+    {
+      "issue": 10102,
+      "role": "composition_and_reconciliation",
+      "consumes": [
+        "RuntimeModuleGeneration",
+        "ReloadInvalidationPlan",
+        "LoadedModuleReloadOutcome"
+      ],
+      "boundary": "Composes the transaction with the protocol, carries RuntimeModuleGeneration on the session, applies the invalidation table, and reconciles durable desired breakpoint configuration. May not invalidate durable client configuration, may not treat thread references as runtime facts, and may not keep old frame/scope/variable/evaluate references or applied installations current after a possibly-applied outcome."
+    }
+  ],
+  "reserved_consumers": [
+    {
+      "issue": 10104,
+      "role": "exact_public_proof",
+      "consumes": [],
+      "boundary": "Proves the bounded manual transaction through exact perl-dap public stdio and real Perl fixtures; consumes only landed semantics and adds no new contract authority."
+    }
+  ],
+  "unknown_consumer_policy": "fails_closed"
+}

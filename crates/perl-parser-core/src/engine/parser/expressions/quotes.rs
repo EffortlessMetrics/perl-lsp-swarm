@@ -2,18 +2,18 @@ impl<'a> Parser<'a> {
     /// Parse quote operator (q, qq, qw, qr, qx)
     fn parse_quote_operator(&mut self) -> ParseResult<Node> {
         let op_token = self.consume_token()?; // consume q/qq/qw/qr/qx
-        let start = op_token.start;
+        let start = op_token.start();
         let op = op_token.text.as_ref();
 
         // Get the delimiter - it might be a bracket token or other punctuation
         let delim_token = self.consume_token()?;
-        let delim_char = match delim_token.kind {
+        let delim_char = match delim_token.kind() {
             TokenKind::LeftBrace => '{',
             TokenKind::LeftBracket => '[',
             TokenKind::LeftParen => '(',
             TokenKind::Less => '<',
             _ => delim_token.text.chars().next().ok_or_else(|| {
-                ParseError::syntax("Expected delimiter after quote operator", delim_token.start)
+                ParseError::syntax("Expected delimiter after quote operator", delim_token.start())
             })?,
         };
 
@@ -148,7 +148,7 @@ impl<'a> Parser<'a> {
                     let token = self.consume_token()?;
                     if token.text.contains(close_delim) {
                         let pos = token.text.find(close_delim).ok_or_else(|| {
-                            ParseError::syntax("Closing delimiter not found in token", token.start)
+                            ParseError::syntax("Closing delimiter not found in token", token.start())
                         })?;
                         content.push_str(&token.text[..pos]);
                         break;
@@ -167,9 +167,9 @@ impl<'a> Parser<'a> {
         let mut modifiers = String::new();
         if op == "qr" {
             while let Ok(token) = self.tokens.peek() {
-                if token.kind == TokenKind::Identifier && token.text.len() == 1 {
+                if token.kind() == TokenKind::Identifier && token.text.len() == 1 {
                     let ch = token.text.chars().next().ok_or_else(|| {
-                        ParseError::syntax("Empty identifier token", token.start)
+                        ParseError::syntax("Empty identifier token", token.start())
                     })?;
                     if ch.is_ascii_alphabetic()
                         && matches!(ch, 'i' | 'm' | 's' | 'x' | 'p' | 'n' | 'o' | 'a' | 'd' | 'l' | 'u')
@@ -247,9 +247,9 @@ impl<'a> Parser<'a> {
 
                 let mut modifiers = String::new();
                 while let Ok(token) = self.tokens.peek() {
-                    if token.kind == TokenKind::Identifier && token.text.len() == 1 {
+                    if token.kind() == TokenKind::Identifier && token.text.len() == 1 {
                         let ch = token.text.chars().next().ok_or_else(|| {
-                            ParseError::syntax("Empty identifier token", token.start)
+                            ParseError::syntax("Empty identifier token", token.start())
                         })?;
                         if ch.is_ascii_alphabetic()
                             && matches!(
@@ -329,9 +329,9 @@ impl<'a> Parser<'a> {
 
         while !self.tokens.is_eof() {
             let token = self.consume_token()?;
-            if token.kind != TokenKind::String && token.text.contains(close_delim) {
+            if token.kind() != TokenKind::String && token.text.contains(close_delim) {
                 let pos = token.text.find(close_delim).ok_or_else(|| {
-                    ParseError::syntax("Closing delimiter not found in token", token.start)
+                    ParseError::syntax("Closing delimiter not found in token", token.start())
                 })?;
                 content.push_str(&token.text[..pos]);
                 break;
@@ -346,12 +346,12 @@ impl<'a> Parser<'a> {
         let mut modifiers = String::new();
 
         while let Ok(token) = self.tokens.peek() {
-            if token.kind != TokenKind::Identifier || token.text.len() != 1 {
+            if token.kind() != TokenKind::Identifier || token.text.len() != 1 {
                 break;
             }
 
             let ch = token.text.chars().next().ok_or_else(|| {
-                ParseError::syntax("Empty identifier token", token.start)
+                ParseError::syntax("Empty identifier token", token.start())
             })?;
             if !ch.is_ascii_alphabetic() {
                 break;
@@ -363,7 +363,7 @@ impl<'a> Parser<'a> {
                          g, i, m, s, x, o, e, r, p, n, a, d, l, u, c",
                         ch
                     ),
-                    token.start,
+                    token.start(),
                 ));
             }
 
@@ -395,7 +395,7 @@ impl<'a> Parser<'a> {
 
                 // Stop if we see a keyword that starts a new statement
                 if matches!(
-                    peek.kind,
+                    peek.kind(),
                     TokenKind::Use
                         | TokenKind::My
                         | TokenKind::Our
@@ -410,11 +410,11 @@ impl<'a> Parser<'a> {
                 }
 
                 // Also stop on semicolon (though we likely won't see it after #)
-                if matches!(peek.kind, TokenKind::Semicolon) {
+                if matches!(peek.kind(), TokenKind::Semicolon) {
                     break;
                 }
 
-                match peek.kind {
+                match peek.kind() {
                     TokenKind::Identifier | TokenKind::Number => {
                         // Check if this is a keyword that likely isn't part of the qw list
                         if matches!(peek.text.as_ref(), "use" | "constant" | "my" | "our" | "sub") {
@@ -478,7 +478,7 @@ impl<'a> Parser<'a> {
     fn parse_qw_list(&mut self) -> ParseResult<Vec<Node>> {
         // Handle different delimiters for qw
         let delimiter_token = self.tokens.peek()?.clone();
-        let close_delim = match delimiter_token.kind {
+        let close_delim = match delimiter_token.kind() {
             TokenKind::LeftParen => {
                 self.consume_token()?;
                 TokenKind::RightParen
@@ -515,7 +515,7 @@ impl<'a> Parser<'a> {
                         value: format!("'{}'", token.text), // qw produces single-quoted strings
                         interpolated: false,
                     },
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 ));
             } else if self.peek_kind() == Some(TokenKind::String) {
                 // Also allow string tokens in qw lists
@@ -525,7 +525,7 @@ impl<'a> Parser<'a> {
                         value: format!("'{}'", token.text.trim_matches(|c| c == '"' || c == '\'')),
                         interpolated: false,
                     },
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 ));
             } else {
                 // Skip other tokens (might be separators or special chars)

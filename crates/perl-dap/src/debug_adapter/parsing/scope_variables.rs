@@ -7,8 +7,9 @@
 //! - [`render_paged_variable`] — render one variable and its optional children
 
 use super::super::{
-    DebugAdapter, HashSet, PerlVariableRenderer, Variable, VariableParser, VariableRenderer,
+    CachedVariable, DebugAdapter, HashSet, PerlVariableRenderer, VariableParser, VariableRenderer,
 };
+use crate::parse_origin::{DebuggerOutputOrigin, OriginatedParseInput, ParseIdentity};
 use crate::value::PerlValue;
 
 const MAX_CACHED_CHILDREN: usize = 1024;
@@ -18,7 +19,12 @@ const MAX_CACHED_CHILDREN: usize = 1024;
 ///
 /// Returns a vec built in reverse-iteration order (most-recent-first).
 /// [`sort_and_paginate`] reverses it before sorting to restore chronological order.
-pub(super) fn parse_assignments(lines: &[String], scope_type: i32) -> Vec<(String, PerlValue)> {
+pub(super) fn parse_assignments(
+    lines: &[String],
+    scope_type: i32,
+    origin: DebuggerOutputOrigin,
+    identity: ParseIdentity,
+) -> Vec<(String, PerlValue)> {
     let parser = VariableParser::new();
     let mut seen = HashSet::new();
     let mut parsed = Vec::new();
@@ -29,7 +35,8 @@ pub(super) fn parse_assignments(lines: &[String], scope_type: i32) -> Vec<(Strin
         if text.is_empty() {
             continue;
         }
-        if let Ok((name, value)) = parser.parse_assignment(text) {
+        let input = OriginatedParseInput::new(origin, identity, text);
+        if let Ok((name, value)) = parser.parse_assignment_originated(input) {
             if !DebugAdapter::scope_allows_variable_name(scope_type, &name) {
                 continue;
             }
@@ -88,7 +95,10 @@ pub(super) fn compute_child_reference(variables_ref: i32, start: usize, idx: usi
 ///
 /// Returns `(top_level_variable, Some((child_ref, children)))` when the value
 /// is expandable and has at least one child; otherwise `None` for the second
-/// tuple element.
+/// tuple element. Both the top row and every child row retain the typed value
+/// alongside the default (decimal) rendering, so a later request's DAP
+/// `ValueFormat` can be projected from typed facts at response time without
+/// reparsing display text (#9588).
 ///
 /// A non-positive `child_ref` means [`compute_child_reference`] refused to mint
 /// a representable handle. The value is then rendered without a reference: the
@@ -98,7 +108,7 @@ pub(super) fn render_paged_variable(
     name: String,
     value: PerlValue,
     child_ref: i32,
-) -> (Variable, Option<(i32, Vec<Variable>)>) {
+) -> (CachedVariable, Option<(i32, Vec<CachedVariable>)>) {
     let renderer = PerlVariableRenderer::new();
     let expandable = value.is_expandable() && child_ref > 0;
 
@@ -107,18 +117,22 @@ pub(super) fn render_paged_variable(
     } else {
         renderer.render(&name, &value)
     };
-    let top = DebugAdapter::rendered_to_variable(rendered);
 
     let cache_entry = if expandable {
         let children = renderer
-            .render_children(&value, 0, MAX_CACHED_CHILDREN)
+            .child_entries(&value, 0, MAX_CACHED_CHILDREN)
             .into_iter()
-            .map(DebugAdapter::rendered_to_variable)
+            .map(|(child_name, child_value)| {
+                let rendered = renderer.render(&child_name, &child_value);
+                CachedVariable::typed(DebugAdapter::rendered_to_variable(rendered), child_value)
+            })
             .collect::<Vec<_>>();
         if children.is_empty() { None } else { Some((child_ref, children)) }
     } else {
         None
     };
+
+    let top = CachedVariable::typed(DebugAdapter::rendered_to_variable(rendered), value);
 
     (top, cache_entry)
 }
@@ -177,7 +191,7 @@ mod tests {
         assert!(value.is_expandable(), "fixture must be an expandable aggregate");
 
         let (top, cache_entry) = render_paged_variable("@deep".to_string(), value, 0);
-        assert_eq!(top.variables_reference, 0, "refused entry must not advertise expansion");
+        assert_eq!(top.row.variables_reference, 0, "refused entry must not advertise expansion");
         assert!(cache_entry.is_none(), "refused entry must not populate the child cache");
     }
 }

@@ -15,13 +15,12 @@
 use perl_dap::breakpoints::{BreakpointRecord, BreakpointStore};
 use perl_dap::protocol::*;
 use perl_dap::{
-    AttachConfiguration, DapConfig, DapMessage, DapMode, DapServer, DapSocketBindError,
-    DebugAdapter, LaunchConfiguration,
+    AttachConfiguration, DapConfig, DapMessage, DapMode, DapServer, DebugAdapter,
+    LaunchConfiguration,
 };
 use serde_json::json;
 use std::collections::HashMap;
-use std::io::{self, Write};
-use std::net::TcpListener;
+use std::io::Write;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
 
@@ -349,6 +348,7 @@ fn test_evaluate_arguments_round_trip() -> Result<(), Box<dyn std::error::Error>
         frame_id: Some(0),
         context: Some("hover".to_string()),
         allow_side_effects: Some(false),
+        format: None,
     };
 
     let json = serde_json::to_string(&args)?;
@@ -822,26 +822,6 @@ fn test_dap_server_creation_native() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[test]
-fn native_socket_preserves_bind_error_identity() -> Result<(), Box<dyn std::error::Error>> {
-    let occupied = TcpListener::bind(("127.0.0.1", 0))?;
-    let port = occupied.local_addr()?.port();
-    let config =
-        DapConfig { log_level: "info".to_string(), mode: DapMode::Native, workspace_root: None };
-    let mut server = DapServer::new(config)?;
-
-    let error = server.run_socket(port).expect_err("occupied port must fail before accept");
-    let marker = error
-        .downcast_ref::<DapSocketBindError>()
-        .ok_or_else(|| io::Error::other("missing DAP bind marker"))?;
-    assert_eq!(marker.port, port);
-    let source = error
-        .downcast_ref::<io::Error>()
-        .ok_or_else(|| io::Error::other("missing underlying io error"))?;
-    assert_eq!(source.kind(), io::ErrorKind::AddrInUse);
-    Ok(())
-}
-
 // ============================================================================
 // BreakpointStore edge cases
 // ============================================================================
@@ -1309,6 +1289,7 @@ fn test_set_variable_arguments_round_trip() -> Result<(), Box<dyn std::error::Er
         variables_reference: 100,
         name: "$x".to_string(),
         value: "42".to_string(),
+        format: None,
     };
 
     let json = serde_json::to_string(&args)?;
@@ -1326,6 +1307,7 @@ fn test_set_expression_arguments_round_trip() -> Result<(), Box<dyn std::error::
         expression: "$hash{key}".to_string(),
         value: "\"new value\"".to_string(),
         frame_id: Some(0),
+        format: None,
     };
 
     let json = serde_json::to_string(&args)?;

@@ -78,8 +78,9 @@ Required before opening the old-repo sync PR:
 - run the relevant support/provider/status checks in swarm
 - preserve release notes and package-lineage docs
 - state whether the sync changes user-facing package behavior
-- run `cargo xtask sync-divergence check` against the target first parent and
-  attach its source-sync receipt
+- run `cargo xtask sync-divergence check` with the release repository head as
+  `--target`, the exact prepared swarm commit as `--source`, and the completed
+  reconciliation boundary as `--boundary`; attach its source-sync receipt
 
 The old-repo PR body must link to the swarm source PRs and list verification.
 
@@ -143,21 +144,43 @@ Do not squash source-sync PRs that are meant to prove `source/master` ancestry.
 
 ### Sync-divergence preflight
 
-Before a swarm-to-source promotion, compute target-unique commits with the
-protocol's `git cherry` comparison from the last common sync base to the first
-parent of the target sync merge. Run:
+Before a swarm-to-source promotion, compute target-unique commits with three
+exact subjects resolved to immutable full SHAs:
 
 ```bash
 cargo xtask sync-divergence check \
-  --base <last-common-sync-base> \
-  --source <swarm-main-ref> \
-  --target <source-sync-first-parent> \
+  --source <exact-prepared-swarm-commit> \
+  --boundary <completed-reconciliation-boundary> \
+  --target <release-repository-head> \
   --ledger docs/swarm/source-syncs/<sync>-reconciliation.json \
   --receipt docs/swarm/source-syncs/<sync>-receipt.json
 ```
 
-The check ignores merge commits, and requires every other `+` result from
-`git cherry` to have a ledger row with one of these classifications:
+Subject roles are strict and independent:
+
+- `--source` is the patch-equivalence upstream: the exact current or prepared
+  swarm commit. Two commits compare equivalent when their `git cherry`
+  patch-id matches a commit reachable from this subject.
+- `--boundary` is only the history limit: the completed reconciliation
+  boundary. Commits reachable from it are excluded from the comparison
+  population; it never participates in patch equivalence.
+- `--target` is the release repository head being judged.
+
+All three subjects must resolve to existing commits, must be unambiguous,
+syntactically single commit-ish values, the boundary must be an ancestor
+of the target, and the source must not already be contained in the target
+(which means the subjects are reversed — swarm passed as the target — or
+reconciliation is already complete); otherwise the command fails closed and
+records the failure in the receipt. A boundary equal to the target resolves
+cleanly and yields an empty comparison population with full identity recorded
+in the receipt.
+
+The check excludes merge commits from the target-unique row population and
+records their ancestry (subject and parents) in the receipt's
+`excluded_merge_ancestry`. Every other `+` result from
+`git cherry <source> <target> <boundary>` requires a ledger row carrying either
+one of these terminal dispositions or an explicit unresolved row
+(`disposition: null`) that forces the `blocked` verdict:
 
 ```text
 port_to_swarm
@@ -167,20 +190,70 @@ deliberately_abandoned
 release_lineage_only
 ```
 
-The `--source` value must resolve to a commit in the repository running the
-check. Missing or otherwise invalid refs fail closed and are recorded in the
-receipt, so a stale or malformed source ref cannot be mistaken for a valid
-promotion input.
+All three subjects must resolve to a commit in the repository running the
+check. Missing, ambiguous, malformed, or reversed subjects fail closed and are
+recorded in the receipt, so a stale or malformed subject cannot be mistaken
+for a valid promotion input. The checker resolves each subject before invoking
+Git and passes the resolved SHAs directly: the resolved source is
+`git cherry`'s upstream, the resolved target its head, and the resolved
+boundary its limit, keeping patch equivalence driven by the exact swarm commit
+and the comparison bounded below by the reconciliation boundary.
 
-The checker also resolves `--base` and `--target` before invoking Git and passes
-the resolved base as `git cherry`'s explicit limit, keeping the comparison
-bounded to the intended base-to-target range.
-
+Ledger and receipt schema version 2 records each subject as its role
+(`patch_equivalence_upstream`, `history_limit`, `release_head`), its input
+ref, and the resolved full object id; the receipt is byte-deterministic
+across runs against the same repository, and the ledger identity fields must
+equal the resolved source, boundary, and target object ids exactly.
 `release_lineage_only` is an explicit exclusion, not an implicit escape hatch.
-Missing rows, unclassified rows, invalid classifications, missing evidence, or
-ledger rows that are not target-unique non-merge commits fail the command. The
-JSON receipt records the target-unique commits and their classifications so a
-promotion can be audited after the source tree is replaced.
+Missing rows, invalid classifications, missing evidence, or ledger rows that
+are not target-unique non-merge commits fail the command. The JSON receipt
+records the target-unique commits, their classifications, the derived verdict,
+and the population digest so a promotion can be audited after the source tree
+is replaced.
+
+#### Reconciliation ledger v2 validation
+
+The ledger is a typed document whose unknown fields fail closed. Its
+`population_digest` must equal the checker's recomputed digest over the sorted
+target-unique non-merge population (SHA-256 over `<commit> <subject>` lines);
+any drift fails the ledger as stale. Each entry declares its changed paths,
+which are verified against `git diff-tree`; a terminal row with empty or
+absent changed paths fails closed so an undeclared footprint cannot evade the
+comparison or the product/test guard, plus one disposition and its supporting
+fields. The load-bearing rules:
+
+- `port_to_swarm` and `already_equivalent_in_swarm` require `source_commit`
+  to resolve to a commit reachable from the declared swarm source;
+  planned-but-unmerged ports and unreachable equivalent SHAs fail closed.
+- `superseded_by_newer_architecture` must name the current architecture owner
+  (`owner`); `deliberately_abandoned` must state the rejected behavior and
+  rationale (`rationale`).
+- `release_lineage_only` cannot cover runtime, product, or test work: any
+  changed path under `src/`, `lib/`, `bin/`, `t/`, `tests/` (or with an
+  `.rs`/`.c`/`.h`/`.hpp`/`.cpp`/`.pm`/`.pl`/`.t` extension) fails.
+- Every terminal disposition requires nonempty evidence; a terminal row may
+  not also carry `blocking_decisions`, because an unresolved decision is not
+  a sixth successful disposition.
+- A row with `disposition: null` is an explicitly unresolved row; top-level
+  `blockers` carry open decisions outside entries. Either forces the
+  `blocked` verdict and keeps the row out of `accepted_commits`.
+
+The command emits one deterministic verdict in the receipt: `pass` (exit 0),
+`blocked` (well-formed but carrying unresolved decisions; nonzero), or
+`not_proven` (malformed, stale, contradictory, unevidenced, or
+population-drifted claims; nonzero). A ledger that declares a `verdict`
+disagreeing with the derived one fails as not proven. `scaffold` writes the
+starting skeleton — one unresolved row per computed commit with real subjects
+and changed paths and no invented terminal disposition; it refuses to
+overwrite an existing ledger file:
+
+```bash
+cargo xtask sync-divergence scaffold \
+  --source <exact-prepared-swarm-commit> \
+  --boundary <completed-reconciliation-boundary> \
+  --target <release-repository-head> \
+  --ledger docs/swarm/source-syncs/<sync>-reconciliation.json
+```
 
 **Reconciling accumulated perl-lsp-unique work.** When `perl-lsp/master` has
 drifted ahead with parallel work (release-lineage aside), identify the genuine

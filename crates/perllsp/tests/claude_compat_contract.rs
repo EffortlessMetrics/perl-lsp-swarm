@@ -1,4 +1,5 @@
-use anyhow::{Result, ensure};
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
+use anyhow::{Result, bail, ensure};
 use perllsp::claude_compat::{
     CompatibilityCatalog, CompatibilityReason, CompatibilityResult, CompatibilityRow, HostSubject,
     PLUGIN_SLUG, PluginSubject, SCHEMA_VERSION, SERVER_EXECUTABLE, ServerSubject, embedded_catalog,
@@ -213,8 +214,9 @@ fn decision_for_rejects_invalid_catalog() -> Result<()> {
         rows: vec![row(bad_plugin, server.clone(), None, CompatibilityResult::Compatible)],
     };
 
-    let err =
-        catalog.decision_for(&plugin, &server, None).expect_err("invalid catalog must fail closed");
+    let Err(err) = catalog.decision_for(&plugin, &server, None) else {
+        bail!("invalid catalog must fail closed");
+    };
     ensure!(err.contains("plugin.slug"));
     Ok(())
 }

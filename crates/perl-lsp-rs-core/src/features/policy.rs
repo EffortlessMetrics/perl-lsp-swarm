@@ -255,7 +255,14 @@ mod tests {
     fn runtime_flags_enables_formatting_when_perltidy_available() {
         let flags = FeatureProfile::Production.runtime_flags(true);
         assert!(flags.formatting, "formatting should be enabled with perltidy");
-        assert!(flags.range_formatting, "range_formatting should be enabled with perltidy");
+        assert!(
+            !flags.range_formatting,
+            "withdrawn range_formatting stays off with perltidy (#11955)"
+        );
+        assert!(
+            !flags.on_type_formatting,
+            "withdrawn on_type_formatting stays off with perltidy (#11955)"
+        );
     }
 
     #[test]
@@ -263,8 +270,8 @@ mod tests {
         let flags = FeatureProfile::Production.runtime_flags(false);
         assert!(flags.formatting, "native formatting should be enabled without perltidy");
         assert!(
-            flags.range_formatting,
-            "native range formatting should be enabled without perltidy"
+            !flags.range_formatting,
+            "withdrawn native range formatting stays off without perltidy"
         );
     }
 
@@ -415,14 +422,20 @@ mod tests {
     fn production_profile_enables_formatting() {
         let flags = FeatureProfile::Production.build_flags();
         assert!(flags.formatting, "production must enable formatting");
-        assert!(flags.range_formatting, "production must enable range_formatting");
+        assert!(
+            !flags.range_formatting,
+            "withdrawn range_formatting must stay off in production (#11955)"
+        );
     }
 
     #[test]
     fn all_profile_gates_nothing_out() {
         let flags = FeatureProfile::All.build_flags();
         assert!(flags.formatting, "all must include formatting");
-        assert!(flags.range_formatting, "all must include range_formatting");
+        assert!(
+            !flags.range_formatting && !flags.on_type_formatting,
+            "withdrawn secondary formatting routes stay out of every profile (#11955)"
+        );
         assert!(flags.inline_values, "all must include inline_values");
     }
 
@@ -498,8 +511,8 @@ mod tests {
                 profile.as_str()
             );
             assert!(
-                flags.range_formatting,
-                "runtime with perltidy should enable range_formatting for {}",
+                !flags.range_formatting,
+                "withdrawn range_formatting stays off for {} (#11955)",
                 profile.as_str()
             );
         }
@@ -512,8 +525,8 @@ mod tests {
         assert!(base.formatting, "build_flags should enable formatting");
         assert!(runtime.formatting, "runtime(false) should keep native formatting enabled");
         assert!(
-            runtime.range_formatting,
-            "runtime(false) should keep native range_formatting enabled"
+            !runtime.range_formatting,
+            "withdrawn native range_formatting stays off at runtime"
         );
     }
 
@@ -522,8 +535,8 @@ mod tests {
         let adv = FeatureProfile::Production.runtime_advertised_features(false);
         assert!(adv.formatting, "production without perltidy should advertise native formatting");
         assert!(
-            adv.range_formatting,
-            "production without perltidy should advertise native range_formatting"
+            !adv.range_formatting && !adv.on_type_formatting,
+            "withdrawn routes must not be advertised without perltidy"
         );
     }
 
@@ -531,7 +544,10 @@ mod tests {
     fn runtime_advertised_features_with_perltidy_enables_formatting() {
         let adv = FeatureProfile::Production.runtime_advertised_features(true);
         assert!(adv.formatting, "production with perltidy should advertise formatting");
-        assert!(adv.range_formatting, "production with perltidy should advertise range_formatting");
+        assert!(
+            !adv.range_formatting && !adv.on_type_formatting,
+            "withdrawn routes must not be advertised with perltidy"
+        );
     }
 
     #[test]

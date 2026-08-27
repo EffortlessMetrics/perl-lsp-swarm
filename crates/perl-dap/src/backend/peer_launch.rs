@@ -24,9 +24,11 @@
 //! editor↔real-`Devel::ptkdb` sessions remain deferred; the seam is proven with
 //! a fake peer.
 
+#[cfg(test)]
+use perl_tdd_support::{must, must_err, must_some};
 use std::fmt;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -1120,28 +1122,6 @@ pub fn run_mirror_listen_session_stdio(
     run_mirror_editor_loop(std::io::stdin(), std::io::stdout(), bridge, peer_rx, poll_interval)
 }
 
-/// Drive a [`MirrorPeerBridge`] listen-launch session over a **socket** editor
-/// connection while the peer connects back on `peer_listener`. `expected_token`
-/// is the session token the peer must present in its `peer/hello` (pass
-/// `Some(endpoint.token)`); a peer that cannot present it is rejected during the
-/// handshake.
-///
-/// # Errors
-/// Returns a transport error if the socket read/write fails irrecoverably.
-pub fn run_mirror_listen_session_socket(
-    editor: TcpStream,
-    peer_listener: TcpListener,
-    bridge: MirrorPeerBridge,
-    handshake_timeout: Duration,
-    poll_interval: Duration,
-    expected_token: Option<PeerSessionToken>,
-) -> std::io::Result<()> {
-    let peer_rx = spawn_peer_acceptor(peer_listener, handshake_timeout, expected_token);
-    let reader = editor.try_clone()?;
-    let writer = editor;
-    run_mirror_editor_loop(reader, writer, bridge, peer_rx, poll_interval)
-}
-
 /// The transport-agnostic editor loop: read framed DAP requests off `reader_src`
 /// on a dedicated thread, dispatch them, write framed responses/events to
 /// `writer`, interleave backend-event delivery, and transition the bridge to
@@ -1367,6 +1347,7 @@ mod tests {
     use crate::peer_protocol::message::{PeerEvent, PeerMessage, PeerRequest, command, event};
     use crate::peer_protocol::payloads::HelloArgs;
     use crate::peer_protocol::{PROTOCOL_VERSION, PeerReportedCapabilities, encode_message};
+    use std::net::TcpStream;
 
     fn spawn_hello_peer(
         addr: SocketAddr,
@@ -1374,7 +1355,7 @@ mod tests {
         hold_open: bool,
     ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
-            let mut stream = TcpStream::connect(addr).expect("connect peer listener");
+            let mut stream = must(TcpStream::connect(addr));
             let hello = PeerMessage::Request(PeerRequest {
                 seq: 1,
                 command: command::HELLO.to_string(),
@@ -1387,7 +1368,7 @@ mod tests {
                 })
                 .ok(),
             });
-            stream.write_all(&encode_message(&hello).expect("encode hello")).expect("write hello");
+            must(stream.write_all(&must(encode_message(&hello))));
             if hold_open {
                 std::thread::sleep(Duration::from_secs(1));
             }
@@ -1399,7 +1380,7 @@ mod tests {
         token: String,
     ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
-            let mut stream = TcpStream::connect(addr).expect("connect attacker peer");
+            let mut stream = must(TcpStream::connect(addr));
             let hello = PeerMessage::Request(PeerRequest {
                 seq: 1,
                 command: command::HELLO.to_string(),
@@ -1412,15 +1393,13 @@ mod tests {
                 })
                 .ok(),
             });
-            stream.write_all(&encode_message(&hello).expect("encode hello")).expect("write hello");
+            must(stream.write_all(&must(encode_message(&hello))));
             let stopped = PeerMessage::Event(PeerEvent {
                 seq: 2,
                 event: event::STOPPED.to_string(),
                 body: Some(json!({ "reason": "breakpoint", "threadId": 1 })),
             });
-            stream
-                .write_all(&encode_message(&stopped).expect("encode stopped"))
-                .expect("write stopped");
+            must(stream.write_all(&must(encode_message(&stopped))));
             std::thread::sleep(Duration::from_secs(1));
         })
     }
@@ -1445,7 +1424,7 @@ mod tests {
                 "port": 0,
             },
         });
-        let cfg = ExternalPeerLaunchConfig::from_launch_arguments(&args).expect("external config");
+        let cfg = must_some(ExternalPeerLaunchConfig::from_launch_arguments(&args));
         assert_eq!(cfg.kind, ExternalDebuggerKind::Ptkdb);
         assert_eq!(cfg.mode, PeerRendezvousMode::Listen);
         assert_eq!(cfg.control, ControlMode::Mirror);
@@ -1455,10 +1434,9 @@ mod tests {
 
     #[test]
     fn parse_defaults_when_external_block_absent() {
-        let cfg = ExternalPeerLaunchConfig::from_launch_arguments(
+        let cfg = must_some(ExternalPeerLaunchConfig::from_launch_arguments(
             &json!({ "debuggerBackend": "external" }),
-        )
-        .expect("defaults");
+        ));
         assert_eq!(cfg.kind, ExternalDebuggerKind::Ptkdb);
         assert_eq!(cfg.mode, PeerRendezvousMode::Connect);
         assert_eq!(cfg.control, ControlMode::Mirror);
@@ -1469,7 +1447,7 @@ mod tests {
     #[test]
     fn bind_allocates_ephemeral_port_and_env_contract() {
         let (listener, endpoint) =
-            PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror).expect("bind");
+            must(PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror));
         assert_ne!(endpoint.addr.port(), 0, "port 0 must resolve to an OS-assigned port");
         assert!(endpoint.addr.ip().is_loopback());
         let token = endpoint.session_token();
@@ -1492,8 +1470,7 @@ mod tests {
         // that keeps the port off the network; `bind` must refuse rather than
         // expose.
         for host in ["0.0.0.0", "::"] {
-            let err = PeerListenEndpoint::bind(host, 0, ControlMode::Mirror)
-                .expect_err("non-loopback host must be refused");
+            let err = must_err(PeerListenEndpoint::bind(host, 0, ControlMode::Mirror));
             assert_eq!(
                 err.kind(),
                 std::io::ErrorKind::InvalidInput,
@@ -1502,8 +1479,7 @@ mod tests {
         }
         // Loopback forms remain accepted.
         for host in ["127.0.0.1", "localhost"] {
-            let (listener, endpoint) = PeerListenEndpoint::bind(host, 0, ControlMode::Mirror)
-                .expect("loopback host must bind");
+            let (listener, endpoint) = must(PeerListenEndpoint::bind(host, 0, ControlMode::Mirror));
             assert!(endpoint.addr.ip().is_loopback());
             drop(listener);
         }
@@ -1511,15 +1487,15 @@ mod tests {
 
     #[test]
     fn tokens_are_unique_per_session() {
-        let a = mint_session_token().expect("first secure token");
-        let b = mint_session_token().expect("second secure token");
+        let a = must(mint_session_token());
+        let b = must(mint_session_token());
         assert_ne!(a, b, "each session mints a distinct token");
     }
 
     #[test]
     fn endpoint_debug_redacts_the_session_token() {
         let (listener, endpoint) =
-            PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror).expect("bind");
+            must(PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror));
         let secret = endpoint.session_token();
         let rendered = format!("{endpoint:?}");
         assert!(!rendered.contains(&secret), "Debug must not disclose the bearer token");
@@ -1529,28 +1505,25 @@ mod tests {
 
     #[test]
     fn acceptor_retries_after_wrong_token_until_correct_peer_authenticates() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
-        let addr = listener.local_addr().expect("listener address");
-        let expected = PeerSessionToken::try_from("0123456789abcdef0123456789abcdef")
-            .expect("valid expected token");
+        let listener = must(TcpListener::bind(("127.0.0.1", 0)));
+        let addr = must(listener.local_addr());
+        let expected = must(PeerSessionToken::try_from("0123456789abcdef0123456789abcdef"));
         let peer_rx = spawn_peer_acceptor(listener, Duration::from_secs(2), Some(expected.clone()));
 
         // This validly-shaped but incorrect credential must consume only the
         // first connection, leaving the listener available for the real peer.
         let wrong = spawn_hello_peer(addr, "00000000000000000000000000000000".to_string(), false);
-        wrong.join().expect("wrong-token peer exits");
+        must(wrong.join());
 
         let correct = spawn_hello_peer(addr, expected.as_str().to_string(), true);
-        let backend = peer_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("correct peer must authenticate after wrong peer");
+        let backend = must(peer_rx.recv_timeout(Duration::from_secs(1)));
         drop(backend);
-        correct.join().expect("correct peer exits");
+        must(correct.join());
     }
 
     #[test]
     fn acceptor_refuses_missing_expected_token() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
+        let listener = must(TcpListener::bind(("127.0.0.1", 0)));
         let peer_rx = spawn_peer_acceptor(listener, Duration::from_secs(1), None);
 
         assert!(matches!(
@@ -1561,31 +1534,27 @@ mod tests {
 
     #[test]
     fn silent_peer_cannot_starve_correct_peer() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
-        let addr = listener.local_addr().expect("listener address");
-        let expected = PeerSessionToken::try_from("0123456789abcdef0123456789abcdef")
-            .expect("valid expected token");
+        let listener = must(TcpListener::bind(("127.0.0.1", 0)));
+        let addr = must(listener.local_addr());
+        let expected = must(PeerSessionToken::try_from("0123456789abcdef0123456789abcdef"));
         let peer_rx = spawn_peer_acceptor(listener, Duration::from_secs(2), Some(expected.clone()));
 
         // Connect first, but never send peer/hello. The acceptor must keep
         // making progress on later connections instead of waiting for this
         // unauthenticated stream until the two-second session deadline.
-        let silent = TcpStream::connect(addr).expect("connect silent peer");
+        let silent = must(TcpStream::connect(addr));
         let correct = spawn_hello_peer(addr, expected.as_str().to_string(), true);
-        let backend = peer_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("correct peer must authenticate behind a silent peer");
+        let backend = must(peer_rx.recv_timeout(Duration::from_secs(1)));
         drop(backend);
         drop(silent);
-        correct.join().expect("correct peer exits");
+        must(correct.join());
     }
 
     #[test]
     fn unauthenticated_peer_cannot_inject_events_before_correct_peer() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
-        let addr = listener.local_addr().expect("listener address");
-        let expected = PeerSessionToken::try_from("0123456789abcdef0123456789abcdef")
-            .expect("valid expected token");
+        let listener = must(TcpListener::bind(("127.0.0.1", 0)));
+        let addr = must(listener.local_addr());
+        let expected = must(PeerSessionToken::try_from("0123456789abcdef0123456789abcdef"));
         let peer_rx = spawn_peer_acceptor(listener, Duration::from_secs(2), Some(expected.clone()));
 
         let attacker =
@@ -1596,12 +1565,10 @@ mod tests {
         );
 
         let correct = spawn_hello_peer(addr, expected.as_str().to_string(), true);
-        let backend = peer_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("correct peer must still authenticate after attacker event");
+        let backend = must(peer_rx.recv_timeout(Duration::from_secs(1)));
         drop(backend);
-        attacker.join().expect("attacker peer exits");
-        correct.join().expect("correct peer exits");
+        must(attacker.join());
+        must(correct.join());
     }
 
     #[test]
@@ -1677,6 +1644,57 @@ mod tests {
         assert_eq!(bps.len(), 2);
         assert_eq!(bps[0]["verified"], false, "queued breakpoints are unverified until flush");
         Ok(())
+    }
+
+    #[test]
+    fn acceptor_timeout_surfaces_terminated_over_stdio_pipes_not_a_hang() {
+        use perl_lsp_rs_core::transport::ContentLengthFramer;
+        use std::sync::{Arc, Mutex};
+
+        // No peer ever connects: the acceptor deadline elapses with no live
+        // backend. Drive the editor loop over a held-open pipe so stdin does
+        // not EOF before the timeout, proving the session emits `terminated`
+        // without an editor TCP listener.
+        let peer_listener = must(TcpListener::bind(("127.0.0.1", 0)));
+        let (reader, _hold_open) = must(std::io::pipe());
+        let out_buf = Arc::new(Mutex::new(Vec::new()));
+
+        #[derive(Clone)]
+        struct SharedSink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for SharedSink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+        must(run_mirror_editor_loop(
+            reader,
+            SharedSink(out_buf.clone()),
+            bridge,
+            spawn_peer_acceptor(peer_listener, Duration::from_millis(80), None),
+            Duration::from_millis(10),
+        ));
+
+        let raw = out_buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut framer = ContentLengthFramer::new();
+        framer.push(&raw);
+        let mut saw_terminated = false;
+        while let Ok(Some(body)) = framer.try_next() {
+            if let Ok(v) = serde_json::from_slice::<Value>(&body)
+                && v.get("event").and_then(Value::as_str) == Some("terminated")
+            {
+                saw_terminated = true;
+            }
+        }
+        assert!(
+            saw_terminated,
+            "an acceptor timeout with no peer must surface a terminated event, not hang forever"
+        );
     }
 
     fn as_response(msg: &DapMessage) -> Result<(&str, bool, Option<&Value>), String> {

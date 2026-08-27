@@ -256,6 +256,21 @@ mod tests {
         );
     }
 
+    /// Withdrawn-route architecture control (#11955): no `workspace/executeCommand`
+    /// entry may produce formatting edits, so a withdrawn request route cannot be
+    /// re-reached under a command name.
+    #[test]
+    fn supported_commands_contain_no_formatting_route() {
+        for command in SUPPORTED_COMMANDS {
+            let lowered = command.to_ascii_lowercase();
+            assert!(
+                !lowered.contains("format"),
+                "command '{command}' must not exist while secondary formatting routes are \
+                 withdrawn (#11955)"
+            );
+        }
+    }
+
     #[test]
     fn inline_completion_advertised_as_top_level_json_when_enabled() {
         let flags = BuildFlags { inline_completion: true, ..BuildFlags::default() };

@@ -2295,6 +2295,250 @@ pub fn perl_dap::ptkdb_bootstrap::perl_single_quoted(s: &str) -> alloc::string::
 pub fn perl_dap::ptkdb_bootstrap::render_env(display: core::option::Option<&str>) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
 pub fn perl_dap::ptkdb_bootstrap::render_launch_command(packet: &perl_dap::model::DebugSessionPacket) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_dap::ptkdb_bootstrap::render_ptkdbrc(packet: &perl_dap::model::DebugSessionPacket, stop_on_entry: bool) -> alloc::string::String
+pub fn perl_dap::reload_family::WireFailureCause::from(cause: perl_dap::reload::IndeterminateCause) -> Self
+pub type perl_dap::reload_family::WireDisposition::Error = ()
+pub fn perl_dap::reload_family::WireDisposition::try_from(eligibility: perl_dap::reload::LoadedModuleReloadEligibility) -> core::result::Result<Self, Self::Error>
+pub fn perl_dap::reload_family::WireOutcomeKind::from(outcome: &perl_dap::reload::LoadedModuleReloadOutcome) -> Self
+pub fn perl_dap::reload_family::WireFailureCause::from(cause: perl_dap::reload::PreMutationFailureCause) -> Self
+pub fn perl_dap::reload_family::WirePhase::from(phase: perl_dap::reload::ReloadTransactionPhase) -> Self
+pub mod perl_dap::reload_family
+pub enum perl_dap::reload_family::FamilyNegotiationRefusal
+pub perl_dap::reload_family::FamilyNegotiationRefusal::FamilyAbsent
+pub perl_dap::reload_family::FamilyNegotiationRefusal::FamilyNameMismatch
+pub perl_dap::reload_family::FamilyNegotiationRefusal::NoOverlappingVersion
+pub const fn perl_dap::reload_family::FamilyNegotiationRefusal::wire_code(self) -> perl_dap::reload_family::WireRejectionCode
+pub fn perl_dap::reload_family::FamilyNegotiationRefusal::clone(&self) -> perl_dap::reload_family::FamilyNegotiationRefusal
+pub fn perl_dap::reload_family::FamilyNegotiationRefusal::eq(&self, other: &perl_dap::reload_family::FamilyNegotiationRefusal) -> bool
+pub fn perl_dap::reload_family::FamilyNegotiationRefusal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::reload_family::LoadedModuleReloadResponseBody
+pub perl_dap::reload_family::LoadedModuleReloadResponseBody::Outcome(perl_dap::reload_family::LoadedModuleReloadOutcomeBody)
+pub perl_dap::reload_family::LoadedModuleReloadResponseBody::Rejected(perl_dap::reload_family::LoadedModuleReloadRejectionBody)
+pub fn perl_dap::reload_family::LoadedModuleReloadResponseBody::clone(&self) -> perl_dap::reload_family::LoadedModuleReloadResponseBody
+pub fn perl_dap::reload_family::LoadedModuleReloadResponseBody::eq(&self, other: &perl_dap::reload_family::LoadedModuleReloadResponseBody) -> bool
+pub fn perl_dap::reload_family::LoadedModuleReloadResponseBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::LoadedModuleReloadResponseBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::reload_family::LoadedModuleReloadResponseBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_dap::reload_family::ReloadRequestEvaluation
+pub perl_dap::reload_family::ReloadRequestEvaluation::Admitted
+pub perl_dap::reload_family::ReloadRequestEvaluation::Admitted::operation_id: u64
+pub perl_dap::reload_family::ReloadRequestEvaluation::Response(perl_dap::reload_family::LoadedModuleReloadWireResponse)
+pub fn perl_dap::reload_family::ReloadRequestEvaluation::clone(&self) -> perl_dap::reload_family::ReloadRequestEvaluation
+pub fn perl_dap::reload_family::ReloadRequestEvaluation::eq(&self, other: &perl_dap::reload_family::ReloadRequestEvaluation) -> bool
+pub fn perl_dap::reload_family::ReloadRequestEvaluation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::reload_family::WireDisposition
+pub perl_dap::reload_family::WireDisposition::ActiveFrameInTarget
+pub perl_dap::reload_family::WireDisposition::AmbiguousRuntimeMapping
+pub perl_dap::reload_family::WireDisposition::DirtyOrUnsavedSource
+pub perl_dap::reload_family::WireDisposition::GeneratedOrEvalSource
+pub perl_dap::reload_family::WireDisposition::MainProgramNotModule
+pub perl_dap::reload_family::WireDisposition::NotLoaded
+pub perl_dap::reload_family::WireDisposition::NotStoppedOrNotCommandReady
+pub perl_dap::reload_family::WireDisposition::OutsideLaunchAuthority
+pub perl_dap::reload_family::WireDisposition::SourceFilterOrCompileHookBoundary
+pub perl_dap::reload_family::WireDisposition::SourceNotExactOrStale
+pub perl_dap::reload_family::WireDisposition::UnsupportedRuntime
+pub perl_dap::reload_family::WireDisposition::XsOrNativeModule
+pub fn perl_dap::reload_family::WireDisposition::clone(&self) -> perl_dap::reload_family::WireDisposition
+pub fn perl_dap::reload_family::WireDisposition::eq(&self, other: &perl_dap::reload_family::WireDisposition) -> bool
+pub type perl_dap::reload_family::WireDisposition::Error = ()
+pub fn perl_dap::reload_family::WireDisposition::try_from(eligibility: perl_dap::reload::LoadedModuleReloadEligibility) -> core::result::Result<Self, Self::Error>
+pub fn perl_dap::reload_family::WireDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::WireDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::reload_family::WireDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_dap::reload_family::WireFailureCause
+pub perl_dap::reload_family::WireFailureCause::AmbiguousAcknowledgement
+pub perl_dap::reload_family::WireFailureCause::CancelledBeforeMutationBegan
+pub perl_dap::reload_family::WireFailureCause::PrepareFailed
+pub perl_dap::reload_family::WireFailureCause::ReadBackInconclusive
+pub perl_dap::reload_family::WireFailureCause::TimeoutAfterMutationBegan
+pub perl_dap::reload_family::WireFailureCause::TransportLossAfterMutationBegan
+pub fn perl_dap::reload_family::WireFailureCause::clone(&self) -> perl_dap::reload_family::WireFailureCause
+pub fn perl_dap::reload_family::WireFailureCause::eq(&self, other: &perl_dap::reload_family::WireFailureCause) -> bool
+pub fn perl_dap::reload_family::WireFailureCause::from(cause: perl_dap::reload::IndeterminateCause) -> Self
+pub fn perl_dap::reload_family::WireFailureCause::from(cause: perl_dap::reload::PreMutationFailureCause) -> Self
+pub fn perl_dap::reload_family::WireFailureCause::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::WireFailureCause::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::reload_family::WireFailureCause::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_dap::reload_family::WireOutcomeKind
+pub perl_dap::reload_family::WireOutcomeKind::FailedBeforeMutation
+pub perl_dap::reload_family::WireOutcomeKind::IndeterminatePossiblyApplied
+pub perl_dap::reload_family::WireOutcomeKind::Refused
+pub perl_dap::reload_family::WireOutcomeKind::Reloaded
+pub const fn perl_dap::reload_family::WireOutcomeKind::as_str(self) -> &'static str
+pub const fn perl_dap::reload_family::WireOutcomeKind::permits_success(self) -> bool
+pub fn perl_dap::reload_family::WireOutcomeKind::clone(&self) -> perl_dap::reload_family::WireOutcomeKind
+pub fn perl_dap::reload_family::WireOutcomeKind::eq(&self, other: &perl_dap::reload_family::WireOutcomeKind) -> bool
+pub fn perl_dap::reload_family::WireOutcomeKind::from(outcome: &perl_dap::reload::LoadedModuleReloadOutcome) -> Self
+pub fn perl_dap::reload_family::WireOutcomeKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::WireOutcomeKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::reload_family::WireOutcomeKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_dap::reload_family::WirePhase
+pub perl_dap::reload_family::WirePhase::Admission
+pub perl_dap::reload_family::WirePhase::CommitGeneration
+pub perl_dap::reload_family::WirePhase::PostReloadReconciliation
+pub perl_dap::reload_family::WirePhase::Preflight
+pub perl_dap::reload_family::WirePhase::Prepare
+pub perl_dap::reload_family::WirePhase::RuntimeAcknowledgementReadBack
+pub perl_dap::reload_family::WirePhase::RuntimeMutationBegins
+pub perl_dap::reload_family::WirePhase::TerminalProjection
+pub fn perl_dap::reload_family::WirePhase::clone(&self) -> perl_dap::reload_family::WirePhase
+pub fn perl_dap::reload_family::WirePhase::eq(&self, other: &perl_dap::reload_family::WirePhase) -> bool
+pub fn perl_dap::reload_family::WirePhase::from(phase: perl_dap::reload::ReloadTransactionPhase) -> Self
+pub fn perl_dap::reload_family::WirePhase::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::WirePhase::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::reload_family::WirePhase::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_dap::reload_family::WireProjectionRefusal
+pub perl_dap::reload_family::WireProjectionRefusal::OutcomePhaseKindMismatch
+pub fn perl_dap::reload_family::WireProjectionRefusal::clone(&self) -> perl_dap::reload_family::WireProjectionRefusal
+pub fn perl_dap::reload_family::WireProjectionRefusal::eq(&self, other: &perl_dap::reload_family::WireProjectionRefusal) -> bool
+pub fn perl_dap::reload_family::WireProjectionRefusal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::WireProjectionRefusal::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::reload_family::WireReconciliationDisposition
+pub perl_dap::reload_family::WireReconciliationDisposition::Deferred
+pub fn perl_dap::reload_family::WireReconciliationDisposition::clone(&self) -> perl_dap::reload_family::WireReconciliationDisposition
+pub fn perl_dap::reload_family::WireReconciliationDisposition::eq(&self, other: &perl_dap::reload_family::WireReconciliationDisposition) -> bool
+pub fn perl_dap::reload_family::WireReconciliationDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::WireReconciliationDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::reload_family::WireReconciliationDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_dap::reload_family::WireRejectionCode
+pub perl_dap::reload_family::WireRejectionCode::DeadlineOutOfRange
+pub perl_dap::reload_family::WireRejectionCode::DetailTooLarge
+pub perl_dap::reload_family::WireRejectionCode::FamilyNameMismatch
+pub perl_dap::reload_family::WireRejectionCode::FamilyNotBackedForSession
+pub perl_dap::reload_family::WireRejectionCode::FamilyNotNegotiated
+pub perl_dap::reload_family::WireRejectionCode::FamilyVersionUnsupported
+pub perl_dap::reload_family::WireRejectionCode::IdentityTooLarge
+pub perl_dap::reload_family::WireRejectionCode::MalformedRequest
+pub perl_dap::reload_family::WireRejectionCode::OperationIdInvalid
+pub perl_dap::reload_family::WireRejectionCode::OperationStale
+pub perl_dap::reload_family::WireRejectionCode::PayloadTooLarge
+pub perl_dap::reload_family::WireRejectionCode::RawClientInputRefused
+pub perl_dap::reload_family::WireRejectionCode::SessionStale
+pub perl_dap::reload_family::WireRejectionCode::SubjectIdentityInsufficient
+pub perl_dap::reload_family::WireRejectionCode::UnknownFieldRejected
+pub perl_dap::reload_family::WireRejectionCode::UnknownVariantRejected
+pub const fn perl_dap::reload_family::WireRejectionCode::as_str(self) -> &'static str
+pub fn perl_dap::reload_family::WireRejectionCode::clone(&self) -> perl_dap::reload_family::WireRejectionCode
+pub fn perl_dap::reload_family::WireRejectionCode::eq(&self, other: &perl_dap::reload_family::WireRejectionCode) -> bool
+pub fn perl_dap::reload_family::WireRejectionCode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::WireRejectionCode::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::reload_family::WireRejectionCode::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_dap::reload_family::WireRejectionMarker
+pub perl_dap::reload_family::WireRejectionMarker::RequestRejected
+pub fn perl_dap::reload_family::WireRejectionMarker::clone(&self) -> perl_dap::reload_family::WireRejectionMarker
+pub fn perl_dap::reload_family::WireRejectionMarker::eq(&self, other: &perl_dap::reload_family::WireRejectionMarker) -> bool
+pub fn perl_dap::reload_family::WireRejectionMarker::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::WireRejectionMarker::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::reload_family::WireRejectionMarker::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_dap::reload_family::WireTerminalClassification
+pub perl_dap::reload_family::WireTerminalClassification::FailedBeforeMutationCleanFailure
+pub perl_dap::reload_family::WireTerminalClassification::PossiblyApplied
+pub perl_dap::reload_family::WireTerminalClassification::RefusedCleanFailure
+pub perl_dap::reload_family::WireTerminalClassification::ReloadedClean
+pub perl_dap::reload_family::WireTerminalClassification::UnknownFailClosed
+pub fn perl_dap::reload_family::WireTerminalClassification::clone(&self) -> perl_dap::reload_family::WireTerminalClassification
+pub fn perl_dap::reload_family::WireTerminalClassification::eq(&self, other: &perl_dap::reload_family::WireTerminalClassification) -> bool
+pub fn perl_dap::reload_family::WireTerminalClassification::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload_family::ClientFamilyDeclaration
+pub perl_dap::reload_family::ClientFamilyDeclaration::family: alloc::string::String
+pub perl_dap::reload_family::ClientFamilyDeclaration::versions: alloc::vec::Vec<u32>
+pub fn perl_dap::reload_family::ClientFamilyDeclaration::clone(&self) -> perl_dap::reload_family::ClientFamilyDeclaration
+pub fn perl_dap::reload_family::ClientFamilyDeclaration::eq(&self, other: &perl_dap::reload_family::ClientFamilyDeclaration) -> bool
+pub fn perl_dap::reload_family::ClientFamilyDeclaration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload_family::LoadedModuleReloadOutcomeBody
+pub perl_dap::reload_family::LoadedModuleReloadOutcomeBody::cause: core::option::Option<perl_dap::reload_family::WireFailureCause>
+pub perl_dap::reload_family::LoadedModuleReloadOutcomeBody::disposition: core::option::Option<perl_dap::reload_family::WireDisposition>
+pub perl_dap::reload_family::LoadedModuleReloadOutcomeBody::generation: core::option::Option<perl_dap::reload_family::WireGenerationWitness>
+pub perl_dap::reload_family::LoadedModuleReloadOutcomeBody::kind: perl_dap::reload_family::WireOutcomeKind
+pub perl_dap::reload_family::LoadedModuleReloadOutcomeBody::phase: perl_dap::reload_family::WirePhase
+pub perl_dap::reload_family::LoadedModuleReloadOutcomeBody::possibly_applied: bool
+pub perl_dap::reload_family::LoadedModuleReloadOutcomeBody::reasons: alloc::vec::Vec<alloc::string::String>
+pub perl_dap::reload_family::LoadedModuleReloadOutcomeBody::reconciliation: perl_dap::reload_family::WireReconciliation
+pub perl_dap::reload_family::LoadedModuleReloadOutcomeBody::remediation: core::option::Option<alloc::string::String>
+pub fn perl_dap::reload_family::LoadedModuleReloadOutcomeBody::clone(&self) -> perl_dap::reload_family::LoadedModuleReloadOutcomeBody
+pub fn perl_dap::reload_family::LoadedModuleReloadOutcomeBody::eq(&self, other: &perl_dap::reload_family::LoadedModuleReloadOutcomeBody) -> bool
+pub fn perl_dap::reload_family::LoadedModuleReloadOutcomeBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::LoadedModuleReloadOutcomeBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::reload_family::LoadedModuleReloadOutcomeBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::reload_family::LoadedModuleReloadRejectionBody
+pub perl_dap::reload_family::LoadedModuleReloadRejectionBody::code: perl_dap::reload_family::WireRejectionCode
+pub perl_dap::reload_family::LoadedModuleReloadRejectionBody::kind: perl_dap::reload_family::WireRejectionMarker
+pub perl_dap::reload_family::LoadedModuleReloadRejectionBody::reasons: alloc::vec::Vec<alloc::string::String>
+pub fn perl_dap::reload_family::LoadedModuleReloadRejectionBody::clone(&self) -> perl_dap::reload_family::LoadedModuleReloadRejectionBody
+pub fn perl_dap::reload_family::LoadedModuleReloadRejectionBody::eq(&self, other: &perl_dap::reload_family::LoadedModuleReloadRejectionBody) -> bool
+pub fn perl_dap::reload_family::LoadedModuleReloadRejectionBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::LoadedModuleReloadRejectionBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::reload_family::LoadedModuleReloadRejectionBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::reload_family::LoadedModuleReloadWireRequest
+pub perl_dap::reload_family::LoadedModuleReloadWireRequest::deadline_ms: core::option::Option<u64>
+pub perl_dap::reload_family::LoadedModuleReloadWireRequest::family: alloc::string::String
+pub perl_dap::reload_family::LoadedModuleReloadWireRequest::family_version: u32
+pub perl_dap::reload_family::LoadedModuleReloadWireRequest::operation_id: u64
+pub perl_dap::reload_family::LoadedModuleReloadWireRequest::session_epoch: u64
+pub perl_dap::reload_family::LoadedModuleReloadWireRequest::subject: perl_dap::reload_family::WireSubject
+pub fn perl_dap::reload_family::LoadedModuleReloadWireRequest::clone(&self) -> perl_dap::reload_family::LoadedModuleReloadWireRequest
+pub fn perl_dap::reload_family::LoadedModuleReloadWireRequest::eq(&self, other: &perl_dap::reload_family::LoadedModuleReloadWireRequest) -> bool
+pub fn perl_dap::reload_family::LoadedModuleReloadWireRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::LoadedModuleReloadWireRequest::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::reload_family::LoadedModuleReloadWireRequest::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::reload_family::LoadedModuleReloadWireResponse
+pub perl_dap::reload_family::LoadedModuleReloadWireResponse::body: perl_dap::reload_family::LoadedModuleReloadResponseBody
+pub perl_dap::reload_family::LoadedModuleReloadWireResponse::operation_id: u64
+pub perl_dap::reload_family::LoadedModuleReloadWireResponse::success: bool
+pub fn perl_dap::reload_family::LoadedModuleReloadWireResponse::clone(&self) -> perl_dap::reload_family::LoadedModuleReloadWireResponse
+pub fn perl_dap::reload_family::LoadedModuleReloadWireResponse::eq(&self, other: &perl_dap::reload_family::LoadedModuleReloadWireResponse) -> bool
+pub fn perl_dap::reload_family::LoadedModuleReloadWireResponse::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::LoadedModuleReloadWireResponse::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::reload_family::LoadedModuleReloadWireResponse::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::reload_family::ReloadFamilySession
+pub fn perl_dap::reload_family::ReloadFamilySession::evaluate(&mut self, raw: &serde_json::value::Value) -> perl_dap::reload_family::ReloadRequestEvaluation
+pub fn perl_dap::reload_family::ReloadFamilySession::negotiate(&mut self, declaration: core::option::Option<&perl_dap::reload_family::ClientFamilyDeclaration>) -> core::result::Result<u32, perl_dap::reload_family::FamilyNegotiationRefusal>
+pub fn perl_dap::reload_family::ReloadFamilySession::new(epoch: u64, backed: bool) -> perl_dap::reload_family::ReloadFamilySession
+pub struct perl_dap::reload_family::WireGenerationWitness
+pub perl_dap::reload_family::WireGenerationWitness::advanced: bool
+pub perl_dap::reload_family::WireGenerationWitness::current: u64
+pub perl_dap::reload_family::WireGenerationWitness::previous: u64
+pub fn perl_dap::reload_family::WireGenerationWitness::clone(&self) -> perl_dap::reload_family::WireGenerationWitness
+pub fn perl_dap::reload_family::WireGenerationWitness::eq(&self, other: &perl_dap::reload_family::WireGenerationWitness) -> bool
+pub fn perl_dap::reload_family::WireGenerationWitness::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::WireGenerationWitness::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::reload_family::WireGenerationWitness::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::reload_family::WireReconciliation
+pub perl_dap::reload_family::WireReconciliation::breakpoint_reconciliation: perl_dap::reload_family::WireReconciliationDisposition
+pub perl_dap::reload_family::WireReconciliation::inspection_invalidation: perl_dap::reload_family::WireReconciliationDisposition
+pub perl_dap::reload_family::WireReconciliation::loaded_source_refresh: perl_dap::reload_family::WireReconciliationDisposition
+pub fn perl_dap::reload_family::WireReconciliation::clone(&self) -> perl_dap::reload_family::WireReconciliation
+pub fn perl_dap::reload_family::WireReconciliation::eq(&self, other: &perl_dap::reload_family::WireReconciliation) -> bool
+pub fn perl_dap::reload_family::WireReconciliation::default() -> Self
+pub fn perl_dap::reload_family::WireReconciliation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::WireReconciliation::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::reload_family::WireReconciliation::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::reload_family::WireSubject
+pub perl_dap::reload_family::WireSubject::logical_source_uri: alloc::string::String
+pub perl_dap::reload_family::WireSubject::module_identity: alloc::string::String
+pub perl_dap::reload_family::WireSubject::observation_generation: u64
+pub perl_dap::reload_family::WireSubject::saved_source_digest: alloc::string::String
+pub fn perl_dap::reload_family::WireSubject::clone(&self) -> perl_dap::reload_family::WireSubject
+pub fn perl_dap::reload_family::WireSubject::eq(&self, other: &perl_dap::reload_family::WireSubject) -> bool
+pub fn perl_dap::reload_family::WireSubject::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload_family::WireSubject::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::reload_family::WireSubject::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const perl_dap::reload_family::DETAIL_REDACTED_MARKER: &str
+pub const perl_dap::reload_family::LOADED_MODULE_RELOAD_FAMILY: &str
+pub const perl_dap::reload_family::LOADED_MODULE_RELOAD_FAMILY_VERSION: u32
+pub const perl_dap::reload_family::LOADED_MODULE_RELOAD_REQUEST: &str
+pub const perl_dap::reload_family::MAX_DEADLINE_MS: u64
+pub const perl_dap::reload_family::MAX_DETAIL_CHARS: usize
+pub const perl_dap::reload_family::MAX_DIGEST_CHARS: usize
+pub const perl_dap::reload_family::MAX_IDENTITY_CHARS: usize
+pub const perl_dap::reload_family::MAX_REASONS: usize
+pub const perl_dap::reload_family::MAX_REASON_CHARS: usize
+pub const perl_dap::reload_family::MAX_REQUEST_BYTES: usize
+pub const perl_dap::reload_family::MAX_RETAINED_OPERATIONS: usize
+pub const perl_dap::reload_family::MIN_DEADLINE_MS: u64
+pub const perl_dap::reload_family::REASONS_TRUNCATED_MARKER: &str
+pub fn perl_dap::reload_family::classify_wire_terminal(kind: &str, possibly_applied: bool) -> perl_dap::reload_family::WireTerminalClassification
+pub fn perl_dap::reload_family::project_outcome(outcome: &perl_dap::reload::LoadedModuleReloadOutcome, operation_id: u64, clock: &mut perl_dap::reload::RuntimeModuleGenerationClock, reasons: &[alloc::string::String], remediation: core::option::Option<&str>) -> core::result::Result<perl_dap::reload_family::LoadedModuleReloadWireResponse, perl_dap::reload_family::WireProjectionRefusal>
 pub mod perl_dap::security
 pub enum perl_dap::security::SecurityError
 pub perl_dap::security::SecurityError::ExcessiveTimeout(u32)
@@ -2329,12 +2573,6 @@ pub struct perl_dap::server::DapServer
 pub perl_dap::server::DapServer::config: perl_dap::DapConfig
 pub fn perl_dap::DapServer::new(config: perl_dap::DapConfig) -> anyhow::Result<Self>
 pub fn perl_dap::DapServer::run(&mut self) -> anyhow::Result<()>
-pub fn perl_dap::DapServer::run_socket(&mut self, port: u16) -> anyhow::Result<()>
-pub struct perl_dap::server::DapSocketBindError
-pub perl_dap::server::DapSocketBindError::port: u16
-pub fn perl_dap::DapSocketBindError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_dap::DapSocketBindError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_dap::DapSocketBindError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub mod perl_dap::session_plan
 pub struct perl_dap::session_plan::DebugSessionPlanBuilder
 pub fn perl_dap::session_plan::DebugSessionPlanBuilder::breakpoint(self, breakpoint: perl_dap::model::DebugBreakpoint) -> Self
@@ -2926,12 +3164,6 @@ pub struct perl_dap::DapServer
 pub perl_dap::DapServer::config: perl_dap::DapConfig
 pub fn perl_dap::DapServer::new(config: perl_dap::DapConfig) -> anyhow::Result<Self>
 pub fn perl_dap::DapServer::run(&mut self) -> anyhow::Result<()>
-pub fn perl_dap::DapServer::run_socket(&mut self, port: u16) -> anyhow::Result<()>
-pub struct perl_dap::DapSocketBindError
-pub perl_dap::DapSocketBindError::port: u16
-pub fn perl_dap::DapSocketBindError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_dap::DapSocketBindError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_dap::DapSocketBindError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub struct perl_dap::DataBreakpoint
 pub perl_dap::DataBreakpoint::access_type: core::option::Option<alloc::string::String>
 pub perl_dap::DataBreakpoint::condition: core::option::Option<alloc::string::String>

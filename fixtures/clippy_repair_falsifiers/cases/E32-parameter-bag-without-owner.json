@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "E32-parameter-bag-without-owner",
+  "family": "structural_ownership_theater",
+  "purpose": "FooArgs parameter bags with no semantic identity or invariant absorb unbounded growth and hide real dependencies.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "pub struct ParseArgs",
+      "args.rest"
+    ],
+    "content": "pub struct ParseArgs {\n    pub a: bool,\n    pub b: Option<String>,\n    pub c: usize,\n    pub d: bool,\n    pub rest: Vec<String>,\n}\npub fn parse(args: &ParseArgs) -> Ast { parse_impl(args.a, args.b.as_deref(), args.c, args.d, &args.rest) }\n",
+    "sha256": "8f5077e5b2effcf06c1620e3cdfe5013ceb89063b091e722dd2443678b212c8b"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11338,
+    "unresolved_reason": "Structural threshold ratchet (#11338) is open; too-many-arguments config alone cannot reject bags."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "parameter_bag_no_owner"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "OptionsError::Depth",
+      "ParseOptions"
+    ],
+    "note": "Arguments form a validated semantic unit.",
+    "content": "pub struct ParseOptions { dialect: Dialect, max_depth: usize }\nimpl ParseOptions {\n    pub fn new(dialect: Dialect, max_depth: usize) -> Result<Self, OptionsError> {\n        if max_depth == 0 { return Err(OptionsError::Depth); }\n        Ok(Self { dialect, max_depth })\n    }\n}\n",
+    "sha256": "1af1ec5fb748fe10c5a654fff333fa61beab6e4e32dc89fab7f2a8fce269324b"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Threshold distributions tracked by #11338/#11460; case freezes the structural theater identity."
+}

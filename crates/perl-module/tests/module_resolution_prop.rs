@@ -1,4 +1,4 @@
-use perl_module::resolution::{ModuleUriResolution, resolve_module_uri};
+use perl_module::{ModuleUriResolution, resolve_module_uri};
 use proptest::prelude::*;
 use std::time::Duration;
 

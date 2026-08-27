@@ -5,6 +5,7 @@
 //!
 //! Tracks `use` and `no` pragmas throughout the codebase to determine
 //! effective pragma state at any point in the code.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_ast::ast::Node;
 use std::ops::Range;
@@ -12,10 +13,12 @@ use std::ops::Range;
 mod args;
 mod conditional;
 mod features;
+mod import_into;
 mod map;
 mod range_builder;
 mod version;
 
+pub use import_into::{ImportIntoCall, ImportIntoSource, ImportIntoTarget, find_import_into_calls};
 pub use map::{
     CompileTimePragmaEnvironment, PragmaEntry, PragmaMap, PragmaQueryCursor, PragmaStateQuery,
 };

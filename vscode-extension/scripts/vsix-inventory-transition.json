@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 10200,
-  "reason": "#10200 baseline truth repair: tighten package.json 58690->58529 to the true current size; record changelog.md at the archive-measured 19955 (vsce markdown processor rewrites the two now-absolute release-note links); record out/extension.js at the true current build 1465078 (both win32 and CI linux builds agree; the prior 1465391 recorded a larger bundle that no longer builds — undeclared -313 drift since the #7276-era packaging). Archive-normalized asset names retained; no file added, removed, or loosened; total recomputed 1638716->1638246.",
-  "base_baseline_file_sha256": "86d37aec8d47610d247c297a2b9c1592419fb8e6ea301de42318006a93c8d690",
-  "candidate_baseline_file_sha256": "0c0505194ee87ddadae4154dc7d77dd005b2791447d7f0278f1f9078f1eabaeb",
-  "base_inventory_sha256": "9ffef8327470dc624893f58b6ca0ac5b04262acebc7ea9d6eaed77fed657373e",
-  "candidate_inventory_sha256": "5b56dd0d313e33cad431fc52e9e16521d10c4e5cbaa0dda80365bd7f0d2f628e"
+  "owner_issue": 6116,
+  "reason": "Repairs the grammar regression from #6116's landed change (2a0497a8a): the trailing-comma fix leaves the grammar at 13660 bytes (was recorded 13346 from the broken state) and the vsix baseline reconciles to total 1711981 (1711667 + 314 + total_bytes correction). Size-only delta: no file added, removed, or loosened; out/extension.js unchanged; grammar scope fixes restore #6116's intended anchoring. Composed on top of the accepted #7845/#9842/#11985 baselines.",
+  "base_baseline_file_sha256": "5c173b406230338b16676a0795ad19242ae3817f96b7d390c60d23300f5b96e9",
+  "candidate_baseline_file_sha256": "18c71611c572f227fff586fed8e8a8f85f9cedabd7c9f5febe72464c09e6f7f5",
+  "base_inventory_sha256": "3e26c061c62287bf6bb97092be08fe450d0ed6bd1a347141c3acccd40c806d3f",
+  "candidate_inventory_sha256": "124e8ae60936f4b50e724e0d6341bb662818dc3324c3790cb08e03bac854b655"
 }

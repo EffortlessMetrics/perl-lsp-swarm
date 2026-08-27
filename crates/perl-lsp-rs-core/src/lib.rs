@@ -29,6 +29,8 @@ pub(crate) mod configuration_authority;
 mod configuration_observation;
 /// Parser for Perl::Critic output emitted by external lint runs.
 pub mod critic_parser;
+/// Registry-driven, native-first external-tool doctor projection.
+pub mod external_tool_doctor;
 /// Canonical policy roles and native replacements for external Perl tooling.
 pub mod external_tools;
 /// Feature catalog parsing and generation utilities shared by build/runtime code.
@@ -51,6 +53,10 @@ pub mod protocol;
 pub mod providers;
 /// Request lifecycle, scheduling, and runtime orchestration infrastructure.
 pub mod runtime;
+/// Ticket-owned fresh-full semantic construction cell (#12151).
+pub mod semantic_construction;
+/// Ticket-bound immutable file semantic snapshot envelope (#12150).
+pub mod semantic_snapshot;
 /// Integrations for external tools such as `perlcritic` and `perltidy`.
 pub mod tooling;
 /// Message framing and stream transport glue for stdio/socket communication.

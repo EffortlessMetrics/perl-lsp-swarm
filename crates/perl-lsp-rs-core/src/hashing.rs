@@ -21,15 +21,25 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     format!("sha256:{hex}")
 }
 
-/// Compute an FNV-1a 64-bit hash and return it as a tagged hex string.
+/// Compute an FNV-1a 64-bit hash of `bytes`.
+///
+/// Deterministic and process-safe: the same bytes hash to the same value in
+/// every process, which makes it suitable for bounded retention fingerprints
+/// where the raw payload must not be retained (#9769).
 #[must_use]
-pub fn fnv1a64_hex(bytes: &[u8]) -> String {
+pub fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in bytes {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    format!("fnv1a64:{hash:016x}")
+    hash
+}
+
+/// Compute an FNV-1a 64-bit hash and return it as a tagged hex string.
+#[must_use]
+pub fn fnv1a64_hex(bytes: &[u8]) -> String {
+    format!("fnv1a64:{:016x}", fnv1a64(bytes))
 }
 
 #[cfg(test)]

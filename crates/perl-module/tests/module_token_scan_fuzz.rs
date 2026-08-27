@@ -1,4 +1,4 @@
-use perl_module::token_parser::parse_module_token;
+use perl_module::parse_module_token;
 
 fn next_u64(state: &mut u64) -> u64 {
     *state ^= *state << 13;

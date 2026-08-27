@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "C19-uncontracted-underscore-binding",
+  "family": "lost_work_error_obligation_theater",
+  "purpose": "Underscore-prefixed bindings used without an accepted deliberate-discard contract keep dead obligations alive invisibly.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "let _err = queue.commit()",
+      "renamed, still ignored"
+    ],
+    "content": "pub fn flush(queue: &Queue) -> Status {\n    let _err = queue.commit(); // renamed, still ignored\n    Status::Flushed\n}\n",
+    "sha256": "32b3b2f0a1b79d18d62dd238fbedda350154279b80c9b01985639ac32df9d048"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11236,
+    "unresolved_reason": "Deliberate must-use discard semantics (#11236) are unsettled; no contract distinguishes honest discards yet."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "uncontracted_deliberate_discard"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "commit()?",
+      "Result<Status, CommitError>"
+    ],
+    "note": "Obligation surfaces in the return type.",
+    "content": "pub fn flush(queue: &Queue) -> Result<Status, CommitError> {\n    queue.commit()?;\n    Ok(Status::Flushed)\n}\n",
+    "sha256": "9fa41f011fecb6eef57d6e21226ab620d79b51d10cd092f1c692b6fa1bbc8323"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Freezes the rename-shaped escape until discard semantics land."
+}
