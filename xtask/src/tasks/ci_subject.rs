@@ -872,7 +872,7 @@ mod tests {
         );
         let bytes = serde_json::to_vec_pretty(&receipt)?;
         ensure!(bytes.len() < 2048, "resolved receipt grew with the changed-input corpus");
-        ensure!(!String::from_utf8(bytes)?.contains("generated/99999.rs"));
+        ensure!(!std::str::from_utf8(&bytes)?.contains("generated/99999.rs"));
         Ok(())
     }
 
