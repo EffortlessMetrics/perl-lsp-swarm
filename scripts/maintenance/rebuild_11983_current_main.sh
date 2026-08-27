@@ -89,6 +89,8 @@ verification = subprocess.run(
         manifest_path,
         "--evidence-dir",
         "target/receipts/rebuild-11983/rejected-hunks",
+        "--reject-scope",
+        ".",
         "--delete-verified",
     ],
     check=False,

@@ -133,17 +133,52 @@ def identity_for(segment: str) -> RejectIdentity:
     return RejectIdentity(lines[0], "\n".join(old_side))
 
 
-def _retain(reject: Path, evidence_dir: Path, reason: str) -> None:
+def _retain_rejects(
+    rejects: set[Path],
+    reject_scope: Path,
+    evidence_dir: Path,
+    reason: str,
+) -> None:
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    if reject.exists():
-        (evidence_dir / reject.name).write_text(reject.read_text(encoding="utf-8"), encoding="utf-8")
-    raise ValueError(f"{reject}: unverified rejected hunks retained: {reason}")
+    for reject in sorted(rejects):
+        try:
+            relative = reject.relative_to(reject_scope)
+        except ValueError:
+            relative = Path(reject.name)
+        retained = evidence_dir / relative
+        retained.parent.mkdir(parents=True, exist_ok=True)
+        retained.write_bytes(reject.read_bytes())
+    raise ValueError(f"unverified rejected hunks retained under {evidence_dir}: {reason}")
+
+
+def _retain(
+    reject: Path,
+    reject_scope: Path,
+    evidence_dir: Path,
+    reason: str,
+) -> None:
+    _retain_rejects(
+        {reject.resolve()} if reject.exists() else set(),
+        reject_scope,
+        evidence_dir,
+        f"{reject}: {reason}",
+    )
+
+
+def _scoped_reject(path: Path, reject_scope: Path) -> Path:
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(reject_scope)
+    except ValueError as error:
+        raise ValueError(f"reject artifact escapes canonical scope: {path}") from error
+    return resolved
 
 
 def validate_manifest(
     manifest_path: Path,
     evidence_dir: Path,
     *,
+    reject_scope: Path,
     delete_verified: bool = False,
     require_complete_table: bool = True,
 ) -> None:
@@ -158,37 +193,99 @@ def validate_manifest(
         extra = sorted(paths - set(EXPECTED_REJECT_IDENTITIES))
         raise ValueError(f"reject table coverage mismatch: missing={missing}, extra={extra}")
 
+    scope = reject_scope.resolve()
+    manifest_rejects = [_scoped_reject(Path(entry[3]), scope) for entry in entries]
+    if len(set(manifest_rejects)) != len(manifest_rejects):
+        raise ValueError("reject manifest contains duplicate artifact identities")
+    discovered_rejects = {candidate.resolve() for candidate in scope.rglob("*.rej")}
+    manifest_reject_set = set(manifest_rejects)
+    if discovered_rejects != manifest_reject_set:
+        missing = sorted(str(path) for path in manifest_reject_set - discovered_rejects)
+        extra = sorted(str(path) for path in discovered_rejects - manifest_reject_set)
+        _retain_rejects(
+            discovered_rejects,
+            scope,
+            evidence_dir,
+            f"canonical artifact scope mismatch: missing={missing}, extra={extra}",
+        )
+
     verified: list[Path] = []
-    for path, patch_file, apply_log_file, reject_name in entries:
+    for (path, patch_file, apply_log_file, _), reject in zip(entries, manifest_rejects):
         expected = EXPECTED_REJECT_IDENTITIES.get(path)
         if expected is None:
             raise ValueError(f"{path}: no authored reject-identity table entry")
-        reject = Path(reject_name)
         log_text = Path(apply_log_file).read_text(encoding="utf-8")
         rejected_hunks = [int(number) for number in re.findall(r"Rejected hunk #(\d+)\.", log_text)]
         if not rejected_hunks:
             if reject.exists():
-                _retain(reject, evidence_dir, "apply reported no rejection but a reject artifact exists")
+                _retain(
+                    reject,
+                    scope,
+                    evidence_dir,
+                    "apply reported no rejection but a reject artifact exists",
+                )
             raise ValueError(f"{path}: authored reject identities have no matching apply rejection")
         if not reject.exists():
-            _retain(reject, evidence_dir, f"apply recorded rejected hunks {rejected_hunks} but no reject file exists")
+            _retain(
+                reject,
+                scope,
+                evidence_dir,
+                f"apply recorded rejected hunks {rejected_hunks} but no reject file exists",
+            )
 
         patch_segments = hunk_segments(Path(patch_file).read_text(encoding="utf-8"))
         reject_segments = hunk_segments(reject.read_text(encoding="utf-8"))
         if len(reject_segments) != len(rejected_hunks):
-            _retain(reject, evidence_dir, f"expected {len(rejected_hunks)} rejected hunks, found {len(reject_segments)}")
-        if any(segment not in patch_segments for segment in reject_segments):
-            _retain(reject, evidence_dir, "reject hunk is not present in the reviewed patch")
+            _retain(
+                reject,
+                scope,
+                evidence_dir,
+                f"expected {len(rejected_hunks)} rejected hunks, found {len(reject_segments)}",
+            )
+
+        patch_indices: list[int] = []
+        for segment in reject_segments:
+            matches = [index for index, candidate in enumerate(patch_segments) if candidate == segment]
+            if len(matches) != 1:
+                _retain(
+                    reject,
+                    scope,
+                    evidence_dir,
+                    "reject hunk is absent from or ambiguous within the reviewed patch",
+                )
+            patch_indices.append(matches[0] + 1)
+        if sorted(patch_indices) != sorted(rejected_hunks):
+            _retain(
+                reject,
+                scope,
+                evidence_dir,
+                f"reject hunk ordinals {patch_indices} do not match apply log {rejected_hunks}",
+            )
 
         actual = []
         for segment in reject_segments:
             identity = identity_for(segment)
-            matches = [candidate for candidate in expected if candidate.hunk == identity.hunk and candidate.old_anchor in identity.old_anchor]
+            old_lines = set(identity.old_anchor.splitlines())
+            matches = [
+                candidate
+                for candidate in expected
+                if candidate.hunk == identity.hunk and candidate.old_anchor in old_lines
+            ]
             if len(matches) != 1:
-                _retain(reject, evidence_dir, f"hunk identity omitted or reused: {identity.hunk}")
+                _retain(
+                    reject,
+                    scope,
+                    evidence_dir,
+                    f"hunk identity omitted or reused: {identity.hunk}",
+                )
             actual.append(matches[0])
         if Counter(actual) != Counter(expected):
-            _retain(reject, evidence_dir, "reject identities do not exactly match the authored per-file table")
+            _retain(
+                reject,
+                scope,
+                evidence_dir,
+                "reject identities do not exactly match the authored per-file table",
+            )
         verified.append(reject)
 
     if delete_verified:
@@ -200,10 +297,16 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--evidence-dir", type=Path, required=True)
+    parser.add_argument("--reject-scope", type=Path, default=Path("."))
     parser.add_argument("--delete-verified", action="store_true")
     args = parser.parse_args()
     try:
-        validate_manifest(args.manifest, args.evidence_dir, delete_verified=args.delete_verified)
+        validate_manifest(
+            args.manifest,
+            args.evidence_dir,
+            reject_scope=args.reject_scope,
+            delete_verified=args.delete_verified,
+        )
     except (OSError, ValueError) as error:
         print(error, flush=True)
         return 1
