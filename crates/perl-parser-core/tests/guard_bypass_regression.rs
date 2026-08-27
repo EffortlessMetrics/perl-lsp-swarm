@@ -6,18 +6,22 @@
 //   - 200  nested `!` operators   → stack overflow in parse_unary
 //
 // After the fix both sites are wrapped in with_recursion_guard() so deeply
-// nested input returns NestingTooDeep instead of crashing.
+// nested input returns a depth-guard error instead of crashing.
 
 mod cpan_test_helpers;
 use cpan_test_helpers::*;
 
 use perl_parser_core::{ParseError, Parser};
 
+fn is_depth_guard_error(error: &ParseError) -> bool {
+    matches!(error, ParseError::RecursionDepthExhausted { .. } | ParseError::NestingTooDeep { .. })
+}
+
 fn fails_gracefully(code: &str) -> bool {
     let mut parser = Parser::new(code);
     let result = parser.parse();
-    result.as_ref().err().is_some_and(|e| matches!(e, ParseError::NestingTooDeep { .. }))
-        || parser.errors().iter().any(|e| matches!(e, ParseError::NestingTooDeep { .. }))
+    result.as_ref().err().is_some_and(is_depth_guard_error)
+        || parser.errors().iter().any(is_depth_guard_error)
 }
 
 // --- parse_word_not_expr (precedence.rs) ---
@@ -29,7 +33,7 @@ fn word_not_5000_deep_does_not_sigsegv() {
     let code = "not ".repeat(5000) + "1";
     assert!(
         fails_gracefully(&code),
-        "5000-deep `not` chain should fail with NestingTooDeep, not crash"
+        "5000-deep `not` chain should fail with the depth guard, not crash"
     );
 }
 
@@ -87,7 +91,7 @@ fn power_chain_depth_hits_limit() {
     let code = "1 ** ".repeat(130) + "1";
     assert!(
         fails_gracefully(&code),
-        "130-deep power chain should fail with NestingTooDeep, not overflow the stack"
+        "130-deep power chain should fail with the depth guard, not overflow the stack"
     );
 }
 
@@ -97,8 +101,8 @@ fn deep_power_chain_recovery_surfaces_nesting_diagnostic() {
     let mut parser = Parser::new(&code);
     let output = parser.parse_with_recovery();
     assert!(
-        output.diagnostics.iter().any(|d| matches!(d, ParseError::NestingTooDeep { .. })),
-        "parse_with_recovery should surface NestingTooDeep for a deep power chain"
+        output.diagnostics.iter().any(is_depth_guard_error),
+        "parse_with_recovery should surface a depth-guard diagnostic for a deep power chain"
     );
 }
 
@@ -158,13 +162,13 @@ fn mixed_not_and_bang_nesting_hits_limit() {
 #[test]
 fn deep_nesting_recovers_with_nesting_diagnostic_on_lsp_path() {
     // LSP uses parse_with_recovery(): deep nesting must yield a (partial) tree
-    // AND a NestingTooDeep diagnostic — not a crash, not a silent success.
+    // AND a depth-guard diagnostic — not a crash, not a silent success.
     let code = "not ".repeat(300) + "1";
     let mut parser = Parser::new(&code);
     let output = parser.parse_with_recovery();
     assert!(
-        output.diagnostics.iter().any(|d| matches!(d, ParseError::NestingTooDeep { .. })),
-        "parse_with_recovery should surface a NestingTooDeep diagnostic for deep nesting"
+        output.diagnostics.iter().any(is_depth_guard_error),
+        "parse_with_recovery should surface a depth-guard diagnostic for deep nesting"
     );
 }
 
