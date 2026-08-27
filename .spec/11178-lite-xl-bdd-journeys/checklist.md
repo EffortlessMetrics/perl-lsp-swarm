@@ -193,9 +193,10 @@ for ($i = 0; $i -lt $expectedRows.Count; $i++) {
 # wrapper via $script:CandidatePinnedBase), so unrelated main movement with a
 # conflict-free candidate never invalidates or re-triggers this proof.
 if (-not $script:CandidatePinnedBase) {
-  $script:CandidatePinnedBase = (& git merge-base 'origin/main' 'HEAD' 2>&1 | Select-Object -First 1)
+  # Full-drain capture: an early-stopping upstream consumer can leave
+  # $LASTEXITCODE unset, so never stop a native pipeline mid-stream.
+  $script:CandidatePinnedBase = ([string](& git merge-base 'origin/main' 'HEAD')).Trim()
   if ($LASTEXITCODE -ne 0 -or -not $script:CandidatePinnedBase) { throw 'cannot resolve candidate base via git merge-base' }
-  $script:CandidatePinnedBase = "$script:CandidatePinnedBase".Trim()
 }
 $candidateBase = [string]$script:CandidatePinnedBase
 $candidateHead = (& git rev-parse --verify 'HEAD^{commit}' 2>&1).Trim()
@@ -240,9 +241,10 @@ function Get-SpecFingerprints {
   })
 }
 $ErrorActionPreference = 'Stop'
-$script:CandidatePinnedBase = (& git merge-base 'origin/main' 'HEAD' 2>&1 | Select-Object -First 1)
+# Full-drain capture: an early-stopping upstream consumer can leave
+# $LASTEXITCODE unset, so never stop a native pipeline mid-stream.
+$script:CandidatePinnedBase = ([string](& git merge-base 'origin/main' 'HEAD')).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $script:CandidatePinnedBase) { throw 'wrapper cannot resolve candidate base via git merge-base' }
-$script:CandidatePinnedBase = "$script:CandidatePinnedBase".Trim()
 $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("spec-11178-check-" + [System.IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
 $tmp1 = Join-Path $tmpDir 'run1.out'
