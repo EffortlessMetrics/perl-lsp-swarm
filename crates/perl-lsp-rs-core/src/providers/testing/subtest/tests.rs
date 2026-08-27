@@ -230,6 +230,27 @@ fn file_scope_subtest_without_containing_package_stays_top_level() {
 }
 
 #[test]
+fn role_scope_owns_subtest_with_canonical_interface_kind() {
+    let source = "package Earlier;\n\
+        package My::Role;\n\
+        use Moo::Role;\n\
+        subtest 'role test' => sub { ok(1); };\n";
+    let outline = nested_outline(source);
+
+    let role = find_named_deep(&outline, "My::Role").expect("role symbol missing");
+    assert_eq!(role.kind, SymbolKind::Role.to_lsp_kind_document_symbol());
+    assert_eq!(role.children.len(), 1, "role should own exactly one subtest");
+    let role_subtest = role.children.first().expect("role subtest missing");
+    assert_eq!(role_subtest.name, "role test");
+    assert_eq!(role_subtest.kind, SymbolKind::Subroutine.to_lsp_kind_document_symbol());
+    assert_eq!(role_subtest.detail, "subtest");
+    assert!(
+        find_named(&outline, "role test").is_none(),
+        "role subtest must not remain at the outline root"
+    );
+}
+
+#[test]
 fn two_sibling_subtests_keep_source_order_inside_their_sub() {
     // Lines (0-based): 0=sub both, 1..2='alpha' subtest, 3..4='beta' subtest.
     let source = "sub both {\n\

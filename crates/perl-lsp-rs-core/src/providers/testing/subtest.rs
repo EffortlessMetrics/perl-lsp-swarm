@@ -12,6 +12,7 @@
 use crate::providers::document_symbols::DocumentSymbol;
 use perl_parser_core::ast::{Node, NodeKind};
 use perl_position_tracking::WireRange;
+use perl_semantic_analyzer::symbol::SymbolKind;
 
 /// LSP `SymbolKind` used for subtests in the document outline. `12` is
 /// `Function`, which renders with a runnable-looking glyph in common clients.
@@ -111,8 +112,17 @@ pub fn nest_subtest_symbols_in_outline(
 /// Outline node kinds that can lexically own a subtest: packages/classes and
 /// their module/namespace aliases (these display only their declaration line
 /// while owning trailing members), plus subroutine-shaped scopes.
-const OWNER_KIND_MODULE_FAMILY: [u32; 4] = [2, 3, 4, 5];
-const OWNER_KIND_CALLABLE: [u32; 2] = [12, 6];
+const OWNER_KIND_MODULE_FAMILY: [u32; 5] = [
+    SymbolKind::Package.to_lsp_kind_document_symbol(),
+    3,
+    4,
+    SymbolKind::Class.to_lsp_kind_document_symbol(),
+    SymbolKind::Role.to_lsp_kind_document_symbol(),
+];
+const OWNER_KIND_CALLABLE: [u32; 2] = [
+    SymbolKind::Subroutine.to_lsp_kind_document_symbol(),
+    SymbolKind::Method.to_lsp_kind_document_symbol(),
+];
 
 /// Depth-first selection of the closest owner of `target`, mirroring how the
 /// assembler scopes children:
