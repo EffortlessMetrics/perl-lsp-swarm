@@ -1016,6 +1016,7 @@ commit_current_selection() {
 
 ensure_path_visible_selectors() {
     local _allow_fault="${1:-1}"
+    local _incoming_pair="${2:-0}"
     local _rel=".perl-lsp/current"
     local _store _want_dap=0
     _store="$(product_store_dir)"
@@ -1024,15 +1025,27 @@ ensure_path_visible_selectors() {
     fi
     atomic_symlink_replace "${INSTALL_DIR}/${BIN_NAME}" "${_rel}/${BIN_NAME}"
     maybe_observe_product_unit "between_path_members"
-    if [ -f "${_store}/current/${DAP_BIN_NAME}" ]; then
+    if [ "$_incoming_pair" = "1" ]; then
+        # The staged incoming unit carries a DAP, so the DAP selector is
+        # written here, before current switches: the commit then publishes the
+        # whole pair to PATH at once instead of relying on a post-commit
+        # selector repair that a failure could leave unfinished. The selector
+        # target is relative and retargets atomically at the commit.
+        _want_dap=1
+    elif [ -f "${_store}/current/${DAP_BIN_NAME}" ]; then
         _want_dap=1
     elif [ ! -e "${_store}/current" ] && [ -n "${EXTRACT_DIR:-}" ] && [ -f "${EXTRACT_DIR}/${DAP_BIN_NAME}" ]; then
         _want_dap=1
     fi
     if [ "$_want_dap" = "1" ]; then
         atomic_symlink_replace "${INSTALL_DIR}/${DAP_BIN_NAME}" "${_rel}/${DAP_BIN_NAME}"
-    elif [ -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; then
+    elif [ -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ] || [ -f "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; then
+        # A pre-existing regular file here is stale selector residue from an
+        # earlier install layout; leaving it would keep PATH pointed at an
+        # adapter unrelated to the selected server unit.
         rm -f "${INSTALL_DIR}/${DAP_BIN_NAME}"
+    elif [ -d "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; then
+        err "stale PATH selector is a directory: ${INSTALL_DIR}/${DAP_BIN_NAME}"
     fi
 }
 
@@ -1147,7 +1160,11 @@ Try one of:
     promote_legacy_layout_if_needed || return
 
     _id="$(publish_immutable_candidate "$EXTRACT_DIR" "$_disposition")" || return
-    ensure_path_visible_selectors || return
+    _incoming_pair=0
+    if [ "$_disposition" = "archive_pair_required" ]; then
+        _incoming_pair=1
+    fi
+    ensure_path_visible_selectors 1 "$_incoming_pair" || return
     commit_current_selection "$_id" || return
     ensure_path_visible_selectors || return
 

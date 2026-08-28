@@ -337,6 +337,37 @@ else
 fi
 
 setup_root
+stage_server_only "$EXTRACT_DIR" "source-server"
+run_promote source
+stage_pair "$EXTRACT_DIR" "server-b" "dap-b"
+_id="$(publish_immutable_candidate "$EXTRACT_DIR" archive_pair_required 0)"
+ensure_path_visible_selectors 1 1
+commit_current_selection "$_id" 0
+if [ -L "$(path_dap)" ] \
+    && [ "$(readlink "$(path_dap)")" = ".perl-lsp/current/${DAP_BIN_NAME}" ] \
+    && assert_complete_pair "server-b" "dap-b"; then
+    pass "source-to-release pair is fully selected by the commit, not by post-commit repair"
+else
+    fail_case "source-to-release pair is fully selected by the commit, not by post-commit repair" \
+        "current=$(observe_current_product_unit 2>/dev/null || true) dap=$(ls -l "$(path_dap)" 2>&1 || true)"
+fi
+
+setup_root
+stage_server_only "$EXTRACT_DIR" "source-server"
+run_promote source
+printf '%s\n' "stale-dap-bytes" > "$(path_dap)"
+stage_server_only "$EXTRACT_DIR" "source-server-2"
+run_promote source
+if [ "$LAST_STATUS" -eq 0 ] \
+    && [ ! -e "$(path_dap)" ] \
+    && [ -L "$(path_server)" ]; then
+    pass "server-only promotion removes a stale regular DAP selector"
+else
+    fail_case "server-only promotion removes a stale regular DAP selector" \
+        "status=$LAST_STATUS dap=$(ls -l "$(path_dap)" 2>&1 || true)"
+fi
+
+setup_root
 stage_pair "$EXTRACT_DIR" "server-a" "dap-a"
 run_promote release
 stage_pair "$EXTRACT_DIR" "server-b" "dap-b"
