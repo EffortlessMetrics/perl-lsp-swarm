@@ -13,7 +13,7 @@ use super::digest::file_digest;
 use super::error::ProofError;
 use super::model::{
     EvidenceClass, FIXTURE_ROOT, FixApply, ISSUE, MANIFEST_NAME, MANIFEST_PATH, ParseExpectation,
-    ProofRemediation, RuleProofManifest, SCHEMA_PATH, SCHEMA_VERSION,
+    ProofRemediation, RuleProofManifest, SCHEMA_PATH, SCHEMA_VERSION, resolve_fixture_path,
 };
 
 /// Pilot rules that must carry a complete applicable evidence set.
@@ -116,11 +116,17 @@ fn validate_fixtures(root: &Path, manifest: &RuleProofManifest, violations: &mut
             violations.push(format!("fixtures.`{relative}`: digest must be sha256:<64 hex chars>"));
             continue;
         }
-        let path = root.join(FIXTURE_ROOT).join(relative);
-        if !path.is_file() {
+        if !root.join(FIXTURE_ROOT).join(relative).is_file() {
             violations.push(format!("fixtures.`{relative}`: file does not exist"));
             continue;
         }
+        let path = match resolve_fixture_path(root, relative) {
+            Ok(path) => path,
+            Err(error) => {
+                violations.push(format!("fixtures.`{relative}`: {error}"));
+                continue;
+            }
+        };
         match file_digest(&path) {
             Ok(actual) if actual != record.digest => {
                 violations.push(format!(
@@ -249,6 +255,14 @@ fn validate_cases(manifest: &RuleProofManifest, violations: &mut Vec<String>) {
             ));
             continue;
         };
+        if case.profile != rule.profile {
+            violations.push(format!(
+                "case `{}`: profile `{}` does not match the governed rule profile `{}`",
+                case.case_id,
+                case.profile.as_str(),
+                rule.profile.as_str()
+            ));
+        }
         let classes = classes_by_rule.entry(case.rule_id.as_str()).or_default();
         for class in &case.evidence_classes {
             classes.insert(*class);

@@ -12,7 +12,7 @@ pub use error::ProofError;
 pub use execute::execute_manifest;
 pub use model::{
     EvidenceClass, FIXTURE_ROOT, MANIFEST_PATH, RuleProofManifest, SCHEMA_PATH, SCHEMA_VERSION,
-    STATUS_PATH,
+    STATUS_PATH, resolve_fixture_path,
 };
 pub use status::{check_status, render_status, write_status};
 pub use validate::{PILOT_RULES, load_and_validate, validate_manifest_value};

@@ -1,6 +1,7 @@
 //! Typed critic rule-proof manifest model (`critic_rule_proof.v1`).
 
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 pub const SCHEMA_VERSION: &str = "critic_rule_proof.v1";
 pub const MANIFEST_NAME: &str = "critic-rule-proof";
@@ -9,6 +10,41 @@ pub const SCHEMA_PATH: &str = "schemas/critic_rule_proof.v1.schema.json";
 pub const STATUS_PATH: &str = "docs/project/status/critic_rule_proof.md";
 pub const FIXTURE_ROOT: &str = "fixtures/critic-rule-proof";
 pub const ISSUE: u32 = 6973;
+
+/// Resolve a declared fixture path beneath the repository root and require it
+/// to stay inside the fixture root. Absolute paths, non-normal components
+/// (`.`, `..`, roots, prefixes), and symlinked escapes are rejected so a
+/// manifest cannot digest or execute files outside
+/// `fixtures/critic-rule-proof`.
+pub fn resolve_fixture_path(root: &Path, fixture: &str) -> Result<PathBuf, String> {
+    if fixture.is_empty() {
+        return Err("fixture path is empty".to_string());
+    }
+    if fixture.contains('\\') {
+        return Err(format!("fixture `{fixture}` must use `/` separators inside the fixture root"));
+    }
+    let relative = Path::new(fixture);
+    if relative.is_absolute() {
+        return Err(format!("fixture `{fixture}` must be a relative path inside the fixture root"));
+    }
+    for component in relative.components() {
+        if !matches!(component, std::path::Component::Normal(_)) {
+            return Err(format!("fixture `{fixture}` contains a non-normal path component"));
+        }
+    }
+    let fixture_root = root.join(FIXTURE_ROOT);
+    let canonical_root = fixture_root
+        .canonicalize()
+        .map_err(|error| format!("fixture root `{FIXTURE_ROOT}`: cannot resolve: {error}"))?;
+    let canonical = fixture_root
+        .join(relative)
+        .canonicalize()
+        .map_err(|error| format!("fixture `{fixture}`: cannot resolve: {error}"))?;
+    if !canonical.starts_with(&canonical_root) {
+        return Err(format!("fixture `{fixture}` resolves outside the fixture root"));
+    }
+    Ok(canonical)
+}
 
 /// Closed evidence-class vocabulary for one rule-proof case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

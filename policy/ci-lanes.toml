@@ -302,6 +302,14 @@ paths = [
   "crates/perl-lsp-rs-core/src/tooling/perl_critic/types.rs",
   "crates/perl-lsp-rs-core/src/tooling/perl_critic/native.rs",
   "crates/perl-lsp-rs-core/src/tooling/perl_critic/native/**",
+  "crates/perl-parser/**",
+  "crates/perl-parser-core/**",
+  "crates/perl-lexer/**",
+  "crates/perl-ast/**",
+  "crates/perl-semantic-analyzer/**",
+  "crates/perl-module/**",
+  "crates/perl-workspace/**",
+  "crates/perl-tdd-support/**",
   ".github/workflows/critic-rule-proof.yml",
 ]
 outputs = ["job output"]

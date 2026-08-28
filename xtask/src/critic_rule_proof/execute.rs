@@ -10,8 +10,8 @@ use std::path::Path;
 
 use super::error::ProofError;
 use super::model::{
-    CaseRecord, ExpectedFinding, FIXTURE_ROOT, FixRoundTrip, ParseExpectation, ProofProfile,
-    ProofRemediation, ProofSeverity, RuleProofManifest,
+    CaseRecord, ExpectedFinding, FixRoundTrip, ParseExpectation, ProofProfile, ProofRemediation,
+    ProofSeverity, RuleProofManifest, resolve_fixture_path,
 };
 
 /// Execute every case against the live native critic.
@@ -26,7 +26,8 @@ pub fn execute_manifest(root: &Path, manifest: &RuleProofManifest) -> Result<(),
 }
 
 fn execute_case(root: &Path, case: &CaseRecord) -> Result<(), ProofError> {
-    let path = root.join(FIXTURE_ROOT).join(&case.fixture);
+    let path = resolve_fixture_path(root, &case.fixture)
+        .map_err(|error| ProofError::new(format!("case fixture: {error}")))?;
     let source = fs::read_to_string(&path).map_err(|error| {
         ProofError::new(format!("cannot read fixture `{}`: {error}", case.fixture))
     })?;

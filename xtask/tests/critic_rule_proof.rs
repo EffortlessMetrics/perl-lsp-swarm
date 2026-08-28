@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use xtask::critic_rule_proof::{
-    self as proof, MANIFEST_PATH, STATUS_PATH, validate_manifest_value,
+    self as proof, MANIFEST_PATH, STATUS_PATH, resolve_fixture_path, validate_manifest_value,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -249,6 +249,65 @@ fn unused_fixture_fails_check() -> TestResult {
         "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
     });
     expect_violation(&manifest, "unused fixture identity")
+}
+
+#[test]
+fn case_profile_mismatch_fails_check() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["profile"] = json!("strict");
+    expect_violation(&manifest, "does not match the governed rule profile")
+}
+
+#[test]
+fn absolute_fixture_path_fails_schema() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["fixture"] =
+        json!("/etc/passwd");
+    expect_violation(&manifest, "schema:")
+}
+
+#[test]
+fn traversal_fixture_path_fails_schema() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["fixture"] =
+        json!("../../Cargo.toml");
+    expect_violation(&manifest, "schema:")
+}
+
+#[test]
+fn fixture_paths_may_not_escape_the_fixture_root() -> TestResult {
+    let base = std::env::temp_dir().join(format!("crp-fixture-escape-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("fixtures/critic-rule-proof/inner"))?;
+    std::fs::write(base.join("fixtures/critic-rule-proof/inner/real.pl"), "1;\n")?;
+    std::fs::write(base.join("outside.pl"), "2;\n")?;
+
+    assert!(resolve_fixture_path(&base, "/etc/passwd").is_err(), "absolute path must fail");
+    assert!(resolve_fixture_path(&base, "../outside.pl").is_err(), "traversal must fail");
+    assert!(
+        resolve_fixture_path(&base, "inner\\real.pl").is_err(),
+        "backslash separator must fail"
+    );
+    assert!(
+        resolve_fixture_path(&base, "missing/real.pl").is_err(),
+        "unresolvable fixture must fail"
+    );
+    assert!(resolve_fixture_path(&base, "inner/real.pl").is_ok(), "contained fixture must resolve");
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(
+            base.join("outside.pl"),
+            base.join("fixtures/critic-rule-proof/inner/link.pl"),
+        )?;
+        assert!(
+            resolve_fixture_path(&base, "inner/link.pl").is_err(),
+            "symlinked escape must fail"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&base);
+    Ok(())
 }
 
 #[test]

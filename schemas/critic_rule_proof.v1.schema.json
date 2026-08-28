@@ -208,7 +208,11 @@
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/evidence_class" }
         },
-        "fixture": { "type": "string", "minLength": 1 },
+        "fixture": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^([A-Za-z0-9][A-Za-z0-9_.-]*/)*[A-Za-z0-9][A-Za-z0-9_.-]*$"
+        },
         "profile": { "$ref": "#/$defs/profile" },
         "include": {
           "type": "array",
