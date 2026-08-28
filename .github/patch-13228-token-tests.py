@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update manual TokenKind test tables without changing their match shape."""
+"""Update manual TokenKind test tables and cardinality invariants."""
 
 from __future__ import annotations
 
@@ -57,9 +57,20 @@ def insert_variant(anchor: str, variant: str, minimum: int) -> int:
     return total
 
 
+def update_cardinality_invariant() -> None:
+    path = Path("crates/perl-token/src/lib.rs")
+    text = path.read_text()
+    old = """    fn all_returns_132_variants() {\n        assert_eq!(TokenKind::all().len(), 132);\n        assert_eq!(TokenKind::metadata_count(), 132);\n    }\n"""
+    new = """    fn all_returns_134_variants() {\n        assert_eq!(TokenKind::all().len(), 134);\n        assert_eq!(TokenKind::metadata_count(), 134);\n    }\n"""
+    if text.count(old) != 1:
+        raise SystemExit("expected exactly one 132-variant TokenKind cardinality invariant")
+    path.write_text(text.replace(old, new))
+
+
 assignment_entries = insert_variant("LogicalOrAssign", "LogicalXorAssign", minimum=2)
 logical_entries = insert_variant("Or", "LogicalXor", minimum=2)
+update_cardinality_invariant()
 print(
-    "patched token-test tables: "
-    f"assignment_entries={assignment_entries}, logical_entries={logical_entries}"
+    "patched token-test tables/cardinality: "
+    f"assignment_entries={assignment_entries}, logical_entries={logical_entries}, variants=134"
 )
