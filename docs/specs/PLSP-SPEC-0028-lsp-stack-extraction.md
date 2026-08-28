@@ -185,7 +185,7 @@ git diff --check
 When stable in the checkout, also run:
 
 ```bash
-cargo xtask docs-check
+just ci-docs-check
 ```
 
 When touched docs could affect support claims, run:

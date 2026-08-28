@@ -134,6 +134,10 @@ the client-response shim are separate claims.
 
 | Current surface | Classification | Evidence and blocker | Current proof |
 | --- | --- | --- | --- |
+| `perl-lsp-rs/src/runtime/scheduler.rs` | **Mixed** | Request classification, priority ordering, bounded queues, deduplication, and sequence barriers are reusable in shape. The current `Scheduler` owns an `Arc<LspServer>`, calls application handlers, reads document generation and instance state, installs diagnostics/file-watcher/parse workers, emits application timing, and writes through the current outbound channel. Split algorithms from server integration; do not move the file wholesale. | Inline classification, priority, heap, dedup, generation/instance freshness, panic-response, queue/shutdown, and `rapid_typing_stale_reads_cancel_before_worker_permit_receipt` tests; raw-RPC and lean startup-trace receipts. |
+| `perl-lsp-rs/src/runtime/lifecycle/mod.rs`, `capabilities.rs`, `watchers.rs` | **Mixed** | Initialize-result shapes, client capability negotiation, and dynamic-registration mechanics coexist with Perl globs and language IDs, `perl.*` commands, `perl-lsp/index-ready`, workspace-index state, client-specific overrides, and runtime tuning. Extract only policy-injected helpers after their protocol shapes are independently proven. | `lsp_3_17_lifecycle_tests`, `lsp_registration_tests`, `lsp_inline_completion_registration_tests`, `lsp_cap_snap`, lifecycle unit tests, and LSP smoke E2E. |
+| `perl-lsp-rs/src/runtime/lifecycle/module_resolution.rs`, `inc_context/**`, `workspace.rs`, `tools.rs` | **Perl-specific** | These modules own `@INC`, Perl module resolution, perltidy/perlcritic integration, workspace roots/scanning, and index coordination. They remain application behavior. | Module-resolution, workspace-folder/index, tool, and integration tests. |
+| `perl-lsp-rs/src/runtime/lifecycle/final_surface_census.rs` | **Not extractable** | This is a current-product capability and lifecycle proof census, not reusable runtime infrastructure. | Inline final-surface census tests. |
 | `runtime/cancellation/mod.rs` | **Mixed** | Atomic token/registry mechanics are reusable, but the public token is named `PerlLspCancellationToken` and carries provider strings, provider cleanup callbacks, JSON values, metrics, and current JSON-RPC ownership. Split mechanism from provider cleanup policy after the JSON-RPC boundary exists. | Inline model/property, registry, cleanup, and latency-oriented tests; app cancellation tests. |
 | `runtime/limits/mod.rs` | **Mixed** | `MemoryBudget`, `MemoryMonitor`, and deadline primitives are generic. `LspLimits` combines them with AST cache, parser, index, provider result, diagnostics, and workspace defaults. Do not move the module wholesale. | Inline memory/limit tests and affected provider/index tests. |
 | `runtime/input_validation/**` | **Mixed** | Structural JSON-RPC admission and bounded strings are potentially reusable. File extensions, Perl source examples, supported URI schemes, current product size limits, and `$/perl-lsp/clientResponse` policy are application-owned. | Inline validation boundary tests and sync-sink tests. |
@@ -148,8 +152,9 @@ the client-response shim are separate claims.
 | --- | --- | --- | --- |
 | `perl-lsp-rs/src/protocol/mod.rs` | **Not extractable** | Re-exports core protocol and product identity so the shipping facade remains stable. Keep until consumer imports are migrated after parity. | App compile and public API tests. |
 | `perl-lsp-rs/src/runtime/client_requests.rs` | **Mixed** | Request-ID allocation, initialized-state rejection, and sink emission are potentially reusable. The implementation is an inherent `LspServer` API with current capability checks and app-owned outbound sink. The accepted tranche does not authorize generic handler traits or a server rewrite. | Server-request unit tests, registration tests, and raw-RPC receipts. |
+| `perl-lsp-rs/src/runtime/dispatch/lifecycle.rs` | **Mixed** | Standard initialize/initialized/shutdown/exit and trace-state transitions coexist with the inherent `LspServer`, compatibility auto-initialization, startup registrations, workspace indexing, the Perl index-ready notification, resolve-session teardown, logging policy, and process exit. Extract lifecycle state mechanics only after application side effects are explicit ports. | Inline lifecycle dispatch tests, `lsp_3_17_lifecycle_tests`, registration tests, and LSP smoke E2E. |
 | `perl-lsp-rs/src/protocol/method_direction.rs` | **Mixed** | The descriptor shape and standard rows are reusable, but the registry includes project extensions and is mechanically synchronized with the current dispatch and outbound inventories. Revisit only after a neutral standard-method registry exists. | Method-direction tests. |
-| `perl-lsp-rs/src/runtime/dispatch/**`, diagnostics, document/workspace state, providers | **Perl-specific** | These surfaces consume parser facts, documents, workspace generations, capabilities, provider behavior, and current receipts. They are integration consumers of a future stack, not extraction candidates. | Current app unit, integration, raw-RPC, lean/e2e, and provider receipts. |
+| Remaining `perl-lsp-rs/src/runtime/dispatch/**`, diagnostics, document/workspace state, providers | **Perl-specific** | After separating the lifecycle row above, these surfaces consume parser facts, documents, workspace generations, feature policy, provider behavior, test endpoints, and current product receipts. They are integration consumers of a future stack, not first extraction candidates. | Current app unit, integration, raw-RPC, lean/e2e, and provider receipts. |
 
 ## Recommended Sequence from This Audit
 
@@ -202,14 +207,26 @@ Record the exact source set and dependency closure in the dependency-audit
 artifact or a bounded follow-up receipt. Re-run the source scan after the
 preparation PR; do not treat this audit snapshot as build proof.
 
-### PR 4: Scaffold only the neutral crate
+### PR 4: Re-prove the current-app test baseline
 
-Create the minimal crate only after PR 3 and the required dependency-preparation
-and closure proof establish the boundary. The scaffold should contain no copied
-production behavior and no Perl dependency. Its package metadata must avoid
-claims of release readiness.
+After PR 3 and any required dependency preparation, run the current application
+baseline before creating a crate boundary. The baseline must cover protocol,
+capability/registration, lifecycle, scheduler/stale-read, raw-RPC, and synthetic
+Neovim-shaped lean behavior at one exact commit. Test or receipt hardening is
+valid; product behavior changes are separate PRs.
 
-### PR 5: Move JSON-RPC IDs and envelopes
+The implementation plan owns the full command list. The required runtime
+receipts are also repeated below so this audit is executable without inferring
+them from the spec.
+
+### PR 5: Scaffold only the neutral crate
+
+Create the minimal crate only after PR 4 records a green current-app baseline
+and the required dependency-preparation and closure proof establish the
+boundary. The scaffold should contain no copied production behavior and no Perl
+dependency. Its package metadata must avoid claims of release readiness.
+
+### PR 6: Move JSON-RPC IDs and envelopes
 
 Move `JsonRpcId`, `JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcError`, and
 `JSONRPC_VERSION` with their existing parse/serialize tests. Preserve the
@@ -256,11 +273,30 @@ imports a `perl-*` crate or application module. The exact command belongs to PR
 ./scripts/cargo-safe test -p perl-lsp-rs --test lsp_cap_snap --profile agent --locked
 ```
 
-### Transport or runtime movement
+### Transport, lifecycle, or runtime movement
 
-Run the relevant core tests plus the raw-RPC and lean editor receipts named by
-PLSP-SPEC-0028. Do not replace those product receipts with isolated generic
-crate tests: both sides of the new boundary must remain proven.
+Run the relevant focused/unit proof plus these exact product-side receipts:
+
+```bash
+./scripts/cargo-safe test -p perl-lsp-rs --lib --profile agent --locked
+./scripts/cargo-safe test -p perl-lsp-rs --test lsp_3_17_lifecycle_tests --profile agent --locked
+./scripts/cargo-safe test -p perl-lsp-rs --test lsp_registration_tests --profile agent --locked
+
+PERL_LSP_E2E=1 \
+PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS=0 \
+PERL_LSP_DIAGNOSTIC_MODE=syntax-only \
+cargo test -p perl-lsp-ux-tests --test ux_latency_raw_rpc -- --test-threads=1 --nocapture
+
+PERL_LSP_E2E=1 \
+PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS=0 \
+PERL_LSP_DIAGNOSTIC_MODE=syntax-only \
+cargo test -p perl-lsp-ux-tests --test ux_neovim_lean_startup_trace -- --test-threads=1 --nocapture
+```
+
+Receipt ownership and the synthetic-versus-actual-host claim boundary live in
+[`docs/project/status/neovim_latency.md`](../../docs/project/status/neovim_latency.md).
+Do not replace product receipts with isolated generic-crate tests: both sides of
+the new boundary must remain proven.
 
 ## Change Declaration for This Audit
 

@@ -26,7 +26,7 @@ The prerequisite baseline is:
   disabled clients
 - LSP 3.18 inline-completion params coverage exists
 - watcher registration honors lean/e2e runtime tuning
-- semantic tokens advertise full-only support until delta is implemented
+- semantic-token delta is advertised only with result-id state and parity proof
 - raw RPC and lean editor receipts exist for the current app
 - editor docs describe LSP4IJ, Neovim lean/e2e mode, standard inline
   completion, and `perlInlineCompletionStream`
@@ -61,7 +61,7 @@ Future `lsp-stack` must have no Perl dependencies.
 
 ### PR 1: Boundary docs
 
-Status: this PR
+Status: landed on `main`
 
 Goal:
 
@@ -87,7 +87,7 @@ Proof:
 
 ```bash
 git diff --check
-cargo xtask docs-check
+just ci-docs-check
 cargo xtask check-support-claims
 ```
 
@@ -99,7 +99,7 @@ Revert the docs-only PR. No runtime rollback is needed because no code moved.
 
 ### PR 2: Static seam audit
 
-Status: tracked by [#13054](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13054)
+Status: candidate in [#13084](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/13084), tracked by [#13054](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13054)
 
 Audit artifact: [static seam audit](static-seam-audit.md)
 
@@ -123,7 +123,7 @@ Proof:
 
 ```bash
 git diff --check
-cargo xtask docs-check
+just ci-docs-check
 ```
 
 Rollback:
@@ -207,11 +207,68 @@ Rollback:
 Revert the dependency preparation and keep the candidate in the current app.
 Do not create the scaffold while the documented blocker remains.
 
-### PR 4: Crate scaffold
+### PR 4: Current-app test baseline
 
 Goal:
 
-Create `crates/lsp-stack` only after PRs 1-3 and any required dependency
+Re-prove the current application's protocol, runtime, scheduling, lifecycle,
+raw-RPC, and lean-editor baseline after the audits and any required dependency
+preparation, before a new crate boundary exists.
+
+Allowed changes:
+
+- test-only changes, fixtures, and receipt documentation that make existing
+  behavior explicit
+- no new product behavior
+- no `crates/lsp-stack`
+- no production file movement
+- any behavior defect exposed by the baseline is repaired in a separate bounded
+  PR before this gate is declared green
+
+Acceptance:
+
+- protocol, capability, registration, lifecycle, and scheduler proof is green
+- generation-aware stale-read cancellation remains proven
+- raw-RPC and synthetic Neovim-shaped lean receipts are green
+- the exact current-app commit used as the extraction baseline is recorded
+- synthetic receipts do not promote an actual-host editor support claim
+
+Proof:
+
+```bash
+git diff --check
+./scripts/cargo-safe test -p perl-lsp-rs --lib --profile agent --locked
+./scripts/cargo-safe test -p perl-lsp-rs --test lsp_3_17_lifecycle_tests --profile agent --locked
+./scripts/cargo-safe test -p perl-lsp-rs --test lsp_inline_completion_registration_tests --profile agent --locked
+./scripts/cargo-safe test -p perl-lsp-rs --test lsp_registration_tests --profile agent --locked
+./scripts/cargo-safe test -p perl-lsp-rs --test lsp_cap_snap --profile agent --locked
+./scripts/cargo-safe check -p perl-lsp-rs-core --all-targets --profile agent --locked
+./scripts/cargo-safe check -p perl-lsp-rs --all-targets --profile agent --locked
+
+PERL_LSP_E2E=1 \
+PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS=0 \
+PERL_LSP_DIAGNOSTIC_MODE=syntax-only \
+cargo test -p perl-lsp-ux-tests --test ux_latency_raw_rpc -- --test-threads=1 --nocapture
+
+PERL_LSP_E2E=1 \
+PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS=0 \
+PERL_LSP_DIAGNOSTIC_MODE=syntax-only \
+cargo test -p perl-lsp-ux-tests --test ux_neovim_lean_startup_trace -- --test-threads=1 --nocapture
+```
+
+Receipt ownership and claim limits are documented in
+[`docs/project/status/neovim_latency.md`](../../docs/project/status/neovim_latency.md).
+
+Rollback:
+
+Revert only the test/fixture/receipt changes from this step. Do not create the
+scaffold while any required current-app baseline proof is red or not proven.
+
+### PR 5: Crate scaffold
+
+Goal:
+
+Create `crates/lsp-stack` only after PRs 1-4 and any required dependency
 preparation land.
 
 Allowed changes:
@@ -238,7 +295,7 @@ Rollback:
 
 Revert the scaffold PR. Current app behavior must remain unchanged.
 
-### PR 5: First protocol primitive move
+### PR 6: First protocol primitive move
 
 Goal:
 
@@ -269,7 +326,7 @@ Rollback:
 Revert the move and restore imports. Keep any added regression test if it
 captures a real bug.
 
-### PR 6: Transport/framing move
+### PR 7: Transport/framing move
 
 Goal:
 
@@ -294,7 +351,7 @@ Rollback:
 
 Revert the transport move and restore current-app framing paths.
 
-### PR 7: Runtime primitive move
+### PR 8: Runtime primitive move
 
 Goal:
 
@@ -311,6 +368,7 @@ Proof:
 
 ```bash
 ./scripts/cargo-safe test -p perl-lsp-rs --test lsp_registration_tests --profile agent --locked
+PERL_LSP_E2E=1 PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS=0 PERL_LSP_DIAGNOSTIC_MODE=syntax-only cargo test -p perl-lsp-ux-tests --test ux_latency_raw_rpc -- --test-threads=1 --nocapture
 PERL_LSP_E2E=1 PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS=0 PERL_LSP_DIAGNOSTIC_MODE=syntax-only cargo test -p perl-lsp-ux-tests --test ux_neovim_lean_startup_trace -- --test-threads=1 --nocapture
 git diff --check
 ```
@@ -319,22 +377,56 @@ Rollback:
 
 Revert the runtime primitive move. Do not weaken cancellation or watcher tests.
 
-### PR 8: Current-app integration cleanup
+### PR 9: Current-app integration
 
 Goal:
 
-Remove duplicate wrappers only after extracted primitives are proven and the
-current app has parity.
+Wire `perl-lsp-rs` to the extracted primitives while keeping it as the product
+crate and preserving current-app behavior and compatibility paths.
 
 Acceptance:
 
 - current app remains the product surface
+- temporary re-exports or compatibility paths are explicit and tested
+- capability JSON, dynamic registration, and editor behavior remain unchanged
+- duplicate-wrapper cleanup is deferred to PR 10
 - no release, package, signing, or marketplace behavior changes
-- docs still describe current editor behavior accurately
 
 Proof:
 
 ```bash
+./scripts/cargo-safe check -p lsp-stack --all-targets --profile agent --locked
+./scripts/cargo-safe check -p perl-lsp-rs --all-targets --profile agent --locked
+./scripts/cargo-safe test -p perl-lsp-rs --test lsp_inline_completion_registration_tests --profile agent --locked
+./scripts/cargo-safe test -p perl-lsp-rs --test lsp_registration_tests --profile agent --locked
+./scripts/cargo-safe test -p perl-lsp-rs --test lsp_cap_snap --profile agent --locked
+git diff --check
+```
+
+Rollback:
+
+Revert the current-app wiring and restore the previous imports. Keep the
+extracted crate and its independent tests unless the defect is in the extracted
+primitive itself.
+
+### PR 10: Post-extraction cleanup
+
+Goal:
+
+Remove duplicate wrappers and temporary compatibility paths only after current-
+app integration, behavior parity, and dependency boundaries are proven.
+
+Acceptance:
+
+- no current consumer requires the removed wrapper
+- current app remains the product surface
+- docs still describe current editor behavior accurately
+- no release, package, signing, or marketplace behavior changes
+
+Proof:
+
+```bash
+./scripts/cargo-safe check -p lsp-stack --all-targets --profile agent --locked
 ./scripts/cargo-safe check -p perl-lsp-rs --all-targets --profile agent --locked
 ./scripts/cargo-safe test -p perl-lsp-rs --test lsp_inline_completion_registration_tests --profile agent --locked
 ./scripts/cargo-safe test -p perl-lsp-rs --test lsp_registration_tests --profile agent --locked
@@ -349,7 +441,7 @@ is in the extracted primitive.
 
 ## Always Invalid In This Lane
 
-- creating `crates/lsp-stack` before the boundary and audits land
+- creating `crates/lsp-stack` before the boundary, audits, any required dependency preparation, and current-app test baseline are green
 - moving code in the boundary-docs PR
 - adding Perl dependencies to future `lsp-stack`
 - changing inline-completion behavior while extracting infrastructure
