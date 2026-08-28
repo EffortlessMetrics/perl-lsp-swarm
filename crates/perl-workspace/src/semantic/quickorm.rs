@@ -181,8 +181,7 @@ fn direct_table_or_view_builder_anchor(expression: &Node) -> Option<&Node> {
     let NodeKind::FunctionCall { args, .. } = &expression.kind else {
         return None;
     };
-    if !is_direct_table_or_view_call(expression)
-        || !args.iter().skip(1).any(contains_builder_body)
+    if !is_direct_table_or_view_call(expression) || !args.iter().skip(1).any(contains_builder_body)
     {
         return None;
     }
