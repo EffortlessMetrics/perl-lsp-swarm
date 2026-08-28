@@ -15,7 +15,11 @@ Options:\n\
 Status:\n\
   The native MCP adapter is not available in this candidate.\n\
   This command never starts the LSP runtime.\n";
-const MCP_UNAVAILABLE: &str = "`perllsp mcp --stdio` is reserved for the native MCP adapter, which is not available in this candidate.\nNo MCP server was started.\n";
+const MCP_UNAVAILABLE: &str = concat!(
+    "`perllsp mcp --stdio` is reserved for the native MCP adapter, ",
+    "which is not available in this candidate.\n",
+    "No MCP server was started.\n",
+);
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum McpProductAction {
