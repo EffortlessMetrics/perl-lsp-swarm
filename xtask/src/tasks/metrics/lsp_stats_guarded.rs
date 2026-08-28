@@ -21,6 +21,7 @@ pub use super::lsp_stats_impl::{
 
 const RECEIPT_SCHEMA_PATH: &str = ".ci/schemas/ux-scenario-run.schema.json";
 const FIXTURE_MATRIX_PATH: &str = "crates/perl-lsp-ux-tests/fixtures/editor_ux_fixture_matrix.json";
+const DEFAULT_RECEIPT_DIR: &str = "target/receipts/editor-ux";
 
 /// Fields that distinguish an editor-UX scenario run from companion receipts
 /// such as Scenario 67's `golden_editor_workload` evidence. Generic receipt
@@ -38,14 +39,8 @@ const UX_RUN_SIGNATURE_FIELDS: &[&str] = &[
     "friendly_repro",
 ];
 
-const UX_RUN_IDENTITY_FIELDS: &[&str] = &["workflow_id", "scenario_file", "test_name"];
-const UX_RUN_DISTINCTIVE_FIELDS: &[&str] = &[
-    "ci_tier",
-    "operation_timings",
-    "time_to_first_useful_result_ms",
-    "canonical_repro",
-    "friendly_repro",
-];
+const UX_RUN_DISTINCTIVE_FIELDS: &[&str] =
+    &["operation_timings", "time_to_first_useful_result_ms", "canonical_repro", "friendly_repro"];
 
 #[derive(Debug, Deserialize)]
 struct FixtureMatrix {
@@ -66,16 +61,20 @@ struct ReceiptCandidate {
 
 /// Run `cargo xtask metrics lsp-stats` with fail-closed receipt validation.
 pub fn run_with_receipt_dir(json: bool, receipt_dir: Option<&Path>) -> Result<()> {
-    if let Some(receipts_dir) = receipt_dir {
-        let root = project_root()?;
-        validate_scorecard_inputs(
-            receipts_dir,
-            &root.join(FIXTURE_MATRIX_PATH),
-            &root.join(RECEIPT_SCHEMA_PATH),
-        )?;
-    }
+    let root = project_root()?;
+    validate_run_inputs(&root, receipt_dir)?;
 
     super::lsp_stats_impl::run_with_receipt_dir(json, receipt_dir)
+}
+
+fn validate_run_inputs(root: &Path, receipt_dir: Option<&Path>) -> Result<()> {
+    let default_receipt_dir = root.join(DEFAULT_RECEIPT_DIR);
+    let receipts_dir = receipt_dir.unwrap_or(&default_receipt_dir);
+    validate_scorecard_inputs(
+        receipts_dir,
+        &root.join(FIXTURE_MATRIX_PATH),
+        &root.join(RECEIPT_SCHEMA_PATH),
+    )
 }
 
 /// Aggregate receipts after validating their schema and fixture identity.
@@ -174,10 +173,10 @@ fn load_receipt_validator(receipt_schema: &Path) -> Result<jsonschema::Validator
 }
 
 /// Identify malformed UX run candidates without claiming every JSON receipt in
-/// the shared directory. Identity markers are unique enough to stand alone;
-/// otherwise require either two markers with one distinctive UX-run field or a
-/// marker whose value is malformed. This catches truncated and malformed runs
-/// while allowing companion receipts that happen to share generic fields.
+/// the shared directory. Require either three markers with one distinctive
+/// UX-run field or two markers with a malformed value. This catches truncated
+/// and malformed runs while allowing companion receipts that happen to share
+/// generic fields such as workflow and scenario metadata.
 fn looks_like_ux_scenario_run(value: &Value) -> bool {
     let Some(object) = value.as_object() else {
         return false;
@@ -188,12 +187,12 @@ fn looks_like_ux_scenario_run(value: &Value) -> bool {
         .copied()
         .filter(|field| object.contains_key(*field))
         .collect();
-    let has_identity = UX_RUN_IDENTITY_FIELDS.iter().any(|field| object.contains_key(*field));
     let has_distinctive = UX_RUN_DISTINCTIVE_FIELDS.iter().any(|field| object.contains_key(*field));
+    let has_multiple_markers = signature_fields.len() >= 2;
 
-    has_identity
-        || (signature_fields.len() >= 2 && has_distinctive)
-        || signature_fields.iter().any(|field| malformed_marker(object, field))
+    (signature_fields.len() >= 3 && has_distinctive)
+        || (has_multiple_markers
+            && signature_fields.iter().any(|field| malformed_marker(object, field)))
 }
 
 fn malformed_marker(object: &serde_json::Map<String, Value>, marker: &str) -> bool {
@@ -260,6 +259,33 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join(".ci/schemas/ux-scenario-run.schema.json")
+    }
+
+    #[test]
+    fn default_receipt_dir_is_validated_when_argument_is_none() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipts = temp.path().join(DEFAULT_RECEIPT_DIR);
+        fs::create_dir_all(&receipts)?;
+        fs::write(receipts.join("broken.json"), "{")?;
+
+        let schema = temp.path().join(RECEIPT_SCHEMA_PATH);
+        if let Some(parent) = schema.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(checked_in_receipt_schema(), &schema)?;
+
+        let matrix = temp.path().join(FIXTURE_MATRIX_PATH);
+        if let Some(parent) = matrix.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&matrix, r#"{"workflows":[{"id":"known","scenario_file":"known.rs"}]}"#)?;
+
+        let error = validation_error(
+            validate_run_inputs(temp.path(), None),
+            "the default receipt directory bypassed scorecard validation",
+        )?;
+        assert!(format!("{error:#}").contains("broken.json"));
+        Ok(())
     }
 
     fn write_matrix(dir: &Path, workflows: &[(&str, &str)]) -> Result<PathBuf> {
@@ -338,11 +364,77 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_json_with_one_receipt_like_field_remains_ignored() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&receipts)?;
+        fs::write(
+            receipts.join("test-report.json"),
+            r#"{"test_name":"unrelated_report","status":"pass"}"#,
+        )?;
+        fs::write(
+            receipts.join("scenario-metadata.json"),
+            r#"{"scenario_file":"unrelated.json","status":"complete"}"#,
+        )?;
+        fs::write(
+            receipts.join("timing-report.json"),
+            r#"{"result":"pass","duration_ms":10.0,"status":"complete"}"#,
+        )?;
+        let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+
+        validate_scorecard_inputs(&receipts, &matrix, &checked_in_receipt_schema())?;
+        Ok(())
+    }
+
+    #[test]
+    fn unrelated_workflow_metadata_with_multiple_identity_fields_remains_ignored() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&receipts)?;
+        fs::write(
+            receipts.join("workflow-report.json"),
+            r#"{
+                "workflow_id":"external_workflow",
+                "scenario_file":"external_scenario.json",
+                "result":"pass",
+                "duration_ms":10.0,
+                "status":"complete"
+            }"#,
+        )?;
+        let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+
+        validate_scorecard_inputs(&receipts, &matrix, &checked_in_receipt_schema())?;
+        Ok(())
+    }
+
+    #[test]
+    fn unrelated_report_with_two_ux_markers_remains_ignored() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&receipts)?;
+        fs::write(
+            receipts.join("external-report.json"),
+            r#"{
+                "result":"pass",
+                "canonical_repro":"external-tool --check",
+                "status":"complete"
+            }"#,
+        )?;
+        let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+
+        validate_scorecard_inputs(&receipts, &matrix, &checked_in_receipt_schema())?;
+        Ok(())
+    }
+
+    #[test]
     fn one_malformed_ux_marker_fails_closed() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let receipts = temp.path().join("receipts");
         fs::create_dir_all(&receipts)?;
-        fs::write(receipts.join("truncated.json"), r#"{"duration_ms":"not-a-number"}"#)?;
+        fs::write(
+            receipts.join("truncated.json"),
+            r#"{"duration_ms":"not-a-number","assertions":{}}"#,
+        )?;
         let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
 
         let error = validation_error(
