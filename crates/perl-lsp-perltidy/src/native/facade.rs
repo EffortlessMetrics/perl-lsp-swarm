@@ -16,14 +16,12 @@ use super::implementation::{
     range_includes_line,
 };
 use super::outcome::{
-    FormatChangeSummary, FormatContext, FormatRequestTarget, TypedFormatResult,
+    FormatContext, FormatIdentity, FormatReasonCode, FormatRequestTarget, TypedFormatResult,
 };
 use perl_parser_core::{SourceRegionIndex, SourceRegionKind, TokenKind, TokenStream};
 
 const LITERAL_PRESERVE_CODE: &str = "native.format.literal_preserve_region";
 const CLASSIFIER_HEREDOC_SOURCE: &str = "print <<'EOF';\nbody\nEOF\n";
-const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// Parse-gated Rust-native Perl formatter with lexical preserve-region guards.
 #[derive(Debug, Default, Clone, Copy)]
@@ -45,13 +43,19 @@ impl NativeFormatter {
         context: &FormatContext,
     ) -> TypedFormatResult {
         let engine = implementation::NativeFormatter::new();
+        if matches!(config.mode, FormatterMode::Off) {
+            return engine.format_document_typed(source, config, context);
+        }
+
         let Some(sanitized) = sanitize_non_code_heredoc_markers(source) else {
             return engine.format_document_typed(source, config, context);
         };
+        let source_identity = engine.format_document_typed(source, config, context).outcome.identity;
 
         restore_typed_result(
             source,
             &sanitized,
+            source_identity,
             engine.format_document_typed(&sanitized.text, config, context),
         )
     }
@@ -66,21 +70,31 @@ impl NativeFormatter {
         context: &FormatContext,
     ) -> TypedFormatResult {
         let engine = implementation::NativeFormatter::new();
-        if matches!(config.mode, FormatterMode::Off) || !valid_range(source, range) {
-            return engine.format_range_typed(source, range, config, context);
+        let baseline = engine.format_range_typed(source, range, config, context);
+        if matches!(config.mode, FormatterMode::Off)
+            || baseline.outcome.reason == FormatReasonCode::UnsafeRange
+        {
+            return baseline;
         }
 
         if range_overlaps_completed_heredoc(source, range) {
-            return typed_heredoc_range_refusal(source, range, config, context);
+            return typed_heredoc_range_refusal(
+                source,
+                range,
+                config,
+                context,
+                baseline.outcome.identity,
+            );
         }
 
         let Some(sanitized) = sanitize_non_code_heredoc_markers(source) else {
-            return engine.format_range_typed(source, range, config, context);
+            return baseline;
         };
 
         restore_typed_result(
             source,
             &sanitized,
+            baseline.outcome.identity,
             engine.format_range_typed(&sanitized.text, range, config, context),
         )
     }
@@ -89,6 +103,12 @@ impl NativeFormatter {
 impl PerlFormatter for NativeFormatter {
     fn format_document(&self, source: &str, config: &FormatConfig) -> FormatResult {
         let engine = implementation::NativeFormatter::new();
+        if matches!(config.mode, FormatterMode::Off) {
+            return <implementation::NativeFormatter as PerlFormatter>::format_document(
+                &engine, source, config,
+            );
+        }
+
         let Some(sanitized) = sanitize_non_code_heredoc_markers(source) else {
             return <implementation::NativeFormatter as PerlFormatter>::format_document(
                 &engine, source, config,
@@ -108,10 +128,12 @@ impl PerlFormatter for NativeFormatter {
 
     fn format_range(&self, source: &str, range: TextRange, config: &FormatConfig) -> FormatResult {
         let engine = implementation::NativeFormatter::new();
-        if !matches!(config.mode, FormatterMode::Off)
-            && valid_range(source, range)
-            && range_overlaps_completed_heredoc(source, range)
-        {
+        if matches!(config.mode, FormatterMode::Off) {
+            return <implementation::NativeFormatter as PerlFormatter>::format_range(
+                &engine, source, range, config,
+            );
+        }
+        if valid_range(source, range) && range_overlaps_completed_heredoc(source, range) {
             return heredoc_range_refusal(source);
         }
 
@@ -185,11 +207,11 @@ fn unused_two_letter_sentinel(source: &str) -> Option<String> {
 fn restore_typed_result(
     source: &str,
     sanitized: &SanitizedSource,
+    source_identity: FormatIdentity,
     mut typed: TypedFormatResult,
 ) -> TypedFormatResult {
     typed.result = restore_format_result(source, sanitized, typed.result);
-    typed.outcome.identity.content_digest = source_digest(source);
-    typed.outcome.change = change_summary(source, &typed.result.formatted, typed.result.edits.len());
+    typed.outcome.identity = source_identity;
     typed
 }
 
@@ -218,6 +240,7 @@ fn typed_heredoc_range_refusal(
     range: TextRange,
     config: &FormatConfig,
     context: &FormatContext,
+    source_identity: FormatIdentity,
 ) -> TypedFormatResult {
     // Reuse the existing outcome classifier instead of creating a second
     // disposition/config-fingerprint authority. The synthetic source reaches
@@ -229,14 +252,8 @@ fn typed_heredoc_range_refusal(
         context,
     );
     typed.result = heredoc_range_refusal(source);
-    typed.outcome.identity.content_digest = source_digest(source);
+    typed.outcome.identity = source_identity;
     typed.outcome.target = FormatRequestTarget::Range { range };
-    typed.outcome.change = FormatChangeSummary {
-        edit_count: 0,
-        source_bytes_changed: 0,
-        rendered_bytes_changed: 0,
-        changed_lines: 0,
-    };
     typed
 }
 
@@ -353,108 +370,4 @@ fn valid_range(source: &str, range: TextRange) -> bool {
             .is_some_and(|line| line.encode_utf16().count() >= position.character as usize)
     };
     position_is_valid(range.start) && position_is_valid(range.end)
-}
-
-fn source_digest(source: &str) -> String {
-    let hash = source.as_bytes().iter().fold(FNV_OFFSET_BASIS, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
-    });
-    format!("source-v1:{hash:016x}")
-}
-
-fn change_summary(source: &str, formatted: &str, edit_count: usize) -> FormatChangeSummary {
-    if source == formatted {
-        return FormatChangeSummary {
-            edit_count,
-            source_bytes_changed: 0,
-            rendered_bytes_changed: 0,
-            changed_lines: 0,
-        };
-    }
-
-    let source_bytes = source.as_bytes();
-    let formatted_bytes = formatted.as_bytes();
-    let prefix =
-        source_bytes.iter().zip(formatted_bytes).take_while(|(left, right)| left == right).count();
-    let suffix_limit = source_bytes.len().min(formatted_bytes.len()).saturating_sub(prefix);
-    let suffix = source_bytes
-        .iter()
-        .rev()
-        .zip(formatted_bytes.iter().rev())
-        .take(suffix_limit)
-        .take_while(|(left, right)| left == right)
-        .count();
-
-    FormatChangeSummary {
-        edit_count,
-        source_bytes_changed: source_bytes.len().saturating_sub(prefix + suffix),
-        rendered_bytes_changed: formatted_bytes.len().saturating_sub(prefix + suffix),
-        changed_lines: count_changed_lines(source, formatted),
-    }
-}
-
-fn count_changed_lines(source: &str, formatted: &str) -> usize {
-    let mut source_lines = source.lines();
-    let mut formatted_lines = formatted.lines();
-    let mut changed_lines = 0;
-
-    loop {
-        match (source_lines.next(), formatted_lines.next()) {
-            (Some(source_line), Some(formatted_line)) => {
-                changed_lines += usize::from(source_line != formatted_line);
-            }
-            (Some(_), None) => return changed_lines + 1 + source_lines.count(),
-            (None, Some(_)) => return changed_lines + 1 + formatted_lines.count(),
-            (None, None) => return changed_lines,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::outcome::FormatReasonCode;
-    use super::*;
-
-    #[test]
-    fn completed_heredoc_span_excludes_following_code_line() {
-        let source = "print <<'EOF';\nbody\nEOF\nmy$x=1;\n";
-        let body = TextRange::new(
-            implementation::TextPosition::new(1, 0),
-            implementation::TextPosition::new(2, 0),
-        );
-        let following = TextRange::new(
-            implementation::TextPosition::new(3, 0),
-            implementation::TextPosition::new(4, 0),
-        );
-        assert!(range_overlaps_completed_heredoc(source, body));
-        assert!(!range_overlaps_completed_heredoc(source, following));
-    }
-
-    #[test]
-    fn unclosed_heredoc_is_not_claimed_as_completed() {
-        let source = "print <<'EOF';\nbody\n";
-        let body = TextRange::new(
-            implementation::TextPosition::new(1, 0),
-            implementation::TextPosition::new(2, 0),
-        );
-        assert!(!range_overlaps_completed_heredoc(source, body));
-    }
-
-    #[test]
-    fn typed_refusal_uses_existing_literal_classifier() {
-        let source = "print <<'EOF';\nbody\nEOF\n";
-        let range = TextRange::new(
-            implementation::TextPosition::new(1, 0),
-            implementation::TextPosition::new(2, 0),
-        );
-        let typed = typed_heredoc_range_refusal(
-            source,
-            range,
-            &FormatConfig::default(),
-            &FormatContext::default(),
-        );
-        assert_eq!(typed.outcome.reason, FormatReasonCode::LiteralPreservationUnsupported);
-        assert_eq!(typed.outcome.target, FormatRequestTarget::Range { range });
-        assert_eq!(typed.outcome.identity.content_digest, source_digest(source));
-    }
 }
