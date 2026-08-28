@@ -141,6 +141,7 @@ pub mod product_identity_workspace;
 pub mod protocol_type_substrate_matrix;
 pub mod provider_confidence_matrix;
 pub mod provider_promotion_ledger;
+pub mod public_release_claims;
 pub mod publication_facts;
 pub mod publish;
 pub mod publish_closure;

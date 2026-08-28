@@ -1,0 +1,1968 @@
+{
+  "claims": [
+    {
+      "claim_id": "C101",
+      "drift_status": "volatile_number",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "README.md:20-22",
+      "notes": "Duplicate of S12 badge; see FND-8",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Marketplace badge \"656 installs\" in source copy",
+      "surface_id": "S01"
+    },
+    {
+      "claim_id": "C102",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "README.md:68-74",
+      "notes": "Matches S02/S12",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "VS Code: `code --install-extension EffortlessMetrics.perl-lsp-rs`; extension downloads matching binary",
+      "surface_id": "S01"
+    },
+    {
+      "claim_id": "C103",
+      "drift_status": "pending",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "README.md:76-90",
+      "notes": "Gate: release packet publication (#4348 chain); matches S02 L54-82",
+      "omitted_caveats": [],
+      "restatement_group": "bootstrap_identity",
+      "summary": "macOS/Linux: manual archive until immutable installer ref+digest exist; identity-bound curl shape with `INSTALLER_REF`/`INSTALLER_SHA256`",
+      "surface_id": "S01"
+    },
+    {
+      "claim_id": "C104",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "README.md:92-96",
+      "notes": "Tap version independently versioned per same lines",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Homebrew from owned tap `brew install effortlessmetrics/tap/perllsp`, not core",
+      "surface_id": "S01"
+    },
+    {
+      "claim_id": "C105",
+      "drift_status": "pending",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "README.md:98-108",
+      "notes": "See FND-9 for split issue references",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Windows x86_64 manual zip; PowerShell installer **not usable** until fix promoted to publication repo (#4348)",
+      "surface_id": "S01"
+    },
+    {
+      "claim_id": "C106",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "README.md:110-128",
+      "notes": "Matches S02 L282-299, S09 L11-13",
+      "omitted_caveats": [],
+      "restatement_group": "verification_probes",
+      "summary": "Verification semantics: `--doctor` diagnostic only, not CI gate; `--health` liveness-only printing `ok <version>`; channels independently versioned vs v0.17.0 receipt",
+      "surface_id": "S01"
+    },
+    {
+      "claim_id": "C107",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "README.md:130-134",
+      "notes": "Product-unit support boundary claim",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Generic clients launch `perllsp --stdio`; Zed registration absent → unsupported",
+      "surface_id": "S01"
+    },
+    {
+      "claim_id": "C108",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "README.md:136-138",
+      "notes": "Non-install dependency boundary",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Native formatting/critic need no `perltidy`/`perlcritic`; opt-in external tools",
+      "surface_id": "S01"
+    },
+    {
+      "claim_id": "C201",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-2",
+        "FND-4",
+        "FND-7",
+        "FND-9",
+        "FND-10",
+        "FND-11"
+      ],
+      "identity_anti_claims": [],
+      "location": "INSTALLATION.md:13-15",
+      "notes": "Channel-independence frame used across surfaces",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Verified `v0.17.0` archives are public beta; other channels not proven by receipt",
+      "surface_id": "S02"
+    },
+    {
+      "claim_id": "C202",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-2",
+        "FND-4",
+        "FND-7",
+        "FND-9",
+        "FND-10",
+        "FND-11"
+      ],
+      "identity_anti_claims": [],
+      "location": "INSTALLATION.md:19-25",
+      "notes": "Local path also claimed by S10 C310",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Fastest-path enumeration: VS Code extension, manual archive, other-editor download, local `cargo install --path crates/perllsp`",
+      "surface_id": "S02"
+    },
+    {
+      "claim_id": "C203",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-2",
+        "FND-4",
+        "FND-7",
+        "FND-9",
+        "FND-10",
+        "FND-11"
+      ],
+      "identity_anti_claims": [
+        {
+          "disposition": "do_not_install",
+          "foreign_name": "perl-lsp",
+          "kind": "crates_io_name_collision",
+          "owned_name": "perllsp"
+        }
+      ],
+      "location": "INSTALLATION.md:27-28",
+      "notes": "Name-collision boundary; restated L117-118, L259",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Do not install crates.io package `perl-lsp`; it is another project; supported Cargo package is `perllsp`",
+      "surface_id": "S02"
+    },
+    {
+      "claim_id": "C204",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-2",
+        "FND-4",
+        "FND-7",
+        "FND-9",
+        "FND-10",
+        "FND-11"
+      ],
+      "identity_anti_claims": [],
+      "location": "INSTALLATION.md:39-66",
+      "notes": "Fail-closed identity bootstrap contract",
+      "omitted_caveats": [],
+      "restatement_group": "bootstrap_identity",
+      "summary": "Root `install.sh` is bootstrap wrapper; canonical logic in `scripts/install.sh`; piped wrapper non-authoritative without `PERL_LSP_INSTALLER_REF` (40-char SHA) + `PERL_LSP_INSTALLER_SHA256`",
+      "surface_id": "S02"
+    },
+    {
+      "claim_id": "C205",
+      "drift_status": "future_example",
+      "finding_refs": [
+        "FND-2",
+        "FND-4",
+        "FND-7",
+        "FND-9",
+        "FND-10",
+        "FND-11"
+      ],
+      "identity_anti_claims": [],
+      "location": "INSTALLATION.md:68-94",
+      "notes": "Example ahead of audited line (next planned train per Distribution Matrix); see FND-2",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Remote bootstrap command shape plus env-var options incl. `VERSION=v0.18.0` example",
+      "surface_id": "S02"
+    },
+    {
+      "claim_id": "C206",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-2",
+        "FND-4",
+        "FND-7",
+        "FND-9",
+        "FND-10",
+        "FND-11"
+      ],
+      "identity_anti_claims": [],
+      "location": "INSTALLATION.md:96-97",
+      "notes": "Matches prebuilt table C213",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Release-archive platforms: Linux x86_64/aarch64 (gnu/musl), macOS x86_64/aarch64",
+      "surface_id": "S02"
+    },
+    {
+      "claim_id": "C207",
+      "dimensions": {
+        "sha256sums_enforcement": {
+          "mode": "fail_closed_required"
+        }
+      },
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-2",
+        "FND-4",
+        "FND-7",
+        "FND-9",
+        "FND-10",
+        "FND-11"
+      ],
+      "identity_anti_claims": [],
+      "location": "INSTALLATION.md:99-114",
+      "notes": "Basis for FND-7 contrast",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "POSIX installer requires downloadable `SHA256SUMS`, exactly one normalized matching row; fails closed; artifact-integrity ≠ publisher provenance; PowerShell retains fail-open boundary; open boundaries under #6097",
+      "surface_id": "S02"
+    },
+    {
+      "claim_id": "C208",
+      "dimensions": {
+        "product_units": {
+          "archive_units_claimed": [
+            "perllsp",
+            "perl-dap"
+          ],
+          "build_from_source_units": [
+            "perllsp"
+          ]
+        }
+      },
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-2",
+        "FND-4",
+        "FND-7",
+        "FND-9",
+        "FND-10",
+        "FND-11"
+      ],
+      "identity_anti_claims": [],
+      "location": "INSTALLATION.md:116-122",
+      "notes": "Product-unit dimension join risk for #11549",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "`BUILD_FROM_SOURCE=1` installs **perllsp only**, not perl-dap; debugger needs archive or `cargo build -p perl-dap --release`",
+      "surface_id": "S02"
+    },
+    {
+      "claim_id": "C209",
+      "dimensions": {
+        "product_units": {
+          "archive_units_claimed": [
+            "perllsp",
+            "perl-dap"
+          ],
+          "build_from_source_units": []
+        }
+      },
+      "drift_status": "pending",
+      "finding_refs": [
+        "FND-2",
+        "FND-4",
+        "FND-7",
+        "FND-9",
+        "FND-10",
+        "FND-11"
+      ],
+      "identity_anti_claims": [],
+      "location": "INSTALLATION.md:124-167",
+      "notes": "Live v0.17.0 probe quoted L140-143; see FND-9",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Windows: manual archive only working path; published installer broken via asset-name mismatch `perl-lsp-*` vs `perllsp-*` (404, #5461); repo copy fixed but unsynced (#4348); installs `%USERPROFILE%\\.local\\bin`",
+      "surface_id": "S02"
+    },
+    {
+      "claim_id": "C210",
+      "dimensions": {
+        "product_units": {
+          "build_from_source_units": [
+            "perllsp"
+          ],
+          "finding_refs": [
+            "FND-11"
+          ],
+          "tracked_installer_ships_adapter": true
+        },
+        "windows_arm64": {
+          "finding_refs": [
+            "FND-4",
+            "FND-11"
+          ],
+          "published_receipt_v0_17_0": "absent",
+          "tracked_source": "built",
+          "user_prose": "x64_fallback_build_from_source"
+        }
+      },
+      "drift_status": "source_drift",
+      "finding_refs": [
+        "FND-2",
+        "FND-4",
+        "FND-7",
+        "FND-9",
+        "FND-10",
+        "FND-11"
+      ],
+      "identity_anti_claims": [],
+      "location": "INSTALLATION.md:158-167",
+      "notes": "Prose lags tracked source: `install.ps1:221-229` ships both executables and `release.yml:121-125` builds `aarch64-pc-windows-msvc`; true for published v0.17.0 assets, stale against current main; FND-4, FND-11",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Windows script installs `perllsp.exe` only (#5036); \"only x86_64-msvc built by the release workflow\"; ARM64 Win10 cannot emulate x64 → build from source (#5007)",
+      "surface_id": "S02"
+    },
+    {
+      "claim_id": "C211",
+      "drift_status": "mutable_pin",
+      "finding_refs": [
+        "FND-2",
+        "FND-4",
+        "FND-7",
+        "FND-9",
+        "FND-10",
+        "FND-11"
+      ],
+      "identity_anti_claims": [],
+      "location": "INSTALLATION.md:169-179",
+      "notes": "Intentional do-not-use exhibit; still a literal master URL; see FND-10",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Pin/dir variants of installer \"404 until then\"; example includes `irm .../master/install.ps1` URL",
+      "surface_id": "S02"
+    },
+    {
+      "claim_id": "C212",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-2",
+        "FND-4",
+        "FND-7",
+        "FND-9",
+        "FND-10",
+        "FND-11"
+      ],
+      "identity_anti_claims": [],
+      "location": "INSTALLATION.md:189-213",
+      "notes": "Honest unsupported-channel annotation",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Scoop/Chocolatey/winget manifest sources exist but are **not proven-current** paths; verify via `scoop search` / `choco search` / `winget search`",
+      "surface_id": "S02"
+    },
+    {
+      "claim_id": "C213",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-2",
+        "FND-4",
+        "FND-7",
+        "FND-9",
+        "FND-10",
+        "FND-11"
+      ],
+      "identity_anti_claims": [],
+      "location": "INSTALLATION.md:215-240",
+      "notes": "Platform breadth L232 matches C206",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Homebrew tap route + two-step form; completions not installed by default, added via `--completion {bash,zsh,fish}`",
+      "surface_id": "S02"
+    },
+    {
+      "claim_id": "C214",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-2",
+        "FND-4",
+        "FND-7",
+        "FND-9",
+        "FND-10",
+        "FND-11"
+      ],
+      "identity_anti_claims": [
+        {
+          "disposition": "do_not_install",
+          "foreign_name": "perl-lsp",
+          "kind": "crates_io_name_collision",
+          "owned_name": "perllsp"
+        }
+      ],
+      "location": "INSTALLATION.md:242-260",
+      "notes": "crate name collision note repeated L259",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Source build: `cargo build --release --bin perllsp -p perllsp`; registry route `cargo install perllsp`",
+      "surface_id": "S02"
+    },
+    {
+      "claim_id": "C215",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-2",
+        "FND-4",
+        "FND-7",
+        "FND-9",
+        "FND-10",
+        "FND-11"
+      ],
+      "identity_anti_claims": [],
+      "location": "INSTALLATION.md:261-280",
+      "notes": "Canonical platform matrix",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Prebuilt v0.17.0 archives; gnu-vs-musl selection rule; suffix table for all seven targets",
+      "surface_id": "S02"
+    },
+    {
+      "claim_id": "C216",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-2",
+        "FND-4",
+        "FND-7",
+        "FND-9",
+        "FND-10",
+        "FND-11"
+      ],
+      "identity_anti_claims": [],
+      "location": "INSTALLATION.md:282-299",
+      "notes": "Mirrors C106",
+      "omitted_caveats": [],
+      "restatement_group": "verification_probes",
+      "summary": "After install: `--stdio`, `--doctor`, `--health ok <version>`; doctor exit status not a CI gate",
+      "surface_id": "S02"
+    },
+    {
+      "claim_id": "C301",
+      "drift_status": "mutable_pin",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3"
+      ],
+      "identity_anti_claims": [],
+      "location": "GITHUB_ACTIONS.md:6-13",
+      "notes": "Repo-qualified route recorded verbatim for downstream matching; FND-1; example version drift = FND-2",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Reusable action usage `- uses: EffortlessMetrics/perl-lsp/.github/actions/setup-perl-lsp@master` with `version: '0.12.3'`",
+      "surface_id": "S03"
+    },
+    {
+      "claim_id": "C302",
+      "dimensions": {
+        "sha256sums_enforcement": {
+          "mode": "verify_present_no_mode"
+        }
+      },
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3"
+      ],
+      "identity_anti_claims": [],
+      "location": "GITHUB_ACTIONS.md:15-23",
+      "notes": "Behavior verified against S04 resolve/download steps",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Action resolves tag or pinned version, downloads per-OS archive, verifies against published `SHA256SUMS`, optional source-build fallback, adds to `PATH`",
+      "surface_id": "S03"
+    },
+    {
+      "claim_id": "C303",
+      "drift_status": "mutable_pin",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3"
+      ],
+      "identity_anti_claims": [],
+      "location": "GITHUB_ACTIONS.md:38-42",
+      "notes": "latest = floating currentness; FND-3",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Explicit `version:` for reproducible install; `version: latest` endorsed for newest binary",
+      "surface_id": "S03"
+    },
+    {
+      "claim_id": "C401",
+      "drift_status": "mutable_pin",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4"
+      ],
+      "identity_anti_claims": [],
+      "location": "action.yml:1-5",
+      "notes": "Repo-qualified route; example version drift = FND-2",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Header usage comment shows `@master` ref and `version: '0.12.3'`",
+      "surface_id": "S04"
+    },
+    {
+      "claim_id": "C402",
+      "drift_status": "mutable_pin",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4"
+      ],
+      "identity_anti_claims": [],
+      "location": "action.yml:12-16",
+      "notes": "Default floats across releases; FND-3",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Input `version`, default `latest` (resolves GitHub `/releases/latest`)",
+      "surface_id": "S04"
+    },
+    {
+      "claim_id": "C403",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4"
+      ],
+      "identity_anti_claims": [],
+      "location": "action.yml:17-24",
+      "notes": "",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Inputs `cache` (default true) and `install-dir` (default runner temp)",
+      "surface_id": "S04"
+    },
+    {
+      "claim_id": "C404",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4"
+      ],
+      "identity_anti_claims": [],
+      "location": "action.yml:25-28",
+      "notes": "",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Input `build-from-source` (default false)",
+      "surface_id": "S04"
+    },
+    {
+      "claim_id": "C405",
+      "dimensions": {
+        "windows_arm64": {
+          "finding_refs": [
+            "FND-4"
+          ],
+          "published_receipt_v0_17_0": "absent",
+          "tracked_source": "built",
+          "user_prose": "unspecified"
+        }
+      },
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4"
+      ],
+      "identity_anti_claims": [],
+      "location": "action.yml:70-105",
+      "notes": "Consistent with tracked source (`release.yml:121-125` now builds the ARM64 target); historical conflict with prose surfaces noted in FND-4",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Platform/target resolution incl. Windows ARM64 → `aarch64-pc-windows-msvc` release target",
+      "surface_id": "S04"
+    },
+    {
+      "claim_id": "C406",
+      "dimensions": {
+        "sha256sums_enforcement": {
+          "mode": "verify_present_no_mode"
+        }
+      },
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4"
+      ],
+      "identity_anti_claims": [],
+      "location": "action.yml:183-190",
+      "notes": "Matches C302/C207 strength",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Release mode downloads exact asset plus `SHA256SUMS` and verifies before extraction",
+      "surface_id": "S04"
+    },
+    {
+      "claim_id": "C501",
+      "dimensions": {
+        "windows_arm64": {
+          "finding_refs": [
+            "FND-4"
+          ],
+          "published_receipt_v0_17_0": "absent",
+          "tracked_source": "built",
+          "user_prose": "supported"
+        }
+      },
+      "drift_status": "source_drift",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "actions/README.md:30-35",
+      "notes": "Consistent with tracked source (`release.yml:121-125` builds ARM64 Windows), but ahead of the published v0.17.0 assets and of S02/S12 prose; three-way split owned by FND-4",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "\"Supported release binaries auto-resolve\" for Linux/macOS/Windows each listing `x86_64`, `aarch64`",
+      "surface_id": "S05"
+    },
+    {
+      "claim_id": "C502",
+      "drift_status": "mutable_pin",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "actions/README.md:36-41",
+      "notes": "Route recorded verbatim; FND-1; example version drift = FND-2",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Usage block with repo-qualified `EffortlessMetrics/perl-lsp/.github/actions/setup-perl-lsp@master` ref and `version: '0.12.3'`",
+      "surface_id": "S05"
+    },
+    {
+      "claim_id": "C503",
+      "drift_status": "mutable_pin",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "actions/README.md:43-45",
+      "notes": "FND-3",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Inputs table: `version` default `latest`",
+      "surface_id": "S05"
+    },
+    {
+      "claim_id": "C601",
+      "drift_status": "mutable_pin",
+      "finding_refs": [
+        "FND-1",
+        "FND-3"
+      ],
+      "identity_anti_claims": [],
+      "location": "setup-perl-lsp-consumer.yml:37-41",
+      "notes": "Repo-qualified route recorded verbatim; both mutable dimensions combined; FND-1, FND-3",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Executable consumer step pins `EffortlessMetrics/perl-lsp/.github/actions/setup-perl-lsp@master` with `version: latest`",
+      "surface_id": "S06"
+    },
+    {
+      "claim_id": "C701",
+      "drift_status": "current",
+      "finding_refs": [],
+      "identity_anti_claims": [
+        {
+          "disposition": "do_not_install",
+          "foreign_name": "perl-lsp",
+          "kind": "crates_io_name_collision",
+          "owned_name": "perllsp"
+        }
+      ],
+      "location": "UPGRADING.md:18",
+      "notes": "Version-consistent pin guidance",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Cargo-installed users: `cargo install --locked perllsp`; pin `--version 0.17.0` only after verifying receipt",
+      "surface_id": "S07"
+    },
+    {
+      "claim_id": "C702",
+      "drift_status": "current",
+      "finding_refs": [],
+      "identity_anti_claims": [
+        {
+          "disposition": "do_not_install",
+          "foreign_name": "perl-lsp",
+          "kind": "crates_io_name_collision",
+          "owned_name": "perllsp"
+        }
+      ],
+      "location": "UPGRADING.md:35-49",
+      "notes": "Binary pair matches product-unit model",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Reinstall server/adapter: `cargo install --locked perllsp` + `cargo install --locked perl-dap`; local checkouts via `--path … --force`",
+      "surface_id": "S07"
+    },
+    {
+      "claim_id": "C703",
+      "drift_status": "current",
+      "finding_refs": [],
+      "identity_anti_claims": [],
+      "location": "UPGRADING.md:31",
+      "notes": "Same frame as C201",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Channels independent: GitHub Release, crates.io, marketplace, Homebrew are separate receipts",
+      "surface_id": "S07"
+    },
+    {
+      "claim_id": "C801",
+      "drift_status": "current",
+      "finding_refs": [],
+      "identity_anti_claims": [],
+      "location": "TROUBLESHOOTING.md:3-16",
+      "notes": "Route-recommendation claim (diagnostic-surface class)",
+      "omitted_caveats": [],
+      "restatement_group": "verification_probes",
+      "summary": "If basic probes fail, fix binary installation and `PATH` first before deeper debugging",
+      "surface_id": "S08"
+    },
+    {
+      "claim_id": "C901",
+      "drift_status": "current",
+      "finding_refs": [],
+      "identity_anti_claims": [],
+      "location": "EDITOR_SETUP.md:3-9",
+      "notes": "Deferral surface, no install commands",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Page defers installation to INSTALLATION.md; VS Code-compatible editors get managed download; generic clients need exact binary on PATH",
+      "surface_id": "S09"
+    },
+    {
+      "claim_id": "C902",
+      "drift_status": "current",
+      "finding_refs": [],
+      "identity_anti_claims": [],
+      "location": "EDITOR_SETUP.md:11-13",
+      "notes": "Channel currentness claim",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "v0.17.0 assets are beta; marketplace/package-manager versions pending or unproven; verify `--version`/`--health`",
+      "surface_id": "S09"
+    },
+    {
+      "claim_id": "C1001",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-3",
+        "FND-7"
+      ],
+      "identity_anti_claims": [],
+      "location": "GETTING_STARTED.md:14-15",
+      "notes": "",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Other editors: put `perllsp` on PATH; run `--health` first",
+      "surface_id": "S10"
+    },
+    {
+      "claim_id": "C1002",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-3",
+        "FND-7"
+      ],
+      "identity_anti_claims": [],
+      "location": "GETTING_STARTED.md:24",
+      "notes": "Parser-embedded posture claim",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Product unit: single native binary, \"No Perl runtime is required\"",
+      "surface_id": "S10"
+    },
+    {
+      "claim_id": "C1003",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-3",
+        "FND-7"
+      ],
+      "identity_anti_claims": [],
+      "location": "GETTING_STARTED.md:38-41",
+      "notes": "Condensed duplicate of C102",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "`code --install-extension EffortlessMetrics.perl-lsp-rs`; extension downloads matching binary",
+      "surface_id": "S10"
+    },
+    {
+      "claim_id": "C1004",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-3",
+        "FND-7"
+      ],
+      "identity_anti_claims": [],
+      "location": "GETTING_STARTED.md:47-53",
+      "notes": "Third restatement of bootstrap (annotation-dedup candidate)",
+      "omitted_caveats": [],
+      "restatement_group": "bootstrap_identity",
+      "summary": "Identity-bound wrapper shape identical to S01/S02",
+      "surface_id": "S10"
+    },
+    {
+      "claim_id": "C1005",
+      "dimensions": {
+        "sha256sums_enforcement": {
+          "finding_refs": [
+            "FND-7"
+          ],
+          "mode": "fail_open_conditional"
+        }
+      },
+      "drift_status": "cross_surface_drift",
+      "finding_refs": [
+        "FND-3",
+        "FND-7"
+      ],
+      "identity_anti_claims": [],
+      "location": "GETTING_STARTED.md:58-61",
+      "notes": "Installer now requires the manifest and fails closed (C207); conditional phrasing describes the old fail-open mode; FND-7",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Canonical installer \"verifies against the release SHA256SUMS when that file is available\"",
+      "surface_id": "S10"
+    },
+    {
+      "claim_id": "C1006",
+      "drift_status": "mutable_pin",
+      "finding_refs": [
+        "FND-3",
+        "FND-7"
+      ],
+      "identity_anti_claims": [],
+      "location": "GETTING_STARTED.md:68-79",
+      "notes": "\"latest\" currentness phrasing without pin; FND-3",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Windows zip route; other editors: \"Download the latest archive\" from Releases",
+      "surface_id": "S10"
+    },
+    {
+      "claim_id": "C1007",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-3",
+        "FND-7"
+      ],
+      "identity_anti_claims": [],
+      "location": "GETTING_STARTED.md:86",
+      "notes": "",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "`cargo install --path crates/perllsp` local-testing route",
+      "surface_id": "S10"
+    },
+    {
+      "claim_id": "C1008",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-3",
+        "FND-7"
+      ],
+      "identity_anti_claims": [],
+      "location": "GETTING_STARTED.md:93-103",
+      "notes": "",
+      "omitted_caveats": [],
+      "restatement_group": "verification_probes",
+      "summary": "Post-install probes `--version`/`--health`/`--info`/`--check`",
+      "surface_id": "S10"
+    },
+    {
+      "claim_id": "C1101",
+      "drift_status": "current",
+      "finding_refs": [],
+      "identity_anti_claims": [
+        {
+          "disposition": "do_not_install",
+          "foreign_name": "perl-lsp",
+          "kind": "crates_io_name_collision",
+          "owned_name": "perllsp"
+        }
+      ],
+      "location": "package.json:2-5",
+      "notes": "Identity triple (`perl-lsp-rs`/`perllsp`/foreign `perl-lsp`) is the collision field consumed by #11549 subject binding",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Extension identity `perl-lsp-rs`, display \"Perl Language Server (perl-lsp)\", description claims native Rust LSP+DAP, version `0.17.0`",
+      "surface_id": "S11"
+    },
+    {
+      "claim_id": "C1102",
+      "drift_status": "current",
+      "finding_refs": [],
+      "identity_anti_claims": [],
+      "location": "package.json:35",
+      "notes": "Scope-of-support metadata claim",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Virtual-workspace limitation note",
+      "surface_id": "S11"
+    },
+    {
+      "claim_id": "C1201",
+      "drift_status": "volatile_number",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "README.md:7-10",
+      "notes": "FND-8",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Badge \"656 installs\"",
+      "surface_id": "S12"
+    },
+    {
+      "claim_id": "C1202",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "README.md:118-137",
+      "notes": "Marketplace-facing command set",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Install from VS Marketplace or Open VSX; `code`/`codium`/PearAI variants of `--install-extension`",
+      "surface_id": "S12"
+    },
+    {
+      "claim_id": "C1203",
+      "drift_status": "mutable_pin",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "README.md:137,190-192",
+      "notes": "Channel default floats; FND-3",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Managed binary auto-download on first activation; settings `autoDownload`, `serverPath`, `channel` default `\"latest\"`",
+      "surface_id": "S12"
+    },
+    {
+      "claim_id": "C1204",
+      "dimensions": {
+        "windows_arm64": {
+          "finding_refs": [
+            "FND-4",
+            "FND-11"
+          ],
+          "published_receipt_v0_17_0": "absent",
+          "tracked_source": "built",
+          "user_prose": "x64_fallback_build_from_source"
+        }
+      },
+      "drift_status": "source_drift",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9",
+        "FND-11"
+      ],
+      "identity_anti_claims": [],
+      "location": "README.md:145-148",
+      "notes": "Prose lags tracked source (`release.yml:121-125` builds `aarch64-pc-windows-msvc`); matched published v0.17.0 assets at audit; FND-4, FND-11",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "No native ARM64 Windows build; x64 fallback; links build-from-source",
+      "surface_id": "S12"
+    },
+    {
+      "claim_id": "C1205",
+      "drift_status": "mutable_pin",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "README.md:157,208",
+      "notes": "File exists in-tree (`vscode-extension/INTERNAL_DEPLOYMENT.md`); FND-5",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "INTERNAL_DEPLOYMENT guidance linked via `blob/master` URLs",
+      "surface_id": "S12"
+    },
+    {
+      "claim_id": "C1206",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "README.md:163-176",
+      "notes": "Fourth restatement of bootstrap",
+      "omitted_caveats": [],
+      "restatement_group": "bootstrap_identity",
+      "summary": "Manual Installation: brew tap; identity-bound curl bootstrap identical to S01/S02/S10",
+      "surface_id": "S12"
+    },
+    {
+      "claim_id": "C1207",
+      "drift_status": "mutable_pin",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "README.md:179",
+      "notes": "Git route without tag/rev pin; FND-6",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "cargo install --git https://github.com/EffortlessMetrics/perl-lsp --package perllsp",
+      "surface_id": "S12"
+    },
+    {
+      "claim_id": "C1208",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-1",
+        "FND-2",
+        "FND-3",
+        "FND-4",
+        "FND-5",
+        "FND-6",
+        "FND-8",
+        "FND-9"
+      ],
+      "identity_anti_claims": [],
+      "location": "README.md:383",
+      "notes": "Matches Distribution Matrix channel row",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Open VSX listed as alternative marketplace",
+      "surface_id": "S12"
+    },
+    {
+      "claim_id": "C1301",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-12"
+      ],
+      "identity_anti_claims": [],
+      "location": "VS_CODE_SETUP.md:41,107",
+      "notes": "Duplicate of C102 route inside editor guide",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "code --install-extension EffortlessMetrics.perl-lsp-rs",
+      "surface_id": "S13"
+    },
+    {
+      "claim_id": "C1302",
+      "drift_status": "current",
+      "finding_refs": [
+        "FND-12"
+      ],
+      "identity_anti_claims": [
+        {
+          "disposition": "do_not_install",
+          "foreign_name": "perl-lsp",
+          "kind": "crates_io_name_collision",
+          "owned_name": "perllsp"
+        }
+      ],
+      "location": "VS_CODE_SETUP.md:55,81",
+      "notes": "Registry + local routes restated from S02",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "`cargo install perllsp --locked`; local `cargo install --path crates/perllsp --locked`",
+      "surface_id": "S13"
+    },
+    {
+      "claim_id": "C1303",
+      "drift_status": "mutable_pin",
+      "finding_refs": [
+        "FND-12"
+      ],
+      "identity_anti_claims": [],
+      "location": "VS_CODE_SETUP.md:61-69",
+      "notes": "Version-variable download with no checksum step anywhere in the flow; first archive-fetch surface outside S02; FND-12",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "Archive download: `curl -LO .../releases/download/v${VERSION}/perllsp-${VERSION}-${TARGET}.tar.gz`, untar, install to `/usr/local/bin`",
+      "surface_id": "S13"
+    },
+    {
+      "claim_id": "C1304",
+      "drift_status": "current",
+      "finding_refs": [],
+      "identity_anti_claims": [
+        {
+          "disposition": "do_not_install",
+          "foreign_name": "perl-lsp",
+          "kind": "crates_io_name_collision",
+          "owned_name": "perllsp"
+        }
+      ],
+      "location": "COC_NEOVIM_SETUP.md:31,38,46",
+      "notes": "Routes restated without their S02 boundaries (tap-versions-unproven caveat absent here)",
+      "omitted_caveats": [
+        "homebrew_tap_version_unproven"
+      ],
+      "restatement_group": null,
+      "summary": "`cargo install perllsp`; `brew install effortlessmetrics/tap/perllsp`; local path install",
+      "surface_id": "S13"
+    },
+    {
+      "claim_id": "C1305",
+      "drift_status": "current",
+      "finding_refs": [],
+      "identity_anti_claims": [
+        {
+          "disposition": "do_not_install",
+          "foreign_name": "perl-lsp",
+          "kind": "crates_io_name_collision",
+          "owned_name": "perllsp"
+        }
+      ],
+      "location": "NEOVIM_SETUP.md:52,60,78",
+      "notes": "Caveat-omission note applies",
+      "omitted_caveats": [
+        "homebrew_tap_version_unproven"
+      ],
+      "restatement_group": null,
+      "summary": "Same three-route set as C1304",
+      "surface_id": "S13"
+    },
+    {
+      "claim_id": "C1306",
+      "drift_status": "current",
+      "finding_refs": [],
+      "identity_anti_claims": [
+        {
+          "disposition": "do_not_install",
+          "foreign_name": "perl-lsp",
+          "kind": "crates_io_name_collision",
+          "owned_name": "perllsp"
+        }
+      ],
+      "location": "EMACS_SETUP.md:34",
+      "notes": "",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "cargo install perllsp",
+      "surface_id": "S13"
+    },
+    {
+      "claim_id": "C1307",
+      "drift_status": "current",
+      "finding_refs": [],
+      "identity_anti_claims": [
+        {
+          "disposition": "do_not_install",
+          "foreign_name": "perl-lsp",
+          "kind": "crates_io_name_collision",
+          "owned_name": "perllsp"
+        }
+      ],
+      "location": "HELIX_SETUP.md:51,60",
+      "notes": "",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "`cargo install perllsp --locked`; local path install",
+      "surface_id": "S13"
+    },
+    {
+      "claim_id": "C1308",
+      "drift_status": "current",
+      "finding_refs": [],
+      "identity_anti_claims": [
+        {
+          "disposition": "do_not_install",
+          "foreign_name": "perl-lsp",
+          "kind": "crates_io_name_collision",
+          "owned_name": "perllsp"
+        }
+      ],
+      "location": "SUBLIME_SETUP.md:46,53,61",
+      "notes": "",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "`cargo install perllsp`; brew tap route; local path install",
+      "surface_id": "S13"
+    },
+    {
+      "claim_id": "C1309",
+      "drift_status": "current",
+      "finding_refs": [],
+      "identity_anti_claims": [],
+      "location": "CODEX_CLI_SETUP.md:30",
+      "notes": "Adjacent-tool acquisition (`lsp-mcp`), not a perl-lsp product claim; recorded to keep the tool boundary explicit for downstream matching",
+      "omitted_caveats": [],
+      "restatement_group": null,
+      "summary": "cargo install lsp-mcp",
+      "surface_id": "S13"
+    }
+  ],
+  "findings": [
+    {
+      "cited_files": [
+        "GITHUB_ACTIONS.md",
+        "README.md",
+        "action.yml",
+        "setup-perl-lsp-consumer.yml"
+      ],
+      "finding_id": "FND-1",
+      "owner_route": "none_recorded",
+      "related_claims": [
+        "C101",
+        "C102",
+        "C103",
+        "C104",
+        "C105",
+        "C106",
+        "C107",
+        "C108",
+        "C301",
+        "C302",
+        "C303",
+        "C401",
+        "C402",
+        "C403",
+        "C404",
+        "C405",
+        "C406",
+        "C501",
+        "C502",
+        "C503",
+        "C601",
+        "C1201",
+        "C1202",
+        "C1203",
+        "C1204",
+        "C1205",
+        "C1206",
+        "C1207",
+        "C1208"
+      ],
+      "title": "`@master` literal action pins (consumer-facing)"
+    },
+    {
+      "cited_files": [
+        "GITHUB_ACTIONS.md",
+        "INSTALLATION.md",
+        "README.md",
+        "action.yml",
+        "install.sh"
+      ],
+      "finding_id": "FND-2",
+      "owner_route": "none_recorded",
+      "related_claims": [
+        "C101",
+        "C102",
+        "C103",
+        "C104",
+        "C105",
+        "C106",
+        "C107",
+        "C108",
+        "C201",
+        "C202",
+        "C203",
+        "C204",
+        "C205",
+        "C206",
+        "C207",
+        "C208",
+        "C209",
+        "C210",
+        "C211",
+        "C212",
+        "C213",
+        "C214",
+        "C215",
+        "C216",
+        "C301",
+        "C302",
+        "C303",
+        "C401",
+        "C402",
+        "C403",
+        "C404",
+        "C405",
+        "C406",
+        "C501",
+        "C502",
+        "C503",
+        "C1201",
+        "C1202",
+        "C1203",
+        "C1204",
+        "C1205",
+        "C1206",
+        "C1207",
+        "C1208"
+      ],
+      "title": "stale example versions behind the release line"
+    },
+    {
+      "cited_files": [
+        "GETTING_STARTED.md",
+        "GITHUB_ACTIONS.md",
+        "README.md",
+        "action.yml",
+        "setup-perl-lsp-consumer.yml"
+      ],
+      "finding_id": "FND-3",
+      "owner_route": "none_recorded",
+      "related_claims": [
+        "C101",
+        "C102",
+        "C103",
+        "C104",
+        "C105",
+        "C106",
+        "C107",
+        "C108",
+        "C301",
+        "C302",
+        "C303",
+        "C401",
+        "C402",
+        "C403",
+        "C404",
+        "C405",
+        "C406",
+        "C501",
+        "C502",
+        "C503",
+        "C601",
+        "C1001",
+        "C1002",
+        "C1003",
+        "C1004",
+        "C1005",
+        "C1006",
+        "C1007",
+        "C1008",
+        "C1201",
+        "C1202",
+        "C1203",
+        "C1204",
+        "C1205",
+        "C1206",
+        "C1207",
+        "C1208"
+      ],
+      "title": "`latest` mutable defaults endorsed in prose"
+    },
+    {
+      "cited_files": [
+        "INSTALLATION.md",
+        "README.md",
+        "action.yml",
+        "release.yml"
+      ],
+      "finding_id": "FND-4",
+      "owner_route": "#11549-classifier",
+      "related_claims": [
+        "C101",
+        "C102",
+        "C103",
+        "C104",
+        "C105",
+        "C106",
+        "C107",
+        "C108",
+        "C201",
+        "C202",
+        "C203",
+        "C204",
+        "C205",
+        "C206",
+        "C207",
+        "C208",
+        "C209",
+        "C210",
+        "C211",
+        "C212",
+        "C213",
+        "C214",
+        "C215",
+        "C216",
+        "C401",
+        "C402",
+        "C403",
+        "C404",
+        "C405",
+        "C406",
+        "C501",
+        "C502",
+        "C503",
+        "C1201",
+        "C1202",
+        "C1203",
+        "C1204",
+        "C1205",
+        "C1206",
+        "C1207",
+        "C1208"
+      ],
+      "title": "Windows ARM64 three-way split across source, prose, and published assets"
+    },
+    {
+      "cited_files": [
+        "README.md"
+      ],
+      "finding_id": "FND-5",
+      "owner_route": "none_recorded",
+      "related_claims": [
+        "C101",
+        "C102",
+        "C103",
+        "C104",
+        "C105",
+        "C106",
+        "C107",
+        "C108",
+        "C501",
+        "C502",
+        "C503",
+        "C1201",
+        "C1202",
+        "C1203",
+        "C1204",
+        "C1205",
+        "C1206",
+        "C1207",
+        "C1208"
+      ],
+      "title": "in-tree file advertised through mutable `blob/master` URL"
+    },
+    {
+      "cited_files": [
+        "README.md"
+      ],
+      "finding_id": "FND-6",
+      "owner_route": "none_recorded",
+      "related_claims": [
+        "C101",
+        "C102",
+        "C103",
+        "C104",
+        "C105",
+        "C106",
+        "C107",
+        "C108",
+        "C501",
+        "C502",
+        "C503",
+        "C1201",
+        "C1202",
+        "C1203",
+        "C1204",
+        "C1205",
+        "C1206",
+        "C1207",
+        "C1208"
+      ],
+      "title": "unpinned git-source install"
+    },
+    {
+      "cited_files": [
+        "GETTING_STARTED.md",
+        "INSTALLATION.md"
+      ],
+      "finding_id": "FND-7",
+      "owner_route": "none_recorded",
+      "related_claims": [
+        "C201",
+        "C202",
+        "C203",
+        "C204",
+        "C205",
+        "C206",
+        "C207",
+        "C208",
+        "C209",
+        "C210",
+        "C211",
+        "C212",
+        "C213",
+        "C214",
+        "C215",
+        "C216",
+        "C1001",
+        "C1002",
+        "C1003",
+        "C1004",
+        "C1005",
+        "C1006",
+        "C1007",
+        "C1008"
+      ],
+      "title": "checksum-semantics drift between siblings"
+    },
+    {
+      "cited_files": [
+        "README.md"
+      ],
+      "finding_id": "FND-8",
+      "owner_route": "none_recorded",
+      "related_claims": [
+        "C101",
+        "C102",
+        "C103",
+        "C104",
+        "C105",
+        "C106",
+        "C107",
+        "C108",
+        "C501",
+        "C502",
+        "C503",
+        "C1201",
+        "C1202",
+        "C1203",
+        "C1204",
+        "C1205",
+        "C1206",
+        "C1207",
+        "C1208"
+      ],
+      "title": "volatile numeric counts in tracked source"
+    },
+    {
+      "cited_files": [
+        "INSTALLATION.md",
+        "README.md"
+      ],
+      "finding_id": "FND-9",
+      "owner_route": "none_recorded",
+      "related_claims": [
+        "C101",
+        "C102",
+        "C103",
+        "C104",
+        "C105",
+        "C106",
+        "C107",
+        "C108",
+        "C201",
+        "C202",
+        "C203",
+        "C204",
+        "C205",
+        "C206",
+        "C207",
+        "C208",
+        "C209",
+        "C210",
+        "C211",
+        "C212",
+        "C213",
+        "C214",
+        "C215",
+        "C216",
+        "C501",
+        "C502",
+        "C503",
+        "C1201",
+        "C1202",
+        "C1203",
+        "C1204",
+        "C1205",
+        "C1206",
+        "C1207",
+        "C1208"
+      ],
+      "title": "PowerShell-breakage annotation spread across four sites with split issue references"
+    },
+    {
+      "cited_files": [
+        "INSTALLATION.md"
+      ],
+      "finding_id": "FND-10",
+      "owner_route": "#10342-ci-cutover",
+      "related_claims": [
+        "C201",
+        "C202",
+        "C203",
+        "C204",
+        "C205",
+        "C206",
+        "C207",
+        "C208",
+        "C209",
+        "C210",
+        "C211",
+        "C212",
+        "C213",
+        "C214",
+        "C215",
+        "C216"
+      ],
+      "title": "intentional do-not-use exhibits contain literal mutable URLs"
+    },
+    {
+      "cited_files": [
+        "INSTALLATION.md",
+        "install.ps1",
+        "release.yml"
+      ],
+      "finding_id": "FND-11",
+      "owner_route": "distribution-docs-sync",
+      "related_claims": [
+        "C201",
+        "C202",
+        "C203",
+        "C204",
+        "C205",
+        "C206",
+        "C207",
+        "C208",
+        "C209",
+        "C210",
+        "C211",
+        "C212",
+        "C213",
+        "C214",
+        "C215",
+        "C216"
+      ],
+      "title": "installer prose behind tracked installer/workflow source"
+    },
+    {
+      "cited_files": [
+        "VS_CODE_SETUP.md"
+      ],
+      "finding_id": "FND-12",
+      "owner_route": "none_recorded",
+      "related_claims": [
+        "C1301",
+        "C1302",
+        "C1303"
+      ],
+      "title": "unpinned release-archive download outside S02"
+    }
+  ],
+  "generator": "cargo xtask public-release-claims-v2 build --write",
+  "input_digests": {
+    "inventory_document": "sha256:dd698d3438891119b1f087de1cab3baf47a8db19dd6b2c3a4aa2eb2eb4c67157",
+    "release_receipt_manifest": "sha256:a6a30ba9a3d5aafd914929b686302b4f31d2df3179612dff12a7eeef9756a4b5",
+    "schema": "sha256:ce249268ca9fb3d565abcf896393b2d1810bedcb4f34b72344766de0b7642554"
+  },
+  "issue": 11548,
+  "release_receipts": [
+    {
+      "assets": [
+        {
+          "name": "SHA256SUMS"
+        },
+        {
+          "name": "perl-lsp-rs-0.17.0.vsix"
+        },
+        {
+          "name": "perllsp-0.17.0-aarch64-apple-darwin.tar.gz"
+        },
+        {
+          "name": "perllsp-0.17.0-aarch64-unknown-linux-gnu.tar.gz"
+        },
+        {
+          "name": "perllsp-0.17.0-aarch64-unknown-linux-musl.tar.gz"
+        },
+        {
+          "name": "perllsp-0.17.0-x86_64-apple-darwin.tar.gz"
+        },
+        {
+          "name": "perllsp-0.17.0-x86_64-pc-windows-msvc.zip"
+        },
+        {
+          "name": "perllsp-0.17.0-x86_64-unknown-linux-gnu.tar.gz"
+        },
+        {
+          "name": "perllsp-0.17.0-x86_64-unknown-linux-musl.tar.gz"
+        },
+        {
+          "name": "sbom-spdx.json"
+        }
+      ],
+      "release": "v0.17.0",
+      "source": "https://github.com/EffortlessMetrics/perl-lsp/releases/tags/v0.17.0",
+      "verified_date": "2026-08-28"
+    }
+  ],
+  "schema_version": "public_release_claims.v2",
+  "source_inventory": {
+    "audited_commit": "20174d50c",
+    "audited_date": "2026-08-26",
+    "path": "docs/distribution/INSTALL_CLAIM_SURFACES.md",
+    "release_anchor": "v0.17.0",
+    "track": "public-beta"
+  },
+  "status": "generated",
+  "surfaces": [
+    {
+      "claim_class": "commands + boundaries",
+      "path": "README.md",
+      "registry_cross_ref": "",
+      "role": "root landing prose",
+      "surface_id": "S01"
+    },
+    {
+      "claim_class": "full command matrix",
+      "path": "docs/how-to/INSTALLATION.md",
+      "registry_cross_ref": "",
+      "role": "canonical install guide",
+      "surface_id": "S02"
+    },
+    {
+      "claim_class": "action usage prose",
+      "path": "docs/how-to/GITHUB_ACTIONS.md",
+      "registry_cross_ref": "",
+      "role": "CI consumer guide",
+      "surface_id": "S03"
+    },
+    {
+      "claim_class": "inputs + usage comment",
+      "path": "`.github/actions/setup-perl-lsp/action.yml`",
+      "registry_cross_ref": "action.setup-perl-lsp",
+      "role": "reusable composite action",
+      "surface_id": "S04"
+    },
+    {
+      "claim_class": "inputs + platform claims",
+      "path": "`.github/actions/README.md`",
+      "registry_cross_ref": "",
+      "role": "actions catalog prose",
+      "surface_id": "S05"
+    },
+    {
+      "claim_class": "executable usage",
+      "path": "`docs/examples/github-actions/setup-perl-lsp-consumer.yml`",
+      "registry_cross_ref": "",
+      "role": "maintained example",
+      "surface_id": "S06"
+    },
+    {
+      "claim_class": "reinstall/upgrade claims",
+      "path": "docs/how-to/UPGRADING.md",
+      "registry_cross_ref": "",
+      "role": "upgrade guide",
+      "surface_id": "S07"
+    },
+    {
+      "claim_class": "diagnostic route advice",
+      "path": "docs/how-to/TROUBLESHOOTING.md",
+      "registry_cross_ref": "",
+      "role": "support guide",
+      "surface_id": "S08"
+    },
+    {
+      "claim_class": "deferral + currentness claims",
+      "path": "docs/how-to/EDITOR_SETUP.md",
+      "registry_cross_ref": "",
+      "role": "editor integration guide",
+      "surface_id": "S09"
+    },
+    {
+      "claim_class": "condensed install claims",
+      "path": "docs/tutorials/GETTING_STARTED.md",
+      "registry_cross_ref": "",
+      "role": "first-run tutorial",
+      "surface_id": "S10"
+    },
+    {
+      "claim_class": "identity fields",
+      "path": "`vscode-extension/package.json`",
+      "registry_cross_ref": "package.vscode.manifest",
+      "role": "extension manifest metadata",
+      "surface_id": "S11"
+    },
+    {
+      "claim_class": "marketplace-facing claims",
+      "path": "vscode-extension/README.md",
+      "registry_cross_ref": "",
+      "role": "tracked marketplace copy",
+      "surface_id": "S12"
+    },
+    {
+      "claim_class": "acquisition commands",
+      "path": "docs/EDITORS/*_SETUP.md (7 guides)",
+      "registry_cross_ref": "",
+      "role": "editor integration guides",
+      "surface_id": "S13"
+    }
+  ]
+}
