@@ -378,6 +378,7 @@ fn prepare_receipt_payload(
         .with_context(|| format!("reading {}", receipt_path.display()))?;
     let mut json_value: serde_json::Value = serde_json::from_str(&raw)
         .with_context(|| format!("parsing {}", receipt_path.display()))?;
+    validate_receipt_schema(root, &json_value)?;
     if let Some(object) = json_value.as_object_mut() {
         let row = |k: &str| artifact.rows.get(k).and_then(|m| m.value);
         object.insert(
@@ -395,6 +396,27 @@ fn prepare_receipt_payload(
         );
     }
     Ok(Some((receipt_path, format!("{}\n", serde_json::to_string_pretty(&json_value)?))))
+}
+
+fn validate_receipt_schema(root: &Path, receipt: &serde_json::Value) -> Result<()> {
+    let schema_path = root.join(".ci/receipt.schema.json");
+    let schema_raw = fs::read_to_string(&schema_path)
+        .with_context(|| format!("reading {}", schema_path.display()))?;
+    let schema: serde_json::Value = serde_json::from_str(&schema_raw)
+        .with_context(|| format!("parsing {}", schema_path.display()))?;
+    let validator = jsonschema::validator_for(&schema)
+        .with_context(|| format!("compiling {}", schema_path.display()))?;
+    let violations: Vec<String> =
+        validator.iter_errors(receipt).map(|error| error.to_string()).collect();
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        bail!(
+            "receipt schema validation failed for {}: {}",
+            schema_path.display(),
+            violations.join("; ")
+        )
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -1052,6 +1074,26 @@ mod tests {
             &fs::read_to_string(&receipt_path)?,
             &malformed_receipt.to_string(),
             "receipt artifact changed after malformed receipt",
+        )
+    }
+
+    #[test]
+    fn schema_invalid_receipt_is_rejected_before_enrichment() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let schema_path = root.path().join(".ci/receipt.schema.json");
+        let schema_parent = schema_path
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("receipt schema path has no parent"))?;
+        fs::create_dir_all(schema_parent)?;
+        fs::write(&schema_path, include_str!("../../../.ci/receipt.schema.json"))?;
+
+        let error = match validate_receipt_schema(root.path(), &json!({})) {
+            Ok(()) => return Err(color_eyre::eyre::eyre!("schema-invalid receipt was accepted")),
+            Err(error) => error,
+        };
+        check_true(
+            error.to_string().contains("receipt schema validation failed"),
+            "schema-invalid receipt error missing context",
         )
     }
 
