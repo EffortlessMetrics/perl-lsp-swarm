@@ -1,0 +1,277 @@
+name: Temporary PerlTidy CRLF implementation proof
+
+on:
+  push:
+    branches:
+      - fix/perltidy-preserve-crlf-layout
+    paths:
+      - .github/workflows/perltidy-crlf-implementation.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: perltidy-crlf-implementation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  implement-and-prove:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Rust 1.95
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+
+      - name: Apply bounded native formatter repair and regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          implementation = Path("crates/perl-lsp-perltidy/src/native/implementation.rs")
+          text = implementation.read_text(encoding="utf-8")
+
+          old_document = '''        for line in source.split_inclusive('\\n') {
+              let (body, line_ending) = split_line_ending(line);
+              formatted
+                  .push_str(&format_simple_line(body, config).unwrap_or_else(|| body.to_string()));
+              formatted.push_str(line_ending);
+          }
+          '''
+          new_document = '''        for line in source.split_inclusive('\\n') {
+              let (body, line_ending) = split_line_ending(line);
+              let formatted_body =
+                  format_simple_line(body, config).unwrap_or_else(|| body.to_string());
+              formatted.push_str(&preserve_generated_line_endings(formatted_body, line_ending));
+              formatted.push_str(line_ending);
+          }
+          '''
+
+          old_range = '''            if let Some(formatted_line) = formatted_body {
+                  if formatted_line != body {
+          '''
+          new_range = '''            if let Some(formatted_line) = formatted_body {
+                  let formatted_line =
+                      preserve_generated_line_endings(formatted_line, line_ending);
+                  if formatted_line != body {
+          '''
+
+          old_helper = '''fn split_line_ending(line: &str) -> (&str, &str) {
+              if let Some(body) = line.strip_suffix("\\r\\n") {
+                  (body, "\\r\\n")
+              } else if let Some(body) = line.strip_suffix('\\n') {
+                  (body, "\\n")
+              } else {
+                  (line, "")
+              }
+          }
+
+          pub(super) fn range_includes_line'''
+          new_helper = '''fn split_line_ending(line: &str) -> (&str, &str) {
+              if let Some(body) = line.strip_suffix("\\r\\n") {
+                  (body, "\\r\\n")
+              } else if let Some(body) = line.strip_suffix('\\n') {
+                  (body, "\\n")
+              } else {
+                  (line, "")
+              }
+          }
+
+          fn preserve_generated_line_endings(
+              formatted: String,
+              source_line_ending: &str,
+          ) -> String {
+              if source_line_ending != "\\r\\n" || !formatted.contains('\\n') {
+                  return formatted;
+              }
+
+              let mut normalized = String::with_capacity(formatted.len());
+              let mut remaining = formatted.as_str();
+              while let Some((line, tail)) = remaining.split_once('\\n') {
+                  normalized.push_str(line.strip_suffix('\\r').unwrap_or(line));
+                  normalized.push_str("\\r\\n");
+                  remaining = tail;
+              }
+              normalized.push_str(remaining);
+              normalized
+          }
+
+          pub(super) fn range_includes_line'''
+
+          replacements = (
+              (old_document, new_document, "document formatting loop"),
+              (old_range, new_range, "range formatting loop"),
+              (old_helper, new_helper, "line-ending helper seam"),
+          )
+          for old, new, label in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one {label}; found {count}")
+              text = text.replace(old, new, 1)
+
+          implementation.write_text(text, encoding="utf-8")
+
+          tests = Path("crates/perl-lsp-perltidy/tests/native_formatter_line_ending_tests.rs")
+          if tests.exists():
+              raise SystemExit(f"refusing to replace existing {tests}")
+          tests.write_text(
+              r'''#![deny(clippy::map_err_ignore)]
+
+use perl_lsp_perltidy::native::{
+    FormatContext, FormatDisposition, FormatLineEndingDisposition,
+};
+use perl_lsp_perltidy::{
+    FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
+};
+
+fn assert_crlf_only(text: &str) {
+    assert_eq!(text.matches('\n').count(), text.matches("\r\n").count());
+    assert!(!text.contains("\r\r\n"));
+}
+
+#[test]
+fn document_block_layout_preserves_crlf_for_generated_lines() {
+    let formatter = NativeFormatter::new();
+    let source = "while($n){next;}\r\n";
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+
+    assert!(result.changed);
+    assert_eq!(result.formatted, "while ($n) {\r\n    next;\r\n}\r\n");
+    assert_crlf_only(&result.formatted);
+}
+
+#[test]
+fn wrapped_expression_layout_preserves_crlf_for_generated_lines() {
+    let formatter = NativeFormatter::new();
+    let config = FormatConfig { line_width: 18, indent_width: 2, ..FormatConfig::default() };
+    let source = "my$result=foo($alpha,$beta,$gamma);\r\n";
+
+    let result = formatter.format_document(source, &config);
+
+    assert!(result.changed);
+    assert_eq!(
+        result.formatted,
+        concat!(
+            "my $result = foo(\r\n",
+            "  $alpha,\r\n",
+            "  $beta,\r\n",
+            "  $gamma\r\n",
+            ");\r\n",
+        )
+    );
+    assert_crlf_only(&result.formatted);
+}
+
+#[test]
+fn range_block_layout_preserves_crlf_in_result_and_edit() {
+    let formatter = NativeFormatter::new();
+    let source = concat!(
+        "my $before=1;\r\n",
+        "while($n){next;}\r\n",
+        "my $after=2;\r\n",
+    );
+    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 16));
+
+    let result = formatter.format_range(source, range, &FormatConfig::default());
+
+    assert!(result.changed);
+    assert_eq!(result.edits.len(), 1);
+    assert_eq!(result.edits[0].new_text, "while ($n) {\r\n    next;\r\n}");
+    assert_eq!(
+        result.formatted,
+        concat!(
+            "my $before=1;\r\n",
+            "while ($n) {\r\n",
+            "    next;\r\n",
+            "}\r\n",
+            "my $after=2;\r\n",
+        )
+    );
+    assert_crlf_only(&result.formatted);
+}
+
+#[test]
+fn typed_outcome_reports_crlf_preserved_after_generated_layout() {
+    let formatter = NativeFormatter::new();
+    let source = "while($n){next;}\r\n";
+
+    let result = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(result.outcome.disposition, FormatDisposition::Applied);
+    assert_eq!(
+        result.outcome.safety.line_endings,
+        FormatLineEndingDisposition::Preserved
+    );
+    assert_crlf_only(&result.result.formatted);
+}
+
+#[test]
+fn generated_layout_keeps_lf_sources_lf_only() {
+    let formatter = NativeFormatter::new();
+    let source = "while($n){next;}\n";
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+
+    assert_eq!(result.formatted, "while ($n) {\n    next;\n}\n");
+    assert!(!result.formatted.contains('\r'));
+}
+''',
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Format candidate
+        run: cargo fmt -p perl-lsp-perltidy
+
+      - name: Reject whitespace damage
+        run: git diff --check
+
+      - name: Focused line-ending proof
+        run: cargo test -p perl-lsp-perltidy --test native_formatter_line_ending_tests --locked
+
+      - name: Crate Clippy proof
+        run: cargo clippy -p perl-lsp-perltidy --all-targets --locked -- -D warnings
+
+      - name: Crate all-targets proof
+        run: cargo test -p perl-lsp-perltidy --all-targets --locked
+
+      - name: Commit proven candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          expected=$(printf '%s\n' \
+            crates/perl-lsp-perltidy/src/native/implementation.rs \
+            crates/perl-lsp-perltidy/tests/native_formatter_line_ending_tests.rs | sort)
+          actual=$(git status --porcelain=v1 | sed -E 's/^.. //' | sort)
+          if [ "$actual" != "$expected" ]; then
+            printf '::error::Unexpected candidate paths\nExpected:\n%s\nActual:\n%s\n' "$expected" "$actual"
+            exit 1
+          fi
+
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add \
+            crates/perl-lsp-perltidy/src/native/implementation.rs \
+            crates/perl-lsp-perltidy/tests/native_formatter_line_ending_tests.rs
+          git commit -m "fix(perltidy): preserve CRLF in generated layout"
+          gh auth setup-git
+          git push origin "HEAD:${BRANCH_NAME}"
