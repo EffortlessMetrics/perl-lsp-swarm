@@ -61,8 +61,7 @@ table "users" => sub {
 }
 
 #[test]
-fn workspace_index_blocks_dynamic_quickorm_type_calls()
--> Result<(), Box<dyn std::error::Error>> {
+fn workspace_index_blocks_dynamic_quickorm_type_calls() -> Result<(), Box<dyn std::error::Error>> {
     let index = WorkspaceIndex::new();
     let uri = Url::parse("file:///lib/MyApp/Schema/Dynamic.pm")?;
     let source = r#"
