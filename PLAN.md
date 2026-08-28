@@ -141,10 +141,11 @@ claim-row table and require an exact-one disposition in the future join data:
 The validator rejects an unknown ID, duplicate disposition, missing ID, range
 shorthand, or exclusion reason not in that closed vocabulary. Restatement rows
 may project to the same route only when their exact IDs are independently listed;
-they do not expand the denominator. The current exclusion set therefore includes
-the rows named in §2.1, including C107, C108, C1205, and C1208 only if their
-explicit reasons are recorded by the accepted join artifact; Open VSX (C1208)
-must not disappear merely because it is a separate channel. The same exact-once
+they do not expand the denominator. The accepted join must explicitly dispose of
+currently unlisted rows such as C107, C108, C1205, and C1208: generic-client and
+Open VSX rows must be projected when route-relevant, while non-install dependency
+or metadata rows may be excluded only with an allowed explicit reason. Open VSX
+(C1208) must not disappear merely because it is a separate channel. The same exact-once
 rule applies to FND-1 through FND-12: each finding must be joined to a route,
 recorded as a route-independent constraint, or explicitly excluded with a reason.
 This oracle is the acceptance condition for inventory traceability; the 70-row
