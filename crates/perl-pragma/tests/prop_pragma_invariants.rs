@@ -480,7 +480,8 @@ fn regression_parse_v5_36_0_three_part() {
 
 #[test]
 fn regression_parse_developer_release() {
-    // Developer releases like 5.012_001 should parse to 5.12
+    // Developer releases like 5.012_001 keep their release component
+    // instead of collapsing to 5.12.
     let result = parse_perl_version("5.012_001");
-    assert_eq!(result, Some(PerlVersion::new(5, 12)));
+    assert_eq!(result, Some(PerlVersion::with_patch(5, 12, 1)));
 }

@@ -544,16 +544,18 @@ fn use_developer_version_enables_effective_strict_only() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn require_version_enables_effective_pragmas() -> Result<(), Box<dyn std::error::Error>> {
-    // In Perl, `require VERSION` enables strict/warnings/features lexically,
-    // just like `use VERSION`. (#5106)
+fn require_version_keeps_lexical_pragma_state_unchanged() -> Result<(), Box<dyn std::error::Error>>
+{
+    // In real Perl, `require VERSION` only checks the running interpreter at
+    // runtime; unlike `use VERSION` it enables no strict, warnings, or feature
+    // bundle lexically. (#13113)
     let ast = program(vec![function_call("require", vec![number_node("5.36", 8, 12)], 0, 13)]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 12);
-    assert!(state.strict_vars, "require 5.36 should enable strict vars");
-    assert!(state.strict_subs, "require 5.36 should enable strict subs");
-    assert!(state.strict_refs, "require 5.36 should enable strict refs");
-    assert!(state.warnings, "require 5.36 should enable warnings");
+    assert!(!state.strict_vars, "require 5.36 must not enable strict vars");
+    assert!(!state.strict_subs, "require 5.36 must not enable strict subs");
+    assert!(!state.strict_refs, "require 5.36 must not enable strict refs");
+    assert!(!state.warnings, "require 5.36 must not enable warnings");
     Ok(())
 }
 

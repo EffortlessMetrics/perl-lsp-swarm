@@ -56,8 +56,8 @@ fn perl_544_bundle_is_explicit_and_excludes_enhanced_xx() {
     let perl_544 = features_enabled_by_version(PerlVersion::new(5, 44));
 
     assert_eq!(perl_544, expected);
-    assert_eq!(perl_544, perl_542, "Perl 5.44 keeps the 5.42 bundle membership",);
-    assert!(!perl_544.contains(&"enhanced_xx"), "enhanced_xx remains opt-in under Perl 5.44",);
+    assert_eq!(perl_544, perl_542, "Perl 5.44 keeps the 5.42 bundle membership");
+    assert!(!perl_544.contains(&"enhanced_xx"), "enhanced_xx remains opt-in under Perl 5.44");
 }
 
 #[test]
