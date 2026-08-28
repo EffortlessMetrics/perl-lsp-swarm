@@ -115,10 +115,20 @@ fn extract_table_declaration(
         return;
     }
 
+    if !args.first().is_some_and(is_static_table_name) {
+        return;
+    }
+
     let Some(builder) = args.iter().rev().find(|arg| is_anonymous_builder(arg)) else {
         return;
     };
     walk_table_builder(builder, file_id, ctx, out);
+}
+
+fn is_static_table_name(node: &Node) -> bool {
+    collect_name_candidates(node)
+        .into_iter()
+        .any(|candidate| normalize_static_column_name(&candidate.name).is_some())
 }
 
 fn is_anonymous_builder(node: &Node) -> bool {
@@ -436,6 +446,24 @@ schema app => sub {
         );
 
         assert!(!has_name(&facts, "My::ORM::id"));
+    }
+
+    #[test]
+    fn dynamic_table_names_remain_a_dynamic_boundary() {
+        let facts = extract_from_source(
+            r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+my $table_name = 'users';
+
+table $table_name => sub {
+    column id => sub { primary_key };
+};
+1;
+"#,
+        );
+
+        assert!(!has_name(&facts, "My::ORM::Table::User::id"));
     }
 
     #[test]
