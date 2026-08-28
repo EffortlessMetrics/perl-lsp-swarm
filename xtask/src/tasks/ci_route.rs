@@ -543,8 +543,9 @@ fn route_receipt(base: &str, head: &str, changed_files: Vec<String>) -> Result<C
         route.add_surface("no_changes");
     }
 
-    let docs_only =
-        !changed_files.is_empty() && changed_files.iter().all(|file| is_docs_file(file));
+    let docs_only = !changed_files.is_empty()
+        && changed_files.iter().all(|file| is_docs_file(file))
+        && !changed_files.iter().any(|file| file == "badges/README.md");
     if docs_only {
         route.add_surface("docs");
         route.add_pack(DOCS_PACK);
@@ -3075,7 +3076,11 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_ripr_badge_owner_paths_to_focused_non_lcov_pack() -> Result<()> {
-        for path in ["scripts/generate-badges.py", "scripts/tests/test-generate-badges.py"] {
+        for path in [
+            "badges/README.md",
+            "scripts/generate-badges.py",
+            "scripts/tests/test-generate-badges.py",
+        ] {
             let receipt = route_receipt("origin/main", "HEAD", vec![path.to_string()])?;
             assert_eq!(receipt.changed_surfaces, vec!["ripr-badge-endpoints"]);
             assert!(proof_pack_ids(&receipt).contains(&"ripr-badge-endpoints-focused"));
@@ -3096,10 +3101,6 @@ mod tests {
                 Some(NON_LCOV_COVERAGE_SKIP_REASON)
             );
         }
-        let docs_receipt =
-            route_receipt("origin/main", "HEAD", vec!["badges/README.md".to_string()])?;
-        assert_eq!(docs_receipt.changed_surfaces, vec!["docs"]);
-        assert!(proof_pack_ids(&docs_receipt).contains(&"docs-focused"));
         Ok(())
     }
 

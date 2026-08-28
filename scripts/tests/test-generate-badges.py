@@ -174,6 +174,19 @@ class GenerateBadgesTests(unittest.TestCase):
                 raise queue.Empty
             return self._queue.get_nowait()
 
+    class ReadFailureStream(io.BytesIO):
+        def __init__(self, initial: bytes, detail: str):
+            super().__init__()
+            self.initial = initial
+            self.detail = detail
+            self.delivered = False
+
+        def read1(self, size=-1):
+            if not self.delivered:
+                self.delivered = True
+                return self.initial
+            raise OSError(self.detail)
+
     def test_rust_compatibility_entrypoint_only_delegates_to_python_owner(self):
         source = RUST_DELEGATE.read_text(encoding="utf-8")
         self.assertIn("scripts/generate-badges.py", source)
@@ -434,12 +447,13 @@ class GenerateBadgesTests(unittest.TestCase):
             stderr = b"e" * (limit + 1)
         process = self.TerminalProcess(io.BytesIO(stdout), io.BytesIO(stderr))
         overflow = self.DelayedFirstOverflowQueue()
+        reader_failures = queue.Queue()
         with mock.patch.object(
             generator.subprocess, "Popen", return_value=process
         ), mock.patch.object(
             generator, "WindowsJob", return_value=self.FakeWindowsJob()
         ), mock.patch.object(
-            generator.queue, "Queue", return_value=overflow
+            generator.queue, "Queue", side_effect=[overflow, reader_failures]
         ), mock.patch.object(generator, "terminate_process_tree", return_value=[]):
             with self.assertRaisesRegex(
                 generator.RiprOutputLimitExceeded,
@@ -452,6 +466,36 @@ class GenerateBadgesTests(unittest.TestCase):
 
     def test_prompt_exit_valid_stdout_and_oversized_stderr_cannot_bypass_overflow(self):
         self.assert_prompt_exit_overflow_wins("stderr")
+
+    def assert_reader_failure_rejects_valid_stdout(self, stream_name: str):
+        payload = json.dumps({"counts": VALID_COUNTS}).encode("utf-8") + b"\n"
+        stdout = io.BytesIO(payload)
+        stderr = io.BytesIO()
+        if stream_name == "stdout":
+            stdout = self.ReadFailureStream(payload, "simulated stdout pipe failure")
+        else:
+            stderr = self.ReadFailureStream(
+                b"diagnostic", "simulated stderr pipe failure"
+            )
+        process = self.TerminalProcess(stdout, stderr)
+        with mock.patch.object(
+            generator.subprocess, "Popen", return_value=process
+        ), mock.patch.object(
+            generator, "WindowsJob", return_value=self.FakeWindowsJob()
+        ), mock.patch.object(
+            generator, "terminate_process_tree", return_value=[]
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                rf"ripr output reader failed: {stream_name} read failed: simulated {stream_name} pipe failure",
+            ):
+                generator.run_ripr(Path.cwd(), timeout_seconds=3)
+
+    def test_valid_stdout_then_stdout_read_failure_fails_closed(self):
+        self.assert_reader_failure_rejects_valid_stdout("stdout")
+
+    def test_valid_stdout_with_stderr_read_failure_fails_closed(self):
+        self.assert_reader_failure_rejects_valid_stdout("stderr")
 
     def test_cleanup_failure_is_preserved_through_generate_on_overflow(self):
         with tempfile.TemporaryDirectory() as directory:

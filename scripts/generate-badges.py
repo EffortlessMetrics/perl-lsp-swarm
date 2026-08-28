@@ -266,17 +266,36 @@ def take_overflow(
     return RiprOutputLimitExceeded(stream_name, limit)
 
 
+def take_reader_failures(
+    failures: queue.Queue[tuple[str, OSError]],
+) -> str | None:
+    """Drain persisted reader failures before captured bytes can be accepted."""
+    details: list[str] = []
+    while True:
+        try:
+            stream_name, error = failures.get_nowait()
+        except queue.Empty:
+            break
+        details.append(f"{stream_name} read failed: {error}")
+    return "; ".join(details) if details else None
+
+
 def read_bounded_stream(
     stream: BinaryIO,
     destination: bytearray,
     limit: int,
     stream_name: str,
     overflow: queue.Queue[tuple[str, int]],
+    failures: queue.Queue[tuple[str, OSError]],
 ) -> None:
     """Read at most ``limit`` bytes and signal before retaining any excess."""
     while True:
         read1 = getattr(stream, "read1", stream.read)
-        chunk = read1(STREAM_READ_CHUNK_SIZE)
+        try:
+            chunk = read1(STREAM_READ_CHUNK_SIZE)
+        except OSError as error:
+            failures.put((stream_name, error))
+            return
         if not chunk:
             return
         remaining = limit - len(destination)
@@ -342,16 +361,31 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
     stdout_bytes = bytearray()
     stderr_bytes = bytearray()
     overflow: queue.Queue[tuple[str, int]] = queue.Queue()
+    reader_failures: queue.Queue[tuple[str, OSError]] = queue.Queue()
     readers = [
         threading.Thread(
             target=read_bounded_stream,
-            args=(process.stdout, stdout_bytes, PRODUCER_STDOUT_LIMIT, "stdout", overflow),
+            args=(
+                process.stdout,
+                stdout_bytes,
+                PRODUCER_STDOUT_LIMIT,
+                "stdout",
+                overflow,
+                reader_failures,
+            ),
             name="ripr-stdout-reader",
             daemon=True,
         ),
         threading.Thread(
             target=read_bounded_stream,
-            args=(process.stderr, stderr_bytes, PRODUCER_STDERR_LIMIT, "stderr", overflow),
+            args=(
+                process.stderr,
+                stderr_bytes,
+                PRODUCER_STDERR_LIMIT,
+                "stderr",
+                overflow,
+                reader_failures,
+            ),
             name="ripr-stderr-reader",
             daemon=True,
         ),
@@ -364,6 +398,13 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
     while True:
         failure = take_overflow(overflow)
         if failure is not None:
+            break
+        reader_failure = take_reader_failures(reader_failures)
+        if reader_failure is not None:
+            failure = RuntimeError(
+                f"ripr output reader failed: {reader_failure}; "
+                "its process tree was terminated"
+            )
             break
         if process.poll() is not None and all(not reader.is_alive() for reader in readers):
             break
@@ -390,8 +431,20 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
             cleanup_failures.extend(
                 terminate_process_tree(process, windows_job=windows_job)
             )
-        elif windows_job is not None:
-            cleanup_failures.extend(windows_job.close())
+    late_reader_failure = take_reader_failures(reader_failures)
+    if late_reader_failure is not None:
+        if failure is None:
+            failure = RuntimeError(
+                f"ripr output reader failed: {late_reader_failure}; "
+                "its process tree was terminated"
+            )
+            cleanup_failures.extend(
+                terminate_process_tree(process, windows_job=windows_job)
+            )
+        else:
+            cleanup_failures.append(late_reader_failure)
+    if failure is None and windows_job is not None:
+        cleanup_failures.extend(windows_job.close())
 
     stderr = stderr_bytes.decode("utf-8", errors="replace")
     if failure is not None:
