@@ -768,3 +768,48 @@ fn the_recurrence_scan_detects_a_planted_violation() {
     });
     assert!(!flagged, "a comment must not count as an invocation");
 }
+
+// ── Merge-command equivalence ────────────────────────────────────────────────
+
+/// The live release script must run exactly the command `merge_command` emits.
+///
+/// `merge_command` is unit-tested in isolation and the recurrence scan only
+/// looks for `--delete-branch`, so nothing held the tested command and the live
+/// one in agreement — they were kept aligned by hand. That is not hypothetical:
+/// hand-maintenance already failed here once, and repairing the divergence is
+/// why `--match-head-commit` is part of this candidate at all.
+///
+/// The expectation is derived FROM `merge_command`, not written out again, so a
+/// change to the function that the script does not follow fails this test
+/// rather than silently re-opening the gap.
+#[test]
+fn the_release_script_runs_the_merge_command_this_module_emits()
+-> Result<(), Box<dyn std::error::Error>> {
+    const SCRIPT: &str = "../scripts/release-turnkey-pr.sh";
+
+    // A read error is a hard failure, never a pass: an unreadable script must
+    // not be reported as an agreeing one.
+    let source = std::fs::read_to_string(SCRIPT)
+        .map_err(|error| format!("reading {SCRIPT}: {error}; the check must not pass unread"))?;
+    assert!(!source.is_empty(), "{SCRIPT} is empty; this check would pass vacuously");
+
+    // Build the expectation from the function, then substitute the shell's own
+    // spellings for the two runtime values.
+    let emitted = merge_command(0, "PLACEHOLDER_SHA").join(" ");
+    let expected =
+        emitted.replace(" 0 ", " \"$PR_NUMBER\" ").replace("PLACEHOLDER_SHA", "\"$PR_HEAD_SHA\"");
+
+    assert!(
+        source.contains(&expected),
+        "the release script does not run the emitted merge command.\n  expected: {expected}\n\
+         If the command changed deliberately, change both and keep them equal.",
+    );
+
+    // And the script must not merge some other way alongside it.
+    let merge_invocations = source.matches("gh pr merge").count();
+    assert_eq!(
+        merge_invocations, 1,
+        "expected exactly one `gh pr merge` in {SCRIPT}, found {merge_invocations}",
+    );
+    Ok(())
+}
