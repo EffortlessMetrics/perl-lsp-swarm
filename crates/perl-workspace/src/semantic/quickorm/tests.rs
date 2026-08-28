@@ -316,6 +316,20 @@ table users => sub {};
 "#,
     )?;
     assert_eq!(canonical_names(&nested_package), vec!["Other::Package::qorm_table"]);
+
+    let semicolon_package = generated_facts_from_source(
+        r#"
+package MyApp::Schema::User;
+{
+    package Other::Package;
+    use DBIx::QuickORM type => 'table';
+    table other_users => sub {};
+}
+table users => sub {};
+1;
+"#,
+    )?;
+    assert_eq!(canonical_names(&semicolon_package), vec!["Other::Package::qorm_table"]);
     Ok(())
 }
 
@@ -434,6 +448,21 @@ table "@users" => sub {};
 "#,
     )?;
     assert!(facts.is_empty());
+    Ok(())
+}
+
+#[test]
+fn perl_namespace_and_special_scalar_interpolation_remains_dynamic()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (package, table_name) in [("Namespaced", "$::prefix_users"), ("Special", "$^O")] {
+        let source = format!(
+            "package MyApp::Schema::{package}; use DBIx::QuickORM type => 'table'; table \"{table_name}\" => sub {{}};"
+        );
+        assert!(
+            generated_facts_from_source(&source)?.is_empty(),
+            "Perl interpolation must not promote {table_name}"
+        );
+    }
     Ok(())
 }
 

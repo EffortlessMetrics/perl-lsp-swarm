@@ -170,10 +170,14 @@ fn walk_direct_statement(
             // A bare lexical block does not change the current package.  Its
             // compile-time QuickORM imports still configure that package, so
             // walk its direct statements while preserving the package-scoped
-            // authority map.  Control-flow and subroutine bodies are not
-            // reached here because this walker intentionally does not recurse
-            // through their enclosing nodes.
+            // authority map.  A semicolon-style package declaration inside the
+            // block changes the traversal context temporarily, so restore the
+            // containing package before returning. Control-flow and subroutine
+            // bodies are not reached here because this walker intentionally
+            // does not recurse through their enclosing nodes.
+            let saved_package = context.current_package.clone();
             walk_direct_statements(statements, file_id, context, facts, source);
+            context.current_package = saved_package;
         }
         NodeKind::Use { module, args, .. } if module == QUICKORM_MODULE => {
             let package = current_package(context).to_string();
@@ -288,14 +292,16 @@ fn contains_unescaped_interpolation(value: &str) -> bool {
             continue;
         }
         if matches!(character, '@' | '$')
-            && characters
-                .peek()
-                .is_some_and(|next| next.is_ascii_alphanumeric() || matches!(next, '_' | '{'))
+            && characters.peek().is_some_and(is_perl_interpolation_name_start)
         {
             return true;
         }
     }
     false
+}
+
+fn is_perl_interpolation_name_start(character: &char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '_' | '{' | ':' | '^')
 }
 
 fn is_static_identifier(value: &str) -> bool {
