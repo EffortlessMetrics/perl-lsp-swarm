@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "fixture": "rename_subroutine",
+  "assertions": [
+    {
+      "kind": "rename_succeeds",
+      "line": 4,
+      "character": 4,
+      "new_name": "sum_values",
+      "rationale": "rename on the calculate_total declaration must return a WorkspaceEdit"
+    },
+    {
+      "kind": "rename_edit_count_at_least",
+      "min": 3,
+      "line": 4,
+      "character": 4,
+      "new_name": "sum_values",
+      "rationale": "the definition and both direct calls must be updated"
+    }
+  ]
+}
