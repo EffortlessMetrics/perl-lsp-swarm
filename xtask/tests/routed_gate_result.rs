@@ -828,8 +828,5 @@ fn in_process_is_post_start_activity_for_never_started_commands() {
     sealed.child.exit_code = None;
     sealed.result_fingerprint =
         sealed.semantic_fingerprint_of().expect("re-seal after writer mutation");
-    assert!(
-        sealed.validate().is_err(),
-        "never-started with in_process=true must fail validation"
-    );
+    assert!(sealed.validate().is_err(), "never-started with in_process=true must fail validation");
 }
