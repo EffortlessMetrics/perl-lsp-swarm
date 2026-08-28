@@ -2,13 +2,15 @@
 //! ptkdb compatibility claim.
 
 use perl_dap::backend::external_peer::{ExternalDebuggerPeerBackend, PeerSessionToken};
-use perl_dap::backend::{DebugBackend, InitializeBackendParams};
+use perl_dap::backend::{
+    DebugBackend, DebugBackendCapabilities, InitializeBackendParams,
+};
 use perl_dap::model::{DebugEvent, OutputCategory, StopReason};
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const PEER_TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
@@ -26,6 +28,14 @@ fn child_stderr(child: &mut Child) -> String {
         let _ = stderr.read_to_string(&mut output);
     }
     output
+}
+
+fn unique_temp_marker(name: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    Ok(std::env::temp_dir().join(format!(
+        "perl-dap-ptkdb-{name}-{}-{nonce}",
+        std::process::id()
+    )))
 }
 
 fn accept_plugin(
@@ -167,6 +177,11 @@ exit 0;
         token,
     )?;
     backend.initialize(InitializeBackendParams::default())?;
+    assert_eq!(
+        backend.capabilities(),
+        DebugBackendCapabilities::none(),
+        "empty peer capabilities must remain empty after negotiation"
+    );
 
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut events = Vec::new();
@@ -231,6 +246,168 @@ exit 0;
             .iter()
             .any(|event| matches!(event, DebugEvent::Terminated { exit_code: None })),
         "missing bounded termination event: {events:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn pinned_ptkdb_plugin_rejects_unpinned_version_without_touching_ptkdb()
+-> Result<(), Box<dyn std::error::Error>> {
+    let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
+    let harness = r#"
+package Devel::ptkdb;
+our $VERSION = '1.1090';
+sub set_file { return "original:$_[2]"; }
+package main;
+my $loaded = do $ENV{PTKDB_PLUGIN_UNDER_TEST};
+die "plugin load failed: " . ($@ || $!) unless $loaded;
+my $window = bless {}, 'Devel::ptkdb';
+my $value = $window->set_file('/work/rejected.pl', 13);
+die "unpinned plugin touched set_file: $value"
+    unless $value eq 'original:13';
+exit 0;
+"#;
+
+    let output = Command::new("perl")
+        .arg("-e")
+        .arg(harness)
+        .env("PERL_DAP_PEER", "127.0.0.1:1")
+        .env("PERL_DAP_PEER_TOKEN", PEER_TOKEN)
+        .env("PERL_DAP_PEER_MODE", "mirror")
+        .env("PTKDB_PLUGIN_UNDER_TEST", plugin)
+        .output()?;
+
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        output.status.success(),
+        "unpinned ptkdb rejection harness failed: {stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "live plugin requires Devel::ptkdb 1.1091; observed 1.1090 -- leaving ptkdb untouched"
+        ),
+        "missing exact-version rejection diagnostic: {stderr}"
+    );
+    assert!(
+        !stderr.contains("cannot connect"),
+        "version rejection must happen before any peer connection: {stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn ptkdb_plugin_survives_host_disconnect_and_later_event_write()
+-> Result<(), Box<dyn std::error::Error>> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let peer_addr = listener.local_addr()?;
+    let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
+    let release = unique_temp_marker("release")?;
+    let survived = unique_temp_marker("survived")?;
+    let _ = std::fs::remove_file(&release);
+    let _ = std::fs::remove_file(&survived);
+
+    let harness = r#"
+package Devel::ptkdb;
+our $VERSION = '1.1091';
+sub set_file { return $_[2]; }
+package DB;
+our $on = 1;
+package main;
+our ($window, $path, $line);
+my $loaded = do $ENV{PTKDB_PLUGIN_UNDER_TEST};
+die "plugin load failed: " . ($@ || $!) unless $loaded;
+$window = bless {}, 'Devel::ptkdb';
+sub DB::DB { $window->set_file($path, $line); }
+$path = '/work/before_disconnect.pl';
+$line = 3;
+DB::DB();
+my $deadline = time + 10;
+while (!-e $ENV{PTKDB_RELEASE_FILE} && time < $deadline) {
+    select undef, undef, undef, 0.01;
+}
+die "release timeout" unless -e $ENV{PTKDB_RELEASE_FILE};
+$path = '/work/after_disconnect.pl';
+$line = 5;
+DB::DB();
+open my $fh, '>', $ENV{PTKDB_SURVIVED_FILE}
+    or die "survival marker: $!";
+print {$fh} "survived\n";
+close $fh or die "close survival marker: $!";
+exit 0;
+"#;
+
+    let mut child = Command::new("perl")
+        .arg("-e")
+        .arg(harness)
+        .env("PERL_DAP_PEER", peer_addr.to_string())
+        .env("PERL_DAP_PEER_TOKEN", PEER_TOKEN)
+        .env("PERL_DAP_PEER_MODE", "mirror")
+        .env("PTKDB_PLUGIN_UNDER_TEST", plugin)
+        .env("PTKDB_RELEASE_FILE", &release)
+        .env("PTKDB_SURVIVED_FILE", &survived)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let stream = accept_plugin(&listener, &mut child, Duration::from_secs(10))?;
+    let token = PeerSessionToken::try_from(PEER_TOKEN)?;
+    let mut backend = ExternalDebuggerPeerBackend::from_connected_stream_with_token(
+        stream,
+        Duration::from_secs(3),
+        token,
+    )?;
+    backend.initialize(InitializeBackendParams::default())?;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut saw_initial_stop = false;
+    while Instant::now() < deadline {
+        saw_initial_stop = backend.drain_events().iter().any(|event| {
+            matches!(
+                event,
+                DebugEvent::Stopped {
+                    position: Some(position),
+                    ..
+                } if position.source.path.to_string_lossy() == "/work/before_disconnect.pl"
+                    && position.line == 3
+            )
+        });
+        if saw_initial_stop {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(saw_initial_stop, "plugin did not report the pre-disconnect stop");
+
+    backend.disconnect(false)?;
+    drop(backend);
+    std::thread::sleep(Duration::from_millis(100));
+    std::fs::write(&release, b"release\n")?;
+
+    let child_deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= child_deadline {
+            let _ = child.kill();
+            break child.wait()?;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let stderr = child_stderr(&mut child);
+    let survived_disconnect = survived.exists();
+    let _ = std::fs::remove_file(&release);
+    let _ = std::fs::remove_file(&survived);
+
+    assert!(
+        status.success(),
+        "host disconnect killed the ptkdb debuggee during a later peer write: {stderr}"
+    );
+    assert!(
+        survived_disconnect,
+        "debuggee did not continue after the mirror transport closed: {stderr}"
     );
 
     Ok(())

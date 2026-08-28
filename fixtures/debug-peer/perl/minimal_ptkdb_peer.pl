@@ -3,8 +3,8 @@
 # minimal_ptkdb_peer.pl -- two deliberately narrow Perl Debugger Peer
 # Protocol adapters for perl-dap (perl-debug-peer-v1):
 #
-#   * executed directly: the original synthetic reference peer used to inspect
-#     and test the wire contract without Devel::ptkdb;
+#   * executed directly: a synthetic reference peer used to inspect and test
+#     the wire contract without Devel::ptkdb;
 #   * loaded from .ptkdbrc: an experimental mirror plugin substrate for the
 #     pinned Devel::ptkdb 1.1091 surface.
 #
@@ -33,13 +33,13 @@ use IO::Socket::INET;
 use JSON::PP qw(decode_json encode_json);
 use Time::HiRes qw(time);
 
-use constant PROTOCOL_VERSION    => 'perl-debug-peer-v1';
+use constant PROTOCOL_VERSION     => 'perl-debug-peer-v1';
 use constant PINNED_PTKDB_VERSION => '1.1091';
-use constant MAX_HEADER_BYTES    => 8 * 1024;
-use constant MAX_BODY_BYTES      => 8 * 1024 * 1024;
-use constant CONNECT_TIMEOUT     => 2;
-use constant HANDSHAKE_TIMEOUT   => 2;
-use constant EVENT_WRITE_TIMEOUT => 0.25;
+use constant MAX_HEADER_BYTES     => 8 * 1024;
+use constant MAX_BODY_BYTES       => 8 * 1024 * 1024;
+use constant CONNECT_TIMEOUT      => 2;
+use constant HANDSHAKE_TIMEOUT    => 2;
+use constant EVENT_WRITE_TIMEOUT  => 0.25;
 
 our ($ACTIVE, $INSTALLED, $ORIGINAL_SET_FILE, $TERMINATED);
 $INSTALLED  //= 0;
@@ -68,6 +68,11 @@ sub _write_all {
     my $offset = 0;
     my $deadline = time() + $timeout;
     my $select = IO::Select->new($socket);
+
+    # A host disconnect is an ordinary end to the mirror transport, not a
+    # reason to terminate the debuggee. Ignore SIGPIPE only for the bounded
+    # write; syswrite then reports EPIPE and the caller closes this peer state.
+    local $SIG{PIPE} = 'IGNORE';
 
     while ($offset < length($bytes)) {
         my $remaining = $deadline - time();
@@ -221,7 +226,7 @@ sub _connect_and_handshake {
         HANDSHAKE_TIMEOUT,
     );
     unless ($sent) {
-        close $socket;
+        close($socket);
         return (undef, "peer/hello write failed: $send_error");
     }
 
@@ -229,7 +234,7 @@ sub _connect_and_handshake {
     while (time() < $deadline) {
         my ($response, $read_error) = _read_message($state, $deadline - time());
         unless ($response) {
-            close $socket;
+            close($socket);
             return (undef, "peer/hello response failed: $read_error");
         }
         next unless ($response->{type} // '') eq 'response';
@@ -237,14 +242,14 @@ sub _connect_and_handshake {
         next unless ($response->{command} // '') eq 'peer/hello';
         unless ($response->{success}) {
             my $why = $response->{message} // 'unknown reason';
-            close $socket;
+            close($socket);
             return (undef, "peer/hello rejected by host: $why");
         }
         $state->{session_id} = $response->{body}{sessionId} // '(no sessionId)';
         return ($state, undef);
     }
 
-    close $socket;
+    close($socket);
     return (undef, 'peer/hello response timed out');
 }
 
@@ -263,7 +268,7 @@ sub _emit_event {
     );
     if (!$ok) {
         $state->{closed} = 1;
-        close $state->{socket};
+        close($state->{socket});
     }
     return $ok;
 }
@@ -287,7 +292,7 @@ sub _emit_terminated {
     $TERMINATED = 1;
     my $ok = _emit_event($state, 'debugger/terminated', {});
     if ($state && $state->{socket}) {
-        close $state->{socket};
+        close($state->{socket});
         $state->{closed} = 1;
     }
     return $ok;
@@ -420,7 +425,7 @@ sub run_reference_peer {
         last;
     }
 
-    close $state->{socket};
+    close($state->{socket});
     $state->{closed} = 1;
     return 0;
 }
