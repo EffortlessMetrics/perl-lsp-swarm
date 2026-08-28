@@ -30,23 +30,27 @@ default — override with `--output <path>`; see
 
 ## Gold corpus
 
-Fixtures live under `test_corpus/gold/`. Each fixture directory contains:
+Fixtures live under `test_corpus/gold/`. Every fixture directory contains
+`fixture.pl` plus at least one assertion sidecar:
 
-- `fixture.pl` — Perl source used as the LSP document
+- `expected.json` — diagnostics
 - `expected_hover.json`, `expected_goto.json`, `expected_completion.json`,
-  `expected_symbols.json`, `expected_rename.json` — per-kind assertion sidecars
+  `expected_symbols.json`, `expected_rename.json` — editor intelligence
+- `expected_module.json` — `@INC` and module-resolution consumer consistency
 
-Add new fixtures here to expand scenario coverage. Current coverage:
-33 fixture directories spanning hover, goto-definition, completion,
-document symbols, rename, diagnostics, `@INC`/`use lib` resolution, and
-parse-error recovery (verify with `find test_corpus/gold -mindepth 1
--maxdepth 1 -type d | wc -l`).
+Current coverage is 34 fixture directories spanning hover, goto definition,
+completion, document symbols, rename, diagnostics, `@INC`/`use lib`
+resolution, and parse-error recovery. The repository contract pins the current
+fixture and sidecar population floors and validates sidecar identity, version,
+and assertion non-vacuity:
 
-(This is a separate metric from `editor_ux.md`'s own "N of 22 declared"
-scenario count, which measures a different subsystem —
-`crates/perl-lsp-ux-tests`'s `ux_scenario_*.rs` files against
-`editor_ux_fixture_matrix.json`, tracked by #1426 — not the
-`test_corpus/gold/` fixtures described in this section.)
+```bash
+cargo test -p perl-corpus --test gold_repository_contract
+```
+
+This is separate from `editor_ux.md`'s "N of 22 declared" scenario count,
+which measures `crates/perl-lsp-ux-tests` scenarios against
+`editor_ux_fixture_matrix.json`, not the `test_corpus/gold/` population.
 
 ## Verify
 
