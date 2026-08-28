@@ -19,9 +19,7 @@ use super::activation::Dancer2FileActivations;
 use super::facts::CanonicalDancer2FileFacts;
 use perl_parser_core::{Node, NodeKind};
 use perl_semantic_analyzer::declaration::current_package_at;
-use perl_semantic_facts::framework_adapters::dancer2::{
-    DANCER2_DSL_CONTRACT_VERSION, Dancer2KeywordState, DslKeywordScope,
-};
+use perl_semantic_facts::framework_adapters::dancer2::{Dancer2KeywordState, DslKeywordScope};
 
 /// One bounded Dancer2 diagnostic.
 #[non_exhaustive]
@@ -58,6 +56,7 @@ pub fn bounded_diagnostics(
             continue;
         }
         let package = activation.package.as_str();
+        let contract_version = activation.facts.dsl_contract_version;
 
         // (1) excluded route keyword used by a declaration.
         for declaration in &facts.extracted_routes {
@@ -78,7 +77,7 @@ pub fn bounded_diagnostics(
                     message: format!(
                         "`{}` was excluded by this activation's `!{}` import; the declaration \
                          is not a route of this application (DSL contract \
-                         {DANCER2_DSL_CONTRACT_VERSION})",
+                         {contract_version})",
                         declaration.route.keyword, declaration.route.keyword
                     ),
                     start: declaration.route.keyword_anchor.start_byte,
@@ -145,7 +144,7 @@ pub fn bounded_diagnostics(
                     message: format!(
                         "`{name}` is a route-handler-only Dancer2 keyword; outside an exact \
                          route handler it has no defined meaning (DSL contract \
-                         {DANCER2_DSL_CONTRACT_VERSION})"
+                         {contract_version})"
                     ),
                     start,
                     end,
@@ -206,9 +205,16 @@ mod tests {
     use perl_semantic_facts::{FileId, SourceGeneration};
 
     fn setup(source: &'static str) -> (Dancer2FileActivations, CanonicalDancer2FileFacts, Node) {
+        setup_with_version(source, "1.1.1")
+    }
+
+    fn setup_with_version(
+        source: &'static str,
+        framework_version: &str,
+    ) -> (Dancer2FileActivations, CanonicalDancer2FileFacts, Node) {
         let mut parser = Parser::new(source);
         let ast = parser.parse().expect("fixture must parse");
-        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", framework_version);
         let activations =
             file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
@@ -263,5 +269,15 @@ mod tests {
         // A local `sub params` declaration owns the name; using it is
         // ordinary Perl, not a framework keyword use.
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn versioned_diagnostic_uses_the_activation_contract() {
+        let source = "use Dancer2 '!get';\nget '/x' => sub { 1 };";
+        let (activations, facts, ast) = setup_with_version(source, "1.0.0");
+        let diagnostics = bounded_diagnostics(&ast, &activations, &facts);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].message.contains("dancer2-dsl.1-0.v3"));
+        assert!(!diagnostics[0].message.contains("dancer2-dsl.1-1.v3"));
     }
 }
