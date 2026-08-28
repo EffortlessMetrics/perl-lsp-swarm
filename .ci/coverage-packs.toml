@@ -181,6 +181,19 @@ coverage_filters = [
 ]
 
 [[pack]]
+id = "patch-coverage-xtask-parser-tdd-facade-guard"
+lcov = false
+files = [
+  "xtask/tests/parser_tdd_facade_consumers.rs",
+]
+commands = [
+  "cargo test -p xtask --test parser_tdd_facade_consumers --profile agent --locked -- --nocapture",
+]
+coverage_filters = [
+  "parser_tdd_facade_consumers",
+]
+
+[[pack]]
 id = "patch-coverage-ci-route"
 lcov = false
 files = [
@@ -813,6 +826,20 @@ commands = [
 ]
 coverage_filters = [
   "generate-badges",
+]
+
+[[pack]]
+id = "patch-coverage-ripr-badge-endpoints"
+lcov = false
+files = [
+  "scripts/generate-badges.py",
+  "scripts/tests/test-generate-badges.py",
+]
+commands = [
+  "python scripts/tests/test-generate-badges.py",
+]
+coverage_filters = [
+  "ripr-badge-endpoints",
 ]
 
 [[pack]]

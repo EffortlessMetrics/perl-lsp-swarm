@@ -28,7 +28,7 @@
 use perl_tdd_support::{must, must_err, must_some};
 use std::fmt;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -1122,28 +1122,6 @@ pub fn run_mirror_listen_session_stdio(
     run_mirror_editor_loop(std::io::stdin(), std::io::stdout(), bridge, peer_rx, poll_interval)
 }
 
-/// Drive a [`MirrorPeerBridge`] listen-launch session over a **socket** editor
-/// connection while the peer connects back on `peer_listener`. `expected_token`
-/// is the session token the peer must present in its `peer/hello` (pass
-/// `Some(endpoint.token)`); a peer that cannot present it is rejected during the
-/// handshake.
-///
-/// # Errors
-/// Returns a transport error if the socket read/write fails irrecoverably.
-pub fn run_mirror_listen_session_socket(
-    editor: TcpStream,
-    peer_listener: TcpListener,
-    bridge: MirrorPeerBridge,
-    handshake_timeout: Duration,
-    poll_interval: Duration,
-    expected_token: Option<PeerSessionToken>,
-) -> std::io::Result<()> {
-    let peer_rx = spawn_peer_acceptor(peer_listener, handshake_timeout, expected_token);
-    let reader = editor.try_clone()?;
-    let writer = editor;
-    run_mirror_editor_loop(reader, writer, bridge, peer_rx, poll_interval)
-}
-
 /// The transport-agnostic editor loop: read framed DAP requests off `reader_src`
 /// on a dedicated thread, dispatch them, write framed responses/events to
 /// `writer`, interleave backend-event delivery, and transition the bridge to
@@ -1369,6 +1347,7 @@ mod tests {
     use crate::peer_protocol::message::{PeerEvent, PeerMessage, PeerRequest, command, event};
     use crate::peer_protocol::payloads::HelloArgs;
     use crate::peer_protocol::{PROTOCOL_VERSION, PeerReportedCapabilities, encode_message};
+    use std::net::TcpStream;
 
     fn spawn_hello_peer(
         addr: SocketAddr,
@@ -1665,6 +1644,57 @@ mod tests {
         assert_eq!(bps.len(), 2);
         assert_eq!(bps[0]["verified"], false, "queued breakpoints are unverified until flush");
         Ok(())
+    }
+
+    #[test]
+    fn acceptor_timeout_surfaces_terminated_over_stdio_pipes_not_a_hang() {
+        use perl_lsp_rs_core::transport::ContentLengthFramer;
+        use std::sync::{Arc, Mutex};
+
+        // No peer ever connects: the acceptor deadline elapses with no live
+        // backend. Drive the editor loop over a held-open pipe so stdin does
+        // not EOF before the timeout, proving the session emits `terminated`
+        // without an editor TCP listener.
+        let peer_listener = must(TcpListener::bind(("127.0.0.1", 0)));
+        let (reader, _hold_open) = must(std::io::pipe());
+        let out_buf = Arc::new(Mutex::new(Vec::new()));
+
+        #[derive(Clone)]
+        struct SharedSink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for SharedSink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+        must(run_mirror_editor_loop(
+            reader,
+            SharedSink(out_buf.clone()),
+            bridge,
+            spawn_peer_acceptor(peer_listener, Duration::from_millis(80), None),
+            Duration::from_millis(10),
+        ));
+
+        let raw = out_buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut framer = ContentLengthFramer::new();
+        framer.push(&raw);
+        let mut saw_terminated = false;
+        while let Ok(Some(body)) = framer.try_next() {
+            if let Ok(v) = serde_json::from_slice::<Value>(&body)
+                && v.get("event").and_then(Value::as_str) == Some("terminated")
+            {
+                saw_terminated = true;
+            }
+        }
+        assert!(
+            saw_terminated,
+            "an acceptor timeout with no peer must surface a terminated event, not hang forever"
+        );
     }
 
     fn as_response(msg: &DapMessage) -> Result<(&str, bool, Option<&Value>), String> {

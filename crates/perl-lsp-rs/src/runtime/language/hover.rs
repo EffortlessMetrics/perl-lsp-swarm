@@ -221,6 +221,50 @@ impl LspServer {
                     let live_compiler_context =
                         Self::live_hover_compiler_context(uri, &text, offset, source_region_kind);
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
+                        // Canonical Dancer2 hover (#8928): one selected
+                        // authority. Under exact activation the canonical
+                        // route/hook/keyword projection answers before the
+                        // generic hover paths; without activation the
+                        // generic paths run unchanged.
+                        if let Some(snapshot) = parsed.as_ref()
+                            && let Some((context, package)) = self.dancer2_package_at(
+                                uri,
+                                &text,
+                                snapshot.content_hash(),
+                                ast,
+                                offset,
+                            )
+                            && let Some(projection) =
+                                perl_lsp_rs_core::providers::dancer2::hover_projection_at(
+                                    &context.activations,
+                                    &context.facts,
+                                    ast,
+                                    &package,
+                                    offset,
+                                )
+                        {
+                            let content = match &projection {
+                                perl_lsp_rs_core::providers::dancer2::RouteHoverProjection::Route {
+                                    content,
+                                    ..
+                                }
+                                | perl_lsp_rs_core::providers::dancer2::RouteHoverProjection::Keyword {
+                                    content,
+                                }
+                                | perl_lsp_rs_core::providers::dancer2::RouteHoverProjection::Hook {
+                                    content,
+                                    ..
+                                } => content.clone(),
+                                _ => "Dancer2 framework projection".to_string(),
+                            };
+                            let value = serde_json::json!({
+                                "contents": {
+                                    "kind": "markdown",
+                                    "value": content,
+                                }
+                            });
+                            return Ok(Self::inject_hover_range_opt(value, &range));
+                        }
                         // Check for `use Module` at this offset first
                         let extracted = if let Some(module_name) =
                             Self::find_use_module_at_offset(ast, offset)
@@ -1314,10 +1358,8 @@ impl LspServer {
                     }
                 }
             }
-            NodeKind::Package { block, .. } => {
-                if let Some(b) = block {
-                    return Self::find_phase_block_at_offset(b, offset);
-                }
+            NodeKind::Package { block: Some(b), .. } => {
+                return Self::find_phase_block_at_offset(b, offset);
             }
             NodeKind::PhaseBlock { block, .. } => {
                 return Self::find_phase_block_at_offset(block, offset);

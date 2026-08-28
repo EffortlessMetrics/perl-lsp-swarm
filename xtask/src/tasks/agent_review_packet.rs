@@ -1005,25 +1005,20 @@ fn validate_packet_old_paths(root: &Map<String, Value>, violations: &mut Vec<Vio
         let disposition = string_field(entry, "disposition");
         match disposition {
             Some(value) if OLD_PATH_DISPOSITIONS.contains(&value) => match value {
-                "compatibility_projection" => {
+                "compatibility_projection"
                     if string_field(entry, "owner").is_none()
-                        || string_field(entry, "exit").is_none()
-                    {
-                        violations.push(Violation::new(
-                            "compatibility_projection_unowned",
-                            format!("old_paths: compatibility projection for {seam:?} needs an owner and an exit"),
-                        ));
-                    }
+                        || string_field(entry, "exit").is_none() =>
+                {
+                    violations.push(Violation::new(
+                        "compatibility_projection_unowned",
+                        format!("old_paths: compatibility projection for {seam:?} needs an owner and an exit"),
+                    ));
                 }
-                "still_live_independent" => {
-                    if string_field(entry, "owner").is_none() {
-                        violations.push(Violation::new(
-                            "still_live_unowned",
-                            format!(
-                                "old_paths: still-live independent seam {seam:?} needs an owner"
-                            ),
-                        ));
-                    }
+                "still_live_independent" if string_field(entry, "owner").is_none() => {
+                    violations.push(Violation::new(
+                        "still_live_unowned",
+                        format!("old_paths: still-live independent seam {seam:?} needs an owner"),
+                    ));
                 }
                 _ => {}
             },
@@ -1573,25 +1568,19 @@ fn validate_closure(root: &Map<String, Value>, doc: &Value, violations: &mut Vec
             );
             match string_field(entry, "state") {
                 Some(state) if ROLE_STATES.contains(&state) => match state {
-                    "terminal" => {
-                        if string_field(entry, "reference").is_none() {
-                            violations.push(Violation::new(
-                                "missing_role_reference",
-                                format!(
-                                    "review_state.roles: terminal role {role:?} must reference its individual review"
-                                ),
-                            ));
-                        }
+                    "terminal" if string_field(entry, "reference").is_none() => {
+                        violations.push(Violation::new(
+                            "missing_role_reference",
+                            format!(
+                                "review_state.roles: terminal role {role:?} must reference its individual review"
+                            ),
+                        ));
                     }
-                    "not_applicable" => {
-                        if string_field(entry, "reason").is_none() {
-                            violations.push(Violation::new(
-                                "role_not_applicable_unjustified",
-                                format!(
-                                    "review_state.roles: role {role:?} skipped without a reason"
-                                ),
-                            ));
-                        }
+                    "not_applicable" if string_field(entry, "reason").is_none() => {
+                        violations.push(Violation::new(
+                            "role_not_applicable_unjustified",
+                            format!("review_state.roles: role {role:?} skipped without a reason"),
+                        ));
                     }
                     _ => {}
                 },
@@ -3154,6 +3143,59 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn old_path_disposition_fields_are_independently_required() -> TestResult {
+        let cases = [
+            ("compatibility_projection", true, true, None),
+            ("compatibility_projection", false, true, Some("compatibility_projection_unowned")),
+            ("compatibility_projection", true, false, Some("compatibility_projection_unowned")),
+            ("compatibility_projection", false, false, Some("compatibility_projection_unowned")),
+            ("still_live_independent", true, false, None),
+            ("still_live_independent", false, false, Some("still_live_unowned")),
+        ];
+
+        for (disposition, keep_owner, keep_exit, expected_violation) in cases {
+            let mut doc = fixture("consumer_issue_controller_t07_shape.v1.json")?;
+            let old_paths = doc
+                .as_object_mut()
+                .and_then(|root| root.get_mut("old_paths"))
+                .and_then(Value::as_array_mut)
+                .ok_or_else(|| color_eyre::eyre::eyre!("fixture old_paths must be an array"))?;
+            let row = old_paths
+                .iter_mut()
+                .find(|row| {
+                    row.get("disposition").and_then(Value::as_str)
+                        == Some("compatibility_projection")
+                })
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "fixture must contain the compatibility_projection old-path row"
+                    )
+                })?;
+            row.insert("disposition".to_string(), Value::String(disposition.to_string()));
+            if !keep_owner {
+                row.remove("owner");
+            }
+            if !keep_exit {
+                row.remove("exit");
+            }
+
+            match expected_violation {
+                Some(code) => color_eyre::eyre::ensure!(
+                    has(&doc, code),
+                    "{disposition} owner={keep_owner} exit={keep_exit} must report {code}"
+                ),
+                None => color_eyre::eyre::ensure!(
+                    valid(&doc),
+                    "{disposition} owner={keep_owner} exit={keep_exit} must remain valid: {:?}",
+                    validate_document(&doc)
+                ),
+            }
+        }
+        Ok(())
+    }
+
     // Negative control 10: missing audit rows and swallowed instrument
     // failures never become a pass.
     #[test]
@@ -3380,6 +3422,43 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn closure_role_state_fields_are_required_and_sufficient() -> TestResult {
+        for (state, field, expected_violation) in [
+            ("terminal", "reference", "missing_role_reference"),
+            ("not_applicable", "reason", "role_not_applicable_unjustified"),
+        ] {
+            let mut doc = fixture("closure_service_marker_eligible.v1.json")?;
+            color_eyre::eyre::ensure!(
+                valid(&doc),
+                "fixture with {state} {field} must establish sufficiency"
+            );
+            let roles = doc
+                .as_object_mut()
+                .and_then(|root| root.get_mut("review_state"))
+                .and_then(Value::as_object_mut)
+                .and_then(|review_state| review_state.get_mut("roles"))
+                .and_then(Value::as_array_mut)
+                .ok_or_else(|| {
+                    color_eyre::eyre::eyre!("fixture review_state.roles must be an array")
+                })?;
+            let role = roles
+                .iter_mut()
+                .find(|role| role.get("state").and_then(Value::as_str) == Some(state))
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| {
+                    color_eyre::eyre::eyre!("fixture must contain a role in state {state}")
+                })?;
+            role.remove(field);
+
+            color_eyre::eyre::ensure!(
+                has(&doc, expected_violation),
+                "{state} without {field} must report {expected_violation}"
+            );
+        }
+        Ok(())
+    }
+
     // PR #12220 review repairs: nonmaterial open follow-ups do not block
     // closure eligibility; material and instrument failures do.
     #[test]
@@ -3398,14 +3477,14 @@ mod tests {
                 .and_then(Value::as_array_mut)
                 .unwrap_or(&mut Vec::new())
             {
-                if role.get("role").and_then(Value::as_str) == Some("specialist") {
-                    if let Some(role) = role.as_object_mut() {
-                        role.insert("state".to_string(), Value::String("terminal".to_string()));
-                        role.insert(
-                            "reference".to_string(),
-                            Value::String("specialist review@c44e0d1b7".to_string()),
-                        );
-                    }
+                if role.get("role").and_then(Value::as_str) == Some("specialist")
+                    && let Some(role) = role.as_object_mut()
+                {
+                    role.insert("state".to_string(), Value::String("terminal".to_string()));
+                    role.insert(
+                        "reference".to_string(),
+                        Value::String("specialist review@c44e0d1b7".to_string()),
+                    );
                 }
             }
             for finding in review_state
@@ -3413,13 +3492,13 @@ mod tests {
                 .and_then(Value::as_array_mut)
                 .unwrap_or(&mut Vec::new())
             {
-                if finding.get("material").and_then(Value::as_bool) == Some(true) {
-                    if let Some(finding) = finding.as_object_mut() {
-                        finding.insert(
-                            "state".to_string(),
-                            Value::String("resolved_on_current_head".to_string()),
-                        );
-                    }
+                if finding.get("material").and_then(Value::as_bool) == Some(true)
+                    && let Some(finding) = finding.as_object_mut()
+                {
+                    finding.insert(
+                        "state".to_string(),
+                        Value::String("resolved_on_current_head".to_string()),
+                    );
                 }
             }
         }

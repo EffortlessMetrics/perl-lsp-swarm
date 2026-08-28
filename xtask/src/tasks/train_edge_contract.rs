@@ -1703,13 +1703,13 @@ mod tests {
         let mut normalized = doc.clone();
         let edges = normalized.get_mut("edges").and_then(Value::as_array_mut).unwrap();
         for edge in edges.iter_mut() {
-            if let Some(object) = edge.as_object_mut() {
-                if object.get("kind").and_then(Value::as_str) == Some("consumes_if_available") {
-                    object.insert(
-                        "kind".to_string(),
-                        Value::String("requires_implementation".to_string()),
-                    );
-                }
+            if let Some(object) = edge.as_object_mut()
+                && object.get("kind").and_then(Value::as_str) == Some("consumes_if_available")
+            {
+                object.insert(
+                    "kind".to_string(),
+                    Value::String("requires_implementation".to_string()),
+                );
             }
         }
         let inflated = profile_requirements(&normalized, "neovim_bounded_core").unwrap();
