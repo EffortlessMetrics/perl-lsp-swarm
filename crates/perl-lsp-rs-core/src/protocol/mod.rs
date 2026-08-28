@@ -18,6 +18,9 @@
 pub mod binary_identity;
 pub mod capabilities;
 pub mod document_version;
+/// Typed deterministic final-surface authority: `EffectiveLspSurface`,
+/// registration plan and effective identities (#9665, #8032 train S02).
+pub mod effective_surface;
 pub mod error_disposition;
 pub mod error_inventory;
 mod errors;

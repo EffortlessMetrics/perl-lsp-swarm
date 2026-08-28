@@ -93,6 +93,7 @@ pub mod hardening;
 pub mod highlight;
 pub mod hook_checks;
 pub mod ignored_tests;
+pub mod inc_claim_boundary;
 pub mod incremental_proof;
 pub mod inject_sha_assets;
 pub mod inline_completion_quality;

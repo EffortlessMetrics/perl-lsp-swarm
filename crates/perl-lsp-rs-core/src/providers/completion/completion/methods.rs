@@ -1,9 +1,12 @@
 //! Method completion for Perl
 //!
-//! Provides context-aware method completion including DBI methods.
+//! Provides context-aware method completion including DBI and common client APIs.
 
+use super::lexical_context::{is_in_comment, is_in_heredoc, is_in_pod, is_in_regex, is_in_string};
+use super::scope_distance;
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
-use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
+use perl_lexer::find_data_marker_byte_lexed;
+use perl_semantic_analyzer::symbol::{Symbol, SymbolKind, SymbolTable};
 use std::borrow::Cow;
 use std::collections::HashSet;
 
@@ -154,6 +157,60 @@ pub const MOJO_MYSQL_METHODS: &[(&str, &str)] = &[
     ("strict_mode", "Create a database wrapper with strict mode enabled"),
 ];
 
+/// Static methods documented by `HTTP::Tiny`.
+pub const HTTP_TINY_STATIC_METHODS: &[(&str, &str)] = &[
+    ("new", "Create an HTTP::Tiny client"),
+    ("can_ssl", "Check whether SSL support is available"),
+];
+
+/// Common instance methods documented by `HTTP::Tiny`.
+pub const HTTP_TINY_METHODS: &[(&str, &str)] = &[
+    ("get", "Send an HTTP GET request"),
+    ("head", "Send an HTTP HEAD request"),
+    ("put", "Send an HTTP PUT request"),
+    ("post", "Send an HTTP POST request"),
+    ("patch", "Send an HTTP PATCH request"),
+    ("delete", "Send an HTTP DELETE request"),
+    ("post_form", "Send form data with an HTTP POST request"),
+    ("mirror", "Mirror a URL to a local file"),
+    ("request", "Send a request with an explicit HTTP method"),
+    ("www_form_urlencode", "Encode form data for a query or request body"),
+    ("can_ssl", "Check whether SSL support is available"),
+    ("connected", "Report the current keep-alive peer"),
+];
+
+/// Common instance methods documented by `LWP::UserAgent`.
+///
+/// `put` and `delete` are real `LWP::UserAgent` instance methods since LWP
+/// 6.56 (2023); verified against a live Perl oracle (`perl -MLWP::UserAgent`,
+/// LWP 6.82: `defined *LWP::UserAgent::put{CODE}` / `...::delete{CODE}`).
+pub const LWP_USER_AGENT_METHODS: &[(&str, &str)] = &[
+    ("request", "Send an HTTP request"),
+    ("simple_request", "Send one HTTP request without redirects"),
+    ("get", "Send an HTTP GET request"),
+    ("head", "Send an HTTP HEAD request"),
+    ("post", "Send an HTTP POST request"),
+    ("put", "Send an HTTP PUT request"),
+    ("delete", "Send an HTTP DELETE request"),
+    ("mirror", "Mirror a URL to a local file"),
+    ("agent", "Get or set the user-agent string"),
+    ("cookie_jar", "Get or set the cookie jar"),
+    ("credentials", "Set credentials for a protection space"),
+    ("default_header", "Get or set one default request header"),
+    ("default_headers", "Get or set default request headers"),
+    ("max_redirect", "Get or set the redirect limit"),
+    ("max_size", "Get or set the response-size limit"),
+    ("parse_head", "Get or set HTML head parsing"),
+    ("requests_redirectable", "Get or set redirectable request methods"),
+    ("ssl_opts", "Get or set SSL options"),
+    ("timeout", "Get or set the request timeout"),
+    ("proxy", "Get or set a proxy for protocols"),
+    ("no_proxy", "Add domains that bypass the proxy"),
+    ("env_proxy", "Load proxy settings from the environment"),
+    ("clone", "Clone the user agent"),
+    ("is_protocol_supported", "Check whether a protocol is supported"),
+];
+
 const GENERIC_OBJECT_METHODS: &[(&str, &str)] = &[
     ("new", "Constructor"),
     ("isa", "Check if object is of given class"),
@@ -229,7 +286,233 @@ pub fn infer_receiver_type(context: &CompletionContext, source: &str) -> Option<
     None
 }
 
-fn imported_framework_methods(
+fn is_code_position(source: &str, position: usize) -> bool {
+    !(is_in_string(source, position)
+        || is_in_comment(source, position)
+        || is_in_heredoc(source, position)
+        || is_in_regex(source, position)
+        || is_in_pod(source, position)
+        || find_data_marker_byte_lexed(source).is_some_and(|marker| position >= marker))
+}
+
+fn binding_at_position<'a>(
+    symbol_table: &'a SymbolTable,
+    receiver: &str,
+    scope_id: usize,
+    position: usize,
+) -> Option<&'a Symbol> {
+    let name = receiver.strip_prefix('$')?;
+    let candidates = symbol_table.find_symbol(name, scope_id, SymbolKind::scalar());
+    let mut visible = candidates.into_iter().filter(|symbol| symbol.location.start <= position);
+    let first = visible.next()?;
+    let defining_scope = first.scope_id;
+    std::iter::once(first)
+        .chain(visible)
+        .filter(|symbol| symbol.scope_id == defining_scope)
+        .max_by_key(|symbol| symbol.location.start)
+}
+
+fn latest_assignment_for_binding<'a>(
+    symbol_table: &SymbolTable,
+    source: &'a str,
+    receiver: &str,
+    binding: &Symbol,
+    cursor_scope_id: usize,
+    end: usize,
+) -> Option<&'a str> {
+    let scope_end = symbol_table
+        .scopes
+        .get(&binding.scope_id)
+        .map(|scope| scope.location.end)
+        .filter(|scope_end| *scope_end > binding.location.start)
+        .unwrap_or(end)
+        .min(end);
+    let search_start = binding.location.start.min(scope_end);
+    let mut expression = None;
+
+    for (offset, _) in source[search_start..scope_end].match_indices(receiver) {
+        let receiver_pos = search_start + offset;
+        if !is_code_position(source, receiver_pos) {
+            continue;
+        }
+        let occurrence_scope =
+            scope_distance::scope_at_position(symbol_table, source, receiver_pos);
+        let Some(occurrence_binding) =
+            binding_at_position(symbol_table, receiver, occurrence_scope, receiver_pos)
+        else {
+            continue;
+        };
+        if occurrence_binding.scope_id != binding.scope_id
+            || occurrence_binding.location.start != binding.location.start
+        {
+            continue;
+        }
+        if assignment_is_in_unrelated_subroutine(symbol_table, occurrence_scope, cursor_scope_id) {
+            continue;
+        }
+
+        let after_receiver = source[receiver_pos + receiver.len()..].trim_start();
+        let Some((assignment, compound)) = assignment_after_receiver(after_receiver) else {
+            if is_list_assignment_target(after_receiver) {
+                // A list assignment also replaces the receiver's value, even though
+                // the assignment operator is not immediately after the scalar.
+                expression = Some("");
+            }
+            continue;
+        };
+        if compound {
+            // Compound assignment changes the receiver's value, so an earlier
+            // constructor assignment is no longer reliable type evidence.
+            expression = Some("");
+            continue;
+        }
+        let statement_end = assignment.find(';').unwrap_or(assignment.len());
+        expression = Some(assignment[..statement_end].trim());
+    }
+
+    expression
+}
+
+fn assignment_is_in_unrelated_subroutine(
+    symbol_table: &SymbolTable,
+    occurrence_scope_id: usize,
+    cursor_scope_id: usize,
+) -> bool {
+    let mut current = occurrence_scope_id;
+    while let Some(scope) = symbol_table.scopes.get(&current) {
+        if scope.kind == perl_semantic_analyzer::symbol::ScopeKind::Subroutine {
+            let mut cursor_scope = cursor_scope_id;
+            while let Some(cursor) = symbol_table.scopes.get(&cursor_scope) {
+                if cursor.id == scope.id {
+                    return false;
+                }
+                let Some(parent) = cursor.parent else {
+                    break;
+                };
+                cursor_scope = parent;
+            }
+            return true;
+        }
+        let Some(parent) = scope.parent else {
+            break;
+        };
+        current = parent;
+    }
+    false
+}
+
+fn assignment_after_receiver(after_receiver: &str) -> Option<(&str, bool)> {
+    for operator in [
+        "**=", "<<=", ">>=", "&&=", "||=", "//=", ".=", "x=", "+=", "-=", "*=", "/=", "%=", "&=",
+        "|=", "^=", "=",
+    ] {
+        if let Some(rhs) = after_receiver.strip_prefix(operator) {
+            if operator == "=" && rhs.chars().next().is_some_and(|c| matches!(c, '=' | '>' | '~')) {
+                return None;
+            }
+            return Some((rhs, operator != "="));
+        }
+    }
+    None
+}
+
+fn is_list_assignment_target(after_receiver: &str) -> bool {
+    let Some(equal_pos) = after_receiver.find('=') else {
+        return false;
+    };
+    let left_hand_side = after_receiver[..equal_pos].trim();
+    left_hand_side.starts_with(',') || left_hand_side.starts_with(')')
+}
+
+fn expression_calls_constructor(expression: &str, module: &str) -> bool {
+    let Some(after_module) = expression.strip_prefix(module) else {
+        return false;
+    };
+    let Some(after_arrow) = after_module.trim_start().strip_prefix("->") else {
+        return false;
+    };
+    let Some(after_new) = after_arrow.trim_start().strip_prefix("new") else {
+        return false;
+    };
+
+    let after_new = after_new.trim_start();
+    if after_new.is_empty() {
+        return true;
+    }
+    if !after_new.starts_with('(') {
+        return false;
+    }
+
+    let mut depth = 0usize;
+    let mut escaped = false;
+    let mut quote = None;
+    for (index, byte) in after_new.bytes().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if byte == b'\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if byte == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(byte, b'\'' | b'"') {
+            quote = Some(byte);
+            continue;
+        }
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return after_new[index + 1..].trim().is_empty();
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Infer an HTTP client receiver type from the binding's latest constructor
+/// assignment.
+///
+/// Claim bound: this is a bounded local bridge over exact same-name scalar
+/// assignments only. Aliases (`my $alias = $http`) and reblessed/derived
+/// namespaces are intentionally unresolved and fail closed (no completion);
+/// parser/semantic-flow backing arrives with #13244, which also owns
+/// migrating this inference onto the canonical workspace facts.
+fn infer_imported_constructor_receiver_type(
+    context: &CompletionContext,
+    source: &str,
+    symbol_table: &SymbolTable,
+    used_modules: &HashSet<String>,
+) -> Option<&'static str> {
+    let receiver = context.receiver_prefix().trim_end_matches("->");
+    let source_before_cursor = source.get(..context.position).unwrap_or(source);
+    let receiver_pos = source_before_cursor.rfind(receiver)?;
+    let binding =
+        binding_at_position(symbol_table, receiver, context.cursor_scope_id, receiver_pos)?;
+    let expression = latest_assignment_for_binding(
+        symbol_table,
+        source,
+        receiver,
+        binding,
+        context.cursor_scope_id,
+        receiver_pos + receiver.len(),
+    )?;
+
+    ["HTTP::Tiny", "LWP::UserAgent"].into_iter().find(|&module| {
+        used_modules.contains(module) && expression_calls_constructor(expression, module)
+    })
+}
+
+fn imported_static_methods(
     prefix: &str,
     used_modules: &HashSet<String>,
 ) -> Option<&'static [(&'static str, &'static str)]> {
@@ -239,8 +522,19 @@ fn imported_framework_methods(
     }
 
     match module {
+        "HTTP::Tiny" => Some(HTTP_TINY_STATIC_METHODS),
         "Mojo::Pg" => Some(MOJO_PG_METHODS),
         "Mojo::mysql" => Some(MOJO_MYSQL_METHODS),
+        _ => None,
+    }
+}
+
+fn known_instance_methods(
+    receiver_type: Option<&str>,
+) -> Option<&'static [(&'static str, &'static str)]> {
+    match receiver_type {
+        Some("HTTP::Tiny") => Some(HTTP_TINY_METHODS),
+        Some("LWP::UserAgent") => Some(LWP_USER_AGENT_METHODS),
         _ => None,
     }
 }
@@ -431,14 +725,21 @@ pub fn add_method_completions(
         }
     }
 
-    // Try to infer the receiver type from context
-    let receiver_type = infer_receiver_type(context, source);
+    // Exact imported constructor evidence takes priority over naming heuristics.
+    let receiver_type =
+        infer_imported_constructor_receiver_type(context, source, symbol_table, used_modules)
+            .map(str::to_owned)
+            .or_else(|| infer_receiver_type(context, source));
 
-    let static_framework_methods =
-        imported_framework_methods(context.receiver_prefix(), used_modules);
+    let static_api_methods = imported_static_methods(context.receiver_prefix(), used_modules);
+    let instance_api_methods = known_instance_methods(receiver_type.as_deref());
 
     // Choose methods based on inferred type
-    let methods: Vec<(&str, &str)> = if let Some(methods) = static_framework_methods {
+    let methods: Vec<(&str, &str)> = if let Some(methods) = static_api_methods {
+        let mut methods = methods.to_vec();
+        methods.extend_from_slice(GENERIC_OBJECT_METHODS);
+        methods
+    } else if let Some(methods) = instance_api_methods {
         let mut methods = methods.to_vec();
         methods.extend_from_slice(GENERIC_OBJECT_METHODS);
         methods
@@ -451,9 +752,11 @@ pub fn add_method_completions(
     };
 
     for (method, desc) in methods {
-        let is_static_framework_method = static_framework_methods
+        let is_static_api_method = static_api_methods
             .is_some_and(|catalog| catalog.iter().any(|(name, _)| *name == method));
-        if is_static_framework_method
+        let is_instance_api_method = instance_api_methods
+            .is_some_and(|catalog| catalog.iter().any(|(name, _)| *name == method));
+        if (is_static_api_method || is_instance_api_method)
             && !method_prefix.is_empty()
             && !method.starts_with(method_prefix)
         {
@@ -503,5 +806,51 @@ pub fn add_method_completions(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pod_regions_stay_pod_until_exact_cut() {
+        let begin_uncut = "=begin comment\ndocs\n=end comment\nmy $code = 1;";
+        assert!(is_in_pod(begin_uncut, begin_uncut.len()));
+        assert!(!is_code_position(begin_uncut, begin_uncut.find("my $code").unwrap()));
+
+        let begin_cut = "=begin comment\ndocs\n=end comment\n=cut\nmy $code = 1;";
+        assert!(!is_in_pod(begin_cut, begin_cut.len()));
+        assert!(is_code_position(begin_cut, begin_cut.find("my $code").unwrap()));
+
+        let for_body = "=for comment\ndocs\n$code";
+        assert!(is_in_pod(for_body, for_body.len()));
+
+        let for_blank_line = "=for comment\ndocs\n\nmy $code = 1;";
+        assert!(is_in_pod(for_blank_line, for_blank_line.len()));
+        assert!(!is_code_position(for_blank_line, for_blank_line.find("my $code").unwrap()));
+    }
+
+    #[test]
+    fn pod_state_ignores_heredoc_directives_and_invalid_indentation() {
+        let source =
+            "my $text = <<'END';\n=begin comment\n=for comment\n=end comment\nEND\nmy $code = 1;";
+        assert!(!is_in_pod(source, source.len()));
+        assert!(is_code_position(source, source.find("my $code").unwrap()));
+
+        let indented = "  =pod\nnot documentation\nmy $code = 1;";
+        assert!(!is_in_pod(indented, indented.len()));
+        assert!(is_code_position(indented, indented.find("my $code").unwrap()));
+    }
+
+    #[test]
+    fn targetless_begin_starts_pod_until_cut() {
+        let source = "=begin\nnot documentation\nmy $code = 1;";
+        assert!(is_in_pod(source, source.len()));
+        assert!(!is_code_position(source, source.find("my $code").unwrap()));
+
+        let cut_source = "=begin\nnot documentation\n=cut\nmy $code = 1;";
+        assert!(!is_in_pod(cut_source, cut_source.len()));
+        assert!(is_code_position(cut_source, cut_source.find("my $code").unwrap()));
     }
 }
