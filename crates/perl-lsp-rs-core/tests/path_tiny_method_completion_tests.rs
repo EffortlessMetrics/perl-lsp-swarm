@@ -160,6 +160,17 @@ fn factory_inference_is_import_receiver_and_latest_assignment_bounded() {
 }
 
 #[test]
+fn comment_between_module_and_semicolon_still_reads_default_import() {
+    let source = "use Path::Tiny # load defaults\n;\nmy $file = path(\"notes.txt\");\n$file->sl";
+    let item_labels = labels(&completions_at_end(source));
+
+    assert!(
+        has_label(&item_labels, "slurp"),
+        "a trailing comment must not hide a default import: {source:?}"
+    );
+}
+
+#[test]
 fn trailing_dereference_yields_plain_string_and_does_not_arm_catalog() {
     let sources = [
         "use Path::Tiny;\nmy $file = path(\"notes.txt\")->stringify;\n$file->sl",

@@ -454,7 +454,8 @@ fn module_imported_symbol_before(
     symbol: &str,
 ) -> bool {
     any_module_use_before(source, position, module, |arguments| {
-        let arguments = strip_optional_version_argument(arguments);
+        let stripped = strip_line_comments_outside_lists(arguments);
+        let arguments = strip_optional_version_argument(&stripped);
         if arguments.is_empty() {
             return true;
         }
@@ -463,6 +464,29 @@ fn module_imported_symbol_before(
             .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
             .any(|word| word == symbol || word == ":all")
     })
+}
+
+/// Drop `#`-to-end-of-line comments that sit outside bracketed import lists,
+/// so `use Path::Tiny # load defaults\n;` still reads as a default import
+/// while `#` stays literal inside `qw( ... )` lists.
+fn strip_line_comments_outside_lists(arguments: &str) -> String {
+    let mut stripped = String::with_capacity(arguments.len());
+    let mut depth = 0usize;
+    for ch in arguments.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                stripped.push(ch);
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                stripped.push(ch);
+            }
+            '#' if depth == 0 => break,
+            _ => stripped.push(ch),
+        }
+    }
+    stripped
 }
 
 fn binding_at_position<'a>(
