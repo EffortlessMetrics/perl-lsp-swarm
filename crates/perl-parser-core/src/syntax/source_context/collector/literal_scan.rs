@@ -74,14 +74,14 @@ pub(super) fn scan_line_comments_and_open_literals(source: &str) -> Vec<SourceRe
 /// Heredoc body regions between opener line and closing delimiter line.
 pub(super) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
     let mut regions = Vec::new();
-    let mut active: Option<(usize, String, bool)> = None;
+    let mut active = Vec::new();
     let mut line_start = 0usize;
 
     for raw_line in source.split_inclusive('\n') {
         let line_end = line_start + raw_line.len();
         let line = strip_line_ending(raw_line);
 
-        if let Some((body_start, label, allow_indented)) = active.take() {
+        if let Some((body_start, label, allow_indented)) = active.first().cloned() {
             // Trailing spaces/tabs after the delimiter still close the region.
             // `PerlLexer` ends the heredoc body on such a line; comparing only
             // the untrimmed line left the collector scanning to EOF and
@@ -96,25 +96,45 @@ pub(super) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
             let closes = candidate == label || candidate.trim_end_matches([' ', '\t']) == label;
             if closes {
                 push_region(&mut regions, body_start, line_start, SourceRegionKind::Heredoc);
-            } else {
-                active = Some((body_start, label, allow_indented));
+                active.remove(0);
             }
-        } else if let Some((label, allow_indented)) = heredoc_opener_on_line(line) {
-            active = Some((line_end, label, allow_indented));
+        } else {
+            active.extend(
+                heredoc_openers_on_line(line)
+                    .into_iter()
+                    .map(|(label, allow_indented)| (line_end, label, allow_indented)),
+            );
         }
 
         line_start = line_end;
     }
 
-    if let Some((body_start, _, _)) = active {
+    for (body_start, _, _) in active {
         push_region(&mut regions, body_start, source.len(), SourceRegionKind::Heredoc);
     }
 
     regions
 }
 
+#[cfg(test)]
 fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
-    let marker = line.find("<<")?;
+    heredoc_openers_on_line(line).into_iter().next()
+}
+
+fn heredoc_openers_on_line(line: &str) -> Vec<(String, bool)> {
+    let mut openers = Vec::new();
+    let mut search_start = 0;
+    while let Some(relative_marker) = line[search_start..].find("<<") {
+        let marker = search_start + relative_marker;
+        if let Some(opener) = heredoc_opener_at(line, marker) {
+            openers.push(opener);
+        }
+        search_start = marker + 2;
+    }
+    openers
+}
+
+fn heredoc_opener_at(line: &str, marker: usize) -> Option<(String, bool)> {
     let before = &line[..marker];
     if before.ends_with('<') {
         return None;

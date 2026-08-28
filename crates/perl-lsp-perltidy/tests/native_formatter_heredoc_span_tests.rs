@@ -101,6 +101,34 @@ fn range_formatting_after_heredoc_terminator_remains_eligible() {
 }
 
 #[test]
+fn multiple_heredocs_preserve_the_second_body_and_terminator_only() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<A, <<B;\nfirst\nA\nsecond\nB\nmy$x=2;\n";
+
+    for range in [
+        TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0)),
+        TextRange::new(TextPosition::new(4, 0), TextPosition::new(5, 0)),
+    ] {
+        let result = formatter.format_range(source, range, &FormatConfig::default());
+
+        assert!(!result.changed, "completed second heredoc span must be preserved");
+        assert_eq!(result.formatted, source);
+        assert!(result.edits.is_empty());
+        assert!(result.diagnostics.first().is_some_and(|diagnostic| {
+            diagnostic.code == "native.format.literal_preserve_region"
+                && diagnostic.message.contains("heredoc")
+        }));
+    }
+
+    let following_code = TextRange::new(TextPosition::new(5, 0), TextPosition::new(6, 0));
+    let result = formatter.format_range(source, following_code, &FormatConfig::default());
+
+    assert!(result.changed, "code after the second terminator remains eligible");
+    assert_eq!(result.formatted, "print <<A, <<B;\nfirst\nA\nsecond\nB\nmy $x = 2;\n");
+    assert!(result.diagnostics.is_empty());
+}
+
+#[test]
 fn trailing_trivia_after_heredoc_does_not_extend_preserve_span() {
     let formatter = NativeFormatter::new();
     let source = "print <<'EOF';\nbody\nEOF\n\n# trailing note\nmy$x=1;\n";
