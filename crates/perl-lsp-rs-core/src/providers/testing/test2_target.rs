@@ -1,15 +1,15 @@
 //! Static resolution for aliases installed by `Test2::Tools::Target`.
 //!
 //! The module installs both a constant and a package scalar for each alias.
-//! `Test2::V0` exposes the same behavior through `-target`. Only literal forms
-//! are resolved; dynamic expressions remain unknown rather than producing
-//! invented completions.
+//! `Test2::V0` and `Test2::V1` expose the same behavior through `-target`.
+//! Only literal forms are resolved; dynamic expressions remain unknown rather
+//! than producing invented completions.
 
 use regex::Regex;
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
-static V0_TARGET_OPTION: LazyLock<Regex> = LazyLock::new(|| {
+static BUNDLE_TARGET_OPTION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r#"(?xs)(?:^|[\s,])(?P<option>-target\s*(?:=>)?\s*(?P<value>\{[^{}]*\}|'(?:\\.|[^'])*'|"(?:\\.|[^"])*"|[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*))"#,
     )
@@ -33,30 +33,30 @@ static STATIC_PACKAGE: LazyLock<Regex> = LazyLock::new(|| {
 pub struct Test2TargetImport {
     /// Local alias names. Each exists as both `NAME()` and `$NAME` at runtime.
     pub aliases: BTreeSet<String>,
-    /// `Test2::V0` arguments with `-target` removed.
+    /// Bundle arguments with `-target` removed.
     ///
     /// Completion feeds these arguments to the ordinary Test2 import resolver
     /// so target hash keys are not mistaken for an explicit export list.
-    pub remaining_v0_args: Option<String>,
+    pub remaining_args: Option<String>,
 }
 
-/// Resolve aliases from `Test2::Tools::Target` or `Test2::V0 -target`.
+/// Resolve aliases from `Test2::Tools::Target` or a Test2 bundle's `-target`.
 ///
-/// Returns `None` when the module has no target semantics or a V0 import does
-/// not contain `-target`.
+/// Returns `None` when the module has no target semantics or a bundle import
+/// does not contain `-target`.
 pub fn resolve_target_import(module: &str, raw_args: &str) -> Option<Test2TargetImport> {
     match module {
         "Test2::Tools::Target" => Some(Test2TargetImport {
             aliases: parse_target_aliases(raw_args),
-            remaining_v0_args: None,
+            remaining_args: None,
         }),
-        "Test2::V0" => {
-            let captures = V0_TARGET_OPTION.captures(raw_args)?;
+        "Test2::V0" | "Test2::V1" => {
+            let captures = BUNDLE_TARGET_OPTION.captures(raw_args)?;
             let option = captures.name("option")?;
             let value = captures.name("value")?;
             Some(Test2TargetImport {
                 aliases: parse_target_aliases(value.as_str()),
-                remaining_v0_args: Some(remove_option(raw_args, option.start(), option.end())),
+                remaining_args: Some(remove_option(raw_args, option.start(), option.end())),
             })
         }
         _ => None,
@@ -171,7 +171,7 @@ mod tests {
             ),
             Some(Test2TargetImport {
                 aliases: BTreeSet::from(["service".to_string()]),
-                remaining_v0_args: Some("':DEFAULT', '!meta'".to_string()),
+                remaining_args: Some("':DEFAULT', '!meta'".to_string()),
             })
         );
     }
@@ -182,14 +182,29 @@ mod tests {
             resolve_target_import("Test2::V0", "-target => 'My::Service'"),
             Some(Test2TargetImport {
                 aliases: BTreeSet::from(["CLASS".to_string()]),
-                remaining_v0_args: Some(String::new()),
+                remaining_args: Some(String::new()),
             })
         );
     }
 
     #[test]
-    fn v0_without_target_is_not_claimed() {
+    fn v1_target_preserves_import_option() {
+        assert_eq!(
+            resolve_target_import(
+                "Test2::V1",
+                "-import, -target => { service => 'My::Service' }",
+            ),
+            Some(Test2TargetImport {
+                aliases: BTreeSet::from(["service".to_string()]),
+                remaining_args: Some("-import".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn bundle_without_target_is_not_claimed() {
         assert_eq!(resolve_target_import("Test2::V0", "'!meta'"), None);
+        assert_eq!(resolve_target_import("Test2::V1", "-import"), None);
     }
 
     #[test]
