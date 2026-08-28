@@ -138,6 +138,7 @@ jobs:
       run: |
         python3 benchmarks/scripts/test_extract_criterion.py -v
         python3 benchmarks/scripts/test_benchmark_guards.py -v
+        python3 benchmarks/scripts/test_benchmark_targets.py -v
 
     - name: Build perllsp binary for real-repo UX perf lane
       run: cargo build -p perllsp --bin perllsp --locked
