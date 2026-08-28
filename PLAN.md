@@ -112,19 +112,25 @@ join and must not be implemented as a hard-coded substitute:
 
 | route_id | Backing claims | Notes |
 | --- | --- | --- |
-| VS Code Marketplace / Open VSX | Extension and managed-binary acquisition | Exact route rows and gallery context come from the catalog |
+| VS Code Marketplace / Open VSX | Extension and managed-binary acquisition | Exact route rows and gallery context come from the catalog; C1208 is a distinct Open VSX projection |
 | Identity-bound archive / POSIX bootstrap | Release archive and bootstrap variants | Checksum and publication bindings come from the catalog |
 | Homebrew / Cargo registry / unpinned Cargo git | Separate channel subjects | No cross-channel inference |
 | Setup Action release/source modes | CI-oriented route families | Explicit ref and product-unit context |
-| Windows zip / source-local builds | Platform and product-unit variants | Receipt-bound support remains separate |
+| Windows zip / source-local builds; generic-client PATH | Platform, product-unit, and generic-client variants | Receipt-bound support remains separate; C107 is projected when the catalog supplies this route |
 | Unproven channels | Scoop, Chocolatey, winget, Docker, or other deferred channels | Only catalog-provided channels may enter here |
 
-Out-of-scope rows (must be *explicitly* excluded, not silently unjoined):
-C801 (diagnostic advice), C1001/C1002/C1008 (probes/posture), C1102
-(virtual-workspace note), C1201/C101 (`volatile_number` badges), C1309
-(`lsp-mcp` adjacent tool), C106/C216 (verification semantics — join as
-post-install probes metadata, not route selection), C703 (channel
-independence frame — a rule, not a route).
+Out-of-scope rows (must be *explicitly* excluded, not silently unjoined): C108
+(`non_install_dependency`, external formatting/critic tools), C201
+(`channel_rule`, channel-independence frame), C703 (`channel_rule`, channel-
+independence frame), C801 (`diagnostic_surface`, diagnostic advice), C1001
+(`diagnostic_surface`, PATH/health advice), C1002 (`non_install_dependency`,
+runtime-dependency posture), C1008 (`verification_metadata`, post-install
+probes), C1102 (`non_install_dependency`, virtual-workspace limitation), C1201
+(`volatile_metadata`, install-count badge), C1205 (`non_install_dependency`,
+internal deployment guidance), C1309 (`adjacent_product`, `lsp-mcp` tool).
+C106 and C216 are not route-selection rows: they must be listed as explicit
+`verification_metadata` exclusions in the future ledger while their post-install
+probe metadata remains available to the classifier.
 
 ### 2.1.1 Inventory projection/exclusion oracle
 
@@ -150,6 +156,47 @@ rule applies to FND-1 through FND-12: each finding must be joined to a route,
 recorded as a route-independent constraint, or explicitly excluded with a reason.
 This oracle is the acceptance condition for inventory traceability; the 70-row
 prose count and the planning-family table are not substitutes for it.
+
+For the six rows raised by review, the provisional ledger disposition is literal:
+C107 → `project(generic-client PATH, generic-client editor context)`;
+C108 → `exclude(non_install_dependency, external formatting/critic tools)`;
+C201 → `exclude(channel_rule, channel-independence frame)`;
+C202 → `project(VS Code Marketplace / Open VSX or source-local, fastest-path
+context)`; C1205 → `exclude(non_install_dependency, internal deployment guidance)`;
+and C1208 → `project(Open VSX, marketplace context)`. These are required
+dispositions for the future validated catalog ledger; they are not permission to
+invent route IDs before #10333 publishes that catalog.
+
+#### Literal closure manifest
+
+The following is the complete literal audit manifest for the landed #11575
+inventory. The future join/exclusion ledger must contain exactly one disposition
+for every ID below; these lines are the auditable denominator, not shorthand or
+examples. A disposition is either `project(route_id, projection_context)` or
+`exclude(reason, rationale)`, and no ID may appear in both forms.
+
+| Inventory surface | Literal claim IDs |
+| --- | --- |
+| S01 | C101, C102, C103, C104, C105, C106, C107, C108 |
+| S02 | C201, C202, C203, C204, C205, C206, C207, C208, C209, C210, C211, C212, C213, C214, C215, C216 |
+| S03 | C301, C302, C303 |
+| S04 | C401, C402, C403, C404, C405, C406 |
+| S05 | C501, C502, C503 |
+| S06 | C601 |
+| S07 | C701, C702, C703 |
+| S08 | C801 |
+| S09 | C901, C902 |
+| S10 | C1001, C1002, C1003, C1004, C1005, C1006, C1007, C1008 |
+| S11 | C1101, C1102 |
+| S12 | C1201, C1202, C1203, C1204, C1205, C1206, C1207, C1208 |
+| S13 | C1301, C1302, C1303, C1304, C1305, C1306, C1307, C1308, C1309 |
+
+The finding denominator is likewise literal and exact-once: FND-1, FND-2,
+FND-3, FND-4, FND-5, FND-6, FND-7, FND-8, FND-9, FND-10, FND-11, and FND-12.
+Each finding must have one and only one ledger disposition: a route join, a
+route-independent constraint, or an explicit exclusion with an allowed reason.
+In particular, FND-5 is a `route-independent constraint` for the mutable
+`INTERNAL_DEPLOYMENT.md` links represented by C1205; it is not silently omitted.
 
 ### 2.2 Classification = conjunction of independent per-dimension verdicts
 
@@ -371,11 +418,21 @@ assuming the former prose-row denominator.
    byte-identical across runs and machines: classification output contains no
    timestamps, ambient state, or catalog-order dependence beyond stable claim
    IDs. Any run-to-run diff fails.
-8. **Denominator closure.** Every exact route row and projection context in the
-   validated catalog is classified exactly once. A join referencing an unknown
-   claim or route ID, or an unjoined row, fails the check. The 70 prose claim
-   rows from #11575 are evidence inputs and do not define the classifier's
-   route denominator by themselves.
+8. **Denominator and inventory closure.** Every exact route row and projection
+   context in the validated catalog is classified exactly once, and every one of
+   the literal claim IDs C101, C102, C103, C104, C105, C106, C107, C108, C201,
+   C202, C203, C204, C205, C206, C207, C208, C209, C210, C211, C212, C213,
+   C214, C215, C216, C301, C302, C303, C401, C402, C403, C404, C405, C406,
+   C501, C502, C503, C601, C701, C702, C703, C801, C901, C902, C1001, C1002,
+   C1003, C1004, C1005, C1006, C1007, C1008, C1101, C1102, C1201, C1202,
+   C1203, C1204, C1205, C1206, C1207, C1208, C1301, C1302, C1303, C1304,
+   C1305, C1306, C1307, C1308, and C1309, plus literal findings FND-1,
+   FND-2, FND-3, FND-4, FND-5, FND-6, FND-7, FND-8, FND-9, FND-10, FND-11,
+   and FND-12, has exactly one ledger disposition. A join referencing an
+   unknown ID, duplicate disposition, missing ID, range shorthand, or an
+   unjoined row fails the check. The 70 prose claim rows from #11575 are the
+   closed audit denominator; they do not define the classifier's route
+   denominator by themselves.
 9. **Cross-channel inference block (C201/C703).** A claim's receipt on channel
    X must never satisfy another route's receipt requirement (e.g., GitHub
    Releases v0.17.0 receipt must not make `homebrew-tap` `proven_current`).
