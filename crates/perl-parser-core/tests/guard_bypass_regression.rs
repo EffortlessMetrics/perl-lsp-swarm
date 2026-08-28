@@ -38,6 +38,10 @@ fn never_matches(_: &ParseError) -> bool {
     false
 }
 
+fn require(condition: bool, message: &str) -> Result<(), String> {
+    condition.then_some(()).ok_or_else(|| message.to_owned())
+}
+
 fn parse_fails_with(
     code: &str,
     expected: fn(&ParseError) -> bool,
@@ -91,107 +95,141 @@ fn has_structural_nesting_stop_cause(output: &ParseOutput) -> bool {
 }
 
 #[test]
-fn parse_error_oracle_rejects_swapped_field_direct_recorded_contradictions() {
+fn parse_error_oracle_rejects_swapped_field_direct_recorded_contradictions() -> Result<(), String> {
     let recursion = ParseError::RecursionDepthExhausted { depth: 129, max_depth: 128 };
     let structural_with_recursion_fields =
         ParseError::NestingTooDeep { depth: 129, max_depth: 128 };
-    assert!(!has_exclusive_error_family(
-        Some(&recursion),
-        &[structural_with_recursion_fields],
-        is_recursion_guard_error,
-        is_structural_nesting_family
-    ));
+    require(
+        !has_exclusive_error_family(
+            Some(&recursion),
+            &[structural_with_recursion_fields],
+            is_recursion_guard_error,
+            is_structural_nesting_family,
+        ),
+        "recursion oracle accepted a structural contradiction with recursion fields",
+    )?;
 
     let structural = ParseError::NestingTooDeep { depth: 513, max_depth: 512 };
     let recursion_with_structural_fields =
         ParseError::RecursionDepthExhausted { depth: 513, max_depth: 512 };
-    assert!(!has_exclusive_error_family(
-        Some(&structural),
-        &[recursion_with_structural_fields],
-        is_structural_nesting_error,
-        is_recursion_guard_family
-    ));
+    require(
+        !has_exclusive_error_family(
+            Some(&structural),
+            &[recursion_with_structural_fields],
+            is_structural_nesting_error,
+            is_recursion_guard_family,
+        ),
+        "structural oracle accepted a recursion contradiction with structural fields",
+    )
 }
 
 #[test]
-fn recovery_oracle_rejects_swapped_structural_fields() {
+fn recovery_oracle_rejects_swapped_structural_fields() -> Result<(), String> {
     let diagnostics = [
         ParseError::RecursionDepthExhausted { depth: 129, max_depth: 128 },
         ParseError::NestingTooDeep { depth: 129, max_depth: 128 },
     ];
-    assert!(!has_exclusive_diagnostic_family(
-        &diagnostics,
-        is_recursion_guard_error,
-        is_structural_nesting_family
-    ));
+    require(
+        !has_exclusive_diagnostic_family(
+            &diagnostics,
+            is_recursion_guard_error,
+            is_structural_nesting_family,
+        ),
+        "recovery oracle accepted a structural contradiction with recursion fields",
+    )
 }
 
 #[test]
-fn recovery_oracle_rejects_swapped_recursion_fields() {
+fn recovery_oracle_rejects_swapped_recursion_fields() -> Result<(), String> {
     let diagnostics = [
         ParseError::NestingTooDeep { depth: 513, max_depth: 512 },
         ParseError::RecursionDepthExhausted { depth: 513, max_depth: 512 },
     ];
-    assert!(!has_exclusive_diagnostic_family(
-        &diagnostics,
-        is_structural_nesting_error,
-        is_recursion_guard_family
-    ));
+    require(
+        !has_exclusive_diagnostic_family(
+            &diagnostics,
+            is_structural_nesting_error,
+            is_recursion_guard_family,
+        ),
+        "recovery oracle accepted a recursion contradiction with structural fields",
+    )
 }
 
 #[test]
-fn parse_error_oracle_rejects_contradictory_guard_families() {
+fn parse_error_oracle_rejects_contradictory_guard_families() -> Result<(), String> {
     let errors = [
         ParseError::RecursionDepthExhausted { depth: 129, max_depth: 128 },
         ParseError::NestingTooDeep { depth: 513, max_depth: 512 },
     ];
-    assert!(!has_exclusive_error_family(
-        None,
-        &errors,
-        is_recursion_guard_error,
-        is_structural_nesting_family
-    ));
-    assert!(!has_exclusive_error_family(
-        Some(&errors[0]),
-        &errors[1..],
-        is_recursion_guard_error,
-        is_structural_nesting_family
-    ));
-    assert!(!has_exclusive_error_family(
-        Some(&errors[1]),
-        &errors[..1],
-        is_recursion_guard_error,
-        is_structural_nesting_family
-    ));
+    let [recursion, structural] = &errors;
+    require(
+        !has_exclusive_error_family(
+            None,
+            &errors,
+            is_recursion_guard_error,
+            is_structural_nesting_family,
+        ),
+        "recorded contradictory guard families were accepted",
+    )?;
+    require(
+        !has_exclusive_error_family(
+            Some(recursion),
+            std::slice::from_ref(structural),
+            is_recursion_guard_error,
+            is_structural_nesting_family,
+        ),
+        "direct recursion plus recorded structural contradiction was accepted",
+    )?;
+    require(
+        !has_exclusive_error_family(
+            Some(structural),
+            std::slice::from_ref(recursion),
+            is_recursion_guard_error,
+            is_structural_nesting_family,
+        ),
+        "direct structural plus recorded recursion contradiction was accepted",
+    )
 }
 
 #[test]
-fn recursion_oracle_rejects_structural_guard_substitution() {
+fn recursion_oracle_rejects_structural_guard_substitution() -> Result<(), String> {
     let code = nested_eval_blocks(600);
-    assert!(!parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_family));
+    require(
+        !parse_fails_with(&code, is_recursion_guard_error, is_structural_nesting_family),
+        "recursion oracle accepted structural guard substitution",
+    )
 }
 
 #[test]
-fn recursion_oracle_rejects_lifted_limit_signature() {
+fn recursion_oracle_rejects_lifted_limit_signature() -> Result<(), String> {
     let lifted_limit = ParseError::RecursionDepthExhausted { depth: 129, max_depth: 129 };
-    assert!(!is_recursion_guard_error(&lifted_limit));
+    require(
+        !is_recursion_guard_error(&lifted_limit),
+        "recursion oracle accepted a lifted limit signature",
+    )?;
 
     let lifted_structural_limit = ParseError::NestingTooDeep { depth: 513, max_depth: 513 };
-    assert!(!is_structural_nesting_error(&lifted_structural_limit));
+    require(
+        !is_structural_nesting_error(&lifted_structural_limit),
+        "structural oracle accepted a lifted limit signature",
+    )
 }
 
 #[test]
-fn parse_fails_with_rejects_successful_recovery_with_recorded_errors() {
+fn parse_fails_with_rejects_successful_recovery_with_recorded_errors() -> Result<(), String> {
     let code = "my $x = ; print 1;";
     let mut parser = Parser::new(code);
     let result = parser.parse();
-    assert!(result.is_ok(), "the recovery fixture should return a partial AST");
-    assert!(
+    require(result.is_ok(), "the recovery fixture should return a partial AST")?;
+    require(
         parser.errors().iter().any(is_recovered_error),
-        "the recovery fixture should record a recovered diagnostic"
-    );
+        "the recovery fixture should record a recovered diagnostic",
+    )?;
 
-    assert!(!parse_fails_with(code, is_recovered_error, never_matches));
+    require(
+        !parse_fails_with(code, is_recovered_error, never_matches),
+        "successful recovery was accepted as a failed parse",
+    )
 }
 
 // --- parse_word_not_expr (precedence.rs) ---
