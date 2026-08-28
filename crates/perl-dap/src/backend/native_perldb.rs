@@ -408,6 +408,131 @@ mod tests {
     }
 
     #[test]
+    fn capability_projection_matrix_is_fail_closed_for_every_field() -> anyhow::Result<()> {
+        type Setter = fn(&mut NativeMethodSupportProjection, NativeMethodSupport);
+        type Getter = fn(NativeMethodSupportProjection) -> NativeMethodSupport;
+        type Capability = fn(DebugBackendCapabilities) -> bool;
+
+        let fields: &[(&str, Setter, Getter, Capability)] = &[
+            (
+                "source_breakpoints",
+                |projection, state| projection.source_breakpoints = state,
+                |projection| projection.source_breakpoints,
+                |capabilities| capabilities.source_breakpoints,
+            ),
+            (
+                "conditional_breakpoints",
+                |projection, state| projection.conditional_breakpoints = state,
+                |projection| projection.conditional_breakpoints,
+                |capabilities| capabilities.conditional_breakpoints,
+            ),
+            (
+                "hit_conditions",
+                |projection, state| projection.hit_conditions = state,
+                |projection| projection.hit_conditions,
+                |capabilities| capabilities.hit_conditions,
+            ),
+            (
+                "logpoints",
+                |projection, state| projection.logpoints = state,
+                |projection| projection.logpoints,
+                |capabilities| capabilities.logpoints,
+            ),
+            (
+                "function_breakpoints",
+                |projection, state| projection.function_breakpoints = state,
+                |projection| projection.function_breakpoints,
+                |capabilities| capabilities.function_breakpoints,
+            ),
+            (
+                "data_breakpoints",
+                |projection, state| projection.data_breakpoints = state,
+                |projection| projection.data_breakpoints,
+                |capabilities| capabilities.data_breakpoints,
+            ),
+            (
+                "evaluate",
+                |projection, state| projection.evaluate = state,
+                |projection| projection.evaluate,
+                |capabilities| capabilities.evaluate,
+            ),
+            (
+                "variables",
+                |projection, state| projection.variables = state,
+                |projection| projection.variables,
+                |capabilities| capabilities.variables,
+            ),
+            (
+                "scopes",
+                |projection, state| projection.scopes = state,
+                |projection| projection.scopes,
+                |capabilities| capabilities.scopes,
+            ),
+            (
+                "stack_trace",
+                |projection, state| projection.stack_trace = state,
+                |projection| projection.stack_trace,
+                |capabilities| capabilities.stack_trace,
+            ),
+            (
+                "continue_execution",
+                |projection, state| projection.continue_execution = state,
+                |projection| projection.continue_execution,
+                |capabilities| capabilities.continue_execution,
+            ),
+            (
+                "stepping",
+                |projection, state| projection.stepping = state,
+                |projection| projection.stepping,
+                |capabilities| capabilities.stepping,
+            ),
+            (
+                "pause",
+                |projection, state| projection.pause = state,
+                |projection| projection.pause,
+                |capabilities| capabilities.pause,
+            ),
+            (
+                "set_variable",
+                |projection, state| projection.set_variable = state,
+                |projection| projection.set_variable,
+                |capabilities| capabilities.set_variable,
+            ),
+        ];
+
+        let non_implemented = [
+            NativeMethodSupport::Unsupported,
+            NativeMethodSupport::RuntimeUnavailable,
+            NativeMethodSupport::NotProven,
+        ];
+
+        for (name, set, get, capability) in fields {
+            for state in non_implemented {
+                let mut projection = NativeMethodSupportProjection::current();
+                set(&mut projection, state);
+                ensure!(get(projection) == state, "{name} test fixture did not install {state:?}");
+                ensure!(
+                    !capability(projection.capabilities()),
+                    "{name} advertised capability for {state:?}"
+                );
+            }
+
+            let mut projection = NativeMethodSupportProjection::current();
+            set(&mut projection, NativeMethodSupport::Implemented);
+            ensure!(
+                get(projection) == NativeMethodSupport::Implemented,
+                "{name} test fixture did not install Implemented"
+            );
+            ensure!(
+                capability(projection.capabilities()),
+                "{name} did not advertise its Implemented capability"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn set_breakpoints_validates_via_ast_without_a_process() {
         // setBreakpoints uses the AST validator + on-disk source, no live perl.
         let mut file = must(tempfile::NamedTempFile::new());
