@@ -41,10 +41,11 @@ pub mod eval_sub_extractor;
 /// Production framework generated-member extraction.
 pub mod generated_member_extractor;
 
-/// Non-published DBIx::QuickORM candidate extraction.
+/// Non-published DBIx::QuickORM table-column field candidates.
 ///
 /// This module has no canonical-shard or provider consumer. Promotion requires
-/// a separate admission receipt rather than joining the live fact stream.
+/// a separate admission receipt and must not reinterpret columns as generated
+/// methods.
 #[path = "generated_member_extractor_quickorm.rs"]
 pub(crate) mod dbix_quickorm_candidate;
 
