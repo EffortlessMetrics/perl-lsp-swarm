@@ -7,10 +7,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const EMACS_SUBJECT_MANIFEST: &str = ".ci/editor-clients/emacs-subjects.v1.json";
-// The manifest pins the exact upstream-source bytes and version. The pinned
-// source header's Package-Requires field supplies this audited minimum until
-// the subject schema carries source dependency metadata directly.
-const PINNED_SOURCE_MINIMUM_EMACS: &str = "29.1";
 
 #[derive(Debug)]
 struct LspModeSubject {
@@ -86,24 +82,23 @@ fn active_emacs_guide_separates_released_and_source_lsp_mode_subjects() {
         released.version, released_minimum
     );
     let source_sentence = format!(
-        "The pinned upstream-source subject reports `lsp-mode` {} and declares Emacs {} or later.",
-        source.version, PINNED_SOURCE_MINIMUM_EMACS
-    );
-    let source_is_not_release = format!(
-        "The source header is not a released `lsp-mode` {} package.",
+        "The pinned upstream-source subject reports `lsp-mode` {} and its Emacs dependency minimum is unverified because the checked manifest does not record a source-package minimum.",
         source.version
     );
+    let source_is_not_release =
+        format!("The source header is not a released `lsp-mode` {} package.", source.version);
     let emacs_28_release_boundary = format!(
         "For package metadata only, Emacs 28.1 and 28.2 fall within the released {} line's declared range.",
         released.version
     );
-    let stale_source_as_package = format!(
-        "current `lsp-mode` {} requires Emacs {}",
-        source.version, PINNED_SOURCE_MINIMUM_EMACS
+    let emacs_28_0_boundary = format!(
+        "Emacs 28.0 is below the released {} minimum of {} and is not covered.",
+        released.version, released_minimum
     );
+    let stale_source_as_package = format!("current `lsp-mode` {} requires Emacs", source.version);
     let stale_tested_package_line = format!(
-        "For the currently tested package line, `lsp-mode` {} requires Emacs {}.",
-        source.version, PINNED_SOURCE_MINIMUM_EMACS
+        "For the currently tested package line, `lsp-mode` {} requires Emacs.",
+        source.version
     );
 
     assert!(
@@ -121,6 +116,14 @@ fn active_emacs_guide_separates_released_and_source_lsp_mode_subjects() {
     assert!(
         guide.contains(&emacs_28_release_boundary),
         "the source-head minimum must not erase the released Emacs 28.1/28.2 package boundary"
+    );
+    assert!(
+        guide.contains(&emacs_28_0_boundary),
+        "the released package boundary must explicitly reject Emacs 28.0"
+    );
+    assert!(
+        source.minimum_emacs.is_none(),
+        "the source subject has no durable minimum in the checked manifest"
     );
     assert!(
         guide.contains(
@@ -143,10 +146,9 @@ fn active_emacs_guide_separates_released_and_source_lsp_mode_subjects() {
         "the pinned source subject must not be relabeled as the currently tested package line"
     );
     assert!(
-        !guide.contains(
-            "If you use Emacs 28 or older, install Eglot separately or use `lsp-mode`."
-        ),
-        "Emacs 27 and Emacs 28.1/28.2 have different current package boundaries"
+        !guide
+            .contains("If you use Emacs 28 or older, install Eglot separately or use `lsp-mode`."),
+        "Emacs 27, 28.0, and 28.1/28.2 have different current package boundaries"
     );
 }
 
@@ -156,13 +158,21 @@ fn active_emacs_guide_keeps_manual_and_stock_discovery_distinct() {
 
     assert!(
         guide.contains(
-            "Current stock Eglot does not yet discover `perllsp` automatically for Perl"
+            "For discovery status, the repository's 2026-08-13 audit uses the [checked Emacs subject manifest](../../.ci/editor-clients/emacs-subjects.v1.json) as its package/source authority."
         ),
-        "Eglot manual registration must not be rendered as stock discovery"
+        "stock claims must identify the dated, linked repository authority"
     );
     assert!(
-        guide.contains("Current stock `lsp-mode` does not yet ship a built-in `perllsp` client"),
-        "lsp-mode manual registration must not be rendered as built-in discovery"
+        guide.contains(
+            "The stock Eglot discovery status for `perllsp` in Perl is unverified by the dated subject authority above"
+        ),
+        "Eglot manual registration must remain separate from unverified stock discovery"
+    );
+    assert!(
+        guide.contains(
+            "not have a repository-backed built-in `perllsp` discovery proof in the dated subject authority above"
+        ),
+        "lsp-mode manual registration must remain separate from unverified built-in discovery"
     );
     assert!(
         guide.contains(
