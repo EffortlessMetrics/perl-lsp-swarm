@@ -212,11 +212,13 @@ pub const KNOWN_FLAGS: &[&str] = &[
     "parser-sensitive",
     "ambiguous",
     "error-node-expected",
+    "expected-error",
     "experimental",
     "version-gated",
     "slow",
     "incomplete",
     "todo",
+    "wip",
 ];
 
 /// Lint configuration
