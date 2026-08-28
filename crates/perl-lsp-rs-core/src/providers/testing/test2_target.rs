@@ -9,49 +9,51 @@ use regex::Regex;
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
-static BUNDLE_TARGET_OPTION: LazyLock<Regex> = LazyLock::new(|| {
+static BUNDLE_TARGET_OPTION: LazyLock<Option<Regex>> = LazyLock::new(|| {
     Regex::new(
         r#"(?xs)(?:^|[\s,])(?P<option>-target\s*(?:=>)?\s*(?P<value>\{[^{}]*\}|'(?:\\.|[^'])*'|"(?:\\.|[^"])*"|[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*))"#,
     )
-    .unwrap_or_else(|_| unreachable!("static Test2 -target pattern is valid"))
+    .ok()
 });
 
-static TARGET_ALIAS_PAIR: LazyLock<Regex> = LazyLock::new(|| {
+static TARGET_ALIAS_PAIR: LazyLock<Option<Regex>> = LazyLock::new(|| {
     Regex::new(
         r#"(?x)(?:^|,)\s*(?:'(?P<single>[A-Za-z_][A-Za-z0-9_]*|)'|"(?P<double>[A-Za-z_][A-Za-z0-9_]*|)"|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))\s*=>"#,
     )
-    .unwrap_or_else(|_| unreachable!("static Test2 target alias pattern is valid"))
+    .ok()
 });
 
-static STATIC_PACKAGE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*$")
-        .unwrap_or_else(|_| unreachable!("static Perl package pattern is valid"))
+static STATIC_PACKAGE: LazyLock<Option<Regex>> = LazyLock::new(|| {
+    Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*$").ok()
 });
 
 /// A statically resolved Test2 target import.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Test2TargetImport {
+pub(crate) struct Test2TargetImport {
     /// Local alias names. Each exists as both `NAME()` and `$NAME` at runtime.
-    pub aliases: BTreeSet<String>,
+    pub(crate) aliases: BTreeSet<String>,
     /// Bundle arguments with `-target` removed.
     ///
     /// Completion feeds these arguments to the ordinary Test2 import resolver
     /// so target hash keys are not mistaken for an explicit export list.
-    pub remaining_args: Option<String>,
+    pub(crate) remaining_args: Option<String>,
 }
 
 /// Resolve aliases from `Test2::Tools::Target` or a Test2 bundle's `-target`.
 ///
 /// Returns `None` when the module has no target semantics or a bundle import
 /// does not contain `-target`.
-pub fn resolve_target_import(module: &str, raw_args: &str) -> Option<Test2TargetImport> {
+pub(crate) fn resolve_target_import(
+    module: &str,
+    raw_args: &str,
+) -> Option<Test2TargetImport> {
     match module {
         "Test2::Tools::Target" => Some(Test2TargetImport {
             aliases: parse_target_aliases(raw_args),
             remaining_args: None,
         }),
         "Test2::V0" | "Test2::V1" => {
-            let captures = BUNDLE_TARGET_OPTION.captures(raw_args)?;
+            let captures = BUNDLE_TARGET_OPTION.as_ref()?.captures(raw_args)?;
             let option = captures.name("option")?;
             let value = captures.name("value")?;
             Some(Test2TargetImport {
@@ -68,7 +70,10 @@ fn parse_target_aliases(raw_value: &str) -> BTreeSet<String> {
     let mut aliases = BTreeSet::new();
 
     if value.contains("=>") {
-        for captures in TARGET_ALIAS_PAIR.captures_iter(value) {
+        let Some(pattern) = TARGET_ALIAS_PAIR.as_ref() else {
+            return aliases;
+        };
+        for captures in pattern.captures_iter(value) {
             let name = captures
                 .name("single")
                 .or_else(|| captures.name("double"))
@@ -80,7 +85,7 @@ fn parse_target_aliases(raw_value: &str) -> BTreeSet<String> {
         }
     } else {
         let package = strip_quotes(value);
-        if STATIC_PACKAGE.is_match(package) {
+        if STATIC_PACKAGE.as_ref().is_some_and(|pattern| pattern.is_match(package)) {
             aliases.insert("CLASS".to_string());
         }
     }
