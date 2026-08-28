@@ -3039,6 +3039,73 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn file_lifecycle_events_never_index_disk_bytes_behind_open_buffer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let create_path = directory.path().join("created-tool");
+        let change_path = directory.path().join("changed-tool");
+        let old_path = directory.path().join("old-tool");
+        let rename_path = directory.path().join("renamed-tool");
+        let create_uri = url::Url::from_file_path(&create_path).map_err(|_| "invalid create URI")?;
+        let change_uri = url::Url::from_file_path(&change_path).map_err(|_| "invalid change URI")?;
+        let old_uri = url::Url::from_file_path(&old_path).map_err(|_| "invalid old URI")?;
+        let rename_uri =
+            url::Url::from_file_path(&rename_path).map_err(|_| "invalid rename URI")?;
+
+        std::fs::write(&create_path, "#!/usr/bin/env perl\nsub disk_create { 1 }\n1;\n")?;
+        std::fs::write(&change_path, "#!/usr/bin/env perl\nsub disk_change { 1 }\n1;\n")?;
+        std::fs::write(&old_path, "#!/usr/bin/env perl\nsub disk_rename { 1 }\n1;\n")?;
+
+        let mut server = LspServer::new();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps::default(),
+            )));
+
+        // A synchronously observed didOpen is the deterministic stand-in for
+        // the lifecycle race: every disk operation must re-check this same
+        // authority before mutating the workspace index.
+        server.test_apply_did_open(
+            create_uri.as_str(),
+            "sub buffer_create { 1 }\n1;\n",
+            1,
+        )?;
+        server.handle_did_create_files(Some(json!({
+            "files": [{ "uri": create_uri.to_string() }]
+        })))?;
+
+        server.test_apply_did_open(
+            change_uri.as_str(),
+            "sub buffer_change { 1 }\n1;\n",
+            1,
+        )?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": change_uri.to_string(), "type": 2 }]
+        })))?;
+
+        std::fs::rename(&old_path, &rename_path)?;
+        server.test_apply_did_open(
+            rename_uri.as_str(),
+            "sub buffer_rename { 1 }\n1;\n",
+            1,
+        )?;
+        server.handle_did_rename_files(Some(json!({
+            "files": [{ "oldUri": old_uri.to_string(), "newUri": rename_uri.to_string() }]
+        })))?;
+
+        let index = server.coordinator().ok_or("missing index coordinator")?.index();
+        for disk_symbol in ["disk_create", "disk_change", "disk_rename"] {
+            assert!(
+                index.find_symbols(disk_symbol).is_empty(),
+                "open-buffer lifecycle must not index disk symbol {disk_symbol}"
+            );
+        }
+        Ok(())
+    }
+
     /// #8262 counterexample: the case-sensitive name-index prefix search returns
     /// only `foobar2` for query "foo", but a non-empty candidate set must never
     /// suppress the canonical case-insensitive matcher that also admits `FooBar`.
