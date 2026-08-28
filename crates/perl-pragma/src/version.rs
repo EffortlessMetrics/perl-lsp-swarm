@@ -41,12 +41,12 @@ pub fn parse_perl_version(module: &str) -> Option<PerlVersion> {
 }
 
 fn parse_version_component(component: &str) -> Option<u32> {
-    let component = component.split_once('_').map_or(component, |(head, _)| head);
+    let component = validate_version_suffix(component)?;
     component.parse().ok()
 }
 
 fn parse_minor_version_component(component: &str, is_decimal: bool) -> Option<u32> {
-    let component = component.split_once('_').map_or(component, |(head, _)| head);
+    let component = validate_version_suffix(component)?;
     if !component.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
@@ -55,6 +55,16 @@ fn parse_minor_version_component(component: &str, is_decimal: bool) -> Option<u3
     // instead of interpreting `5.043011` as the future minor version 43011.
     let component = if is_decimal && component.len() > 3 { component.get(..3)? } else { component };
     component.parse().ok()
+}
+
+fn validate_version_suffix(component: &str) -> Option<&str> {
+    let Some((head, suffix)) = component.split_once('_') else {
+        return Some(component);
+    };
+    if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some(head)
 }
 
 /// Whether `use VERSION` implies `strict` for this version.
