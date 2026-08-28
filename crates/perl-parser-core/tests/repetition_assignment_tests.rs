@@ -3,7 +3,7 @@
 mod cpan_test_helpers;
 
 use cpan_test_helpers::{assert_clean_parse, parse};
-use perl_parser_core::hir::{HirKind, lower_ast};
+use perl_parser_core::hir::{AssignMode, HirExpr, HirKind, HirStmt, lower_ast};
 use perl_parser_core::{Node, NodeKind, Parser};
 
 fn find_assignment<'a>(node: &'a Node, expected_op: &str) -> Option<&'a Node> {
@@ -179,6 +179,38 @@ fn repetition_assignment_preserves_hir_declaration_reachability() -> Result<(), 
     if !initializer_source.contains("x=") {
         return Err(format!("HIR initializer lost x= semantics: {initializer_source:?}"));
     }
+
+    let body = hir.root_body().ok_or("expected production root HIR body")?;
+    let root = body.block(body.root_block).ok_or("expected production root block")?;
+    let stmt = body
+        .stmt(*root.stmts.first().ok_or("expected declaration body statement")?)
+        .ok_or("expected declaration body statement")?;
+    let init_id = match stmt {
+        HirStmt::Let { init: Some(init_id), .. } => *init_id,
+        other => return Err(format!("expected lowered declaration initializer, got {other:?}")),
+    };
+    let HirExpr::Assign { lhs, rhs, mode } =
+        body.expr(init_id).ok_or("expected lowered declaration assignment")?
+    else {
+        return Err("declaration initializer must lower to HirExpr::Assign".to_string());
+    };
+    if !matches!(mode, AssignMode::Simple) {
+        return Err(format!("expected simple declaration assignment, got {mode:?}"));
+    }
+    if !matches!(body.expr(*lhs), Some(HirExpr::Variable(variable)) if variable.name == "value") {
+        return Err(format!("expected declaration lhs operand, got {:?}", body.expr(*lhs)));
+    }
+    let HirExpr::Assign { lhs: repetition_lhs, rhs: repetition_rhs, mode: repetition_mode } =
+        body.expr(*rhs).ok_or("expected lowered x= assignment operand")?
+    else {
+        return Err("x= initializer must lower to HirExpr::Assign".to_string());
+    };
+    if !matches!(repetition_mode, AssignMode::ReadModifyWrite)
+        || !matches!(body.expr(*repetition_lhs), Some(HirExpr::Variable(variable)) if variable.name == "value")
+        || body.expr(*repetition_rhs).is_none()
+    {
+        return Err(format!("lowered x= operands are incomplete: {:?}", body.expr(*rhs)));
+    }
     Ok(())
 }
 
@@ -200,10 +232,17 @@ fn repetition_assignment_preserves_x_call_boundary() -> Result<(), String> {
 fn repetition_assignment_rejects_malformed_operator_boundaries() -> Result<(), String> {
     for source in ["$value x== 3;", "$value x=> 3;"] {
         let mut parser = Parser::new(source);
-        if let Ok(ast) = parser.parse()
-            && find_assignment(&ast, "x=").is_some()
-        {
+        let result = parser.parse();
+        let ast = result
+            .map_err(|error| format!("unexpected parse failure for {source:?}: {error:?}"))?;
+        let sexp = ast.to_sexp();
+        if find_assignment(&ast, "x=").is_some() {
             return Err(format!("malformed boundary must not normalize to x=:\n{}", ast.to_sexp()));
+        }
+        let expected =
+            if source.contains("x==") { "(binary_==" } else { "(hash (key (string (value x)))" };
+        if !sexp.contains(expected) {
+            return Err(format!("malformed boundary lost expected AST {expected:?}:\n{sexp}"));
         }
     }
     Ok(())
