@@ -126,6 +126,29 @@ table users => sub {};
 }
 
 #[test]
+fn bare_constant_import_value_remains_dynamic() -> Result<(), Box<dyn std::error::Error>> {
+    let source = r#"
+package User;
+sub table () { 'orm' }
+use DBIx::QuickORM type => table;
+table users => sub {};
+1;
+"#;
+    let specs = import_specs_from_source(source)?;
+    let spec = quickorm_spec(&specs)?;
+
+    assert_eq!(spec.kind, ImportKind::ManualImport);
+    assert_eq!(spec.symbols, ImportSymbols::Dynamic);
+    assert_eq!(spec.provenance, Provenance::DynamicBoundary);
+    assert_eq!(spec.confidence, Confidence::Low);
+    assert!(
+        generated_facts_from_source(source)?.is_empty(),
+        "a parenthesis-free constant call must not earn literal table mode"
+    );
+    Ok(())
+}
+
+#[test]
 fn filtered_quickorm_import_remains_a_dynamic_manual_import()
 -> Result<(), Box<dyn std::error::Error>> {
     let specs = import_specs_from_source(
@@ -183,6 +206,23 @@ table users => sub {
 }
 
 #[test]
+fn package_reentry_retains_unconsumed_table_authority() -> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        r#"
+package MyApp::Schema::User;
+use DBIx::QuickORM type => 'table';
+package Other::Package;
+package MyApp::Schema::User;
+table users => sub {};
+1;
+"#,
+    )?;
+
+    assert_eq!(canonical_names(&facts), vec!["MyApp::Schema::User::qorm_table"]);
+    Ok(())
+}
+
+#[test]
 fn dynamic_builder_consumes_table_package_authority() -> Result<(), Box<dyn std::error::Error>> {
     let facts = generated_facts_from_source(
         r#"
@@ -233,6 +273,21 @@ table "users" => sub {};
     )?;
 
     assert_eq!(canonical_names(&facts), vec!["MyApp::Schema::User::qorm_table"]);
+    Ok(())
+}
+
+#[test]
+fn percent_in_double_quoted_table_name_remains_static() -> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        r#"
+package MyApp::Schema::Archive;
+use DBIx::QuickORM type => 'table';
+table "archive%2026" => sub {};
+1;
+"#,
+    )?;
+
+    assert_eq!(canonical_names(&facts), vec!["MyApp::Schema::Archive::qorm_table"]);
     Ok(())
 }
 
