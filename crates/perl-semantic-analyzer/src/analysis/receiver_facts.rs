@@ -429,9 +429,7 @@ fn receiver_container_fact(left: &Node, context: ReceiverFactContext<'_>) -> Opt
                 return Some(with_access_evidence(
                     TypeFact::dynamic(DynamicBoundary::DynamicHashKey),
                     &container_fact,
-                    TypeEvidence::Heuristic {
-                        reason: "hash receiver key is dynamic".to_string(),
-                    },
+                    TypeEvidence::Heuristic { reason: "hash receiver key is dynamic".to_string() },
                 ));
             };
 
@@ -663,8 +661,8 @@ fn is_self_like_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::type_inference::TypeInferenceEngine;
+    use super::*;
     use crate::Parser;
     use std::collections::BTreeMap;
 
@@ -778,10 +776,7 @@ mod tests {
         ))
     }
 
-    fn source_derived_receiver_fact_for(
-        code: &str,
-        method: &str,
-    ) -> Result<ReceiverFact, String> {
+    fn source_derived_receiver_fact_for(code: &str, method: &str) -> Result<ReceiverFact, String> {
         let ast = parse_ast(code)?;
         let call = method_call_named(&ast, method).ok_or("expected method call")?;
         let mut engine = TypeInferenceEngine::new();
