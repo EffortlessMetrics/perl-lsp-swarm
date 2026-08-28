@@ -1,0 +1,29 @@
+{
+  "schema": "perl_dap.loaded_module_reload_family.vector.v1",
+  "name": "redacted_detail_projection",
+  "description": "A remediation detail exceeding the bound is replaced by the content-free detail_redacted code; no private path, source text, or runtime output is echoed.",
+  "outcome": {
+    "kind": "refused",
+    "disposition": "outside_launch_authority"
+  },
+  "generation_before": 2,
+  "oversized_remediation_input": "/private/path/yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+  "expect": {
+    "kind": "refused",
+    "phase": "admission",
+    "disposition": "outside_launch_authority",
+    "success": false,
+    "possibly_applied": false,
+    "generation": {
+      "previous": 2,
+      "current": 2,
+      "advanced": false
+    },
+    "remediation": "detail_redacted",
+    "reconciliation": {
+      "loaded_source_refresh": "deferred",
+      "inspection_invalidation": "deferred",
+      "breakpoint_reconciliation": "deferred"
+    }
+  }
+}

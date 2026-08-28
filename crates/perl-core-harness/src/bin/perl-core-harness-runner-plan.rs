@@ -1,4 +1,7 @@
-#![allow(clippy::print_stdout)]
+#![expect(
+    clippy::print_stdout,
+    reason = "The runner-plan CLI prints exact one-line summaries; tracing is not the user-facing contract."
+)]
 
 //! Build and compare target-driven upstream runner discovery plans.
 
@@ -26,11 +29,11 @@ mod normalize;
 #[path = "../runner_plan/model.rs"]
 mod runner_model;
 
-use build::{build_runner_plan, validate_runner_plan, validate_runner_plan_against};
+use build::{build_runner_plan_with_frame, validate_runner_plan, validate_runner_plan_against};
 use color_eyre::eyre::{Context, ContextCompat, Result, bail};
 use compare::{compare_runner_plans_against, validate_runner_parity_against};
 use io::read_matrix;
-use runner_model::{RunnerKind, RunnerParityReport, RunnerPlan, RunnerScheduling};
+use runner_model::{DiscoveryFrame, RunnerKind, RunnerParityReport, RunnerPlan, RunnerScheduling};
 use serde::Serialize;
 use std::env;
 use std::ffi::OsString;
@@ -62,11 +65,18 @@ fn build_command(args: Vec<OsString>) -> Result<()> {
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
     let discovery_path = PathBuf::from(&args[3]);
     let output_path = PathBuf::from(&args[4]);
-    let scheduling = parse_scheduling(&args[5..])?;
+    let (discovery_frame, scheduling) = parse_build_options(&args[5..])?;
     let matrix = read_matrix(&matrix_path)?;
     let raw = read_bytes(&discovery_path)?;
-    let plan = build_runner_plan(&matrix, &target_id, runner, &raw, scheduling)
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let plan = build_runner_plan_with_frame(
+        &matrix,
+        &target_id,
+        runner,
+        &raw,
+        discovery_frame,
+        scheduling,
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
     write_json(&output_path, &plan)?;
     println!(
         "runner plan valid: target={} runner={:?} files={}",
@@ -170,6 +180,29 @@ fn parse_scheduling(args: &[OsString]) -> Result<RunnerScheduling> {
     Ok(scheduling)
 }
 
+fn parse_build_options(args: &[OsString]) -> Result<(DiscoveryFrame, RunnerScheduling)> {
+    let mut frame = None;
+    let mut scheduling_args = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        if args[index].to_string_lossy() == "--frame" {
+            index += 1;
+            let value = args.get(index).context("--frame requires a discovery frame")?;
+            frame = Some(match value.to_string_lossy().as_ref() {
+                "runner_t_directory_relative" => DiscoveryFrame::RunnerTDirectoryRelative,
+                "repository_root_relative" => DiscoveryFrame::RepositoryRootRelative,
+                "canonical_repository_path" => DiscoveryFrame::CanonicalRepositoryPath,
+                other => bail!("unsupported discovery frame {other}"),
+            });
+        } else {
+            scheduling_args.push(args[index].clone());
+        }
+        index += 1;
+    }
+    let frame = frame.context("--frame is required; declare the raw discovery path frame")?;
+    Ok((frame, parse_scheduling(&scheduling_args)?))
+}
+
 fn read_bytes(path: &Path) -> Result<Vec<u8>> {
     fs::read(path).with_context(|| format!("reading {}", path.display()))
 }
@@ -198,7 +231,7 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 }
 
 fn usage() -> &'static str {
-    "usage: perl-core-harness-runner-plan build <matrix> <target-id> <test|harness|direct_fallback> <raw-discovery> <output> [--jobs N] [--asap] [--state-ordering] [--property key=value] | compare <matrix> <left-plan> <left-raw-discovery> <right-plan> <right-raw-discovery> <output> | check-plan <matrix> <raw-discovery> <plan> | check-parity <matrix> <left-plan> <left-raw-discovery> <right-plan> <right-raw-discovery> <parity-report>"
+    "usage: perl-core-harness-runner-plan build <matrix> <target-id> <test|harness|direct_fallback> <raw-discovery> <output> --frame runner_t_directory_relative|repository_root_relative|canonical_repository_path [--jobs N] [--asap] [--state-ordering] [--property key=value] | compare <matrix> <left-plan> <left-raw-discovery> <right-plan> <right-raw-discovery> <output> | check-plan <matrix> <raw-discovery> <plan> | check-parity <matrix> <left-plan> <left-raw-discovery> <right-plan> <right-raw-discovery> <parity-report>"
 }
 
 #[cfg(test)]

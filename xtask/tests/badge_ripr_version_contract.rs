@@ -4,8 +4,11 @@ use std::{collections::BTreeSet, fs, path::PathBuf};
 
 use serde_yaml_ng::Value;
 
+// `seed-cache` (#12563) installs the same reviewed release to warm the rust
+// caches; it executes no analysis, but it must stay version-aligned with the
+// routed lanes, so the contract covers it too.
 const EXPECTED_RIPR_EXECUTION_JOBS: &[&str] =
-    &["ripr-cx53", "ripr-cx43", "ripr-github", "ripr-fallback"];
+    &["ripr-cx53", "ripr-cx43", "ripr-github", "ripr-fallback", "seed-cache"];
 const VARIABLE_INSTALL_COMMAND: &str = "cargo install ripr --version \"$RIPR_VERSION\" --locked";
 
 fn project_root() -> PathBuf {

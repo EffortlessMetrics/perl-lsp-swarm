@@ -1,5 +1,5 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"if ($text =~ /abc) { print 1; }\\nmy $ok = 1;\")"
 ---
-(source_file (ERROR "expected \'{\', found end of input at position 43"))
+(source_file (statements (ERROR (message "expected expression, found unknown token at position 13") (found Unknown "/abc) { print 1; }"))) (statements (my_declaration (declarator my) (variable (variable (sigil $) (name ok))) (initializer (number (value 1))))))

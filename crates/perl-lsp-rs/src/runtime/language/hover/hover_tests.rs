@@ -331,11 +331,11 @@ fn require_module_scan_respects_static_module_token_boundaries() {
     let text = "require Local::Doc;\n";
     let token_start = must_some(text.find("Local"));
     let token_end = must_some(text.find(';'));
-    let head = must_some(perl_module::import::parse_module_import_head(text));
-    let span = must_some(perl_module::token_parser::parse_module_token(text, head.token_start));
+    let head = must_some(perl_module::parse_module_import_head(text));
+    let span = must_some(perl_module::parse_module_token(text, head.token_start));
 
-    assert_eq!(head.kind, perl_module::import::ModuleImportKind::Require);
-    assert_eq!(head.require_form(), Some(perl_module::import::RequireForm::ModuleName));
+    assert_eq!(head.kind, perl_module::ModuleImportKind::Require);
+    assert_eq!(head.require_form(), Some(perl_module::RequireForm::ModuleName));
     assert_eq!(head.token_start, token_start);
     assert_eq!(head.token_end, token_end);
     assert_eq!(span.end, head.token_end);
@@ -374,11 +374,11 @@ fn require_module_scan_rejects_non_module_suffixes() {
 #[test]
 fn require_module_scan_has_explicit_boundary_discriminators() {
     let text = "require Local::Doc;\n";
-    let head = must_some(perl_module::import::parse_module_import_head(text));
-    let span = must_some(perl_module::token_parser::parse_module_token(text, 8));
+    let head = must_some(perl_module::parse_module_import_head(text));
+    let span = must_some(perl_module::parse_module_token(text, 8));
 
-    assert_eq!(head.kind, perl_module::import::ModuleImportKind::Require);
-    assert_eq!(head.require_form(), Some(perl_module::import::RequireForm::ModuleName));
+    assert_eq!(head.kind, perl_module::ModuleImportKind::Require);
+    assert_eq!(head.require_form(), Some(perl_module::RequireForm::ModuleName));
     assert_eq!(span.end, 18);
     assert_eq!(head.token_start, 8);
     assert_eq!(head.token_end, 18);
@@ -391,13 +391,13 @@ fn require_module_scan_has_explicit_boundary_discriminators() {
 #[test]
 fn require_module_boundary_predicates_are_explicit() {
     assert!(LspServer::is_static_require_module(
-        perl_module::import::ModuleImportKind::Require,
-        Some(perl_module::import::RequireForm::ModuleName)
+        perl_module::ModuleImportKind::Require,
+        Some(perl_module::RequireForm::ModuleName)
     ));
-    assert!(!LspServer::is_static_require_module(perl_module::import::ModuleImportKind::Use, None));
+    assert!(!LspServer::is_static_require_module(perl_module::ModuleImportKind::Use, None));
     assert!(!LspServer::is_static_require_module(
-        perl_module::import::ModuleImportKind::Require,
-        Some(perl_module::import::RequireForm::FilePath)
+        perl_module::ModuleImportKind::Require,
+        Some(perl_module::RequireForm::FilePath)
     ));
 
     assert!(!LspServer::cursor_spans_module_token(7, 8, 18));

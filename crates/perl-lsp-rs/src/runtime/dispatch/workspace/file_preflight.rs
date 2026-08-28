@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 #[cfg(feature = "workspace")]
 use crate::runtime::workspace::{module_name_appears_in_text, path_to_module_name};
 #[cfg(feature = "workspace")]
-use perl_module::rename::{apply_module_rename_edits, plan_module_rename_edits};
+use perl_module::{apply_module_rename_edits, plan_module_rename_edits};
 #[cfg(feature = "workspace")]
 use std::collections::{BTreeMap, HashSet};
 
@@ -24,10 +24,13 @@ impl LspServer {
     ) -> Result<Option<Value>, JsonRpcError> {
         #[cfg(feature = "workspace")]
         {
-            let Some(files) =
-                params.as_ref().and_then(|value| value.get("files")).and_then(Value::as_array)
-            else {
-                return Ok(Some(empty_workspace_edit()));
+            let files = match params
+                .as_ref()
+                .and_then(|value| value.get("files"))
+                .and_then(Value::as_array)
+            {
+                Some(files) => files,
+                None => return Ok(Some(empty_workspace_edit())),
             };
 
             let mut planned_workspace_texts: BTreeMap<String, (String, String)> = BTreeMap::new();

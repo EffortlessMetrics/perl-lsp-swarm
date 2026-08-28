@@ -95,7 +95,7 @@ slow_tests = []  # Enable slow stress tests (deep nesting, etc.)
 doc-coverage = []  # SPEC-149 documentation coverage tests
 
 [dev-dependencies]
-insta = { version = "1.47.2", features = ["yaml"] }
+insta = { workspace = true, features = ["yaml"] }
 criterion.workspace = true
 perl-uri = { workspace = true }
 regex.workspace = true

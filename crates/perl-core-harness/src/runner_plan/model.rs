@@ -3,7 +3,16 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const RUNNER_PLAN_SCHEMA_VERSION: &str = "perl_core_harness.runner_plan.v1";
+pub const RUNNER_PLAN_SCHEMA_VERSION: &str = "perl_core_harness.runner_plan.v2";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Retired runner_plan.v1 identity is retained for mismatch tests; the production CLI rejects genuine v1 receipts at serde before this constant is consulted."
+    )
+)]
+pub const RUNNER_PLAN_V1_SCHEMA_VERSION: &str = "perl_core_harness.runner_plan.v1";
+pub const SOURCE_NORMALIZATION_SCHEMA_VERSION: &str = "perl_core_harness.source_identity.v2";
 pub const RUNNER_PARITY_SCHEMA_VERSION: &str = "perl_core_harness.runner_parity.v1";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -42,6 +51,15 @@ pub enum SourceForm {
     TestPl,
 }
 
+/// Reference frame for a raw discovery path.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryFrame {
+    RunnerTDirectoryRelative,
+    RepositoryRootRelative,
+    CanonicalRepositoryPath,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourcePathClass {
@@ -65,6 +83,7 @@ pub enum InvocationContextClass {
 #[serde(deny_unknown_fields)]
 pub struct RunnerSourceItem {
     pub raw_path: String,
+    pub discovery_frame: DiscoveryFrame,
     pub canonical_path: String,
     pub source_form: SourceForm,
     pub path_class: SourcePathClass,
@@ -97,6 +116,8 @@ pub struct RunnerPlan {
     pub runner_entrypoint: String,
     pub canonical_selection_entrypoint: String,
     pub raw_discovery_digest: String,
+    pub normalization_schema: String,
+    pub discovery_frame: DiscoveryFrame,
     pub source_items: Vec<RunnerSourceItem>,
     pub normalized_order: Vec<String>,
     pub normalized_membership: Vec<String>,

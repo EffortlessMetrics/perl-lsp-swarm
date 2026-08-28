@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "G46-invented-guarantee-documentation",
+  "family": "documentation_cargo_test_proof_theater",
+  "purpose": "Docs inventing performance/stability/panic/safety guarantees the implementation does not own.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "perl-lsp-rs",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "O(1) lookup",
+      "Guaranteed stable forever"
+    ],
+    "content": "/// O(1) lookup. Guaranteed stable forever. Never panics.\npub fn lookup(index: &Index, key: &str) -> Option<&Entry> { index.get(key) }\n",
+    "sha256": "4ee88f539cfb3197141c8b40173f6b33a1317f35ee0329e82d2b948aa72b886f"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11410,
+    "unresolved_reason": "Guarantee-vocabulary governance rides #11410; nothing audits claims today."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "invented_guarantee_documentation"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "Hash-indexed lookup",
+      "complexity tracks the underlying map"
+    ],
+    "note": "Claims match measured, owned behavior.",
+    "content": "/// Hash-indexed lookup; complexity tracks the underlying map.\npub fn lookup(index: &Index, key: &str) -> Option<&Entry> { index.get(key) }\n",
+    "sha256": "8fbfe9f6184cf30bd7f9528487d8c2a0d39449b5fb9b789ff2b6036afd929848"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Frozen so reviewer projections challenge guarantee provenance uniformly."
+}

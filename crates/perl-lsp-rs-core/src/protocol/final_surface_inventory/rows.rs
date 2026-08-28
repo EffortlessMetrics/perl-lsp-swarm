@@ -185,7 +185,7 @@ fn capability_rows() -> Vec<SurfaceRow> {
             competing_paths: vec![CompetingPath {
                 path: RT_INIT,
                 delta: "runtime replaces the whole textDocumentSync value after initialize \
-                        parsing: adds willSave=true, willSaveWaitUntil=true and turns save \
+                        parsing: adds willSave=true, willSaveWaitUntil=false and turns save \
                         from boolean true into {includeText:true} (see \
                         mut.handle_initialize.textDocumentSyncOverride)",
             }],
@@ -327,21 +327,6 @@ fn capability_rows() -> Vec<SurfaceRow> {
             "features.toml#lsp.formatting",
         ),
         SurfaceRow {
-            competing_paths: vec![CompetingPath {
-                path: S_JSON,
-                delta: "capabilities_for() emits boolean true (OneOf::Left) but capabilities_json() \
-                        replaces the whole value with {rangesSupport:true} when range_formatting is \
-                        enabled (LSP 3.18 rangesSupport absent from lsp-types 0.97)",
-            }],
-            ..cap(
-                "cap.documentRangeFormattingProvider.rangesSupport",
-                "documentRangeFormattingProvider.rangesSupport",
-                S_JSON,
-                "textDocument/rangeFormatting multi-range variant",
-                "features.toml#lsp.ranges_formatting; lifecycle tests ranges_formatting_*",
-            )
-        },
-        SurfaceRow {
             client_capability_inputs: &[
                 "textDocument.rename.prepareSupport",
                 "textDocument.rename.prepareSupportDefaultBehavior",
@@ -354,20 +339,6 @@ fn capability_rows() -> Vec<SurfaceRow> {
                 "features.toml#lsp.prepare_rename; lifecycle tests prepare_support_default_behavior",
             )
         },
-        cap(
-            "cap.documentOnTypeFormattingProvider.firstTriggerCharacter",
-            "documentOnTypeFormattingProvider.firstTriggerCharacter",
-            S_EDIT,
-            "textDocument/onTypeFormatting",
-            "features.toml#lsp.on_type_formatting",
-        ),
-        cap(
-            "cap.documentOnTypeFormattingProvider.moreTriggerCharacter[]",
-            "documentOnTypeFormattingProvider.moreTriggerCharacter[]",
-            S_EDIT,
-            "textDocument/onTypeFormatting",
-            "features.toml#lsp.on_type_formatting",
-        ),
         cap(
             "cap.linkedEditingRangeProvider",
             "linkedEditingRangeProvider",

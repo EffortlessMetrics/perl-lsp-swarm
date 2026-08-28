@@ -1,0 +1,13 @@
+{
+  "name": "indeterminate_timeout_advances",
+  "fixture_class": "ambiguous timeout after the mutation boundary (#10097 class 11); advances the generation and never projects clean",
+  "phase": "runtime_acknowledgement_read_back",
+  "outcome": {
+    "kind": "indeterminate_possibly_applied",
+    "failure_phase": "runtime_acknowledgement_read_back",
+    "cause": "timeout_after_mutation_began"
+  },
+  "expected_generation_effect": "advance",
+  "expected_phase_valid": true,
+  "expected_clean_projection": false
+}

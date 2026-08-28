@@ -108,7 +108,8 @@ fn projection_classifies_the_live_clap_surface_exactly() -> Result<(), Box<dyn E
         .get("admitted_arguments")
         .and_then(Value::as_array)
         .ok_or("missing admitted_arguments")?;
-    let mut classified: BTreeSet<String> = BTreeSet::from([transport_key]);
+    let mut classified: BTreeSet<String> = BTreeSet::new();
+    classify_exactly_once(&mut classified, transport_key, "`required_transport_flag`")?;
     for row in admitted {
         let flag = row.get("flag").and_then(Value::as_str).ok_or("admitted row lacks flag")?;
         let takes_value = row
@@ -121,7 +122,7 @@ fn projection_classifies_the_live_clap_surface_exactly() -> Result<(), Box<dyn E
             expected.contains(&key),
             "admitted flag `{flag}` no longer matches its declared value kind in the CLI"
         );
-        classified.insert(key);
+        classify_exactly_once(&mut classified, key, &format!("admitted flag `{flag}`"))?;
     }
 
     for flag in string_array(&projection, "/rejected_flags")? {
@@ -130,7 +131,7 @@ fn projection_classifies_the_live_clap_surface_exactly() -> Result<(), Box<dyn E
             canonical_flags.contains(&key),
             "rejected flag `{flag}` no longer exists in the CLI; update the projection"
         );
-        classified.insert(key);
+        classify_exactly_once(&mut classified, key, &format!("rejected flag `{flag}`"))?;
     }
 
     assert_eq!(
@@ -138,6 +139,45 @@ fn projection_classifies_the_live_clap_surface_exactly() -> Result<(), Box<dyn E
         "every canonical long option must be classified exactly once (transport, admitted, or rejected)"
     );
 
+    Ok(())
+}
+
+/// Insert one classified flag, failing when the same flag is classified
+/// again (review 3848275693): a flag listed twice — or in both
+/// `admitted_arguments` and `rejected_flags` — must invalidate the
+/// projection even though a deduplicated set would compare equal.
+fn classify_exactly_once(
+    classified: &mut BTreeSet<String>,
+    key: String,
+    label: &str,
+) -> Result<(), Box<dyn Error>> {
+    if !classified.insert(key) {
+        return Err(format!(
+            "{label} is classified more than once; duplicate or cross-class \
+             projection entries make the exactly-once claim false"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn duplicate_or_cross_class_classifications_are_rejected() -> Result<(), Box<dyn Error>> {
+    // Review 3848275693 mutation controls: duplicate and cross-class
+    // classification must be rejected, though the deduplicated final set
+    // would be identical.
+    let mut classified: BTreeSet<String> = BTreeSet::new();
+    classify_exactly_once(&mut classified, "--stdio".to_string(), "transport seed")?;
+    classify_exactly_once(&mut classified, "--log".to_string(), "admitted `--log`")?;
+    assert!(
+        classify_exactly_once(&mut classified, "--log".to_string(), "rejected `--log`").is_err(),
+        "a flag in both admitted_arguments and rejected_flags must fail the currentness check"
+    );
+    assert!(
+        classify_exactly_once(&mut classified, "--stdio".to_string(), "transport seed again")
+            .is_err(),
+        "a duplicated transport seed must fail the currentness check"
+    );
     Ok(())
 }
 

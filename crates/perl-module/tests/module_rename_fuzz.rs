@@ -1,4 +1,4 @@
-use perl_module::rename::{apply_module_rename_edits, plan_module_rename_edits};
+use perl_module::{apply_module_rename_edits, plan_module_rename_edits};
 
 fn next_u64(state: &mut u64) -> u64 {
     *state ^= *state >> 12;

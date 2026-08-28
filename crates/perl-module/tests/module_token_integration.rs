@@ -1,5 +1,5 @@
-use perl_module::path::file_path_to_module_name;
-use perl_module::token::{module_variant_pairs, replace_module_token};
+use perl_module::file_path_to_module_name;
+use perl_module::{module_variant_pairs, replace_module_token};
 
 fn rewrite_with_variants(line: &str, old_module: &str, new_module: &str) -> String {
     let mut rewritten = line.to_string();

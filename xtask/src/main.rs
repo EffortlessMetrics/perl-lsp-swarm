@@ -22,6 +22,7 @@ mod utils;
 use tasks::corpus;
 use tasks::dead_code::{DeadCodeConfig, DeadCodeMode};
 use tasks::dependency_hygiene::{DependencyHygieneConfig, DependencyHygieneMode};
+use tasks::emacs_train_specs::{LeafSpecDisposition, SpecsOutputFormat};
 use tasks::gate_policy::GatePolicyProfile;
 use tasks::gates::{GateTier, OutputFormat as GatesOutputFormat};
 use tasks::issue_plan::IssuePlanOutputFormat;
@@ -32,32 +33,34 @@ use tasks::ux_scorecard::UxScorecardFormat;
 use tasks::workflow_trigger_lint::WorkflowTriggerLintFormat;
 use tasks::worktree_allocator::AgentWorktreeCommand;
 use tasks::{
-    active_goal_manifest, agent_capability_policy, agent_flow, agent_lease, agent_receipt,
-    aggregate_receipts, badges, bench, benchmarks, build, build_timing, bump_version, change_set,
-    check, check_agent_context, check_lint_policy, check_test_wiring, check_toolchain,
-    check_version_sync, ci, ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene,
-    ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route, ci_scope, clean, command_evidence,
-    compare, corpus_audit, count_ratchet, cpan_corpus, dead_code, debt_report, dependency_hygiene,
-    dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
-    emacs_train_context, features, finalize_check, fix_forward, fmt, forbid_fatal_constructs,
-    forensics, gate_receipts, gates, generated_files, github, github_preflight, github_review,
-    goals, hardening, hook_checks, ignored_tests, incremental_proof, inject_sha_assets,
-    inline_completion_quality, inline_completion_smoke, install_surface_check, integration_proof,
-    intent_diff_gate, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
-    memory_trends, merge_ready, methodology_gate, metrics, native_critic, native_format,
+    active_goal_manifest, agent_capability_policy, agent_flow, agent_implementation_packet,
+    agent_lease, agent_receipt, agent_review_packet, aggregate_receipts, badges, bench, benchmarks,
+    build, build_timing, bump_version, change_set, check, check_agent_context, check_lint_policy,
+    check_test_wiring, check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract,
+    ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
+    ci_scope, clean, clippy_cost_measure, command_evidence, compare, compiler_lexical_cutline,
+    corpus_audit, count_ratchet, cpan_corpus, dead_code, debt_report, dependency_hygiene, dev,
+    devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
+    emacs_train_context, emacs_train_specs, features, finalize_check, fix_forward, fmt,
+    forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files, github,
+    github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
+    incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
+    install_surface_check, integration_proof, intent_diff_gate, issue_plan, layer_check,
+    lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate,
+    metrics, module_train, module_train_live, native_critic, native_format, native_neovim_train,
     native_product_surface, native_tooling, oracle_fixture_manifest, oracle_receipt_schema,
     oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet,
     perl_core_harness, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
-    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
-    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
-    quality_baseline, quality_gate, queue_health, queue_snapshot, receipts, release,
-    release_artifact_check, release_evidence, release_notes, release_turnkey, repo_hygiene,
-    ripr_evidence, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
-    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
-    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, unwired_scan,
-    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
-    validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
+    product_health_rail_contract, protocol_type_substrate_matrix, provider_confidence_matrix,
+    provider_promotion_ledger, publication_facts, publish, publish_closure, publish_manifest_check,
+    publish_receipts, quality_baseline, quality_gate, queue_health, queue_snapshot, receipts,
+    release, release_artifact_check, release_evidence, release_notes, release_turnkey,
+    repo_hygiene, ripr_evidence, rust_small_proof, seam_diff, semantic_inline_next_edit,
+    semantic_inline_receipts, semantic_scorecard, semantic_shadow_compare, semantic_token_classes,
+    session_receipt, shadow_parity, srp_microcrates, supported_editor_inline_smoke,
+    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
+    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
+    ux_scorecard, validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
@@ -136,8 +139,121 @@ enum Commands {
     /// Validate declared differential real-Perl oracle fixtures.
     CheckOracleFixtureManifest,
 
+    /// List, validate, and explain the compiler lexical cut-line cases
+    /// manifest (`compiler_lexical_cutline_cases.v1`, #12156).
+    CompilerLexicalCutline {
+        /// Operation to run against the manifest.
+        #[command(subcommand)]
+        command: tasks::compiler_lexical_cutline::CompilerLexicalCutlineSubcommand,
+    },
+
     /// Validate differential real-Perl oracle receipt schema.
     CheckOracleReceiptSchema,
+
+    /// Validate the shared typed train edge and claim-profile contract
+    /// (train_edge_contract.v1), its programme-neutral fixtures, and the
+    /// declared adaptations of the landed programme train manifests.
+    CheckTrainEdgeContract,
+
+    /// Validate the stable native Neovim implementation train manifest
+    /// (native_neovim_train.v1, #11392): the closed schema, graph shift-left
+    /// rejection law with named diagnostics, the shuffled determinism
+    /// control, and every discriminating invalid fixture.
+    #[command(name = "check-native-neovim-train")]
+    CheckNativeNeovimTrain,
+
+    /// Validate the dependency-neutral product-health rail/adapter registry contract.
+    #[command(name = "check-product-health-rail-contract")]
+    CheckProductHealthRailContract,
+
+    /// Validate the shared bounded builder-packet contract
+    /// (agent_implementation_packet.v1, #10872): the closed schema, the
+    /// programme-neutral fixtures, the fail-closed negative controls, the
+    /// canonical-semantics control, and the deterministic golden
+    /// projections. `--update-golden` rewrites the golden vectors.
+    #[command(name = "check-agent-implementation-packet")]
+    CheckAgentImplementationPacket {
+        /// Rewrite the golden projection vectors (explicit writer action;
+        /// never live packet state).
+        #[arg(long)]
+        update_golden: bool,
+    },
+
+    /// Render one projection of a caller-supplied packet document to stdout
+    /// (agent_implementation_packet.v1, #10872). Fails closed when the
+    /// document violates the contract. Packet instances are runtime-local
+    /// outputs: this command never writes repository files.
+    #[command(name = "render-agent-packet")]
+    RenderAgentImplementationPacket {
+        /// Projection to render.
+        #[arg(long, value_enum, default_value = "markdown")]
+        format: agent_implementation_packet::PacketProjection,
+
+        /// Path to the caller-supplied packet document.
+        input: std::path::PathBuf,
+    },
+
+    /// Validate specialized Vim/vim-lsp driver observations
+    /// (vim_lsp_specialized_driver.v1, #11380) against the compiled action
+    /// vocabulary: barrier/timeout/generation/result semantics, boundedness,
+    /// and the pinned Vim + vim-lsp + perllsp subject. The file carries one
+    /// JSON observation per line and fails closed on any violation.
+    #[command(name = "check-vim-lsp-specialized-observations")]
+    CheckVimLspSpecializedObservations {
+        /// Path to the JSONL observations file emitted by the specialized
+        /// adapter or the fake backend.
+        #[arg(long)]
+        file: PathBuf,
+    },
+
+    /// Editor-compat actual-host execution (#10944): launch, drive, bound,
+    /// and clean one exact editor client subject through the shared hermetic
+    /// Rust host runner. Every exact input is digest-verified before launch;
+    /// an unavailable host is a typed error, never a skip.
+    #[command(name = "editor-compat")]
+    EditorCompat {
+        #[command(subcommand)]
+        command: EditorCompatCommand,
+    },
+
+    /// Provision and verify the content-bound Vim + vim-lsp host test
+    /// instrument (vim_vim_lsp_host_toolchain.v1, #11372): the pinned Vim
+    /// release bytes plus the #11369-pinned vim-lsp subject, acquired,
+    /// digest-verified, cached under exact-identity keys, revalidated on
+    /// every use, and handed off as ephemeral roles. Test-instrument
+    /// identity only: no support verdict, journey, or receipt.
+    #[command(name = "vim-host-toolchain")]
+    VimHostToolchain {
+        #[command(subcommand)]
+        command: VimHostToolchainCommand,
+    },
+
+    /// Validate the shared adversarial review-packet, review-finding, and
+    /// advisory closure-projection contracts (#10881): the closed schemas,
+    /// the programme-neutral fixtures, the fail-closed negative controls,
+    /// the canonical-semantics control, and the deterministic golden
+    /// projections. `--update-golden` rewrites the golden vectors.
+    #[command(name = "check-agent-review-packet")]
+    CheckAgentReviewPacket {
+        /// Rewrite the golden projection vectors (explicit writer action;
+        /// never live review state).
+        #[arg(long)]
+        update_golden: bool,
+    },
+
+    /// Render one projection of a caller-supplied review document (packet,
+    /// finding, or closure projection) to stdout (#10881). Fails closed when
+    /// the document violates the contract. Document instances are
+    /// runtime-local outputs: this command never writes repository files.
+    #[command(name = "render-review-packet")]
+    RenderAgentReviewPacket {
+        /// Projection to render.
+        #[arg(long, value_enum, default_value = "markdown")]
+        format: agent_review_packet::ReviewProjection,
+
+        /// Path to the caller-supplied review document.
+        input: std::path::PathBuf,
+    },
 
     /// Run differential oracle comparison (PackageSubTable vertical slice).
     ///
@@ -181,6 +297,16 @@ enum Commands {
     Goals {
         #[command(subcommand)]
         command: GoalsCommand,
+    },
+
+    /// Offline current-tree status and safe parallel frontier over the
+    /// stable `module_train.v1` train graph (#11626 C02, data from #11625).
+    ///
+    /// Reads only the checked-in manifest and local git facts. Performs no
+    /// network or GitHub access, no scheduling, and no mutation.
+    ModuleTrain {
+        #[command(subcommand)]
+        command: ModuleTrainCommand,
     },
 
     /// Capture a GitHub PR queue snapshot for disconnected maintainership.
@@ -228,15 +354,17 @@ enum Commands {
         command: PrSubcommand,
     },
 
-    /// Verify merge-base ancestry proof before closing a PR.
+    /// Verify landing and content-survival proof without evaluating semantic completion.
     ///
-    /// Implements CLOSE_PROOF_POLICY.md Rule 1: runs
-    /// `git merge-base --is-ancestor <commit> <canonical-main>` and emits
-    /// a structured receipt.
+    /// Implements the landing-proof layer of CLOSE_PROOF_POLICY.md: runs
+    /// `git merge-base --is-ancestor <commit> <canonical-main>` and emits a
+    /// structured `landing_proof.v1` receipt. Landing ancestry never
+    /// authorizes an issue close; `semantic_completion` is always
+    /// `not_evaluated`.
     ///
-    /// Exit 0 = reachable (safe to close), exit 2 = not reachable (do not close),
+    /// Exit 0 = landing proof passes, exit 2 = commit is not reachable,
     /// exit 1 = error (git failed).
-    #[command(name = "pr-close-proof")]
+    #[command(name = "landing-proof")]
     PrCloseProof {
         /// Commit SHA to verify.
         #[arg(long)]
@@ -443,7 +571,8 @@ enum Commands {
         no_build: bool,
     },
 
-    /// Regenerate public Shields endpoint JSON for README badges.
+    /// Deprecated compatibility delegate for the Python badge endpoint owner.
+    #[command(hide = true)]
     Badges {
         /// Check committed endpoints for drift without updating badges/.
         #[arg(long)]
@@ -949,6 +1078,26 @@ enum Commands {
     /// Measure CI lane runtimes and emit timing artifacts.
     CiMeasure,
 
+    /// Time workspace Clippy by target-kind scope under controlled cache
+    /// states and write a receipt (#11736 decision-1 cost instrument).
+    ClippyCostMeasure {
+        /// Receipt output path (relative paths resolve against the project root).
+        #[arg(long, default_value = "target/receipts/clippy-cost-measurement.json")]
+        receipt: PathBuf,
+
+        /// Comma-separated scopes to measure: lib,all-targets
+        #[arg(long, value_delimiter = ',', default_value = "lib,all-targets")]
+        scopes: Vec<clippy_cost_measure::ClippyScope>,
+
+        /// Comma-separated cache states to measure: warm,members-cold
+        #[arg(long, value_delimiter = ',', default_value = "warm,members-cold")]
+        states: Vec<clippy_cost_measure::ClippyCacheState>,
+
+        /// Per-pass watchdog in seconds; a killed pass fails the measurement loudly.
+        #[arg(long, default_value_t = 2400)]
+        timeout_secs: u64,
+    },
+
     /// Analyze GitHub Actions costs over a recent period.
     CiCostMonitor {
         /// Number of days to analyze.
@@ -992,9 +1141,48 @@ enum Commands {
         #[arg(long, default_value = "auto")]
         base: String,
 
+        /// Immutable CI subject receipt. When supplied, the exact receipt
+        /// identity replaces mutable base/HEAD discovery.
+        #[arg(long)]
+        subject: Option<PathBuf>,
+
+        /// Repository root override for hermetic fixtures.
+        #[arg(long)]
+        root: Option<PathBuf>,
+
         /// Output format: `json` or `text` (default: json).
         #[arg(long, default_value = "json")]
         format: String,
+    },
+
+    /// Resolve one immutable GitHub-event subject and bounded input receipt (#8042).
+    CiSubject {
+        /// Event kind (`pull_request`, `push`, `merge_group`,
+        /// `workflow_dispatch`, or `explicit`). Defaults to
+        /// `GITHUB_EVENT_NAME`, then `explicit`.
+        #[arg(long)]
+        event_name: Option<String>,
+        /// GitHub event JSON. Defaults to `GITHUB_EVENT_PATH`.
+        #[arg(long)]
+        event_path: Option<PathBuf>,
+        /// Expected owner/name. Defaults to `GITHUB_REPOSITORY`.
+        #[arg(long)]
+        repository: Option<String>,
+        /// Exact GitHub workflow SHA. Defaults to `GITHUB_SHA`.
+        #[arg(long)]
+        github_sha: Option<String>,
+        /// Exact base SHA for explicit/workflow-dispatch subjects.
+        #[arg(long)]
+        base_sha: Option<String>,
+        /// Exact head SHA for explicit/workflow-dispatch subjects.
+        #[arg(long)]
+        head_sha: Option<String>,
+        /// Bounded semantic receipt path.
+        #[arg(long)]
+        receipt: PathBuf,
+        /// Repository root override for hermetic fixtures.
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
 
     /// Run the thin exact-head repository contract advisory (issue #3987).
@@ -1005,6 +1193,10 @@ enum Commands {
         /// Head git ref or full SHA for the evaluated range.
         #[arg(long, default_value = "HEAD")]
         head: String,
+        /// Immutable CI subject receipt. When supplied, its exact identity
+        /// and changed-input digest replace independent event resolution.
+        #[arg(long)]
+        subject: Option<PathBuf>,
         /// JSON receipt output path.
         #[arg(long, default_value = "target/receipts/ci-contract.json")]
         receipt: PathBuf,
@@ -1208,6 +1400,15 @@ enum Commands {
         /// Receipt JSON retained for clean and blocking verdicts.
         #[arg(long, default_value = "target/receipts/publication-drift.json")]
         out: PathBuf,
+    },
+
+    /// Read-only upstream refresh and drift classification for the pinned
+    /// vim-lsp subject (#11411). Advisory only: never a CI gate, never a pin
+    /// update; live observation is gated behind --allow-network.
+    #[command(name = "vim-lsp-subject")]
+    VimLspSubject {
+        #[command(subcommand)]
+        command: VimLspSubjectCommand,
     },
 
     /// Sync active release narrative docs from workspace version and publish count.
@@ -1975,6 +2176,18 @@ enum Commands {
         ratchet_check: bool,
     },
 
+    /// Run the canonical Rust Small proof lane in one repository command (#8407).
+    ///
+    /// Executes locked fetch, workspace check, parser smokes, LSP smoke,
+    /// references scorecard census + replay, and diff hygiene with pinned argv,
+    /// failing closed on any omitted or failing step. Every routed Rust Small
+    /// job in `.github/workflows/em-ci-routed-rust.yml` invokes this single
+    /// definition, so the aggregate required check means one proof on all
+    /// routes; the yml keeps only runner instrumentation and the #12320
+    /// pinned `cargo fmt` literal. Typed step receipts remain issue #8408.
+    #[command(name = "rust-small-proof")]
+    RustSmallProof,
+
     /// Publish/check 0.13.2 semantic scorecard artifacts from deterministic fixtures.
     SemanticScorecard {
         /// Optional path to semantic fixture manifest JSON.
@@ -2071,9 +2284,23 @@ enum Commands {
         #[arg(long)]
         base: Option<String>,
 
+        /// Immutable CI subject receipt used for scope-aware planning.
+        #[arg(long)]
+        subject: Option<PathBuf>,
+
         /// List available gates without running them
         #[arg(long, short)]
         list: bool,
+
+        /// Explain the typed profile expansion and governed gate denominator
+        /// (ci_route_profile.v1) without running anything
+        #[arg(long)]
+        explain_denominator: bool,
+
+        /// Explain the typed gate lifecycle disposition authority
+        /// (gate_disposition.v1) without running anything
+        #[arg(long)]
+        explain_disposition: bool,
 
         /// Output format (default: human)
         #[arg(long, short, value_enum, default_value = "human")]
@@ -2128,6 +2355,15 @@ enum Commands {
         /// Emit receipt JSON (also writes to target/receipts/receipt.json)
         #[arg(long, short)]
         receipt: bool,
+    },
+
+    /// Run the `lsp_smoke` gate as atomic, bounded, independently terminal
+    /// children with typed per-child receipts (#8063).
+    LspSmokeAtomic {
+        /// Path for the incremental child receipt JSON (gate telemetry; not
+        /// a `test_results` envelope, so it never feeds Test Analytics).
+        #[arg(long)]
+        receipt: PathBuf,
     },
 
     /// Inspect and validate effective gate policy profiles.
@@ -2444,6 +2680,18 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+
+    /// Check tracked generated artifacts against policy/generated-allowlist.toml.
+    #[command(name = "check-generated")]
+    CheckGenerated {
+        /// Enforcement mode.
+        #[arg(long, value_enum, default_value = "advisory")]
+        mode: tasks::generated_policy::GeneratedPolicyMode,
+
+        /// Override the default JSON receipt path.
+        #[arg(long)]
+        json: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
@@ -2451,6 +2699,117 @@ enum CheckFilePolicyCliMode {
     Advisory,
     BlockingAllowlist,
     BlockingStrict,
+}
+
+#[derive(Subcommand)]
+enum EditorCompatCommand {
+    /// Run one exact Vim + vim-lsp actual-host subject through the hermetic
+    /// Rust host runner (#10944). The pinned vim-lsp checkout is verified
+    /// against the #11369 subject manifest (commit, clean worktree, tree and
+    /// entry-file digests) before launch; the registration shape is consumed
+    /// from the #11369 configuration manifest; the root markers are consumed
+    /// from the #7762 activation-root manifest.
+    Vim {
+        #[command(subcommand)]
+        command: VimEditorCompatCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum VimHostToolchainCommand {
+    /// Acquire (or revalidate) the pinned toolchain under --output and write
+    /// the deterministic identity manifest. Network is used only for
+    /// immutable subjects missing from the cache; an existing valid entry is
+    /// a pure offline revalidation, and any drift deletes and rebuilds.
+    Provision {
+        /// Output/cache root directory for the provisioned toolchain.
+        #[arg(long)]
+        output: PathBuf,
+
+        /// Offline vim-lsp acquisition: clone the pinned commit from this
+        /// local checkout instead of the governed upstream URL. The subject
+        /// identity law is identical in both modes.
+        #[arg(long)]
+        vim_lsp_source: Option<PathBuf>,
+
+        /// Execution-environment label recorded in identity.
+        #[arg(long, default_value = "local_runner")]
+        environment: String,
+    },
+    /// Offline revalidation of one provisioned identity manifest against its
+    /// sibling subjects: recomputes every digest and refuses any drift as a
+    /// typed instrument failure. Never touches the network.
+    Verify {
+        /// Path to a provisioned vim_vim_lsp_host_toolchain.v1.json.
+        #[arg(long)]
+        manifest: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum VimEditorCompatCommand {
+    /// Execute a hermetic host journey: start exact Vim headless, load the
+    /// pinned vim-lsp, register the canonical perllsp --stdio server, attach
+    /// to the fixture through native activation, capture the initialize
+    /// capabilities, stop the server, and prove client/host cleanup. Writes
+    /// the canonical editor-client receipt plus the retained
+    /// client/server/process artifacts.
+    ///
+    /// `host-lifecycle` (#10944) runs the minimal substrate journey.
+    /// `bootstrap-diagnostics` (#10946) runs the four-cell journey —
+    /// bootstrap, native root selection with wrong-root discrimination, the
+    /// diagnostics lifecycle through the client's own state, and baseline
+    /// cleanup — against the governed diagnostics fixture.
+    /// `freshness-generations` (#11390) runs the six-cell freshness journey —
+    /// route classification, external source generations through the explicit
+    /// reload route, project config through the restart route, client
+    /// settings through the live push channel, stale generation rejection,
+    /// and provider ownership — against the governed freshness fixture.
+    /// `save-format` (#11396) runs the seven-cell format-on-save journey —
+    /// the documented BufWritePre autocmd owner over the canonical sync
+    /// format action, one-save-one-invocation cardinality, exact applied and
+    /// legitimate no-change bytes, distinct disabled/refused/failure
+    /// dispositions, and stale-result rejection — against the governed save
+    /// fixture.
+    Run {
+        /// Exact client subject id (see
+        /// `xtask::vim_host_run::VimClientSubject::known_ids`).
+        #[arg(long)]
+        subject: String,
+
+        /// Hermetic journey to execute: host-lifecycle, bootstrap-diagnostics,
+        /// freshness-generations, or save-format.
+        #[arg(long, default_value = "host-lifecycle")]
+        journey: String,
+
+        /// Fixture variant for the bootstrap-diagnostics,
+        /// freshness-generations, and save-format journeys (canonical must
+        /// pass; the negative controls must fail with their typed reason).
+        #[arg(long, default_value = "canonical")]
+        fixture_variant: String,
+
+        /// Absolute path of the exact Vim executable to run.
+        #[arg(long)]
+        vim: PathBuf,
+
+        /// Absolute path of the pinned vim-lsp git checkout (verified against
+        /// the #11369 subject manifest before launch).
+        #[arg(long)]
+        vim_lsp_dir: PathBuf,
+
+        /// Absolute path of the exact perllsp candidate executable.
+        #[arg(long)]
+        candidate: PathBuf,
+
+        /// Fresh output directory for the hermetic layout, artifacts, and
+        /// receipt (an existing directory refuses the run).
+        #[arg(long)]
+        out: PathBuf,
+
+        /// Host run timeout in milliseconds (default 240000).
+        #[arg(long, default_value_t = 240_000)]
+        timeout_ms: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2463,7 +2822,8 @@ enum NonRustCommand {
     /// `docs/policy/NON_RUST_INVENTORY.md`.
     Inventory {
         /// Check classification and newly added files without rewriting outputs.
-        /// The generated Markdown snapshot may be stale during concurrent merges.
+        /// Require the generated Markdown snapshot to match the committed snapshot
+        /// after line-ending normalization.
         #[arg(long)]
         check: bool,
 
@@ -2647,6 +3007,13 @@ enum CpanCorpusCommand {
         /// runs and lets cpanm skip already-installed modules.
         #[arg(long)]
         reset: bool,
+
+        /// Stop cleanly once this many minutes have elapsed, keeping completed
+        /// batches installed and emitting CPAN_CORPUS_INSTALL_COMPLETE=false.
+        /// Lets a scheduled warm lane end below runner preemption while
+        /// checkpointing forward progress (#12823).
+        #[arg(long)]
+        time_budget_minutes: Option<u64>,
     },
 
     /// Run parser corpus sweep against installed CPAN modules
@@ -2885,6 +3252,10 @@ enum PerlCoreHarnessCommand {
         /// Prebuilt perl-core-test-runner binary. Defaults to target/agent/perl-core-test-runner.
         #[arg(long)]
         runner_binary: Option<PathBuf>,
+
+        /// Disable bounded direct diagnostic probes for missing upstream rows.
+        #[arg(long)]
+        no_diagnostic_probes: bool,
     },
 
     /// Render the latest Perl core harness report (future slice).
@@ -3125,6 +3496,33 @@ enum GateReceiptsFormat {
 enum FreshnessCheckMode {
     Warn,
     Block,
+}
+
+/// Subcommands of `cargo xtask vim-lsp-subject` (#11411).
+#[derive(Debug, Subcommand)]
+enum VimLspSubjectCommand {
+    /// Read-only drift classification for the pinned vim-lsp subject.
+    Refresh {
+        /// Print the drift report (explicit positive findings when no drift).
+        #[arg(long)]
+        check: bool,
+
+        /// Write the bounded review artifact/proposal to this path (refuses .ci/).
+        #[arg(long)]
+        proposal: Option<PathBuf>,
+
+        /// Offline: classify a retained observation packet instead of probing the network.
+        #[arg(long)]
+        observation: Option<PathBuf>,
+
+        /// Explicit opt-in gate for live network observation (git ls-remote + depth-1 fetch).
+        #[arg(long)]
+        allow_network: bool,
+
+        /// Repository root used to resolve the landed authorities.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3797,13 +4195,13 @@ enum PrLedgerCommand {
 enum SyncDivergenceCommand {
     /// Validate the target-only commit reconciliation ledger and write a receipt.
     Check {
-        /// Common source/target base used for the git cherry comparison.
-        #[arg(long)]
-        base: String,
-        /// Active swarm source ref.
+        /// Exact swarm source ref; resolved as the patch-equivalence upstream.
         #[arg(long)]
         source: String,
-        /// Release-repo target ref, normally the first parent of the sync merge.
+        /// Completed reconciliation boundary ref; resolved as the exclusive history floor.
+        #[arg(long)]
+        boundary: String,
+        /// Release-repo target ref (normally the release repository head).
         #[arg(long)]
         target: String,
         /// Machine-readable reconciliation ledger.
@@ -3812,6 +4210,22 @@ enum SyncDivergenceCommand {
         /// Output source-sync receipt JSON.
         #[arg(long)]
         receipt: PathBuf,
+    },
+    /// Scaffold a v2 reconciliation ledger with one unresolved row per
+    /// target-unique non-merge commit; it invents no terminal disposition.
+    Scaffold {
+        /// Exact swarm source ref; resolved as the patch-equivalence upstream.
+        #[arg(long)]
+        source: String,
+        /// Completed reconciliation boundary ref; resolved as the exclusive history floor.
+        #[arg(long)]
+        boundary: String,
+        /// Release-repo target ref (normally the release repository head).
+        #[arg(long)]
+        target: String,
+        /// Output reconciliation ledger JSON (schema v2).
+        #[arg(long)]
+        ledger: PathBuf,
     },
 }
 
@@ -3831,7 +4245,61 @@ enum EmacsIntegrationCommand {
     /// Operate on the Emacs support train's checked contracts.
     Train {
         #[command(subcommand)]
-        command: emacs_train_context::EmacsTrainCommand,
+        command: EmacsTrainSubcommand,
+    },
+    /// Execute one exact-client-subject actual-host run through the shared
+    /// hermetic Emacs runner (#7778). Every exact input is digest-verified
+    /// before launch; an unavailable host is a typed error, never a skip.
+    HostRun {
+        /// Exact client subject id (see
+        /// `xtask::emacs_host_run::EmacsClientSubject::known_ids`).
+        #[arg(long)]
+        subject: String,
+
+        /// Absolute path of the exact Emacs executable to run.
+        #[arg(long)]
+        emacs: PathBuf,
+
+        /// Absolute path of the exact perllsp candidate executable.
+        #[arg(long)]
+        candidate: PathBuf,
+
+        /// Absolute path of the exact client library file. For bundled
+        /// subjects it may be omitted and is resolved inside the Emacs
+        /// installation (ambiguity fails closed); released subjects require
+        /// it and never search the installation.
+        #[arg(long)]
+        client_source: Option<PathBuf>,
+
+        /// Absolute path of the exact released client package file. Required
+        /// for released subjects (package identity is part of the subject);
+        /// rejected for bundled subjects.
+        #[arg(long)]
+        client_package: Option<PathBuf>,
+
+        /// Output directory for the hermetic layout, artifacts, and receipt.
+        #[arg(long)]
+        out: PathBuf,
+
+        /// Host run timeout in milliseconds (default 180000).
+        #[arg(long, default_value_t = 180_000)]
+        timeout_ms: u64,
+    },
+}
+
+/// Union of the Emacs train command families over the stable
+/// `emacs_train.v1` graph: the exact-tree context engine (CTXENG #11756)
+/// and the checked leaf-spec disposition compiler (#11751).
+#[derive(Subcommand)]
+enum EmacsTrainSubcommand {
+    /// Exact-tree context engine operations (#11756).
+    #[command(flatten)]
+    Context(emacs_train_context::EmacsTrainCommand),
+    /// Checked leaf-spec disposition compiler (#11751): plan, compile,
+    /// check and explain per-node spec dispositions.
+    Specs {
+        #[command(subcommand)]
+        command: EmacsTrainSpecsCommand,
     },
 }
 
@@ -3863,6 +4331,91 @@ enum IssuePlanSubcommand {
         /// Output format.
         #[arg(long, value_enum, default_value = "human")]
         format: IssuePlanOutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+enum EmacsTrainSpecsCommand {
+    /// Print the deterministic disposition plan for every stable node
+    /// (report-only; a partial ledger is the normal pre-population state).
+    Plan {
+        /// Stable train manifest path (default: the E01 emacs_train.v1 graph).
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Disposition ledger path (default: .spec/11717-emacs-train-specs/).
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+
+        /// Output format.
+        #[arg(long, value_enum, default_value = "human")]
+        format: SpecsOutputFormat,
+    },
+
+    /// Compile one node (or `--all`) into a checked disposition record.
+    /// Fails closed on any law violation; a disposition change of an
+    /// existing record requires `--readjudicate`.
+    Compile {
+        /// Node id, alias or issue number (omit with `--all`).
+        subject: Option<String>,
+
+        /// Compile the whole denominator from manifest-embedded
+        /// dispositions (all-or-nothing; skips already-compiled nodes).
+        #[arg(long)]
+        all: bool,
+
+        /// Stable train manifest path.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Disposition ledger path to write.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+
+        /// Reviewed disposition override (records provenance `adjudicated`).
+        #[arg(long, value_enum)]
+        disposition: Option<LeafSpecDisposition>,
+
+        /// Existing checked bundle path for a `SPEC_COMPILED` adjudication.
+        #[arg(long)]
+        compiled_spec: Option<PathBuf>,
+
+        /// Reviewed reason (required for RETURN_TO_ISSUE / NOT_PROVEN).
+        #[arg(long)]
+        reviewed_reason: Option<String>,
+
+        /// Allow replacing an existing record's disposition.
+        #[arg(long)]
+        readjudicate: bool,
+    },
+
+    /// Fail-closed validation of the whole disposition denominator.
+    Check {
+        /// Stable train manifest path.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Disposition ledger path.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+
+        /// Output format.
+        #[arg(long, value_enum, default_value = "human")]
+        format: SpecsOutputFormat,
+    },
+
+    /// Print the disposition and full leaf-contract trace for one node.
+    Explain {
+        /// Node id, alias or issue number.
+        subject: String,
+
+        /// Stable train manifest path.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Disposition ledger path.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
     },
 }
 
@@ -3906,6 +4459,85 @@ enum DevexCommand {
         /// Receipt path referenced by the generated PR body.
         #[arg(long, default_value = "target/devex/local-proof.json")]
         receipt: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModuleTrainCommand {
+    /// Project every stable node into its typed exact current-tree state.
+    ///
+    /// Implementation presence stays independent from dependency readiness,
+    /// evidence profiles, and support stages. Nodes without a semantic probe
+    /// in this slice are reported `not_proven`, never guessed.
+    Status {
+        /// Exact tree to bind. This slice accepts `HEAD` only (the current
+        /// checkout); arbitrary-tree checkout is a recorded residual.
+        #[arg(long, default_value = "HEAD")]
+        tree: String,
+    },
+
+    /// Print the safe offline parallel frontier: all and only hard-ready,
+    /// role-valid, conflict-recorded leaves with visible limitations.
+    Next {
+        /// Exact tree to bind. This slice accepts `HEAD` only (the current
+        /// checkout); arbitrary-tree checkout is a recorded residual.
+        #[arg(long, default_value = "HEAD")]
+        tree: String,
+    },
+
+    /// Read-only live frontier over the checked train (#11627 C03): join
+    /// candidate/stack/worktree/check/review observation to the offline
+    /// projection and recommend one safe action per writer/conflict surface.
+    /// Only `refresh` (without `--from-fixture`) touches the network, strictly
+    /// through read-only observation commands; nothing mutates anything.
+    Live {
+        #[command(subcommand)]
+        command: ModuleTrainLiveCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModuleTrainLiveCommand {
+    /// Observe live Git/GitHub state and write the immutable
+    /// `module_train_live.v1` snapshot. The only networked subcommand;
+    /// `--from-fixture` normalizes a stored raw observation instead (offline,
+    /// deterministic, test path).
+    Refresh {
+        /// Snapshot output path.
+        #[arg(long)]
+        output: PathBuf,
+
+        /// Normalize this raw-observation fixture instead of observing live
+        /// state (offline; never touches the network).
+        #[arg(long)]
+        from_fixture: Option<PathBuf>,
+    },
+
+    /// Validate a snapshot offline: schema, semantic digest, vocabularies,
+    /// one-action-per-conflict-surface, and stored-action consistency.
+    Check {
+        /// Snapshot path.
+        #[arg(long)]
+        snapshot: PathBuf,
+    },
+
+    /// Project the safe live frontier from a validated snapshot.
+    Next {
+        /// Snapshot path.
+        #[arg(long)]
+        snapshot: PathBuf,
+    },
+
+    /// Compose one node's static packet with its live addendum: why this
+    /// action now, unavailable facts and their consequence, next bounded
+    /// action, closeout route.
+    Explain {
+        /// Node id (for example `C03`).
+        node: String,
+
+        /// Snapshot path.
+        #[arg(long)]
+        snapshot: PathBuf,
     },
 }
 
@@ -4124,7 +4756,305 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckActiveGoalManifest => active_goal_manifest::run(),
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
+        Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
+        Commands::CheckTrainEdgeContract => train_edge_contract::run(),
+        Commands::CheckNativeNeovimTrain => native_neovim_train::run(),
+        Commands::CheckProductHealthRailContract => product_health_rail_contract::run(),
+        Commands::CheckAgentImplementationPacket { update_golden } => {
+            agent_implementation_packet::run(update_golden)
+        }
+        Commands::RenderAgentImplementationPacket { format, input } => {
+            let text = std::fs::read_to_string(&input).map_err(|error| {
+                eyre!("failed to read packet document {}: {error}", input.display())
+            })?;
+            let doc: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+                eyre!("failed to parse packet document {}: {error}", input.display())
+            })?;
+            let rendered = agent_implementation_packet::render_to_string(&doc, format)?;
+            println!("{rendered}");
+            Ok(())
+        }
+        Commands::CheckVimLspSpecializedObservations { file } => {
+            let validated = xtask::vim_lsp_specialized_driver::validate_observation_file(&file)
+                .map_err(|error| eyre!("{error:#}"))?;
+            println!("validated {validated} specialized vim/vim-lsp observations");
+            Ok(())
+        }
+        Commands::VimHostToolchain { command } => match command {
+            VimHostToolchainCommand::Provision { output, vim_lsp_source, environment } => {
+                let repo_root = utils::project_root().map_err(|error| eyre!(error.to_string()))?;
+                let inputs = xtask::vim_host_toolchain::ProvisionInputs {
+                    output_root: output,
+                    repo_root: repo_root.clone(),
+                    authority: xtask::vim_host_toolchain::SubjectAuthoritySource::RepoRoot(
+                        repo_root,
+                    ),
+                    vim_lsp_source,
+                    vim_archive_source: None,
+                    vim_archive_expected_sha256: None,
+                    vim_executable_expected_sha256: None,
+                    execution_environment: environment,
+                };
+                let outcome = xtask::vim_host_toolchain::provision(
+                    &inputs,
+                    &xtask::vim_host_toolchain::probe_vim_version,
+                )
+                .map_err(|error| eyre!("{error}"))?;
+                println!("{}", xtask::vim_host_toolchain::render_handoff(&outcome));
+                Ok(())
+            }
+            VimHostToolchainCommand::Verify { manifest } => {
+                xtask::vim_host_toolchain::verify_layout(
+                    &manifest,
+                    &xtask::vim_host_toolchain::probe_vim_version,
+                )
+                .map_err(|error| eyre!("{error}"))?;
+                println!(
+                    "verified: {} identity holds for {}",
+                    xtask::vim_host_toolchain::SCHEMA_VERSION,
+                    manifest.display()
+                );
+                Ok(())
+            }
+        },
+        Commands::EditorCompat { command } => match command {
+            EditorCompatCommand::Vim { command } => match command {
+                VimEditorCompatCommand::Run {
+                    subject,
+                    journey,
+                    fixture_variant,
+                    vim,
+                    vim_lsp_dir,
+                    candidate,
+                    out,
+                    timeout_ms,
+                } => {
+                    let repo_root =
+                        utils::project_root().map_err(|error| eyre!(error.to_string()))?;
+                    if journey == "save-format" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_save_format_run::SaveFormatFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_save_format_run::host_save_format_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim save-format run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} driver_failure={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.driver_failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.driver_failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
+                                        outcome.driver_failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim save-format run did not pass: {result:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                    if journey == "freshness-generations" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_freshness_run::FreshnessFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_freshness_run::host_freshness_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim freshness-generations run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} driver_failure={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.driver_failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.driver_failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
+                                        outcome.driver_failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim freshness-generations run did not pass: {result:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                    if journey == "bootstrap-diagnostics" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_diagnostics_run::DiagnosticsFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_diagnostics_run::host_diagnostics_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim bootstrap-diagnostics run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} driver_failure={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.driver_failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.driver_failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
+                                        outcome.driver_failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim bootstrap-diagnostics run did not pass: {result:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                    if journey != "host-lifecycle" {
+                        return Err(eyre!(
+                            "unknown journey {journey}: known journeys are host-lifecycle, \
+                             bootstrap-diagnostics, freshness-generations, save-format"
+                        ));
+                    }
+                    let outcome = xtask::vim_host_run::host_run_from_cli(
+                        &repo_root,
+                        &subject,
+                        vim,
+                        vim_lsp_dir,
+                        candidate,
+                        out,
+                        timeout_ms,
+                    )
+                    .map_err(|error| eyre!("{error:#}"))?;
+                    println!(
+                        "vim host run complete: result={:?} cleanup={:?} driver_complete={} \
+                         receipt={}",
+                        outcome.result,
+                        outcome.process_cleanup,
+                        outcome.driver_complete,
+                        outcome.receipt_path.display()
+                    );
+                    if outcome.result != xtask::editor_client_compat::ObservationResult::Pass {
+                        return Err(eyre!("vim host run did not pass: {:?}", outcome.result));
+                    }
+                    Ok(())
+                }
+            },
+        },
+        Commands::CheckAgentReviewPacket { update_golden } => {
+            agent_review_packet::run(update_golden)
+        }
+        Commands::RenderAgentReviewPacket { format, input } => {
+            let text = std::fs::read_to_string(&input).map_err(|error| {
+                eyre!("failed to read review document {}: {error}", input.display())
+            })?;
+            let doc: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+                eyre!("failed to parse review document {}: {error}", input.display())
+            })?;
+            let rendered = agent_review_packet::render_to_string(&doc, format)?;
+            println!("{rendered}");
+
+            Ok(())
+        }
         Commands::CheckOracleCompare => oracle_runner::run(),
         Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
@@ -4133,6 +5063,23 @@ fn run_cli(cli: Cli) -> Result<()> {
             protocol_type_substrate_matrix::run(check)
         }
         Commands::CheckWorkspaceSymbolClasses => workspace_symbol_classes::run(),
+        Commands::ModuleTrain { command } => match command {
+            ModuleTrainCommand::Status { tree } => module_train::run_status(&tree),
+            ModuleTrainCommand::Next { tree } => module_train::run_next(&tree),
+            ModuleTrainCommand::Live { command } => match command {
+                ModuleTrainLiveCommand::Refresh { output, from_fixture } => {
+                    module_train_live::run_refresh(&output, from_fixture.as_deref())
+                }
+                ModuleTrainLiveCommand::Check { snapshot } => {
+                    module_train_live::run_check(&snapshot)
+                }
+                ModuleTrainLiveCommand::Next { snapshot } => module_train_live::run_next(&snapshot),
+                ModuleTrainLiveCommand::Explain { node, snapshot } => {
+                    module_train_live::run_explain(&node, &snapshot)
+                }
+            },
+        },
+
         Commands::Goals { command } => match command {
             GoalsCommand::Next { program, fixture, json } => goals::next(program, fixture, json),
             GoalsCommand::Reconcile { program, fixture, json } => {
@@ -4172,7 +5119,8 @@ fn run_cli(cli: Cli) -> Result<()> {
             })?;
             if !reachable {
                 // Exit 2: not ancestor — distinct from 1 (error).
-                // CLOSE_PROOF_POLICY.md: do not close if not reachable.
+                // CLOSE_PROOF_POLICY.md: landing proof failed; this result
+                // carries no issue-close authority in either direction.
                 std::process::exit(2);
             }
             Ok(())
@@ -4183,13 +5131,23 @@ fn run_cli(cli: Cli) -> Result<()> {
             }
         },
         Commands::SyncDivergence { command } => match command {
-            SyncDivergenceCommand::Check { base, source, target, ledger, receipt } => {
+            SyncDivergenceCommand::Check { source, boundary, target, ledger, receipt } => {
                 tasks::sync_divergence::check(tasks::sync_divergence::CheckConfig {
-                    base,
                     source,
+                    boundary,
                     target,
                     ledger,
                     receipt,
+                    working_directory: None,
+                })
+            }
+            SyncDivergenceCommand::Scaffold { source, boundary, target, ledger } => {
+                tasks::sync_divergence::scaffold(tasks::sync_divergence::ScaffoldConfig {
+                    source,
+                    boundary,
+                    target,
+                    ledger,
+                    working_directory: None,
                 })
             }
         },
@@ -4464,15 +5422,48 @@ fn run_cli(cli: Cli) -> Result<()> {
             })
         }
         Commands::CiMeasure => ci_measure::run(),
+        Commands::ClippyCostMeasure { receipt, scopes, states, timeout_secs } => {
+            clippy_cost_measure::run(clippy_cost_measure::ClippyCostMeasureArgs {
+                receipt,
+                scopes,
+                states,
+                timeout_secs,
+            })
+        }
         Commands::CiCostMonitor { days, json } => ci_metrics::run_cost_monitor(days, json),
         Commands::CiBaseline { branch, days, limit, output } => {
             ci_metrics::run_ci_baseline(branch, days, limit, output)
         }
-        Commands::CiScope { base, format } => {
-            ci_scope::run(ci_scope::CiScopeConfig { base, format })
+        Commands::CiScope { base, subject, root, format } => {
+            ci_scope::run(ci_scope::CiScopeConfig { base, subject, root, format })
         }
-        Commands::CiContract { base, head, receipt, summary } => {
-            ci_contract::run(ci_contract::CiContractConfig { base, head, receipt, summary })
+        Commands::CiSubject {
+            event_name,
+            event_path,
+            repository,
+            github_sha,
+            base_sha,
+            head_sha,
+            receipt,
+            root,
+        } => tasks::ci_subject::run(tasks::ci_subject::CiSubjectConfig {
+            event_name,
+            event_path,
+            repository,
+            github_sha,
+            base_sha,
+            head_sha,
+            receipt,
+            root,
+        }),
+        Commands::CiContract { base, head, subject, receipt, summary } => {
+            ci_contract::run(ci_contract::CiContractConfig {
+                base,
+                head,
+                subject,
+                receipt,
+                summary,
+            })
         }
         Commands::CommandEvidence { command } => match command {
             CommandEvidenceCommand::Run {
@@ -4499,6 +5490,78 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::IntegrationProof { spec, receipt } => {
             integration_proof::run_from_file(&spec, &receipt)
         }
+        Commands::Integration { command } => match command {
+            IntegrationCommand::Emacs { command } => match command {
+                EmacsIntegrationCommand::Train { command } => match command {
+                    EmacsTrainSubcommand::Context(inner) => emacs_train_context::run(inner),
+                    EmacsTrainSubcommand::Specs { command } => match command {
+                        EmacsTrainSpecsCommand::Plan { manifest, ledger, format } => {
+                            emacs_train_specs::plan(manifest, ledger, format)
+                        }
+                        EmacsTrainSpecsCommand::Compile {
+                            subject,
+                            all,
+                            manifest,
+                            ledger,
+                            disposition,
+                            compiled_spec,
+                            reviewed_reason,
+                            readjudicate,
+                        } => emacs_train_specs::compile(emacs_train_specs::CompileConfig {
+                            subject,
+                            all,
+                            manifest_path: manifest,
+                            ledger_path: ledger,
+                            disposition,
+                            compiled_spec,
+                            reviewed_reason,
+                            readjudicate,
+                        }),
+                        EmacsTrainSpecsCommand::Check { manifest, ledger, format } => {
+                            emacs_train_specs::check(manifest, ledger, format)
+                        }
+                        EmacsTrainSpecsCommand::Explain { subject, manifest, ledger } => {
+                            emacs_train_specs::explain(&subject, manifest, ledger)
+                        }
+                    },
+                },
+                EmacsIntegrationCommand::HostRun {
+                    subject,
+                    emacs,
+                    candidate,
+                    client_source,
+                    client_package,
+                    out,
+                    timeout_ms,
+                } => {
+                    let root =
+                        crate::utils::project_root().map_err(|error| eyre!(error.to_string()))?;
+                    let outcome = xtask::emacs_host_run::host_run_from_cli(
+                        &root,
+                        &subject,
+                        emacs,
+                        candidate,
+                        client_source,
+                        client_package,
+                        out,
+                        timeout_ms,
+                    )
+                    .map_err(|error| eyre!(error.to_string()))?;
+                    println!(
+                        "host run result {:?} (process_cleanup {:?}, driver_complete {}); receipt: {}",
+                        outcome.result,
+                        outcome.process_cleanup,
+                        outcome.driver_complete,
+                        outcome.receipt_path.display()
+                    );
+                    if outcome.result == xtask::editor_client_compat::ObservationResult::Pass {
+                        Ok(())
+                    } else {
+                        Err(eyre!("host run did not pass: {:?}", outcome.result))
+                    }
+                }
+            },
+        },
         Commands::RepoHygiene { base, head, receipt, summary } => {
             repo_hygiene::run(repo_hygiene::RepoHygieneConfig { base, head, receipt, summary })
         }
@@ -4527,6 +5590,32 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckVersionSync => check_version_sync::run(),
         Commands::PublicationDrift { input, repo_root, out } => {
             xtask::publication_drift::run_with_paths(input, repo_root, out)
+        }
+        Commands::VimLspSubject {
+            command:
+                VimLspSubjectCommand::Refresh { check, proposal, observation, allow_network, repo_root },
+        } => {
+            let root = if repo_root.as_path() == std::path::Path::new(".") {
+                crate::utils::project_root().map_err(|error| eyre!(error.to_string()))?
+            } else {
+                repo_root
+            };
+            match xtask::vim_lsp_subject_refresh::run(
+                xtask::vim_lsp_subject_refresh::RefreshOptions {
+                    check,
+                    proposal,
+                    observation,
+                    allow_network,
+                    repo_root: root,
+                },
+            ) {
+                Ok(outcome) if outcome.instrument_failed => {
+                    eprintln!("vim-lsp-subject refresh: instrument failure — not no-drift");
+                    std::process::exit(2);
+                }
+                Ok(_) => Ok(()),
+                Err(error) => Err(eyre!(error.to_string())),
+            }
         }
         Commands::SyncReleaseDocs { write } => sync_release_docs::run(write),
         Commands::CheckFromRaw => ci_policy::check_from_raw(),
@@ -4828,6 +5917,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 tests,
                 output,
                 runner_binary,
+                no_diagnostic_probes,
             } => perl_core_harness::run_mode(perl_core_harness::RunConfig {
                 perl_tree,
                 host_perl,
@@ -4837,6 +5927,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 tests,
                 output,
                 runner_binary,
+                diagnostic_probes: !no_diagnostic_probes,
             }),
             PerlCoreHarnessCommand::Report => perl_core_harness::report(),
             PerlCoreHarnessCommand::Baseline {
@@ -4912,7 +6003,13 @@ fn run_cli(cli: Cli) -> Result<()> {
                     }
                     cpan_corpus::fetch_list(&config)
                 }
-                CpanCorpusCommand::Install { dist_list, install_dir, verbose, reset } => {
+                CpanCorpusCommand::Install {
+                    dist_list,
+                    install_dir,
+                    verbose,
+                    reset,
+                    time_budget_minutes,
+                } => {
                     if let Some(dl) = dist_list {
                         config.dist_list = dl;
                     }
@@ -4921,6 +6018,17 @@ fn run_cli(cli: Cli) -> Result<()> {
                         config.install_dir = id;
                     }
                     config.verbose = verbose;
+                    config.time_budget = match time_budget_minutes {
+                        None => None,
+                        Some(mins) => {
+                            let secs = mins.checked_mul(60).ok_or_else(|| {
+                                color_eyre::eyre::eyre!(
+                                    "--time-budget-minutes {mins} overflows the budget clock"
+                                )
+                            })?;
+                            Some(std::time::Duration::from_secs(secs))
+                        }
+                    };
                     cpan_corpus::install(&config)
                 }
                 CpanCorpusCommand::Sweep { output, enforce, verbose, install_dir } => {
@@ -5128,6 +6236,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::SemanticScorecard { manifest, output, status_md, check } => {
             semantic_scorecard::run(manifest, output, status_md, check)
         }
+        Commands::RustSmallProof => rust_small_proof::run(),
         Commands::SemanticShadowCompare { output, status_md, check } => {
             semantic_shadow_compare::run(output, status_md, check)
         }
@@ -5154,7 +6263,10 @@ fn run_cli(cli: Cli) -> Result<()> {
             gate_policy,
             gate,
             base,
+            subject,
             list,
+            explain_denominator,
+            explain_disposition,
             format,
             receipt,
             receipt_path,
@@ -5168,11 +6280,14 @@ fn run_cli(cli: Cli) -> Result<()> {
             gate_policy: Some(gate_policy),
             gate_filter: gate,
             base_ref: base,
+            subject,
             output_format: format,
             emit_receipt: receipt,
             receipt_path,
             diff_baseline: diff,
             list_only: list,
+            explain_denominator,
+            explain_disposition,
             fail_fast,
             parallel,
             verbose,
@@ -5185,6 +6300,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             staged: true,
             ..gates::GateRunnerConfig::default()
         }),
+        Commands::LspSmokeAtomic { receipt } => tasks::lsp_smoke_atomic::run_cli(&receipt),
         Commands::GatePolicy { command } => match command {
             GatePolicyCommand::Check => match tasks::gate_policy::check() {
                 Ok(()) => Ok(()),
@@ -5280,11 +6396,6 @@ fn run_cli(cli: Cli) -> Result<()> {
                 })
             }
         },
-        Commands::Integration { command } => emacs_train_context::run(match command {
-            IntegrationCommand::Emacs { command } => match command {
-                EmacsIntegrationCommand::Train { command } => command,
-            },
-        }),
         Commands::WriterAdmission {
             branch,
             base,
@@ -5433,6 +6544,10 @@ fn run_cli(cli: Cli) -> Result<()> {
                     root_override,
                 },
             )
+        }
+        Commands::CheckGenerated { mode, json } => {
+            let root = utils::project_root()?;
+            tasks::generated_policy::run(&root, mode, json)
         }
         Commands::FreshnessCheck {
             base,
@@ -5693,6 +6808,7 @@ mod tests {
                     tests: Vec::new(),
                     output: None,
                     runner_binary: None,
+                    no_diagnostic_probes: false,
                 },
                 "requires one or more explicit --test",
             ),

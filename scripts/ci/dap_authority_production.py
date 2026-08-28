@@ -93,6 +93,44 @@ def validate_production_boundary(
             f"unclassified production={missing}, stale manifest={stale}"
         )
 
+    # Versioned custom families: their request and event names are
+    # registered transport surfaces, distinct from dispatched production
+    # wire names. A family record that claims `dispatched: false` must have
+    # no route in the production inventory (and vice versa), so a family
+    # can never silently gain or lose runtime reachability.
+    family_boundary: list[dict[str, object]] = []
+    for index, family in enumerate(manifest_rows(manifest, "project_families")):
+        where = f"project_families[{index}]"
+        name = string_value(family.get("family"), f"{where}.family")
+        request_name = string_value(family.get("request_name"), f"{where}.request_name")
+        dispatched = family.get("dispatched")
+        if not isinstance(dispatched, bool):
+            raise AuthorityError(f"{where}.dispatched must be a boolean")
+        if dispatched != (request_name in commands):
+            raise AuthorityError(
+                f"custom family {name!r} dispatch mismatch: dispatched={dispatched} but the "
+                f"production inventory {'has' if request_name in commands else 'lacks'} a "
+                f"route for {request_name!r}"
+            )
+        for event_entry in array_value(family.get("event_names"), f"{where}.event_names"):
+            event = string_value(event_entry, f"{where}.event_names entry")
+            if event in events:
+                raise AuthorityError(
+                    f"custom family {name!r} event {event!r} is emitted in production; "
+                    "family events must be registered here, not dispatched around it"
+                )
+        family_boundary.append(
+            {
+                "family": name,
+                "request_name": request_name,
+                "event_names": list(
+                    string_value(entry, f"{where}.event_names entry")
+                    for entry in array_value(family.get("event_names"), f"{where}.event_names")
+                ),
+                "dispatched": dispatched,
+            }
+        )
+
     return {
         "dispatch_path": DISPATCH_PATH.as_posix(),
         "source_root": DEBUG_ADAPTER_ROOT.as_posix(),
@@ -101,4 +139,5 @@ def validate_production_boundary(
         "project_extensions": [
             {"kind": kind, "wire_name": name} for kind, name in sorted(production_extensions)
         ],
+        "project_families": family_boundary,
     }
