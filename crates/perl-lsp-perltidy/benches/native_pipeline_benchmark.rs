@@ -99,12 +99,10 @@ fn native_pipeline_document(c: &mut Criterion) {
         let source = spec.source();
         group.bench_function(spec.id(), |b| {
             b.iter(|| {
-                let mut counters = NativePipelineCounters::default();
-                black_box(NativeFormatter::new().format_document_typed_with_counters(
+                black_box(NativeFormatter::new().format_document_typed(
                     black_box(&source),
                     &FormatConfig::default(),
                     &FormatContext::default(),
-                    &mut counters,
                 ))
             });
         });

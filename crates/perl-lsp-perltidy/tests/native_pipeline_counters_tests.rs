@@ -638,6 +638,13 @@ fn bench_target_enrolls_native_pipeline_benchmark() -> Result<(), Box<dyn std::e
     assert!(benchmark.contains("format_document_typed_with_counters"));
     assert!(benchmark.contains("identity_row_with_counters"));
     assert!(benchmark.contains("native-pipeline-measurements.v1.json"));
+    let timing_body =
+        benchmark.split("b.iter(|| {").nth(1).ok_or("benchmark timing closure missing")?;
+    assert!(
+        timing_body.contains("format_document_typed(")
+            && !timing_body.contains("format_document_typed_with_counters("),
+        "Criterion timing must use the plain typed entry point so counter collection stays in the dedicated receipt pass"
+    );
     assert!(workflow.contains("NATIVE_PIPELINE_RUN_ID"));
     assert!(workflow.contains("target/criterion/native-pipeline-measurements.v1.json"));
     Ok(())
