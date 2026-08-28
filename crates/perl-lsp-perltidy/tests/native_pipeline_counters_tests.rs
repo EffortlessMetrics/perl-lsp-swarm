@@ -746,6 +746,34 @@ fn bench_target_enrolls_native_pipeline_benchmark() -> Result<(), Box<dyn std::e
 }
 
 #[test]
+fn criterion_timing_invokes_native_formatter_production_path()
+-> Result<(), Box<dyn std::error::Error>> {
+    let benchmark = std::fs::read_to_string(
+        repo_root().join("crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs"),
+    )?;
+    let iter_start = benchmark.find("b.iter(|| {").ok_or("benchmark timing closure missing")?;
+    let iter_body = &benchmark[iter_start..];
+    let iter_end = iter_body.find("});").ok_or("benchmark timing closure is unterminated")?;
+    let iter_body = &iter_body[..iter_end];
+    let production_invocation = "NativeFormatter::new().format_document_typed(";
+
+    assert_eq!(
+        iter_body.matches(production_invocation).count(),
+        1,
+        "Criterion must time exactly one native production invocation per iteration"
+    );
+    assert!(
+        iter_body.contains("black_box(&source)"),
+        "the timed production invocation must consume the enrolled subject source"
+    );
+    assert!(
+        !iter_body.contains("format_document_typed_with_counters("),
+        "counter collection belongs to the dedicated receipt pass, not Criterion timing"
+    );
+    Ok(())
+}
+
+#[test]
 fn elapsed_measurement_wraps_classification_for_document_and_range()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = std::fs::read_to_string(
