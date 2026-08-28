@@ -395,6 +395,7 @@ fn prepare_receipt_payload(
             }),
         );
     }
+    validate_receipt_schema(root, &json_value)?;
     Ok(Some((receipt_path, format!("{}\n", serde_json::to_string_pretty(&json_value)?))))
 }
 
@@ -1095,6 +1096,43 @@ mod tests {
             error.to_string().contains("receipt schema validation failed"),
             "schema-invalid receipt error missing context",
         )
+    }
+
+    #[test]
+    fn valid_receipt_enrichment_remains_schema_valid() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let schema_path = root.path().join(".ci/receipt.schema.json");
+        let schema_parent = schema_path
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("receipt schema path has no parent"))?;
+        fs::create_dir_all(schema_parent)?;
+        fs::write(&schema_path, include_str!("../../../.ci/receipt.schema.json"))?;
+        let receipt_path = root.path().join("target/receipts/receipt.json");
+        fs::create_dir_all(
+            receipt_path
+                .parent()
+                .ok_or_else(|| color_eyre::eyre::eyre!("receipt path has no parent"))?,
+        )?;
+        fs::write(&receipt_path, include_str!("../../../.ci/examples/receipt-pr-fast.json"))?;
+
+        let artifact = UxScorecardArtifact {
+            schema_version: 1,
+            measured_at: "2026-01-01T00:00:00Z".to_string(),
+            subsystem: "editor_ux",
+            scenario_count: 0,
+            scenario_ids: Vec::new(),
+            rows: BTreeMap::new(),
+            latency_by_request_class: BTreeMap::new(),
+            provenance: json!({}),
+        };
+        let (_, payload) = prepare_receipt_payload(root.path(), &artifact)?
+            .ok_or_else(|| color_eyre::eyre::eyre!("existing receipt was not prepared"))?;
+        let enriched: serde_json::Value = serde_json::from_str(&payload)?;
+        check_true(
+            enriched.get("ux_scorecard").is_some(),
+            "prepared receipt omitted ux_scorecard",
+        )?;
+        validate_receipt_schema(root.path(), &enriched)
     }
 
     #[test]
