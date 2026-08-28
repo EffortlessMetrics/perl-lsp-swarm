@@ -43,16 +43,12 @@ fn scenario_14_quarantine_rows_have_terminal_executable_dispositions() -> TestRe
             .as_str()
             .ok_or_else(|| invalid_data(format!("{test} is missing disposition")))?;
         assert!(
-            matches!(
-                disposition,
-                "stabilized" | "resolved_by_intent" | "folded" | "not_proven"
-            ),
+            matches!(disposition, "stabilized" | "resolved_by_intent" | "folded" | "not_proven"),
             "{test} has non-terminal disposition {disposition}"
         );
 
         assert_eq!(
-            entry["evidence"]["command"],
-            "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
+            entry["evidence"]["command"], "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
             "{test} must name the hard-fail verification lane"
         );
         let replacements = entry["evidence"]["replacement_tests"]
