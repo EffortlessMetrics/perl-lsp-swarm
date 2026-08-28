@@ -249,7 +249,7 @@ These questions are intentionally preserved for the implementation lane:
   `46a3db8dadbd23493a3ca00ec3053bb64521b819`. The same refresh reports
   `origin/main` through GitHub, and PR #13291’s base, at
   `0fac6d848048113b4d3e3886e874fd32ff8dd8ee`; PR #13291’s current head is
-  `173591ed5e52f3a1b164ac8d63e6ed5013bdcf72`. This is a timestamped
+  `1c59479b6945f080b4a539af6d9a6634a2a7a76d`. This is a timestamped
   refresh-time snapshot, not durable authority: every implementation or proof
   lane must query GitHub again and use the then-current head/base and
   protection state.
