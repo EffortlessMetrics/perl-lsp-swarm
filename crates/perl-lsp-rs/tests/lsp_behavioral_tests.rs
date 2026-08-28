@@ -41,14 +41,20 @@ fn workspace_edit_has_text_edits(edit: &Value, target_uri: &str) -> bool {
         let Some(range) = edit.get("range") else {
             return false;
         };
-        let valid_position = |position: &Value| {
-            position.get("line").and_then(Value::as_u64).is_some()
-                && position.get("character").and_then(Value::as_u64).is_some()
+        let position = |position: &Value| {
+            Some((
+                position.get("line").and_then(Value::as_u64)?,
+                position.get("character").and_then(Value::as_u64)?,
+            ))
+        };
+        let Some(start) = range.get("start").and_then(position) else {
+            return false;
+        };
+        let Some(end) = range.get("end").and_then(position) else {
+            return false;
         };
 
-        range.get("start").is_some_and(valid_position)
-            && range.get("end").is_some_and(valid_position)
-            && edit.get("newText").and_then(Value::as_str).is_some()
+        start <= end && edit.get("newText").and_then(Value::as_str).is_some()
     }
 
     if edit.get("changes").and_then(Value::as_object).is_some_and(|changes| {
@@ -87,6 +93,13 @@ fn workspace_edit_requires_well_formed_text_edits() {
         }
     });
     assert!(workspace_edit_has_text_edits(&valid, target_uri));
+    let valid_document_changes = json!({
+        "documentChanges": [{
+            "textDocument": { "uri": target_uri, "version": null },
+            "edits": [{ "range": range.clone(), "newText": "my $x" }]
+        }]
+    });
+    assert!(workspace_edit_has_text_edits(&valid_document_changes, target_uri));
 
     for malformed in [
         json!({ "changes": { (target_uri): [null] } }),
@@ -94,6 +107,17 @@ fn workspace_edit_requires_well_formed_text_edits() {
         json!({
             "changes": {
                 (target_uri): [{ "range": range.clone(), "newText": 42 }]
+            }
+        }),
+        json!({
+            "changes": {
+                (target_uri): [{
+                    "range": {
+                        "start": { "line": 2, "character": 0 },
+                        "end": { "line": 1, "character": 0 }
+                    },
+                    "newText": "my $x"
+                }]
             }
         }),
         json!({
