@@ -63,11 +63,9 @@ impl CompileTimePragmaEnvironment {
 
         let entries = ranges
             .into_iter()
-            .map(|(range, tracked)| {
-                PragmaEntry {
-                    range,
-                    snapshot: PragmaSnapshot::from_parts(tracked.state, tracked.perl_version),
-                }
+            .map(|(range, tracked)| PragmaEntry {
+                range,
+                snapshot: PragmaSnapshot::from_parts(tracked.state, tracked.perl_version),
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
