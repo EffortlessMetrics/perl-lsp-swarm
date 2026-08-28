@@ -202,6 +202,31 @@ fn non_brace_quote_like_hash_values_remain_opaque() -> TestResult {
 }
 
 #[test]
+fn non_brace_quote_like_payload_braces_remain_opaque() -> TestResult {
+    for value in [
+        "q/Foo {Widget}/",
+        "qq/Foo {Widget}/",
+        "qx/Foo {Widget}/",
+        "m/Foo {Widget}/",
+        "s/Foo {Widget}/Bar {Other}/",
+        "tr/Foo {Widget}/Bar {Other}/",
+        "y/Foo {Widget}/Bar {Other}/",
+        "qw/Foo {Widget}/",
+    ] {
+        let args = format!("-target => {{ pkg => {value}, other => 'Gadget' }}, ok");
+        let resolved = resolve_import("Test2::V0", &args)
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+        assert!(resolved.symbols.contains("pkg"), "value {value:?}");
+        assert!(resolved.symbols.contains("other"), "value {value:?}");
+        assert!(resolved.symbols.contains("ok"), "value {value:?}");
+        for leaked in ["Foo", "Widget", "Bar", "Other", "Gadget"] {
+            assert!(!resolved.symbols.contains(leaked), "{leaked} leaked from {value:?}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn nested_hash_target_restores_outer_key_value_parity() -> TestResult {
     let resolved = resolve_import(
         "Test2::V0",
@@ -426,6 +451,26 @@ fn target_helpers_reach_live_bundle_completion() {
         assert!(has_test2_completion(&completions, "pkg"), "value {value:?}");
         assert!(has_test2_completion(&completions, "other"), "value {value:?}");
         for leaked in ["Widget", "Other", "Gadget"] {
+            assert!(!has_test2_completion(&completions, leaked), "{leaked} leaked from {value:?}");
+        }
+    }
+
+    for value in [
+        "q/Foo {Widget}/",
+        "qq/Foo {Widget}/",
+        "qx/Foo {Widget}/",
+        "m/Foo {Widget}/",
+        "s/Foo {Widget}/Bar {Other}/",
+        "tr/Foo {Widget}/Bar {Other}/",
+        "y/Foo {Widget}/Bar {Other}/",
+        "qw/Foo {Widget}/",
+    ] {
+        let source =
+            format!("use Test2::V0 -target => {{ pkg => {value}, other => 'Gadget' }};\n|");
+        let completions = complete(&source);
+        assert!(has_test2_completion(&completions, "pkg"), "value {value:?}");
+        assert!(has_test2_completion(&completions, "other"), "value {value:?}");
+        for leaked in ["Foo", "Widget", "Bar", "Other", "Gadget"] {
             assert!(!has_test2_completion(&completions, leaked), "{leaked} leaked from {value:?}");
         }
     }

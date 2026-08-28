@@ -875,8 +875,17 @@ fn count_unquoted_braces(raw: &str) -> (isize, isize) {
     let mut closes = 0;
     let mut quote = None;
     let mut escaped = false;
+    let mut index = 0;
 
-    for ch in raw.chars() {
+    while index < raw.len() {
+        if quote.is_none()
+            && let Some(end) = quote_like_expression_end(raw, index)
+        {
+            index = end;
+            continue;
+        }
+        let Some(ch) = raw[index..].chars().next() else { break };
+        index += ch.len_utf8();
         if let Some(delimiter) = quote {
             if escaped {
                 escaped = false;
@@ -912,7 +921,18 @@ fn split_import_piece(piece: &str) -> Vec<String> {
         }
     };
 
-    for ch in piece.chars() {
+    let mut index = 0;
+    while index < piece.len() {
+        if quote.is_none()
+            && current.is_empty()
+            && let Some(end) = quote_like_expression_end(piece, index)
+        {
+            out.push(piece[index..end].to_string());
+            index = end;
+            continue;
+        }
+        let Some(ch) = piece[index..].chars().next() else { break };
+        index += ch.len_utf8();
         if let Some(delimiter) = quote {
             current.push(ch);
             if escaped {
