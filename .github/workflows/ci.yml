@@ -979,6 +979,7 @@ jobs:
           PR_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
         run: |
           set -euo pipefail
+          checkout_root="$(realpath -e -- .)"
           meta_self_tests=(
             scripts/ci/test_run_gate_shard.py
             scripts/ci/test_scope_cache_key.py
@@ -1009,6 +1010,17 @@ jobs:
               echo "::error title=Invalid candidate meta self-test::$self_test is present but is not a regular non-symlink file"
               exit 1
             fi
+            resolved_self_test="$(realpath -e -- "$self_test")" || {
+              echo "::error title=Unresolvable candidate meta self-test::$self_test cannot be resolved safely"
+              exit 1
+            }
+            case "$resolved_self_test" in
+              "$checkout_root"/*) ;;
+              *)
+                echo "::error title=Candidate meta self-test escapes checkout::$self_test resolves outside the checkout"
+                exit 1
+                ;;
+            esac
             python3 -m unittest "$self_test"
           done
 

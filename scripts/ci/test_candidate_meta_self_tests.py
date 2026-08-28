@@ -15,6 +15,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 STEP_NAME = "Verify candidate meta self-tests"
+EXPECTED_PR_BASE_BINDING = (
+    "PR_BASE_SHA: ${{ github.event_name == 'pull_request' "
+    "&& github.event.pull_request.base.sha || '' }}"
+)
 SELF_TESTS = (
     Path("scripts/ci/test_run_gate_shard.py"),
     Path("scripts/ci/test_scope_cache_key.py"),
@@ -86,6 +90,20 @@ def executable_workflow_script() -> str:
     """Adapt only the host interpreter name while preserving the workflow body."""
     script = candidate_self_test_script()
     return script.replace("python3 -m unittest", f"{python_executable()} -m unittest")
+
+
+def assert_pr_base_binding(step: str) -> None:
+    """Require the immutable pull-request base expression, exactly once."""
+    bindings = [
+        line.strip()
+        for line in step.splitlines()
+        if line.strip().startswith("PR_BASE_SHA:")
+    ]
+    if bindings != [EXPECTED_PR_BASE_BINDING]:
+        raise AssertionError(
+            "the meta self-test step must bind PR_BASE_SHA exactly to "
+            f"{EXPECTED_PR_BASE_BINDING!r}; found {bindings!r}"
+        )
 
 
 def initialize_base(root: Path, files: dict[Path, str] | None = None) -> str:
@@ -287,6 +305,39 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not a regular non-symlink file", result.stdout)
 
+    def test_symlinked_ancestor_candidate_test_stays_red(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            root = Path(directory)
+            outside_root = Path(outside)
+            initialize_base(root)
+            outside_ci = outside_root / "ci"
+            outside_ci.mkdir()
+            for relative in SELF_TESTS:
+                target = outside_ci / relative.name
+                target.write_text(passing_test(), encoding="utf-8")
+
+            scripts = root / "scripts"
+            scripts.mkdir()
+            try:
+                (scripts / "ci").symlink_to(outside_ci, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"directory symlinks unavailable: {error}")
+
+            environment = os.environ.copy()
+            environment["GITHUB_STEP_SUMMARY"] = str(root / "summary.md")
+            environment["PR_BASE_SHA"] = "a" * 40
+            result = subprocess.run(
+                [bash_executable(), "-c", executable_workflow_script()],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("escapes checkout", result.stdout)
+
     def test_workflow_uses_only_candidate_paths(self) -> None:
         script = candidate_self_test_script()
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -298,9 +349,11 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
             self.assertIn(path.as_posix(), script)
         self.assertIn("        if: matrix.name == 'meta'", step)
         self.assertIn("        shell: bash", step)
-        self.assertIn("          PR_BASE_SHA: ${{ github.event_name", step)
+        assert_pr_base_binding(step)
         self.assertIn('git cat-file -e "${PR_BASE_SHA}^{commit}"', script)
         self.assertIn('git cat-file -e "${PR_BASE_SHA}:${self_test}"', script)
+        self.assertIn('checkout_root="$(realpath -e -- .)"', script)
+        self.assertIn('resolved_self_test="$(realpath -e -- "$self_test")"', script)
         for forbidden in (
             "git show",
             "git checkout",
@@ -310,6 +363,23 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
             "wget ",
         ):
             self.assertNotIn(forbidden, script)
+
+    def test_workflow_rejects_head_or_wrong_context_binding(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        step = workflow.split(f"      - name: {STEP_NAME}", 1)[1].split(
+            "\n      - name:", 1
+        )[0]
+        for wrong_expression in (
+            "github.event.pull_request.head.sha",
+            "github.sha",
+            "github.event.head_commit.id",
+        ):
+            with self.subTest(wrong_expression=wrong_expression):
+                wrong_step = step.replace(
+                    "github.event.pull_request.base.sha", wrong_expression
+                )
+                with self.assertRaises(AssertionError):
+                    assert_pr_base_binding(wrong_step)
 
 
 if __name__ == "__main__":
