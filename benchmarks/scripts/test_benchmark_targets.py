@@ -1,114 +1,171 @@
 #!/usr/bin/env python3
-"""Proof that the nightly Criterion targets are explicit and runnable.
+"""Proof that every nightly benchmark target is explicit and runnable.
 
-Run directly (stdlib only)::
+Run directly with Python 3.11 or newer::
 
     python3 benchmarks/scripts/test_benchmark_targets.py -v
 
-The positive checks join Cargo metadata to the affected manifest entries and
-their Criterion entry points.  The negative controls exercise the authority
-boundary itself and Cargo's libtest behavior: restoring ``harness = true``
-must not accept the Criterion-only ``--noplot`` argument.
+The positive check reconciles the workflow target list with Cargo metadata,
+including each target's source path and required features, then checks the
+manifest and Criterion entry point. Negative controls prove that wrong path or
+feature authority and the legacy libtest harness are rejected.
 """
 
 import copy
 import json
+import re
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - the CI Python is 3.11+
-    import tomli as tomllib  # type: ignore[no-redef]
+import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_TARGETS = {
-    "perl-parser": {
-        "positions_bench": "crates/perl-parser/benches/positions_bench.rs",
-        "substitution_performance": "crates/perl-parser/benches/substitution_performance.rs",
-    },
-    "perl-incremental-parsing": {
-        "incremental_parsing_benchmarks": (
-            "crates/perl-incremental-parsing/benches/"
-            "incremental_parsing_benchmarks.rs"
-        ),
-    },
-}
+WORKFLOW = ROOT / ".github/workflows/ci-nightly.yml"
 
 
-def _manifest(crate: str) -> dict:
+def _workflow_targets() -> list[tuple[str, str, str]]:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    match = re.search(
+        r"declare -a BENCH_TARGETS=\(\n(?P<body>.*?)\n\s*\)",
+        text,
+        re.DOTALL,
+    )
+    if match is None:
+        raise AssertionError("nightly BENCH_TARGETS declaration is missing")
+
+    entries = re.findall(r'^\s*"([^"]+)"\s*$', match.group("body"), re.MULTILINE)
+    targets = []
+    for entry in entries:
+        parts = entry.split(":", 2)
+        if len(parts) != 3 or not all(parts[:2]):
+            raise AssertionError(f"invalid nightly benchmark target entry: {entry!r}")
+        targets.append((parts[0], parts[1], parts[2]))
+    return targets
+
+
+def _metadata() -> dict:
+    return json.loads(
+        subprocess.check_output(
+            [
+                "cargo",
+                "metadata",
+                "--manifest-path",
+                str(ROOT / "Cargo.toml"),
+                "--no-deps",
+                "--format-version",
+                "1",
+                "--locked",
+            ],
+            cwd=ROOT,
+            text=True,
+        )
+    )
+
+
+def _manifest(crate: str) -> tuple[Path, dict]:
     path = ROOT / "crates" / crate / "Cargo.toml"
     with path.open("rb") as handle:
-        return tomllib.load(handle)
+        return path, tomllib.load(handle)
 
 
-def _bench_entry(manifest: dict, name: str) -> dict:
+def _metadata_benches(metadata: dict) -> dict[tuple[str, str], dict]:
+    result = {}
+    for package in metadata["packages"]:
+        for target in package["targets"]:
+            if "bench" in target["kind"]:
+                result[(package["name"], target["name"])] = target
+    return result
+
+
+def _manifest_bench(manifest: dict, name: str) -> dict:
     entries = [entry for entry in manifest.get("bench", []) if entry.get("name") == name]
     if len(entries) != 1:
-        raise AssertionError(f"expected exactly one [[bench]] entry for {name!r}")
+        raise AssertionError(f"expected one [[bench]] entry for {name!r}")
     return entries[0]
 
 
 def _require_criterion_target(entry: dict, source: str) -> None:
     if entry.get("harness") is not False:
         raise AssertionError("Criterion targets must explicitly set harness = false")
-    if "criterion_main!" not in source:
-        raise AssertionError("declared target does not expose a Criterion main")
+    has_macro_main = "criterion_main!" in source
+    has_manual_main = all(
+        marker in source
+        for marker in ("Criterion::default()", "configure_from_args", "final_summary")
+    )
+    if not (has_macro_main or has_manual_main):
+        raise AssertionError("declared target does not expose a Criterion entry point")
+
+
+def _validate_targets(
+    nightly: list[tuple[str, str, str]], metadata: dict
+) -> None:
+    nightly_keys = [(crate, name) for crate, name, _ in nightly]
+    if len(nightly_keys) != len(set(nightly_keys)):
+        raise AssertionError("nightly benchmark target list contains duplicates")
+
+    metadata_benches = _metadata_benches(metadata)
+    if set(nightly_keys) != set(metadata_benches):
+        missing = sorted(set(metadata_benches) - set(nightly_keys))
+        extra = sorted(set(nightly_keys) - set(metadata_benches))
+        raise AssertionError(f"nightly/metadata mismatch: missing={missing}, extra={extra}")
+
+    for crate, name, feature_text in nightly:
+        target = metadata_benches[(crate, name)]
+        required_features = tuple(target.get("required-features", []))
+        requested_features = tuple(filter(None, feature_text.split(",")))
+        if requested_features != required_features:
+            raise AssertionError(
+                f"feature mismatch for {crate}:{name}: "
+                f"nightly={requested_features}, metadata={required_features}"
+            )
+
+        manifest_path, manifest = _manifest(crate)
+        entry = _manifest_bench(manifest, name)
+        declared_path = manifest_path.parent / entry.get("path", f"benches/{name}.rs")
+        metadata_path = Path(target["src_path"])
+        if metadata_path.resolve() != declared_path.resolve():
+            raise AssertionError(
+                f"source mismatch for {crate}:{name}: "
+                f"metadata={metadata_path}, manifest={declared_path}"
+            )
+        source = metadata_path.read_text(encoding="utf-8")
+        _require_criterion_target(entry, source)
 
 
 class BenchmarkTargetAuthorityTests(unittest.TestCase):
-    def test_affected_targets_are_declared_exposed_and_criterion_backed(self) -> None:
-        metadata = json.loads(
-            subprocess.check_output(
-                [
-                    "cargo",
-                    "metadata",
-                    "--manifest-path",
-                    str(ROOT / "Cargo.toml"),
-                    "--no-deps",
-                    "--format-version",
-                    "1",
-                    "--locked",
-                ],
-                cwd=ROOT,
-                text=True,
-            )
-        )
-        packages = {package["name"]: package for package in metadata["packages"]}
+    def test_all_nightly_targets_match_metadata_paths_features_and_sources(self) -> None:
+        nightly = _workflow_targets()
+        self.assertEqual(len(nightly), 14)
+        _validate_targets(nightly, _metadata())
 
-        for crate, targets in EXPECTED_TARGETS.items():
-            manifest = _manifest(crate)
-            package = packages[crate]
-            metadata_targets = {
-                target["name"]: target
-                for target in package["targets"]
-                if "bench" in target["kind"]
-            }
-            for name, source_path in targets.items():
-                entry = _bench_entry(manifest, name)
-                source = (ROOT / source_path).read_text(encoding="utf-8")
-                _require_criterion_target(entry, source)
-                self.assertIn(name, metadata_targets)
+    def test_wrong_src_path_is_rejected(self) -> None:
+        nightly = _workflow_targets()
+        metadata = _metadata()
+        target = _metadata_benches(metadata)[("perl-parser", "positions_bench")]
+        target["src_path"] = str(ROOT / "crates/perl-parser/benches/parser_benchmark.rs")
+        with self.assertRaisesRegex(AssertionError, "source mismatch"):
+            _validate_targets(nightly, metadata)
 
-    def test_authority_rejects_harness_true_negative_control(self) -> None:
-        manifest = _manifest("perl-parser")
-        entry = copy.deepcopy(_bench_entry(manifest, "positions_bench"))
+    def test_wrong_required_feature_is_rejected(self) -> None:
+        nightly = _workflow_targets()
+        metadata = _metadata()
+        target = _metadata_benches(metadata)[("perl-parser", "positions_bench")]
+        target["required-features"] = ["synthetic_feature"]
+        with self.assertRaisesRegex(AssertionError, "feature mismatch"):
+            _validate_targets(nightly, metadata)
+
+    def test_harness_true_is_rejected(self) -> None:
+        manifest = _manifest("perl-parser")[1]
+        entry = copy.deepcopy(_manifest_bench(manifest, "positions_bench"))
         entry["harness"] = True
-        source = (ROOT / EXPECTED_TARGETS["perl-parser"]["positions_bench"]).read_text(
+        source = (ROOT / "crates/perl-parser/benches/positions_bench.rs").read_text(
             encoding="utf-8"
         )
         with self.assertRaisesRegex(AssertionError, "harness = false"):
             _require_criterion_target(entry, source)
-
-    def test_authority_rejects_non_criterion_negative_control(self) -> None:
-        manifest = _manifest("perl-parser")
-        entry = _bench_entry(manifest, "positions_bench")
-        with self.assertRaisesRegex(AssertionError, "Criterion main"):
-            _require_criterion_target(entry, "fn main() {}")
 
 
 class CargoHarnessNegativeControlTests(unittest.TestCase):
@@ -117,12 +174,13 @@ class CargoHarnessNegativeControlTests(unittest.TestCase):
             root = Path(temporary)
             (root / "benches").mkdir()
             (root / "Cargo.toml").write_text(
-                '[package]\nname = "harness-control"\nversion = "0.0.0"\nedition = "2021"\n',
+                "[package]\nname = \"harness-control\"\nversion = \"0.0.0\"\n"
+                "edition = \"2021\"\n\n[[bench]]\nname = \"criterion_like\"\n"
+                "harness = true\n",
                 encoding="utf-8",
             )
             (root / "benches" / "criterion_like.rs").write_text(
-                "fn main() {}\n",
-                encoding="utf-8",
+                "fn main() {}\n", encoding="utf-8"
             )
             process = subprocess.run(
                 [
@@ -139,8 +197,9 @@ class CargoHarnessNegativeControlTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
+            output = process.stdout + process.stderr
             self.assertNotEqual(process.returncode, 0)
-            self.assertIn("Unrecognized option: 'noplot'", process.stdout + process.stderr)
+            self.assertIn("noplot", output.casefold())
 
 
 if __name__ == "__main__":
