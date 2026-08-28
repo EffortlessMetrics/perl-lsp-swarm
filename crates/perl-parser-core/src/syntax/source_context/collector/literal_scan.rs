@@ -8,7 +8,7 @@ use std::cmp::Ordering;
 use crate::syntax::text_line::is_identifier_byte;
 
 use super::super::kind::SourceRegionKind;
-use super::super::region::{last_char_start, SourceRegion};
+use super::super::region::{SourceRegion, last_char_start};
 
 pub(super) fn scan_line_comments_and_open_literals(source: &str) -> Vec<SourceRegion> {
     let mut regions = Vec::new();
@@ -226,11 +226,7 @@ fn heredoc_opener_at(line: &str, marker: usize) -> Option<(String, bool)> {
         }
         _ => return None,
     };
-    if label.is_empty() {
-        None
-    } else {
-        Some((label, allow_indented))
-    }
+    if label.is_empty() { None } else { Some((label, allow_indented)) }
 }
 
 /// Whether `rest` starts an unquoted heredoc label, i.e. a Perl identifier.

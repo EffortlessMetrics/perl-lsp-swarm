@@ -220,8 +220,10 @@ fn unclosed_heredoc_body_remains_owned_by_parse_gate() {
 
     let result = formatter.format_range(source, body, &FormatConfig::default());
 
-    assert!(result
-        .diagnostics
-        .iter()
-        .all(|diagnostic| { diagnostic.code != "native.format.literal_preserve_region" }));
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|diagnostic| { diagnostic.code != "native.format.literal_preserve_region" })
+    );
 }
