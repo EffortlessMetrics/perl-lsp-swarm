@@ -105,10 +105,7 @@ mod tests {
 
     #[test]
     fn empty_projected_inputs_do_not_fabricate_effects() {
-        let state = perl_pragma::PragmaState {
-            features: Vec::new(),
-            ..Default::default()
-        };
+        let state = perl_pragma::PragmaState { features: Vec::new(), ..Default::default() };
         let file_id = test_file_id();
         let facts = CompileEffectFacts::from_pragma_state(file_id.clone(), &state, None);
 
@@ -124,11 +121,8 @@ mod tests {
 
     #[test]
     fn strict_requires_every_strict_category() {
-        let cases = [
-            ("vars", false, true, true),
-            ("subs", true, false, true),
-            ("refs", true, true, false),
-        ];
+        let cases =
+            [("vars", false, true, true), ("subs", true, false, true), ("refs", true, true, false)];
 
         for (missing_category, strict_vars, strict_subs, strict_refs) in cases {
             let state = perl_pragma::PragmaState {
