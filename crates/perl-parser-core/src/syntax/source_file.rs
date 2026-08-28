@@ -278,6 +278,7 @@ fn perl_interpreter_name(command: &str) -> &str {
 }
 
 fn is_perl_interpreter_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
     if name == "perl" {
         return true;
     }
@@ -392,6 +393,7 @@ mod tests {
         assert!(is_perl_shebang_line("#!/usr/bin/env perl"));
         assert!(is_perl_shebang_line("#!/usr/bin/env -S perl -w"));
         assert!(is_perl_shebang_line(r"#!C:\Strawberry\perl\bin\perl.exe -w"));
+        assert!(is_perl_shebang_line(r"#!C:\Strawberry\perl\bin\PERL.EXE -w"));
         assert!(is_perl_shebang_line(r"#!/usr/bin/perl5.40.exe"));
         assert!(!is_perl_shebang_line("#!/usr/bin/superl"));
         assert!(!is_perl_shebang_line("#!/usr/bin/perlbrew"));
