@@ -40,7 +40,7 @@
       "strict": false,
       "json": {
         "path": "expected/pr_non_strict.json",
-        "sha256": "0e97df4b4da9c76d9d1343222e5a19f7f3161fe94dbabb15abed0c5619426fb9"
+        "sha256": "2b7a32ca7ec0233a8eb1c4909dc3d6a7e4ed3110490d6fed2b6de3cf1592eedc"
       },
       "markdown": {
         "path": "expected/pr_non_strict.md",
@@ -62,7 +62,7 @@
       "strict": true,
       "json": {
         "path": "expected/pr_strict.json",
-        "sha256": "8fcb2c994d1fa79fe1033f00e9c05710e19610e7c3584f4b8bdd58fd257abdab"
+        "sha256": "166a4a9bfc79b0a0b7ad0662e08f05bbfabaa5023224c263adaece63968fae04"
       },
       "markdown": {
         "path": "expected/pr_strict.md",
@@ -81,7 +81,7 @@
       "strict": false,
       "json": {
         "path": "expected/release_non_strict.json",
-        "sha256": "bc3d845d0b1e3a106fe96c909b8ed6eaf11f0c40389a51e8424c50ec3be4ea21"
+        "sha256": "4ae88babeeb69a80fbc88e4eb2c2272db6f958428a99b1ba487b35a1ff7e71f0"
       },
       "markdown": {
         "path": "expected/release_non_strict.md",
@@ -103,7 +103,7 @@
       "strict": true,
       "json": {
         "path": "expected/release_strict.json",
-        "sha256": "bc3d845d0b1e3a106fe96c909b8ed6eaf11f0c40389a51e8424c50ec3be4ea21"
+        "sha256": "4ae88babeeb69a80fbc88e4eb2c2272db6f958428a99b1ba487b35a1ff7e71f0"
       },
       "markdown": {
         "path": "expected/release_strict.md",
@@ -122,7 +122,7 @@
       "strict": false,
       "json": {
         "path": "expected/nightly_non_strict.json",
-        "sha256": "ea83ff4f2b823ab5d672553002c186140ef64c610c45a259ba444666a163cae1"
+        "sha256": "9e4470e2c7a1b3c2ae69f38fbfbc57965315f7f6ef86b0814709e44c08ea52ab"
       },
       "markdown": {
         "path": "expected/nightly_non_strict.md",
@@ -144,7 +144,7 @@
       "strict": true,
       "json": {
         "path": "expected/nightly_strict.json",
-        "sha256": "5bec48f42f74236e5056466e2d48b654219bbba54a08b9b37097b8b9f735cd00"
+        "sha256": "71eae10a716f6e36977f563ad0d5cbdd3be6b1a3409e1f0490fe08bc6a42f5b7"
       },
       "markdown": {
         "path": "expected/nightly_strict.md",

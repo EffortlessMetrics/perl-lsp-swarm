@@ -16,7 +16,31 @@ use perl_kwalitee::{
     indicator_ids,
 };
 use serde::Deserialize;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
+
+// This is the independent parity ledger.  It is intentionally not obtained from
+// `indicator_ids()` or from the manifest: changing either side must be visible to
+// this test before a moved evaluator can claim parity.
+const FROZEN_CATALOG_IDS: [&str; 17] = [
+    "manifest.workspace_member_declared",
+    "manifest.publish_policy_clean",
+    "license.declared",
+    "product_surface.native_only",
+    "dap.cli_native_only",
+    "release.native_binaries_present",
+    "release.no_external_tooling",
+    "release.checksums_valid",
+    "formatter.native_default",
+    "critic.native_default",
+    "critic.run_critic_registry_parity",
+    "quality.no_new_severe_gaps",
+    "docs.status_current",
+    "formatter.corpus_idempotent",
+    "critic.no_false_positives",
+    "formatter.perltidy_compat_no_external_only",
+    "critic.perlcritic_compat_no_external_only",
+];
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -104,31 +128,120 @@ fn load_manifest() -> Manifest {
     let path = fixture_dir().join("manifest.json");
     let text = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-    serde_json::from_str(&text).unwrap_or_else(|error| panic!("decode {}: {error}", path.display()))
+    parse_manifest(&text).unwrap_or_else(|error| panic!("decode {}: {error}", path.display()))
 }
 
 fn independent_frozen_catalog_ids() -> Vec<String> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("legacy_indicator_migrations.toml");
-    let text = fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("read independent catalog {}: {error}", path.display()));
-    let document: toml::Value = toml::from_str(&text)
-        .unwrap_or_else(|error| panic!("decode independent catalog {}: {error}", path.display()));
-    document
-        .get("indicator")
-        .and_then(toml::Value::as_array)
-        .unwrap_or_else(|| panic!("independent catalog {} has no indicator array", path.display()))
-        .iter()
-        .map(|row| {
-            row.get("legacy_id")
-                .and_then(toml::Value::as_str)
-                .unwrap_or_else(|| panic!("independent catalog row has no legacy_id"))
-                .to_string()
-        })
-        .collect()
+    FROZEN_CATALOG_IDS.iter().map(|id| (*id).to_string()).collect()
 }
 
 fn catalog_matches_independent_authority(candidate: &[String]) -> bool {
     candidate == independent_frozen_catalog_ids()
+}
+
+fn parse_manifest(text: &str) -> Result<Manifest, String> {
+    let manifest: Manifest = serde_json::from_str(text).map_err(|error| error.to_string())?;
+    validate_manifest(&manifest)?;
+    Ok(manifest)
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn checked_artifact_path(relative: &str) -> Result<PathBuf, String> {
+    let path = Path::new(relative);
+    if path.is_absolute()
+        || !path.components().all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(format!("artifact path must stay inside the fixture root: {relative}"));
+    }
+    Ok(fixture_dir().join(path))
+}
+
+fn validate_artifact(artifact: &Artifact, label: &str) -> Result<(), String> {
+    if !valid_sha256(&artifact.sha256) {
+        return Err(format!("{label} has an invalid SHA-256 digest"));
+    }
+    let path = checked_artifact_path(&artifact.path)?;
+    let bytes =
+        fs::read(&path).map_err(|error| format!("{label}: read {}: {error}", path.display()))?;
+    let actual = sha256_bytes(&bytes);
+    if actual != artifact.sha256 {
+        return Err(format!("{label}: committed artifact digest drifted"));
+    }
+    Ok(())
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut encoded, "{byte:02x}").expect("write digest");
+    }
+    encoded
+}
+
+fn validate_manifest(manifest: &Manifest) -> Result<(), String> {
+    if manifest.schema_version != 1 || manifest.subject != "perl_kwalitee.v1" {
+        return Err("unsupported parity manifest identity".to_string());
+    }
+    if manifest.generated_at.is_empty() || manifest.repo_token.is_empty() {
+        return Err("parity manifest requires generated_at and repo_token".to_string());
+    }
+    let frozen = independent_frozen_catalog_ids();
+    if manifest.catalog_ids != frozen {
+        return Err(
+            "parity manifest catalog differs from the independent frozen ledger".to_string()
+        );
+    }
+    let expected_cases = [
+        ("pr", false),
+        ("pr", true),
+        ("release", false),
+        ("release", true),
+        ("nightly", false),
+        ("nightly", true),
+    ];
+    if manifest.cases.len() != expected_cases.len() {
+        return Err("parity manifest must contain exactly six profile/strictness cases".to_string());
+    }
+    for case in &manifest.cases {
+        let profile = case.profile.as_str();
+        let expected_id =
+            format!("{profile}_{}", if case.strict { "strict" } else { "non_strict" });
+        if !expected_cases.contains(&(profile, case.strict)) || case.id != expected_id {
+            return Err(format!("unexpected or duplicate parity case {}", case.id));
+        }
+        validate_artifact(&case.json, &format!("{} JSON", case.id))?;
+        validate_artifact(&case.markdown, &format!("{} Markdown", case.id))?;
+        if case.strict {
+            if case.report.is_some() {
+                return Err(format!("{} strict case unexpectedly has a report contract", case.id));
+            }
+        } else if case
+            .report
+            .as_ref()
+            .is_none_or(|report| report.exit_code != 0 || !valid_sha256(&report.stdout_sha256))
+        {
+            return Err(format!("{} has an invalid report CLI contract", case.id));
+        }
+        let expected_exit =
+            if case.id == "pr_non_strict" || case.id == "nightly_non_strict" { 0 } else { 1 };
+        if case.check.exit_code != expected_exit
+            || !valid_sha256(&case.check.stdout_sha256)
+            || case.check.stderr_contains.is_some() != (expected_exit != 0)
+        {
+            return Err(format!("{} has an invalid check CLI contract", case.id));
+        }
+    }
+    validate_artifact(&manifest.explain, "explain catalog")?;
+    validate_artifact(&manifest.legacy_reader.expected, "legacy reader")?;
+    validate_artifact(&manifest.migration_reference, "migration reference")?;
+    checked_artifact_path(&manifest.legacy_reader.input).and_then(|path| {
+        fs::metadata(&path).map_err(|error| format!("legacy reader input: {error}"))
+    })?;
+    Ok(())
 }
 
 fn checked_input_path(relative: &str) -> &Path {
@@ -208,6 +321,11 @@ fn sha256(text: &str) -> String {
     encoded
 }
 
+fn canonical_json(value: &str) -> String {
+    let parsed: Value = serde_json::from_str(value).expect("decode parity JSON");
+    format!("{}\n", serde_json::to_string_pretty(&parsed).expect("format parity JSON"))
+}
+
 fn read_artifact(artifact: &Artifact) -> String {
     let path = fixture_dir().join(&artifact.path);
     fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
@@ -215,7 +333,8 @@ fn read_artifact(artifact: &Artifact) -> String {
 
 fn artifact_matches(actual: &str, artifact: &Artifact) -> bool {
     let expected = read_artifact(artifact);
-    sha256(&expected) == artifact.sha256 && sha256(actual) == artifact.sha256 && actual == expected
+    let actual = canonical_json(actual);
+    sha256(&expected) == artifact.sha256 && sha256(&actual) == artifact.sha256 && actual == expected
 }
 
 fn assert_artifact(actual: &str, artifact: &Artifact, label: &str) {
@@ -294,7 +413,7 @@ fn frozen_matrix_covers_every_row_profile_and_strictness() {
         }
 
         normalize_receipt(&mut receipt, fixture.path(), &manifest.repo_token);
-        let json = receipt.to_json_pretty().expect("serialize parity receipt");
+        let json = canonical_json(&receipt.to_json_pretty().expect("serialize parity receipt"));
         let markdown = receipt.to_markdown();
         assert_artifact(&json, &case.json, &format!("{} JSON", case.id));
         assert_artifact(&markdown, &case.markdown, &format!("{} Markdown", case.id));
@@ -327,6 +446,54 @@ fn independent_catalog_authority_rejects_missing_row_drift() {
     assert!(
         !catalog_matches_independent_authority(&drifted),
         "a catalog missing a frozen legacy row must not match the independent authority"
+    );
+}
+
+#[test]
+fn manifest_schema_rejects_malformed_missing_and_unknown_fields() {
+    let source = fs::read_to_string(fixture_dir().join("manifest.json")).expect("read manifest");
+
+    assert!(parse_manifest("{not-json").is_err(), "malformed JSON must fail closed");
+
+    let mut missing = serde_json::from_str::<Value>(&source).expect("decode manifest");
+    missing["cases"][0]["check"].as_object_mut().expect("check object").remove("stdout_sha256");
+    assert!(
+        parse_manifest(&serde_json::to_string(&missing).expect("encode missing field")).is_err(),
+        "missing required CLI field must fail closed"
+    );
+
+    let mut extra = serde_json::from_str::<Value>(&source).expect("decode manifest");
+    extra["unexpected"] = Value::String("must be rejected".to_string());
+    assert!(
+        parse_manifest(&serde_json::to_string(&extra).expect("encode unknown field")).is_err(),
+        "unknown manifest field must fail closed"
+    );
+}
+
+#[test]
+fn manifest_validation_rejects_extra_rows_and_digest_or_cli_drift() {
+    let source = fs::read_to_string(fixture_dir().join("manifest.json")).expect("read manifest");
+
+    let mut extra_row = serde_json::from_str::<Value>(&source).expect("decode manifest");
+    let duplicate = extra_row["cases"][0].clone();
+    extra_row["cases"].as_array_mut().expect("cases array").push(duplicate);
+    assert!(
+        parse_manifest(&serde_json::to_string(&extra_row).expect("encode extra row")).is_err(),
+        "extra parity row must fail closed"
+    );
+
+    let mut bad_digest = serde_json::from_str::<Value>(&source).expect("decode manifest");
+    bad_digest["cases"][0]["json"]["sha256"] = Value::String("0".repeat(64));
+    assert!(
+        parse_manifest(&serde_json::to_string(&bad_digest).expect("encode bad digest")).is_err(),
+        "artifact digest drift must fail closed"
+    );
+
+    let mut bad_cli = serde_json::from_str::<Value>(&source).expect("decode manifest");
+    bad_cli["cases"][0]["check"]["exit_code"] = Value::Number(1.into());
+    assert!(
+        parse_manifest(&serde_json::to_string(&bad_cli).expect("encode bad CLI contract")).is_err(),
+        "CLI exit-contract drift must fail closed"
     );
 }
 
