@@ -6,7 +6,17 @@ set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-repo_name="$(basename "$repo_root")"
+
+# Repository identity must be stable across linked worktrees: keyed by the
+# COMMON git dir (the main checkout), never by this checkout's directory
+# name, so every worktree of one repository shares a single devplane by
+# default instead of per-checkout caches that can never hit each other.
+common_git_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "")"
+if [ -n "$common_git_dir" ]; then
+  repo_name="$(basename "$(dirname "$common_git_dir")")"
+else
+  repo_name="$(basename "$repo_root")"
+fi
 
 # Machine may override this. Default is user-cache, not repo-local.
 devplane="${DEVPLANE:-${XDG_CACHE_HOME:-$HOME/.cache}/devplane/$repo_name}"
@@ -49,9 +59,11 @@ if command -v sccache >/dev/null 2>&1; then
   export SCCACHE_DIR="${SCCACHE_DIR:-$devplane/sccache}"
   export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-15G}"
 
-  # Helps cache hits across sibling worktrees.
-  worktree_parent="$(dirname "$repo_root")"
-  export SCCACHE_BASEDIRS="${SCCACHE_BASEDIRS:-$worktree_parent}"
+  # Cross-worktree sharing is structural: every worktree of the repository
+  # resolves the same devplane (common-git-dir identity above), so compiler
+  # invocations use identical CARGO_TARGET_DIR/SCCACHE_DIR paths and hit the
+  # same sccache entries. No path-rewrite variable is exported here; the
+  # sccache versions this repository documents do not support one.
 fi
 
 heavy="${1:-}"
@@ -64,9 +76,30 @@ case "$heavy" in
       exec flock -w "${CARGO_LOCK_WAIT:-180}" \
         "$lock_root/cargo-build.lock" \
         cargo "$@"
-    else
-      exec cargo "$@"
     fi
+
+    # Portable fallback where flock does not exist (Windows Git Bash): an
+    # atomic mkdir lock with a bounded wait and stale-owner reclaim, so
+    # shared-devplane runs stay serialized and fixed receipt paths stay
+    # exclusive instead of falling through to unserialized cargo.
+    lock_dir="$lock_root/cargo-build.lock.d"
+    waited=0
+    while ! mkdir "$lock_dir" 2>/dev/null; do
+      owner_pid="$(cat "$lock_dir/pid" 2>/dev/null || echo "")"
+      if [ -n "$owner_pid" ] && ! kill -0 "$owner_pid" 2>/dev/null; then
+        rm -rf "$lock_dir"
+        continue
+      fi
+      waited=$((waited + 5))
+      if [ "$waited" -ge "${CARGO_LOCK_WAIT:-180}" ]; then
+        echo "DENY: timed out waiting for $lock_dir" >&2
+        exit 75
+      fi
+      sleep 5
+    done
+    echo $$ > "$lock_dir/pid"
+    trap 'rm -rf "$lock_dir"' EXIT
+    exec cargo "$@"
     ;;
   *)
     exec cargo "$@"

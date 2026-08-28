@@ -43,16 +43,25 @@ agent-pr-fast:
 # Each worktree building with plain `cargo` owns a private multi-GB `target/`
 # tree; on a box running several worktrees they multiply and thrash the disk.
 # These cached recipes route through scripts/cargo-safe, which redirects
-# CARGO_TARGET_DIR/CARGO_HOME into the per-user devplane, wraps rustc in
-# sccache, and sets SCCACHE_BASEDIRS to the worktree parent so sibling
-# worktrees share compiler output. Cross-worktree sharing is sccache-based by
-# default (devplane keyed per checkout name); pin DEVPLANE explicitly for one
-# full shared target/ across worktrees. They are the documented default for
-# local multi-worktree development — see CONTRIBUTING.md "Shared build cache".
+# CARGO_TARGET_DIR/CARGO_HOME into a per-user devplane keyed by repository
+# identity (the main checkout's git dir), so every linked worktree shares one
+# devplane — one target/, one sccache store — by default. Cross-worktree
+# sharing is structural, not sccache-variable based. They are the documented
+# default for local multi-worktree development — see CONTRIBUTING.md
+# "Shared build cache".
 
 # PR-fast gate through the shared devplane cache (multi-worktree default).
+# Mirrors pr-fast's explicit CI_SCOPE_BASE forwarding: when an invalid or
+# unavailable base is passed, the gate must fall back the same way the plain
+# recipe does, never silently narrow to a default base.
 pr-fast-cached: _check-tools-basic
-    {{cargo_safe}} xtask gates --tier pr-fast --receipt
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=(--tier pr-fast --receipt)
+    if [ -n "${CI_SCOPE_BASE:-}" ]; then
+        args+=(--base "$CI_SCOPE_BASE")
+    fi
+    exec {{cargo_safe}} xtask gates "${args[@]}"
 
 # Workspace tests through the shared devplane cache.
 test-cached:

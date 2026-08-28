@@ -54,13 +54,18 @@ just clippy-cached    # lint
 
 These route through `scripts/cargo-safe`, which sets
 `CARGO_TARGET_DIR`/`CARGO_HOME` under
-`${XDG_CACHE_HOME:-$HOME/.cache}/devplane/<checkout-name>`, wraps `rustc` in
-`sccache`, and exports `SCCACHE_BASEDIRS=<worktree parent>` so sibling
-worktrees share compiler output. Scope note: the devplane is keyed per
-checkout directory name, so cross-worktree sharing comes from sccache by
-default; to share one full `target/` across worktrees, pin a common root
-explicitly (`DEVPLANE=<common-root>/devplane just pr-fast-cached`) and rely
-on cargo-safe's bounded flock for build serialization. The manual equivalent
+`${XDG_CACHE_HOME:-$HOME/.cache}/devplane/<main-checkout-name>`, wraps `rustc`
+in `sccache`, and keys the devplane by repository identity (the main
+checkout's git dir), so every linked worktree of one repository shares a
+single devplane by default — one `target/`, one sccache store, so sibling
+worktrees share compiler output structurally. No `SCCACHE_BASEDIRS` variable
+is exported: the sccache versions this repository documents do not support
+it, and sharing does not depend on it. To isolate a worktree instead, pin a
+private root explicitly
+(`DEVPLANE=<private-root>/devplane just pr-fast-cached`). cargo-safe
+serializes shared-devplane builds with its bounded flock where available and
+an atomic directory-lock fallback (bounded wait, stale-owner reclaim) where
+`flock` does not exist, such as Windows Git Bash. The manual equivalent
 for tools that bypass `just` (IDE rust-analyzer tasks):
 
 ```bash
@@ -78,9 +83,10 @@ Tradeoffs to know before adopting:
   cargo's file locks. The cached recipes carry cargo-safe's bounded flock and
   disk gate; hand-rolled `CARGO_TARGET_DIR` exports have no lock discipline,
   so parallel lanes should use the recipes rather than raw exports.
-- **sccache vs shared target**: sccache keeps per-invocation target dirs but
-  shares compiler output keyed by `SCCACHE_BASEDIRS`; a shared target dir
-  shares everything but serializes builds. cargo-safe composes both.
+- **sccache vs shared target**: the default devplane is already shared across
+  worktrees, so rustc invocations use identical paths and sccache entries hit
+  regardless of path rewriting; a fully shared `target/` additionally skips
+  duplicate codegen but serializes builds. cargo-safe composes both.
 
 Adoption evidence ties into #9178's cache-strategy receipts: capture
 `just storage-doctor` output (devplane + sccache stats) and cold-build timing
