@@ -124,6 +124,7 @@ impl UxClient {
         let transport_error_clone = Arc::clone(&transport_error);
         let capability_violations_clone = Arc::clone(&capability_violations);
         let client_capabilities_clone = client_capabilities.clone();
+        let closing_clone = Arc::clone(&closing);
         let _stdout_thread = std::thread::Builder::new()
             .name("ux-lsp-stdout".into())
             .spawn(move || {
@@ -138,7 +139,7 @@ impl UxClient {
                         &client_capabilities_clone,
                     );
                     if let Err(error) = routed {
-                        record_transport_error(&transport_error_clone, &error);
+                        record_transport_error(&transport_error_clone, &error, &closing_clone);
                         break;
                     }
                 }
@@ -558,8 +559,12 @@ impl std::fmt::Display for NormalEof {
 
 impl std::error::Error for NormalEof {}
 
-fn record_transport_error(slot: &Mutex<Option<String>>, error: &anyhow::Error) {
-    if is_normal_eof(error) {
+fn record_transport_error(
+    slot: &Mutex<Option<String>>,
+    error: &anyhow::Error,
+    closing: &std::sync::atomic::AtomicBool,
+) {
+    if is_normal_eof(error) && closing.load(Ordering::Acquire) {
         return;
     }
     let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1083,13 +1088,22 @@ mod tests {
     }
 
     #[test]
-    fn normal_eof_is_not_recorded_as_transport_failure() -> Result<()> {
+    fn normal_eof_is_only_ignored_after_shutdown_begins() -> Result<()> {
         let mut reader = BufReader::new(&b""[..]);
         let error = read_one_message(&mut reader).expect_err("empty stdout should be EOF");
         assert!(is_normal_eof(&error));
 
         let transport_error = Mutex::new(None);
-        record_transport_error(&transport_error, &error);
+        let closing = std::sync::atomic::AtomicBool::new(false);
+        record_transport_error(&transport_error, &error, &closing);
+        assert_eq!(
+            transport_error.lock().unwrap_or_else(|e| e.into_inner()).as_deref(),
+            Some("normal EOF")
+        );
+
+        let transport_error = Mutex::new(None);
+        closing.store(true, Ordering::Release);
+        record_transport_error(&transport_error, &error, &closing);
         assert!(transport_error.lock().unwrap_or_else(|e| e.into_inner()).is_none());
         Ok(())
     }
