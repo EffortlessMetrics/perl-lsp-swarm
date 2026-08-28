@@ -6,8 +6,12 @@ cooperate with `perl-dap` without making ptkdb implement DAP.
 **Current status**: the host protocol is implemented. The repository's Perl
 reference fixture now also contains an authenticated, headless-tested mirror
 adapter for an explicitly marked, ptkdb-shaped `Devel::ptkdb 1.1091` reference
-harness. This is not immutable source or distribution provenance, and it is not
-stock-ptkdb + Tk support; issue #4786 owns that live receipt.
+harness. The adapter pins the CPAN distribution by SHA-256
+`889bfc25d107f46718963023cc9662d3d779896a48d729d0327beec0502c226e` and
+verifies a loaded `ptkdb.pm` against SHA-256
+`2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab`.
+The headless harness carries the same digest as an explicit test contract.
+This is not stock-ptkdb + Tk support; issue #4786 owns that live receipt.
 
 ## Product boundary
 
@@ -63,8 +67,8 @@ rendezvous in `mirror` mode, sends an empty capability set, and uses deadline-gu
   reached from `DB::DB`. An `END` hook emits one best-effort, bounded
   `debugger/terminated` event.
 
-A `.ptkdbrc` can load the reference adapter by absolute path, but the path is
-not pinned or authenticated:
+A `.ptkdbrc` can load the reference adapter by absolute path. The path is
+still user-selected; the adapter is not an installer or package manager:
 
 ```perl
 my $perl_dap_peer = '/absolute/path/to/minimal_ptkdb_peer.pl';
@@ -73,8 +77,10 @@ do $perl_dap_peer or die $@ || $!;
 
 The reference harness must expose both `$Devel::ptkdb::VERSION = '1.1091'` and
 `$Devel::ptkdb::PERL_DAP_MIRROR_SOURCE =
-'perl-dap-reference-ptkdb-1.1091'`. This marker is an adapter-contract guard,
-not a cryptographic source or provenance check. When the rendezvous variables
+'CPAN:AEPAGE/Devel-ptkdb-1.1091'` plus
+`$Devel::ptkdb::PERL_DAP_MIRROR_SHA256` equal to the pinned module digest. A
+real loaded module is hashed from its `%INC` path and a mismatch fails closed
+before any connection or method wrap. When the rendezvous variables
 are absent, loaded mode is a silent no-op. A version/source mismatch or
 malformed/authentication contract leaves the harness untouched and reports one
 narrow diagnostic on stderr.

@@ -28,6 +28,7 @@ use warnings;
 package PerlDAP::PtkdbMirror;
 
 use Errno qw(EAGAIN EINTR EWOULDBLOCK);
+use Digest::SHA qw(sha256_hex);
 use IO::Select;
 use IO::Socket::INET;
 use JSON::PP qw(decode_json encode_json);
@@ -35,7 +36,9 @@ use Time::HiRes qw(time);
 
 use constant PROTOCOL_VERSION     => 'perl-debug-peer-v1';
 use constant REFERENCE_PTKDB_VERSION => '1.1091';
-use constant REFERENCE_PTKDB_SOURCE  => 'perl-dap-reference-ptkdb-1.1091';
+use constant REFERENCE_PTKDB_SOURCE  => 'CPAN:AEPAGE/Devel-ptkdb-1.1091';
+use constant REFERENCE_PTKDB_MODULE_SHA256 => '2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab';
+use constant REFERENCE_PTKDB_DIST_SHA256 => '889bfc25d107f46718963023cc9662d3d779896a48d729d0327beec0502c226e';
 use constant MAX_HEADER_BYTES     => 8 * 1024;
 use constant MAX_BODY_BYTES       => 8 * 1024 * 1024;
 use constant CONNECT_TIMEOUT      => 2;
@@ -316,6 +319,40 @@ sub _ptkdb_source {
     return undef;
 }
 
+sub _ptkdb_source_digest {
+    my $path = $INC{'Devel/ptkdb.pm'};
+    return (undef, 'Devel/ptkdb.pm is not present in %INC')
+        unless defined $path && length $path;
+    open my $fh, '<:raw', $path
+        or return (undef, "cannot read loaded Devel/ptkdb.pm: $!");
+    my $digest = eval { sha256_hex($fh) };
+    close $fh or return (undef, "cannot close loaded Devel/ptkdb.pm: $!");
+    return (undef, 'cannot hash loaded Devel/ptkdb.pm') unless defined $digest;
+    return ($digest, undef);
+}
+
+sub _check_ptkdb_provenance {
+    my $loaded_path = $INC{'Devel/ptkdb.pm'};
+    if (defined $loaded_path && length $loaded_path) {
+        my ($digest, $error) = _ptkdb_source_digest();
+        return (0, $error) unless defined $digest;
+        return (0, 'loaded Devel/ptkdb.pm digest does not match the pinned CPAN artifact')
+            unless $digest eq REFERENCE_PTKDB_MODULE_SHA256;
+        return (1, undef);
+    }
+
+    # The headless harness has no installed module file. Its explicit contract
+    # carries the same immutable module digest; this remains harness proof only.
+    my $source = _ptkdb_source();
+    my $digest = $Devel::ptkdb::PERL_DAP_MIRROR_SHA256;
+    return (0, 'reference harness provenance fields are required')
+        unless defined $source && defined $digest;
+    return (0, 'reference harness provenance does not match the pinned CPAN artifact')
+        unless "$source" eq REFERENCE_PTKDB_SOURCE
+            && "$digest" eq REFERENCE_PTKDB_MODULE_SHA256;
+    return (1, undef);
+}
+
 sub _after_set_file {
     my ($state, $caller_sub, $path, $line) = @_;
     return unless $caller_sub eq 'DB::DB';
@@ -340,15 +377,9 @@ sub install_ptkdb_mirror {
         );
         return 1;
     }
-    my $source = _ptkdb_source();
-    unless (defined $source && "$source" eq REFERENCE_PTKDB_SOURCE) {
-        _diagnostic(
-            'reference mirror adapter requires source marker '
-                . REFERENCE_PTKDB_SOURCE
-                . '; observed '
-                . (defined $source ? $source : 'none')
-                . ' -- leaving ptkdb untouched'
-        );
+    my ($proven, $provenance_error) = _check_ptkdb_provenance();
+    unless ($proven) {
+        _diagnostic("reference mirror adapter provenance check failed: $provenance_error -- leaving ptkdb untouched");
         return 1;
     }
     unless (defined &Devel::ptkdb::set_file) {

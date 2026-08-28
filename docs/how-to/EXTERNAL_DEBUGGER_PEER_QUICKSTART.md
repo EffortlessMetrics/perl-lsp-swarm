@@ -71,7 +71,7 @@ This mode is intentionally narrow and is not a pinned or distributable stock
 ptkdb plugin:
 
 - it activates only for a ptkdb-shaped harness that exposes `Devel::ptkdb 1.1091`
-  and the exact `$Devel::ptkdb::PERL_DAP_MIRROR_SOURCE` reference marker, when a trusted host launcher has
+  and the exact pinned `Devel::ptkdb 1.1091` module SHA-256, when a trusted host launcher has
   supplied `PERL_DAP_PEER`, a 32-hex `PERL_DAP_PEER_TOKEN`, and
   `PERL_DAP_PEER_MODE=mirror`;
 - it advertises no inspection or control capabilities;
