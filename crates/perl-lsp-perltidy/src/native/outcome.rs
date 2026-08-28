@@ -239,17 +239,10 @@ impl NativeFormatter {
         let started = std::time::Instant::now();
         let result = <Self as PerlFormatter>::format_document(self, source, config);
         scope.merge_into(counters);
-        counters.observe_edits_derived(
-            u64::try_from(result.edits.len()).unwrap_or(u64::MAX),
-            result
-                .edits
-                .iter()
-                .map(|edit| edit.new_text.len() as u64)
-                .fold(0_u64, u64::saturating_add),
-        );
+        observe_edits_derived(counters, &result);
         let typed =
             classify_native_result(source, config, context, FormatRequestTarget::Document, result);
-        counters.observe_elapsed(started.elapsed());
+        observe_elapsed(counters, started.elapsed());
         typed
     }
 
@@ -303,14 +296,7 @@ impl NativeFormatter {
             )
         };
         scope.merge_into(counters);
-        counters.observe_edits_derived(
-            u64::try_from(result.edits.len()).unwrap_or(u64::MAX),
-            result
-                .edits
-                .iter()
-                .map(|edit| edit.new_text.len() as u64)
-                .fold(0_u64, u64::saturating_add),
-        );
+        observe_edits_derived(counters, &result);
         let typed = classify_native_result(
             source,
             config,
@@ -318,9 +304,25 @@ impl NativeFormatter {
             FormatRequestTarget::Range { range },
             result,
         );
-        counters.observe_elapsed(started.elapsed());
+        observe_elapsed(counters, started.elapsed());
         typed
     }
+}
+
+fn observe_edits_derived(counters: &mut NativePipelineCounters, result: &FormatResult) {
+    let edits = u64::try_from(result.edits.len()).unwrap_or(u64::MAX);
+    let replacement_bytes =
+        result.edits.iter().map(|edit| edit.new_text.len() as u64).fold(0_u64, u64::saturating_add);
+    counters.observe_edits_derived(edits, replacement_bytes);
+    // A typed entry may be nested inside a caller-owned collector. The
+    // supplied snapshot and the outer scope must observe the same derived
+    // output, just as they already do for pipeline-stage counters.
+    counters::record_with(|outer| outer.observe_edits_derived(edits, replacement_bytes));
+}
+
+fn observe_elapsed(counters: &mut NativePipelineCounters, elapsed: std::time::Duration) {
+    counters.observe_elapsed(elapsed);
+    counters::record_with(|outer| outer.observe_elapsed(elapsed));
 }
 
 fn classify_native_result(

@@ -33,6 +33,8 @@ use perl_lsp_perltidy::native::{
 fn counter_schema_is_pinned_v1() {
     assert_eq!(COUNTER_SCHEMA_V1, "native-pipeline-counters-v1");
     assert_eq!(COUNTER_CLOCK_TAG, "std-instant-monotonic-v1");
+    assert_eq!(SCALING_RATIO_BOUND_V1, 2);
+    assert_eq!(SCALING_ABSOLUTE_SLACK_V1, 8);
     let counters = NativePipelineCounters::default();
     assert_eq!(counters.schema(), COUNTER_SCHEMA_V1);
     assert_eq!(counters.clock_tag(), COUNTER_CLOCK_TAG);
@@ -174,6 +176,9 @@ fn detector_flags_known_quadratic_series() {
     // Canonical quadratic series (units squared): any bound looser than 2x
     // stops flagging this control and the assertion below fails.
     assert!(is_superlinear(100, 400, 1_600));
+    // Keep a low-magnitude control: the absolute slack must not hide a
+    // quadratic series near the origin.
+    assert!(is_superlinear(2, 8, 32));
     // The first doubling is independently checked; ignoring N would let this
     // pathological jump pass even though the complete three-point shape is
     // not bounded.
@@ -280,12 +285,18 @@ fn nested_counter_scope_populates_supplied_and_outer_snapshots() {
     assert_eq!(supplied.pipeline_invocations, 1);
     assert_eq!(supplied.parse_gate_invocations, 2);
     assert!(supplied.delimited_groups_fitted > 0);
+    assert!(supplied.edits_derived > 0);
+    assert!(supplied.replacement_bytes > 0);
+    assert!(supplied.elapsed > std::time::Duration::ZERO);
 
     let mut outer_snapshot = NativePipelineCounters::default();
     outer.merge_into(&mut outer_snapshot);
     assert_eq!(outer_snapshot.pipeline_invocations, 1);
     assert_eq!(outer_snapshot.parse_gate_invocations, 2);
     assert!(outer_snapshot.delimited_groups_fitted > 0);
+    assert_eq!(outer_snapshot.edits_derived, supplied.edits_derived);
+    assert_eq!(outer_snapshot.replacement_bytes, supplied.replacement_bytes);
+    assert_eq!(outer_snapshot.elapsed, supplied.elapsed);
 }
 
 // ---------------------------------------------------------------------------

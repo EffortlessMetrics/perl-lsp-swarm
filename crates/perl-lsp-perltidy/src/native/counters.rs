@@ -16,6 +16,8 @@
 //! evidence, never a required gate (#3979/#5282).
 
 use std::cell::RefCell;
+use std::marker::PhantomData;
+use std::rc::Rc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -191,6 +193,10 @@ pub(crate) fn count_parse_nodes(root: &perl_parser_core::Node) -> u64 {
 pub struct PipelineCollectorScope {
     previous: Option<NativePipelineCounters>,
     active: bool,
+    // The collector lives in thread-local storage. Keep the RAII guard
+    // thread-affine as well, so it cannot be moved to another thread and
+    // accidentally restore or detach that thread's unrelated collector.
+    _thread_affine: PhantomData<Rc<()>>,
 }
 
 impl PipelineCollectorScope {
@@ -198,7 +204,7 @@ impl PipelineCollectorScope {
     pub fn install() -> Self {
         let previous = ACTIVE_COLLECTOR
             .with(|cell| cell.borrow_mut().replace(NativePipelineCounters::default()));
-        Self { previous, active: true }
+        Self { previous, active: true, _thread_affine: PhantomData }
     }
 
     /// Fold everything recorded inside the scope into `counters` and restore
