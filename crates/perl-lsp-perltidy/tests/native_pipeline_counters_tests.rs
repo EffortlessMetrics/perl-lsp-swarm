@@ -161,8 +161,10 @@ fn no_change_subjects_count_zero_edits_with_full_pipeline() {
 /// canonical quadratic control below pass, which turns
 /// `detector_flags_known_quadratic_series` red — the detector weakening is
 /// therefore itself observable.
-fn is_superlinear(_n: u64, two_n: u64, four_n: u64) -> bool {
-    four_n > two_n.saturating_mul(SCALING_RATIO_BOUND_V1).saturating_add(SCALING_ABSOLUTE_SLACK_V1)
+fn is_superlinear(n: u64, two_n: u64, four_n: u64) -> bool {
+    two_n > n.saturating_mul(SCALING_RATIO_BOUND_V1).saturating_add(SCALING_ABSOLUTE_SLACK_V1)
+        || four_n
+            > two_n.saturating_mul(SCALING_RATIO_BOUND_V1).saturating_add(SCALING_ABSOLUTE_SLACK_V1)
 }
 
 #[test]
@@ -170,6 +172,10 @@ fn detector_flags_known_quadratic_series() {
     // Canonical quadratic series (units squared): any bound looser than 2x
     // stops flagging this control and the assertion below fails.
     assert!(is_superlinear(100, 400, 1_600));
+    // The first doubling is independently checked; ignoring N would let this
+    // pathological jump pass even though the complete three-point shape is
+    // not bounded.
+    assert!(is_superlinear(1, 1_000, 2_000));
     // Exact linear series (through origin) stays bounded.
     assert!(!is_superlinear(1, 2, 4));
     // Linear with a constant term stays bounded.
