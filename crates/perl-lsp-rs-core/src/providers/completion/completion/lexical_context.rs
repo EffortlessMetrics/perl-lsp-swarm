@@ -4,10 +4,12 @@ use std::cmp::Ordering;
 /// Bounded local POD boundary for completion (#13241, HTTP-client scope).
 ///
 /// Canonical broad boundary: any column-zero alphabetic `=command` directive
-/// enters POD, and only an exact column-zero `=cut` (followed by whitespace or
-/// end of line) returns the source to Perl code. `=end` and the blank line
-/// ending a `=for` paragraph close an inner POD construct only; they never
-/// resume executable code, and unknown alphabetic commands stay opaque POD.
+/// enters POD, and only an exact column-zero `=cut` returns the source to Perl
+/// code. Like perl, `=cut` exits POD when followed by any non-word byte (or
+/// end of line), so `=cut;` resumes code while `=cutlery` stays POD. `=end`
+/// and the blank line ending a `=for` paragraph close an inner POD construct
+/// only; they never resume executable code, and unknown alphabetic commands
+/// stay opaque POD.
 ///
 /// #13244 owns migrating completion onto the generation-bound canonical
 /// `SourceRegionIndex` and deleting this local bridge.
@@ -88,7 +90,12 @@ pub(super) fn is_in_string(source: &str, position: usize) -> bool {
             return literal_state.in_single_quote
                 || literal_state.in_double_quote
                 || literal_state.in_backtick
-                || literal_state.literal.as_ref().is_some_and(ActiveLiteral::is_string_like);
+                || literal_state.literal.as_ref().is_some_and(|literal| {
+                    // The replacement section of `s///`/`tr///` is string-like:
+                    // it stays completion-eligible but must not read as
+                    // executable constructor evidence.
+                    literal.is_string_like() || !literal.in_pattern_section()
+                });
         }
 
         let started_in_literal = literal_state.is_active();
@@ -132,10 +139,29 @@ pub(super) fn is_in_regex(source: &str, position: usize) -> bool {
     }
 
     let mut literal_state = LiteralScanState::default();
-    literal_state.scan_segment(source.as_bytes(), 0, position);
+    scan_prefix_line_by_line(&mut literal_state, source, position);
     literal_state.literal.as_ref().is_some_and(|literal| {
         literal.kind == QuoteLikeLiteralKind::Regex && literal.in_pattern_section()
     })
+}
+
+/// Advance `state` over the source prefix `[0, position)` one line at a time.
+///
+/// [`LiteralScanState::scan_segment`] suspends at the first unquoted `#`, so
+/// feeding it an entire multi-line prefix would permanently stop literal
+/// tracking at the first line comment. Comment state ends with its newline,
+/// so per-line segments resume literal detection on the following line.
+fn scan_prefix_line_by_line(state: &mut LiteralScanState, source: &str, position: usize) {
+    let bytes = source.as_bytes();
+    let mut segment_start = 0usize;
+    while segment_start < position {
+        let segment_end = bytes[segment_start..position]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(position, |offset| segment_start + offset + 1);
+        state.scan_segment(bytes, segment_start, segment_end);
+        segment_start = segment_end;
+    }
 }
 
 /// True when `position` sits strictly inside an open regex pattern body.
@@ -149,7 +175,7 @@ fn is_inside_entered_regex_body(source: &str, position: usize) -> bool {
     }
 
     let mut literal_state = LiteralScanState::default();
-    literal_state.scan_segment(source.as_bytes(), 0, position);
+    scan_prefix_line_by_line(&mut literal_state, source, position);
     let Some(literal) = literal_state.literal.as_ref() else {
         return false;
     };
@@ -1109,7 +1135,7 @@ fn slash_starts_bare_regex_literal(bytes: &[u8], index: usize) -> bool {
     )
 }
 
-fn ascii_word_start(text: &str) -> usize {
+pub(super) fn ascii_word_start(text: &str) -> usize {
     text.as_bytes()
         .iter()
         .rposition(|byte| !is_identifier_byte(*byte))
@@ -1395,7 +1421,13 @@ fn is_in_multiline_literal(source: &str, position: usize) -> bool {
 }
 
 fn is_pod_end_marker(line: &str) -> bool {
-    pod_directive(line) == Some("=cut")
+    // perl exits POD at a column-zero `=cut` followed by any non-word byte
+    // (including none): `=cut;` and `=cut-lt` resume code, while `=cutlery`,
+    // `=cut1`, and `=cut_lt` remain POD commands/paragraph text.
+    let Some(after_cut) = line.strip_prefix("=cut") else {
+        return false;
+    };
+    after_cut.bytes().next().is_none_or(|byte| !byte.is_ascii_alphanumeric() && byte != b'_')
 }
 
 fn pod_directive(line: &str) -> Option<&str> {
@@ -1976,5 +2008,55 @@ my $after = "op"#;
     #[test]
     fn quoted_heredoc_label_preserves_non_quote_escape() {
         assert_eq!(parse_quoted_heredoc_label(r#""EO\nF""#, '"'), Some(r"EO\nF".to_string()));
+    }
+
+    #[test]
+    fn pod_exits_on_cut_followed_by_any_non_word_byte() {
+        // perl exits POD at column-zero `=cut` plus any non-word byte.
+        let semicolon = "=pod\ndocs\n=cut;\nmy $code = 1;";
+        assert!(!is_in_pod(semicolon, semicolon.len()));
+
+        let hyphenated = "=pod\ndocs\n=cut-lt\nmy $code = 1;";
+        assert!(!is_in_pod(hyphenated, hyphenated.len()));
+
+        let plain = "=pod\ndocs\n=cut\nmy $code = 1;";
+        assert!(!is_in_pod(plain, plain.len()));
+
+        let spaced = "=pod\ndocs\n=cut \nmy $code = 1;";
+        assert!(!is_in_pod(spaced, spaced.len()));
+    }
+
+    #[test]
+    fn pod_word_continuations_after_cut_stay_pod() {
+        for line in ["=cutlery", "=cut1", "=cut_lt"] {
+            let source = format!("=pod\ndocs\n{line}\nmy $code = 1;");
+            assert!(is_in_pod(&source, source.len()), "{line} must stay POD");
+        }
+    }
+
+    #[test]
+    fn is_in_regex_resumes_after_line_comment() {
+        let source = "my $http; # prior comment\nmy $pattern = qr{$http = HTTP::Tiny->new()};\n";
+        let regex_body = source.find("HTTP::Tiny").unwrap();
+        assert!(
+            is_in_regex(source, regex_body),
+            "a regex opened after a line comment must still be detected as a regex position"
+        );
+
+        let before_pattern = source.find("my $pattern").unwrap();
+        assert!(!is_in_regex(source, before_pattern));
+    }
+
+    #[test]
+    fn substitution_replacement_section_is_string_like() {
+        let source = "my $x = s;foo;replacement;;
+";
+        let replacement = source.find("replacement").unwrap();
+        assert!(is_in_string(source, replacement));
+        assert!(!is_in_regex(source, replacement));
+
+        let pattern = source.find("foo").unwrap();
+        assert!(is_in_regex(source, pattern));
+        assert!(!is_in_string(source, pattern));
     }
 }
