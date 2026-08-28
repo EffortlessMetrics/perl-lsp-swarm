@@ -97,16 +97,14 @@ impl LegacyParitySubject for CurrentLegacySubject {
 }
 
 fn fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.ci/fixtures/perl-kwalitee-legacy-parity")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.ci/fixtures/perl-kwalitee-legacy-parity")
 }
 
 fn load_manifest() -> Manifest {
     let path = fixture_dir().join("manifest.json");
     let text = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-    serde_json::from_str(&text)
-        .unwrap_or_else(|error| panic!("decode {}: {error}", path.display()))
+    serde_json::from_str(&text).unwrap_or_else(|error| panic!("decode {}: {error}", path.display()))
 }
 
 fn checked_input_path(relative: &str) -> &Path {
@@ -193,23 +191,13 @@ fn read_artifact(artifact: &Artifact) -> String {
 
 fn artifact_matches(actual: &str, artifact: &Artifact) -> bool {
     let expected = read_artifact(artifact);
-    sha256(&expected) == artifact.sha256
-        && sha256(actual) == artifact.sha256
-        && actual == expected
+    sha256(&expected) == artifact.sha256 && sha256(actual) == artifact.sha256 && actual == expected
 }
 
 fn assert_artifact(actual: &str, artifact: &Artifact, label: &str) {
     let expected = read_artifact(artifact);
-    assert_eq!(
-        sha256(&expected),
-        artifact.sha256,
-        "{label}: committed artifact digest drifted"
-    );
-    assert_eq!(
-        sha256(actual),
-        artifact.sha256,
-        "{label}: evaluated artifact digest drifted"
-    );
+    assert_eq!(sha256(&expected), artifact.sha256, "{label}: committed artifact digest drifted");
+    assert_eq!(sha256(actual), artifact.sha256, "{label}: evaluated artifact digest drifted");
     assert_eq!(actual, expected, "{label}: evaluated artifact bytes drifted");
 }
 
@@ -219,8 +207,7 @@ fn frozen_matrix_covers_every_row_profile_and_strictness() {
     assert_eq!(manifest.schema_version, 1);
     assert_eq!(manifest.subject, "perl_kwalitee.v1");
 
-    let live_ids =
-        indicator_ids().into_iter().map(ToOwned::to_owned).collect::<Vec<String>>();
+    let live_ids = indicator_ids().into_iter().map(ToOwned::to_owned).collect::<Vec<String>>();
     assert_eq!(
         live_ids, manifest.catalog_ids,
         "catalog identity or order changed without updating the frozen authority"
@@ -305,19 +292,13 @@ fn frozen_matrix_covers_every_row_profile_and_strictness() {
 #[test]
 fn focused_semantic_or_order_drift_is_rejected() {
     let manifest = load_manifest();
-    let case = manifest
-        .cases
-        .iter()
-        .find(|case| case.id == "pr_non_strict")
-        .expect("pr_non_strict case");
+    let case =
+        manifest.cases.iter().find(|case| case.id == "pr_non_strict").expect("pr_non_strict case");
     let expected = read_artifact(&case.json);
     let baseline: KwaliteeReceipt =
         serde_json::from_str(&expected).expect("decode committed receipt");
     assert!(
-        artifact_matches(
-            &baseline.to_json_pretty().expect("serialize baseline"),
-            &case.json
-        ),
+        artifact_matches(&baseline.to_json_pretty().expect("serialize baseline"), &case.json),
         "baseline must match before mutation controls run"
     );
 

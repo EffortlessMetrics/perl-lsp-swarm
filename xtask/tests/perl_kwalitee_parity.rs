@@ -58,16 +58,14 @@ struct CheckExpectation {
 }
 
 fn fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../.ci/fixtures/perl-kwalitee-legacy-parity")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.ci/fixtures/perl-kwalitee-legacy-parity")
 }
 
 fn load_manifest() -> Manifest {
     let path = fixture_dir().join("manifest.json");
     let text = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-    serde_json::from_str(&text)
-        .unwrap_or_else(|error| panic!("decode {}: {error}", path.display()))
+    serde_json::from_str(&text).unwrap_or_else(|error| panic!("decode {}: {error}", path.display()))
 }
 
 fn checked_input_path(relative: &str) -> &Path {
@@ -149,16 +147,8 @@ fn read_artifact(artifact: &Artifact) -> String {
 
 fn assert_artifact(actual: &str, artifact: &Artifact, label: &str) {
     let expected = read_artifact(artifact);
-    assert_eq!(
-        sha256(&expected),
-        artifact.sha256,
-        "{label}: committed artifact digest drifted"
-    );
-    assert_eq!(
-        sha256(actual),
-        artifact.sha256,
-        "{label}: command artifact digest drifted"
-    );
+    assert_eq!(sha256(&expected), artifact.sha256, "{label}: committed artifact digest drifted");
+    assert_eq!(sha256(actual), artifact.sha256, "{label}: command artifact digest drifted");
     assert_eq!(actual, expected, "{label}: command artifact bytes drifted");
 }
 
@@ -204,12 +194,7 @@ fn report_replays_non_strict_json_markdown_and_summary() {
             &stdout,
             &[(&json_path, "<json-output>"), (&markdown_path, "<markdown-output>")],
         );
-        assert_eq!(
-            sha256(&normalized_stdout),
-            report.stdout_sha256,
-            "{} report stdout",
-            case.id
-        );
+        assert_eq!(sha256(&normalized_stdout), report.stdout_sha256, "{} report stdout", case.id);
 
         let mut receipt: KwaliteeReceipt = serde_json::from_slice(
             &fs::read(&json_path)
@@ -223,10 +208,7 @@ fn report_replays_non_strict_json_markdown_and_summary() {
         let written_markdown = fs::read_to_string(&markdown_path)
             .unwrap_or_else(|error| panic!("read {}: {error}", markdown_path.display()));
         let normalized_markdown = normalize_generated_line(
-            &normalize_paths(
-                &written_markdown,
-                &[(fixture.path(), manifest.repo_token.as_str())],
-            ),
+            &normalize_paths(&written_markdown, &[(fixture.path(), manifest.repo_token.as_str())]),
             &manifest.generated_at,
         );
         assert_artifact(
