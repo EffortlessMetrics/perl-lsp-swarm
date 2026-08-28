@@ -439,7 +439,11 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                     }
                     saw_hash |= opens > 0;
                     brace_depth += opens;
-                    let candidate = strip_quotes(value.trim_matches(['{', '}']).trim());
+                    // Unary-plus and parenthesized hashrefs leave wrapper
+                    // punctuation attached to the first/last atom. These
+                    // structural atoms must not consume a key/value slot.
+                    let candidate =
+                        strip_quotes(value.trim_matches(['+', '{', '}', '(', ')']).trim());
                     if brace_depth == 1 && !candidate.is_empty() {
                         if expect_key && is_bareword(candidate) {
                             target_helpers.insert(candidate.to_string());

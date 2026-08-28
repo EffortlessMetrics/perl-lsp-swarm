@@ -64,6 +64,23 @@ fn named_hash_targets_preserve_defaults_and_generate_helpers() -> TestResult {
 }
 
 #[test]
+fn wrapped_hash_targets_ignore_structural_tokens() -> TestResult {
+    for args in [
+        "-target => +{ pkg => 'Widget', other => 'Gadget' }",
+        "-target => ({ pkg => 'Widget', other => 'Gadget' })",
+    ] {
+        let resolved = resolve_import("Test2::V0", args)
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+        assert!(resolved.symbols.contains("pkg"));
+        assert!(resolved.symbols.contains("other"));
+        assert!(!resolved.symbols.contains("Widget"));
+        assert!(!resolved.symbols.contains("Gadget"));
+    }
+    Ok(())
+}
+
+#[test]
 fn target_consumption_stops_before_an_explicit_import() -> TestResult {
     let resolved = resolve_import("Test2::V0", "-target => 'Foo', ok")
         .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
