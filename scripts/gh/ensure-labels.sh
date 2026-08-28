@@ -1,6 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+CI_CONFIG_PATH="${CI_CONFIG_PATH:-${REPO_ROOT}/.github/ci-config.yml}"
+
+public_api_metadata() {
+  python3 - "${CI_CONFIG_PATH}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+match = re.search(r"(?ms)^  ci:public-api:\s*\n(?P<body>(?:^    .*\n?)*)", text)
+if match is None:
+    raise SystemExit("ci:public-api metadata is missing from .github/ci-config.yml")
+
+metadata = {}
+for line in match.group("body").splitlines():
+    field = re.fullmatch(r"    (color|description):\s*'([^']*)'\s*", line)
+    if field is not None:
+        metadata[field.group(1)] = field.group(2)
+
+if set(metadata) != {"color", "description"}:
+    raise SystemExit("ci:public-api metadata must define exactly color and description")
+
+print(f"{metadata['color']}\t{metadata['description']}")
+PY
+}
+
+IFS=$'\t' read -r PUBLIC_API_COLOR PUBLIC_API_DESCRIPTION < <(public_api_metadata)
+if [[ -z "${PUBLIC_API_COLOR}" || -z "${PUBLIC_API_DESCRIPTION}" ]]; then
+  echo "ci:public-api metadata is empty" >&2
+  exit 1
+fi
+
 # Ensure gh auth works
 gh auth status >/dev/null
 
@@ -74,7 +109,7 @@ ensure "area:semantic" "c2e0c6" "Semantic analysis"
 
 echo ""
 echo "=== Lane Trigger Labels ==="
-ensure_reconciled "ci:public-api" "0052cc" "Run public API surface validation"
+ensure_reconciled "ci:public-api" "${PUBLIC_API_COLOR}" "${PUBLIC_API_DESCRIPTION}"
 
 echo ""
 echo "=== Done ==="
