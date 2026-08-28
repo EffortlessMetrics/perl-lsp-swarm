@@ -2,7 +2,7 @@
 //!
 //! Provides context-aware method completion including DBI and common client APIs.
 
-use super::lexical_context::{is_in_comment, is_in_heredoc, is_in_regex, is_in_string};
+use super::lexical_context::{is_in_comment, is_in_heredoc, is_in_pod, is_in_regex, is_in_string};
 use super::scope_distance;
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
 use perl_semantic_analyzer::symbol::{Symbol, SymbolKind, SymbolTable};
@@ -281,67 +281,12 @@ pub fn infer_receiver_type(context: &CompletionContext, source: &str) -> Option<
     None
 }
 
-fn is_in_pod_block(source: &str, position: usize) -> bool {
-    let source_before_position = source.get(..position).unwrap_or(source);
-    enum PodState<'a> {
-        Code,
-        CutTerminated,
-        Begin(&'a str),
-        ForParagraph,
-    }
-
-    let mut state = PodState::Code;
-    for line in source_before_position.split_inclusive('\n') {
-        let content = line.strip_suffix('\n').unwrap_or(line);
-        let directive = content.split_ascii_whitespace().next();
-
-        match state {
-            PodState::Code => match directive {
-                Some("=pod") | Some("=head1") | Some("=head2") | Some("=head3")
-                | Some("=head4") | Some("=over") | Some("=item") | Some("=back") => {
-                    state = PodState::CutTerminated;
-                }
-                Some("=begin") => {
-                    state = PodState::Begin(
-                        content.split_ascii_whitespace().nth(1).unwrap_or_default(),
-                    );
-                }
-                Some("=for") => state = PodState::ForParagraph,
-                _ => {}
-            },
-            PodState::CutTerminated => {
-                if directive == Some("=cut") {
-                    state = PodState::Code;
-                } else if directive == Some("=begin") {
-                    state = PodState::Begin(
-                        content.split_ascii_whitespace().nth(1).unwrap_or_default(),
-                    );
-                }
-            }
-            PodState::Begin(format) => {
-                if directive == Some("=end")
-                    && content.split_ascii_whitespace().nth(1) == Some(format)
-                {
-                    state = PodState::Code;
-                }
-            }
-            PodState::ForParagraph => {
-                if content.trim().is_empty() || directive == Some("=cut") {
-                    state = PodState::Code;
-                }
-            }
-        }
-    }
-
-    !matches!(state, PodState::Code)
-}
-
 fn is_code_position(source: &str, position: usize) -> bool {
     !(is_in_string(source, position)
         || is_in_comment(source, position)
         || is_in_heredoc(source, position)
         || is_in_regex(source, position)
-        || is_in_pod_block(source, position))
+        || is_in_pod(source, position))
 }
 
 fn binding_at_position<'a>(
@@ -750,13 +695,32 @@ mod tests {
     #[test]
     fn pod_for_is_one_paragraph_and_begin_ends_at_matching_end() {
         let begin = "=begin comment\ndocs\n=end comment\nmy $code = 1;";
-        assert!(!is_in_pod_block(begin, begin.len()));
+        assert!(!is_in_pod(begin, begin.len()));
 
         let for_body = "=for comment\ndocs\n$code";
-        assert!(is_in_pod_block(for_body, for_body.len()));
+        assert!(is_in_pod(for_body, for_body.len()));
 
         let for_code = "=for comment\ndocs\n\nmy $code = 1;";
-        assert!(!is_in_pod_block(for_code, for_code.len()));
+        assert!(!is_in_pod(for_code, for_code.len()));
         assert!(is_code_position(for_code, for_code.find("my $code").unwrap()));
+    }
+
+    #[test]
+    fn pod_state_ignores_heredoc_directives_and_invalid_indentation() {
+        let source =
+            "my $text = <<'END';\n=begin comment\n=for comment\n=end comment\nEND\nmy $code = 1;";
+        assert!(!is_in_pod(source, source.len()));
+        assert!(is_code_position(source, source.find("my $code").unwrap()));
+
+        let indented = "  =pod\nnot documentation\nmy $code = 1;";
+        assert!(!is_in_pod(indented, indented.len()));
+        assert!(is_code_position(indented, indented.find("my $code").unwrap()));
+    }
+
+    #[test]
+    fn malformed_begin_does_not_suppress_following_code() {
+        let source = "=begin\nnot documentation\nmy $code = 1;";
+        assert!(!is_in_pod(source, source.len()));
+        assert!(is_code_position(source, source.find("my $code").unwrap()));
     }
 }

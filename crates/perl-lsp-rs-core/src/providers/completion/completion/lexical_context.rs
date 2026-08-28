@@ -1345,15 +1345,23 @@ pub(super) fn is_in_pod(source: &str, position: usize) -> bool {
             let directive = line.split_ascii_whitespace().next();
             state = match state {
                 PodState::Code => match directive {
-                    Some("=begin") => PodState::Begin(line.split_ascii_whitespace().nth(1)),
-                    Some("=for") => PodState::ForParagraph,
+                    Some("=begin") => line
+                        .split_ascii_whitespace()
+                        .nth(1)
+                        .filter(|format| !format.starts_with('#'))
+                        .map_or(PodState::Code, |format| PodState::Begin(Some(format))),
+                    Some("=for") if line.split_ascii_whitespace().nth(1).is_some() => {
+                        PodState::ForParagraph
+                    }
                     _ if is_pod_start_marker(line) => PodState::CutTerminated,
                     _ => PodState::Code,
                 },
                 PodState::CutTerminated if directive == Some("=cut") => PodState::Code,
-                PodState::CutTerminated if directive == Some("=begin") => {
-                    PodState::Begin(line.split_ascii_whitespace().nth(1))
-                }
+                PodState::CutTerminated if directive == Some("=begin") => line
+                    .split_ascii_whitespace()
+                    .nth(1)
+                    .filter(|format| !format.starts_with('#'))
+                    .map_or(PodState::CutTerminated, |format| PodState::Begin(Some(format))),
                 PodState::CutTerminated => PodState::CutTerminated,
                 PodState::Begin(Some(format))
                     if directive == Some("=end")
@@ -1449,9 +1457,16 @@ fn is_pod_start_marker(line: &str) -> bool {
 
     // Per perlpod: the command paragraph must begin at column 0.
     // Do NOT use trim_start() here — indented `=pod` is not a POD directive.
-    line.strip_prefix('=')
-        .and_then(|rest| rest.chars().next())
-        .is_some_and(|command| command.is_ascii_alphabetic())
+    let Some(command) =
+        line.strip_prefix('=').and_then(|rest| rest.split_ascii_whitespace().next())
+    else {
+        return false;
+    };
+
+    matches!(
+        command,
+        "=pod" | "=head1" | "=head2" | "=head3" | "=head4" | "=over" | "=item" | "=back"
+    )
 }
 
 fn is_pod_end_marker(line: &str) -> bool {
