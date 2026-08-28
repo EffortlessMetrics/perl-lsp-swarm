@@ -57,6 +57,7 @@ if let Some(tree) = parser.parse("my $x = 42;") {
 | `Tree::reparse_mode() -> Option<ReparseMode>` | Reports unchanged reuse, token replay, or the typed full-parse fallback reason |
 | `Tree::incremental_metrics() -> Option<&IncrementalMetrics>` | Reports tokens reused/re-lexed and bytes reprocessed; absent for initial and unchanged parses |
 | `Tree::reprocessed_ranges() -> Vec<Range<usize>>` | Lexer work ranges from the most recent replay or fallback, not structural tree-difference ranges |
+| `Tree::semantic_overlay() -> SemanticOverlay<'_>` | Experimental definition/import/pragma queries when `semantic-overlay` is enabled |
 | `Node::kind() -> String` | Grammar-canonical node type name (e.g. `"source_file"`) matching tree-sitter output |
 | `Node::native_kind() -> &'static str` | Native v3 internal node name (e.g. `"Program"`) |
 | `Node::grammar_kind() -> String` | Compatibility alias of `kind()` |
@@ -84,6 +85,32 @@ if let Some(tree) = parser.parse("my $x = 42;") {
 | `ParseOutcome` / `ParseFailure` / `ParseDiagnostic` | Detailed recovery and catastrophic-failure reporting |
 | `ReparseMode` / `FallbackReason` / `IncrementalMetrics` | Explicit bounded-replay operation classification and measurements |
 | `Query` / `QueryCursor` | Structural AST matching when the `queries` feature is enabled |
+
+### Semantic overlay
+
+The default feature set is parser-only. Enable `semantic-overlay` to compile the experimental
+file-local definition, visible-import, and pragma-state query surface:
+
+```toml
+tree-sitter-perl-rs = { version = "...", features = ["semantic-overlay"] }
+```
+
+This feature exposes `Tree::semantic_overlay()`, `SemanticOverlay`, `OverlayDefinition`, and
+`VisibleImport`, and owns the facade's optional direct dependencies on `perl-module`,
+`perl-pragma`, and `perl-semantic-analyzer`. Without the feature, the overlay API is absent at
+compile time rather than returning a runtime “unavailable” result. The independent `queries`
+feature does not enable the semantic overlay.
+
+The default and queries-only resolved graphs exclude `perl-module` and
+`perl-semantic-analyzer`. `perl-parser-core` still resolves `perl-pragma` for its parser/HIR
+compile-time environment; this feature removes the facade's direct edge and does not claim that
+parser-owned transitive dependency is absent.
+
+Run the repository example with:
+
+```text
+cargo run -p tree-sitter-perl-rs --example semantic_overlay_queries --features semantic-overlay
+```
 
 ### Structural queries
 

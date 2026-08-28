@@ -56,6 +56,7 @@ mod parser;
 mod point;
 #[cfg(feature = "queries")]
 mod query;
+#[cfg(feature = "semantic-overlay")]
 mod semantic_overlay;
 mod support;
 mod tree;
@@ -67,6 +68,7 @@ pub use parser::{
     FallbackReason, IncrementalMetrics, ParseFailure, ParseOutcome, Parser, ReparseMode,
 };
 pub use point::Point;
+#[cfg(feature = "semantic-overlay")]
 pub use semantic_overlay::{OverlayDefinition, SemanticOverlay, VisibleImport};
 pub use tree::Tree;
 
