@@ -226,6 +226,28 @@ impl DiagnosticsProvider {
         module_resolver: Option<&dyn Fn(&str, usize) -> bool>,
         module_search_context: &[ModuleSearchPathDisplay],
         source_path: Option<&Path>,
+    ) -> Vec<Diagnostic> {
+        self.get_diagnostics_with_search_context_and_project_version(
+            ast,
+            parse_errors,
+            source,
+            module_resolver,
+            module_search_context,
+            source_path,
+            None,
+        )
+    }
+
+    /// Generate diagnostics with labeled search context and a project version fallback.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_diagnostics_with_search_context_and_project_version(
+        &self,
+        ast: &std::sync::Arc<Node>,
+        parse_errors: &[ParseError],
+        source: &str,
+        module_resolver: Option<&dyn Fn(&str, usize) -> bool>,
+        module_search_context: &[ModuleSearchPathDisplay],
+        source_path: Option<&Path>,
         project_version: Option<&str>,
     ) -> Vec<Diagnostic> {
         self.get_diagnostics_with_path_and_semantics_impl(
@@ -312,6 +334,34 @@ impl DiagnosticsProvider {
     /// and labeled `@INC` roots from the runtime include-context builder.
     #[allow(clippy::too_many_arguments)]
     pub fn get_diagnostics_with_search_context_and_semantics<Q: SemanticQueries>(
+        &self,
+        ast: &std::sync::Arc<Node>,
+        parse_errors: &[ParseError],
+        source: &str,
+        module_resolver: Option<&dyn Fn(&str, usize) -> bool>,
+        module_search_context: &[ModuleSearchPathDisplay],
+        source_path: Option<&Path>,
+        file_id: FileId,
+        semantic_queries: &Q,
+    ) -> Vec<Diagnostic> {
+        self.get_diagnostics_with_search_context_and_semantics_and_project_version(
+            ast,
+            parse_errors,
+            source,
+            module_resolver,
+            module_search_context,
+            source_path,
+            None,
+            file_id,
+            semantic_queries,
+        )
+    }
+
+    /// Generate semantic-aware diagnostics with labeled search context and a project version fallback.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_diagnostics_with_search_context_and_semantics_and_project_version<
+        Q: SemanticQueries,
+    >(
         &self,
         ast: &std::sync::Arc<Node>,
         parse_errors: &[ParseError],

@@ -788,7 +788,7 @@ impl LspServer {
                             workspace_index.with_semantic_queries_for_uri(
                                 uri,
                                 |file_id, queries| {
-                                    provider.get_diagnostics_with_search_context_and_semantics(
+                                    provider.get_diagnostics_with_search_context_and_semantics_and_project_version(
                                         ast,
                                         &parse_errors,
                                         &text,
@@ -808,7 +808,7 @@ impl LspServer {
                                 uri,
                                 &scoped_graph,
                                 |file_id, queries| {
-                                    provider.get_diagnostics_with_search_context_and_semantics(
+                                    provider.get_diagnostics_with_search_context_and_semantics_and_project_version(
                                         ast,
                                         &parse_errors,
                                         &text,
@@ -824,7 +824,7 @@ impl LspServer {
                         }
                     });
                 semantic_diags.unwrap_or_else(|| {
-                    provider.get_diagnostics_with_search_context(
+                    provider.get_diagnostics_with_search_context_and_project_version(
                         ast,
                         &parse_errors,
                         &text,
@@ -836,7 +836,7 @@ impl LspServer {
                 })
             };
             #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-            let mut diagnostics = provider.get_diagnostics_with_search_context(
+            let mut diagnostics = provider.get_diagnostics_with_search_context_and_project_version(
                 ast,
                 &parse_errors,
                 &text,
@@ -1910,7 +1910,7 @@ impl LspServer {
                                 workspace_index.with_semantic_queries_for_uri(
                                     uri_str,
                                     |file_id, queries| {
-                                        provider.get_diagnostics_with_search_context_and_semantics(
+                                        provider.get_diagnostics_with_search_context_and_semantics_and_project_version(
                                             ast,
                                             parse_errors,
                                             &doc.text,
@@ -1930,7 +1930,7 @@ impl LspServer {
                                     uri_str,
                                     &scoped_graph,
                                     |file_id, queries| {
-                                        provider.get_diagnostics_with_search_context_and_semantics(
+                                        provider.get_diagnostics_with_search_context_and_semantics_and_project_version(
                                             ast,
                                             parse_errors,
                                             &doc.text,
@@ -1946,7 +1946,7 @@ impl LspServer {
                             }
                         });
                     semantic_diags.unwrap_or_else(|| {
-                        provider.get_diagnostics_with_search_context(
+                        provider.get_diagnostics_with_search_context_and_project_version(
                             ast,
                             parse_errors,
                             &doc.text,
@@ -1958,15 +1958,16 @@ impl LspServer {
                     })
                 };
                 #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-                let mut diagnostics = provider.get_diagnostics_with_search_context(
-                    ast,
-                    parse_errors,
-                    &doc.text,
-                    Some(&resolver),
-                    &search_context,
-                    source_path.as_deref(),
-                    project_version.as_deref(),
-                );
+                let mut diagnostics = provider
+                    .get_diagnostics_with_search_context_and_project_version(
+                        ast,
+                        parse_errors,
+                        &doc.text,
+                        Some(&resolver),
+                        &search_context,
+                        source_path.as_deref(),
+                        project_version.as_deref(),
+                    );
 
                 // Add native critic diagnostics when explicitly selected.
                 let critic_source_identity = critic_source_identity_for(uri_str, *gen_at_snapshot);
@@ -3096,6 +3097,76 @@ mod tests {
     }
 
     #[test]
+    fn workspace_reload_drops_malformed_and_absent_project_versions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("lifecycle-project");
+        std::fs::create_dir_all(&folder)?;
+        let config_path = folder.join(".perl-lsp.toml");
+        std::fs::write(&config_path, "[perl]\nversion = \"5.20\"\n")?;
+        let file = folder.join("main.pl");
+        let uri = url::Url::from_file_path(&file)
+            .map_err(|()| "failed to build lifecycle file URI")?
+            .to_string();
+        let folder_uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| "failed to build lifecycle folder URI")?
+            .to_string();
+        let server = make_server_with_capture().0;
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(folder.clone()),
+        );
+        server.load_and_apply_project_config();
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "sub f ($x) { return $x; }\n"}
+        })))?;
+        let initial = server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("initial lifecycle report missing")?;
+        let initial_item = initial["items"]
+            .as_array()
+            .and_then(|items| items.first())
+            .ok_or("initial lifecycle item missing")?;
+        let initial_id = initial_item["resultId"]
+            .as_str()
+            .ok_or("initial lifecycle result ID missing")?
+            .to_string();
+        assert!(initial_item.to_string().contains("PL900"));
+
+        std::fs::write(&config_path, "[perl]\nversion = \"5.20.1\"\n")?;
+        server.load_and_apply_project_config();
+        let malformed = server
+            .handle_workspace_diagnostic(Some(json!({
+                "previousResultIds": [{"uri": uri, "value": initial_id}]
+            })))?
+            .ok_or("malformed lifecycle report missing")?;
+        let malformed_item = malformed["items"]
+            .as_array()
+            .and_then(|items| items.first())
+            .ok_or("malformed lifecycle item missing")?;
+        assert_eq!(malformed_item["kind"], "full");
+        assert!(!malformed_item.to_string().contains("PL900"));
+
+        let malformed_id = malformed_item["resultId"]
+            .as_str()
+            .ok_or("malformed lifecycle result ID missing")?
+            .to_string();
+        std::fs::remove_file(&config_path)?;
+        server.load_and_apply_project_config();
+        let absent = server
+            .handle_workspace_diagnostic(Some(json!({
+                "previousResultIds": [{"uri": uri, "value": malformed_id}]
+            })))?
+            .ok_or("absent lifecycle report missing")?;
+        let absent_item = absent["items"]
+            .as_array()
+            .and_then(|items| items.first())
+            .ok_or("absent lifecycle item missing")?;
+        assert!(!absent_item.to_string().contains("PL900"));
+        Ok(())
+    }
+
+    #[test]
     fn workspace_reload_preserves_per_folder_project_version_isolation()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
@@ -3139,13 +3210,14 @@ mod tests {
             .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
             .ok_or("initial workspace diagnostic response missing")?;
         let first_items = first_report["items"].as_array().ok_or("initial report items missing")?;
-        let report_for = |items: &[Value], uri: &str| {
-            items.iter().find(|item| item["uri"].as_str() == Some(uri))
-        };
-        let first_item =
-            report_for(first_items, &first_uri).ok_or("first folder report missing")?;
-        let second_item =
-            report_for(first_items, &second_uri).ok_or("second folder report missing")?;
+        let first_item = first_items
+            .iter()
+            .find(|item| item["uri"].as_str() == Some(first_uri.as_str()))
+            .ok_or("first folder report missing")?;
+        let second_item = first_items
+            .iter()
+            .find(|item| item["uri"].as_str() == Some(second_uri.as_str()))
+            .ok_or("second folder report missing")?;
         let first_id = first_item["resultId"].as_str().ok_or("first folder result ID missing")?;
         let second_id =
             second_item["resultId"].as_str().ok_or("second folder result ID missing")?;
@@ -3163,10 +3235,14 @@ mod tests {
             })))?
             .ok_or("reloaded workspace diagnostic response missing")?;
         let reloaded_items = reloaded["items"].as_array().ok_or("reloaded report items missing")?;
-        let reloaded_first =
-            report_for(reloaded_items, &first_uri).ok_or("reloaded first report missing")?;
-        let reloaded_second =
-            report_for(reloaded_items, &second_uri).ok_or("reloaded second report missing")?;
+        let reloaded_first = reloaded_items
+            .iter()
+            .find(|item| item["uri"].as_str() == Some(first_uri.as_str()))
+            .ok_or("reloaded first report missing")?;
+        let reloaded_second = reloaded_items
+            .iter()
+            .find(|item| item["uri"].as_str() == Some(second_uri.as_str()))
+            .ok_or("reloaded second report missing")?;
         assert_eq!(reloaded_first["kind"], "full");
         assert!(!reloaded_first.to_string().contains("PL900"));
         assert!(reloaded_second.to_string().contains("PL900"));
