@@ -29,8 +29,7 @@ fn retired_mcp_alias_exits_without_starting_lsp() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-fn reserved_mcp_subcommand_exits_without_starting_either_protocol()
--> Result<(), Box<dyn std::error::Error>> {
+fn reserved_mcp_subcommand_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let output = run_perllsp(&["mcp", "--workspace", ".", "--stdio"])?;
 
     if output.status.success() {
@@ -45,14 +44,16 @@ fn reserved_mcp_subcommand_exits_without_starting_either_protocol()
         stderr.contains("is reserved for the native MCP adapter"),
         "missing native-adapter boundary: {stderr}"
     );
-    assert!(stderr.contains("No MCP server was started."), "missing fail-closed result: {stderr}");
+    assert!(
+        stderr.contains("No MCP server was started."),
+        "missing fail-closed result: {stderr}"
+    );
     assert!(!stderr.contains("Content-Length"), "LSP framing leaked into rejection: {stderr}");
     Ok(())
 }
 
 #[test]
-fn reserved_mcp_help_documents_the_owned_command_grammar()
--> Result<(), Box<dyn std::error::Error>> {
+fn reserved_mcp_help_is_protocol_clean() -> Result<(), Box<dyn std::error::Error>> {
     let output = run_perllsp(&["mcp", "--help"])?;
 
     if !output.status.success() {
