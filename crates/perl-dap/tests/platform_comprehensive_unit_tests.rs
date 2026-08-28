@@ -93,13 +93,28 @@ fn normalize_path_does_not_convert_non_wsl_mnt_path() -> Result<(), anyhow::Erro
 #[cfg(target_os = "linux")]
 #[test]
 fn normalize_path_wsl_short_mnt_path_no_conversion() -> Result<(), anyhow::Error> {
-    // A bare mount name has no separator after the drive letter, so it is incomplete
-    // and must not become the drive-relative Windows path `C:`.
-    let input = PathBuf::from("/mnt/c");
+    // A mount name is complete only when a separator follows its ASCII drive
+    // letter. Keep adjacent and invalid drive forms untranslated as well.
+    for value in ["/mnt/c", "/mnt/Z", "/mnt/cx", "/mnt/é", "/mnt/1"] {
+        let input = PathBuf::from(value);
+        let normalized = normalize_path(&input);
+        anyhow::ensure!(
+            normalized == input,
+            "incomplete or invalid WSL mount should remain untranslated: {value} -> {}",
+            normalized.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn normalize_path_wsl_mount_root_translates_to_windows_root() -> Result<(), anyhow::Error> {
+    let input = PathBuf::from("/mnt/c/");
     let normalized = normalize_path(&input);
     anyhow::ensure!(
-        normalized == input,
-        "bare WSL mount should remain untranslated, got: {}",
+        normalized == PathBuf::from("C:\\"),
+        "complete WSL mount root should translate exactly, got: {}",
         normalized.display()
     );
     Ok(())
