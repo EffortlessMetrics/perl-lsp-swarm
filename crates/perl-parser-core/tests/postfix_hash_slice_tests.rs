@@ -10,8 +10,11 @@ use cpan_test_helpers::*;
 use perl_parser_core::{Node, NodeKind};
 
 fn count_hash_slices(node: &Node) -> usize {
-    let here = usize::from(matches!(node.kind, NodeKind::HashSlice { .. }));
-    here + node.children().iter().map(count_hash_slices).sum::<usize>()
+    let mut count = usize::from(matches!(&node.kind, NodeKind::HashSlice { .. }));
+    for child in node.children() {
+        count += count_hash_slices(child);
+    }
+    count
 }
 
 fn assert_one_hash_slice(source: &str) {
