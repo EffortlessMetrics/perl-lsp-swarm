@@ -1,0 +1,580 @@
+name: Repair EffectiveLspSurface review findings v2
+
+on:
+  push:
+    branches:
+      - automation/12649-s02-review-repair
+    paths:
+      - .github/workflows/repair-effective-surface-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact repair branch
+        uses: actions/checkout@v4
+        with:
+          ref: automation/12649-s02-review-repair
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Apply bounded S02 review repair
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          ROOT = Path('.')
+
+          def read(path: str) -> str:
+              return (ROOT / path).read_text(encoding='utf-8')
+
+          def write(path: str, text: str) -> None:
+              (ROOT / path).write_text(text, encoding='utf-8')
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+              return text.replace(old, new, 1)
+
+          def replace_count(text: str, old: str, new: str, expected: int, label: str) -> str:
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f'{label}: expected {expected} matches, found {count}')
+              return text.replace(old, new)
+
+          def insert_after(text: str, marker: str, insertion: str, label: str) -> str:
+              return replace_once(text, marker, marker + insertion, label)
+
+          def insert_before(text: str, marker: str, insertion: str, label: str) -> str:
+              return replace_once(text, marker, insertion + marker, label)
+
+          # -----------------------------------------------------------------
+          # Typed final-surface authority.
+          # -----------------------------------------------------------------
+          effective_path = 'crates/perl-lsp-rs-core/src/protocol/effective_surface.rs'
+          effective = read(effective_path)
+          effective = insert_after(
+              effective,
+              '    /// `notebookDocumentSync`.\n    NotebookDocumentSync,\n',
+              '    /// `lsp.notebook_cell_execution` identity-only sub-feature.\n'
+              '    ///\n'
+              '    /// This selection has no independent `serverCapabilities` pointer; it\n'
+              '    /// still participates in profile/configuration suppression and the\n'
+              '    /// effective advertised feature-ID set.\n'
+              '    NotebookCellExecution,\n',
+              'capability-family notebook identity',
+          )
+          effective = replace_once(
+              effective,
+              '    /// No active workspace-symbol surface remains for the watcher to serve.\n'
+              '    WorkspaceSurfaceInactive,\n',
+              '    /// The simple `lsp.workspace_symbol` feature gate required by the shipped\n'
+              '    /// watcher-admission predicate is inactive. A resolve-only\n'
+              '    /// `workspaceSymbolProvider` advertisement may still remain active.\n'
+              '    WorkspaceSymbolFeatureDisabled,\n',
+              'watcher reason definition',
+          )
+          effective = replace_count(
+              effective,
+              'WatcherWithholdReason::WorkspaceSurfaceInactive',
+              'WatcherWithholdReason::WorkspaceSymbolFeatureDisabled',
+              1,
+              'watcher reason use',
+          )
+          effective = insert_after(
+              effective,
+              '        (CapabilityFamily::NotebookDocumentSync, base.notebook_document_sync),\n',
+              '        (CapabilityFamily::NotebookCellExecution, base.notebook_cell_execution),\n',
+              'notebook identity base flag',
+          )
+          effective = insert_after(
+              effective,
+              '        CapabilityFamily::NotebookDocumentSync => flags.notebook_document_sync,\n',
+              '        CapabilityFamily::NotebookCellExecution => flags.notebook_cell_execution,\n',
+              'notebook identity post-config flag',
+          )
+          effective = insert_after(
+              effective,
+              '            Self::NotebookDocumentSync => "lsp.notebook_document_sync",\n',
+              '            Self::NotebookCellExecution => "lsp.notebook_cell_execution",\n',
+              'notebook identity feature id',
+          )
+          effective = insert_after(
+              effective,
+              '            Self::NotebookDocumentSync => &["notebookDocumentSync"],\n',
+              '            Self::NotebookCellExecution => &[],\n',
+              'notebook identity wire ownership',
+          )
+          effective = insert_after(
+              effective,
+              '            (Self::NotebookDocumentSync, "lsp.notebook_document_sync"),\n',
+              '            (Self::NotebookCellExecution, "lsp.notebook_cell_execution"),\n',
+              'notebook identity suppression mapping',
+          )
+          effective = replace_once(
+              effective,
+              '                    "insertTextModes": [1, 2],\n',
+              '',
+              'invalid completion insertTextModes removal',
+          )
+          write(effective_path, effective)
+
+          # -----------------------------------------------------------------
+          # Discriminating model proof.
+          # -----------------------------------------------------------------
+          tests_path = 'crates/perl-lsp-rs-core/src/protocol/effective_surface/tests.rs'
+          tests = read(tests_path)
+
+          notebook_test = '''#[test]
+fn notebook_cell_execution_is_a_typed_identity_without_a_wire_pointer() {
+    let all = build_ok(&bare_inputs(FeatureProfile::All));
+    assert_eq!(
+        all.families.get(&CapabilityFamily::NotebookCellExecution),
+        Some(&FamilyOutcome::Static),
+    );
+    assert!(all.advertised_feature_ids.contains(&"lsp.notebook_cell_execution"));
+    assert!(CapabilityFamily::NotebookCellExecution.wire_prefixes().is_empty());
+    assert!(
+        flatten_surface_pointers(&all.server_capabilities)
+            .iter()
+            .all(|pointer| !pointer.contains("notebookCellExecution")),
+        "identity-only sub-feature must not invent a server capability"
+    );
+
+    let production = build_ok(&bare_inputs(FeatureProfile::Production));
+    assert_eq!(
+        production.families.get(&CapabilityFamily::NotebookCellExecution),
+        Some(&FamilyOutcome::UnadvertisedUnsupported),
+    );
+    assert!(
+        !production.advertised_feature_ids.contains(&"lsp.notebook_cell_execution")
+    );
+
+    let mut disabled = bare_inputs(FeatureProfile::All);
+    disabled
+        .disabled_feature_ids
+        .insert("lsp.notebook_cell_execution".to_string());
+    let suppressed = build_ok(&disabled);
+    assert_eq!(
+        suppressed.families.get(&CapabilityFamily::NotebookCellExecution),
+        Some(&FamilyOutcome::Suppressed(
+            SuppressionReason::DisabledByConfiguration {
+                feature_id: "lsp.notebook_cell_execution".to_string(),
+            },
+        )),
+    );
+    assert!(
+        !suppressed.advertised_feature_ids.contains(&"lsp.notebook_cell_execution")
+    );
+}
+
+'''
+          tests = insert_before(
+              tests,
+              '#[test]\nfn position_encoding_pin_records_negotiated_preference_as_downgrade() {',
+              notebook_test,
+              'notebook identity test insertion',
+          )
+
+          completion_test = '''#[test]
+fn completion_projection_removes_invalid_server_insert_text_modes_shape() {
+    let surface = build_ok(&bare_inputs(FeatureProfile::Production));
+    assert_eq!(
+        surface
+            .server_capabilities
+            .pointer("/completionProvider/completionItem/labelDetailsSupport"),
+        Some(&serde_json::json!(true)),
+    );
+    assert!(
+        surface
+            .server_capabilities
+            .pointer("/completionProvider/completionItem/insertTextModes")
+            .is_none(),
+        "insertTextModes is a client capability, not a valid server capability"
+    );
+}
+
+'''
+          tests = insert_before(
+              tests,
+              '// ---------------------------------------------------------------------------\n'
+              '// Static vs planned-dynamic exclusivity (#9665 item 4)\n',
+              completion_test,
+              'completion negative-control test insertion',
+          )
+
+          watcher_insert = '''    // The shipped watcher predicate still depends on the simple
+    // `lsp.workspace_symbol` flag. Suppressing only that flag leaves the
+    // resolve-capable wire surface active, but withholds the watcher for the
+    // exact typed feature-gate cause.
+    let mut resolve_only = base();
+    resolve_only
+        .disabled_feature_ids
+        .insert("lsp.workspace_symbol".to_string());
+    let resolve_only = build_ok(&resolve_only);
+    assert_eq!(
+        resolve_only.server_capabilities.get("workspaceSymbolProvider"),
+        Some(&serde_json::json!({ "resolveProvider": true })),
+    );
+    assert!(resolve_only.registration_plan.registrations.is_empty());
+    assert_eq!(
+        resolve_only.watcher_registration_decision,
+        WatcherPlanDecision::Withheld(
+            WatcherWithholdReason::WorkspaceSymbolFeatureDisabled,
+        ),
+    );
+
+'''
+          tests = insert_before(
+              tests,
+              '    // With the JetBrains compatibility exception: force-disabled.\n',
+              watcher_insert,
+              'watcher resolve-only regression',
+          )
+
+          parity_fn_start = tests.index(
+              'fn model_matches_static_builder_except_runtime_authority_deltas() {'
+          )
+          parity_fn_end = tests.index('\nfn retain_count(', parity_fn_start)
+          parity = tests[parity_fn_start:parity_fn_end]
+          model_delta_start = parity.index(
+              '        let removed_model_only = retain_count(&mut model_only, |pointer| {'
+          )
+          model_delta_end = parity.index(
+              '        // 4. inlineCompletionProvider tri-state:', model_delta_start
+          )
+          parity = (
+              parity[:model_delta_start]
+              + '''        assert!(
+            model_only.iter().any(|pointer| pointer == "positionEncoding"),
+            "positionEncoding itself must be the model-only pin pointer"
+        );
+        retain_count(&mut model_only, |pointer| {
+            pointer == "positionEncoding"
+                || pointer.starts_with("workspace")
+                || pointer.starts_with("textDocumentSync")
+        });
+'''
+              + parity[model_delta_end:]
+          )
+          parity = insert_after(
+              parity,
+              '        static_only.retain(|pointer| !pointer.starts_with("textDocumentSync"));\n',
+              '''
+        // The live static builder still emits this invalid server-capability
+        // field. S03 removes that second writer; S02 must not preserve it in
+        // the intended final-surface authority.
+        let invalid_insert_text_modes =
+            "completionProvider.completionItem.insertTextModes[]";
+        assert!(
+            static_only.iter().any(|pointer| pointer == invalid_insert_text_modes),
+            "the pre-S03 static builder delta must remain explicit"
+        );
+        static_only.retain(|pointer| pointer != invalid_insert_text_modes);
+''',
+              'insertTextModes static parity delta',
+          )
+          sanitizer_marker = '''        assert_eq!(
+            sanitized_static, sanitized_final,
+            "{profile_name}: model must equal the static builder outside documented deltas"
+        );
+'''
+          parity = insert_before(
+              parity,
+              sanitizer_marker,
+              '''        if let Some(completion_item) = sanitized_static
+            .pointer_mut("/completionProvider/completionItem")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            completion_item.remove("insertTextModes");
+        }
+''',
+              'sanitize explicit static insertTextModes delta',
+          )
+          parity = parity.replace(
+              '// Everything OUTSIDE the four documented delta families must agree',
+              '// Everything outside the documented authority deltas must agree',
+          )
+          tests = tests[:parity_fn_start] + parity + tests[parity_fn_end:]
+
+          inventory_start = tests.index(
+              '#[test]\nfn every_9665_targeted_inventory_row_maps_into_the_model() {'
+          )
+          inventory_end = tests.index(
+              '\n#[test]\nfn file_operation_intersection_follows_normalized_facts()',
+              inventory_start,
+          )
+          inventory_test = '''#[test]
+fn every_9665_targeted_inventory_row_maps_into_the_model() {
+    use crate::protocol::final_surface_inventory::{SurfaceKind, final_surface_rows};
+
+    let rows = final_surface_rows();
+    for row in &rows {
+        if row.target_issue != "#9665" || row.kind != SurfaceKind::Suppression {
+            continue;
+        }
+
+        // Each named suppression input is expressible as a typed model
+        // mechanism: disabledFeatures IDs map to feature-ID families;
+        // profile:/tool:/config: inputs are expressed by profile selection,
+        // reviewed RuntimeAvailability, and registration-plan tuning.
+        let expressible = row
+            .protocol_field
+            .starts_with("initializationOptions.disabledFeatures:")
+            || CapabilityFamily::feature_id_for_suppression(row.protocol_field).is_some()
+            || row.protocol_field.starts_with("profile:")
+            || row.protocol_field.starts_with("tool:")
+            || row.protocol_field.starts_with("config:");
+        assert!(
+            expressible,
+            "S02 model cannot yet express suppression row {}",
+            row.surface_id
+        );
+    }
+
+    let compatibility_rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row.target_issue == "#9665" && row.kind == SurfaceKind::Compatibility)
+        .collect();
+    assert_eq!(
+        compatibility_rows.len(),
+        3,
+        "S02 owns only intrinsic client exceptions and the position pin"
+    );
+    for row in compatibility_rows {
+        let maps_to_typed_policy = row.protocol_field
+            == KnownException::JetBrainsWatcherForceDisable.subject_evidence()
+            || row.protocol_field
+                == KnownException::OpenCodePushDiagnosticsRetention.subject_evidence()
+            || row.client_capability_inputs.contains(&"general.positionEncodings");
+        assert!(
+            maps_to_typed_policy,
+            "S02 compatibility row {} lacks an actual typed final-surface policy",
+            row.surface_id
+        );
+    }
+}
+'''
+          tests = tests[:inventory_start] + inventory_test + tests[inventory_end:]
+          write(tests_path, tests)
+
+          # -----------------------------------------------------------------
+          # Live initialize parity keeps one explicit pre-S03 removal delta.
+          # -----------------------------------------------------------------
+          runtime_path = (
+              'crates/perl-lsp-rs/src/runtime/lifecycle/'
+              'effective_surface_parity_tests.rs'
+          )
+          runtime = read(runtime_path)
+          runtime = replace_once(
+              runtime,
+              '//! independently derives the exact final surface the runtime emits, and pins\n',
+              '//! independently derives the intended final surface outside one explicit\n'
+              '//! pre-S03 invalid-field removal delta, and pins\n',
+              'runtime parity module claim',
+          )
+          runtime = replace_once(
+              runtime,
+              '/// Core discriminator: the model must reproduce the EXACT emitted initialize\n'
+              '/// capabilities for the given subject, plus effective advertised identities.\n',
+              '/// Core discriminator: the model must reproduce emitted initialize capabilities\n'
+              '/// outside the explicit pre-S03 `insertTextModes` removal delta, plus effective\n'
+              '/// advertised identities.\n',
+              'runtime parity function claim',
+          )
+          equality_start = runtime.index(
+              '    assert_eq!(\n        response.get("capabilities"),'
+          )
+          equality_end = runtime.index(
+              '    // The model derives identities from final family outcomes',
+              equality_start,
+          )
+          equality = '''    let mut runtime_capabilities = response
+        .get("capabilities")
+        .cloned()
+        .expect("initialize response carries capabilities");
+    let removed_insert_text_modes = runtime_capabilities
+        .pointer_mut("/completionProvider/completionItem")
+        .and_then(Value::as_object_mut)
+        .and_then(|completion_item| completion_item.remove("insertTextModes"));
+    let completion_active = surface
+        .families
+        .get(&CapabilityFamily::Completion)
+        .is_some_and(FamilyOutcome::is_effectively_advertised);
+    if completion_active {
+        assert_eq!(
+            removed_insert_text_modes,
+            Some(json!([1, 2])),
+            "the live pre-S03 path must expose only the enumerated invalid delta"
+        );
+    } else {
+        assert!(removed_insert_text_modes.is_none());
+    }
+    assert!(
+        surface
+            .server_capabilities
+            .pointer("/completionProvider/completionItem/insertTextModes")
+            .is_none(),
+        "the intended authority must not preserve the invalid client-capability field"
+    );
+    assert_eq!(
+        runtime_capabilities, surface.server_capabilities,
+        "model projection must equal shipped initialize capabilities outside the \
+         explicit insertTextModes removal owned by S03"
+    );
+'''
+          runtime = runtime[:equality_start] + equality + runtime[equality_end:]
+          write(runtime_path, runtime)
+
+          # -----------------------------------------------------------------
+          # Inventory ownership: explicit target issue per compatibility row.
+          # -----------------------------------------------------------------
+          inventory_path = 'crates/perl-lsp-rs-core/src/protocol/final_surface_inventory.rs'
+          inventory = read(inventory_path)
+          inventory = replace_once(
+              inventory,
+              '    expiry: &\'static str,\n) -> SurfaceRow {\n',
+              '    expiry: &\'static str,\n    target_issue: &\'static str,\n) -> SurfaceRow {\n',
+              'compat target issue parameter',
+          )
+          inventory = replace_once(
+              inventory,
+              '        target_issue: "#9665",\n        compatibility: Some(CompatBoundary { subject, reason, expiry }),\n',
+              '        target_issue,\n        compatibility: Some(CompatBoundary { subject, reason, expiry }),\n',
+              'compat target issue field',
+          )
+          write(inventory_path, inventory)
+
+          rows_path = 'crates/perl-lsp-rs-core/src/protocol/final_surface_inventory/rows.rs'
+          rows = read(rows_path)
+          section_start = rows.index('fn compatibility_rows() -> Vec<SurfaceRow> {')
+          section_end = rows.index(
+              '\n// ---------------------------------------------------------------------------\n'
+              '// Execute-command identities (#8285)',
+              section_start,
+          )
+          section = rows[section_start:section_end]
+          pattern = re.compile(r'        compat\(\n            "([^"]+)",')
+          matches = list(pattern.finditer(section))
+          if len(matches) != 10:
+              raise SystemExit(
+                  f'compatibility call denominator: expected 10 matches, found {len(matches)}'
+              )
+          ownership = {
+              'compat.client.jetbrains.watcherForceDisable': '#9665',
+              'compat.client.opencode.pushDiagnosticsRetention': '#9665',
+              'compat.protocol.positionEncodingUtf16Pin': '#9665',
+              'compat.protocol.diagnosticRefreshSingularKey': '#6735',
+              'compat.protocol.markdownContentFormatFallback': '#6735',
+              'compat.protocol.completionItemFlattenedShape': '#6735',
+              'compat.negotiated.clientInputsWithoutAdvertisementSeam': '#6735',
+              'compat.initialize.legacyRootPath': '#1671',
+              'compat.initialize.initOptionsRootFallbackChain': '#1671',
+              'compat.initialize.cwdFallback': '#1671',
+          }
+          rebuilt = []
+          cursor = 0
+          for index, match in enumerate(matches):
+              call_start = match.start()
+              call_end = matches[index + 1].start() if index + 1 < len(matches) else len(section)
+              call = section[call_start:call_end]
+              close = call.rfind('        ),')
+              if close < 0:
+                  raise SystemExit(f'compatibility call {match.group(1)} has no closing marker')
+              surface_id = match.group(1)
+              issue = ownership.get(surface_id)
+              if issue is None:
+                  raise SystemExit(f'compatibility call {surface_id} has no explicit owner')
+              call = call[:close] + f'            "{issue}",\n' + call[close:]
+              rebuilt.append(section[cursor:call_start])
+              rebuilt.append(call)
+              cursor = call_end
+          rebuilt.append(section[cursor:])
+          section = ''.join(rebuilt)
+          rows = rows[:section_start] + section + rows[section_end:]
+
+          rows = replace_once(
+              rows,
+              '"until #9665 canonical negotiation model owns markup selection",',
+              '"until #6735 canonical client-capability normalization owns markup selection",',
+              'markdown compatibility expiry',
+          )
+          rows = replace_once(
+              rows,
+              '"until #9665 normalizes capability parsing",',
+              '"until #6735 normalizes capability parsing",',
+              'completion compatibility expiry',
+          )
+          rows = replace_once(
+              rows,
+              '"until #9665 owns root-resolution policy",',
+              '"until #1671 initialize bootstrap owns root-resolution policy",',
+              'init-options root expiry',
+          )
+          rows = replace_once(
+              rows,
+              '"until #9665 defines explicit no-workspace behavior",',
+              '"until #1671 initialize bootstrap defines explicit no-workspace behavior",',
+              'cwd fallback expiry',
+          )
+          rows = replace_once(
+              rows,
+              '"S02 EffectiveLspSurface models each as a typed negotiation outcome (#9665)",',
+              '"owned by #6735 client-capability normalization; S02 consumes only normalized inputs that affect final-surface policy",',
+              'parsed client inputs ownership',
+          )
+          write(rows_path, rows)
+          PY
+
+      - name: Format sources
+        run: cargo fmt --all
+
+      - name: Regenerate final-surface inventory
+        run: >-
+          cargo test -p perl-lsp-rs-core --lib
+          final_surface_inventory::tests::regenerate_checked_in_artifact
+          --locked -- --ignored
+
+      - name: Verify focused authority tests
+        run: |
+          cargo test -p perl-lsp-rs-core --lib effective_surface --locked
+          cargo test -p perl-lsp-rs --lib effective_surface_parity --locked
+          cargo test -p perl-lsp-rs-core --lib capabilities --locked
+          cargo test -p perl-lsp-rs-core --lib final_surface_inventory --locked
+
+      - name: Verify focused lint and formatting
+        run: |
+          cargo clippy -p perl-lsp-rs-core --lib --locked -- -D warnings
+          cargo clippy -p perl-lsp-rs --lib --locked -- -D warnings
+          cargo fmt --all -- --check
+          git diff --check
+
+      - name: Commit exact-head repair
+        shell: bash
+        run: |
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git rm \
+            .github/workflows/repair-effective-surface.yml \
+            .github/workflows/repair-effective-surface-v2.yml
+          git add \
+            crates/perl-lsp-rs-core/src/protocol/effective_surface.rs \
+            crates/perl-lsp-rs-core/src/protocol/effective_surface/tests.rs \
+            crates/perl-lsp-rs-core/src/protocol/final_surface_inventory.rs \
+            crates/perl-lsp-rs-core/src/protocol/final_surface_inventory/rows.rs \
+            crates/perl-lsp-rs/src/runtime/lifecycle/effective_surface_parity_tests.rs \
+            docs/specs/lsp-final-surface-inventory.json
+          git status --short
+          git commit -m "fix(lsp): close EffectiveLspSurface review gaps (#12649)"
+          git push origin HEAD:automation/12649-s02-review-repair
