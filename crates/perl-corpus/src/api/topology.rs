@@ -1235,13 +1235,25 @@ mod tests {
 
         for (label, payload, expected) in cases {
             let topology = serde_json::from_str::<CorpusTopology>(payload)?;
-            match topology.validate() {
-                Err(error) if error == expected => {}
-                result => {
-                    return Err(format!(
-                        "forged {label} must fail validation with {expected:?}, got {result:?}"
-                    )
-                    .into());
+            let asset = topology
+                .assets
+                .first()
+                .cloned()
+                .ok_or_else(|| format!("forged {label} topology has no asset"))?;
+
+            for (entry_point, result) in [
+                ("validate", topology.validate().map(|_| ())),
+                ("with_root", topology.clone().with_root(".").map(|_| ())),
+                ("asset_path", topology.asset_path(&asset).map(|_| ())),
+            ] {
+                match result {
+                    Err(error) if error == expected => {}
+                    result => {
+                        return Err(format!(
+                            "forged {label} must fail through {entry_point} with {expected:?}, got {result:?}"
+                        )
+                        .into());
+                    }
                 }
             }
         }
