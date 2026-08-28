@@ -135,3 +135,43 @@ table "users" => sub {};
     assert!(index.search_generated_workspace_symbols("qorm_table", None).is_empty());
     Ok(())
 }
+
+#[test]
+fn workspace_index_blocks_quickorm_rename_skip_and_unknown_options()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (name, options) in [
+        ("Rename", "rename => { table => 'make_table' }"),
+        ("Skip", "skip => ['table']"),
+        ("Unknown", "unknown => 'value'"),
+    ] {
+        let index = WorkspaceIndex::new();
+        let uri = Url::parse(&format!("file:///lib/MyApp/Schema/{name}.pm"))?;
+        let source = format!(
+            "package MyApp::Schema::{name};\nuse DBIx::QuickORM type => 'table', {options};\ntable users => sub {{}};\n1;\n"
+        );
+
+        index.index_file(uri.clone(), source.clone())?;
+        assert!(index.search_generated_workspace_symbols("qorm_table", None).is_empty());
+
+        let query_offset = u32::try_from(source.len())?;
+        let dynamic_evidence = index
+            .with_semantic_queries_for_uri(uri.as_str(), |file_id, queries| {
+                queries.dynamic_callable_may_be_visible_at(
+                    file_id,
+                    query_offset,
+                    "unknown_callable",
+                )
+            })
+            .ok_or("QuickORM option file was not available to semantic queries")?
+            .ok_or("QuickORM option boundary did not reach ImportExportIndex queries")?;
+        match dynamic_evidence {
+            DynamicCallableEvidence::DynamicImport { module, .. } => {
+                assert_eq!(module, "DBIx::QuickORM");
+            }
+            DynamicCallableEvidence::EvalSub { .. } => {
+                return Err("QuickORM option was misclassified as eval-sub evidence".into());
+            }
+        }
+    }
+    Ok(())
+}

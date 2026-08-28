@@ -288,6 +288,38 @@ table users => sub {};
 }
 
 #[test]
+fn bare_lexical_block_preserves_same_package_import_and_isolates_nested_package()
+-> Result<(), Box<dyn std::error::Error>> {
+    let same_package = generated_facts_from_source(
+        r#"
+package MyApp::Schema::User;
+{
+    use DBIx::QuickORM type => 'table';
+}
+table users => sub {};
+1;
+"#,
+    )?;
+    assert_eq!(canonical_names(&same_package), vec!["MyApp::Schema::User::qorm_table"]);
+
+    let nested_package = generated_facts_from_source(
+        r#"
+package MyApp::Schema::User;
+{
+    package Other::Package {
+        use DBIx::QuickORM type => 'table';
+        table other_users => sub {};
+    }
+}
+table users => sub {};
+1;
+"#,
+    )?;
+    assert_eq!(canonical_names(&nested_package), vec!["Other::Package::qorm_table"]);
+    Ok(())
+}
+
+#[test]
 fn dynamic_builder_consumes_table_package_authority() -> Result<(), Box<dyn std::error::Error>> {
     let facts = generated_facts_from_source(
         r#"
@@ -382,6 +414,30 @@ fn trailing_dollar_in_double_quoted_table_name_is_literal() -> Result<(), Box<dy
 }
 
 #[test]
+fn trailing_at_in_double_quoted_table_name_is_literal() -> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        "package MyApp::Schema::At; use DBIx::QuickORM type => 'table'; table \"archive@\" => sub {};",
+    )?;
+    assert_eq!(canonical_names(&facts), vec!["MyApp::Schema::At::qorm_table"]);
+    Ok(())
+}
+
+#[test]
+fn array_interpolation_in_double_quoted_table_name_remains_dynamic()
+-> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        r#"
+package MyApp::Schema::Users;
+use DBIx::QuickORM type => 'table';
+table "@users" => sub {};
+1;
+"#,
+    )?;
+    assert!(facts.is_empty());
+    Ok(())
+}
+
+#[test]
 fn nested_builder_does_not_promote_outer_table_call() -> Result<(), Box<dyn std::error::Error>> {
     let facts = generated_facts_from_source(
         "package User; use DBIx::QuickORM type => 'table'; table users, wrapper(sub {});",
@@ -454,6 +510,25 @@ table users => sub {};
     )?;
 
     assert!(facts.is_empty());
+    Ok(())
+}
+
+#[test]
+fn rename_skip_and_unknown_quickorm_options_remain_dynamic()
+-> Result<(), Box<dyn std::error::Error>> {
+    for source in [
+        "package User; use DBIx::QuickORM type => 'table', rename => { table => 'make_table' }; table users => sub {};",
+        "package User; use DBIx::QuickORM type => 'table', skip => ['table']; table users => sub {};",
+        "package User; use DBIx::QuickORM type => 'table', unknown => 'value'; table users => sub {};",
+    ] {
+        let specs = import_specs_from_source(source)?;
+        let spec = quickorm_spec(&specs)?;
+        assert_eq!(spec.kind, ImportKind::ManualImport);
+        assert_eq!(spec.symbols, ImportSymbols::Dynamic);
+        assert_eq!(spec.provenance, Provenance::DynamicBoundary);
+        assert_eq!(spec.confidence, Confidence::Low);
+        assert!(generated_facts_from_source(source)?.is_empty());
+    }
     Ok(())
 }
 

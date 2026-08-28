@@ -166,6 +166,15 @@ fn walk_direct_statement(
                 context.current_package = Some(name.clone());
             }
         }
+        NodeKind::Block { statements } => {
+            // A bare lexical block does not change the current package.  Its
+            // compile-time QuickORM imports still configure that package, so
+            // walk its direct statements while preserving the package-scoped
+            // authority map.  Control-flow and subroutine bodies are not
+            // reached here because this walker intentionally does not recurse
+            // through their enclosing nodes.
+            walk_direct_statements(statements, file_id, context, facts, source);
+        }
         NodeKind::Use { module, args, .. } if module == QUICKORM_MODULE => {
             let package = current_package(context).to_string();
             let source_segment = source.and_then(|text| source_import_segment(text, node));
@@ -209,9 +218,9 @@ fn walk_direct_statement(
                 fact.entity.canonical_name != format!("{package}::{QORM_TABLE_MEMBER}")
             });
         }
-        // Runtime-controlled and bare lexical blocks are not package-level
-        // table declarations. Do not recurse into them or let their package /
-        // framework state escape into the containing package.
+        // Runtime-controlled nodes and nested subroutine bodies are not
+        // package-level table declarations. Do not recurse into them or let
+        // runtime-controlled framework state escape into the containing package.
         _ => {}
     }
 }
@@ -278,10 +287,7 @@ fn contains_unescaped_interpolation(value: &str) -> bool {
             escaped = true;
             continue;
         }
-        if character == '@' {
-            return true;
-        }
-        if character == '$'
+        if matches!(character, '@' | '$')
             && characters
                 .peek()
                 .is_some_and(|next| next.is_ascii_alphanumeric() || matches!(next, '_' | '{'))
