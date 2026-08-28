@@ -20,6 +20,7 @@ use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, EntityFact, EntityId, EntityKind, FileId, ImportKind,
     ImportSpec, ImportSymbols, Provenance,
 };
+use std::collections::BTreeSet;
 
 const QUICKORM_MODULE: &str = "DBIx::QuickORM";
 const QORM_TABLE_MEMBER: &str = "qorm_table";
@@ -96,10 +97,10 @@ pub(super) fn extract_generated_member_facts(
     facts
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 struct WalkContext {
     current_package: Option<String>,
-    table_package_active: bool,
+    table_package_authority: BTreeSet<String>,
 }
 
 fn walk_direct_statements(
@@ -125,29 +126,35 @@ fn walk_direct_statement(
         }
         NodeKind::Package { name, block, .. } => {
             if let Some(block) = block {
-                let saved = context.clone();
+                let saved_package = context.current_package.clone();
                 context.current_package = Some(name.clone());
-                context.table_package_active = false;
 
                 if let NodeKind::Block { statements } = &block.kind {
                     walk_direct_statements(statements, file_id, context, facts);
                 }
 
-                *context = saved;
+                context.current_package = saved_package;
             } else {
                 context.current_package = Some(name.clone());
-                context.table_package_active = false;
             }
         }
         NodeKind::Use { module, args, .. } if module == QUICKORM_MODULE => {
-            context.table_package_active =
-                classify_import_shape(args) == QuickOrmImportShape::UnfilteredTable;
+            let package = current_package(context).to_string();
+            if classify_import_shape(args) == QuickOrmImportShape::UnfilteredTable {
+                context.table_package_authority.insert(package);
+            } else {
+                context.table_package_authority.remove(&package);
+            }
         }
         NodeKind::No { module, .. } if module == QUICKORM_MODULE => {
-            context.table_package_active = false;
+            let package = current_package(context).to_string();
+            context.table_package_authority.remove(&package);
         }
-        NodeKind::ExpressionStatement { expression } if context.table_package_active => {
-            if !is_direct_table_or_view_call(expression) {
+        NodeKind::ExpressionStatement { expression } => {
+            let package = current_package(context).to_string();
+            if !context.table_package_authority.contains(&package)
+                || !is_direct_table_or_view_call(expression)
+            {
                 return;
             }
 
@@ -155,19 +162,22 @@ fn walk_direct_statement(
             // view build, including a build whose name or body is not statically
             // known. Consume authority before deciding whether the declaration
             // is precise enough to emit a source-backed fact.
-            context.table_package_active = false;
+            context.table_package_authority.remove(&package);
 
             let Some(anchor) = direct_table_or_view_builder_anchor(expression) else {
                 return;
             };
-            let package = context.current_package.as_deref().unwrap_or("main");
-            push_qorm_table_fact(package, anchor, file_id, facts);
+            push_qorm_table_fact(&package, anchor, file_id, facts);
         }
         // Runtime-controlled and bare lexical blocks are not package-level
         // table declarations. Do not recurse into them or let their package /
         // framework state escape into the containing package.
         _ => {}
     }
+}
+
+fn current_package(context: &WalkContext) -> &str {
+    context.current_package.as_deref().unwrap_or("main")
 }
 
 fn is_direct_table_or_view_call(expression: &Node) -> bool {
@@ -214,7 +224,7 @@ fn contains_unescaped_interpolation(value: &str) -> bool {
             escaped = true;
             continue;
         }
-        if matches!(character, '$' | '@' | '%') {
+        if matches!(character, '$' | '@') {
             return true;
         }
     }
@@ -307,10 +317,10 @@ fn classify_import_shape(args: &[String]) -> QuickOrmImportShape {
         _ => return QuickOrmImportShape::Dynamic,
     };
 
-    let Some(key) = static_import_atom(raw_key) else {
+    let Some(key) = static_import_key(raw_key) else {
         return QuickOrmImportShape::Dynamic;
     };
-    let Some(value) = static_import_atom(raw_value) else {
+    let Some(value) = quoted_import_value(raw_value) else {
         return QuickOrmImportShape::Dynamic;
     };
     if key != "type" {
@@ -324,21 +334,30 @@ fn classify_import_shape(args: &[String]) -> QuickOrmImportShape {
     }
 }
 
-fn static_import_atom(raw: &str) -> Option<String> {
+fn static_import_key(raw: &str) -> Option<String> {
+    quoted_import_value(raw).or_else(|| {
+        let value = raw.trim();
+        is_static_identifier(value).then_some(value.to_string())
+    })
+}
+
+fn quoted_import_value(raw: &str) -> Option<String> {
     let value = raw.trim();
-    if value.len() >= 2 {
-        let first = value.as_bytes().first().copied()?;
-        let last = value.as_bytes().last().copied()?;
-        if (first == b'\'' && last == b'\'') || (first == b'"' && last == b'"') {
-            let body = &value[1..value.len() - 1];
-            if body.is_empty() || (first == b'"' && contains_unescaped_interpolation(body)) {
-                return None;
-            }
-            return Some(body.to_string());
-        }
+    if value.len() < 2 {
+        return None;
     }
 
-    is_static_identifier(value).then_some(value.to_string())
+    let first = value.as_bytes().first().copied()?;
+    let last = value.as_bytes().last().copied()?;
+    if !((first == b'\'' && last == b'\'') || (first == b'"' && last == b'"')) {
+        return None;
+    }
+
+    let body = &value[1..value.len() - 1];
+    if body.is_empty() || (first == b'"' && contains_unescaped_interpolation(body)) {
+        return None;
+    }
+    Some(body.to_string())
 }
 
 fn stable_id(label: &str, file_id: FileId, anchor_start: usize, package: &str, name: &str) -> u64 {
