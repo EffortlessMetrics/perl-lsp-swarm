@@ -444,7 +444,8 @@ fn unrecognized_file_role_is_not_runnable_or_debuggable() {
             named_subroutine_policy: NamedSubroutinePolicy::Off,
         })
         .expect("unrecognized-role discovery must still validate");
-        let file = snapshot.items.iter().find(|item| item.kind == TestItemKind::File).expect("file");
+        let file =
+            snapshot.items.iter().find(|item| item.kind == TestItemKind::File).expect("file");
         assert!(
             !file.capabilities.runnable && !file.capabilities.debuggable,
             "{role:?} must not advertise Run/Debug"
