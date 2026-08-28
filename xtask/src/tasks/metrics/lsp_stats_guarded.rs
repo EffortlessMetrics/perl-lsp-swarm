@@ -153,13 +153,9 @@ fn validate_scorecard_inputs(
 }
 
 fn is_receipt_shaped(value: &Value) -> bool {
-    value.as_object().is_some_and(|object| {
-        object.contains_key("workflow_id")
-            && RECEIPT_MARKER_FIELDS
-                .iter()
-                .filter(|field| **field != "workflow_id")
-                .any(|field| object.contains_key(*field))
-    })
+    value
+        .as_object()
+        .is_some_and(|object| RECEIPT_MARKER_FIELDS.iter().any(|field| object.contains_key(*field)))
 }
 
 fn read_receipt_candidates(receipts_dir: &Path) -> Result<Vec<ReceiptCandidate>> {
@@ -359,6 +355,34 @@ mod tests {
             "malformed receipt-shaped JSON unexpectedly passed",
         )?;
         assert!(format!("{error:#}").contains("unsupported kind"));
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_receipt_marker_without_valid_workflow_id_fails_closed() -> Result<()> {
+        for (filename, workflow_id) in
+            [("absent-workflow-id.json", None), ("malformed-workflow-id.json", Some(Value::Null))]
+        {
+            let temp = tempfile::tempdir()?;
+            let receipts = temp.path().join("receipts");
+            fs::create_dir_all(&receipts)?;
+            let mut value = serde_json::json!({
+                "kind": "other_receipt",
+                "duration_ms": "not-a-number",
+            });
+            if let Some(workflow_id) = workflow_id {
+                value["workflow_id"] = workflow_id;
+            }
+            fs::write(receipts.join(filename), serde_json::to_string(&value)?)?;
+            let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+            let schema = write_schema(temp.path())?;
+
+            let error = validation_error(
+                validate_scorecard_inputs(&receipts, &matrix, &schema),
+                "malformed receipt marker unexpectedly passed",
+            )?;
+            assert!(format!("{error:#}").contains("unsupported kind"));
+        }
         Ok(())
     }
 
