@@ -1,10 +1,12 @@
 //! LSP client for UX scenario tests.
 //!
 //! Spawns the real `perl-lsp` binary via stdio and communicates using the
-//! JSON-RPC 2.0 / LSP Content-Length framing protocol.  All server-initiated
+//! JSON-RPC 2.0 / LSP Content-Length framing protocol. All server-initiated
 //! messages (`window/showMessage`, `window/logMessage`, diagnostic
-//! notifications, etc.) are captured in an event queue so scenarios can
-//! assert on user-visible messages after the fact.
+//! notifications, requests, etc.) are captured in an event queue so scenarios
+//! can assert on user-visible behavior after the fact. Server-initiated
+//! requests receive deterministic client responses so modern LSP flows cannot
+//! leave the server waiting on the harness.
 // Test harness client — eprintln! echoes spawned server stderr for debugging.
 #![allow(clippy::print_stderr)]
 
@@ -37,16 +39,16 @@ pub enum LspEvent {
     LogMessage { message_type: u32, message: String },
     /// `textDocument/publishDiagnostics` — diagnostic update.
     Diagnostics { uri: String, version: Option<i64>, diagnostics: Vec<Value> },
-    /// Any other server-initiated notification.
+    /// Any other server-initiated message.
     Other { method: String, params: Value },
 }
 
 /// A lightweight LSP client that speaks directly to a spawned perl-lsp process.
 pub struct UxClient {
     child: Mutex<Child>,
-    stdin: Mutex<ChildStdin>,
+    stdin: Arc<Mutex<ChildStdin>>,
     initialize_result: Value,
-    /// Events buffered from the server's stdout (notifications, etc.)
+    /// Events buffered from the server's stdout (notifications, requests, etc.).
     events: Arc<Mutex<VecDeque<Value>>>,
     /// Responses to requests (matched by id).
     responses: Arc<Mutex<VecDeque<Value>>>,
@@ -71,7 +73,7 @@ impl UxClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .with_context(|| format!("Failed to spawn perl-lsp from {:?}", binary_path))?;
+            .with_context(|| format!("Failed to spawn perl-lsp from {binary_path:?}"))?;
 
         let stdin = child
             .stdin
@@ -86,13 +88,15 @@ impl UxClient {
             .take()
             .ok_or_else(|| anyhow!("perl-lsp stderr not available after spawn"))?;
 
+        let stdin = Arc::new(Mutex::new(stdin));
         let events: Arc<Mutex<VecDeque<Value>>> = Arc::new(Mutex::new(VecDeque::new()));
         let responses: Arc<Mutex<VecDeque<Value>>> = Arc::new(Mutex::new(VecDeque::new()));
         let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
         // ── stdout reader thread ──────────────────────────────────────────────
-        let ev_clone = events.clone();
-        let resp_clone = responses.clone();
+        let stdin_clone = Arc::clone(&stdin);
+        let ev_clone = Arc::clone(&events);
+        let resp_clone = Arc::clone(&responses);
         let _stdout_thread = std::thread::Builder::new()
             .name("ux-lsp-stdout".into())
             .spawn(move || {
@@ -105,8 +109,20 @@ impl UxClient {
                         if let Ok(mut guard) = resp_clone.lock() {
                             guard.push_back(msg);
                         }
-                    } else if let Ok(mut guard) = ev_clone.lock() {
+                        continue;
+                    }
+
+                    let server_response = server_request_response(&msg);
+                    if let Ok(mut guard) = ev_clone.lock() {
                         guard.push_back(msg);
+                    }
+
+                    if let Some(response) = server_response {
+                        let mut stdin = stdin_clone.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Err(error) = write_lsp_message(&mut *stdin, &response) {
+                            eprintln!("[ux-lsp-client] failed to answer server request: {error:#}");
+                            break;
+                        }
                     }
                 }
             })
@@ -114,7 +130,7 @@ impl UxClient {
 
         // ── stderr drain thread ───────────────────────────────────────────────
         let echo = config.echo_stderr;
-        let stderr_clone = stderr_lines.clone();
+        let stderr_clone = Arc::clone(&stderr_lines);
         let _stderr_thread = std::thread::Builder::new()
             .name("ux-lsp-stderr".into())
             .spawn(move || {
@@ -124,7 +140,7 @@ impl UxClient {
                         guard.push(l.clone());
                     }
                     if echo {
-                        eprintln!("[perl-lsp stderr] {}", l);
+                        eprintln!("[perl-lsp stderr] {l}");
                     }
                 }
             })
@@ -135,7 +151,7 @@ impl UxClient {
 
         let mut client = Self {
             child: Mutex::new(child),
-            stdin: Mutex::new(stdin),
+            stdin,
             initialize_result: Value::Null,
             events,
             responses,
@@ -215,7 +231,7 @@ impl UxClient {
         let init_resp = self.request("initialize", params, timeout)?;
 
         if let Some(err) = init_resp.get("error") {
-            return Err(anyhow!("LSP initialize returned error: {}", err));
+            return Err(anyhow!("LSP initialize returned error: {err}"));
         }
 
         self.notify("initialized", json!({}))?;
@@ -310,7 +326,7 @@ impl UxClient {
 
     /// Drain all buffered server-initiated events and decode them.
     ///
-    /// After this call the internal queue is empty.  Use `peek_events` if you
+    /// After this call the internal queue is empty. Use `peek_events` if you
     /// need to inspect events without consuming them.
     pub fn drain_events(&self) -> Vec<LspEvent> {
         let raw: Vec<Value> = {
@@ -321,7 +337,7 @@ impl UxClient {
     }
 
     /// Clone and decode all buffered events **without** removing them from the
-    /// queue.  Safe to call before or after `drain_events` / `collect_notifications`.
+    /// queue. Safe to call before or after `drain_events` / `collect_notifications`.
     pub fn peek_events(&self) -> Vec<LspEvent> {
         let raw: Vec<Value> = {
             let guard = self.events.lock().unwrap_or_else(|e| e.into_inner());
@@ -337,6 +353,15 @@ impl UxClient {
     pub fn peek_raw_events(&self) -> Vec<Value> {
         let guard = self.events.lock().unwrap_or_else(|e| e.into_inner());
         guard.iter().cloned().collect()
+    }
+
+    /// Clone raw server-initiated requests without removing them from the queue.
+    ///
+    /// Requests remain observable after the client has sent its deterministic
+    /// response, allowing scenarios to assert method, id, and params together.
+    pub fn peek_server_requests(&self) -> Vec<Value> {
+        let guard = self.events.lock().unwrap_or_else(|e| e.into_inner());
+        guard.iter().filter(|message| is_server_request(message)).cloned().collect()
     }
 
     /// Clone all stderr lines captured from the server process.
@@ -370,13 +395,8 @@ impl UxClient {
     // ── Internal helpers ──────────────────────────────────────────────────────
 
     fn send_raw(&self, msg: &Value) -> Result<()> {
-        let body = msg.to_string();
-        let header = format!("Content-Length: {}\r\n\r\n", body.len());
         let mut stdin = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
-        stdin.write_all(header.as_bytes()).context("Failed to write LSP header to stdin")?;
-        stdin.write_all(body.as_bytes()).context("Failed to write LSP body to stdin")?;
-        stdin.flush().context("Failed to flush LSP stdin")?;
-        Ok(())
+        write_lsp_message(&mut *stdin, msg)
     }
 
     fn wait_for_response(&self, id: u64, timeout: Duration) -> Result<Value> {
@@ -395,8 +415,7 @@ impl UxClient {
             }
             if Instant::now() >= deadline {
                 return Err(anyhow!(
-                    "Timeout waiting for LSP response to id={} after {}ms",
-                    id,
+                    "Timeout waiting for LSP response to id={id} after {}ms",
                     timeout.as_millis()
                 ));
             }
@@ -479,6 +498,70 @@ fn read_one_message(reader: &mut impl BufRead) -> Result<Value> {
     serde_json::from_slice(&body).context("Failed to parse LSP JSON body")
 }
 
+fn write_lsp_message(writer: &mut impl Write, message: &Value) -> Result<()> {
+    let body = message.to_string();
+    let header = format!("Content-Length: {}\r\n\r\n", body.len());
+    writer.write_all(header.as_bytes()).context("Failed to write LSP header to stdin")?;
+    writer.write_all(body.as_bytes()).context("Failed to write LSP body to stdin")?;
+    writer.flush().context("Failed to flush LSP stdin")?;
+    Ok(())
+}
+
+fn is_server_request(message: &Value) -> bool {
+    message.get("id").is_some_and(|id| !id.is_null())
+        && message.get("method").and_then(Value::as_str).is_some()
+}
+
+fn server_request_response(message: &Value) -> Option<Value> {
+    if !is_server_request(message) {
+        return None;
+    }
+
+    let id = message.get("id")?.clone();
+    let method = message.get("method")?.as_str()?;
+    let result = match method {
+        "workspace/applyEdit" => json!({
+            "applied": false,
+            "failureReason": "UX test client does not apply workspace edits automatically"
+        }),
+        "workspace/configuration" => {
+            let item_count = message
+                .pointer("/params/items")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            Value::Array(vec![Value::Null; item_count])
+        }
+        "window/showMessageRequest" => Value::Null,
+        "window/showDocument" => json!({ "success": false }),
+        "client/registerCapability"
+        | "client/unregisterCapability"
+        | "window/workDoneProgress/create"
+        | "workspace/codeLens/refresh"
+        | "workspace/semanticTokens/refresh"
+        | "workspace/inlayHint/refresh"
+        | "workspace/inlineValue/refresh"
+        | "workspace/diagnostic/refresh"
+        | "workspace/foldingRange/refresh"
+        | "workspace/textDocumentContent/refresh" => Value::Null,
+        _ => {
+            return Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": -32601,
+                    "message": format!("Method not found: {method}")
+                }
+            }));
+        }
+    };
+
+    Some(json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": result
+    }))
+}
+
 // ── Event decoding ────────────────────────────────────────────────────────────
 
 fn decode_event(v: Value) -> LspEvent {
@@ -530,4 +613,124 @@ fn build_command(binary_path: &str, config: &ScenarioConfig) -> Result<Command> 
     }
 
     Ok(cmd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_server_requests_receive_results() {
+        for method in [
+            "workspace/applyEdit",
+            "workspace/configuration",
+            "client/registerCapability",
+            "client/unregisterCapability",
+            "window/showMessageRequest",
+            "window/showDocument",
+            "window/workDoneProgress/create",
+            "workspace/codeLens/refresh",
+            "workspace/semanticTokens/refresh",
+            "workspace/inlayHint/refresh",
+            "workspace/inlineValue/refresh",
+            "workspace/diagnostic/refresh",
+            "workspace/foldingRange/refresh",
+            "workspace/textDocumentContent/refresh",
+        ] {
+            let request = json!({
+                "jsonrpc": "2.0",
+                "id": "server-request-1",
+                "method": method,
+                "params": { "items": [] }
+            });
+            let response = server_request_response(&request).unwrap_or(Value::Null);
+
+            assert_eq!(response["jsonrpc"], "2.0", "method={method}");
+            assert_eq!(response["id"], "server-request-1", "method={method}");
+            assert!(response.get("result").is_some(), "method={method}");
+            assert!(response.get("error").is_none(), "method={method}");
+        }
+    }
+
+    #[test]
+    fn workspace_configuration_preserves_result_cardinality() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "workspace/configuration",
+            "params": {
+                "items": [
+                    { "section": "perl" },
+                    { "section": "perl.formatting" }
+                ]
+            }
+        });
+        let response = server_request_response(&request).unwrap_or(Value::Null);
+
+        assert_eq!(response["result"], json!([null, null]));
+    }
+
+    #[test]
+    fn workspace_apply_edit_is_refused_without_hidden_mutation() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "workspace/applyEdit",
+            "params": { "edit": { "changes": {} } }
+        });
+        let response = server_request_response(&request).unwrap_or(Value::Null);
+
+        assert_eq!(response["result"]["applied"], false);
+        assert_eq!(
+            response["result"]["failureReason"],
+            "UX test client does not apply workspace edits automatically"
+        );
+    }
+
+    #[test]
+    fn unknown_server_request_receives_method_not_found() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": "extension-3",
+            "method": "experimental/clientPrompt",
+            "params": {}
+        });
+        let response = server_request_response(&request).unwrap_or(Value::Null);
+
+        assert_eq!(response["id"], "extension-3");
+        assert_eq!(response["error"]["code"], -32601);
+        assert_eq!(
+            response["error"]["message"],
+            "Method not found: experimental/clientPrompt"
+        );
+    }
+
+    #[test]
+    fn notification_is_not_misclassified_as_server_request() {
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/semanticTokens/refresh",
+            "params": {}
+        });
+
+        assert!(!is_server_request(&notification));
+        assert!(server_request_response(&notification).is_none());
+    }
+
+    #[test]
+    fn server_response_uses_lsp_content_length_framing() -> Result<()> {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 11,
+            "result": null
+        });
+        let body = response.to_string();
+        let mut framed = Vec::new();
+
+        write_lsp_message(&mut framed, &response)?;
+
+        let expected = format!("Content-Length: {}\r\n\r\n{body}", body.len());
+        assert_eq!(framed, expected.as_bytes());
+        Ok(())
+    }
 }
