@@ -226,13 +226,14 @@ fn heredoc_empty_body() -> R {
 }
 
 #[test]
-fn heredoc_with_trailing_whitespace_on_terminator() -> R {
-    // Perl allows trailing whitespace on the terminator line
+fn heredoc_trailing_whitespace_near_miss_is_unterminated() -> R {
     let input = "<<EOF\nhello\nEOF   \n";
     assert_terminates(input);
-    let sig = significant(input);
-    let has_heredoc = sig.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart));
-    assert!(has_heredoc, "expected HeredocStart");
+    let toks = tokens(input);
+    assert!(
+        toks.iter().any(|t| matches!(t.token_type, TokenType::UnknownRest)),
+        "expected UnknownRest when heredoc label is followed by trailing whitespace"
+    );
     Ok(())
 }
 
