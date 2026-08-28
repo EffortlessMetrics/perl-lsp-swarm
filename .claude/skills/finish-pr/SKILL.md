@@ -7,8 +7,9 @@ argument-hint: "[PR number, branch, or candidate]"
 # Finish PR
 
 Carry one coherent acceptance-and-rollback candidate through its current GitHub state.
-The main Claude thread remains the accountable lane owner. Do not inspect sibling
-implementations or treat nearby files, crates, branches, or worktrees as ownership.
+The main Claude thread remains the accountable orchestrator for this root-held claim
+frame. Do not inspect sibling implementations or treat nearby files, crates, branches,
+or worktrees as ownership.
 
 Read the selected PR, controlling issue, governing authority, cumulative diff, proof
 and limitations, submitted reviews, inline threads, current substantive review result,
@@ -21,12 +22,12 @@ Claude's operational path is this skill together with `orchestrate-work`,
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains the earliest useful route entry, finding validity/disposition,
-which repairs materially change proof/review dimensions, substantive review sufficiency,
-candidate/base/integration failure ownership, remote in-flight/blocking classification,
-protected merge, and current-main reconciliation.
+The main Claude thread retains the earliest useful route entry, finding
+validity/disposition, which repairs materially change proof/review dimensions,
+substantive review sufficiency, candidate/base/integration failure ownership, remote
+in-flight/blocking classification, protected merge, and current-main reconciliation.
 
 ### Useful subagent and workflow work
 
@@ -50,9 +51,9 @@ uncertainty, and non-goals. Children return graph deltas, not merge verdicts.
 One writer integrates accepted candidate repairs. Read-only reviewers and CI evidence
 agents do not mutate the candidate.
 
-The lane root joins current findings/dispositions, affected proof, cumulative review,
-live integration facts, contradictions, and limitations into one typed route result.
-Repeated bot findings or several agents reading one artifact are not independent
+The main Claude thread joins current findings/dispositions, affected proof, cumulative
+review, live integration facts, contradictions, and limitations into one typed route
+result. Repeated bot findings or several agents reading one artifact are not independent
 evidence.
 
 ### Return packet
@@ -106,9 +107,9 @@ current; it need not be repeated merely because the head SHA changed.
 
 ## Claude-native review handoff
 
-Before `review-pr`, the lane root uses `orchestrate-work` to select only review lenses
-that can change the decision. It may delegate `review-tests`, `review-candidate`, a
-production-path trace, an external oracle, or a focused
+Before `review-pr`, the main Claude thread uses `orchestrate-work` to select only review
+lenses that can change the decision. It may delegate `review-tests`, `review-candidate`,
+a production-path trace, an external oracle, or a focused
 security/package/migration/persistence/support question to read-only subagents or
 context forks. Use Agent Teams only when lateral communication changes the result.
 
@@ -116,9 +117,9 @@ Each child receives the exact candidate, controlling claim, established facts,
 authority, named skill, falsifiers, read-only boundary, sufficient evidence, and
 non-goals.
 
-The lane root joins evidence rather than votes, inspects load-bearing seams, and
-publishes one cumulative `review-pr` judgment. Reviewers do not authorize merge. One
-writer repairs accepted findings.
+The main Claude thread joins evidence rather than votes, inspects load-bearing seams,
+and publishes one cumulative `review-pr` judgment. Reviewers do not authorize merge.
+One writer repairs accepted findings.
 
 ## Review-forward repair
 
@@ -141,7 +142,7 @@ One writer mutates this candidate branch/worktree at a time. Read-only research,
 review, CI classification, and oracle work may assist.
 
 - behind-only movement on `main` requires no action;
-- a real Git conflict is resolved in this lane;
+- a real Git conflict is resolved in this claim;
 - an explicit stack is retargeted after its prerequisite lands;
 - a combined-tree interaction is repaired in the smallest affected candidate;
 - only affected proof and review are refreshed.
