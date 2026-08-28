@@ -42,12 +42,13 @@ impl Clone for Node {
 }
 
 impl Node {
-    /// Clone the full tree while replacing every node's source location.
+    /// Clone the full tree while replacing every source location.
     ///
     /// The structural walk is the same iterative canonical traversal used by
-    /// [`Clone`]. `map` is called exactly once for every node. Its invocation
-    /// order is intentionally unspecified; callers should derive each result
-    /// from the supplied location rather than from traversal order.
+    /// [`Clone`]. `map` is called once for every [`Node::location`] and once for
+    /// every independent [`SourceLocation`] stored in a [`NodeKind`] payload.
+    /// Its invocation order is intentionally unspecified; callers should derive
+    /// each result from the supplied location rather than from traversal order.
     ///
     /// This is a full owned duplication, not an in-place edit or a shared view.
     #[must_use]
@@ -114,6 +115,112 @@ fn install_cloned_children(shell: &mut Node, children: Vec<Node>) {
     });
 }
 
+fn map_optional_location<F>(location: &mut Option<SourceLocation>, map: &F)
+where
+    F: Fn(SourceLocation) -> SourceLocation,
+{
+    if let Some(location) = location {
+        *location = map(*location);
+    }
+}
+
+/// Map every independent [`SourceLocation`] stored outside [`Node::location`].
+///
+/// The no-location arm is intentionally exhaustive and has no wildcard. A new
+/// `NodeKind` variant therefore fails to compile here until its payload geometry
+/// is classified. Recovery-token spans are a separate invariant-bearing type,
+/// not `SourceLocation`; incremental reuse rejects recovery trees before calling
+/// this mapper.
+fn map_payload_locations<F>(kind: &mut NodeKind, map: &F)
+where
+    F: Fn(SourceLocation) -> SourceLocation,
+{
+    match kind {
+        NodeKind::Heredoc { body_span, .. } => map_optional_location(body_span, map),
+        NodeKind::Try { catch_blocks, .. } => {
+            for (catch_variable, _) in catch_blocks {
+                if let Some((_, location)) = catch_variable {
+                    *location = map(*location);
+                }
+            }
+        }
+        NodeKind::Subroutine { name_span, .. }
+        | NodeKind::Method { name_span, .. }
+        | NodeKind::Class { name_span, .. }
+        | NodeKind::Format { name_span, .. } => map_optional_location(name_span, map),
+        NodeKind::Package { name_span, .. } => *name_span = map(*name_span),
+        NodeKind::PhaseBlock { phase_span, .. } => map_optional_location(phase_span, map),
+        NodeKind::Program { .. }
+        | NodeKind::ExpressionStatement { .. }
+        | NodeKind::VariableDeclaration { .. }
+        | NodeKind::VariableListDeclaration { .. }
+        | NodeKind::NestedVariableList { .. }
+        | NodeKind::Variable { .. }
+        | NodeKind::VariableWithAttributes { .. }
+        | NodeKind::Assignment { .. }
+        | NodeKind::Binary { .. }
+        | NodeKind::ArraySlice { .. }
+        | NodeKind::HashSlice { .. }
+        | NodeKind::KeyValueSlice { .. }
+        | NodeKind::ChainedComparison { .. }
+        | NodeKind::Ternary { .. }
+        | NodeKind::Unary { .. }
+        | NodeKind::Diamond
+        | NodeKind::Ellipsis
+        | NodeKind::Undef
+        | NodeKind::Readline { .. }
+        | NodeKind::Glob { .. }
+        | NodeKind::Typeglob { .. }
+        | NodeKind::Number { .. }
+        | NodeKind::String { .. }
+        | NodeKind::VString { .. }
+        | NodeKind::ArrayLiteral { .. }
+        | NodeKind::HashLiteral { .. }
+        | NodeKind::Block { .. }
+        | NodeKind::Eval { .. }
+        | NodeKind::Do { .. }
+        | NodeKind::Defer { .. }
+        | NodeKind::If { .. }
+        | NodeKind::LabeledStatement { .. }
+        | NodeKind::While { .. }
+        | NodeKind::Tie { .. }
+        | NodeKind::Untie { .. }
+        | NodeKind::For { .. }
+        | NodeKind::Foreach { .. }
+        | NodeKind::Given { .. }
+        | NodeKind::When { .. }
+        | NodeKind::Default { .. }
+        | NodeKind::StatementModifier { .. }
+        | NodeKind::Prototype { .. }
+        | NodeKind::Signature { .. }
+        | NodeKind::MandatoryParameter { .. }
+        | NodeKind::OptionalParameter { .. }
+        | NodeKind::SlurpyParameter { .. }
+        | NodeKind::NamedParameter { .. }
+        | NodeKind::Return { .. }
+        | NodeKind::LoopControl { .. }
+        | NodeKind::Goto { .. }
+        | NodeKind::MethodCall { .. }
+        | NodeKind::FunctionCall { .. }
+        | NodeKind::AmperCall { .. }
+        | NodeKind::IndirectCall { .. }
+        | NodeKind::Regex { .. }
+        | NodeKind::Match { .. }
+        | NodeKind::Substitution { .. }
+        | NodeKind::Transliteration { .. }
+        | NodeKind::Use { .. }
+        | NodeKind::No { .. }
+        | NodeKind::DataSection { .. }
+        | NodeKind::Identifier { .. }
+        | NodeKind::Error { .. }
+        | NodeKind::MissingExpression
+        | NodeKind::MissingStatement
+        | NodeKind::MissingIdentifier
+        | NodeKind::MissingBlock
+        | NodeKind::UnknownRest => {}
+    }
+}
+
 fn preserve_location(location: SourceLocation) -> SourceLocation {
     location
 }
@@ -152,6 +259,7 @@ where
                 let cloned_children = take_last_n_reversed(&mut done, child_count);
                 let mut cloned = clone_payload_shell(source);
                 cloned.location = map(source.location);
+                map_payload_locations(&mut cloned.kind, map);
                 install_cloned_children(&mut cloned, cloned_children);
                 observer.on_rebuild();
                 done.push(cloned);
@@ -164,6 +272,7 @@ where
         None => {
             let mut cloned = clone_payload_shell(root);
             cloned.location = map(root.location);
+            map_payload_locations(&mut cloned.kind, map);
             cloned
         }
     }
@@ -174,7 +283,7 @@ mod tests {
     use super::{
         CLONE_PAYLOAD_SHELL, CloneObserver, Node, NodeKind, ShellCloneGuard, SourceLocation,
         clone_node, clone_payload_shell, clone_slot_placeholder, install_cloned_children,
-        take_last_n_reversed,
+        map_payload_locations, take_last_n_reversed,
     };
     use std::cell::Cell;
 
@@ -251,8 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn mapped_location_clone_updates_every_canonical_node()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn mapped_location_clone_updates_every_canonical_node() -> Result<(), Box<dyn std::error::Error>> {
         let binary = Node::new(
             NodeKind::Binary {
                 op: "+".to_string(),
@@ -289,6 +397,89 @@ mod tests {
         assert!(matches!(&left.kind, NodeKind::Number { value } if value == "1"));
         assert!(matches!(&right.kind, NodeKind::Number { value } if value == "2"));
         Ok(())
+    }
+
+    #[test]
+    fn payload_location_map_covers_every_source_location_family() {
+        let shift = |location: SourceLocation| loc(location.start + 10, location.end + 10);
+
+        let mut heredoc = NodeKind::Heredoc {
+            delimiter: "EOF".to_string(),
+            content: "body".to_string(),
+            interpolated: false,
+            indented: false,
+            command: false,
+            body_span: Some(loc(2, 6)),
+        };
+        map_payload_locations(&mut heredoc, &shift);
+        assert!(matches!(heredoc, NodeKind::Heredoc { body_span: Some(span), .. } if span == loc(12, 16)));
+
+        let mut try_block = NodeKind::Try {
+            body: Box::new(numbered("1", 0)),
+            catch_blocks: vec![(Some(("e".to_string(), loc(3, 5))), Box::new(numbered("2", 6)))],
+            finally_block: None,
+        };
+        map_payload_locations(&mut try_block, &shift);
+        assert!(matches!(
+            try_block,
+            NodeKind::Try { catch_blocks, .. }
+                if matches!(&catch_blocks[0].0, Some((_, span)) if *span == loc(13, 15))
+        ));
+
+        let mut subroutine = NodeKind::Subroutine {
+            name: Some("work".to_string()),
+            name_span: Some(loc(4, 8)),
+            declarator: None,
+            prototype: None,
+            signature: None,
+            attributes: vec![],
+            body: Box::new(numbered("3", 9)),
+        };
+        map_payload_locations(&mut subroutine, &shift);
+        assert!(matches!(subroutine, NodeKind::Subroutine { name_span: Some(span), .. } if span == loc(14, 18)));
+
+        let mut method = NodeKind::Method {
+            name: "run".to_string(),
+            name_span: Some(loc(5, 8)),
+            signature: None,
+            attributes: vec![],
+            body: Box::new(numbered("4", 9)),
+        };
+        map_payload_locations(&mut method, &shift);
+        assert!(matches!(method, NodeKind::Method { name_span: Some(span), .. } if span == loc(15, 18)));
+
+        let mut package = NodeKind::Package {
+            name: "Pkg".to_string(),
+            name_span: loc(8, 11),
+            block: None,
+        };
+        map_payload_locations(&mut package, &shift);
+        assert!(matches!(package, NodeKind::Package { name_span, .. } if name_span == loc(18, 21)));
+
+        let mut phase = NodeKind::PhaseBlock {
+            phase: "BEGIN".to_string(),
+            phase_span: Some(loc(0, 5)),
+            block: Box::new(numbered("5", 6)),
+        };
+        map_payload_locations(&mut phase, &shift);
+        assert!(matches!(phase, NodeKind::PhaseBlock { phase_span: Some(span), .. } if span == loc(10, 15)));
+
+        let mut class = NodeKind::Class {
+            name: "Thing".to_string(),
+            name_span: Some(loc(6, 11)),
+            parents: vec![],
+            body: Box::new(numbered("6", 12)),
+        };
+        map_payload_locations(&mut class, &shift);
+        assert!(matches!(class, NodeKind::Class { name_span: Some(span), .. } if span == loc(16, 21)));
+
+        let mut format = NodeKind::Format {
+            name: "STDOUT".to_string(),
+            name_span: Some(loc(7, 13)),
+            body: String::new(),
+        };
+        map_payload_locations(&mut format, &shift);
+        assert!(matches!(format, NodeKind::Format { name_span: Some(span), .. } if span == loc(17, 23)));
     }
 
     #[test]
