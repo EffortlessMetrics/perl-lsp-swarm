@@ -288,9 +288,15 @@ pub fn normalize_path(path: &std::path::Path) -> PathBuf {
             && drive.is_ascii_alphabetic()
         {
             let rest = &after_mnt[drive.len_utf8()..];
-            let windows_path =
-                format!("{}:{}", drive.to_ascii_uppercase(), rest.replace('/', "\\"));
-            return PathBuf::from(windows_path);
+            // Only translate when there is a path separator after the drive letter,
+            // so that a bare drive-root mount like `/mnt/c` is left untranslated.
+            // Without this guard, `/mnt/c` → `C:` (drive-relative), which is wrong;
+            // a valid Windows drive root requires at least a trailing separator.
+            if rest.starts_with('/') {
+                let windows_path =
+                    format!("{}:{}", drive.to_ascii_uppercase(), rest.replace('/', "\\"));
+                return PathBuf::from(windows_path);
+            }
         }
     }
 

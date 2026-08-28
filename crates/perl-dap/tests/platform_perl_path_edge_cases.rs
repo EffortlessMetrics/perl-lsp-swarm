@@ -257,6 +257,71 @@ fn normalize_path_wsl_activeperl() -> TestResult {
     Ok(())
 }
 
+// ── WSL bare drive-root boundary tests (issue #13028) ─────────────────────
+
+/// Bare `/mnt/c` has no path suffix beyond the drive letter and must not be
+/// translated to the drive-relative `C:`.  Only paths with a separator after
+/// the letter (`/mnt/c/...`) are valid WSL mount paths and should translate.
+#[cfg(target_os = "linux")]
+#[test]
+fn normalize_path_wsl_bare_drive_root_not_translated() -> TestResult {
+    let input = PathBuf::from("/mnt/c");
+    let normalized = normalize_path(&input);
+    let s = normalized.to_string_lossy();
+    assert!(
+        !s.contains(':'),
+        "bare /mnt/c has no path suffix and must not produce a drive-relative path, got: {s}"
+    );
+    Ok(())
+}
+
+/// A longer WSL mount path (has a slash after the drive letter) must still
+/// translate to Windows-style.  This is the positive case that must survive
+/// the bare-root guard introduced for issue #13028.
+#[cfg(target_os = "linux")]
+#[test]
+fn normalize_path_wsl_longer_path_still_translates() -> TestResult {
+    let input = PathBuf::from("/mnt/c/Users/test/script.pl");
+    let normalized = normalize_path(&input);
+    let s = normalized.to_string_lossy();
+    assert!(
+        s.starts_with("C:\\") || s.starts_with("C:/"),
+        "longer WSL path must still translate to Windows drive root, got: {s}"
+    );
+    assert!(s.contains("test"), "path content must be preserved after translation, got: {s}");
+    Ok(())
+}
+
+/// Non-ASCII in the drive position must not be translated or panic.
+/// `é` is two UTF-8 bytes; byte-slicing at position 1 would split the codepoint.
+#[cfg(target_os = "linux")]
+#[test]
+fn normalize_path_wsl_non_ascii_drive_not_translated() -> TestResult {
+    let input = PathBuf::from("/mnt/é/file.pl");
+    let normalized = normalize_path(&input);
+    let s = normalized.to_string_lossy();
+    assert!(
+        !s.contains(':'),
+        "non-ASCII drive position must not be translated to Windows style, got: {s}"
+    );
+    Ok(())
+}
+
+/// A digit in the drive position is not a valid WSL mount letter and must
+/// remain untranslated.
+#[cfg(target_os = "linux")]
+#[test]
+fn normalize_path_wsl_digit_drive_not_translated() -> TestResult {
+    let input = PathBuf::from("/mnt/1/file.pl");
+    let normalized = normalize_path(&input);
+    let s = normalized.to_string_lossy();
+    assert!(
+        !s.contains(':') && !s.contains('\\'),
+        "digit in drive position must not be translated, got: {s}"
+    );
+    Ok(())
+}
+
 #[test]
 fn find_perl_interpreter_cached_respects_configured_path_changes() -> TestResult {
     let tmp = tempfile::tempdir()?;

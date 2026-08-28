@@ -93,13 +93,16 @@ fn normalize_path_does_not_convert_non_wsl_mnt_path() -> Result<(), anyhow::Erro
 #[cfg(target_os = "linux")]
 #[test]
 fn normalize_path_wsl_short_mnt_path_no_conversion() -> Result<(), anyhow::Error> {
-    // "/mnt/" is only 5 chars, plus 1 for drive letter = 6; path_str.len() > 6 check
-    // means "/mnt/c" (len 6) should NOT trigger conversion
+    // A bare `/mnt/c` path has no suffix after the drive letter, so there is no
+    // path separator following the letter.  The guard `rest.starts_with('/')` ensures
+    // it is left untranslated rather than producing drive-relative `C:` (#13028).
     let input = PathBuf::from("/mnt/c");
     let normalized = normalize_path(&input);
     let s = normalized.to_string_lossy().to_string();
-    // The path is exactly 6 chars, so the > 6 check means it won't convert
-    assert!(!s.contains(':'), "path of exactly 6 chars should not be converted, got: {s}");
+    assert!(
+        !s.contains(':'),
+        "bare /mnt/c must not be translated to a drive-relative path, got: {s}"
+    );
     Ok(())
 }
 
