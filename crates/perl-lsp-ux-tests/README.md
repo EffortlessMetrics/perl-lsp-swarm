@@ -57,6 +57,11 @@ This keeps the server's client-request registry from accumulating unresolved
 operations while retaining the exact request id, method, and params as test
 evidence.
 
+The stdout transport loop is fail-fast. Malformed framing, invalid JSON, or a
+failure while writing a deterministic client response is retained as transport
+evidence, and foreground request waits return that actionable failure instead
+of consuming the full scenario timeout.
+
 ## Running the tests
 
 From the workspace root:

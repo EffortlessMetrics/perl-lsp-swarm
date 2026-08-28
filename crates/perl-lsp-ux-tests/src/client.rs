@@ -54,6 +54,8 @@ pub struct UxClient {
     responses: Arc<Mutex<VecDeque<Value>>>,
     /// Stderr lines captured from the server process.
     stderr_lines: Arc<Mutex<Vec<String>>>,
+    /// First terminal failure observed by the stdout transport loop.
+    transport_error: Arc<Mutex<Option<String>>>,
     _stdout_thread: std::thread::JoinHandle<()>,
     _stderr_thread: std::thread::JoinHandle<()>,
 }
@@ -92,37 +94,29 @@ impl UxClient {
         let events: Arc<Mutex<VecDeque<Value>>> = Arc::new(Mutex::new(VecDeque::new()));
         let responses: Arc<Mutex<VecDeque<Value>>> = Arc::new(Mutex::new(VecDeque::new()));
         let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let transport_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
         // ── stdout reader thread ──────────────────────────────────────────────
         let stdin_clone = Arc::clone(&stdin);
         let ev_clone = Arc::clone(&events);
         let resp_clone = Arc::clone(&responses);
+        let transport_error_clone = Arc::clone(&transport_error);
         let _stdout_thread = std::thread::Builder::new()
             .name("ux-lsp-stdout".into())
             .spawn(move || {
                 let mut reader = BufReader::new(stdout);
-                while let Ok(msg) = read_one_message(&mut reader) {
-                    let has_id = msg.get("id").is_some() && !msg["id"].is_null();
-                    let is_response =
-                        has_id && (msg.get("result").is_some() || msg.get("error").is_some());
-                    if is_response {
-                        if let Ok(mut guard) = resp_clone.lock() {
-                            guard.push_back(msg);
-                        }
-                        continue;
-                    }
-
-                    let server_response = server_request_response(&msg);
-                    if let Ok(mut guard) = ev_clone.lock() {
-                        guard.push_back(msg);
-                    }
-
-                    if let Some(response) = server_response {
-                        let mut stdin = stdin_clone.lock().unwrap_or_else(|e| e.into_inner());
-                        if let Err(error) = write_lsp_message(&mut *stdin, &response) {
-                            eprintln!("[ux-lsp-client] failed to answer server request: {error:#}");
-                            break;
-                        }
+                loop {
+                    if let Err(error) = route_next_stdout_message(
+                        &mut reader,
+                        &stdin_clone,
+                        &ev_clone,
+                        &resp_clone,
+                    ) {
+                        let mut guard = transport_error_clone
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        *guard = Some(format!("{error:#}"));
+                        break;
                     }
                 }
             })
@@ -156,6 +150,7 @@ impl UxClient {
             events,
             responses,
             stderr_lines,
+            transport_error,
             _stdout_thread,
             _stderr_thread,
         };
@@ -369,6 +364,14 @@ impl UxClient {
         self.stderr_lines.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Return the terminal stdout transport failure, if one has occurred.
+    ///
+    /// Foreground request waits consume the same evidence so malformed frames,
+    /// invalid JSON, and response-write failures fail fast instead of timing out.
+    pub fn peek_transport_error(&self) -> Option<String> {
+        self.transport_error.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// Wait up to `timeout` for any `window/showMessage` containing `needle`.
     pub fn wait_for_message(&self, needle: &str, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
@@ -400,27 +403,43 @@ impl UxClient {
     }
 
     fn wait_for_response(&self, id: u64, timeout: Duration) -> Result<Value> {
-        let deadline = Instant::now() + timeout;
-        loop {
+        wait_for_response_queue(&self.responses, &self.transport_error, id, timeout)
+    }
+}
+
+fn wait_for_response_queue(
+    responses: &Mutex<VecDeque<Value>>,
+    transport_error: &Mutex<Option<String>>,
+    id: u64,
+    timeout: Duration,
+) -> Result<Value> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        {
+            let mut guard = responses.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(pos) =
+                guard.iter().position(|v| v["id"].as_u64() == Some(id) || v["id"] == json!(id))
+                && let Some(msg) = guard.remove(pos)
             {
-                let mut guard = self.responses.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(pos) =
-                    guard.iter().position(|v| v["id"].as_u64() == Some(id) || v["id"] == json!(id))
-                {
-                    // pos is valid since we just found it
-                    if let Some(msg) = guard.remove(pos) {
-                        return Ok(msg);
-                    }
-                }
+                return Ok(msg);
             }
-            if Instant::now() >= deadline {
-                return Err(anyhow!(
-                    "Timeout waiting for LSP response to id={id} after {}ms",
-                    timeout.as_millis()
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(20));
         }
+
+        if let Some(error) =
+            transport_error.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        {
+            return Err(anyhow!(
+                "LSP stdout transport failed while waiting for response id={id}: {error}"
+            ));
+        }
+
+        if Instant::now() >= deadline {
+            return Err(anyhow!(
+                "Timeout waiting for LSP response to id={id} after {}ms",
+                timeout.as_millis()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -504,6 +523,49 @@ fn write_lsp_message(writer: &mut impl Write, message: &Value) -> Result<()> {
     writer.write_all(header.as_bytes()).context("Failed to write LSP header to stdin")?;
     writer.write_all(body.as_bytes()).context("Failed to write LSP body to stdin")?;
     writer.flush().context("Failed to flush LSP stdin")?;
+    Ok(())
+}
+
+fn route_next_stdout_message<R, W>(
+    reader: &mut R,
+    stdin: &Arc<Mutex<W>>,
+    events: &Arc<Mutex<VecDeque<Value>>>,
+    responses: &Arc<Mutex<VecDeque<Value>>>,
+) -> Result<()>
+where
+    R: BufRead,
+    W: Write,
+{
+    let message = read_one_message(reader)?;
+    let has_id = message.get("id").is_some_and(|id| !id.is_null());
+    let is_response =
+        has_id && (message.get("result").is_some() || message.get("error").is_some());
+    if is_response {
+        responses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push_back(message);
+        return Ok(());
+    }
+
+    let server_response = server_request_response(&message);
+    let method = message
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("<missing>")
+        .to_owned();
+    let id = message.get("id").cloned().unwrap_or(Value::Null);
+    events
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push_back(message);
+
+    if let Some(response) = server_response {
+        let mut stdin = stdin.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        write_lsp_message(&mut *stdin, &response)
+            .with_context(|| format!("Failed to answer server request method={method} id={id}"))?;
+    }
+
     Ok(())
 }
 
@@ -616,6 +678,118 @@ fn build_command(binary_path: &str, config: &ScenarioConfig) -> Result<Command> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct BrokenWriter;
+
+    impl Write for BrokenWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "synthetic broken pipe",
+            ))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn stdout_router_answers_server_request_preserves_evidence_and_keeps_routing() -> Result<()> {
+        let server_request = json!({
+            "jsonrpc": "2.0",
+            "id": "server-17",
+            "method": "workspace/configuration",
+            "params": {
+                "items": [
+                    { "section": "perl" },
+                    { "section": "perl.formatting" }
+                ]
+            }
+        });
+        let later_response = json!({
+            "jsonrpc": "2.0",
+            "id": 101,
+            "result": { "ok": true }
+        });
+        let mut server_stdout = Vec::new();
+        write_lsp_message(&mut server_stdout, &server_request)?;
+        write_lsp_message(&mut server_stdout, &later_response)?;
+
+        let mut reader = BufReader::new(server_stdout.as_slice());
+        let stdin = Arc::new(Mutex::new(Vec::new()));
+        let events = Arc::new(Mutex::new(VecDeque::new()));
+        let responses = Arc::new(Mutex::new(VecDeque::new()));
+
+        route_next_stdout_message(&mut reader, &stdin, &events, &responses)?;
+        route_next_stdout_message(&mut reader, &stdin, &events, &responses)?;
+
+        let framed_response = stdin.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut response_reader = BufReader::new(framed_response.as_slice());
+        let client_response = read_one_message(&mut response_reader)?;
+        assert_eq!(client_response["id"], "server-17");
+        assert_eq!(client_response["result"], json!([null, null]));
+
+        let observed: Vec<Value> = events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect();
+        assert_eq!(observed, vec![server_request]);
+
+        let queued: Vec<Value> = responses
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect();
+        assert_eq!(queued, vec![later_response]);
+        Ok(())
+    }
+
+    #[test]
+    fn stdout_router_reports_response_write_failure_with_request_identity() -> Result<()> {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 33,
+            "method": "window/workDoneProgress/create",
+            "params": { "token": "index" }
+        });
+        let mut server_stdout = Vec::new();
+        write_lsp_message(&mut server_stdout, &request)?;
+        let mut reader = BufReader::new(server_stdout.as_slice());
+        let stdin = Arc::new(Mutex::new(BrokenWriter));
+        let events = Arc::new(Mutex::new(VecDeque::new()));
+        let responses = Arc::new(Mutex::new(VecDeque::new()));
+
+        let failure = match route_next_stdout_message(&mut reader, &stdin, &events, &responses) {
+            Ok(()) => return Err(anyhow!("broken writer unexpectedly accepted the response")),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(failure.contains("method=window/workDoneProgress/create id=33"));
+        assert!(failure.contains("synthetic broken pipe"));
+        Ok(())
+    }
+
+    #[test]
+    fn response_wait_surfaces_transport_failure_before_timeout() -> Result<()> {
+        let responses = Mutex::new(VecDeque::new());
+        let transport_error = Mutex::new(Some("Failed to parse LSP JSON body".to_owned()));
+
+        let failure = match wait_for_response_queue(
+            &responses,
+            &transport_error,
+            77,
+            Duration::from_secs(30),
+        ) {
+            Ok(value) => return Err(anyhow!("unexpected response: {value}")),
+            Err(error) => error.to_string(),
+        };
+        assert!(failure.contains("response id=77"));
+        assert!(failure.contains("Failed to parse LSP JSON body"));
+        Ok(())
+    }
 
     #[test]
     fn known_server_requests_receive_results() {
