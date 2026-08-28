@@ -566,6 +566,32 @@ mod tests {
     }
 
     #[test]
+    fn non_null_failure_class_is_rejected_for_passing_results() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&receipts)?;
+        let path = write_receipt(
+            &receipts,
+            "pass-with-failure-class.json",
+            "simple_file_smoke",
+            "ux_scenario_01_simple_file.rs",
+        )?;
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
+        value["failure_class"] = Value::String("server_crash".to_owned());
+        fs::write(&path, serde_json::to_string_pretty(&value)?)?;
+
+        let fixture_matrix = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("crates/perl-lsp-ux-tests/fixtures/editor_ux_fixture_matrix.json");
+        let error = validation_error(
+            aggregate_from_receipts(&receipts, &fixture_matrix, None).map(|_| ()),
+            "passing receipt with a non-null failure_class unexpectedly passed the guarded scorecard path",
+        )?;
+        assert!(format!("{error:#}").contains("invalid UX scenario receipt"));
+        Ok(())
+    }
+
+    #[test]
     fn unknown_workflow_fails_as_matrix_drift() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let receipts = temp.path().join("receipts");

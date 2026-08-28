@@ -270,6 +270,25 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "const": "pass"
+          }
+        },
+        "required": [
+          "result"
+        ]
+      },
+      "then": {
+        "properties": {
+          "failure_class": {
+            "type": "null"
+          }
+        }
+      }
     }
   ],
   "additionalProperties": false
