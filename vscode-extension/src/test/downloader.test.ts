@@ -20,6 +20,7 @@ import {
   classifyWindowsArm64Support,
   getUnsupportedWindowsArm64Message,
   findReleaseAssetName,
+  lookupSha256SumsDigest,
   selectWindowsArm64Target,
   WINDOWS_ARM64_TARGET,
   WINDOWS_X64_TARGET,
@@ -1707,17 +1708,35 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
   }
 
   let downloader: TestDownloader;
+  let restoreProcessHost: (() => void) | undefined;
 
   beforeEach(() => {
     downloader = new BinaryDownloader(
       makeContext(),
       makeOutputChannel(),
     ) as unknown as TestDownloader;
-    // Fixtures name x86_64-unknown-linux-gnu assets; pin the host target so
-    // these controls are independent of the machine running the suite.
+    // Fixtures name x86_64-unknown-linux-gnu .tar.gz assets; pin the host so
+    // these controls are independent of the machine running the suite. The
+    // target mock alone is not enough: getLatestRelease also derives the
+    // archive extension and the ARM64 emulation check from process.platform
+    // and process.arch, so a Windows runner would match .zip asset names
+    // against these .tar.gz fixtures and every selection control would
+    // refuse for a reason the fixture never chose.
     jest
       .spyOn(downloader as unknown as { getPlatformTarget: () => string }, 'getPlatformTarget')
       .mockReturnValue('x86_64-unknown-linux-gnu');
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    const archDescriptor = Object.getOwnPropertyDescriptor(process, 'arch');
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
+    restoreProcessHost = () => {
+      if (platformDescriptor) {
+        Object.defineProperty(process, 'platform', platformDescriptor);
+      }
+      if (archDescriptor) {
+        Object.defineProperty(process, 'arch', archDescriptor);
+      }
+    };
     const vscode = require('vscode');
     vscode.workspace.getConfiguration.mockReturnValue({
       get: jest.fn((key: string, defaultValue?: unknown) => {
@@ -1734,6 +1753,8 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
   });
 
   afterEach(() => {
+    restoreProcessHost?.();
+    restoreProcessHost = undefined;
     jest.restoreAllMocks();
   });
 
@@ -2232,6 +2253,130 @@ describe('release asset candidate selection', () => {
 
     expect(candidates[0]).toBe('perllsp-0.13.1-x86_64-pc-windows-msvc.zip');
     expect(candidates).toContain('perllsp-v0.13.1-x86_64-pc-windows-msvc.zip');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SHA256SUMS anchored digest lookup (#9839)
+//
+// A line only counts when the digest is a whole leading token and the file
+// name field exactly equals the requested asset. Substring containment let a
+// crafted filename that merely contained the requested name (or an embedded
+// digest string) satisfy verification with an attacker-chosen digest.
+// ---------------------------------------------------------------------------
+describe('SHA256SUMS anchored digest lookup', () => {
+  const GOOD_DIGEST = 'ab'.repeat(32);
+  const EVIL_DIGEST = 'cd'.repeat(32);
+  const ASSET_NAME = 'perllsp-0.13.1-x86_64-pc-windows-msvc.zip';
+
+  test('rejects crafted decoy whose filename embeds a valid digest plus the requested suffix (#9839 falsifier)', () => {
+    // Today's substring match resolves `evil.asset` to EVIL_DIGEST because the
+    // decoy filename contains it; the embedded "valid" digest makes the craft
+    // look genuine at a glance.
+    const sums = `${EVIL_DIGEST}  xx${GOOD_DIGEST}evil.asset\n`;
+
+    expect(lookupSha256SumsDigest(sums, 'evil.asset')).toEqual({ status: 'absent' });
+  });
+
+  test('decoy line containing the asset name as a substring cannot shadow the real entry', () => {
+    const sums = [
+      `${EVIL_DIGEST}  prefix-${ASSET_NAME}.bak`,
+      `${GOOD_DIGEST}  ${ASSET_NAME}`,
+      '',
+      '',
+    ].join('\n');
+
+    expect(lookupSha256SumsDigest(sums, ASSET_NAME)).toEqual({
+      status: 'found',
+      digest: GOOD_DIGEST,
+    });
+  });
+
+  test('resolves genuine sha256sum entries across binary modes, tabs, and CRLF', () => {
+    const binaryMarker = `${GOOD_DIGEST} *${ASSET_NAME}\n`;
+    expect(lookupSha256SumsDigest(binaryMarker, ASSET_NAME)).toEqual({
+      status: 'found',
+      digest: GOOD_DIGEST,
+    });
+
+    const tabSeparated = `${GOOD_DIGEST}\t${ASSET_NAME}\n`;
+    expect(lookupSha256SumsDigest(tabSeparated, ASSET_NAME)).toEqual({
+      status: 'found',
+      digest: GOOD_DIGEST,
+    });
+
+    const amongOthers = [
+      `${'11'.repeat(32)}  unrelated.tar.gz`,
+      `${GOOD_DIGEST}  ${ASSET_NAME}`,
+      `${'22'.repeat(32)}  another.zip`,
+      '',
+    ].join('\n');
+    expect(lookupSha256SumsDigest(amongOthers, ASSET_NAME)).toEqual({
+      status: 'found',
+      digest: GOOD_DIGEST,
+    });
+  });
+
+  test('rejects uppercase digest characters as non-canonical', () => {
+    const uppercaseDigest = GOOD_DIGEST.toUpperCase();
+    const sums = `${uppercaseDigest}  ${ASSET_NAME}\r\n`;
+
+    expect(lookupSha256SumsDigest(sums, ASSET_NAME)).toEqual({ status: 'malformed' });
+  });
+
+  test('fails closed on malformed lines even when they mention the asset name', () => {
+    const malformedEntries = [
+      // Digest one character short.
+      `${GOOD_DIGEST.slice(0, 63)}  ${ASSET_NAME}`,
+      // Digest one character long.
+      `${GOOD_DIGEST}a  ${ASSET_NAME}`,
+      // Non-hex character inside the digest token.
+      `${GOOD_DIGEST.slice(0, 31) + 'g' + GOOD_DIGEST.slice(32)}  ${ASSET_NAME}`,
+    ];
+
+    for (const sums of malformedEntries) {
+      expect(lookupSha256SumsDigest(`${sums}\n`, ASSET_NAME)).toEqual({ status: 'malformed' });
+    }
+
+    const ignoredCases = [
+      // Digest glued to the filename without a separator.
+      `${GOOD_DIGEST}${ASSET_NAME}`,
+      // Reversed (BSD-style) ordering is not sha256sum format.
+      `${ASSET_NAME}  ${GOOD_DIGEST}`,
+      // Indented entry never comes from sha256sum output.
+      `  ${GOOD_DIGEST}  ${ASSET_NAME}`,
+      // Prose mentioning the asset carries no digest token.
+      `checksum for ${ASSET_NAME} pending`,
+      // Empty manifest.
+      '',
+      // Comment-style line.
+      `# ${GOOD_DIGEST}  ${ASSET_NAME}`,
+    ];
+
+    for (const sums of ignoredCases) {
+      expect(lookupSha256SumsDigest(`${sums}\n`, ASSET_NAME)).toEqual({ status: 'absent' });
+    }
+  });
+
+  test('duplicate entries are conflicting and fail closed, even when they agree', () => {
+    const conflicting = [`${GOOD_DIGEST}  ${ASSET_NAME}`, `${EVIL_DIGEST}  ${ASSET_NAME}`, ''].join(
+      '\n',
+    );
+    expect(lookupSha256SumsDigest(conflicting, ASSET_NAME)).toEqual({ status: 'conflicting' });
+
+    const agreeing = [`${GOOD_DIGEST}  ${ASSET_NAME}`, `${GOOD_DIGEST}  ${ASSET_NAME}`, ''].join(
+      '\n',
+    );
+    expect(lookupSha256SumsDigest(agreeing, ASSET_NAME)).toEqual({ status: 'conflicting' });
+
+    const validAndMalformed = [
+      `${GOOD_DIGEST}  ${ASSET_NAME}`,
+      `${GOOD_DIGEST.slice(0, 63)}  ${ASSET_NAME}`,
+      '',
+    ].join('\n');
+    expect(lookupSha256SumsDigest(validAndMalformed, ASSET_NAME)).toEqual({
+      status: 'conflicting',
+    });
   });
 });
 

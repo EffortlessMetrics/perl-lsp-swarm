@@ -335,7 +335,7 @@ pub(crate) fn analyze_modifiers(
                 x_count = x_count.saturating_add(1);
                 match x_count {
                     1 => effective.extended = ExtendedMode::Extended,
-                    2 => {
+                    2
                         // Before 5.26 the second `x` is not `/xx`; the admitted
                         // behavior stays plain `/x` rather than extra-extended.
                         if record_version_requirement(
@@ -344,7 +344,7 @@ pub(crate) fn analyze_modifiers(
                             profile,
                             &mut requirements,
                             &mut diagnostics,
-                        ) {
+                        ) => {
                             effective.extended = ExtendedMode::ExtraExtended {
                                 enhanced: enhanced_xx_state(
                                     token.range,
@@ -354,31 +354,29 @@ pub(crate) fn analyze_modifiers(
                                 ),
                             };
                         }
-                    }
                     _ => {}
                 }
             }
-            'a' | 'd' | 'l' | 'u' => {
+            'a' | 'd' | 'l' | 'u'
                 if record_version_requirement(
                     token.range,
                     PERL_5_14,
                     profile,
                     &mut requirements,
                     &mut diagnostics,
-                ) {
-                    character_tokens.push(*token);
-                }
+                ) =>
+            {
+                character_tokens.push(*token);
             }
-            'n' => {
-                if record_version_requirement(
-                    token.range,
-                    PERL_5_22,
-                    profile,
-                    &mut requirements,
-                    &mut diagnostics,
-                ) {
-                    effective.captures = CaptureMode::NonCapturingByDefault;
-                }
+            'n' if record_version_requirement(
+                token.range,
+                PERL_5_22,
+                profile,
+                &mut requirements,
+                &mut diagnostics,
+            ) =>
+            {
+                effective.captures = CaptureMode::NonCapturingByDefault;
             }
             'p' => effective.preserve_match = true,
             'o' => effective.compile_once = true,
@@ -390,16 +388,15 @@ pub(crate) fn analyze_modifiers(
                 effective.substitution_evaluation_depth =
                     effective.substitution_evaluation_depth.saturating_add(1);
             }
-            'r' => {
-                if record_version_requirement(
-                    token.range,
-                    PERL_5_14,
-                    profile,
-                    &mut requirements,
-                    &mut diagnostics,
-                ) {
-                    effective.non_destructive = true;
-                }
+            'r' if record_version_requirement(
+                token.range,
+                PERL_5_14,
+                profile,
+                &mut requirements,
+                &mut diagnostics,
+            ) =>
+            {
+                effective.non_destructive = true;
             }
             _ => {}
         }

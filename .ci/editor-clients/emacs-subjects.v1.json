@@ -1,0 +1,151 @@
+{
+  "schema_version": "emacs_subject_manifest.v1",
+  "subjects": [
+    {
+      "subject_id": "bundled_eglot_emacs_29_4",
+      "client_kind": "bundled_eglot",
+      "source_state": "bundled",
+      "emacs_release_tag": "emacs-29.4",
+      "emacs_version_token": "29.4",
+      "client_version_hint": "1.12.29",
+      "client_source_relative_path": "lisp/progmodes/eglot.el",
+      "client_source_sha256": "sha256:1d94e789d4d08119b5ed631468627c7f052cc268d084ccf881a3d317abc1ab2c",
+      "materialization": "installation_root_resolution",
+      "client_library_forms": ["eglot.el", "eglot.elc", "eglot.el.gz"],
+      "digest_audit": {
+        "gnu_tarball_url": "https://ftp.gnu.org/gnu/emacs/emacs-29.4.tar.xz",
+        "gnu_tarball_sha256": "sha256:ba897946f94c36600a7e7bb3501d27aa4112d791bfe1445c61ed28550daca235",
+        "observed_client_version_header": "1.12.29"
+      }
+    },
+    {
+      "subject_id": "bundled_eglot_emacs_30_1",
+      "client_kind": "bundled_eglot",
+      "source_state": "bundled",
+      "emacs_release_tag": "emacs-30.1",
+      "emacs_version_token": "30.1",
+      "client_version_hint": "1.17.30",
+      "client_source_relative_path": "lisp/progmodes/eglot.el",
+      "client_source_sha256": "sha256:f20303322b1ddb3231a133dd7543ec3b9ba86f01e92d608c859b5ecad3cd2d7b",
+      "materialization": "installation_root_resolution",
+      "client_library_forms": ["eglot.el", "eglot.elc", "eglot.el.gz"],
+      "digest_audit": {
+        "gnu_tarball_url": "https://ftp.gnu.org/gnu/emacs/emacs-30.1.tar.xz",
+        "gnu_tarball_sha256": "sha256:6ccac1ae76e6af93c6de1df175e8eb406767c23da3dd2a16aa67e3124a6f138f",
+        "observed_client_version_header": "1.17.30"
+      }
+    },
+    {
+      "subject_id": "released_eglot_gnu_elpa_1_24",
+      "client_kind": "external_eglot",
+      "source_state": "released",
+      "emacs_release_tag": "0d67e76b94e1f0af9fe364aed8aa5db1c494c206",
+      "emacs_version_token": "30.1",
+      "client_version_hint": "1.24",
+      "client_source_relative_path": "eglot.el",
+      "client_source_sha256": "sha256:14f16148ec7c76642be39e302d048bb06c06550e6fd9095a6cdd8e186dec1a47",
+      "materialization": "explicit_input",
+      "client_library_forms": ["eglot.el"],
+      "external_package": {
+        "archive_url": "https://elpa.gnu.org/packages/eglot-1.24.tar",
+        "archive_sha256": "sha256:ec91a464e63315bb7e150cafe8c73c9707b43f76ab6cbe7b09908ec1fb03213a",
+        "attested_source_commit": "0d67e76b94e1f0af9fe364aed8aa5db1c494c206",
+        "package_requires": [
+          "emacs 26.3",
+          "eldoc 1.16.0",
+          "external-completion 0.1",
+          "flymake 1.4.5",
+          "jsonrpc 1.0.29",
+          "project 0.11.2",
+          "seq 2.23",
+          "xref 1.7.0"
+        ],
+        "minimum_emacs": "26.3",
+        "checksum_disposition": "gnu_elpa_archive_sha256_at_audit_time"
+      },
+      "digest_audit": {
+        "gnu_tarball_url": "https://elpa.gnu.org/packages/eglot-1.24.tar",
+        "gnu_tarball_sha256": "sha256:ec91a464e63315bb7e150cafe8c73c9707b43f76ab6cbe7b09908ec1fb03213a",
+        "observed_client_version_header": "1.24"
+      }
+    },
+    {
+      "subject_id": "source_eglot_emacs_c1ad9d27",
+      "client_kind": "external_eglot",
+      "source_state": "upstream_source",
+      "emacs_release_tag": "c1ad9d27207aff96a22d49ae4c6cab35a2619927",
+      "emacs_version_token": "30.1",
+      "client_version_hint": "1.24",
+      "client_source_relative_path": "lisp/progmodes/eglot.el",
+      "client_source_sha256": "sha256:c16bf52a9a03f7e1f84f6f2668271a08418064b740a398c29b0b8c4ae50fbf9e",
+      "materialization": "explicit_input",
+      "client_library_forms": ["eglot.el"],
+      "source_tree": {
+        "source_repo_url": "https://github.com/emacs-mirror/emacs",
+        "commit": "c1ad9d27207aff96a22d49ae4c6cab35a2619927",
+        "tree_sha1": "dc5475f03a6462846d36ade5a68a2e90a2578087"
+      },
+      "digest_audit": {
+        "gnu_tarball_url": "https://raw.githubusercontent.com/emacs-mirror/emacs/c1ad9d27207aff96a22d49ae4c6cab35a2619927/lisp/progmodes/eglot.el",
+        "gnu_tarball_sha256": "sha256:c16bf52a9a03f7e1f84f6f2668271a08418064b740a398c29b0b8c4ae50fbf9e",
+        "observed_client_version_header": "1.24"
+      }
+    },
+    {
+      "subject_id": "released_lsp_mode_melpa_stable_10_0_0",
+      "client_kind": "lsp_mode",
+      "source_state": "released",
+      "emacs_release_tag": "913a6c07f163205cb568bc68d7dfe677dbc358ab",
+      "emacs_version_token": "30.1",
+      "client_version_hint": "10.0.0",
+      "client_source_relative_path": "lsp-mode.el",
+      "client_source_sha256": "sha256:70466bde62d673a848f7e55d0e2a91d1a11b8fff76bad36ae5ff0c2a59445db0",
+      "materialization": "explicit_input",
+      "client_library_forms": ["lsp-mode.el"],
+      "external_package": {
+        "archive_url": "https://stable.melpa.org/packages/lsp-mode-10.0.0.tar",
+        "archive_sha256": "sha256:ad7d46d6bb5b2f840f73c5884cf86dd2678ff6ce68d1bede9ba6b9b60b5668ba",
+        "attested_source_commit": "913a6c07f163205cb568bc68d7dfe677dbc358ab",
+        "package_requires": [
+          "emacs 28.1",
+          "dash 2.18.0",
+          "f 0.21.0",
+          "ht 2.3",
+          "spinner 1.7.3",
+          "markdown-mode 2.3",
+          "lv 0",
+          "eldoc 1.11"
+        ],
+        "minimum_emacs": "28.1",
+        "checksum_disposition": "melpa_stable_archive_sha256_at_audit_time"
+      },
+      "digest_audit": {
+        "gnu_tarball_url": "https://stable.melpa.org/packages/lsp-mode-10.0.0.tar",
+        "gnu_tarball_sha256": "sha256:ad7d46d6bb5b2f840f73c5884cf86dd2678ff6ce68d1bede9ba6b9b60b5668ba",
+        "observed_client_version_header": "10.0.0"
+      }
+    },
+    {
+      "subject_id": "source_lsp_mode_github_6bfc593",
+      "client_kind": "lsp_mode",
+      "source_state": "upstream_source",
+      "emacs_release_tag": "6bfc593d7b1bc0dd656f09ffce52cc085ebced05",
+      "emacs_version_token": "30.1",
+      "client_version_hint": "10.0.1",
+      "client_source_relative_path": "lsp-mode.el",
+      "client_source_sha256": "sha256:2878b061e01de2239ae2d1206838cead3a0726c6cb6e7c4280d4248197ab568d",
+      "materialization": "explicit_input",
+      "client_library_forms": ["lsp-mode.el"],
+      "source_tree": {
+        "source_repo_url": "https://github.com/emacs-lsp/lsp-mode",
+        "commit": "6bfc593d7b1bc0dd656f09ffce52cc085ebced05",
+        "tree_sha1": "b9111a657fe1376f92d203ba4951868fb0fa3f57"
+      },
+      "digest_audit": {
+        "gnu_tarball_url": "https://raw.githubusercontent.com/emacs-lsp/lsp-mode/6bfc593d7b1bc0dd656f09ffce52cc085ebced05/lsp-mode.el",
+        "gnu_tarball_sha256": "sha256:2878b061e01de2239ae2d1206838cead3a0726c6cb6e7c4280d4248197ab568d",
+        "observed_client_version_header": "10.0.1"
+      }
+    }
+  ]
+}

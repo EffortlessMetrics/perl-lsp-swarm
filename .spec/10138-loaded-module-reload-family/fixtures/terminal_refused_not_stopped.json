@@ -1,0 +1,20 @@
+{
+  "schema": "perl_dap.loaded_module_reload_family.vector.v1",
+  "name": "terminal_refused_not_stopped",
+  "description": "Admission refused because the debuggee is not stopped or command-ready; no generation advance, no possibly-applied.",
+  "outcome": { "kind": "refused", "disposition": "not_stopped_or_not_command_ready" },
+  "generation_before": 1,
+  "expect": {
+    "kind": "refused",
+    "phase": "admission",
+    "disposition": "not_stopped_or_not_command_ready",
+    "success": false,
+    "possibly_applied": false,
+    "generation": { "previous": 1, "current": 1, "advanced": false },
+    "reconciliation": {
+      "loaded_source_refresh": "deferred",
+      "inspection_invalidation": "deferred",
+      "breakpoint_reconciliation": "deferred"
+    }
+  }
+}

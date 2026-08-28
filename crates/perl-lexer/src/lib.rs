@@ -898,6 +898,27 @@ impl<'a> PerlLexer<'a> {
         let start = self.position;
         let quote = self.current_char()?;
 
+        // Punctuation typeglob names (`*"`, `*'`, *`): after a glob sigil in
+        // term position, a quote character immediately followed by `;` is the
+        // punctuation-variable typeglob name (English.pm, e.g.
+        // `*PREMATCH = *`;`), never the start of a string. String-lexing it
+        // runs the unterminated-quote recovery, which consumes through
+        // end-of-line: it errors when a newline follows (#12363) and silently
+        // swallows the rest of the line otherwise. A multiplication such as
+        // `$a * ";"` is excluded by requiring a non-operand before the star.
+        if matches!(quote, '"' | '\'' | '`')
+            && self.peek_char(1) == Some(';')
+            && self.glob_sigil_precedes()
+        {
+            self.advance();
+            return Some(Token {
+                token_type: TokenType::Operator(Arc::from(&self.input[start..start + 1])),
+                text: Arc::from(&self.input[start..start + 1]),
+                start,
+                end: start + 1,
+            });
+        }
+
         match quote {
             '"' => self.parse_double_quoted_string(start),
             '\'' => self.parse_single_quoted_string(start),
@@ -905,6 +926,33 @@ impl<'a> PerlLexer<'a> {
             'q' if self.peek_char(1) == Some('{') => self.parse_q_string(start),
             _ => None,
         }
+    }
+
+    /// Whether the previous significant character is a `*` in glob-sigil
+    /// position (preceded by an operator or the start of input, not by an
+    /// operand — `$a * x` is multiplication, `= *x` is a glob).
+    fn glob_sigil_precedes(&self) -> bool {
+        let bytes = self.input.as_bytes();
+        let mut index = self.position;
+        while index > 0 && bytes[index - 1].is_ascii_whitespace() {
+            index -= 1;
+        }
+        if index == 0 || bytes[index - 1] != b'*' {
+            return false;
+        }
+        index -= 1;
+        while index > 0 && bytes[index - 1].is_ascii_whitespace() {
+            index -= 1;
+        }
+        if index == 0 {
+            return true;
+        }
+        let before = bytes[index - 1] as char;
+        !(before.is_ascii_alphanumeric()
+            || matches!(
+                before,
+                '_' | '$' | '@' | '%' | '&' | '*' | ')' | ']' | '}' | '\'' | '"' | '`'
+            ))
     }
 
     #[inline]
@@ -1819,7 +1867,6 @@ impl<'a> PerlLexer<'a> {
 
             // Check for substitution/transliteration operators
             // Skip if after '->'  -- these are method names, not operators.
-            #[allow(clippy::collapsible_if)]
             if !self.after_sub
                 && !self.after_arrow
                 && !follows_sigil_prefix
@@ -1959,16 +2006,15 @@ impl<'a> PerlLexer<'a> {
                                 self.skip_quote_operator_delimiter_gap();
 
                                 // Get the delimiter
-                                #[allow(clippy::collapsible_if)]
-                                if let Some(delim) = self.current_char() {
-                                    if !delim.is_alphanumeric() {
-                                        self.advance();
-                                        if let Some(ref mut info) = self.current_quote_op {
-                                            info.delimiter = delim;
-                                        }
-                                        // Parse the quote operator content and return the complete token
-                                        return self.parse_quote_operator(delim);
+                                if let Some(delim) = self.current_char()
+                                    && !delim.is_alphanumeric()
+                                {
+                                    self.advance();
+                                    if let Some(ref mut info) = self.current_quote_op {
+                                        info.delimiter = delim;
                                     }
+                                    // Parse the quote operator content and return the complete token
+                                    return self.parse_quote_operator(delim);
                                 }
                             } else {
                                 // Not a quote operator here → treat as IDENTIFIER
@@ -2259,31 +2305,30 @@ impl<'a> PerlLexer<'a> {
                 }
                 self.advance();
                 // Check for compound operators
-                #[allow(clippy::collapsible_if)]
-                if let Some(next) = self.current_char() {
-                    if is_compound_operator(ch, next) {
-                        self.advance();
+                if let Some(next) = self.current_char()
+                    && is_compound_operator(ch, next)
+                {
+                    self.advance();
 
-                        // Check for three-character operators like **=, <<=, >>=
-                        if self.position < self.input.len() {
-                            let third = self.current_char();
-                            // Check for three-character operators
-                            if matches!(
-                                (ch, next, third),
-                                ('*', '*', Some('='))
-                                    | ('<', '<', Some('='))
-                                    | ('>', '>', Some('='))
-                                    | ('&', '&', Some('='))
-                                    | ('|', '|', Some('='))
-                                    | ('/', '/', Some('='))
-                            ) {
-                                self.advance(); // consume the =
-                            } else if ch == '<' && next == '=' && third == Some('>') {
-                                self.advance(); // consume the >
-                            // Special case: <=> spaceship operator
-                            } else if ch == '.' && next == '.' && third == Some('.') {
-                                self.advance(); // consume the third .
-                            }
+                    // Check for three-character operators like **=, <<=, >>=
+                    if self.position < self.input.len() {
+                        let third = self.current_char();
+                        // Check for three-character operators
+                        if matches!(
+                            (ch, next, third),
+                            ('*', '*', Some('='))
+                                | ('<', '<', Some('='))
+                                | ('>', '>', Some('='))
+                                | ('&', '&', Some('='))
+                                | ('|', '|', Some('='))
+                                | ('/', '/', Some('='))
+                        ) {
+                            self.advance(); // consume the =
+                        } else if ch == '<' && next == '=' && third == Some('>') {
+                            self.advance(); // consume the >
+                        // Special case: <=> spaceship operator
+                        } else if ch == '.' && next == '.' && third == Some('.') {
+                            self.advance(); // consume the third .
                         }
                     }
                 }
@@ -2292,29 +2337,28 @@ impl<'a> PerlLexer<'a> {
             | '\\' => {
                 self.advance();
                 // Check for compound operators
-                #[allow(clippy::collapsible_if)]
-                if let Some(next) = self.current_char() {
-                    if is_compound_operator(ch, next) {
-                        self.advance();
+                if let Some(next) = self.current_char()
+                    && is_compound_operator(ch, next)
+                {
+                    self.advance();
 
-                        // Check for three-character operators like **=, <<=, >>=
-                        if self.position < self.input.len() {
-                            let third = self.current_char();
-                            // Check for three-character operators
-                            if matches!(
-                                (ch, next, third),
-                                ('*', '*', Some('='))
-                                    | ('<', '<', Some('='))
-                                    | ('>', '>', Some('='))
-                                    | ('&', '&', Some('='))
-                                    | ('|', '|', Some('='))
-                                    | ('/', '/', Some('='))
-                            ) {
-                                self.advance(); // consume the =
-                            } else if ch == '<' && next == '=' && third == Some('>') {
-                                self.advance(); // consume the >
-                                // Special case: <=> spaceship operator
-                            }
+                    // Check for three-character operators like **=, <<=, >>=
+                    if self.position < self.input.len() {
+                        let third = self.current_char();
+                        // Check for three-character operators
+                        if matches!(
+                            (ch, next, third),
+                            ('*', '*', Some('='))
+                                | ('<', '<', Some('='))
+                                | ('>', '>', Some('='))
+                                | ('&', '&', Some('='))
+                                | ('|', '|', Some('='))
+                                | ('/', '/', Some('='))
+                        ) {
+                            self.advance(); // consume the =
+                        } else if ch == '<' && next == '=' && third == Some('>') {
+                            self.advance(); // consume the >
+                            // Special case: <=> spaceship operator
                         }
                     }
                 }
