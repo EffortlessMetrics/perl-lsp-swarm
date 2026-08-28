@@ -19,6 +19,7 @@ WORKFLOW = Path(sys.argv[1])
 REQUIRED_PATHS = {
     "AGENTS.md",
     "CLAUDE.md",
+    ".github/PULL_REQUEST_TEMPLATE.md",
     "docs/agents/**",
     "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
     "docs/specs/README.md",
@@ -33,10 +34,15 @@ REQUIRED_PATHS = {
     "xtask/src/tasks/mod.rs",
     "xtask/tests/agent_merge_review_backstop.rs",
     "xtask/tests/pr_convergence_contract.rs",
+    "xtask/tests/shift_left_publication_contract.rs",
     "scripts/tests/test-agent-flow-control-plane-trigger.sh",
     ".github/workflows/agent-flow-control-plane.yml",
 }
-TARGET = "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md"
+TARGETS = (
+    "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    "xtask/tests/shift_left_publication_contract.rs",
+)
 EVENTS = ("pull_request", "push")
 
 
@@ -112,15 +118,16 @@ source = WORKFLOW.read_text(encoding="utf-8")
 validate(source)
 
 for event in EVENTS:
-    mutated = remove_scoped_path(source, event, TARGET)
-    try:
-        validate(mutated)
-    except AssertionError:
-        pass
-    else:
-        raise AssertionError(
-            f"removing {TARGET!r} only from on.{event}.paths must fail the contract"
-        )
+    for target in TARGETS:
+        mutated = remove_scoped_path(source, event, target)
+        try:
+            validate(mutated)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(
+                f"removing {target!r} only from on.{event}.paths must fail the contract"
+            )
 
 print("agent-flow control-plane trigger fixtures passed")
 PY
