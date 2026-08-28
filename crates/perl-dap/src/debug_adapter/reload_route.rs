@@ -237,6 +237,16 @@ impl DebugAdapter {
         let mut session_guard = lock_or_recover(&self.session, "debug_adapter.reload_route");
         let mut scratch_clock = RuntimeModuleGenerationClock::new();
         let has_session = session_guard.is_some();
+        // Command-readiness gate (review finding): a held session is only
+        // an admission fact when the debuggee is actually suspended. A
+        // running or terminated session owns no consistent inspection
+        // snapshot to invalidate and cannot accept a mutation handshake,
+        // so mutating terminals refuse `not_stopped_or_not_command_ready`
+        // exactly like the absent-session case.
+        let session_ready = has_session
+            && session_guard.as_ref().is_some_and(|session| {
+                matches!(session.state, crate::debug_adapter::session::DebugState::Stopped)
+            });
         let clock: &mut RuntimeModuleGenerationClock = match session_guard.as_mut() {
             Some(session) => &mut session.module_generation,
             None => &mut scratch_clock,
@@ -251,7 +261,7 @@ impl DebugAdapter {
             // refusal — the composition fails closed rather than routing a
             // reload whose affected source it cannot name (review finding).
             Some(outcome)
-                if has_session
+                if session_ready
                     && crate::reload::outcome_is_mutating(&outcome)
                     && subject_source.is_none() =>
             {
@@ -259,7 +269,7 @@ impl DebugAdapter {
                     disposition: LoadedModuleReloadEligibility::SourceNotExactOrStale,
                 }
             }
-            Some(outcome) if has_session => {
+            Some(outcome) if session_ready => {
                 if crate::reload::outcome_is_mutating(&outcome) && clock.current().is_exhausted() {
                     // Bounded exhaustion (#10097): fail closed as a
                     // deterministic pre-mutation prepare failure rather
@@ -312,6 +322,20 @@ impl DebugAdapter {
             session.stack_frames.clear();
             session.stack_frame_arguments.clear();
             session.variable_cache.clear();
+            // Suspension authority (review finding): frame ids mint their
+            // wire identity from `stopped_generation`
+            // (`debug_adapter/process.rs`), so clearing the table alone
+            // cannot retire a pre-reload frame handle — the rebuilt
+            // suspension would re-mint the numerically identical id and
+            // old handles would pass membership checks against the new
+            // table. Advancing the clock with the composed invalidation
+            // makes every generation-bound pre-reload identity
+            // authority-dead (`reload/invalidation.rs` staleness), keeping
+            // this route's frozen promise that no client observes
+            // `reloaded` while old affected handles are still current.
+            // Refusals and pre-mutation failures move nothing, matching
+            // the module-clock `GenerationEffect` doctrine.
+            session.stopped_generation = session.stopped_generation.saturating_add(1);
             *lock_or_recover(&self.last_exception_message, "debug_adapter.last_exception") = None;
         }
         drop(session_guard);
@@ -530,6 +554,22 @@ mod tests {
                 exception,
             ),
             None => (0, false, exception),
+        }
+    }
+
+    /// The session's stopped-suspension frame-authority generation, if a
+    /// session exists (test observability for the invalidation witness).
+    fn stopped_generation_snapshot(adapter: &DebugAdapter) -> Option<u64> {
+        lock_or_recover(&adapter.session, "reload_route.test.generation")
+            .as_ref()
+            .map(|session| session.stopped_generation)
+    }
+
+    /// Re-seed the held session's execution state (running/stopped).
+    fn force_session_state(adapter: &DebugAdapter, state: DebugState) {
+        if let Some(session) = lock_or_recover(&adapter.session, "reload_route.test.force").as_mut()
+        {
+            session.state = state;
         }
     }
 
@@ -917,6 +957,116 @@ mod tests {
         let (frames, _, _) = session_state_snapshot(&adapter);
         assert_eq!(frames, 2, "an unbound subject never triggers invalidation");
         assert!(receiver.try_recv().is_err());
+        Ok(())
+    }
+
+    /// Review finding (admission gating): a session that exists but is not
+    /// stopped is not command-ready; a seeded mutating outcome must refuse
+    /// with the frozen disposition instead of routing a reload into a
+    /// running debuggee.
+    #[test]
+    fn mutating_outcome_against_a_running_session_refuses_not_stopped() -> TestResult {
+        let sources = SeededSources::new();
+        let mut adapter = DebugAdapter::new();
+        let (event_sender, receiver) = sync_channel(64);
+        adapter.set_event_sender(event_sender);
+        adapter.enable_loaded_module_reload_preview_profile(true);
+        adapter.declare_loaded_module_reload_client_for_test(&[1])?;
+        adapter.seed_loaded_module_reload_subject_for_test(
+            MODULE_IDENTITY,
+            &sources.path_string(true),
+        );
+        adapter.seed_loaded_module_reload_outcome_for_test(LoadedModuleReloadOutcome::Reloaded);
+        seed_stopped_session(&adapter, &sources);
+        force_session_state(&adapter, DebugState::Running);
+
+        let response = adapter.handle_request(2, LOADED_MODULE_RELOAD_REQUEST, Some(request(1, 1)));
+        let DapMessage::Response { success, body: Some(body), .. } = &response else {
+            return Err("expected a response body".into());
+        };
+        assert!(!success);
+        let wire: LoadedModuleReloadWireResponse = serde_json::from_value(body.clone())?;
+        let outcome = loaded_module_reload_outcome_body(&wire).ok_or("expected an outcome body")?;
+        assert_eq!(outcome.kind.as_str(), "refused");
+        assert_eq!(
+            serde_json::to_value(outcome.disposition)?,
+            serde_json::json!("not_stopped_or_not_command_ready"),
+            "a non-stopped session is not command-ready"
+        );
+        assert!(!outcome.generation.ok_or("witness required")?.advanced);
+
+        // No invalidation, no events: the refusal is purely pre-mutation.
+        let (frames, has_cache, exception) = session_state_snapshot(&adapter);
+        assert_eq!(frames, 2, "a not-ready refusal never invalidates frames");
+        assert!(has_cache);
+        assert_eq!(exception.as_deref(), Some("old-code exception fact"));
+        assert!(receiver.try_recv().is_err(), "a not-ready refusal emits no events");
+        Ok(())
+    }
+
+    /// Review finding (frame authority): composed invalidation must
+    /// advance `stopped_generation` so pre-reload generation-derived
+    /// frame identities can never be valid against the rebuilt table.
+    #[test]
+    fn mutating_route_advances_stopped_frame_authority() -> TestResult {
+        let sources = SeededSources::new();
+        let mut adapter = DebugAdapter::new();
+        adapter.enable_loaded_module_reload_preview_profile(true);
+        adapter.declare_loaded_module_reload_client_for_test(&[1])?;
+        adapter.seed_loaded_module_reload_subject_for_test(
+            MODULE_IDENTITY,
+            &sources.path_string(true),
+        );
+        adapter.seed_loaded_module_reload_outcome_for_test(LoadedModuleReloadOutcome::Reloaded);
+        seed_stopped_session(&adapter, &sources);
+        let generation_before =
+            stopped_generation_snapshot(&adapter).ok_or("session must exist")?;
+
+        let response = adapter.handle_request(2, LOADED_MODULE_RELOAD_REQUEST, Some(request(1, 1)));
+        let DapMessage::Response { success: true, .. } = &response else {
+            return Err("the reloaded route must succeed for this witness".into());
+        };
+
+        // The suspension authority moved: any client-held frame identity
+        // minted from the previous generation is authority-dead, and the
+        // cleared table cannot revive it by numeric coincidence.
+        let generation_after = stopped_generation_snapshot(&adapter).ok_or("session must die?")?;
+        assert!(
+            generation_after > generation_before,
+            "composed invalidation must advance stopped_generation \
+             (before {generation_before}, after {generation_after})"
+        );
+        Ok(())
+    }
+
+    /// A refusal routes without touching frame authority either: only a
+    /// terminal that mutated the debuggee advances the suspension clock.
+    #[test]
+    fn refusing_route_preserves_stopped_frame_authority() -> TestResult {
+        let sources = SeededSources::new();
+        let mut adapter = DebugAdapter::new();
+        adapter.enable_loaded_module_reload_preview_profile(true);
+        adapter.declare_loaded_module_reload_client_for_test(&[1])?;
+        adapter.seed_loaded_module_reload_subject_for_test(
+            MODULE_IDENTITY,
+            &sources.path_string(true),
+        );
+        adapter.seed_loaded_module_reload_outcome_for_test(LoadedModuleReloadOutcome::Refused {
+            disposition: LoadedModuleReloadEligibility::OutsideLaunchAuthority,
+        });
+        seed_stopped_session(&adapter, &sources);
+        let generation_before =
+            stopped_generation_snapshot(&adapter).ok_or("session must exist")?;
+
+        let response = adapter.handle_request(2, LOADED_MODULE_RELOAD_REQUEST, Some(request(1, 1)));
+        let DapMessage::Response { success: false, .. } = &response else {
+            return Err("a refused outcome is not success".into());
+        };
+        assert_eq!(
+            stopped_generation_snapshot(&adapter),
+            Some(generation_before),
+            "a pre-mutation refusal preserves the suspension authority"
+        );
         Ok(())
     }
 }
