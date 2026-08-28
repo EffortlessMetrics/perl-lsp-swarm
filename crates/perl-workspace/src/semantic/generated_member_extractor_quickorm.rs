@@ -30,6 +30,13 @@ struct NameCandidate {
     span_end: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ImportToken {
+    Word(String),
+    FatArrow,
+    Separator,
+}
+
 /// Extract the bounded DBIx::QuickORM candidate facts without publishing them.
 ///
 /// There is intentionally no non-test caller while provider admission remains
@@ -38,16 +45,18 @@ struct NameCandidate {
 #[allow(dead_code)]
 pub(crate) fn extract_dbix_quickorm_candidate_facts(
     ast: &Node,
+    source: &str,
     file_id: FileId,
 ) -> Vec<GeneratedMemberFact> {
     let mut out = Vec::new();
     let mut ctx = QuickOrmWalkCtx::default();
-    walk_quickorm(ast, file_id, &mut ctx, &mut out);
+    walk_quickorm(ast, source, file_id, &mut ctx, &mut out);
     out
 }
 
 fn walk_quickorm(
     node: &Node,
+    source: &str,
     file_id: FileId,
     ctx: &mut QuickOrmWalkCtx,
     out: &mut Vec<GeneratedMemberFact>,
@@ -55,13 +64,13 @@ fn walk_quickorm(
     match &node.kind {
         NodeKind::Program { statements } => {
             for statement in statements {
-                walk_quickorm(statement, file_id, ctx, out);
+                walk_quickorm(statement, source, file_id, ctx, out);
             }
         }
         NodeKind::Block { statements } => {
             let mut block_ctx = ctx.clone();
             for statement in statements {
-                walk_quickorm(statement, file_id, &mut block_ctx, out);
+                walk_quickorm(statement, source, file_id, &mut block_ctx, out);
             }
         }
         NodeKind::Package { name, block, .. } => {
@@ -69,18 +78,18 @@ fn walk_quickorm(
                 let saved = ctx.clone();
                 ctx.current_package = Some(name.clone());
                 ctx.explicit_table_class_active = false;
-                walk_quickorm(block, file_id, ctx, out);
+                walk_quickorm(block, source, file_id, ctx, out);
                 *ctx = saved;
             } else {
                 ctx.current_package = Some(name.clone());
                 ctx.explicit_table_class_active = false;
             }
         }
-        NodeKind::Use { module, args, .. } if module == "DBIx::QuickORM" => {
+        NodeKind::Use { module, .. } if module == "DBIx::QuickORM" => {
             // Every import creates and installs a fresh builder in the caller.
             // A later plain import therefore replaces a table builder with the
             // default ORM builder instead of preserving table-class activation.
-            ctx.explicit_table_class_active = is_explicit_table_class_import(args);
+            ctx.explicit_table_class_active = is_explicit_table_class_import(node, source);
         }
         NodeKind::No { module, .. } if module == "DBIx::QuickORM" => {
             ctx.explicit_table_class_active = false;
@@ -91,32 +100,125 @@ fn walk_quickorm(
         NodeKind::Subroutine { .. } | NodeKind::Method { .. } => {}
         _ => {
             for child in node.children() {
-                walk_quickorm(child, file_id, ctx, out);
+                walk_quickorm(child, source, file_id, ctx, out);
             }
         }
     }
 }
 
-fn is_explicit_table_class_import(args: &[String]) -> bool {
-    let normalized: Vec<String> = args
-        .iter()
-        .map(|arg| normalize_use_arg(arg))
-        .filter(|arg| !arg.is_empty() && arg != "," && arg != "=>")
-        .collect();
+fn is_explicit_table_class_import(node: &Node, source: &str) -> bool {
+    let Some(use_source) = source.get(node.location.start..node.location.end) else {
+        return false;
+    };
+    let Some(tokens) = top_level_quickorm_import_tokens(use_source) else {
+        return false;
+    };
 
-    let table_type = normalized.windows(2).any(|pair| pair[0] == "type" && pair[1] == "table");
-    let customizes_symbols = normalized
-        .iter()
-        .any(|arg| matches!(arg.as_str(), "rename" | "skip" | "only"));
+    let table_type = tokens.windows(3).any(|window| {
+        matches!(&window[0], ImportToken::Word(word) if word == "type")
+            && window[1] == ImportToken::FatArrow
+            && matches!(&window[2], ImportToken::Word(word) if word == "table")
+    });
+    let customizes_symbols = tokens.windows(2).any(|window| {
+        matches!(
+            &window[0],
+            ImportToken::Word(word) if matches!(word.as_str(), "rename" | "skip" | "only")
+        ) && window[1] == ImportToken::FatArrow
+    });
 
     table_type && !customizes_symbols
 }
 
-fn normalize_use_arg(raw: &str) -> String {
-    raw.trim()
-        .trim_matches(|ch| matches!(ch, '\'' | '"' | '(' | ')' | '[' | ']' | '{' | '}'))
-        .trim()
-        .to_ascii_lowercase()
+fn top_level_quickorm_import_tokens(use_source: &str) -> Option<Vec<ImportToken>> {
+    let after_use = strip_keyword(use_source.trim_start(), "use")?.trim_start();
+    let tail = strip_keyword(after_use, "DBIx::QuickORM")?.trim_start();
+    let parenthesized = tail.starts_with('(');
+    let base_depth = usize::from(parenthesized);
+    let mut depth = 0usize;
+    let mut tokens = Vec::new();
+    let mut chars = tail.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' | '"' => {
+                let mut value = String::new();
+                let mut escaped = false;
+                let mut closed = false;
+                for next in chars.by_ref() {
+                    if escaped {
+                        value.push(next);
+                        escaped = false;
+                    } else if next == '\\' {
+                        escaped = true;
+                    } else if next == ch {
+                        closed = true;
+                        break;
+                    } else {
+                        value.push(next);
+                    }
+                }
+                if !closed {
+                    return None;
+                }
+                if depth == base_depth {
+                    tokens.push(ImportToken::Word(value.to_ascii_lowercase()));
+                }
+            }
+            '#' => {
+                for next in chars.by_ref() {
+                    if next == '\n' {
+                        break;
+                    }
+                }
+            }
+            '(' | '{' | '[' => {
+                depth = depth.saturating_add(1);
+            }
+            ')' | '}' | ']' => {
+                depth = depth.saturating_sub(1);
+            }
+            '=' if chars.peek() == Some(&'>') => {
+                chars.next();
+                if depth == base_depth {
+                    tokens.push(ImportToken::FatArrow);
+                }
+            }
+            ',' if depth == base_depth => tokens.push(ImportToken::Separator),
+            ';' if depth == 0 => break,
+            current if current.is_ascii_alphabetic() || current == '_' => {
+                let mut word = String::from(current);
+                while let Some(next) = chars.peek().copied() {
+                    if next.is_ascii_alphanumeric() || next == '_' {
+                        word.push(next);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                if depth == base_depth {
+                    tokens.push(ImportToken::Word(word.to_ascii_lowercase()));
+                }
+            }
+            current if current.is_whitespace() => {}
+            _ if depth == base_depth => tokens.push(ImportToken::Separator),
+            _ => {}
+        }
+    }
+
+    Some(tokens)
+}
+
+fn strip_keyword<'a>(source: &'a str, keyword: &str) -> Option<&'a str> {
+    let remainder = source.strip_prefix(keyword)?;
+    if remainder
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        None
+    } else {
+        Some(remainder)
+    }
 }
 
 fn extract_table_declaration(
@@ -376,7 +478,7 @@ mod tests {
     }
 
     fn candidate_facts(source: &str) -> Vec<GeneratedMemberFact> {
-        extract_dbix_quickorm_candidate_facts(&parse(source), FileId(1))
+        extract_dbix_quickorm_candidate_facts(&parse(source), source, FileId(1))
     }
 
     fn has_name(facts: &[GeneratedMemberFact], canonical_name: &str) -> bool {
@@ -404,6 +506,21 @@ table users => sub {
     }
 
     #[test]
+    fn positional_type_and_table_arguments_do_not_activate_the_candidate() {
+        let facts = candidate_facts(
+            r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM 'type', 'table';
+
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+        );
+
+        assert!(!has_name(&facts, "My::ORM::Table::User::id"));
+    }
+
+    #[test]
     fn candidate_is_not_published_by_production_generated_member_extractor() {
         let source = r#"
 package My::ORM::Table::User;
@@ -412,7 +529,7 @@ table users => sub { column id => sub { primary_key }; };
 1;
 "#;
         let ast = parse(source);
-        let candidate = extract_dbix_quickorm_candidate_facts(&ast, FileId(1));
+        let candidate = extract_dbix_quickorm_candidate_facts(&ast, source, FileId(1));
         let production =
             crate::semantic::generated_member_extractor::extract_generated_member_facts(
                 &ast,
