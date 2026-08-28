@@ -6,13 +6,14 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
 fn invalid_data(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
 #[test]
-fn scenario_14_quarantine_rows_have_terminal_executable_dispositions(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn scenario_14_quarantine_rows_have_terminal_executable_dispositions() -> TestResult {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let ledger_raw = fs::read_to_string(root.join(".ci/ux-flakes.json"))?;
     let ledger: Value = serde_json::from_str(&ledger_raw)?;
@@ -42,7 +43,10 @@ fn scenario_14_quarantine_rows_have_terminal_executable_dispositions(
             .as_str()
             .ok_or_else(|| invalid_data(format!("{test} is missing disposition")))?;
         assert!(
-            matches!(disposition, "stabilized" | "resolved_by_intent" | "folded" | "not_proven"),
+            matches!(
+                disposition,
+                "stabilized" | "resolved_by_intent" | "folded" | "not_proven"
+            ),
             "{test} has non-terminal disposition {disposition}"
         );
 
