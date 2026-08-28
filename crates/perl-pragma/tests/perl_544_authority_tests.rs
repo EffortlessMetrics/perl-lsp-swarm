@@ -83,6 +83,25 @@ fn explicit_feature_pragmas_toggle_enhanced_xx() {
 }
 
 #[test]
+fn explicit_feature_preserves_older_version_authority() {
+    let ast = program(
+        vec![
+            use_node("v5.42", &[], 0, 10),
+            use_node("feature", &["'enhanced_xx'"], 20, 48),
+        ],
+        48,
+    );
+    let environment = CompileTimePragmaEnvironment::build(&ast);
+    let snapshot = environment.snapshot_at(48);
+
+    assert_eq!(
+        snapshot.perl_version(),
+        Some(PerlVersion::new(5, 42)),
+    );
+    assert!(snapshot.has_feature("enhanced_xx"));
+}
+
+#[test]
 fn feature_all_and_experimental_admit_enhanced_xx() {
     let feature_all = program(vec![use_node("feature", &["':all'"], 0, 20)], 20);
     let experimental = program(
