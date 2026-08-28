@@ -38,11 +38,11 @@ Fixtures live under `test_corpus/gold/`. Every fixture directory contains
   `expected_symbols.json`, `expected_rename.json` — editor intelligence
 - `expected_module.json` — `@INC` and module-resolution consumer consistency
 
-Current coverage is 34 fixture directories spanning hover, goto definition,
-completion, document symbols, rename, diagnostics, `@INC`/`use lib`
-resolution, and parse-error recovery. The repository contract pins the current
-fixture and sidecar population floors and validates sidecar identity, version,
-and assertion non-vacuity:
+The corpus currently contains at least 34 fixture directories spanning hover,
+goto definition, completion, document symbols, rename, diagnostics, `@INC`/`use
+lib` resolution, and parse-error recovery. The repository contract pins the
+current fixture and sidecar population floors and validates sidecar identity,
+version, and assertion non-vacuity:
 
 ```bash
 cargo test -p perl-corpus --test gold_repository_contract

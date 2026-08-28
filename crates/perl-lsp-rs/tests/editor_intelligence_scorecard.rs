@@ -29,10 +29,10 @@ mod common;
 use common::test_utils::TestServerBuilder;
 use perl_corpus::gold::{
     CompletionAssertionKind, CompletionGoldFixture, GoldAssertion, GoldFixture, GotoAssertionKind,
-    GotoGoldFixture, HoverAssertionKind, HoverGoldFixture, RenameAssertionKind, RenameExpectedEdit,
-    RenameGoldFixture, load_completion_gold_fixtures, load_document_symbol_gold_fixtures,
-    load_gold_fixtures, load_goto_gold_fixtures, load_hover_gold_fixtures,
-    load_rename_gold_fixtures,
+    GotoGoldFixture, HoverAssertionKind, HoverGoldFixture, RenameAssertion, RenameAssertionKind,
+    RenameExpectedEdit, RenameGoldFixture, load_completion_gold_fixtures,
+    load_document_symbol_gold_fixtures, load_gold_fixtures, load_goto_gold_fixtures,
+    load_hover_gold_fixtures, load_rename_gold_fixtures,
 };
 use perl_corpus::{DocumentSymbolAssertionKind, DocumentSymbolGoldFixture};
 use serde_json::Value;
@@ -847,6 +847,39 @@ mod rename_oracle_tests {
         if rename_expected_edits_match(&resp, "file:///gold/rename_subroutine.pl", Some(&[])) {
             return Err("non-empty rename edit passed explicit empty exact mode".into());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn rename_parser_rejects_null_without_disabling_count_only_mode() -> TestResult {
+        let omitted: RenameAssertion = serde_json::from_str(
+            r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values"}"#,
+        )?;
+        let null = serde_json::from_str::<RenameAssertion>(
+            r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_edits":null}"#,
+        );
+        if null.is_ok() {
+            return Err("explicit null expected_edits passed the parser".into());
+        }
+
+        let valid = json!({
+            "range": {
+                "start": {"line": 4, "character": 4},
+                "end": {"line": 4, "character": 19}
+            },
+            "newText": "sum_values"
+        });
+        let response = response_with_entries(json!([valid]));
+        if omitted.expected_edits.is_some()
+            || !rename_expected_edits_match(
+                &response,
+                "file:///gold/rename_subroutine.pl",
+                omitted.expected_edits.as_deref(),
+            )
+        {
+            return Err("omitted expected_edits must use count-only scorecard mode".into());
+        }
+
         Ok(())
     }
 }

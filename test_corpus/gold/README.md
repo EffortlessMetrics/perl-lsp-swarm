@@ -32,6 +32,12 @@ Editor and module sidecars use this common envelope:
 
 `fixture` must exactly match the containing directory name. LSP `line` and `character` values are zero-based.
 
+Rename assertions use `expected_edits` as follows:
+
+- Omit `expected_edits` for the legacy count-only contract; the scorecard still requires a well-formed response.
+- Provide an array to require the exact edited ranges and replacement text. An empty array therefore requires no edits.
+- `null` is invalid and rejected by the corpus parser. It never downgrades an assertion to count-only mode.
+
 ## Recognized sidecars
 
 | Sidecar | Surface | Current floor |

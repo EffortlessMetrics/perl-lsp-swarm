@@ -1,3 +1,4 @@
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -491,8 +492,9 @@ pub struct RenameAssertion {
     pub new_name: String,
     /// Exact edits expected when this assertion exercises a concrete rename.
     /// Omission preserves the count-only contract of older fixtures; an explicit
-    /// empty list remains an exact expectation of no edits.
-    #[serde(default)]
+    /// empty list remains an exact expectation of no edits. `null` is rejected
+    /// so it cannot silently weaken an assertion to count-only mode.
+    #[serde(default, deserialize_with = "deserialize_expected_edits")]
     pub expected_edits: Option<Vec<RenameExpectedEdit>>,
     #[serde(default)]
     pub rationale: String,
@@ -506,6 +508,20 @@ pub struct RenameExpectedEdit {
     pub end_line: u32,
     pub end_character: u32,
     pub new_text: String,
+}
+
+fn deserialize_expected_edits<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<RenameExpectedEdit>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<Vec<RenameExpectedEdit>>::deserialize(deserializer)? {
+        Some(edits) => Ok(Some(edits)),
+        None => Err(de::Error::custom(
+            "expected_edits must be omitted or an array; null is not supported",
+        )),
+    }
 }
 
 /// On-disk representation of `expected_rename.json`
@@ -642,6 +658,26 @@ mod tests {
             matches!(&assertion, GoldAssertion::DiagnosticCount { code, count: 3 } if code == "PL001"),
             "Expected DiagnosticCount variant with code PL001 and count 3"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rename_expected_edits_distinguishes_omission_from_null()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let omitted: RenameAssertion = serde_json::from_str(
+            r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values"}"#,
+        )?;
+        if omitted.expected_edits.is_some() {
+            return Err("omitted expected_edits must remain count-only mode".into());
+        }
+
+        let explicit_null = serde_json::from_str::<RenameAssertion>(
+            r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_edits":null}"#,
+        );
+        if explicit_null.is_ok() {
+            return Err("explicit null expected_edits must fail closed".into());
+        }
+
         Ok(())
     }
 }
