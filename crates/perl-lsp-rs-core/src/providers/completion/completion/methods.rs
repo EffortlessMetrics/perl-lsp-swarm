@@ -392,6 +392,104 @@ fn is_code_position(source: &str, position: usize) -> bool {
         || is_in_pod_block(source, position))
 }
 
+fn is_module_identifier_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == ':'
+}
+
+fn any_module_use_before(
+    source: &str,
+    position: usize,
+    module: &str,
+    mut predicate: impl FnMut(&str) -> bool,
+) -> bool {
+    let source = source.get(..position).unwrap_or(source);
+    let mut search_start = 0usize;
+
+    while let Some(relative_use) = source[search_start..].find("use") {
+        let use_start = search_start + relative_use;
+        let after_use_start = use_start + "use".len();
+        search_start = after_use_start;
+
+        if !is_code_position(source, use_start)
+            || source[..use_start]
+                .chars()
+                .next_back()
+                .is_some_and(is_module_identifier_char)
+        {
+            continue;
+        }
+
+        let after_use = &source[after_use_start..];
+        let trimmed_after_use = after_use.trim_start_matches(char::is_whitespace);
+        if trimmed_after_use.len() == after_use.len() {
+            continue;
+        }
+
+        let module_start = after_use_start + after_use.len() - trimmed_after_use.len();
+        let Some(after_module) = source[module_start..].strip_prefix(module) else {
+            continue;
+        };
+        if after_module.chars().next().is_some_and(is_module_identifier_char) {
+            continue;
+        }
+
+        let arguments_start = module_start + module.len();
+        let statement_end = source[arguments_start..]
+            .char_indices()
+            .find_map(|(relative, ch)| {
+                let index = arguments_start + relative;
+                (ch == ';' && is_code_position(source, index)).then_some(index)
+            });
+        let Some(statement_end) = statement_end else { continue };
+
+        if predicate(source[arguments_start..statement_end].trim()) {
+            return true;
+        }
+        search_start = statement_end + 1;
+    }
+
+    false
+}
+
+fn looks_like_version_argument(argument: &str) -> bool {
+    let version = argument.strip_prefix('v').unwrap_or(argument);
+    !version.is_empty()
+        && version.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
+}
+
+fn strip_optional_version_argument(arguments: &str) -> &str {
+    let arguments = arguments.trim();
+    let first_end = arguments.find(char::is_whitespace).unwrap_or(arguments.len());
+    let first = &arguments[..first_end];
+    if looks_like_version_argument(first) {
+        arguments[first_end..].trim_start()
+    } else {
+        arguments
+    }
+}
+
+fn module_was_used_before(source: &str, position: usize, module: &str) -> bool {
+    any_module_use_before(source, position, module, |_| true)
+}
+
+fn module_imported_symbol_before(
+    source: &str,
+    position: usize,
+    module: &str,
+    symbol: &str,
+) -> bool {
+    any_module_use_before(source, position, module, |arguments| {
+        let arguments = strip_optional_version_argument(arguments);
+        if arguments.is_empty() {
+            return true;
+        }
+
+        arguments
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+            .any(|word| word == symbol || word == ":all")
+    })
+}
+
 fn assignment_expression_before_receiver<'a>(
     receiver: &str,
     source_before_receiver: &'a str,
@@ -479,7 +577,13 @@ fn infer_imported_api_receiver_type(
         assignment_expression_before_receiver(receiver, &source_before_cursor[..receiver_pos])?;
 
     if used_modules.contains("Path::Tiny")
-        && (expression_calls_function(expression, "path")
+        && module_was_used_before(source, context.position, "Path::Tiny")
+        && ((module_imported_symbol_before(
+            source,
+            context.position,
+            "Path::Tiny",
+            "path",
+        ) && expression_calls_function(expression, "path"))
             || ["new", "cwd", "rootdir", "tempfile", "tempdir"]
                 .into_iter()
                 .any(|method| expression_calls_static_method(expression, "Path::Tiny", method)))
@@ -488,16 +592,20 @@ fn infer_imported_api_receiver_type(
     }
 
     ["HTTP::Tiny", "LWP::UserAgent"].into_iter().find(|&module| {
-        used_modules.contains(module) && expression_calls_constructor(expression, module)
+        used_modules.contains(module)
+            && module_was_used_before(source, context.position, module)
+            && expression_calls_constructor(expression, module)
     })
 }
 
 fn imported_static_methods(
     prefix: &str,
+    source: &str,
+    position: usize,
     used_modules: &HashSet<String>,
 ) -> Option<&'static [(&'static str, &'static str)]> {
     let module = static_receiver_module(prefix)?;
-    if !used_modules.contains(module) {
+    if !used_modules.contains(module) || !module_was_used_before(source, position, module) {
         return None;
     }
 
@@ -712,7 +820,12 @@ pub fn add_method_completions(
         .map(str::to_owned)
         .or_else(|| infer_receiver_type(context, source));
 
-    let static_api_methods = imported_static_methods(context.receiver_prefix(), used_modules);
+    let static_api_methods = imported_static_methods(
+        context.receiver_prefix(),
+        source,
+        context.position,
+        used_modules,
+    );
     let instance_api_methods = known_instance_methods(receiver_type.as_deref());
 
     // Choose methods based on inferred type
