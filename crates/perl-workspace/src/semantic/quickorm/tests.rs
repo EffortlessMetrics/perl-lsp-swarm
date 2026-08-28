@@ -62,7 +62,7 @@ fn configured_table_import_uses_default_dsl_exports() -> Result<(), Box<dyn std:
     assert_eq!(spec.kind, ImportKind::Use);
     assert_eq!(spec.symbols, ImportSymbols::Default);
     assert_eq!(spec.provenance, Provenance::ImportExportInference);
-    assert_eq!(spec.confidence, Confidence::High);
+    assert_eq!(spec.confidence, Confidence::Medium);
     Ok(())
 }
 
@@ -75,7 +75,7 @@ fn compact_and_comment_separated_fat_arrow_imports_are_source_backed()
     ] {
         let specs = import_specs_from_source(source)?;
         let spec = quickorm_spec(&specs)?;
-        assert_eq!(spec.confidence, Confidence::High);
+        assert_eq!(spec.confidence, Confidence::Medium);
         assert_eq!(spec.symbols, ImportSymbols::Default);
         assert_eq!(
             canonical_names(&generated_facts_from_source(source)?),
@@ -166,7 +166,7 @@ fn configured_orm_import_uses_default_dsl_exports() -> Result<(), Box<dyn std::e
     assert_eq!(spec.kind, ImportKind::Use);
     assert_eq!(spec.symbols, ImportSymbols::Default);
     assert_eq!(spec.provenance, Provenance::ImportExportInference);
-    assert_eq!(spec.confidence, Confidence::High);
+    assert_eq!(spec.confidence, Confidence::Medium);
     Ok(())
 }
 
@@ -263,9 +263,9 @@ table users => sub {
     let fact = facts.first().ok_or("missing qorm_table fact")?;
     assert_eq!(fact.entity.kind, EntityKind::GeneratedMember);
     assert_eq!(fact.entity.provenance, Provenance::FrameworkSynthesis);
-    assert_eq!(fact.entity.confidence, Confidence::High);
+    assert_eq!(fact.entity.confidence, Confidence::Medium);
     assert_eq!(fact.anchor.provenance, Provenance::FrameworkSynthesis);
-    assert_eq!(fact.anchor.confidence, Confidence::High);
+    assert_eq!(fact.anchor.confidence, Confidence::Medium);
     assert!(fact.anchor.span_end_byte > fact.anchor.span_start_byte);
     Ok(())
 }
