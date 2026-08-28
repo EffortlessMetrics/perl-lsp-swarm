@@ -19,11 +19,11 @@ follow-up
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains whether a finding is valid, stale, refuted, superseded, or a
-bounded follow-up; whether it changes claim/owner/proof/risk; the accepted repair; and
-which proof/review dimensions become stale.
+The accountable root retains whether a finding is valid, stale, refuted, superseded,
+or a bounded follow-up; whether it changes claim/owner/proof/risk; the accepted repair;
+and which proof/review dimensions become stale.
 
 ### Delegable read-only work
 
@@ -42,9 +42,10 @@ not resolve threads or authorize repair.
 
 ### Mutation owner and join
 
-One candidate writer integrates accepted repairs. The lane root joins duplicate or
-conflicting findings, verifies dispositions against current source/evidence, and decides
-which findings are repaired, refuted, superseded, followed up, blocked, or not proven.
+One candidate writer integrates accepted repairs. The accountable root joins duplicate
+or conflicting findings, verifies dispositions against current source/evidence, and
+decides which findings are repaired, refuted, superseded, followed up, blocked, or not
+proven.
 
 The repair join is complete only when every substantive finding has one supported
 visible disposition, accepted mutations have current affected proof, and any material
