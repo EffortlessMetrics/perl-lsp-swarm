@@ -1,8 +1,8 @@
 # perl-lsp Documentation
 
 Use this page as the short docs route map. It tells you where to go next
-without making you learn the workspace layout first. For the complete
-inventory, use [INDEX.md](INDEX.md).
+without making you learn the workspace layout first. For a broader curated
+map of the docs tree, use [INDEX.md](INDEX.md).
 
 ## Diataxis in This Repository
 
