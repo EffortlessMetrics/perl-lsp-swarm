@@ -9,6 +9,13 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::TryRecvError;
 
 const EVENT_WRITE_BATCH_MAX: usize = 64;
+
+/// Upper bound on how long a response waits for handler-emitted events to
+/// drain before it is written anyway. Generous enough for the consumer to
+/// drain a full queue to a healthy wire (including slow CI schedulers);
+/// small enough that a genuinely stalled consumer cannot stall the
+/// session. Commands that emit no events never wait at all.
+const EVENT_DRAIN_MAX_WAIT: std::time::Duration = std::time::Duration::from_millis(1000);
 const WRITE_FAILURE_THRESHOLD: usize = 3;
 
 fn write_framed_payload<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<()> {
@@ -86,6 +93,12 @@ impl DebugAdapter {
         let (tx, rx) = sync_channel::<DapMessage>(EVENT_QUEUE_CAPACITY);
         self.event_sender = Some(tx.clone());
 
+        // A new transport run starts with a clean drain latch: any residue
+        // from a previous run whose consumer died mid-batch must not make
+        // this run's responses wait for a drain that can never complete.
+        self.event_drain.reset();
+        let event_drain = self.event_drain.clone();
+
         // Clone transport_broken flag to pass to the event handler thread.
         let transport_broken = Arc::clone(&self.transport_broken);
 
@@ -100,6 +113,7 @@ impl DebugAdapter {
 
                 let mut batch = Vec::with_capacity(EVENT_WRITE_BATCH_MAX);
                 batch.push(first_msg);
+                let batch_len = batch.len();
 
                 let mut disconnected = false;
                 while batch.len() < EVENT_WRITE_BATCH_MAX {
@@ -135,12 +149,17 @@ impl DebugAdapter {
                 }
 
                 let mut writer = lock_or_recover(&event_writer, "event_writer");
-                if write_event_payloads(
+                let persistent_failure = write_event_payloads(
                     &mut *writer,
                     &payloads,
                     &mut consecutive_write_failures,
                     &transport_broken,
-                ) {
+                );
+                // Release the request loop's drain barrier for this batch:
+                // every counted message has now been written (or its write
+                // attempt failed on a broken transport, which fails open).
+                event_drain.complete(batch_len);
+                if persistent_failure {
                     tracing::error!(
                         failure_count = consecutive_write_failures,
                         threshold = WRITE_FAILURE_THRESHOLD,
@@ -230,6 +249,20 @@ impl DebugAdapter {
                 };
 
                 let response = self.dispatch_request(seq, &command, arguments);
+
+                // Handler-emitted events must reach the client before the
+                // terminal response that can imply their effect: queueing
+                // alone does not order the wire because the event consumer
+                // is asynchronous. Wait (bounded, fail-open) for the drain;
+                // on timeout the response proceeds without the ordering
+                // guarantee rather than stalling the session.
+                if !self.event_drain.wait_until_drained(EVENT_DRAIN_MAX_WAIT) {
+                    tracing::warn!(
+                        wait_ms = EVENT_DRAIN_MAX_WAIT.as_millis() as u64,
+                        "event drain barrier timed out; writing response without event ordering"
+                    );
+                }
+
                 let payload = serde_json::to_vec(&response).map_err(io::Error::other)?;
                 let notify_initialized = command == "initialize"
                     && Self::response_succeeded_for_command(&response, "initialize");
@@ -1042,5 +1075,117 @@ mod framing_tests {
         let mut adapter = DebugAdapter::new();
         adapter.run_with_io(Cursor::new(Vec::<u8>::new()), SharedBuf::new())?;
         Ok(())
+    }
+
+    // ── event-before-response ordering (drain barrier) ─────────────────────────
+
+    /// Writer that forwards to [`SharedBuf`] but delays event payload writes,
+    /// simulating a slow wire. With the drain barrier the response waits for
+    /// the delayed event write; without it the response would win the race
+    /// deterministically, making this test a real falsifier of the ordering
+    /// claim.
+    struct SlowEventWriter {
+        inner: SharedBuf,
+    }
+
+    impl SlowEventWriter {
+        fn new(inner: SharedBuf) -> Self {
+            Self { inner }
+        }
+    }
+
+    impl io::Write for SlowEventWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if buf
+                .windows(b"\"event\":\"continued\"".len())
+                .any(|w| w == b"\"event\":\"continued\"")
+            {
+                std::thread::sleep(std::time::Duration::from_millis(60));
+            }
+            self.inner.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    /// A child whose only job is to own a piped stdin so the `continue`
+    /// handler can observe a debuggee process. It exits immediately; the
+    /// handler ignores stdin write failures.
+    fn exited_child() -> io::Result<std::process::Child> {
+        #[cfg(windows)]
+        let program = "cmd";
+        #[cfg(not(windows))]
+        let program = "true";
+        #[cfg(windows)]
+        let args: &[&str] = &["/c", "exit", "0"];
+        #[cfg(not(windows))]
+        let args: &[&str] = &[];
+        std::process::Command::new(program)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+    }
+
+    #[test]
+    fn run_with_io_writes_handler_events_before_the_response() -> io::Result<()> {
+        use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
+        use crate::debug_adapter::variable_cache::VariableCache;
+        use crate::reload::RuntimeModuleGenerationClock;
+        use crate::types::StackFrame;
+        use std::collections::HashMap;
+
+        let mut adapter = DebugAdapter::new();
+        {
+            let mut guard = lock_or_recover(&adapter.session, "transport.test.drain.session");
+            *guard = Some(DebugSession {
+                process: exited_child()?,
+                state: DebugState::Stopped,
+                stack_frames: Vec::<StackFrame>::new(),
+                stack_frame_arguments: HashMap::new(),
+                variable_cache: VariableCache::default(),
+                thread_id: 1,
+                last_resume_mode: ResumeMode::Unknown,
+                stopped_generation: 1,
+                module_generation: RuntimeModuleGenerationClock::new(),
+            });
+        }
+        let input = framed_request(1, "continue", Some(json!({"threadId": 1})));
+        let output = SharedBuf::new();
+        adapter.run_with_io(Cursor::new(input), SlowEventWriter::new(output.clone()))?;
+
+        // The consumer thread is not joined by run_with_io; poll until the
+        // response frame exists (the barrier guarantees the event precedes
+        // it, so once the response is on the wire the event must be too).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let snapshot = loop {
+            let snap = output.bytes_snapshot();
+            if windows_find(&snap, b"\"command\":\"continue\"").is_some() {
+                break snap;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "continue response was never written to the transport"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+
+        let event_offset = windows_find(&snapshot, b"\"event\":\"continued\"")
+            .expect("continue handler must emit the continued event");
+        let response_offset = windows_find(&snapshot, b"\"command\":\"continue\"")
+            .expect("continue response must be written");
+        assert!(
+            event_offset < response_offset,
+            "handler-emitted events must precede the terminal response on the wire              (event at {event_offset}, response at {response_offset})"
+        );
+        Ok(())
+    }
+
+    /// Byte-subsequence search returning the match offset.
+    fn windows_find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
     }
 }
