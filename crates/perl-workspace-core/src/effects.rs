@@ -67,6 +67,10 @@ mod tests {
         FileId::new("lib/App.pm", &Digest::of("x"))
     }
 
+    fn alternate_file_id() -> FileId {
+        FileId::new("script.pl", &Digest::of("y"))
+    }
+
     #[test]
     fn projects_complete_pragma_state() {
         let state = perl_pragma::PragmaState {
@@ -76,10 +80,10 @@ mod tests {
             warnings: true,
             utf8: true,
             unicode_strings: true,
-            features: vec!["say", "signatures"],
+            features: vec!["signatures", "say"],
             disabled_warning_categories: vec![
-                "deprecated".to_string(),
                 "uninitialized".to_string(),
+                "deprecated".to_string(),
             ],
             ..Default::default()
         };
@@ -95,10 +99,10 @@ mod tests {
         assert!(facts.warnings);
         assert!(facts.utf8);
         assert!(facts.unicode_strings);
-        assert_eq!(facts.features, vec!["say", "signatures"]);
+        assert_eq!(facts.features, vec!["signatures", "say"]);
         assert_eq!(
             facts.disabled_warnings,
-            vec!["deprecated".to_string(), "uninitialized".to_string()]
+            vec!["uninitialized".to_string(), "deprecated".to_string()]
         );
         assert_eq!(facts.perl_version.as_deref(), Some("v5.38"));
     }
@@ -106,7 +110,7 @@ mod tests {
     #[test]
     fn empty_projected_inputs_do_not_fabricate_effects() {
         let state = perl_pragma::PragmaState { features: Vec::new(), ..Default::default() };
-        let file_id = test_file_id();
+        let file_id = alternate_file_id();
         let facts = CompileEffectFacts::from_pragma_state(file_id.clone(), &state, None);
 
         assert_eq!(facts.file_id, file_id);
@@ -117,6 +121,43 @@ mod tests {
         assert!(facts.features.is_empty());
         assert!(facts.disabled_warnings.is_empty());
         assert!(facts.perl_version.is_none());
+    }
+
+    #[test]
+    fn projects_boolean_effect_fields_independently() {
+        let cases = [
+            ("strict", true, false, false, false),
+            ("warnings", false, true, false, false),
+            ("utf8", false, false, true, false),
+            ("unicode_strings", false, false, false, true),
+        ];
+
+        for (enabled_field, strict, warnings, utf8, unicode_strings) in cases {
+            let state = perl_pragma::PragmaState {
+                strict_vars: strict,
+                strict_subs: strict,
+                strict_refs: strict,
+                warnings,
+                utf8,
+                unicode_strings,
+                features: Vec::new(),
+                ..Default::default()
+            };
+            let file_id = alternate_file_id();
+            let facts = CompileEffectFacts::from_pragma_state(
+                file_id.clone(),
+                &state,
+                Some("v5.42".to_string()),
+            );
+
+            assert_eq!(facts.file_id, file_id);
+            assert_eq!(
+                (facts.strict, facts.warnings, facts.utf8, facts.unicode_strings),
+                (strict, warnings, utf8, unicode_strings),
+                "{enabled_field} must remain attached to its own projection field"
+            );
+            assert_eq!(facts.perl_version.as_deref(), Some("v5.42"));
+        }
     }
 
     #[test]
