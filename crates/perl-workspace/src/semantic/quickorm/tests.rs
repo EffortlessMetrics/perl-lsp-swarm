@@ -518,6 +518,21 @@ fn package_builder_redefinition_invalidates_prior_generated_fact()
 }
 
 #[test]
+fn dynamic_reconfiguration_invalidates_prior_generated_fact()
+-> Result<(), Box<dyn std::error::Error>> {
+    for source in [
+        "package User; use DBIx::QuickORM type => 'table'; table 'first' => sub {}; use DBIx::QuickORM type => table(); table 'second' => sub {};",
+        "package User; use DBIx::QuickORM type => 'table'; table 'first' => sub {}; use DBIx::QuickORM type => 'table'; table 'second' => make_builder(sub {});",
+    ] {
+        assert!(
+            generated_facts_from_source(source)?.is_empty(),
+            "dynamic QuickORM reconfiguration must not retain a stale qorm_table fact"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn package_level_table_shadow_blocks_later_import_promotion()
 -> Result<(), Box<dyn std::error::Error>> {
     let facts = generated_facts_from_source(

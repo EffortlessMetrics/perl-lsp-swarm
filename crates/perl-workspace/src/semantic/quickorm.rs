@@ -188,11 +188,13 @@ fn walk_direct_statement(
                 context.table_package_authority.insert(package);
             } else {
                 context.table_package_authority.remove(&package);
+                invalidate_qorm_table_fact(&package, facts);
             }
         }
         NodeKind::No { module, .. } if module == QUICKORM_MODULE => {
             let package = current_package(context).to_string();
             context.table_package_authority.remove(&package);
+            invalidate_qorm_table_fact(&package, facts);
         }
         NodeKind::ExpressionStatement { expression } => {
             let package = current_package(context).to_string();
@@ -210,6 +212,7 @@ fn walk_direct_statement(
             context.table_package_authority.remove(&package);
 
             let Some(anchor) = direct_table_or_view_builder_anchor(expression) else {
+                invalidate_qorm_table_fact(&package, facts);
                 return;
             };
             push_qorm_table_fact(&package, anchor, file_id, facts);
@@ -218,9 +221,7 @@ fn walk_direct_statement(
             let package = current_package(context).to_string();
             context.shadowed_builders.insert(package.clone());
             context.table_package_authority.remove(&package);
-            facts.retain(|fact| {
-                fact.entity.canonical_name != format!("{package}::{QORM_TABLE_MEMBER}")
-            });
+            invalidate_qorm_table_fact(&package, facts);
         }
         // Runtime-controlled nodes and nested subroutine bodies are not
         // package-level table declarations. Do not recurse into them or let
@@ -231,6 +232,11 @@ fn walk_direct_statement(
 
 fn current_package(context: &WalkContext) -> &str {
     context.current_package.as_deref().unwrap_or("main")
+}
+
+fn invalidate_qorm_table_fact(package: &str, facts: &mut Vec<GeneratedMemberFact>) {
+    let canonical_name = format!("{package}::{QORM_TABLE_MEMBER}");
+    facts.retain(|fact| fact.entity.canonical_name != canonical_name);
 }
 
 fn is_direct_table_or_view_call(expression: &Node) -> bool {

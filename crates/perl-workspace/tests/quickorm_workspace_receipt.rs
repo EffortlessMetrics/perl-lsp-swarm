@@ -258,3 +258,34 @@ fn workspace_index_blocks_quickorm_rename_skip_and_unknown_options()
     }
     Ok(())
 }
+
+#[test]
+fn workspace_index_invalidates_stale_qorm_table_after_dynamic_reconfiguration()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/Reconfigured.pm")?;
+    let source = r#"
+package MyApp::Schema::Reconfigured;
+use DBIx::QuickORM type => 'table';
+table first => sub {};
+use DBIx::QuickORM type => table();
+table second => sub {};
+1;
+"#;
+
+    index.index_file(uri.clone(), source.to_string())?;
+    let shard =
+        index.file_fact_shard(uri.as_str()).ok_or("WorkspaceIndex did not retain a fact shard")?;
+    assert!(
+        shard
+            .entities
+            .iter()
+            .all(|entity| entity.canonical_name != "MyApp::Schema::Reconfigured::qorm_table"),
+        "dynamic QuickORM reconfiguration must invalidate the prior generated fact"
+    );
+    assert!(
+        index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
+        "dynamic QuickORM reconfiguration must not retain a stale workspace symbol"
+    );
+    Ok(())
+}
