@@ -304,7 +304,11 @@ pub type ContentLengthMessageReader = crate::transport::ContentLengthMessageRead
 ///
 /// It delegates to the strict stateful reader and therefore never rewrites
 /// invalid UTF-8 or includes body contents in diagnostics. Its return shape
-/// and skip-and-continue behavior remain compatible with the old API.
+/// and skip-and-continue behavior remain compatible with the old API: typed
+/// framing and decode failures are logged and omitted, so `Ok(None)` means no
+/// later valid request was found and does not distinguish clean EOF from a
+/// stream containing only rejected frames. Callers that need that distinction
+/// must use [`crate::transport::ContentLengthMessageReader::read_next_outcome`].
 pub fn read_message(reader: &mut dyn BufRead) -> io::Result<Option<JsonRpcRequest>> {
     let mut message_reader = crate::transport::ContentLengthMessageReader::new();
     message_reader.read_next(reader)
@@ -352,8 +356,8 @@ pub fn log_response(response: &JsonRpcResponse) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContentLengthFramer, ContentLengthMessageReader, FramingError, MAX_FRAME_SIZE,
-        MAX_HEADER_BYTES, log_response, read_message, write_message, write_notification,
+        log_response, read_message, write_message, write_notification, ContentLengthFramer,
+        ContentLengthMessageReader, FramingError, MAX_FRAME_SIZE, MAX_HEADER_BYTES,
     };
     use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcResponse};
     use perl_parser_core::{ErrorCategory, ErrorClass};

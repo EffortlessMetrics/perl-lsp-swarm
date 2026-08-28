@@ -6,7 +6,7 @@
 
 use super::framing::{ContentLengthFramer, FramingError};
 use crate::protocol::{JsonRpcId, JsonRpcRequest};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::fmt;
 use std::io::{self, Read};
 
@@ -305,7 +305,24 @@ fn decode_current_message_shape(
         return Err(IncomingMessageError::InvalidJsonRpcVersion { payload_bytes });
     }
 
-    if value.get("method").is_some() {
+    let has_method = value.get("method").is_some();
+    let has_result = value.get("result").is_some();
+    let has_error = value.get("error").is_some();
+
+    // Serde ignores unknown fields on `JsonRpcRequest`; reject a mixed
+    // request/response object before deserialization so response members
+    // cannot be silently discarded.
+    if has_method && (has_result || has_error) {
+        return Err(IncomingMessageError::InvalidMessageShape {
+            payload_bytes,
+            source: serde_json::Error::io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "JSON-RPC request cannot contain response fields",
+            )),
+        });
+    }
+
+    if has_method {
         return serde_json::from_value(value)
             .map_err(|source| IncomingMessageError::InvalidMessageShape { payload_bytes, source });
     }
@@ -318,10 +335,21 @@ fn decode_current_message_shape(
         let Some(id) = JsonRpcId::from_value(raw_id) else {
             return reject_current_message_shape(value, payload_bytes);
         };
-        let has_result = value.get("result").is_some();
-        let has_error = value.get("error").is_some();
         if has_result == has_error {
             return reject_current_message_shape(value, payload_bytes);
+        }
+        if let Some(error) = value.get("error") {
+            let Some(error_object) = error.as_object() else {
+                return reject_current_message_shape(value, payload_bytes);
+            };
+            let Some(code) = error_object.get("code").and_then(Value::as_i64) else {
+                return reject_current_message_shape(value, payload_bytes);
+            };
+            if i32::try_from(code).is_err()
+                || !error_object.get("message").is_some_and(Value::is_string)
+            {
+                return reject_current_message_shape(value, payload_bytes);
+            }
         }
 
         let params = json!({

@@ -2,11 +2,11 @@
 
 use perl_lsp_rs_core::protocol::JsonRpcRequest;
 use perl_lsp_rs_core::transport::{
-    ContentLengthMessageReader, FramingError, IncomingMessageError, frame,
+    frame, ContentLengthMessageReader, FramingError, IncomingMessageError,
 };
 use serde_json::Value;
 use std::error::Error;
-use std::io::{self, Cursor};
+use std::io::{self, Cursor, Read};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -14,9 +14,40 @@ fn request_body(id: i64, method: &str, params: &str) -> Vec<u8> {
     format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{params}}}"#).into_bytes()
 }
 
+struct ChunkedReader {
+    bytes: Vec<u8>,
+    offset: usize,
+    chunk_size: usize,
+}
+
+impl ChunkedReader {
+    fn new(bytes: Vec<u8>, chunk_size: usize) -> Self {
+        Self { bytes, offset: 0, chunk_size }
+    }
+}
+
+impl Read for ChunkedReader {
+    fn read(&mut self, destination: &mut [u8]) -> io::Result<usize> {
+        if self.offset >= self.bytes.len() {
+            return Ok(0);
+        }
+        let remaining = self.bytes.len() - self.offset;
+        let count = self.chunk_size.min(remaining).min(destination.len());
+        let source = self.bytes.get(self.offset..self.offset + count).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "chunk source out of bounds")
+        })?;
+        let target = destination
+            .get_mut(..count)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chunk target too small"))?;
+        target.copy_from_slice(source);
+        self.offset += count;
+        Ok(count)
+    }
+}
+
 fn required_request(
     reader: &mut ContentLengthMessageReader,
-    input: &mut Cursor<Vec<u8>>,
+    input: &mut dyn Read,
 ) -> Result<JsonRpcRequest, Box<dyn Error>> {
     match reader.read_next_outcome(input)? {
         Some(Ok(request)) => Ok(request),
@@ -27,7 +58,7 @@ fn required_request(
 
 fn required_error(
     reader: &mut ContentLengthMessageReader,
-    input: &mut Cursor<Vec<u8>>,
+    input: &mut dyn Read,
 ) -> Result<IncomingMessageError, Box<dyn Error>> {
     match reader.read_next_outcome(input)? {
         Some(Err(error)) => Ok(error),
@@ -181,10 +212,15 @@ fn invalid_jsonrpc_version_and_batch_are_distinct_outcomes() -> TestResult {
 
 #[test]
 fn malformed_response_envelopes_are_rejected_and_recovery_preserves_valid_input() -> TestResult {
-    let malformed_responses: [&[u8]; 3] = [
+    let malformed_responses: [&[u8]; 8] = [
         br#"{"jsonrpc":"2.0","id":true,"result":{}}"#,
         br#"{"jsonrpc":"2.0","id":1}"#,
         br#"{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":-1,"message":"bad"}}"#,
+        br#"{"jsonrpc":"2.0","id":1,"error":null}"#,
+        br#"{"jsonrpc":"2.0","id":1,"error":7}"#,
+        br#"{"jsonrpc":"2.0","id":1,"error":{}}"#,
+        br#"{"jsonrpc":"2.0","id":1,"method":"shutdown","result":{}}"#,
+        br#"{"jsonrpc":"2.0","id":1,"method":"shutdown","error":{"code":-1,"message":"bad"}}"#,
     ];
     let valid_request = request_body(11, "shutdown", "{}");
     let mut stream = Vec::new();
@@ -220,6 +256,27 @@ fn malformed_response_envelopes_are_rejected_and_recovery_preserves_valid_input(
             format!("expected valid request after malformed responses, got {}", request.method),
         )
         .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn split_reads_recover_and_then_report_clean_eof() -> TestResult {
+    let mut stream = frame(&request_body(12, "initialize", "{}"));
+    stream.extend(frame(&request_body(13, "shutdown", "{}")));
+    let mut input = ChunkedReader::new(stream, 1);
+    let mut reader = ContentLengthMessageReader::new();
+
+    if required_request(&mut reader, &mut input)?.method != "initialize" {
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidData, "expected initialize request").into()
+        );
+    }
+    if required_request(&mut reader, &mut input)?.method != "shutdown" {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "expected shutdown request").into());
+    }
+    if reader.read_next_outcome(&mut input)?.is_some() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "expected clean EOF").into());
     }
     Ok(())
 }
