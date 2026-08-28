@@ -88,7 +88,7 @@ editor configuration.
 For a peer implementation that already speaks the Perl Debugger Peer Protocol:
 
 ```bash
-perl-dap --stdio --external-peer 127.0.0.1:5000
+perl-dap --external-peer 127.0.0.1:5000
 ```
 
 The editor speaks DAP over stdio. `perl-dap` connects to the peer and translates
