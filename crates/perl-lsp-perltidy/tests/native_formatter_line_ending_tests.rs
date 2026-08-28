@@ -77,6 +77,46 @@ fn typed_outcome_reports_crlf_preserved_after_generated_layout() {
 }
 
 #[test]
+fn unterminated_last_line_inherits_crlf_document_convention() {
+    let formatter = NativeFormatter::new();
+    let source = "my $before = 1;\r\nwhile($n){next;}";
+
+    let result = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(result.outcome.disposition, FormatDisposition::Applied);
+    assert_eq!(
+        result.result.formatted,
+        concat!("my $before = 1;\r\n", "while ($n) {\r\n", "    next;\r\n", "}",)
+    );
+    assert_eq!(result.outcome.safety.line_endings, FormatLineEndingDisposition::Preserved);
+    assert_crlf_only(&result.result.formatted);
+    assert!(!result.result.formatted.ends_with('\n'));
+}
+
+#[test]
+fn range_on_unterminated_last_line_inherits_crlf_for_result_and_edit() {
+    let formatter = NativeFormatter::new();
+    let source = "my $before = 1;\r\nwhile($n){next;}";
+    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 16));
+
+    let result = formatter.format_range(source, range, &FormatConfig::default());
+
+    assert!(result.changed);
+    assert_eq!(result.edits.len(), 1);
+    assert_eq!(result.edits[0].new_text, "while ($n) {\r\n    next;\r\n}");
+    assert_eq!(
+        result.formatted,
+        concat!("my $before = 1;\r\n", "while ($n) {\r\n", "    next;\r\n", "}",)
+    );
+    assert_crlf_only(&result.formatted);
+    assert!(!result.formatted.ends_with('\n'));
+}
+
+#[test]
 fn generated_layout_keeps_lf_sources_lf_only() {
     let formatter = NativeFormatter::new();
     let source = "while($n){next;}\n";
