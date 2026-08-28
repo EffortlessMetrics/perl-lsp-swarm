@@ -388,7 +388,7 @@ sub _check_ptkdb_provenance {
     return (0, 'ptkdb distribution digest does not match the pinned CPAN artifact')
         unless "$declared_dist_digest" eq REFERENCE_PTKDB_DIST_SHA256;
 
-    if (defined $loaded_path && length $loaded_path) {
+    if (exists $INC{'Devel/ptkdb.pm'}) {
         return (0, 'loaded Devel/ptkdb.pm bytes cannot be bound to this provenance check; refusing loaded-module activation');
     }
 

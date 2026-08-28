@@ -692,6 +692,50 @@ exit 0;
 }
 
 #[test]
+fn reference_ptkdb_adapter_rejects_false_inc_entry_before_connecting()
+-> Result<(), Box<dyn std::error::Error>> {
+    let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
+    let harness = r#"
+package Devel::ptkdb;
+our $VERSION = '1.1091';
+our $PERL_DAP_MIRROR_SOURCE = 'CPAN:AEPAGE/Devel-ptkdb-1.1091';
+our $PERL_DAP_MIRROR_SHA256 = '2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab';
+our $PERL_DAP_MIRROR_DIST_SHA256 = '889bfc25d107f46718963023cc9662d3d779896a48d729d0327beec0502c226e';
+sub set_file { return "original:$_[2]"; }
+package main;
+$INC{'Devel/ptkdb.pm'} = '';
+my $loaded = do $ENV{PTKDB_PLUGIN_UNDER_TEST};
+die "plugin load failed: " . ($@ || $!) unless $loaded;
+my $window = bless {}, 'Devel::ptkdb';
+my $value = $window->set_file('/work/rejected.pl', 13);
+die "false %INC rejection touched set_file: $value" unless $value eq 'original:13';
+exit 0;
+"#;
+    let output = Command::new("perl")
+        .arg("-e")
+        .arg(harness)
+        .env("PTKDB_PLUGIN_UNDER_TEST", plugin)
+        .env("PTKDB_SOURCE_MARKER", "CPAN:AEPAGE/Devel-ptkdb-1.1091")
+        .env("PTKDB_SOURCE_SHA256", PTKDB_MODULE_SHA256)
+        .env("PTKDB_DIST_SHA256", PTKDB_DIST_SHA256)
+        .env("PERL_DAP_PEER", "127.0.0.1:1")
+        .env("PERL_DAP_PEER_TOKEN", PEER_TOKEN)
+        .env("PERL_DAP_PEER_MODE", "mirror")
+        .output()?;
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(output.status.success(), "false %INC rejection harness failed: {stderr}");
+    assert!(
+        stderr.contains("loaded Devel/ptkdb.pm bytes cannot be bound to this provenance check"),
+        "missing false-%INC rejection diagnostic: {stderr}"
+    );
+    assert!(
+        !stderr.contains("cannot connect"),
+        "false %INC must fail before peer connection: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
 fn ptkdb_plugin_survives_host_disconnect_and_later_event_write()
 -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
