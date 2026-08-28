@@ -38,11 +38,49 @@ pub mod queries;
 /// Literal-eval sub extractor for dynamic boundary evidence.
 pub mod eval_sub_extractor;
 
-/// Framework generated member extractor for package-level `has` declarations.
-pub mod generated_member_extractor;
+#[path = "generated_member_extractor.rs"]
+mod generated_member_extractor_core;
 
-/// Import-spec extractor for `ImportExportIndex` population during `index_file`.
-pub mod workspace_import_extractor;
+#[allow(unreachable_pub)]
+#[path = "workspace_import_extractor.rs"]
+mod workspace_import_extractor_core;
+
+mod quickorm;
+
+/// Framework-generated member extraction for package-level declarations.
+pub mod generated_member_extractor {
+    use crate::Node;
+    use perl_semantic_facts::FileId;
+
+    pub(crate) use super::generated_member_extractor_core::GeneratedMemberFact;
+
+    /// Extract generated-member facts from the canonical framework producers.
+    pub(crate) fn extract_generated_member_facts(
+        ast: &Node,
+        file_id: FileId,
+    ) -> Vec<GeneratedMemberFact> {
+        let mut facts =
+            super::generated_member_extractor_core::extract_generated_member_facts(ast, file_id);
+        facts.extend(super::quickorm::extract_generated_member_facts(ast, file_id));
+        facts
+    }
+}
+
+/// Import-spec extraction for `ImportExportIndex` population during `index_file`.
+pub mod workspace_import_extractor {
+    use crate::Node;
+    use perl_semantic_facts::{FileId, ImportSpec};
+
+    pub use super::workspace_import_extractor_core::extract_use_lib_facts;
+
+    /// Extract import facts and apply bounded framework-specific import semantics.
+    pub fn extract_import_specs(ast: &Node, file_id: FileId) -> Vec<ImportSpec> {
+        let mut specs =
+            super::workspace_import_extractor_core::extract_import_specs(ast, file_id);
+        super::quickorm::normalize_import_specs(ast, &mut specs);
+        specs
+    }
+}
 
 /// Per-provider scorecard gate fixture suites (test-only).
 #[cfg(test)]
