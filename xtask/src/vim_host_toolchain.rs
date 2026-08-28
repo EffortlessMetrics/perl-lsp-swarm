@@ -547,7 +547,20 @@ fn extract_runtime_subtree(archive_path: &Path, subtree: &str, dest: &Path) -> R
 /// entry kind, and file bytes are length-prefixed so path boundaries and
 /// empty directories cannot collide. WalkDir does not promise ordering, so
 /// entries are sorted before the canonical stream is hashed.
+///
+/// The runtime root itself is rejected when it is a symlink: WalkDir yields
+/// the root entry before its descendants and this walk skips that entry by
+/// path, so a replaced root would otherwise be walked as ordinary storage
+/// (external mutable bytes presented as the cached runtime) without ever
+/// tripping the per-entry symlink rejection below.
 fn runtime_tree_sha256(runtime_root: &Path) -> Result<String> {
+    let root_metadata = fs::symlink_metadata(runtime_root)
+        .with_context(|| format!("statting the runtime root {}", runtime_root.display()))?;
+    anyhow::ensure!(
+        !root_metadata.file_type().is_symlink(),
+        "runtime root {} is a symlink",
+        runtime_root.display()
+    );
     let mut entries = Vec::new();
     for entry in WalkDir::new(runtime_root).follow_links(false) {
         let entry = entry.context("walking the extracted Vim runtime")?;
@@ -1130,6 +1143,15 @@ fn verify_manifest_core(
 /// verified vim-lsp checkout. The schema version intentionally remains v1, so
 /// caches written before this field existed need a local, fully verified
 /// migration rather than being treated as a network-required rebuild.
+///
+/// Identity sourcing law: the legacy tree's bytes were never bound by the old
+/// manifest, so the migrated digest must be derived from the digest-verified
+/// pinned archive, never from the on-disk tree itself (hashing that tree and
+/// recording the result would let a corrupted legacy tree self-attest as the
+/// expected identity). The runtime subtree is therefore re-extracted from the
+/// archive before hashing, and the retained vim-lsp checkout is left in place
+/// so migration stays offline. A missing or drifted archive, or any post-migration
+/// verification failure, degrades to the ordinary rebuild path.
 fn migrate_legacy_manifest(
     manifest_path: &Path,
     manifest_bytes: &[u8],
@@ -1142,10 +1164,24 @@ fn migrate_legacy_manifest(
     if vim.contains_key("runtime_tree_sha256") {
         return None;
     }
+    let expected_archive_sha256 =
+        vim.get("acquisition")?.as_object()?.get("archive_sha256")?.as_str()?;
+    let archive_path = entry_root.join("downloads").join(format!("gvim_{VIM_RELEASE_TAG}.zip"));
+    if file_sha256(&archive_path).ok()?.as_str() != expected_archive_sha256 {
+        return None;
+    }
+    // Re-extract wholesale: the extraction destination is cleared and rebuilt
+    // from the verified archive, so added/modified legacy runtime files (and
+    // a symlinked runtime root) cannot survive into the hashed tree.
     let runtime_root = entry_root.join("vim").join("vim92");
+    extract_runtime_subtree(&archive_path, VIM_ARCHIVE_RUNTIME_SUBTREE, &runtime_root).ok()?;
     let digest = runtime_tree_sha256(&runtime_root).ok()?;
     vim.insert("runtime_tree_sha256".to_string(), serde_json::Value::String(digest));
-    let migrated_bytes = serde_json::to_vec_pretty(&value).ok()?;
+    // Publish through the same canonical serializer as a fresh build so the
+    // manifest bytes (and therefore manifest_sha256) depend only on identity,
+    // not on migration history.
+    let manifest: ToolchainManifest = serde_json::from_value(value).ok()?;
+    let migrated_bytes = serialize_manifest(&manifest).ok()?;
     let manifest = serde_json::from_slice::<ToolchainManifest>(&migrated_bytes).ok()?;
     if manifest.cache_key != key
         || verify_manifest_core(&manifest, &migrated_bytes, entry_root, probe).is_err()
@@ -1909,15 +1945,12 @@ mod tests {
         let output = scratch.path().join("out");
         let (mut inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
         let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
-
-        let mut legacy =
-            serde_json::from_slice::<serde_json::Value>(&fs::read(&first.manifest_path)?)?;
-        legacy
-            .get_mut("vim")
-            .and_then(serde_json::Value::as_object_mut)
-            .and_then(|vim| vim.remove("runtime_tree_sha256"))
-            .ok_or_else(|| anyhow::anyhow!("fresh manifest did not contain runtime digest"))?;
-        fs::write(&first.manifest_path, serde_json::to_vec_pretty(&legacy)?)?;
+        let entry_root = first
+            .manifest_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("manifest path has no parent directory"))?
+            .to_path_buf();
+        let fresh_bytes = legacyize_entry(&entry_root, &first.manifest_path, &archive)?;
 
         // With no local vim-lsp source, any rebuild would need network access.
         // Successful migration therefore proves the existing checkout was
@@ -1928,7 +1961,145 @@ mod tests {
         assert!(migrated.manifest.vim.runtime_tree_sha256.starts_with("sha256:"));
         verify_layout(&migrated.manifest_path, &probe)
             .map_err(|error| anyhow::anyhow!("{error}"))?;
+        // Canonical manifest-byte contract: a migrated entry and a freshly
+        // provisioned entry with the same identity expose identical bytes,
+        // so manifest_sha256 depends on identity, not on migration history.
+        assert_eq!(fs::read(&migrated.manifest_path)?, fresh_bytes);
+        assert_eq!(migrated.manifest_sha256, bytes_sha256(&fresh_bytes)?);
         Ok(())
+    }
+
+    #[test]
+    fn legacy_runtime_corruption_binds_archive_bytes_not_tree_bytes() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
+        let output = scratch.path().join("out");
+        let (mut inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
+        let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        let entry_root = first
+            .manifest_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("manifest path has no parent directory"))?
+            .to_path_buf();
+        let support_file = first
+            .vim_executable_role
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("provisioned Vim executable has no parent"))?
+            .join("runtime/feature.txt");
+        let original = fs::read(&support_file)?;
+        let fresh_digest = first.manifest.vim.runtime_tree_sha256.clone();
+        legacyize_entry(&entry_root, &first.manifest_path, &archive)?;
+
+        // Mutate the legacy runtime AFTER legacyizing: these bytes were never
+        // bound by the old manifest, so a migration that hashed the on-disk
+        // tree would record a digest describing corrupted bytes and accept
+        // them as the expected identity (self-attestation).
+        fs::write(&support_file, [original.as_slice(), b"corruption".as_slice()].concat())?;
+
+        inputs.vim_lsp_source = None;
+        let migrated = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(migrated.cache_hit);
+        // The bound digest is the archive-derived identity, and the on-disk
+        // tree was healed from the digest-verified archive instead of the
+        // corrupted legacy tree being blessed as expected.
+        assert_eq!(migrated.manifest.vim.runtime_tree_sha256, fresh_digest);
+        assert_eq!(fs::read(&support_file)?, original);
+        verify_layout(&migrated.manifest_path, &probe)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_corruption_without_verified_archive_cannot_cache_hit() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
+        let output = scratch.path().join("out");
+        let (inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
+        let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        let entry_root = first
+            .manifest_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("manifest path has no parent directory"))?
+            .to_path_buf();
+        let support_file = first
+            .vim_executable_role
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("provisioned Vim executable has no parent"))?
+            .join("runtime/feature.txt");
+        let original = fs::read(&support_file)?;
+        let fresh_digest = first.manifest.vim.runtime_tree_sha256.clone();
+        legacyize_entry(&entry_root, &first.manifest_path, &archive)?;
+
+        // Corrupt the legacy runtime AND remove the retained archive, so the
+        // migration has no digest-verified identity source and must decline
+        // rather than bless the mutated tree; the ordinary rebuild path (kept
+        // offline here through the injected vim-lsp source) heals the entry.
+        fs::write(&support_file, [original.as_slice(), b"corruption".as_slice()].concat())?;
+        fs::remove_file(entry_root.join("downloads").join(format!("gvim_{VIM_RELEASE_TAG}.zip")))?;
+
+        let rebuilt = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(!rebuilt.cache_hit);
+        assert_eq!(rebuilt.manifest.vim.runtime_tree_sha256, fresh_digest);
+        verify_layout(&rebuilt.manifest_path, &probe)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok(())
+    }
+
+    fn create_dir_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(target, link)
+        }
+    }
+
+    #[test]
+    fn runtime_tree_sha256_rejects_symlinked_root() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let real = scratch.path().join("real");
+        fs::create_dir_all(real.join("runtime"))?;
+        fs::write(real.join("runtime").join("feature.txt"), b"payload")?;
+        let link = scratch.path().join("link");
+        // Symlink creation requires platform privileges; an environment that
+        // refuses it cannot exercise this invariant here and skips, while the
+        // ordinary-root control below still runs everywhere.
+        if create_dir_symlink(&real, &link).is_err() {
+            return Ok(());
+        }
+        let error =
+            runtime_tree_sha256(&link).expect_err("symlinked runtime root must be rejected");
+        assert!(format!("{error:#}").contains("is a symlink"), "{error}");
+        let real_digest = runtime_tree_sha256(&real)?;
+        assert!(real_digest.starts_with("sha256:"));
+        Ok(())
+    }
+
+    /// Re-create a production-shaped legacy entry: the pinned archive stays
+    /// under the entry's downloads directory (every acquired entry has one)
+    /// and the manifest predates the runtime-digest field. Returns the fresh
+    /// manifest bytes for canonical-byte comparisons.
+    fn legacyize_entry(
+        entry_root: &Path,
+        manifest_path: &Path,
+        archive: &ArchiveFixture,
+    ) -> Result<Vec<u8>> {
+        let downloads = entry_root.join("downloads");
+        fs::create_dir_all(&downloads)?;
+        fs::copy(&archive.archive_path, downloads.join(format!("gvim_{VIM_RELEASE_TAG}.zip")))?;
+        let fresh_bytes = fs::read(manifest_path)?;
+        let mut legacy = serde_json::from_slice::<serde_json::Value>(&fresh_bytes)?;
+        legacy
+            .get_mut("vim")
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|vim| vim.remove("runtime_tree_sha256"))
+            .ok_or_else(|| anyhow::anyhow!("fresh manifest did not contain runtime digest"))?;
+        fs::write(manifest_path, serde_json::to_vec_pretty(&legacy)?)?;
+        Ok(fresh_bytes)
     }
 
     #[test]
