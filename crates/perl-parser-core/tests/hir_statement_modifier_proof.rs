@@ -8,8 +8,8 @@ use std::error::Error;
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
-    AccessMode, AssignMode, HirBody, HirExpr, HirExprId, HirFile, HirKind, HirStmt, Sigil,
-    StatementModifierKind, VariableKind, lower_ast,
+    AccessMode, AssignMode, HIR_BODY_MODEL_VERSION, HirBody, HirExpr, HirExprId, HirFile, HirKind,
+    HirStmt, RecoveryConfidence, Sigil, StatementModifierKind, VariableKind, lower_ast,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -82,15 +82,17 @@ const CASES: &[ModifierCase] = &[
     },
 ];
 
-fn lower(source: &str) -> HirFile {
+fn lower(source: &str) -> Result<HirFile, Box<dyn Error>> {
     let mut parser = Parser::new(source);
     let output = parser.parse_with_recovery();
-    assert!(
-        parser.errors().is_empty(),
-        "fixture must parse without recovery: {source:?}: {:?}",
-        parser.errors()
-    );
-    lower_ast(&output.ast)
+    if !parser.errors().is_empty() {
+        return Err(format!(
+            "fixture must parse without recovery: {source:?}: {:?}",
+            parser.errors()
+        )
+        .into());
+    }
+    Ok(lower_ast(&output.ast))
 }
 
 fn source_slice<'a>(
@@ -118,7 +120,7 @@ fn variable<'a>(
 #[test]
 fn postfix_modifiers_preserve_exact_flat_hir_condition_and_label() -> TestResult {
     for case in CASES {
-        let file = lower(case.flat_source);
+        let file = lower(case.flat_source)?;
         let modifiers = file
             .items
             .iter()
@@ -156,6 +158,12 @@ fn postfix_modifiers_preserve_exact_flat_hir_condition_and_label() -> TestResult
             case.flat_source
         );
         assert_eq!(item.anchor.node_kind, "StatementModifier");
+        assert_eq!(
+            item.recovery_confidence,
+            RecoveryConfidence::Parsed,
+            "valid postfix modifier must retain parsed confidence for {:?}",
+            case.flat_source
+        );
         assert!(
             !file
                 .items
@@ -172,7 +180,13 @@ fn postfix_modifiers_preserve_exact_flat_hir_condition_and_label() -> TestResult
 #[test]
 fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResult {
     for case in CASES {
-        let file = lower(case.body_source);
+        let file = lower(case.body_source)?;
+        assert_eq!(
+            file.body_model_version,
+            HIR_BODY_MODEL_VERSION,
+            "production body lowering must attach the current HIR body model for {:?}",
+            case.body_source
+        );
         let body = file
             .root_body()
             .ok_or_else(|| format!("root body is missing for {:?}", case.body_source))?;
@@ -288,8 +302,8 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
 }
 
 #[test]
-fn prefix_control_flow_does_not_mint_postfix_modifier_proof() {
-    let branch_file = lower("if ($enabled) { $result = $value; }\n");
+fn prefix_control_flow_does_not_mint_postfix_modifier_proof() -> TestResult {
+    let branch_file = lower("if ($enabled) { $result = $value; }\n")?;
     assert!(
         branch_file.items.iter().any(|item| matches!(&item.kind, HirKind::BranchShell(_))),
         "prefix if control must retain its branch shell"
@@ -302,7 +316,7 @@ fn prefix_control_flow_does_not_mint_postfix_modifier_proof() {
         "prefix if control must not be counted as postfix-modifier proof"
     );
 
-    let loop_file = lower("while ($ready) { $result = $value; }\n");
+    let loop_file = lower("while ($ready) { $result = $value; }\n")?;
     assert!(
         loop_file.items.iter().any(|item| matches!(&item.kind, HirKind::LoopShell(_))),
         "prefix loop control must retain its loop shell"
@@ -314,4 +328,23 @@ fn prefix_control_flow_does_not_mint_postfix_modifier_proof() {
             .any(|item| matches!(&item.kind, HirKind::StatementModifierShell(_))),
         "prefix loop control must not be counted as postfix-modifier proof"
     );
+
+    Ok(())
+}
+
+#[test]
+fn malformed_and_chained_modifiers_are_rejected_before_hir_proof_admission() {
+    for (source, subject) in [
+        ("$result = $value if;\n", "missing modifier condition"),
+        (
+            "$result = $value if $enabled while $ready;\n",
+            "chained statement modifiers",
+        ),
+    ] {
+        let result = lower(source);
+        assert!(
+            result.is_err(),
+            "{subject} must not enter HIR proof admission: {source:?}"
+        );
+    }
 }
