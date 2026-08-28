@@ -85,8 +85,7 @@ fn parse_target_aliases(raw_value: &str) -> BTreeSet<String> {
             aliases.insert(name.to_string());
         }
     } else {
-        let package = strip_quotes(value);
-        if is_static_target_package(package) {
+        if is_static_target_package(value) {
             aliases.insert("CLASS".to_string());
         }
     }
@@ -95,37 +94,86 @@ fn parse_target_aliases(raw_value: &str) -> BTreeSet<String> {
 }
 
 fn is_static_target_package(value: &str) -> bool {
-    let package = strip_quotes(value.trim());
-    package != "undef" && STATIC_PACKAGE.as_ref().is_some_and(|pattern| pattern.is_match(package))
+    let value = value.trim();
+    let quoted = value.len() >= 2
+        && matches!(
+            (value.as_bytes().first(), value.as_bytes().last()),
+            (Some(b'\''), Some(b'\'')) | (Some(b'"'), Some(b'"'))
+        );
+    let package = strip_quotes(value);
+    (quoted || package != "undef")
+        && STATIC_PACKAGE.as_ref().is_some_and(|pattern| pattern.is_match(package))
 }
 
 fn find_bundle_target_option(raw_args: &str) -> Option<(usize, usize, &str)> {
     let bytes = raw_args.as_bytes();
     let option = b"-target";
 
-    for start in 0..bytes.len() {
-        if bytes.get(start..start + option.len()) != Some(option)
-            || (start > 0 && !matches!(bytes[start - 1], b',' | b'\n' | b'\r' | b'\t' | b' '))
-        {
+    let mut delimiters = Vec::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            index += 1;
             continue;
         }
 
-        let mut value_start = start + option.len();
-        while bytes.get(value_start).is_some_and(u8::is_ascii_whitespace) {
-            value_start += 1;
-        }
-        if bytes.get(value_start..value_start + 2) == Some(b"=>") {
-            value_start += 2;
+        if byte == b'\'' || byte == b'"' {
+            quote = Some(byte);
+        } else if matches!(byte, b'{' | b'[' | b'(') {
+            delimiters.push(byte);
+        } else if matches!(byte, b'}' | b']' | b')') {
+            let expected = match byte {
+                b'}' => b'{',
+                b']' => b'[',
+                b')' => b'(',
+                _ => return None,
+            };
+            if delimiters.pop() != Some(expected) {
+                return None;
+            }
+        } else if byte == b'-'
+            && delimiters.is_empty()
+            && bytes.get(index..index + option.len()) == Some(option)
+            && option_has_boundaries(bytes, index, option.len())
+        {
+            let mut value_start = index + option.len();
             while bytes.get(value_start).is_some_and(u8::is_ascii_whitespace) {
                 value_start += 1;
             }
-        }
+            if bytes.get(value_start..value_start + 2) == Some(b"=>") {
+                value_start += 2;
+                while bytes.get(value_start).is_some_and(u8::is_ascii_whitespace) {
+                    value_start += 1;
+                }
+            }
 
-        let value_end = scan_bundle_target_value(raw_args, value_start)?;
-        return Some((start, value_end, &raw_args[value_start..value_end]));
+            let value_end = scan_bundle_target_value(raw_args, value_start)?;
+            return Some((index, value_end, &raw_args[value_start..value_end]));
+        }
+        index += 1;
     }
 
     None
+}
+
+fn option_has_boundaries(bytes: &[u8], start: usize, len: usize) -> bool {
+    let before_is_boundary = start == 0
+        || bytes.get(start - 1).is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b',');
+    let after = start + len;
+    let after_is_boundary = bytes
+        .get(after)
+        .is_none_or(|byte| byte.is_ascii_whitespace() || matches!(*byte, b',' | b'='));
+    before_is_boundary && after_is_boundary
 }
 
 fn scan_bundle_target_value(raw: &str, start: usize) -> Option<usize> {
@@ -313,6 +361,20 @@ mod tests {
     }
 
     #[test]
+    fn quoted_undef_is_a_literal_but_bare_undef_is_not() {
+        assert_eq!(
+            aliases("Test2::Tools::Target", "'undef'"),
+            BTreeSet::from(["CLASS".to_string()])
+        );
+        assert_eq!(
+            aliases("Test2::V0", "-target => \"undef\""),
+            BTreeSet::from(["CLASS".to_string()])
+        );
+        assert!(aliases("Test2::Tools::Target", "undef").is_empty());
+        assert!(aliases("Test2::V0", "-target => undef").is_empty());
+    }
+
+    #[test]
     fn direct_target_pairs_preserve_static_aliases() {
         assert_eq!(
             aliases("Test2::Tools::Target", "service => 'My::Service', repo => 'My::Repo'",),
@@ -406,6 +468,26 @@ mod tests {
                 aliases: BTreeSet::new(),
                 remaining_args: Some(String::new()),
             })
+        );
+    }
+
+    #[test]
+    fn bundle_target_option_requires_exact_top_level_token() {
+        assert_eq!(resolve_target_import("Test2::V0", "-targetish => 'Fake::Target'"), None);
+        assert_eq!(
+            resolve_target_import(
+                "Test2::V0",
+                "-srand => \"contains -target => 'Fake::Target'\", -target => 'Real::Target'",
+            )
+            .map(|resolved| resolved.aliases),
+            Some(BTreeSet::from(["CLASS".to_string()]))
+        );
+        assert_eq!(
+            resolve_target_import(
+                "Test2::V0",
+                "-T2 => { -as => \"contains -target => 'Fake::Target'\" }",
+            ),
+            None
         );
     }
 }

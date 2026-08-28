@@ -349,6 +349,18 @@ fn test2_imports_target_option_does_not_drop_exports() {
 }
 
 #[test]
+fn test2_v1_handle_options_preserve_suppression_and_custom_name() {
+    let suppressed = resolve_import("Test2::V1", "-no-T2").expect("recognized");
+    assert!(!suppressed.symbols.contains("T2"), "-no-T2 suppresses the default handle");
+    let suppressed_facts = Test2Facts::from_source("use Test2::V1 -no-T2;\n");
+    assert!(!suppressed_facts.is_imported("T2"), "facts preserve -no-T2 suppression");
+
+    let custom = resolve_import("Test2::V1", "-T2 => { -as => 'custom' }").expect("recognized");
+    assert!(!custom.symbols.contains("T2"), "custom -T2 replaces the default handle name");
+    assert!(custom.symbols.contains("custom"), "custom -T2 exports the requested name");
+}
+
+#[test]
 fn expand_qw_only_fires_on_word_boundary_and_real_delimiter() {
     // Genuine qw list expands to space-separated words.
     assert_eq!(expand_qw("qw(ok is like)"), " ok is like ");

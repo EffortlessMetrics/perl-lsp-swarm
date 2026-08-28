@@ -467,6 +467,13 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
         symbols.remove(excluded);
     }
 
+    // `-no-T2` suppresses the default handle export in V1. This remains
+    // relevant when the completion projection removes a separate `-target`
+    // option before resolving the bundle's ordinary imports.
+    if module == "Test2::V1" && args_contains_option(raw_args, "no-T2") {
+        symbols.remove("T2");
+    }
+
     Some(ResolvedImport { symbols, pragmas })
 }
 
@@ -549,11 +556,7 @@ fn is_bareword(s: &str) -> bool {
 /// raw args, in either `-flag` or `-flag => 1` form.
 fn args_contains_option(raw_args: &str, flag: &str) -> bool {
     let needle = format!("-{flag}");
-    raw_args.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')).any(|tok| {
-        // Match the exact flag token, not a prefix (`-no_strict` must not match
-        // a hypothetical `-no_strictness`).
-        tok == needle
-    })
+    top_level_option_tokens(raw_args).iter().any(|token| *token == needle)
 }
 
 /// Whether the Test2::V1 short flag `flag_char` is set — either as a standalone
@@ -563,13 +566,76 @@ fn args_contains_option(raw_args: &str, flag: &str) -> bool {
 /// `-import` or `-strict` (whose other letters are not short flags). Oracle:
 /// metacpan `Test2::V1` SYNOPSIS (`use Test2::V1 -ipP;`).
 fn v1_short_flag(raw_args: &str, flag_char: char) -> bool {
-    raw_args.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')).any(|tok| {
+    top_level_option_tokens(raw_args).iter().any(|tok| {
         tok.strip_prefix('-').is_some_and(|rest| {
             !rest.is_empty()
                 && rest.chars().all(|c| matches!(c, 'i' | 'p' | 'P' | 'x'))
                 && rest.contains(flag_char)
         })
     })
+}
+
+/// Return option tokens at the import-argument level, ignoring quoted text
+/// and nested values such as `-T2 => { -as => 'custom' }`.
+fn top_level_option_tokens(raw: &str) -> Vec<&str> {
+    let bytes = raw.as_bytes();
+    let mut tokens = Vec::new();
+    let mut delimiters = Vec::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut index = 0;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'{' | b'[' | b'(' => delimiters.push(byte),
+            b'}' | b']' | b')' => {
+                let expected = match byte {
+                    b'}' => b'{',
+                    b']' => b'[',
+                    b')' => b'(',
+                    _ => return tokens,
+                };
+                if delimiters.pop() != Some(expected) {
+                    return tokens;
+                }
+            }
+            b'-' if delimiters.is_empty()
+                && (index == 0
+                    || bytes[index - 1].is_ascii_whitespace()
+                    || bytes[index - 1] == b',') =>
+            {
+                let mut end = index + 1;
+                while bytes.get(end).is_some_and(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-')
+                }) {
+                    end += 1;
+                }
+                if end > index + 1 {
+                    tokens.push(&raw[index..end]);
+                }
+                index = end;
+                continue;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+
+    tokens
 }
 
 /// Split raw import-argument text into classifiable atoms. Handles `qw//`

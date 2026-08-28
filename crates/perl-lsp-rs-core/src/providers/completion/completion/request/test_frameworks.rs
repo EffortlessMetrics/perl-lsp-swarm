@@ -301,7 +301,9 @@ fn walk_scoped_uses(
 }
 
 fn source_use_statement(node: &Node, source: &str, module: &str, args: &[String]) -> String {
-    let raw = source.get(node.location.start..node.location.end).unwrap_or_default().trim();
+    let source_tail = source.get(node.location.start..).unwrap_or_default();
+    let statement_end = use_statement_end(source_tail).unwrap_or(source_tail.len());
+    let raw = source_tail.get(..statement_end).unwrap_or(source_tail).trim();
     let raw = raw.strip_suffix(';').unwrap_or(raw).trim();
     if raw.strip_prefix("use").is_some_and(|rest| rest.starts_with(char::is_whitespace)) {
         return raw.to_string();
@@ -313,6 +315,46 @@ fn source_use_statement(node: &Node, source: &str, module: &str, args: &[String]
         reconstructed.push_str(args.join(" ").as_str());
     }
     reconstructed
+}
+
+fn use_statement_end(source: &str) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut delimiters = Vec::new();
+    let mut quote = None;
+    let mut escaped = false;
+
+    for (index, &byte) in bytes.iter().enumerate() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'{' | b'[' | b'(' => delimiters.push(byte),
+            b'}' | b']' | b')' => {
+                let expected = match byte {
+                    b'}' => b'{',
+                    b']' => b'[',
+                    b')' => b'(',
+                    _ => return None,
+                };
+                if delimiters.pop() != Some(expected) {
+                    return None;
+                }
+            }
+            b';' if delimiters.is_empty() => return Some(index + 1),
+            _ => {}
+        }
+    }
+
+    None
 }
 
 fn use_module_and_args(statement: &str) -> Option<(&str, &str)> {
@@ -395,6 +437,21 @@ mod tests {
     }
 
     #[test]
+    fn quoted_undef_target_completes_class_but_bare_undef_does_not() {
+        let direct = complete("use Test2::Tools::Target 'undef';\nCL|", Some("t/example.t"));
+        assert!(labels(&direct).contains(&"CLASS"));
+
+        let bundle = complete("use Test2::V0 -target => \"undef\";\nCL|", Some("t/example.t"));
+        assert!(labels(&bundle).contains(&"CLASS"));
+
+        let bare_direct = complete("use Test2::Tools::Target undef;\nCL|", Some("t/example.t"));
+        assert!(!labels(&bare_direct).contains(&"CLASS"));
+
+        let bare_bundle = complete("use Test2::V0 -target => undef;\nCL|", Some("t/example.t"));
+        assert!(!labels(&bare_bundle).contains(&"CLASS"));
+    }
+
+    #[test]
     fn scalar_targets_preserve_versioned_defaults_without_package_values() {
         let v0_tools = complete("use Test2::V0 -target => 'My::Service';\ni|", Some("t/example.t"));
         assert!(labels(&v0_tools).contains(&"is"));
@@ -459,6 +516,25 @@ mod tests {
         let bundle_items =
             complete("use Test2::V0 -target => { service => $target };\nser|", Some("t/example.t"));
         assert!(!labels(&bundle_items).contains(&"service"));
+    }
+
+    #[test]
+    fn target_option_discovery_rejects_targetish_and_quoted_text() {
+        let targetish =
+            complete("use Test2::V0 -targetish => 'Fake::Target';\nCL|", Some("t/example.t"));
+        assert!(!labels(&targetish).contains(&"CLASS"));
+
+        let quoted = complete(
+            "use Test2::V0 -srand => \"contains -target => 'Fake::Target'\";\nCL|",
+            Some("t/example.t"),
+        );
+        assert!(!labels(&quoted).contains(&"CLASS"));
+
+        let nested = complete(
+            "use Test2::V0 -T2 => { -as => \"contains -target => 'Fake::Target'\" };\nCL|",
+            Some("t/example.t"),
+        );
+        assert!(!labels(&nested).contains(&"CLASS"));
     }
 
     #[test]
@@ -538,6 +614,26 @@ mod tests {
             Some("t/example.t"),
         );
         assert!(labels(&excluded_alias).contains(&"service"));
+    }
+
+    #[test]
+    fn v1_target_removal_preserves_handle_suppression_and_custom_name() {
+        let source = "use Test2::V1 -target => 'My::Service', -no-T2;\nT";
+        let scoped = collect_scoped_uses(source).expect("test source parses");
+        let package_uses = scoped.iter().collect::<Vec<_>>();
+        let (projected, _, _) = project_test2_imports(&package_uses);
+        assert_eq!(projected, "use Test2::V1 -no-T2;\n");
+
+        let suppressed =
+            complete("use Test2::V1 -target => 'My::Service', -no-T2;\nT|", Some("t/example.t"));
+        assert!(!labels(&suppressed).contains(&"T2"));
+
+        let custom = complete(
+            "use Test2::V1 -target => 'My::Service', -T2 => { -as => 'custom' };\ncu|",
+            Some("t/example.t"),
+        );
+        assert!(labels(&custom).contains(&"custom"));
+        assert!(!labels(&custom).contains(&"T2"));
     }
 
     #[test]
