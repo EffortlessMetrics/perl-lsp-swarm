@@ -28,6 +28,8 @@ ORCHESTRATION_SKILL_SURFACES = (
     ".claude/skills/deliver-pr/SKILL.md",
     ".claude/skills/orchestrate-work/SKILL.md",
 )
+ACTIVE_SKILL_ROOTS = (".agents/skills", ".claude/skills")
+ACTIVE_SKILL_GLOBS = (".agents/skills/**", ".claude/skills/**")
 SHARED_ORCHESTRATION_SURFACES = (
     "docs/agents/DEVELOPMENT_METHOD.md",
     "docs/agents/SKILL_CONTRACT.md",
@@ -44,7 +46,7 @@ TRIGGER_PATHS = (
     WORKTREE_PROTOCOL,
     "AGENTS.md",
     "CLAUDE.md",
-    *ORCHESTRATION_SKILL_SURFACES,
+    *ACTIVE_SKILL_GLOBS,
     CLAUDE_AGENT_GLOB,
     *SHARED_ORCHESTRATION_SURFACES,
     JUSTFILE,
@@ -379,6 +381,17 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
                     lowered,
                     f"{surface} restored retired nested orchestration marker {retired!r}",
                 )
+
+        for skill_root in ACTIVE_SKILL_ROOTS:
+            for skill_path in sorted((ROOT / skill_root).rglob("SKILL.md")):
+                lowered = active_text(str(skill_path), is_text=False).lower()
+                relative = skill_path.relative_to(ROOT).as_posix()
+                for retired in ("lane root", "lane-root", "lane owner"):
+                    self.assertNotIn(
+                        retired,
+                        lowered,
+                        f"{relative} restored retired claim-orchestration authority {retired!r}",
+                    )
 
         self.assertFalse(
             (ROOT / RETIRED_LANE_AGENT).exists(),
