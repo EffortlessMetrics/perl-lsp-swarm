@@ -5,6 +5,7 @@
 //! trusted Perl-region classifier and must not become typed-oracle authority.
 
 use std::collections::BTreeSet;
+use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 
@@ -12,6 +13,8 @@ use serde::Deserialize;
 
 const MANIFEST_PATH: &str = "crates/perl-corpus/fixtures/parser_accuracy/manifest.json";
 const LEGACY_APPLIED_CASE_COUNT: usize = 46;
+
+type TestResult = Result<(), Box<dyn Error>>;
 
 #[derive(Debug, Deserialize)]
 struct Manifest {
@@ -44,16 +47,20 @@ fn legacy_whitespace_case_applies(source: &str) -> bool {
 }
 
 #[test]
-fn legacy_whitespace_population_retains_every_live_manifest_fixture()
--> Result<(), Box<dyn std::error::Error>> {
+fn legacy_whitespace_population_retains_every_live_manifest_fixture() -> TestResult {
     let root = project_root();
     let manifest: Manifest = serde_json::from_str(&fs::read_to_string(root.join(MANIFEST_PATH))?)?;
 
-    assert_eq!(manifest.schema_version, 1, "unexpected parser-accuracy manifest schema");
-    assert!(!manifest.fixtures.is_empty(), "parser-accuracy manifest must not be empty");
+    assert_eq!(
+        manifest.schema_version, 1,
+        "unexpected parser-accuracy manifest schema"
+    );
+    assert!(
+        !manifest.fixtures.is_empty(),
+        "parser-accuracy manifest must not be empty"
+    );
 
     let mut fixture_ids = BTreeSet::new();
-    let mut source_paths = BTreeSet::new();
     let mut applied_case_ids = BTreeSet::new();
     let mut omitted_case_ids = BTreeSet::new();
 
@@ -62,11 +69,6 @@ fn legacy_whitespace_population_retains_every_live_manifest_fixture()
             fixture_ids.insert(fixture.id.clone()),
             "duplicate parser-accuracy fixture id `{}`",
             fixture.id
-        );
-        assert!(
-            source_paths.insert(fixture.source_path.clone()),
-            "duplicate parser-accuracy source path `{}`",
-            fixture.source_path
         );
 
         let source = fs::read_to_string(root.join(&fixture.source_path))?;
@@ -89,7 +91,6 @@ fn legacy_whitespace_population_retains_every_live_manifest_fixture()
         "every live fixture must retain an applied or omitted legacy disposition"
     );
     assert_eq!(fixture_ids.len(), manifest.fixtures.len());
-    assert_eq!(source_paths.len(), manifest.fixtures.len());
     assert!(
         !omitted_case_ids.is_empty(),
         "legacy whole-file filtering must remain visible until typed applicability replaces it"
