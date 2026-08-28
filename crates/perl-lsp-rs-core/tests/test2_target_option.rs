@@ -81,6 +81,15 @@ fn wrapped_hash_targets_ignore_structural_tokens() -> TestResult {
 }
 
 #[test]
+fn target_helpers_are_not_invented_for_tool_modules() -> TestResult {
+    let resolved = resolve_import("Test2::Tools::Compare", "-target => 'Foo'")
+        .ok_or_else(|| io::Error::other("Test2::Tools::Compare must be recognized"))?;
+
+    assert!(!resolved.symbols.contains("CLASS"));
+    Ok(())
+}
+
+#[test]
 fn target_consumption_stops_before_an_explicit_import() -> TestResult {
     let resolved = resolve_import("Test2::V0", "-target => 'Foo', ok")
         .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;

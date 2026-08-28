@@ -391,6 +391,7 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
     stripped = RENAME_FIX.replace_all(&stripped, " ").into_owned();
 
     let atoms = tokenize_import_args(&stripped);
+    let target_option_supported = matches!(module, "Test2::V0" | "Test2::V1");
     let mut atom_index = 0;
     let mut target_helpers: BTreeSet<String> = BTreeSet::new();
 
@@ -425,7 +426,7 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
             // Test2::V0 and Test2::V1 consume the value after `-target` before
             // export processing. The flat atom view must do the same or a
             // single-segment package name/hash key looks like an imported sub.
-            if atom == "-target" {
+            if target_option_supported && atom == "-target" {
                 let mut brace_depth = 0_isize;
                 let mut saw_hash = false;
                 let mut expect_key = true;
