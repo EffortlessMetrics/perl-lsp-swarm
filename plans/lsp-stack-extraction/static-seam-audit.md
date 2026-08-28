@@ -3,6 +3,7 @@
 Status: candidate
 Owner: perl-lsp maintainers
 Issue: [#13059](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13059)
+Pull request: [#13097](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/13097)
 Linked ADR: [PLSP-ADR-0004](../../docs/adr/PLSP-ADR-0004-lsp-stack-extraction.md)
 Linked spec: [PLSP-SPEC-0028](../../docs/specs/PLSP-SPEC-0028-lsp-stack-extraction.md)
 Linked plan: [implementation-plan.md](implementation-plan.md)
@@ -18,7 +19,10 @@ leverage:
 
 - its contract is only JSON-RPC integer-or-string identity;
 - its source needs only `std`, `serde`, and `serde_json`;
-- focused tests already prove strict wire behavior;
+- embedded tests already cover integer and string acceptance, string-ID echo,
+  and null/fractional rejection;
+- the next boundary PR can add direct helper, serde, and out-of-domain proof
+  without involving runtime policy;
 - current request, response, dispatch, cancellation, and serving paths consume
   it through the public protocol re-export.
 
@@ -33,7 +37,8 @@ tests without a Perl dependency, a scaffold PR may create `crates/lsp-stack`.
 The first mechanical move can then relocate the exact unit and keep the current
 path as a compatibility re-export.
 
-No production code is moved by this audit.
+No production code is moved by this audit. No `lsp-stack` crate or extraction
+implementation exists yet.
 
 ## Classification Rule
 
@@ -65,8 +70,14 @@ Blocker:
 
 Current proof:
 
-- embedded ID, request, response, and error tests;
-- app dispatch, serving, cancellation, and raw-RPC tests.
+- embedded request tests accept integer and string IDs and reject null and
+  fractional IDs;
+- an embedded response test proves string-ID echo;
+- no focused test currently proves direct `JsonRpcId` serde,
+  `from_value`/`try_from_value`/`to_value`, or out-of-i64 rejection; PR 3 must
+  add that discrimination;
+- app dispatch, serving, cancellation, and raw-RPC tests exercise the shared
+  type through larger paths.
 
 Disposition:
 
@@ -276,23 +287,55 @@ Those surfaces may consume the future stack. They do not become part of it.
 
 ## Initial External Consumer Contract
 
-The first public unit should eventually be
-`lsp_stack::jsonrpc::JsonRpcId` with this contract:
+The first public implementation path should eventually be
+`lsp_stack::jsonrpc::JsonRpcId`.
 
-- IDs are signed 64-bit integers or strings;
-- serde uses the untagged JSON representation;
-- deserialization rejects null, booleans, arrays, objects, fractional numbers,
-  and integers outside the supported signed domain;
-- `from_value` returns `None` for unsupported values;
-- `to_value` preserves every accepted ID;
-- display returns the contained integer or string spelling;
-- the enum remains `#[non_exhaustive]`;
-- no API mentions Perl, providers, parser categories, feature catalogs,
-  process environment, tracing policy, DAP, packaging, or release state.
+### Wire contract
 
-During migration,
-`perl_lsp_rs_core::protocol::JsonRpcId` remains a compatibility re-export. The
-wire behavior above is the compatibility contract; internal file layout is not.
+- IDs are signed 64-bit integers or strings.
+- Serde uses the untagged JSON representation.
+- Deserialization rejects null, booleans, arrays, objects, fractional numbers,
+  and integers outside the supported signed domain.
+- The enum remains `#[non_exhaustive]`.
+
+### Migration compatibility
+
+- `from_value`, `try_from_value`, `to_value`, and display preserve current
+  behavior while `perl-lsp` migrates.
+- `perl_lsp_rs_core::protocol::JsonRpcId` remains a compatibility re-export.
+- The wire behavior is the compatibility contract; internal file layout is
+  not.
+- Retaining migration helpers does not yet make every helper a permanent
+  published stability promise.
+
+### External-use proof
+
+- A crate integration test must consume the type through only the public
+  `lsp_stack` path.
+- The test must construct integer and string IDs, round-trip them through
+  serde, and challenge unsupported values.
+- This internal workspace public API does not imply crates.io publication or a
+  general stability contract. Publication and versioning require separate
+  authority and proof.
+
+## Minimum Useful Consumer Slice
+
+`JsonRpcId` is the first safe migration unit, not a useful standalone stack
+release.
+
+The project may claim that another language server can use the extracted stack
+only after a non-Perl integration fixture can, through public `lsp_stack` APIs:
+
+1. accept a bounded Content-Length-framed request;
+2. deserialize a JSON-RPC request and preserve its ID;
+3. emit a success or error response with the same ID;
+4. issue and correlate one server-to-client request; and
+5. compile without any Perl, provider, feature-catalog, DAP, editor, package,
+   or release dependency.
+
+That fixture is a later parity gate after JSON-RPC models, framing, and
+server-request correlation move. It is not authorization to publish the crate
+or claim a stable general-purpose runtime.
 
 ## Next PR: `JsonRpcId` Dependency Boundary
 
@@ -325,6 +368,8 @@ Acceptance:
 
 - the candidate unit has no `crate::` or workspace-crate import;
 - all callers compile through the unchanged public path;
+- focused tests directly cover `JsonRpcId` serde and helper conversions rather
+  than only request/response envelopes;
 - integer and string IDs retain round-trip behavior;
 - null, fractional, and out-of-domain numeric IDs remain rejected;
 - no runtime or JSON shape changes;
@@ -334,27 +379,32 @@ Proof:
 
 ```bash
 git diff --check
-./scripts/cargo-safe test -p perl-lsp-rs-core protocol::jsonrpc::tests --profile agent --locked
+./scripts/cargo-safe test -p perl-lsp-rs-core json_rpc_ --profile agent --locked
 ./scripts/cargo-safe check -p perl-lsp-rs-core --all-targets --profile agent --locked
 ./scripts/cargo-safe check -p perl-lsp-rs --all-targets --profile agent --locked
 ./scripts/cargo-safe test -p perl-lsp-rs --test lsp_registration_tests --profile agent --locked
 ```
 
 Raw-RPC receipts are not required for the in-place split unless wire
-construction or framing changes.
+construction or framing changes. The first source-changing PR must also satisfy
+the current-app baseline gate in the implementation plan, using current
+unaffected evidence where valid rather than replaying CI solely for head
+freshness.
 
 ## Later Order
 
 1. Prove the in-place `JsonRpcId` boundary.
 2. Scaffold `crates/lsp-stack` with no moved behavior.
-3. Move `JsonRpcId` and retain the compatibility re-export.
+3. Move `JsonRpcId`, retain the compatibility re-export, and add the public-path
+   integration test.
 4. Make product error classification local, then move the remaining neutral
    JSON-RPC wire types.
 5. Split and move low-level Content-Length framing.
 6. Evaluate standard method constants and policy-neutral document-version
    decoding.
 7. Evaluate cancellation and server-request registry primitives.
-8. Leave capability policy, providers, launcher/tuning, DAP, editor, and
+8. Prove the minimum useful non-Perl consumer fixture.
+9. Leave capability policy, providers, launcher/tuning, DAP, editor, and
    release surfaces in the product.
 
 No later candidate is authorized merely because this audit finds a reusable
