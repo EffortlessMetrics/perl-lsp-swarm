@@ -8,9 +8,17 @@ fn skip_all_plan_is_clean_at_the_public_boundary() {
 
     assert_eq!(report.version, Some(13));
     assert_eq!(
-        report.plan.as_ref().map(|plan| {
-            (plan.start, plan.end, plan.directive.as_deref(), plan.line)
-        }),
+        report
+            .plan
+            .as_ref()
+            .map(|plan| {
+                (
+                    plan.start,
+                    plan.end,
+                    plan.directive.as_deref(),
+                    plan.line,
+                )
+            }),
         Some((1, 0, Some("SKIP database unavailable"), 2))
     );
     assert!(report.assertions.is_empty());
@@ -24,9 +32,19 @@ fn nested_assertions_do_not_satisfy_the_top_level_plan() {
     let report = parse_tap("    ok 1 - nested\n1..1\n");
 
     assert_eq!(report.assertions.len(), 1);
-    assert_eq!(report.assertions.first().map(|assertion| assertion.depth), Some(1));
     assert_eq!(
-        report.assertions.iter().filter(|assertion| assertion.depth == 0).count(),
+        report
+            .assertions
+            .first()
+            .map(|assertion| assertion.depth),
+        Some(1)
+    );
+    assert_eq!(
+        report
+            .assertions
+            .iter()
+            .filter(|assertion| assertion.depth == 0)
+            .count(),
         0
     );
     assert!(report.diagnostics.iter().any(|diagnostic| {
@@ -50,7 +68,11 @@ fn directives_do_not_erase_raw_outcomes_or_hard_failure_counts() {
     );
 
     assert_eq!(
-        report.assertions.iter().map(|assertion| assertion.status).collect::<Vec<_>>(),
+        report
+            .assertions
+            .iter()
+            .map(|assertion| assertion.status)
+            .collect::<Vec<_>>(),
         vec![
             TapAssertionStatus::Todo,
             TapAssertionStatus::Todo,
@@ -60,7 +82,11 @@ fn directives_do_not_erase_raw_outcomes_or_hard_failure_counts() {
         ]
     );
     assert_eq!(
-        report.assertions.iter().map(|assertion| assertion.outcome).collect::<Vec<_>>(),
+        report
+            .assertions
+            .iter()
+            .map(|assertion| assertion.outcome)
+            .collect::<Vec<_>>(),
         vec![
             TapAssertionOutcome::Pass,
             TapAssertionOutcome::Fail,
@@ -96,8 +122,20 @@ fn malformed_known_records_and_unknown_records_keep_distinct_evidence() {
     );
 
     assert_eq!(report.version, None);
-    assert_eq!(report.plan.as_ref().map(|plan| (plan.end, plan.line)), Some((1, 5)));
-    assert_eq!(report.assertions.first().map(|assertion| assertion.line), Some(2));
+    assert_eq!(
+        report
+            .plan
+            .as_ref()
+            .map(|plan| (plan.end, plan.line)),
+        Some((1, 5))
+    );
+    assert_eq!(
+        report
+            .assertions
+            .first()
+            .map(|assertion| assertion.line),
+        Some(2)
+    );
     assert_eq!(
         report.diagnostics,
         vec![
