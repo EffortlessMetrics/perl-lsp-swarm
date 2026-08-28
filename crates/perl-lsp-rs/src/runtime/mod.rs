@@ -173,6 +173,9 @@ pub struct LspServer {
     initialize_requested: AtomicBool,
     /// Whether the server is initialized
     initialized: AtomicBool,
+    /// Server-owned coordinate authority, published only after initialize succeeds.
+    pub(crate) position_encoding_session_context:
+        Mutex<Option<lifecycle::position_encoding::PositionEncodingSessionContext>>,
     /// Whether shutdown was received (for LSP-compliant exit handling)
     shutdown_received: AtomicBool,
     /// Pending `window/logMessage` text to emit once the client has sent the

@@ -50,15 +50,8 @@ mod capabilities;
 #[cfg(test)]
 mod final_surface_census;
 pub(crate) mod inc_context;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "introduced by #8534 before generation/request/provider consumers adopt the context"
-    )
-)]
-pub(crate) mod position_encoding;
 pub mod module_resolution;
+pub(crate) mod position_encoding;
 mod tools;
 mod watchers;
 mod workspace;

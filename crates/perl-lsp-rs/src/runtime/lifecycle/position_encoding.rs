@@ -7,7 +7,7 @@
 //! can consume as they migrate. It deliberately contains no mapper and exposes
 //! no per-document or per-provider override.
 
-use super::super::{LspServer, Ordering};
+use super::super::LspServer;
 use perl_position_tracking::PositionEncoding;
 
 const SERVER_SUPPORTED_POSITION_ENCODINGS: [PositionEncoding; 2] =
@@ -19,9 +19,6 @@ const SERVER_SUPPORTED_POSITION_ENCODINGS: [PositionEncoding; 2] =
 pub(crate) enum ActivePositionEncodingSelectionReason {
     /// Compatibility phase: every shipping wire-coordinate path still uses UTF-16.
     CompatibilityPinnedUtf16,
-    /// Test-only discriminator proving encoding participates in persisted identity.
-    #[cfg(test)]
-    TestOnly,
 }
 
 /// Immutable coordinate identity shared by every position-bearing session path.
@@ -52,11 +49,6 @@ impl ActivePositionEncoding {
     pub(crate) const fn selection_reason(self) -> ActivePositionEncodingSelectionReason {
         self.selection_reason
     }
-
-    #[cfg(test)]
-    const fn test_only(encoding: PositionEncoding) -> Self {
-        Self { encoding, selection_reason: ActivePositionEncodingSelectionReason::TestOnly }
-    }
 }
 
 /// Position-encoding authority exposed by one initialized server session.
@@ -66,9 +58,8 @@ pub(crate) struct PositionEncodingSessionContext {
 }
 
 impl PositionEncodingSessionContext {
-    const COMPATIBILITY_PINNED_UTF16: Self = Self {
-        active: ActivePositionEncoding::COMPATIBILITY_PINNED_UTF16,
-    };
+    const COMPATIBILITY_PINNED_UTF16: Self =
+        Self { active: ActivePositionEncoding::COMPATIBILITY_PINNED_UTF16 };
 
     /// Encodings the server implementation can represent.
     ///
@@ -87,7 +78,7 @@ impl PositionEncodingSessionContext {
 }
 
 impl LspServer {
-    /// Return the active position-encoding context after initialize begins.
+    /// Return the active position-encoding context for a successful session.
     ///
     /// The client preference remains separate in `ClientCapabilities`; this
     /// accessor never derives the active value from that mutable compatibility
@@ -97,9 +88,24 @@ impl LspServer {
     pub(crate) fn position_encoding_session_context(
         &self,
     ) -> Option<PositionEncodingSessionContext> {
-        self.initialize_requested
-            .load(Ordering::Acquire)
-            .then_some(PositionEncodingSessionContext::COMPATIBILITY_PINNED_UTF16)
+        *self.position_encoding_session_context.lock()
+    }
+
+    pub(super) fn publish_position_encoding_session_context(&self) {
+        *self.position_encoding_session_context.lock() =
+            Some(PositionEncodingSessionContext::COMPATIBILITY_PINNED_UTF16);
+    }
+
+    pub(super) fn clear_position_encoding_session_context(&self) {
+        *self.position_encoding_session_context.lock() = None;
+    }
+
+    /// Return the active coordinate encoding, retaining UTF-16 for direct calls
+    /// made before initialize by compatibility and unit-test paths.
+    #[must_use]
+    pub(crate) fn position_encoding_for_coordinates(&self) -> PositionEncoding {
+        self.position_encoding_session_context()
+            .map_or(PositionEncoding::Utf16, |context| context.active().encoding())
     }
 }
 
@@ -138,18 +144,12 @@ mod tests {
             }),
         )?;
 
-        assert!(matches!(
-            server.client_capabilities.lock().position_encoding,
-            PosEnc::Utf8
-        ));
+        assert!(matches!(server.client_capabilities.lock().position_encoding, PosEnc::Utf8));
 
         let context = server
             .position_encoding_session_context()
             .ok_or("initialized session should expose an active encoding")?;
-        assert_eq!(
-            context.server_supported(),
-            &[PositionEncoding::Utf8, PositionEncoding::Utf16]
-        );
+        assert_eq!(context.server_supported(), &[PositionEncoding::Utf8, PositionEncoding::Utf16]);
         assert_eq!(context.active().encoding(), PositionEncoding::Utf16);
         assert_eq!(
             context.active().selection_reason(),
@@ -180,10 +180,7 @@ mod tests {
                 .position_encoding_session_context()
                 .ok_or("initialized session should expose an active encoding")?;
 
-            assert_eq!(
-                context.active(),
-                ActivePositionEncoding::COMPATIBILITY_PINNED_UTF16
-            );
+            assert_eq!(context.active(), ActivePositionEncoding::COMPATIBILITY_PINNED_UTF16);
             assert_eq!(
                 response.pointer("/capabilities/positionEncoding").and_then(Value::as_str),
                 Some("utf-16")
@@ -224,10 +221,7 @@ mod tests {
             .ok_or("active encoding should survive rejected initialize")?;
         assert_eq!(error.code, -32600);
         assert_eq!(before, after);
-        assert!(matches!(
-            server.client_capabilities.lock().position_encoding,
-            PosEnc::Utf8
-        ));
+        assert!(matches!(server.client_capabilities.lock().position_encoding, PosEnc::Utf8));
         Ok(())
     }
 
@@ -242,13 +236,42 @@ mod tests {
             })
         );
 
-        let test_only_utf8 = ActivePositionEncoding::test_only(PositionEncoding::Utf8);
-        assert_ne!(pinned, test_only_utf8);
+        let encoding_only_utf8 = ActivePositionEncoding {
+            encoding: PositionEncoding::Utf8,
+            selection_reason: pinned.selection_reason(),
+        };
+        assert_ne!(pinned, encoding_only_utf8);
 
         let mut identities = HashSet::new();
         assert!(identities.insert(pinned));
-        assert!(identities.insert(test_only_utf8));
+        assert!(identities.insert(encoding_only_utf8));
         assert_eq!(identities.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn independent_servers_do_not_share_active_context() -> TestResult {
+        let first = LspServer::new();
+        let second = LspServer::new();
+        initialize(&first, json!({"capabilities": {}}))?;
+
+        assert!(first.position_encoding_session_context().is_some());
+        assert!(second.position_encoding_session_context().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_preference_mutation_cannot_change_active_encoding() -> TestResult {
+        let server = LspServer::new();
+        initialize(
+            &server,
+            json!({
+                "capabilities": {"general": {"positionEncodings": ["utf-8"]}}
+            }),
+        )?;
+        server.client_capabilities.lock().position_encoding = PosEnc::Utf8;
+
+        assert_eq!(server.position_encoding_for_coordinates(), PositionEncoding::Utf16);
         Ok(())
     }
 }

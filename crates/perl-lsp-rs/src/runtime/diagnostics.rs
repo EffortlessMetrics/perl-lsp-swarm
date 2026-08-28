@@ -275,7 +275,7 @@ impl PullDiagnosticsOrchestrator {
 
         // Get client capabilities
         let markup_message_support = server.client_capabilities.lock().markup_message_support;
-        let position_encoding = server.client_capabilities.lock().position_encoding;
+        let position_encoding = server.position_encoding_for_coordinates();
 
         // Wait for index build, then sample per-document staleness before wiring
         // workspace semantic queries or dead-code analysis into pull diagnostics
@@ -320,8 +320,8 @@ impl PullDiagnosticsOrchestrator {
             facts_generation,
             projection: DiagnosticProjectionFragment {
                 position_encoding: match position_encoding {
-                    crate::textdoc::PosEnc::Utf8 => PullPositionEncoding::Utf8,
-                    crate::textdoc::PosEnc::Utf16 => PullPositionEncoding::Utf16,
+                    perl_position_tracking::PositionEncoding::Utf8 => PullPositionEncoding::Utf8,
+                    perl_position_tracking::PositionEncoding::Utf16 => PullPositionEncoding::Utf16,
                 },
                 markup_messages: markup_message_support,
             },
@@ -1794,9 +1794,9 @@ impl LspServer {
             )
         };
         let identity_projection = DiagnosticProjectionFragment {
-            position_encoding: match self.client_capabilities.lock().position_encoding {
-                crate::textdoc::PosEnc::Utf8 => PullPositionEncoding::Utf8,
-                crate::textdoc::PosEnc::Utf16 => PullPositionEncoding::Utf16,
+            position_encoding: match self.position_encoding_for_coordinates() {
+                perl_position_tracking::PositionEncoding::Utf8 => PullPositionEncoding::Utf8,
+                perl_position_tracking::PositionEncoding::Utf16 => PullPositionEncoding::Utf16,
             },
             markup_messages: markup_message_support,
         };
@@ -4306,6 +4306,25 @@ mod tests {
             context.workspace_root.as_deref(),
             Some(workspace.as_path()),
             "workspace_root must fall back to root_path when no folder contains the document"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_context_uses_server_owned_encoding_after_initialize()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, _buf) = make_server_with_capture();
+        server.handle_initialize(Some(serde_json::json!({
+            "capabilities": {"general": {"positionEncodings": ["utf-8"]}}
+        })))?;
+        server.client_capabilities.lock().position_encoding = crate::textdoc::PosEnc::Utf8;
+
+        let context = PullDiagnosticsOrchestrator::new().build_context(&server, "file:///test.pl");
+
+        assert_eq!(
+            context.projection.position_encoding,
+            PullPositionEncoding::Utf16,
+            "diagnostic projection must use the server-owned active encoding"
         );
         Ok(())
     }
