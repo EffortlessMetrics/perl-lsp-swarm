@@ -1,5 +1,6 @@
 [package]
 name = "perl-incremental-parsing"
+autobenches = false
 publish = false
 version.workspace = true
 edition.workspace = true
