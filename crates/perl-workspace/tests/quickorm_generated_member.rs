@@ -57,6 +57,14 @@ table users => sub {
     let members = index.get_generated_package_members("MyApp::Schema::User");
     let member_names: Vec<&str> = members.iter().map(|member| member.name.as_str()).collect();
     assert_eq!(member_names, ["qorm_table"]);
+
+    let all_members = index.get_package_members("MyApp::Schema::User");
+    let all_member_names: Vec<&str> =
+        all_members.iter().map(|member| member.name.as_str()).collect();
+    assert!(
+        !all_member_names.contains(&"qorm_table"),
+        "generic source-only package members must not expose generated qorm_table"
+    );
     for unearned_member in ["users", "id", "name", "email"] {
         assert!(
             !member_names.contains(&unearned_member),
