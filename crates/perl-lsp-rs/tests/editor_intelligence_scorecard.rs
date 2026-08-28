@@ -565,25 +565,25 @@ fn json_u32(value: &Value) -> Option<u32> {
     value.as_u64().and_then(|number| u32::try_from(number).ok())
 }
 
-fn observed_rename_edits(resp: &Value) -> Vec<ObservedRenameEdit> {
+fn observed_rename_edits(resp: &Value) -> Option<Vec<ObservedRenameEdit>> {
     let Some(changes) =
         resp.get("result").and_then(|result| result.get("changes")).and_then(Value::as_object)
     else {
-        return Vec::new();
+        return None;
     };
 
     let mut edits = Vec::new();
     for (uri, value) in changes {
-        let Some(entries) = value.as_array() else { continue };
+        let entries = value.as_array()?;
         for entry in entries {
-            let Some(range) = entry.get("range") else { continue };
-            let Some(start) = range.get("start") else { continue };
-            let Some(end) = range.get("end") else { continue };
-            let Some(new_text) = entry.get("newText").and_then(Value::as_str) else { continue };
-            let Some(line) = start.get("line").and_then(json_u32) else { continue };
-            let Some(character) = start.get("character").and_then(json_u32) else { continue };
-            let Some(end_line) = end.get("line").and_then(json_u32) else { continue };
-            let Some(end_character) = end.get("character").and_then(json_u32) else { continue };
+            let range = entry.get("range")?.as_object()?;
+            let start = range.get("start")?.as_object()?;
+            let end = range.get("end")?.as_object()?;
+            let new_text = entry.get("newText")?.as_str()?;
+            let line = start.get("line").and_then(json_u32)?;
+            let character = start.get("character").and_then(json_u32)?;
+            let end_line = end.get("line").and_then(json_u32)?;
+            let end_character = end.get("character").and_then(json_u32)?;
             edits.push(ObservedRenameEdit {
                 uri: uri.clone(),
                 line,
@@ -595,7 +595,7 @@ fn observed_rename_edits(resp: &Value) -> Vec<ObservedRenameEdit> {
         }
     }
     edits.sort();
-    edits
+    Some(edits)
 }
 
 fn rename_expected_edits_match(
@@ -603,10 +603,6 @@ fn rename_expected_edits_match(
     expected_uri: &str,
     expected: &[RenameExpectedEdit],
 ) -> bool {
-    if expected.is_empty() {
-        return true;
-    }
-
     let mut expected_edits: Vec<ObservedRenameEdit> = expected
         .iter()
         .map(|edit| ObservedRenameEdit {
@@ -619,7 +615,7 @@ fn rename_expected_edits_match(
         })
         .collect();
     expected_edits.sort();
-    observed_rename_edits(resp) == expected_edits
+    observed_rename_edits(resp).is_some_and(|observed| observed == expected_edits)
 }
 
 /// Run all rename gold fixtures and assert every assertion passes.
@@ -655,15 +651,20 @@ fn test_rename_gold_corpus() -> TestResult {
 
             let expected_edits_ok =
                 rename_expected_edits_match(&resp, &uri, &assertion.expected_edits);
+            let response_edits_are_well_formed =
+                rename_is_null(&resp) || observed_rename_edits(&resp).is_some();
             let ok = match &assertion.kind {
                 RenameAssertionKind::RenameSucceeds => {
                     !rename_is_null(&resp)
                         && rename_total_edit_count(&resp) >= 1
+                        && response_edits_are_well_formed
                         && expected_edits_ok
                 }
                 RenameAssertionKind::RenameNull => rename_is_null(&resp),
                 RenameAssertionKind::RenameEditCountAtLeast { min } => {
-                    rename_total_edit_count(&resp) >= *min && expected_edits_ok
+                    response_edits_are_well_formed
+                        && rename_total_edit_count(&resp) >= *min
+                        && expected_edits_ok
                 }
             };
 
@@ -733,6 +734,16 @@ mod rename_oracle_tests {
         })
     }
 
+    fn response_with_entries(entries: Value) -> Value {
+        json!({
+            "result": {
+                "changes": {
+                    "file:///gold/rename_subroutine.pl": entries
+                }
+            }
+        })
+    }
+
     #[test]
     fn rename_oracle_rejects_wrong_range() -> TestResult {
         let resp = response(
@@ -753,6 +764,45 @@ mod rename_oracle_tests {
         );
         if rename_expected_edits_match(&resp, "file:///gold/rename_subroutine.pl", &expected()) {
             return Err("wrong-text rename edit passed the oracle".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rename_oracle_rejects_malformed_extra_edit() -> TestResult {
+        let valid = json!({
+            "range": {
+                "start": {"line": 4, "character": 4},
+                "end": {"line": 4, "character": 19}
+            },
+            "newText": "sum_values"
+        });
+        let malformed = json!({
+            "range": {
+                "start": {"line": 5, "character": "not-a-number"},
+                "end": {"line": 5, "character": 8}
+            },
+            "newText": "sum_values"
+        });
+        let resp = response_with_entries(json!([valid, malformed]));
+        if rename_expected_edits_match(&resp, "file:///gold/rename_subroutine.pl", &expected()) {
+            return Err("malformed extra rename edit passed the oracle".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rename_oracle_rejects_malformed_edit_without_expected_edits() -> TestResult {
+        let malformed = json!({
+            "range": {
+                "start": {"line": 5, "character": "not-a-number"},
+                "end": {"line": 5, "character": 8}
+            },
+            "newText": "sum_values"
+        });
+        let resp = response_with_entries(json!([malformed]));
+        if rename_expected_edits_match(&resp, "file:///gold/rename_subroutine.pl", &[]) {
+            return Err("malformed rename edit passed an empty expected-edit oracle".into());
         }
         Ok(())
     }

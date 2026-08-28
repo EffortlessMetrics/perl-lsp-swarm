@@ -198,7 +198,7 @@ fn validate_typed_named_sidecar<T: DeserializeOwned>(
     document: &Value,
 ) -> Result<(), Box<dyn Error>> {
     serde_json::from_value::<T>(document.clone()).map_err(|error| {
-        contract_error(format!("typed assertions in {} are invalid: {error}")).into()
+        contract_error(format!("typed assertions in {} are invalid: {error}", path.display()))
     })?;
     Ok(())
 }
@@ -208,8 +208,10 @@ fn validate_module_sidecar(
     document: &Value,
     expected_fixture: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let expected: ModuleGoldExpected = serde_json::from_value(document.clone())
-        .map_err(|error| contract_error(format!("typed assertions in {} are invalid: {error}")))?;
+    let expected: ModuleGoldExpected =
+        serde_json::from_value(document.clone()).map_err(|error| {
+            contract_error(format!("typed assertions in {} are invalid: {error}", path.display()))
+        })?;
 
     if expected.version != 1 {
         return Err(contract_error(format!(
@@ -513,6 +515,36 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn create_file_symlink(target: &Path, link: &Path) -> Result<bool, Box<dyn Error>> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link)?;
+            return Ok(true);
+        }
+
+        #[cfg(windows)]
+        {
+            if perl_tdd_support::symlink_test_decision().skip_visibly() {
+                return Ok(false);
+            }
+            return Ok(perl_tdd_support::try_create_file_symlink(target, link)?.is_some());
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (target, link);
+            Err(contract_error("symlink contract controls are unsupported on this platform").into())
+        }
+    }
+
+    #[cfg(windows)]
+    fn create_directory_symlink(target: &Path, link: &Path) -> Result<bool, Box<dyn Error>> {
+        if perl_tdd_support::symlink_test_decision().skip_visibly() {
+            return Ok(false);
+        }
+        Ok(perl_tdd_support::try_create_dir_symlink(target, link)?.is_some())
+    }
+
     fn write_fixture_file(path: &Path, contents: &str) -> Result<(), Box<dyn Error>> {
         fs::write(path, contents)?;
         Ok(())
@@ -630,6 +662,94 @@ mod tests {
             Err(error) => error,
         };
         if !error.to_string().contains("unexpected fixture asset") {
+            return Err(contract_error(format!("unexpected validation error: {error}")).into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_symlinked_fixture_members() -> Result<(), Box<dyn Error>> {
+        let root = tempdir()?;
+        let fixture = root.path().join("fixture");
+        fs::create_dir(&fixture)?;
+        let target = root.path().join("target.pl");
+        fs::write(&target, "my $value = 1;\n")?;
+        let link = fixture.join("linked.pl");
+        if !create_file_symlink(&target, &link)? {
+            return Ok(());
+        }
+
+        let error = match validate_fixture_members(&fixture) {
+            Ok(()) => return Err(contract_error("fixture symlink was accepted").into()),
+            Err(error) => error,
+        };
+        if !error.to_string().contains("symbolic link") {
+            return Err(contract_error(format!("unexpected validation error: {error}")).into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_dangling_symlinked_fixture_members() -> Result<(), Box<dyn Error>> {
+        let root = tempdir()?;
+        let fixture = root.path().join("fixture");
+        fs::create_dir(&fixture)?;
+        let link = fixture.join("dangling.pl");
+        if !create_file_symlink(&root.path().join("missing.pl"), &link)? {
+            return Ok(());
+        }
+
+        let error = match validate_fixture_members(&fixture) {
+            Ok(()) => return Err(contract_error("dangling fixture symlink was accepted").into()),
+            Err(error) => error,
+        };
+        if !error.to_string().contains("symbolic link") {
+            return Err(contract_error(format!("unexpected validation error: {error}")).into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_nested_module_payload_symlinks() -> Result<(), Box<dyn Error>> {
+        let root = tempdir()?;
+        let fixture = root.path().join("fixture");
+        let nested = fixture.join("lib").join("nested");
+        fs::create_dir_all(&nested)?;
+        let target = root.path().join("Target.pm");
+        fs::write(&target, "package Target;\n1;\n")?;
+        let link = nested.join("Target.pm");
+        if !create_file_symlink(&target, &link)? {
+            return Ok(());
+        }
+
+        let error = match validate_fixture_members(&fixture) {
+            Ok(()) => return Err(contract_error("nested module symlink was accepted").into()),
+            Err(error) => error,
+        };
+        if !error.to_string().contains("symbolic link") {
+            return Err(contract_error(format!("unexpected validation error: {error}")).into());
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_windows_reparse_fixture_directory() -> Result<(), Box<dyn Error>> {
+        let root = tempdir()?;
+        let target = root.path().join("real_fixture");
+        fs::create_dir(&target)?;
+        let link = root.path().join("linked_fixture");
+        if !create_directory_symlink(&target, &link)? {
+            return Ok(());
+        }
+
+        let error = match fixture_directories(root.path()) {
+            Ok(_) => {
+                return Err(contract_error("Windows reparse fixture directory was accepted").into());
+            }
+            Err(error) => error,
+        };
+        if !error.to_string().contains("symbolic link") {
             return Err(contract_error(format!("unexpected validation error: {error}")).into());
         }
         Ok(())
