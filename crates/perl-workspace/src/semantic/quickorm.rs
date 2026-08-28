@@ -66,7 +66,7 @@ fn normalize_import_specs_at_node(node: &Node, specs: &mut [ImportSpec], source:
                     spec.kind = ImportKind::Use;
                     spec.symbols = ImportSymbols::Default;
                     spec.provenance = Provenance::ImportExportInference;
-                    spec.confidence = Confidence::High;
+                    spec.confidence = Confidence::Medium;
                 }
                 QuickOrmImportShape::Dynamic => {
                     // The selected or renamed namespace is not known. ManualImport
@@ -200,7 +200,7 @@ fn walk_direct_statement(
             let package = current_package(context).to_string();
             if !context.table_package_authority.contains(&package)
                 || context.shadowed_builders.contains(&package)
-                || !is_direct_table_or_view_call(expression)
+                || !is_table_or_view_call(expression)
             {
                 return;
             }
@@ -244,6 +244,15 @@ fn is_direct_table_or_view_call(expression: &Node) -> bool {
         return false;
     };
     matches!(name.as_str(), "table" | "view") && !args.is_empty()
+}
+
+fn is_table_or_view_call(expression: &Node) -> bool {
+    let NodeKind::FunctionCall { name, .. } = &expression.kind else {
+        return false;
+    };
+    is_direct_table_or_view_call(expression)
+        || name.ends_with("::table")
+        || name.ends_with("::view")
 }
 
 fn direct_table_or_view_builder_anchor(expression: &Node) -> Option<&Node> {
@@ -383,7 +392,7 @@ fn push_qorm_table_fact(
         // Exact source-backed QuickORM configuration, direct package-level
         // builder shape, and a source anchor satisfy the policy requirement
         // for live generated workspace symbols.
-        confidence: Confidence::High,
+        confidence: Confidence::Medium,
     };
     let entity = EntityFact {
         id: entity_id,
@@ -392,7 +401,7 @@ fn push_qorm_table_fact(
         anchor_id: Some(anchor_id),
         scope_id: None,
         provenance: Provenance::FrameworkSynthesis,
-        confidence: Confidence::High,
+        confidence: Confidence::Medium,
     };
 
     let fact = GeneratedMemberFact { entity, anchor };

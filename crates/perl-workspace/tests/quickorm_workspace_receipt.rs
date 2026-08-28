@@ -30,7 +30,7 @@ table "users" => sub {
         .find(|entity| entity.canonical_name == "MyApp::Schema::User::qorm_table")
         .ok_or("missing QuickORM qorm_table entity")?;
     assert_eq!(entity.provenance, perl_semantic_facts::Provenance::FrameworkSynthesis);
-    assert_eq!(entity.confidence, perl_semantic_facts::Confidence::High);
+    assert_eq!(entity.confidence, perl_semantic_facts::Confidence::Medium);
 
     let anchor_id = entity.anchor_id.ok_or("entity lacks anchor")?;
     let anchor = shard
@@ -124,6 +124,60 @@ fn workspace_index_receipts_keep_perl_interpolation_dynamic()
             "interpolated table name {table_name} must not reach generated workspace symbols"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn workspace_index_consumes_qualified_quickorm_builder_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/Qualified.pm")?;
+    let source = r#"
+package MyApp::Schema::Qualified;
+use DBIx::QuickORM type => 'table';
+A::table "qualified_users" => sub {};
+table "later_users" => sub {};
+1;
+"#;
+
+    index.index_file(uri, source.to_string())?;
+    assert!(
+        index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
+        "a qualified table call must consume authority without earning a direct package fact"
+    );
+    Ok(())
+}
+
+#[test]
+fn workspace_index_receipts_cover_package_reentry_and_fresh_anchor()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/Reentry.pm")?;
+    let source = r#"
+package MyApp::Schema::A;
+use DBIx::QuickORM type => 'table';
+table "first_users" => sub {};
+package MyApp::Schema::B;
+use DBIx::QuickORM type => 'table';
+table "other_users" => sub {};
+package MyApp::Schema::A;
+use DBIx::QuickORM type => 'table';
+table "second_users" => sub {};
+1;
+"#;
+
+    index.index_file(uri.clone(), source.to_string())?;
+    let generated = index.search_generated_workspace_symbols("qorm_table", None);
+    let a = generated
+        .iter()
+        .find(|symbol| symbol.qualified_name.as_deref() == Some("MyApp::Schema::A::qorm_table"))
+        .ok_or("missing re-entered package fact")?;
+    assert_eq!(source.get(a.range.start.byte..a.range.end.byte), Some("\"second_users\""));
+    let b = generated
+        .iter()
+        .find(|symbol| symbol.qualified_name.as_deref() == Some("MyApp::Schema::B::qorm_table"))
+        .ok_or("missing intermediate package fact")?;
+    assert_eq!(source.get(b.range.start.byte..b.range.end.byte), Some("\"other_users\""));
     Ok(())
 }
 
