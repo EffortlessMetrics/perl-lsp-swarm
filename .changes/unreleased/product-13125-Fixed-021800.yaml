@@ -2,9 +2,9 @@ project: product
 component: Parser and lexer
 kind: Fixed
 body: >-
-  Preserve scalar-filehandle print calls as indirect-call AST nodes when the
-  message begins with a numeric literal, including expression contexts, while
-  keeping comma-form calls and scalar subscripts on their existing parse paths.
+  Parse scalar-filehandle print calls whose first message term is numeric through
+  the established indirect-call AST path in statement and expression contexts,
+  while leaving comma-form calls and scalar subscripts on their existing paths.
 time: 2026-08-28T02:18:00Z
 custom:
   PR: "13125"
