@@ -67,6 +67,8 @@ pub fn version_implies_warnings(version: PerlVersion) -> bool {
 pub fn features_enabled_by_version(version: PerlVersion) -> Vec<&'static str> {
     let bundle = if version < PerlVersion::new(5, 10) {
         DEFAULT_FEATURES
+    } else if version >= PerlVersion::new(5, 44) {
+        BUNDLE_5_44_FEATURES
     } else if version >= PerlVersion::new(5, 42) {
         BUNDLE_5_42_FEATURES
     } else if version >= PerlVersion::new(5, 40) {
@@ -244,6 +246,10 @@ const BUNDLE_5_42_FEATURES: &[&str] = &[
     "unicode_strings",
 ];
 
+// Perl 5.44 does not add `enhanced_xx` to the implicit bundle. The feature is
+// available starting in 5.44 but still requires an explicit feature pragma.
+const BUNDLE_5_44_FEATURES: &[&str] = BUNDLE_5_42_FEATURES;
+
 pub(crate) fn enable_effective_version_semantics(state: &mut PragmaState, version: PerlVersion) {
     if version_implies_strict(version) {
         state.strict_vars = true;
@@ -254,7 +260,7 @@ pub(crate) fn enable_effective_version_semantics(state: &mut PragmaState, versio
         state.warnings = true;
     }
     // Populate the version-implied feature set.
-    // Replace (not merge) so the highest `use vX.Y` wins if multiple appear.
+    // Replace (not merge) so the latest lexical `use vX.Y` declaration wins.
     state.features = features_enabled_by_version(version);
     state.unicode_strings = state.has_feature("unicode_strings");
     state.signatures_strict = false;
