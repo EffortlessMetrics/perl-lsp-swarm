@@ -91,7 +91,9 @@ jobs:
 
       - name: Non-dispatch event does not require a manual subject
         if: github.event_name != 'workflow_dispatch'
-        run: echo "workflow_dispatch subject binding not applicable to ${{ github.event_name }}"
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: echo "workflow_dispatch subject binding not applicable to $EVENT_NAME"
 
   draft-pr-check:
     name: Draft PR guard
