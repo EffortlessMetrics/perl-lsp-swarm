@@ -103,6 +103,17 @@ fn dynamic_and_uncertain_numeric_targets_do_not_generate_class() -> TestResult {
 }
 
 #[test]
+fn dynamic_dereference_targets_are_consumed_as_one_expression() -> TestResult {
+    let resolved = resolve_import("Test2::V0", "-target => $ENV{TARGET}, ok")
+        .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+    assert!(resolved.symbols.contains("ok"));
+    for leaked in ["CLASS", "ENV", "TARGET"] {
+        assert!(!resolved.symbols.contains(leaked), "{leaked} leaked");
+    }
+    Ok(())
+}
+
+#[test]
 fn attached_parenthesized_scalar_targets_generate_class() -> TestResult {
     let resolved = resolve_import("Test2::V0", "-target => ('Foo'), ok")
         .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
@@ -155,11 +166,27 @@ fn qualified_quoted_scalar_targets_require_literal_proof() -> TestResult {
 
 #[test]
 fn separated_unary_plus_targets_consume_their_operand() -> TestResult {
-    let resolved = resolve_import("Test2::V0", "-target => + 'Foo', ok")
-        .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
-    assert!(resolved.symbols.contains("ok"));
-    assert!(!resolved.symbols.contains("CLASS"));
-    assert!(!resolved.symbols.contains("Foo"));
+    for target in ["+ 'Foo'", "+ + 'Foo'"] {
+        let resolved = resolve_import("Test2::V0", &format!("-target => {target}, ok"))
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+        assert!(resolved.symbols.contains("ok"), "ok missing for {target:?}");
+        assert!(!resolved.symbols.contains("CLASS"), "CLASS leaked for {target:?}");
+        assert!(!resolved.symbols.contains("Foo"), "Foo leaked for {target:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn whitespace_separated_hash_values_do_not_shift_pairing() -> TestResult {
+    let resolved =
+        resolve_import("Test2::V0", "-target => { pkg => uc 'Widget', other => 'Gadget' }, ok")
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+    for expected in ["pkg", "other", "ok"] {
+        assert!(resolved.symbols.contains(expected), "{expected} missing");
+    }
+    for leaked in ["CLASS", "uc", "Widget", "Gadget"] {
+        assert!(!resolved.symbols.contains(leaked), "{leaked} leaked");
+    }
     Ok(())
 }
 
@@ -539,13 +566,31 @@ fn target_helpers_reach_live_bundle_completion() {
     let dynamic = complete("use Test2::V0 -target => \"$ENV{TARGET}\";\nC|");
     assert!(!has_test2_completion(&dynamic, "CLASS"));
 
+    let dynamic_dereference = complete("use Test2::V0 -target => $ENV{TARGET}, ok;\no|");
+    assert!(has_test2_completion(&dynamic_dereference, "ok"));
+    for leaked in ["CLASS", "ENV", "TARGET"] {
+        assert!(!has_test2_completion(&dynamic_dereference, leaked), "{leaked} leaked");
+    }
+
     let separated_plus = complete("use Test2::V0 -target => + 'Foo', ok;\no|");
     assert!(has_test2_completion(&separated_plus, "ok"));
     assert!(!has_test2_completion(&separated_plus, "Foo"));
 
+    let nested_plus = complete("use Test2::V0 -target => + + 'Foo', ok;\no|");
+    assert!(has_test2_completion(&nested_plus, "ok"));
+    assert!(!has_test2_completion(&nested_plus, "Foo"));
+
     let v0_hash = complete("use Test2::V0 -target => { pkg => 'Widget', other => 'Gadget' };\np|");
     assert!(has_test2_completion(&v0_hash, "plan"));
     assert!(has_test2_completion(&v0_hash, "pkg"));
+
+    let expression_hash =
+        complete("use Test2::V0 -target => { pkg => uc 'Widget', other => 'Gadget' };\n|");
+    assert!(has_test2_completion(&expression_hash, "pkg"));
+    assert!(has_test2_completion(&expression_hash, "other"));
+    for leaked in ["CLASS", "uc", "Widget", "Gadget"] {
+        assert!(!has_test2_completion(&expression_hash, leaked), "{leaked} leaked");
+    }
 
     let v0_hash_value =
         complete("use Test2::V0 -target => { pkg => 'Widget', other => 'Gadget' };\nW|");

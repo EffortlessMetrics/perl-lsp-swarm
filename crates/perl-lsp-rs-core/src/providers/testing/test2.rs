@@ -438,6 +438,12 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                 let mut pending_helpers: BTreeSet<String> = BTreeSet::new();
                 while let Some(value) = atoms.get(atom_index) {
                     atom_index += 1;
+                    if saw_hash && brace_depth == 1 && value == "," {
+                        // Commas preserved by tokenization delimit hash pairs;
+                        // whitespace inside a value must not change pairing.
+                        expect_key = true;
+                        continue;
+                    }
                     if is_quote_like_operator(value) {
                         // Quote-like operators are expressions, even when
                         // their first token resembles a bareword. At the
@@ -449,7 +455,6 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                         // values into ordinary import processing.
                         atom_index = consume_quote_like_target(&atoms, atom_index - 1, value);
                         if saw_hash {
-                            expect_key = !expect_key;
                             continue;
                         }
                         break;
@@ -498,6 +503,10 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                             atom_index = consume_parenthesized_expression(&atoms, atom_index);
                             break;
                         }
+                        if is_dynamic_target_atom(value) {
+                            atom_index = consume_dynamic_target_expression(&atoms, atom_index - 1);
+                            break;
+                        }
                         if scalar_target_is_truthy(value) {
                             target_helpers.insert("CLASS".to_string());
                         }
@@ -520,8 +529,8 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                     if brace_depth == 1 && !candidate.is_empty() {
                         if expect_key && is_bareword(candidate) {
                             pending_helpers.insert(candidate.to_string());
+                            expect_key = false;
                         }
-                        expect_key = !expect_key;
                     }
                     brace_depth -= closes;
                     if nested_value_depth.is_some_and(|depth| brace_depth < depth) {
@@ -702,9 +711,13 @@ fn tokenize_import_args(raw: &str) -> Vec<String> {
     let expanded = expand_qw(raw);
     // Normalize separators only outside quoted strings. A quoted scalar is one
     // Perl atom even when it contains commas, braces, or escaped delimiters.
-    for piece in split_import_pieces(&expanded) {
-        let piece = replace_unquoted_fat_commas(&piece);
+    let pieces = split_import_pieces(&expanded);
+    for (piece_index, piece) in pieces.iter().enumerate() {
+        let piece = replace_unquoted_fat_commas(piece);
         out.extend(split_import_piece(&piece));
+        if piece_index + 1 < pieces.len() {
+            out.push(",".to_string());
+        }
     }
     out
 }
@@ -985,7 +998,10 @@ fn split_import_piece(piece: &str) -> Vec<String> {
                     out.push(ch.to_string());
                 }
             }
-            ',' if attached_parens == 0 => flush(&mut out, &mut current),
+            ',' if attached_parens == 0 => {
+                flush(&mut out, &mut current);
+                out.push(",".to_string());
+            }
             c if c.is_whitespace() && attached_parens == 0 => flush(&mut out, &mut current),
             _ => current.push(ch),
         }
@@ -1255,7 +1271,10 @@ fn consume_parenthesized_expression(atoms: &[String], start: usize) -> usize {
 /// deliberately left outside the truthiness boundary: only a direct quoted
 /// scalar or bare literal is proven by this resolver.
 fn consume_unwrapped_target_expression(atoms: &[String], start: usize) -> usize {
-    let operand = start.saturating_add(1);
+    let mut operand = start.saturating_add(1);
+    while atoms.get(operand).map(String::as_str) == Some("+") {
+        operand = operand.saturating_add(1);
+    }
     let Some(value) = atoms.get(operand).map(String::as_str) else {
         return atoms.len();
     };
@@ -1269,6 +1288,37 @@ fn consume_unwrapped_target_expression(atoms: &[String], start: usize) -> usize 
         return consume_parenthesized_expression(atoms, operand + 1);
     }
     operand.saturating_add(1)
+}
+
+/// Whether an atom starts a dynamic Perl dereference whose value is not
+/// statically provable by this resolver.
+fn is_dynamic_target_atom(atom: &str) -> bool {
+    matches!(atom.chars().next(), Some('$' | '@' | '%' | '&'))
+}
+
+/// Consume a dynamic dereference and its balanced subscript expression.
+fn consume_dynamic_target_expression(atoms: &[String], start: usize) -> usize {
+    let Some(open) = atoms.get(start.saturating_add(1)).map(String::as_str) else {
+        return start.saturating_add(1);
+    };
+    if open != "{" {
+        return start.saturating_add(1);
+    }
+
+    let mut depth = 0usize;
+    for (index, atom) in atoms.iter().enumerate().skip(start.saturating_add(1)) {
+        match atom.as_str() {
+            "{" => depth = depth.saturating_add(1),
+            "}" => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return index.saturating_add(1);
+                }
+            }
+            _ => {}
+        }
+    }
+    atoms.len()
 }
 
 /// Whether a scalar `-target` literal creates Test2::Tools::Target helpers.
