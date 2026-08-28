@@ -90,7 +90,7 @@ selected dependency closure independently.
 | `protocol/capabilities.rs` and `protocol/capabilities/**` | Perl-specific | Capability construction consumes the app feature flags, Perl trigger characters, Perl command IDs, experimental policy, and current static/dynamic advertisement choices. | Colocated capability tests, `lsp_cap_snap`, inline-completion registration tests, and general registration tests. | Keep capability policy in the current product. Only later-proven generic capability-shape helpers may cross the boundary. |
 | `protocol/binary_identity.rs` | Not extractable in this lane | The contract binds Perl server, DAP, VSIX, repository, package, and artifact identity. | Colocated identity/compatibility tests and product-identity proof. | Keep with product and release identity. |
 | `protocol/error_disposition.rs` and `protocol/error_inventory.rs` | Not extractable in this lane | They depend on the Perl workspace-wide `ErrorCategory` taxonomy and inventory LSP, parser, and DAP error types. | Colocated mapping and inventory tests. | Keep as app/workspace governance. Do not make the neutral stack depend on this taxonomy. |
-| `protocol/final_surface_inventory/**` | Not extractable in this lane | Test-only final capability, registration, and mutation governance belongs to the current product surface. | Existing final-surface unit inventory and current registration/capability tests. | Retain as current-app parity proof while primitives move. |
+| `protocol/final_surface_inventory.rs` | Not extractable in this lane | Test-only final capability, registration, and mutation governance belongs to the current product surface. | Existing final-surface unit inventory and current registration/capability tests. | Retain as current-app parity proof while primitives move. |
 | `protocol/mod.rs` | Mixed | It re-exports every category above and adds an app-facing `lsp_error` convenience. | Entire `perl-lsp-rs-core` unit suite. | Keep as the current-app integration facade until extracted modules have independent parity. |
 
 ## Transport Audit
@@ -210,7 +210,8 @@ Performed at the audited revision:
 - inspected the public module surface in `src/lib.rs`
 - inspected the protocol, transport, runtime, and URI candidate source
 - checked for an existing static seam audit in the repository
-- checked the open-PR surface for an exact `lsp-stack` audit collision
+- checked the recent open-PR listing returned by GitHub for an exact
+  `lsp-stack` audit collision
 
 Not performed:
 
@@ -219,6 +220,8 @@ Not performed:
 - independent candidate compilation
 - runtime/editor parity execution
 - hosted CI proof for this documentation change
+- an exhaustive issue/PR uniqueness search; the GitHub search endpoint was
+  rate-limited during the audit
 
 For this PR 2 documentation change, the required repository proof remains:
 
