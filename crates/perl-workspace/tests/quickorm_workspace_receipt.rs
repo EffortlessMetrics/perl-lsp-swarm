@@ -1,5 +1,6 @@
 //! Production-path receipt for the bounded DBIx::QuickORM adapter.
 
+use perl_workspace::semantic::queries::{DynamicCallableEvidence, SemanticQueries};
 use perl_workspace::workspace::workspace_index::WorkspaceIndex;
 use url::Url;
 
@@ -57,6 +58,17 @@ table "users" => sub {
         );
     }
 
+    let query_offset = u32::try_from(source.len())?;
+    let dynamic_evidence = index
+        .with_semantic_queries_for_uri(uri.as_str(), |file_id, queries| {
+            queries.dynamic_callable_may_be_visible_at(file_id, query_offset, "unknown_callable")
+        })
+        .ok_or("literal QuickORM file was not available to semantic queries")?;
+    assert!(
+        dynamic_evidence.is_none(),
+        "literal table-package configuration must not be stored as a dynamic import"
+    );
+
     Ok(())
 }
 
@@ -86,6 +98,22 @@ table "users" => sub {};
         index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
         "runtime import configuration must not reach generated workspace symbols"
     );
+
+    let query_offset = u32::try_from(source.len())?;
+    let dynamic_evidence = index
+        .with_semantic_queries_for_uri(uri.as_str(), |file_id, queries| {
+            queries.dynamic_callable_may_be_visible_at(file_id, query_offset, "unknown_callable")
+        })
+        .ok_or("dynamic QuickORM file was not available to semantic queries")?
+        .ok_or("dynamic QuickORM configuration did not reach ImportExportIndex queries")?;
+    match dynamic_evidence {
+        DynamicCallableEvidence::DynamicImport { module, .. } => {
+            assert_eq!(module, "DBIx::QuickORM");
+        }
+        DynamicCallableEvidence::EvalSub { .. } => {
+            return Err("QuickORM import was misclassified as eval-sub evidence".into());
+        }
+    }
 
     Ok(())
 }
