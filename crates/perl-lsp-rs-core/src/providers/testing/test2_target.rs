@@ -43,10 +43,7 @@ pub(crate) struct Test2TargetImport {
 ///
 /// Returns `None` when the module has no target semantics or a bundle import
 /// does not contain `-target`.
-pub(crate) fn resolve_target_import(
-    module: &str,
-    raw_args: &str,
-) -> Option<Test2TargetImport> {
+pub(crate) fn resolve_target_import(module: &str, raw_args: &str) -> Option<Test2TargetImport> {
     match module {
         "Test2::Tools::Target" => Some(Test2TargetImport {
             aliases: parse_target_aliases(raw_args),
