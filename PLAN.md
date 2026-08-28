@@ -22,6 +22,13 @@ is explicit, human-owned product data — never derived.
 **Entry flow:** `$prepare-issue` → this plan → `$prepare-proof`/`$build-candidate`
 in a later lane. Sibling state at authoring time:
 
+**Human-ruling gate:** H1–H7 are explicit maintainer decisions, not defaults that
+the implementer may adopt. Until each row is ruled in the authoritative issue, this
+plan is a provisional design only: no preferred-route ordering, recommendation,
+selection policy, or implementation may be treated as operative. A later lane may
+prepare classification proof and fixtures only against the validated catalog; it
+must stop at `provisional(human-pending)` for the selection surface.
+
 - #11575 inventory **landed** on `origin/main`:
   `docs/distribution/INSTALL_CLAIM_SURFACES.md` — 13 surfaces (S01–S13), 70
   claim rows (C101–C1309), 12 findings (FND-1–FND-12). Its "Family handoff
@@ -190,8 +197,10 @@ schema-closed:
 ## 3. Preferred-route selection: algorithm options and tradeoffs
 
 Selection input: `(platform, arch, desired product units, context
-{editor | ci | server-only | manual}, risk posture)`. Output: ordered route
-recommendation with per-route verdicts and gate citations.
+{editor | ci | server-only | manual}, risk posture)`. Once H1–H7 are explicitly
+ruled, output may be an ordered route recommendation with per-route verdicts and
+gate citations. Before then, any selection output is only a provisional diagnostic;
+it must not recommend or silently order a route.
 
 ### Option A — Static precedence table (curated data only)
 
@@ -241,8 +250,10 @@ implies an order + a refusal rule that is pure derivation.
 - **Cons:** still requires EXPLICIT-HUMAN rows (§5) for orderings prose does
   not settle; two moving parts (filter + table).
 
-**Recommendation: Option C.** Option B is rejected because preference ordering
-is product authority and must remain reviewable data, not emergent constants.
+**Design recommendation: Option C, pending H1–H7.** Option B is rejected because
+preference ordering is product authority and must remain reviewable data, not
+emergent constants. This recommendation does not authorize implementation of a
+preferred-route policy or emission of recommendations before all seven rulings.
 
 ---
 
@@ -361,7 +372,8 @@ can be one word.
 **Suggested conventional title:**
 `feat(distribution): add conjunctive install-route classification and preferred-route selection (#11549)`
 
-**Sizing: M** — one candidate writer, one coherent claim. Roughly: route-join
+**Sizing: M after the human-ruling gate** — one candidate writer, one coherent
+claim. Roughly: route-join
 table + verdict derivation (~250–400 lines incl. static tables, following the
 existing catalog-generator idiom), artifact + closed schema +
 regen-check wiring (~150–250), selection filter + context policy table
@@ -370,7 +382,8 @@ doc rewrites. **Optional split if review prefers:** slice 1 = classification
 artifact (S/M), slice 2 = selection + policy table (S), sharing §2.1's join
 table. Do NOT pull FND-7/FND-11 doc syncs or #10342 linting into this claim.
 
-**Hard prerequisite check at build time:** require the validated route
+**Hard prerequisite check at build time:** require explicit rulings for H1–H7 in
+addition to the validated route
 schema/catalog from #10333, with #10334's fan-in complete, #11434's canonical
 denominator, and the relevant #11432/evidence-producer revisions. Require exact
 route IDs, projection contexts, producer joins, publication/channel bindings,
