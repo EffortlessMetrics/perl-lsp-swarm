@@ -356,78 +356,115 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
             daemon=True,
         ),
     ]
-    for reader in readers:
-        reader.start()
-
-    deadline = time.monotonic() + timeout_seconds
-    failure: RuntimeError | None = None
-    while True:
-        failure = take_overflow(overflow)
-        if failure is not None:
-            break
-        if process.poll() is not None and all(not reader.is_alive() for reader in readers):
-            break
-        if time.monotonic() >= deadline:
-            failure = RuntimeError(
-                f"ripr check timed out after {timeout_seconds:g}s and its process tree was terminated"
-            )
-            break
-        time.sleep(0.01)
-
-    cleanup_failures = (
-        terminate_process_tree(process, windows_job=windows_job)
-        if failure is not None
-        else []
-    )
-    reader_failure = finish_readers(
-        readers, [("stdout", process.stdout), ("stderr", process.stderr)]
-    )
-    if reader_failure is not None:
-        cleanup_failures.append(reader_failure)
-    if failure is None:
-        failure = take_overflow(overflow)
-        if failure is not None:
-            cleanup_failures.extend(
-                terminate_process_tree(process, windows_job=windows_job)
-            )
-        elif windows_job is not None:
-            cleanup_failures.extend(windows_job.close())
-
-    stderr = stderr_bytes.decode("utf-8", errors="replace")
-    if failure is not None:
-        if isinstance(failure, RiprOutputLimitExceeded):
-            failure.retained_stdout_bytes = len(stdout_bytes)
-            failure.retained_stderr_bytes = len(stderr_bytes)
-            if cleanup_failures:
-                failure.record_cleanup_failure("; ".join(cleanup_failures))
-            raise failure
-        diagnostic = bounded_stderr(stderr)
-        suffix = f"; stderr: {diagnostic}" if diagnostic else ""
-        cleanup_suffix = (
-            f"; cleanup incomplete: {'; '.join(cleanup_failures)}"
-            if cleanup_failures
-            else ""
-        )
-        raise RuntimeError(f"{failure}{suffix}{cleanup_suffix}")
-    if process.returncode:
-        diagnostic = bounded_stderr(stderr)
-        suffix = f": {diagnostic}" if diagnostic else ""
-        cleanup_suffix = (
-            f"; cleanup incomplete: {'; '.join(cleanup_failures)}"
-            if cleanup_failures
-            else ""
-        )
-        raise RuntimeError(
-            f"ripr check failed for ripr+ badge (exit {process.returncode})"
-            f"{suffix}{cleanup_suffix}"
-        )
-    if cleanup_failures:
-        raise RuntimeError(f"ripr cleanup incomplete: {'; '.join(cleanup_failures)}")
+    started_readers: list[threading.Thread] = []
+    lifecycle_released = False
     try:
-        stdout = stdout_bytes.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise RuntimeError("ripr stdout was not valid UTF-8") from error
-    return stdout
+        for reader in readers:
+            reader.start()
+            started_readers.append(reader)
+
+        deadline = time.monotonic() + timeout_seconds
+        failure: RuntimeError | None = None
+        while True:
+            failure = take_overflow(overflow)
+            if failure is not None:
+                break
+            if process.poll() is not None and all(
+                not reader.is_alive() for reader in readers
+            ):
+                break
+            if time.monotonic() >= deadline:
+                failure = RuntimeError(
+                    f"ripr check timed out after {timeout_seconds:g}s and its process tree was terminated"
+                )
+                break
+            time.sleep(0.01)
+
+        cleanup_failures = (
+            terminate_process_tree(process, windows_job=windows_job)
+            if failure is not None
+            else []
+        )
+        reader_failure = finish_readers(
+            readers, [("stdout", process.stdout), ("stderr", process.stderr)]
+        )
+        if reader_failure is not None:
+            cleanup_failures.append(reader_failure)
+        if failure is None:
+            failure = take_overflow(overflow)
+            if failure is not None:
+                cleanup_failures.extend(
+                    terminate_process_tree(process, windows_job=windows_job)
+                )
+            elif windows_job is not None:
+                cleanup_failures.extend(windows_job.close())
+        lifecycle_released = True
+
+        stderr = stderr_bytes.decode("utf-8", errors="replace")
+        if failure is not None:
+            if isinstance(failure, RiprOutputLimitExceeded):
+                failure.retained_stdout_bytes = len(stdout_bytes)
+                failure.retained_stderr_bytes = len(stderr_bytes)
+                if cleanup_failures:
+                    failure.record_cleanup_failure("; ".join(cleanup_failures))
+                raise failure
+            diagnostic = bounded_stderr(stderr)
+            suffix = f"; stderr: {diagnostic}" if diagnostic else ""
+            cleanup_suffix = (
+                f"; cleanup incomplete: {'; '.join(cleanup_failures)}"
+                if cleanup_failures
+                else ""
+            )
+            raise RuntimeError(f"{failure}{suffix}{cleanup_suffix}")
+        if process.returncode:
+            diagnostic = bounded_stderr(stderr)
+            suffix = f": {diagnostic}" if diagnostic else ""
+            cleanup_suffix = (
+                f"; cleanup incomplete: {'; '.join(cleanup_failures)}"
+                if cleanup_failures
+                else ""
+            )
+            raise RuntimeError(
+                f"ripr check failed for ripr+ badge (exit {process.returncode})"
+                f"{suffix}{cleanup_suffix}"
+            )
+        if cleanup_failures:
+            raise RuntimeError(f"ripr cleanup incomplete: {'; '.join(cleanup_failures)}")
+        try:
+            stdout = stdout_bytes.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise RuntimeError("ripr stdout was not valid UTF-8") from error
+        return stdout
+    except BaseException as error:
+        if not lifecycle_released:
+            emergency_failures: list[str] = []
+            try:
+                emergency_failures.extend(
+                    terminate_process_tree(process, windows_job=windows_job)
+                )
+            except BaseException as cleanup_error:
+                emergency_failures.append(f"process-tree cleanup raised: {cleanup_error}")
+            try:
+                reader_failure = finish_readers(
+                    started_readers,
+                    [("stdout", process.stdout), ("stderr", process.stderr)],
+                )
+                if reader_failure is not None:
+                    emergency_failures.append(reader_failure)
+            except BaseException as cleanup_error:
+                emergency_failures.append(f"reader cleanup raised: {cleanup_error}")
+            if windows_job is not None:
+                try:
+                    emergency_failures.extend(windows_job.close())
+                except BaseException as cleanup_error:
+                    emergency_failures.append(f"job close raised: {cleanup_error}")
+            if emergency_failures:
+                detail = "; ".join(emergency_failures)
+                if isinstance(error, RiprOutputLimitExceeded):
+                    error.record_cleanup_failure(detail)
+                else:
+                    error.add_note(f"ripr emergency cleanup: {detail}")
+        raise
 
 
 def badge_from_ripr(payload: object) -> dict[str, object]:

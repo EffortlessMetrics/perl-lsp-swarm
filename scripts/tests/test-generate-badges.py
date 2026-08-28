@@ -381,12 +381,56 @@ class GenerateBadgesTests(unittest.TestCase):
         child_pid = int((root / "ripr-child.pid").read_text(encoding="utf-8"))
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
-            try:
-                os.kill(child_pid, 0)
-            except OSError:
+            if not self.process_is_running(child_pid):
                 return
             time.sleep(0.05)
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(child_pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        else:
+            try:
+                os.kill(child_pid, 9)
+            except OSError:
+                pass
         self.fail(f"{reason} fake RIPR child {child_pid} remained alive")
+
+    def process_is_running(self, process_id: int) -> bool:
+        if os.name != "nt":
+            try:
+                os.kill(process_id, 0)
+            except OSError:
+                return False
+            return True
+
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(0x00100000, False, process_id)
+        if not handle:
+            error = ctypes.get_last_error()
+            if error == 87:
+                return False
+            raise ctypes.WinError(error)
+        try:
+            result = kernel32.WaitForSingleObject(handle, 0)
+            if result == 0:
+                return False
+            if result == 258:
+                return True
+            raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            kernel32.CloseHandle(handle)
 
     def assert_output_overflow_terminates_tree(self, stream_name: str):
         with tempfile.TemporaryDirectory() as directory:
@@ -558,6 +602,38 @@ class GenerateBadgesTests(unittest.TestCase):
                 generator.run_ripr(Path.cwd(), timeout_seconds=3)
         self.assertTrue(process.killed)
         self.assertTrue(job.terminated)
+
+    def test_reader_start_failure_releases_process_tree_and_streams(self):
+        class TrackingWindowsJob(self.FakeWindowsJob):
+            def __init__(self):
+                self.terminate_calls = 0
+                self.close_calls = 0
+
+            def terminate(self):
+                self.terminate_calls += 1
+                return []
+
+            def close(self):
+                self.close_calls += 1
+                return []
+
+        stdout = io.BytesIO()
+        stderr = io.BytesIO()
+        process = self.TerminalProcess(stdout, stderr)
+        job = TrackingWindowsJob()
+        with mock.patch.object(generator.os, "name", "nt"), mock.patch.object(
+            generator.subprocess, "Popen", return_value=process
+        ), mock.patch.object(generator, "WindowsJob", return_value=job), mock.patch.object(
+            generator.threading.Thread,
+            "start",
+            side_effect=RuntimeError("reader startup failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "reader startup failed"):
+                generator.run_ripr(Path.cwd(), timeout_seconds=3)
+        self.assertEqual(job.terminate_calls, 1)
+        self.assertEqual(job.close_calls, 1)
+        self.assertTrue(stdout.closed)
+        self.assertTrue(stderr.closed)
 
     def test_windows_taskkill_timeout_is_reported_without_masking_trigger(self):
         class FakeProcess:
