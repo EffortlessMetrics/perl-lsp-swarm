@@ -523,14 +523,20 @@ def validate_closure(inventory_rows, ledger_rows, catalog_rows):
         c1208_rows[0]["exact_catalog_route_id"],
         c1208_rows[0]["exact_projection_context"],
     )
-    catalog_route_ids = [row["route_id"] for row in catalog_rows]
-    referenced_route_ids = [
-        row["exact_catalog_route_id"]
+    catalog_projections = [
+        (row["route_id"], projection_context)
+        for row in catalog_rows
+        for projection_context in row["projection_contexts"]
+    ]
+    referenced_projections = [
+        (row["exact_catalog_route_id"], row["exact_projection_context"])
         for row in ledger_rows
         if row["kind"] == "project"
     ]
-    if Counter(referenced_route_ids) != Counter(catalog_route_ids):
-        raise ValueError("catalog contains an unreferenced or multiply referenced route")
+    if Counter(referenced_projections) != Counter(catalog_projections):
+        raise ValueError(
+            "catalog contains an unreferenced or multiply referenced route/context"
+        )
     return True
 
 def assert_closure_rejected(catalog_rows):
@@ -549,6 +555,17 @@ require_true(validate_closure(
     fixture_ledger(),
     FIXTURE_CATALOG,
 ), "fixture closure was not validated")
+UNREFERENCED_CONTEXT_CATALOG = tuple(
+    {
+        **row,
+        "projection_contexts": row["projection_contexts"] + ("unused-context",),
+    } if row["route_id"] == "r_4f8c2a" else row
+    for row in FIXTURE_CATALOG
+)
+require_true(
+    assert_closure_rejected(UNREFERENCED_CONTEXT_CATALOG),
+    "unreferenced projection context was accepted",
+)
 UNREFERENCED_CATALOG = FIXTURE_CATALOG + ({
     "route_id": "r_unreferenced",
     "target_registry": "fixture_registry",
@@ -580,8 +597,9 @@ also resolves its exact route ID and projection context through the fixture cata
 The claim-to-disposition rules independently require every explicit out-of-scope
 row (C106, C108, C201, C216, C703, C801, C1001, C1002, C1008, C1102, C1201,
 C1205, and C1309) to remain its declared exclusion; a project or other incompatible
-exclusion disposition is rejected for each. The reverse catalog check also rejects
-any catalog route that is not referenced by exactly one project projection.
+exclusion disposition is rejected for each. The reverse catalog check compares exact
+`(route_id, projection_context)` pairs and rejects any unreferenced or multiply
+referenced route/context pair, including an extra context on an otherwise known route.
 The C1208 assertion
 also proves that its opaque ID resolves to exactly one catalog row whose registry is
 Open VSX and whose projection context is compatible; an ID that resolves to the
