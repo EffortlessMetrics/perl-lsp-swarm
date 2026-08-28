@@ -22,15 +22,18 @@ impl PerlVersion {
 /// - `v5.36`
 /// - `v5.36.0`
 /// - `5.036`
+/// - `5.043011`
 /// - `5.10`
 /// - developer releases like `5.012_001`
 pub fn parse_perl_version(module: &str) -> Option<PerlVersion> {
+    let is_v_string = module.starts_with('v');
     let s = module.strip_prefix('v').unwrap_or(module);
+    let is_decimal = !is_v_string && s.matches('.').count() == 1;
     let mut parts = s.splitn(3, '.');
 
     let major = parse_version_component(parts.next()?)?;
     let minor = match parts.next() {
-        Some(part) => parse_version_component(part)?,
+        Some(part) => parse_minor_version_component(part, is_decimal)?,
         None => 0,
     };
 
@@ -39,6 +42,22 @@ pub fn parse_perl_version(module: &str) -> Option<PerlVersion> {
 
 fn parse_version_component(component: &str) -> Option<u32> {
     let component = component.split_once('_').map_or(component, |(head, _)| head);
+    component.parse().ok()
+}
+
+fn parse_minor_version_component(component: &str, is_decimal: bool) -> Option<u32> {
+    let component = component.split_once('_').map_or(component, |(head, _)| head);
+    if !component.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    // Perl decimal versions group fractional digits in threes. The current
+    // public model retains only major/minor, so discard later patch groups
+    // instead of interpreting `5.043011` as the future minor version 43011.
+    let component = if is_decimal && component.len() > 3 {
+        component.get(..3)?
+    } else {
+        component
+    };
     component.parse().ok()
 }
 
