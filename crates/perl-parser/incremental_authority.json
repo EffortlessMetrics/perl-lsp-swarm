@@ -41,7 +41,7 @@
       "allowed_consumers": [
         {
           "symbol": "tree_sitter_perl_rs::Parser::parse_with_old_tree",
-          "source_path": "crates/tree-sitter-perl-rs/src/lib.rs"
+          "source_path": "crates/tree-sitter-perl-rs/src/parser.rs"
         }
       ],
       "next_action": "route_behind_canonical_or_retire_after_differential_proof",

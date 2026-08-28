@@ -210,7 +210,11 @@ fn discovered_lower_tier_consumers() -> Result<BTreeSet<String>, Box<dyn std::er
     let mut consumers = BTreeSet::new();
     for path in production_rust_sources()? {
         let source = read(&path)?;
-        if uses_lower_tier_incremental(&source) {
+        // The authority ledger records production reparse call sites, not every
+        // facade module that imports a lower-tier type or re-exports its metrics.
+        // The tree-sitter facade split moved the one actual call out of lib.rs
+        // and into parser.rs; keep type-only imports from becoming false callers.
+        if uses_lower_tier_incremental(&source) && lower_tier_reparse_call_count(&source) > 0 {
             consumers.insert(normalized_workspace_path(&path)?);
         }
     }
@@ -433,7 +437,7 @@ fn active_lower_tier_kernel_and_consumer_are_explicitly_classified() -> TestResu
         .iter()
         .find(|consumer| consumer.symbol == "tree_sitter_perl_rs::Parser::parse_with_old_tree")
         .ok_or("the tree-sitter lower-tier consumer is missing from the authority ledger")?;
-    assert_eq!(consumer.source_path, "crates/tree-sitter-perl-rs/src/lib.rs");
+    assert_eq!(consumer.source_path, "crates/tree-sitter-perl-rs/src/parser.rs");
 
     let core_facade =
         compact_whitespace(&read(crate_root().join("../perl-parser-core/src/lib.rs"))?);
