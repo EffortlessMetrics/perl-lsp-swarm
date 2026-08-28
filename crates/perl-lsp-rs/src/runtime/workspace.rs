@@ -1949,67 +1949,10 @@ impl LspServer {
                     continue;
                 }
 
-                // Index the new file if it's a Perl file
-                // Note: Mutation operation - use coordinator with lifecycle tracking
-                #[cfg(feature = "workspace")]
-                if let Some(coordinator) = self.coordinator()
-                    && let Some(path) = uri_to_fs_path(uri)
-                {
-                    match read_perl_source_file(&path) {
-                        Ok(Some(content)) => {
-                            // The read is authoritative for classification and
-                            // content. Recheck document authority after the
-                            // potentially blocking I/O so a racing didOpen
-                            // cannot be overwritten by disk facts.
-                            let _transition = self.indexing_transition_lock.lock();
-                            if self.document_is_open(uri) {
-                                self.record_backing_file_transition(
-                                    uri,
-                                    BackingFileTransition::Changed,
-                                );
-                                tracing::debug!(
-                                    uri,
-                                    "File opened while create read was in flight — indexing skipped"
-                                );
-                                continue;
-                            }
-                            coordinator.notify_change(uri);
-                            coordinator.index().clear_file(uri);
-                            if let Ok(url) = url::Url::parse(uri) {
-                                match coordinator.index().index_file(url, content) {
-                                    Ok(()) => {
-                                        tracing::debug!("Indexed new file: {}", uri)
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("Failed to index new file {}: {}", uri, e)
-                                    }
-                                }
-                            }
-                            coordinator.notify_parse_complete(uri);
-                        }
-                        Ok(None) => {
-                            let _transition = self.indexing_transition_lock.lock();
-                            if !self.document_is_open(uri) {
-                                coordinator.notify_change(uri);
-                                coordinator.index().clear_file(uri);
-                                coordinator.notify_parse_complete(uri);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::debug!(
-                                "Failed to read new file for indexing ({}): {}",
-                                path.display(),
-                                e
-                            );
-                            let _transition = self.indexing_transition_lock.lock();
-                            if !self.document_is_open(uri) {
-                                coordinator.notify_change(uri);
-                                coordinator.index().clear_file(uri);
-                                coordinator.notify_parse_complete(uri);
-                            }
-                        }
-                    }
-                }
+                // Explicit creates use the same filesystem-byte classifier as
+                // watched changes. This keeps extensionless shebang scripts
+                // live and evicts their facts when the shebang is removed.
+                self.process_file_watcher_uri_immediate(uri);
             }
 
             // Trigger client refresh after file creations
@@ -3061,6 +3004,25 @@ mod tests {
             .index()
             .find_symbols("changed_tool");
         assert_eq!(renamed.len(), 1, "renames must index an extensionless Perl script");
+        assert!(
+            server
+                .coordinator()
+                .ok_or("missing index coordinator")?
+                .index()
+                .file_symbols(old_uri.as_str())
+                .is_empty(),
+            "renames must remove the old extensionless file identity"
+        );
+        assert_eq!(
+            server
+                .coordinator()
+                .ok_or("missing index coordinator")?
+                .index()
+                .file_symbols(new_uri.as_str())
+                .len(),
+            1,
+            "renames must retain the new extensionless file identity"
+        );
         Ok(())
     }
 
