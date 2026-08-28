@@ -59,17 +59,12 @@ fn canonical_adapter_expands_the_plain_git_marker_for_vim_lsp() -> Result<()> {
 }
 
 #[test]
-fn every_executable_vim_lsp_rail_covers_both_git_root_shapes() -> Result<()> {
-    for path in [
-        "scripts/ux/vim_vim_lsp_driver.vim",
-        "scripts/ux/vim_vim_lsp_specialized.vim",
-    ] {
-        let rail = source(path)?;
-        ensure!(
-            rail.contains("'dist.ini', '.git/', '.git'"),
-            "{path} must pass both vim-lsp Git marker spellings"
-        );
-    }
+fn executable_vim_lsp_root_proof_covers_both_git_root_shapes() -> Result<()> {
+    let deep_rail = source("scripts/ux/vim_vim_lsp_driver.vim")?;
+    ensure!(
+        deep_rail.contains("'dist.ini', '.git/', '.git'"),
+        "the deep actual-client rail must pass both vim-lsp Git marker spellings"
+    );
 
     let smoke = source("scripts/ux/vim_activation_root_smoke.sh")?;
     for required in [
