@@ -40,10 +40,7 @@ fn gold_root() -> Result<PathBuf, Box<dyn Error>> {
 
 fn fixture_name(directory: &Path) -> Result<String, Box<dyn Error>> {
     let name = directory.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
-        contract_error(format!(
-            "invalid fixture directory name: {}",
-            directory.display()
-        ))
+        contract_error(format!("invalid fixture directory name: {}", directory.display()))
     })?;
     Ok(name.to_owned())
 }
@@ -131,11 +128,7 @@ fn validate_diagnostics_sidecar(path: &Path, source_len: usize) -> Result<(), Bo
     );
 
     for assertion in &expected.diagnostics {
-        if let GoldAssertion::DiagnosticPresent {
-            byte_offset: Some(byte_offset),
-            ..
-        } = assertion
-        {
+        if let GoldAssertion::DiagnosticPresent { byte_offset: Some(byte_offset), .. } = assertion {
             assert!(
                 *byte_offset <= source_len,
                 "{} declares byte_offset {} beyond fixture length {}",
@@ -151,38 +144,18 @@ fn validate_diagnostics_sidecar(path: &Path, source_len: usize) -> Result<(), Bo
 
 fn validate_named_sidecar(path: &Path, expected_fixture: &str) -> Result<(), Box<dyn Error>> {
     let document = read_json(path)?;
-    let object = document.as_object().ok_or_else(|| {
-        contract_error(format!(
-            "{} must contain a JSON object",
-            path.display()
-        ))
+    let object = document
+        .as_object()
+        .ok_or_else(|| contract_error(format!("{} must contain a JSON object", path.display())))?;
+
+    let version = object.get("version").and_then(Value::as_u64).ok_or_else(|| {
+        contract_error(format!("{} must declare an integer version", path.display()))
     })?;
+    assert_eq!(version, 1, "{} uses an unsupported sidecar version", path.display());
 
-    let version = object
-        .get("version")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| {
-            contract_error(format!(
-                "{} must declare an integer version",
-                path.display()
-            ))
-        })?;
-    assert_eq!(
-        version,
-        1,
-        "{} uses an unsupported sidecar version",
-        path.display()
-    );
-
-    let declared_fixture = object
-        .get("fixture")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            contract_error(format!(
-                "{} must declare its fixture identity",
-                path.display()
-            ))
-        })?;
+    let declared_fixture = object.get("fixture").and_then(Value::as_str).ok_or_else(|| {
+        contract_error(format!("{} must declare its fixture identity", path.display()))
+    })?;
     assert_eq!(
         declared_fixture,
         expected_fixture,
@@ -190,20 +163,10 @@ fn validate_named_sidecar(path: &Path, expected_fixture: &str) -> Result<(), Box
         path.display()
     );
 
-    let assertions = object
-        .get("assertions")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            contract_error(format!(
-                "{} must declare an assertions array",
-                path.display()
-            ))
-        })?;
-    assert!(
-        !assertions.is_empty(),
-        "{} must contain at least one assertion",
-        path.display()
-    );
+    let assertions = object.get("assertions").and_then(Value::as_array).ok_or_else(|| {
+        contract_error(format!("{} must declare an assertions array", path.display()))
+    })?;
+    assert!(!assertions.is_empty(), "{} must contain at least one assertion", path.display());
 
     Ok(())
 }
@@ -214,9 +177,7 @@ fn reject_unknown_sidecars(directory: &Path) -> Result<(), Box<dyn Error>> {
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.starts_with("expected")
             && name.ends_with(".json")
-            && !SIDECAR_FLOORS
-                .iter()
-                .any(|(known, _)| name.as_str() == *known)
+            && !SIDECAR_FLOORS.iter().any(|(known, _)| name.as_str() == *known)
         {
             return Err(contract_error(format!(
                 "unregistered gold sidecar {} in {}",
