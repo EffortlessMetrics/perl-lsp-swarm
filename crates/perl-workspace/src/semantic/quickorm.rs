@@ -1,8 +1,9 @@
 //! Bounded DBIx::QuickORM semantic adaptation.
 //!
-//! QuickORM's import arguments configure its DSL importer; they are not an
-//! Exporter-style explicit symbol list. In table-package mode, executing a
-//! direct `table` or `view` builder installs one fixed method, `qorm_table`.
+//! QuickORM's import arguments configure its custom DSL importer; they are not
+//! an Exporter-style explicit symbol list. In table-package mode, executing a
+//! direct package-level `table` builder installs one fixed method,
+//! `qorm_table`.
 //!
 //! Named field and link accessors are intentionally absent here. Upstream
 //! installs those through database-backed `autofill`/`autorow`, not from a
@@ -43,13 +44,12 @@ fn normalize_import_specs_at_node(node: &Node, specs: &mut [ImportSpec]) {
         {
             match classify_import_shape(args) {
                 QuickOrmImportShape::Bare => {}
-                QuickOrmImportShape::UnfilteredOrm | QuickOrmImportShape::UnfilteredTable => {
-                    spec.kind = ImportKind::Use;
-                    spec.symbols = ImportSymbols::Default;
-                    spec.provenance = Provenance::ImportExportInference;
-                    spec.confidence = Confidence::High;
-                }
-                QuickOrmImportShape::Dynamic => {
+                QuickOrmImportShape::UnfilteredOrm
+                | QuickOrmImportShape::UnfilteredTable
+                | QuickOrmImportShape::Dynamic => {
+                    // ImportSpec cannot yet encode QuickORM's selected DSL set.
+                    // Preserve the use-site while refusing the generic extractor's
+                    // false `type`, `orm`, and `table` explicit-symbol facts.
                     spec.kind = ImportKind::Use;
                     spec.symbols = ImportSymbols::Dynamic;
                     spec.provenance = Provenance::DynamicBoundary;
@@ -72,7 +72,14 @@ pub(super) fn extract_generated_member_facts(
 ) -> Vec<GeneratedMemberFact> {
     let mut facts = Vec::new();
     let mut context = WalkContext::default();
-    walk(ast, file_id, &mut context, &mut facts);
+
+    match &ast.kind {
+        NodeKind::Program { statements } => {
+            walk_direct_statements(statements, file_id, &mut context, &mut facts);
+        }
+        _ => walk_direct_statement(ast, file_id, &mut context, &mut facts),
+    }
+
     facts
 }
 
@@ -82,7 +89,18 @@ struct WalkContext {
     table_package_active: bool,
 }
 
-fn walk(
+fn walk_direct_statements(
+    statements: &[Node],
+    file_id: FileId,
+    context: &mut WalkContext,
+    facts: &mut Vec<GeneratedMemberFact>,
+) {
+    for statement in statements {
+        walk_direct_statement(statement, file_id, context, facts);
+    }
+}
+
+fn walk_direct_statement(
     node: &Node,
     file_id: FileId,
     context: &mut WalkContext,
@@ -90,19 +108,18 @@ fn walk(
 ) {
     match &node.kind {
         NodeKind::Program { statements } => {
-            walk_statements(statements, file_id, context, facts);
-        }
-        NodeKind::Block { statements } => {
-            let saved = context.clone();
-            walk_statements(statements, file_id, context, facts);
-            *context = saved;
+            walk_direct_statements(statements, file_id, context, facts);
         }
         NodeKind::Package { name, block, .. } => {
             if let Some(block) = block {
                 let saved = context.clone();
                 context.current_package = Some(name.clone());
                 context.table_package_active = false;
-                walk(block, file_id, context, facts);
+
+                if let NodeKind::Block { statements } = &block.kind {
+                    walk_direct_statements(statements, file_id, context, facts);
+                }
+
                 *context = saved;
             } else {
                 context.current_package = Some(name.clone());
@@ -121,22 +138,13 @@ fn walk(
         {
             let package = context.current_package.as_deref().unwrap_or("main");
             push_qorm_table_fact(package, node, file_id, facts);
-            // QuickORM removes its DSL imports after the table/view package is built.
+            // QuickORM removes its DSL imports after the table package is built.
             context.table_package_active = false;
         }
-        NodeKind::Subroutine { .. } | NodeKind::Method { .. } => {}
+        // Runtime-controlled and bare lexical blocks are not package-level
+        // table declarations. Do not recurse into them or let their package /
+        // framework state escape into the containing package.
         _ => {}
-    }
-}
-
-fn walk_statements(
-    statements: &[Node],
-    file_id: FileId,
-    context: &mut WalkContext,
-    facts: &mut Vec<GeneratedMemberFact>,
-) {
-    for statement in statements {
-        walk(statement, file_id, context, facts);
     }
 }
 
@@ -144,7 +152,7 @@ fn is_direct_table_builder(expression: &Node) -> bool {
     let NodeKind::FunctionCall { name, args } = &expression.kind else {
         return false;
     };
-    if !matches!(name.as_str(), "table" | "view") || args.is_empty() {
+    if name != "table" || args.is_empty() {
         return false;
     }
 
@@ -169,7 +177,10 @@ fn push_qorm_table_fact(
     facts: &mut Vec<GeneratedMemberFact>,
 ) {
     let canonical_name = format!("{package}::{QORM_TABLE_MEMBER}");
-    if facts.iter().any(|fact| fact.entity.canonical_name == canonical_name) {
+    if facts
+        .iter()
+        .any(|fact| fact.entity.canonical_name == canonical_name)
+    {
         return;
     }
 
@@ -218,7 +229,10 @@ fn classify_import_shape(args: &[String]) -> QuickOrmImportShape {
     }
 
     let raw_args = args.join(" ");
-    if raw_args.chars().any(|ch| matches!(ch, '{' | '}' | '[' | ']')) {
+    if raw_args
+        .chars()
+        .any(|ch| matches!(ch, '{' | '}' | '[' | ']'))
+    {
         return QuickOrmImportShape::Dynamic;
     }
 
@@ -278,20 +292,24 @@ mod tests {
         source: &str,
     ) -> Result<Vec<ImportSpec>, Box<dyn std::error::Error>> {
         let mut parser = Parser::new(source);
-        let ast =
-            parser.parse().map_err(|error| format!("failed to parse QuickORM import: {error:?}"))?;
-        Ok(super::super::workspace_import_extractor::extract_import_specs(
-            &ast,
-            FileId(1),
-        ))
+        let ast = parser
+            .parse()
+            .map_err(|error| format!("failed to parse QuickORM import: {error:?}"))?;
+        Ok(
+            super::super::workspace_import_extractor::extract_import_specs(
+                &ast,
+                FileId(1),
+            ),
+        )
     }
 
     fn generated_facts_from_source(
         source: &str,
     ) -> Result<Vec<GeneratedMemberFact>, Box<dyn std::error::Error>> {
         let mut parser = Parser::new(source);
-        let ast =
-            parser.parse().map_err(|error| format!("failed to parse QuickORM table: {error:?}"))?;
+        let ast = parser
+            .parse()
+            .map_err(|error| format!("failed to parse QuickORM table: {error:?}"))?;
         Ok(
             super::super::generated_member_extractor::extract_generated_member_facts(
                 &ast,
@@ -308,8 +326,10 @@ mod tests {
     }
 
     fn canonical_names(facts: &[GeneratedMemberFact]) -> Vec<&str> {
-        let mut names: Vec<_> =
-            facts.iter().map(|fact| fact.entity.canonical_name.as_str()).collect();
+        let mut names: Vec<_> = facts
+            .iter()
+            .map(|fact| fact.entity.canonical_name.as_str())
+            .collect();
         names.sort_unstable();
         names
     }
@@ -323,21 +343,22 @@ mod tests {
         let spec = quickorm_spec(&specs)?;
 
         assert_eq!(spec.kind, ImportKind::Use);
-        assert_eq!(spec.symbols, ImportSymbols::Default);
-        assert_eq!(spec.provenance, Provenance::ImportExportInference);
-        assert_eq!(spec.confidence, Confidence::High);
+        assert_eq!(spec.symbols, ImportSymbols::Dynamic);
+        assert_eq!(spec.provenance, Provenance::DynamicBoundary);
+        assert_eq!(spec.confidence, Confidence::Low);
         Ok(())
     }
 
     #[test]
     fn configured_orm_import_is_not_an_explicit_symbol_list(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let specs =
-            import_specs_from_source("package App; use DBIx::QuickORM type => 'orm';")?;
+        let specs = import_specs_from_source("package App; use DBIx::QuickORM type => 'orm';")?;
         let spec = quickorm_spec(&specs)?;
 
         assert_eq!(spec.kind, ImportKind::Use);
-        assert_eq!(spec.symbols, ImportSymbols::Default);
+        assert_eq!(spec.symbols, ImportSymbols::Dynamic);
+        assert_eq!(spec.provenance, Provenance::DynamicBoundary);
+        assert_eq!(spec.confidence, Confidence::Low);
         Ok(())
     }
 
@@ -391,27 +412,14 @@ table users => sub {
         assert_eq!(names, vec!["MyApp::Schema::User::qorm_table"]);
         let fact = facts.first().ok_or("missing qorm_table fact")?;
         assert_eq!(fact.entity.kind, EntityKind::GeneratedMember);
-        assert_eq!(fact.entity.provenance, Provenance::FrameworkSynthesis);
+        assert_eq!(
+            fact.entity.provenance,
+            Provenance::FrameworkSynthesis
+        );
         assert_eq!(fact.entity.confidence, Confidence::Medium);
         assert_eq!(fact.anchor.provenance, Provenance::FrameworkSynthesis);
         assert_eq!(fact.anchor.confidence, Confidence::Medium);
         assert!(fact.anchor.span_end_byte > fact.anchor.span_start_byte);
-        Ok(())
-    }
-
-    #[test]
-    fn table_package_view_emits_qorm_table_member(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let facts = generated_facts_from_source(
-            r#"
-package MyApp::Schema::ActiveUser;
-use DBIx::QuickORM type => 'table';
-view active_users => sub {};
-1;
-"#,
-        )?;
-
-        assert_eq!(canonical_names(&facts), vec!["MyApp::Schema::ActiveUser::qorm_table"]);
         Ok(())
     }
 
@@ -475,6 +483,47 @@ sub build_later {
         )?;
 
         assert!(facts.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn table_call_inside_runtime_control_is_not_treated_as_package_builder(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let facts = generated_facts_from_source(
+            r#"
+package MyApp::Schema::User;
+use DBIx::QuickORM type => 'table';
+if ($enabled) {
+    table users => sub {};
+}
+1;
+"#,
+        )?;
+
+        assert!(facts.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn bare_lexical_block_does_not_leak_package_or_framework_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let facts = generated_facts_from_source(
+            r#"
+package MyApp::Schema::User;
+use DBIx::QuickORM type => 'table';
+{
+    package Other::Package;
+    use DBIx::QuickORM type => 'orm';
+}
+table users => sub {};
+1;
+"#,
+        )?;
+
+        assert_eq!(
+            canonical_names(&facts),
+            vec!["MyApp::Schema::User::qorm_table"]
+        );
         Ok(())
     }
 
