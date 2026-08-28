@@ -1,6 +1,7 @@
 use super::super::{CompletionContext, CompletionItem, CompletionProvider};
 use crate::providers::completion_item::{CompletionItemKind, InsertTextFormat};
 use crate::providers::testing::test2::{Test2Facts, is_test2_module};
+use crate::providers::testing::test2_target::resolve_target_import;
 use perl_parser_core::Parser;
 use perl_parser_core::ast::{Node, NodeKind};
 use std::borrow::Cow;
@@ -9,6 +10,7 @@ use std::sync::LazyLock;
 
 const TEST_MORE_DETAIL: &str = "Test::More";
 const TEST2_DETAIL: &str = "Test2 imported symbol";
+const TEST2_TARGET_DETAIL: &str = "Test2 target alias";
 
 static COMMON_TEST_NAMES: LazyLock<BTreeSet<String>> =
     LazyLock::new(|| Test2Facts::from_source("use Test2::V0;\n").imported_symbols);
@@ -52,13 +54,10 @@ pub(super) fn reconcile(
             && use_module_and_args(import.statement.as_str())
                 .is_some_and(|(_, args)| args.trim() != "()")
     });
-    let scoped_test2_source = package_uses
-        .iter()
-        .filter(|import| is_test2_module(import.module.as_str()))
-        .map(|import| format!("{};\n", import.statement))
-        .collect::<String>();
+    let (scoped_test2_source, target_aliases, uses_target_import) =
+        project_test2_imports(&package_uses);
     let test2_facts = Test2Facts::from_source(scoped_test2_source.as_str());
-    let uses_test2 = test2_facts.uses_test2();
+    let uses_test2 = test2_facts.uses_test2() || uses_target_import;
     let generic_test_table_present =
         completions.iter().any(|item| item.detail.as_deref() == Some(TEST_MORE_DETAIL));
 
@@ -113,6 +112,67 @@ pub(super) fn reconcile(
             label_details: None,
         });
     }
+
+    for name in target_aliases {
+        if !context.prefix.is_empty() && !name.starts_with(&context.prefix) {
+            continue;
+        }
+
+        completions.push(CompletionItem {
+            label: Cow::Owned(name.clone()),
+            kind: CompletionItemKind::Constant,
+            detail: Some(Cow::Borrowed(TEST2_TARGET_DETAIL)),
+            documentation: None,
+            insert_text: Some(Cow::Owned(name.clone())),
+            sort_text: Some(Cow::Owned(format!("2_test2_target_{name}"))),
+            filter_text: Some(Cow::Owned(name)),
+            additional_edits: vec![],
+            text_edit_range: Some((context.prefix_start, context.position)),
+            commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
+            label_details: None,
+        });
+    }
+}
+
+/// Project package-scoped Test2 imports into the ordinary export resolver plus
+/// the dynamic aliases installed by `Test2::Tools::Target`.
+///
+/// `Test2::V0 -target => { alias => 'Package' }` is sanitized before it reaches
+/// `Test2Facts`: without that step the generic import tokenizer can mistake the
+/// hash key for an explicit Test2 export and suppress the V0 default tool set.
+fn project_test2_imports(package_uses: &[&ScopedUse]) -> (String, BTreeSet<String>, bool) {
+    let mut source = String::new();
+    let mut aliases = BTreeSet::new();
+    let mut uses_target_import = false;
+
+    for import in package_uses {
+        if !is_test2_module(import.module.as_str()) {
+            continue;
+        }
+
+        let target_import = use_module_and_args(import.statement.as_str())
+            .and_then(|(module, args)| resolve_target_import(module, args));
+        if let Some(target_import) = target_import {
+            uses_target_import = true;
+            aliases.extend(target_import.aliases);
+
+            if let Some(remaining_args) = target_import.remaining_v0_args {
+                source.push_str("use Test2::V0");
+                if !remaining_args.is_empty() {
+                    source.push(' ');
+                    source.push_str(&remaining_args);
+                }
+                source.push_str(";\n");
+            }
+            continue;
+        }
+
+        source.push_str(&import.statement);
+        source.push_str(";\n");
+    }
+
+    (source, aliases, uses_target_import)
 }
 
 /// Reject completion flows that dispatch owns as structural rather than plain
@@ -321,6 +381,39 @@ mod tests {
     fn standalone_compare_completes_in_a_non_test_file() {
         let items = complete("use Test2::Tools::Compare;\nli|", Some("lib/Example.pm"));
         assert!(labels(&items).contains(&"like"));
+    }
+
+    #[test]
+    fn standalone_target_completes_default_class_alias() {
+        let items = complete(
+            "use Test2::Tools::Target 'My::Service';\nCL|",
+            Some("lib/Example.pm"),
+        );
+        assert!(labels(&items).contains(&"CLASS"));
+    }
+
+    #[test]
+    fn v0_target_hash_completes_alias_without_losing_default_tools() {
+        let alias_items = complete(
+            "use Test2::V0 -target => { service => 'My::Service' };\nser|",
+            Some("t/example.t"),
+        );
+        assert!(labels(&alias_items).contains(&"service"));
+
+        let tool_items = complete(
+            "use Test2::V0 -target => { service => 'My::Service' };\ni|",
+            Some("t/example.t"),
+        );
+        assert!(labels(&tool_items).contains(&"is"));
+    }
+
+    #[test]
+    fn target_aliases_do_not_leak_across_package_boundaries() {
+        let items = complete(
+            "package One;\nuse Test2::Tools::Target 'My::Service';\npackage Two;\nCL|",
+            Some("lib/Example.pm"),
+        );
+        assert!(!labels(&items).contains(&"CLASS"));
     }
 
     #[test]
