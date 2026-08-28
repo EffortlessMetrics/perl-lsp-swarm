@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ STDERR_DIAGNOSTIC_LIMIT = 2_048
 PRODUCER_STDOUT_LIMIT = 64 * 1_024
 PRODUCER_STDERR_LIMIT = 64 * 1_024
 STREAM_READ_CHUNK_SIZE = 8 * 1_024
+WINDOWS_JOB_LAUNCHER_FLAG = "--windows-job-launcher"
 EXPECTED_COUNT_FIELDS = (
     "unsuppressed_exposure_gaps",
     "unsuppressed_test_efficiency_findings",
@@ -46,6 +48,119 @@ class RiprOutputLimitExceeded(RuntimeError):
         self.args = (f"{self.args[0]}; cleanup incomplete: {detail}",)
 
 
+class WindowsJob:
+    """Own a Windows process tree independently of its direct leader."""
+
+    _KILL_ON_JOB_CLOSE = 0x00002000
+    _EXTENDED_LIMIT_INFORMATION = 9
+
+    def __init__(self) -> None:
+        from ctypes import wintypes
+
+        class BasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
+
+        class ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", BasicLimitInformation),
+                ("IoInfo", IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            self._raise_last_error("CreateJobObjectW")
+        self._kernel32 = kernel32
+        self._handle = handle
+        limits = ExtendedLimitInformation()
+        limits.BasicLimitInformation.LimitFlags = self._KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+            handle,
+            self._EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(limits),
+            ctypes.sizeof(limits),
+        ):
+            error = ctypes.get_last_error()
+            kernel32.CloseHandle(handle)
+            self._handle = None
+            raise OSError(error, f"SetInformationJobObject: {ctypes.FormatError(error)}")
+
+    @staticmethod
+    def _raise_last_error(operation: str) -> None:
+        error = ctypes.get_last_error()
+        raise OSError(error, f"{operation}: {ctypes.FormatError(error)}")
+
+    def assign(self, process: subprocess.Popen[bytes]) -> None:
+        from ctypes import wintypes
+
+        if self._handle is None:
+            raise OSError("Windows job handle is closed")
+        if not self._kernel32.AssignProcessToJobObject(
+            self._handle, wintypes.HANDLE(process._handle)
+        ):
+            self._raise_last_error("AssignProcessToJobObject")
+
+    def terminate(self) -> list[str]:
+        failures: list[str] = []
+        if self._handle is None:
+            return failures
+        if not self._kernel32.TerminateJobObject(self._handle, 1):
+            error = ctypes.get_last_error()
+            failures.append(f"TerminateJobObject failed: {ctypes.FormatError(error)}")
+        failures.extend(self.close())
+        return failures
+
+    def close(self) -> list[str]:
+        if self._handle is None:
+            return []
+        handle = self._handle
+        self._handle = None
+        if not self._kernel32.CloseHandle(handle):
+            error = ctypes.get_last_error()
+            return [f"CloseHandle(job) failed: {ctypes.FormatError(error)}"]
+        return []
+
+
 def bounded_stderr(stderr: str) -> str:
     normalized = stderr.strip()
     if len(normalized) <= STDERR_DIAGNOSTIC_LIMIT:
@@ -54,27 +169,36 @@ def bounded_stderr(stderr: str) -> str:
 
 
 def terminate_process_tree(
-    process: subprocess.Popen[bytes], *, windows: bool | None = None
+    process: subprocess.Popen[bytes],
+    *,
+    windows: bool | None = None,
+    windows_job: WindowsJob | None = None,
 ) -> list[str]:
     """Best-effort tree termination that never masks the triggering failure."""
     failures: list[str] = []
     is_windows = os.name == "nt" if windows is None else windows
     if is_windows:
-        try:
-            result = subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=TERMINATION_GRACE_SECONDS,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            failures.append("taskkill timed out")
-        except OSError as error:
-            failures.append(f"taskkill failed: {error}")
-        else:
-            if result.returncode:
-                failures.append(f"taskkill exited {result.returncode}")
+        needs_taskkill = windows_job is None
+        if windows_job is not None:
+            job_failures = windows_job.terminate()
+            failures.extend(job_failures)
+            needs_taskkill = bool(job_failures)
+        if needs_taskkill:
+            try:
+                result = subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=TERMINATION_GRACE_SECONDS,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                failures.append("taskkill timed out")
+            except OSError as error:
+                failures.append(f"taskkill failed: {error}")
+            else:
+                if result.returncode:
+                    failures.append(f"taskkill exited {result.returncode}")
         if failures and process.poll() is None:
             try:
                 process.kill()
@@ -114,7 +238,7 @@ def terminate_process_tree(
 
 
 def finish_readers(
-    readers: list[threading.Thread], streams: list[BinaryIO]
+    readers: list[threading.Thread], streams: list[tuple[str, BinaryIO]]
 ) -> str | None:
     """Close pipe streams only after every bounded reader is terminal."""
     for reader in readers:
@@ -122,9 +246,24 @@ def finish_readers(
     still_running = [reader.name for reader in readers if reader.is_alive()]
     if still_running:
         return "output readers did not stop: " + ", ".join(still_running)
-    for stream in streams:
-        stream.close()
-    return None
+    failures: list[str] = []
+    for stream_name, stream in streams:
+        try:
+            stream.close()
+        except OSError as error:
+            failures.append(f"{stream_name} close failed: {error}")
+    return "; ".join(failures) if failures else None
+
+
+def take_overflow(
+    overflow: queue.Queue[tuple[str, int]],
+) -> RiprOutputLimitExceeded | None:
+    """Consume one persisted overflow signal, if present."""
+    try:
+        stream_name, limit = overflow.get_nowait()
+    except queue.Empty:
+        return None
+    return RiprOutputLimitExceeded(stream_name, limit)
 
 
 def read_bounded_stream(
@@ -150,22 +289,53 @@ def read_bounded_stream(
 def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
     ripr = os.environ.get("RIPR_BIN", "ripr")
     command = [ripr, "check", "--root", str(root), "--format", "repo-badge-json"]
+    windows_job: WindowsJob | None = None
     platform_options: dict[str, object]
     if os.name == "nt":
+        try:
+            windows_job = WindowsJob()
+        except OSError as error:
+            raise RuntimeError(f"could not create Windows process-tree owner: {error}") from error
         platform_options = {
             "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            "stdin": subprocess.PIPE,
         }
+        launched_command = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            WINDOWS_JOB_LAUNCHER_FLAG,
+            *command,
+        ]
     else:
         platform_options = {"start_new_session": True}
+        launched_command = command
     process = subprocess.Popen(
-        command,
+        launched_command,
         cwd=root,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         **platform_options,
     )
+    if windows_job is not None:
+        try:
+            windows_job.assign(process)
+            if process.stdin is None:
+                raise OSError("Windows launcher input pipe was not created")
+            process.stdin.write(b"\0")
+            process.stdin.close()
+        except OSError as error:
+            try:
+                process.kill()
+                process.wait(timeout=TERMINATION_GRACE_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            cleanup = windows_job.terminate()
+            suffix = f"; cleanup incomplete: {'; '.join(cleanup)}" if cleanup else ""
+            raise RuntimeError(
+                f"could not establish Windows process-tree ownership: {error}{suffix}"
+            ) from error
     if process.stdout is None or process.stderr is None:
-        cleanup = terminate_process_tree(process)
+        cleanup = terminate_process_tree(process, windows_job=windows_job)
         suffix = f"; cleanup incomplete: {'; '.join(cleanup)}" if cleanup else ""
         raise RuntimeError(f"ripr output pipes were not created{suffix}")
 
@@ -192,12 +362,8 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
     deadline = time.monotonic() + timeout_seconds
     failure: RuntimeError | None = None
     while True:
-        try:
-            stream_name, limit = overflow.get_nowait()
-        except queue.Empty:
-            pass
-        else:
-            failure = RiprOutputLimitExceeded(stream_name, limit)
+        failure = take_overflow(overflow)
+        if failure is not None:
             break
         if process.poll() is not None and all(not reader.is_alive() for reader in readers):
             break
@@ -208,10 +374,24 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
             break
         time.sleep(0.01)
 
-    cleanup_failures = terminate_process_tree(process) if failure is not None else []
-    reader_failure = finish_readers(readers, [process.stdout, process.stderr])
+    cleanup_failures = (
+        terminate_process_tree(process, windows_job=windows_job)
+        if failure is not None
+        else []
+    )
+    reader_failure = finish_readers(
+        readers, [("stdout", process.stdout), ("stderr", process.stderr)]
+    )
     if reader_failure is not None:
         cleanup_failures.append(reader_failure)
+    if failure is None:
+        failure = take_overflow(overflow)
+        if failure is not None:
+            cleanup_failures.extend(
+                terminate_process_tree(process, windows_job=windows_job)
+            )
+        elif windows_job is not None:
+            cleanup_failures.extend(windows_job.close())
 
     stderr = stderr_bytes.decode("utf-8", errors="replace")
     if failure is not None:
@@ -232,7 +412,17 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
     if process.returncode:
         diagnostic = bounded_stderr(stderr)
         suffix = f": {diagnostic}" if diagnostic else ""
-        raise RuntimeError(f"ripr check failed for ripr+ badge (exit {process.returncode}){suffix}")
+        cleanup_suffix = (
+            f"; cleanup incomplete: {'; '.join(cleanup_failures)}"
+            if cleanup_failures
+            else ""
+        )
+        raise RuntimeError(
+            f"ripr check failed for ripr+ badge (exit {process.returncode})"
+            f"{suffix}{cleanup_suffix}"
+        )
+    if cleanup_failures:
+        raise RuntimeError(f"ripr cleanup incomplete: {'; '.join(cleanup_failures)}")
     try:
         stdout = stdout_bytes.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -288,6 +478,18 @@ def generate(root: Path, check: bool, ripr_timeout_seconds: float = RIPR_TIMEOUT
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == WINDOWS_JOB_LAUNCHER_FLAG:
+        if os.name != "nt" or len(sys.argv) < 3:
+            print("badges: invalid Windows job launcher invocation", file=sys.stderr)
+            return 125
+        if sys.stdin.buffer.read(1) != b"\0":
+            print("badges: Windows job launcher was not released", file=sys.stderr)
+            return 125
+        try:
+            return subprocess.run(sys.argv[2:], check=False).returncode
+        except OSError as error:
+            print(f"badges: Windows job launcher failed: {error}", file=sys.stderr)
+            return 126
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     try:
