@@ -63,31 +63,103 @@ mod tests {
     use super::*;
     use crate::id::Digest;
 
+    fn test_file_id() -> FileId {
+        FileId::new("lib/App.pm", &Digest::of("x"))
+    }
+
     #[test]
-    fn projects_pragma_state() {
+    fn projects_complete_pragma_state() {
         let state = perl_pragma::PragmaState {
             strict_vars: true,
             strict_subs: true,
             strict_refs: true,
             warnings: true,
+            utf8: true,
+            unicode_strings: true,
             features: vec!["say", "signatures"],
+            disabled_warning_categories: vec![
+                "deprecated".to_string(),
+                "uninitialized".to_string(),
+            ],
             ..Default::default()
         };
-        let file_id = FileId::new("lib/App.pm", &Digest::of("x"));
-        let facts =
-            CompileEffectFacts::from_pragma_state(file_id, &state, Some("v5.38".to_string()));
+        let file_id = test_file_id();
+        let facts = CompileEffectFacts::from_pragma_state(
+            file_id.clone(),
+            &state,
+            Some("v5.38".to_string()),
+        );
+
+        assert_eq!(facts.file_id, file_id);
         assert!(facts.strict);
         assert!(facts.warnings);
+        assert!(facts.utf8);
+        assert!(facts.unicode_strings);
         assert_eq!(facts.features, vec!["say", "signatures"]);
+        assert_eq!(
+            facts.disabled_warnings,
+            vec!["deprecated".to_string(), "uninitialized".to_string()]
+        );
         assert_eq!(facts.perl_version.as_deref(), Some("v5.38"));
     }
 
     #[test]
-    fn partial_strict_is_not_full_strict() {
-        // only vars, not subs/refs
-        let state = perl_pragma::PragmaState { strict_vars: true, ..Default::default() };
-        let file_id = FileId::new("lib/App.pm", &Digest::of("x"));
-        let facts = CompileEffectFacts::from_pragma_state(file_id, &state, None);
-        assert!(!facts.strict, "partial strict must not report full strict");
+    fn default_pragma_state_does_not_fabricate_effects() {
+        let file_id = test_file_id();
+        let facts = CompileEffectFacts::from_pragma_state(
+            file_id.clone(),
+            &perl_pragma::PragmaState::default(),
+            None,
+        );
+
+        assert_eq!(facts.file_id, file_id);
+        assert!(!facts.strict);
+        assert!(!facts.warnings);
+        assert!(!facts.utf8);
+        assert!(!facts.unicode_strings);
+        assert!(facts.features.is_empty());
+        assert!(facts.disabled_warnings.is_empty());
+        assert!(facts.perl_version.is_none());
+    }
+
+    #[test]
+    fn strict_requires_every_strict_category() {
+        let cases = [
+            (
+                "vars",
+                perl_pragma::PragmaState {
+                    strict_vars: false,
+                    strict_subs: true,
+                    strict_refs: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                "subs",
+                perl_pragma::PragmaState {
+                    strict_vars: true,
+                    strict_subs: false,
+                    strict_refs: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                "refs",
+                perl_pragma::PragmaState {
+                    strict_vars: true,
+                    strict_subs: true,
+                    strict_refs: false,
+                    ..Default::default()
+                },
+            ),
+        ];
+
+        for (missing_category, state) in cases {
+            let facts = CompileEffectFacts::from_pragma_state(test_file_id(), &state, None);
+            assert!(
+                !facts.strict,
+                "strict must be false when the {missing_category} category is disabled"
+            );
+        }
     }
 }
