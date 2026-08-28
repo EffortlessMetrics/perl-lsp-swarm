@@ -25,6 +25,7 @@ use tasks::dependency_hygiene::{DependencyHygieneConfig, DependencyHygieneMode};
 use tasks::emacs_train_specs::{LeafSpecDisposition, SpecsOutputFormat};
 use tasks::gate_policy::GatePolicyProfile;
 use tasks::gates::{GateTier, OutputFormat as GatesOutputFormat};
+use tasks::issue_controllers::IssueControllersCommand;
 use tasks::issue_plan::IssuePlanOutputFormat;
 use tasks::methodology_gate::MethodologyOutputFormat;
 use tasks::targeted_checks::CheckMode;
@@ -45,22 +46,23 @@ use tasks::{
     forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files, github,
     github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
     incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
-    install_surface_check, integration_proof, intent_diff_gate, issue_plan, layer_check,
-    lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate,
-    metrics, module_train, module_train_live, native_critic, native_format, native_neovim_train,
-    native_product_surface, native_tooling, oracle_fixture_manifest, oracle_receipt_schema,
-    oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet,
-    perl_core_harness, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
-    product_health_rail_contract, protocol_type_substrate_matrix, provider_confidence_matrix,
-    provider_promotion_ledger, publication_facts, publish, publish_closure, publish_manifest_check,
-    publish_receipts, quality_baseline, quality_gate, queue_health, queue_snapshot, receipts,
-    release, release_artifact_check, release_evidence, release_notes, release_turnkey,
-    repo_hygiene, ripr_evidence, rust_small_proof, seam_diff, semantic_inline_next_edit,
-    semantic_inline_receipts, semantic_scorecard, semantic_shadow_compare, semantic_token_classes,
-    session_receipt, shadow_parity, srp_microcrates, supported_editor_inline_smoke,
-    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
-    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
-    ux_scorecard, validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
+    install_surface_check, integration_proof, intent_diff_gate, issue_controllers, issue_plan,
+    layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready,
+    methodology_gate, metrics, module_train, module_train_live, native_critic, native_format,
+    native_neovim_train, native_product_surface, native_tooling, oracle_fixture_manifest,
+    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
+    parser_ratchet, perl_core_harness, perl_kwalitee, populate_book, pre_push_plan,
+    prep_crates_io_launch, product_health_rail_contract, protocol_type_substrate_matrix,
+    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
+    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
+    queue_health, queue_snapshot, receipts, release, release_artifact_check, release_evidence,
+    release_notes, release_turnkey, repo_hygiene, ripr_evidence, rust_small_proof, seam_diff,
+    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
+    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
+    srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
+    sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
+    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
@@ -407,6 +409,15 @@ enum Commands {
     Integration {
         #[command(subcommand)]
         command: IntegrationCommand,
+    },
+
+    /// Issue-controller train tooling: independent static validation of the
+    /// stable `issue_controller_train.v1` manifest and its checked human
+    /// projection (#11765). Deterministic and offline only.
+    #[command(name = "issue-controllers")]
+    IssueControllers {
+        #[command(subcommand)]
+        command: IssueControllersCommand,
     },
 
     /// Writer admission — read-only pre-admission diagnostic (#3957 W1).
@@ -6396,6 +6407,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 })
             }
         },
+        Commands::IssueControllers { command } => issue_controllers::run(command),
         Commands::WriterAdmission {
             branch,
             base,

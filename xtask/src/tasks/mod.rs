@@ -100,6 +100,7 @@ pub mod install_surface_check;
 pub mod integration_proof;
 pub mod integration_trigger;
 pub mod intent_diff_gate;
+pub mod issue_controllers;
 pub mod issue_plan;
 pub mod layer_check;
 pub mod lsp_318_claims;
