@@ -136,6 +136,7 @@ pub enum IndexEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConfigEvidence {
     Present { path: String, bytes: u64, sha256: String },
+    OptionalAbsent { detail: String },
     Missing,
     Unknown(String),
 }
@@ -565,7 +566,10 @@ pub fn classify(evidence: &RecoveryEvidence) -> RecoveryClassification {
     if matches!(&evidence.head, HeadEvidence::Attached { .. })
         && matches!(&evidence.reference, ReferenceEvidence::Resolved { .. })
         && matches!(&evidence.index, IndexEvidence::Present { .. })
-        && matches!(&evidence.config, ConfigEvidence::Present { .. })
+        && matches!(
+            &evidence.config,
+            ConfigEvidence::Present { .. } | ConfigEvidence::OptionalAbsent { .. }
+        )
         && matches!(&evidence.unique_work, UniqueWorkEvidence::None)
         && matches!(&evidence.active_use, ActiveUseEvidence::Inactive)
     {
@@ -745,7 +749,17 @@ fn observe_administration(
         IndexEvidence::Present { bytes, sha256 } => {
             ConfigEvidence::Present { path: String::from("config.worktree"), bytes, sha256 }
         }
-        IndexEvidence::Missing => ConfigEvidence::Missing,
+        IndexEvidence::Missing => {
+            match extensions_worktree_config_state(&repository.common_dir, &reader) {
+                WorktreeConfigExtension::Enabled => ConfigEvidence::Missing,
+                WorktreeConfigExtension::Disabled => ConfigEvidence::OptionalAbsent {
+                    detail: String::from(
+                        "config.worktree is legitimately absent: extensions.worktreeConfig is not enabled",
+                    ),
+                },
+                WorktreeConfigExtension::Unknown(detail) => ConfigEvidence::Unknown(detail),
+            }
+        }
         IndexEvidence::Unknown(detail) => ConfigEvidence::Unknown(detail),
     };
 
@@ -774,10 +788,7 @@ fn observe_administration(
         ActiveUseEvidence::Locked { paths: lock_paths.into_iter().collect() }
     };
 
-    let status = run_git_output(
-        candidate,
-        &["status", "--porcelain=v1", "--ignored=matching", "--untracked-files=all"],
-    );
+    let status = run_git_output(candidate, &unique_work_status_args());
     evidence.unique_work = match status {
         Ok(output) if output.status.success() => match String::from_utf8(output.stdout) {
             Err(error) => UniqueWorkEvidence::Unknown(format!(
@@ -804,17 +815,11 @@ fn observe_administration(
                         .lines()
                         .filter(|line| !line.starts_with("!! ") && !line.trim().is_empty())
                         .count();
-                    if !ignored_sources.is_empty() {
-                        UniqueWorkEvidence::IgnoredSource { paths: ignored_sources }
-                    } else if !ignored_paths.is_empty() {
-                        UniqueWorkEvidence::IgnoredContent {
-                            paths: ignored_paths.into_iter().map(String::from).collect(),
-                        }
-                    } else if lines == 0 {
-                        UniqueWorkEvidence::None
-                    } else {
-                        UniqueWorkEvidence::Present { status_lines: lines }
-                    }
+                    decide_unique_work_evidence(
+                        ignored_sources,
+                        ignored_paths.into_iter().map(String::from).collect(),
+                        lines,
+                    )
                 }
             }
         },
@@ -824,6 +829,97 @@ fn observe_administration(
         )),
         Err(error) => UniqueWorkEvidence::Unknown(error.to_string()),
     };
+}
+
+fn unique_work_status_args() -> Vec<&'static str> {
+    vec![
+        "status",
+        "--porcelain=v1",
+        "--ignored=matching",
+        "--untracked-files=all",
+        // Ambient repository configuration such as diff.ignoreSubmodules=all or
+        // status.ignoreSubmodules=all would otherwise hide modified or untracked
+        // submodule content from the forensic status evidence.
+        "--ignore-submodules=none",
+    ]
+}
+
+fn decide_unique_work_evidence(
+    ignored_sources: Vec<String>,
+    ignored_paths: Vec<String>,
+    changed_lines: usize,
+) -> UniqueWorkEvidence {
+    if !ignored_sources.is_empty() {
+        UniqueWorkEvidence::IgnoredSource { paths: ignored_sources }
+    } else if changed_lines > 0 {
+        UniqueWorkEvidence::Present { status_lines: changed_lines }
+    } else if !ignored_paths.is_empty() {
+        UniqueWorkEvidence::IgnoredContent { paths: ignored_paths }
+    } else {
+        UniqueWorkEvidence::None
+    }
+}
+
+enum WorktreeConfigExtension {
+    Enabled,
+    Disabled,
+    Unknown(String),
+}
+
+fn extensions_worktree_config_state(
+    common_dir: &Path,
+    reader: &dyn StableFileReader,
+) -> WorktreeConfigExtension {
+    let common_config = common_dir.join("config");
+    match read_stable_file(&common_config, reader, MAX_ADMIN_FILE_BYTES) {
+        StableRead::Stable(bytes) if extensions_worktree_config_enabled(&bytes) => {
+            WorktreeConfigExtension::Enabled
+        }
+        StableRead::Stable(_) => WorktreeConfigExtension::Disabled,
+        StableRead::Unstable(detail) | StableRead::Unavailable(detail) => {
+            WorktreeConfigExtension::Unknown(format!(
+                "extensions.worktreeConfig state unavailable: {detail}"
+            ))
+        }
+    }
+}
+
+fn extensions_worktree_config_enabled(config_bytes: &[u8]) -> bool {
+    let mut in_extensions_section = false;
+    for line in String::from_utf8_lossy(config_bytes).lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.starts_with('[') {
+            let header = line.trim_start_matches('[').trim_end_matches(']').trim();
+            let base = header
+                .split(['"', ' ', '\t'])
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            // `[extensions "subsection"]` rows belong to extensions.<subsection>,
+            // not to the extensions table that owns worktreeConfig.
+            let has_subsection = header.contains('"') || header.contains(' ');
+            in_extensions_section = base == "extensions" && !has_subsection;
+            continue;
+        }
+        if !in_extensions_section {
+            continue;
+        }
+        let (key, value) = match line.split_once('=') {
+            Some((key, value)) => (key.trim(), value.trim()),
+            None => (line, ""),
+        };
+        if key.eq_ignore_ascii_case("worktreeconfig") {
+            let value = value.to_ascii_lowercase();
+            return value.is_empty()
+                || matches!(value.as_str(), "true" | "yes" | "on")
+                || value.parse::<i64>().map(|parsed| parsed != 0).unwrap_or(false);
+        }
+    }
+    false
 }
 
 fn observe_administrative_identity(
@@ -2002,6 +2098,87 @@ mod tests {
             "missing config was classified clean"
         );
         Ok(())
+    }
+
+    #[test]
+    fn optionally_absent_worktree_config_can_be_clean() -> Result<()> {
+        let optional_absent = RecoveryEvidence {
+            config: ConfigEvidence::OptionalAbsent {
+                detail: String::from(
+                    "config.worktree is legitimately absent: extensions.worktreeConfig is not enabled",
+                ),
+            },
+            ..positive_evidence()
+        };
+        ensure!(
+            classify(&optional_absent) == RecoveryClassification::CleanReconstructable,
+            "optional absent config.worktree must not block a clean classification"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn worktree_config_extension_parser_matches_git_truthy_keys() {
+        let enabled_cases = [
+            "[core]\n\trepositoryformatversion = 0\n[extensions]\n\tworktreeConfig = true\n",
+            "[extensions]\n\tworktreeconfig\n",
+            "[extensions]\n\tWORKTREECONFIG = yes\n",
+            "[extensions]\n\tworktreeconfig = 1\n",
+            "[extensions]\n\tworktreeconfig = on\n",
+        ];
+        for case in enabled_cases {
+            assert!(
+                extensions_worktree_config_enabled(case.as_bytes()),
+                "expected enabled: {case:?}"
+            );
+        }
+        let disabled_cases = [
+            "[core]\n\trepositoryformatversion = 0\n",
+            "[extensions]\n\tworktreeConfig = false\n",
+            "[extensions]\n\tworktreeconfig = 0\n",
+            "[extensions \"other\"]\n\tworktreeconfig = true\n",
+            "; comment\n[extensions]\n",
+        ];
+        for case in disabled_cases {
+            assert!(
+                !extensions_worktree_config_enabled(case.as_bytes()),
+                "expected disabled: {case:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn changed_unique_work_outranks_ignored_content() {
+        assert!(matches!(
+            decide_unique_work_evidence(Vec::new(), vec![String::from("target/")], 2),
+            UniqueWorkEvidence::Present { status_lines: 2 }
+        ));
+        assert!(matches!(
+            decide_unique_work_evidence(Vec::new(), vec![String::from("target/")], 0),
+            UniqueWorkEvidence::IgnoredContent { .. }
+        ));
+        assert!(matches!(
+            decide_unique_work_evidence(vec![String::from("lib/old.pm")], Vec::new(), 3),
+            UniqueWorkEvidence::IgnoredSource { .. }
+        ));
+        assert!(matches!(
+            decide_unique_work_evidence(Vec::new(), Vec::new(), 0),
+            UniqueWorkEvidence::None
+        ));
+    }
+
+    #[test]
+    fn unique_work_status_pins_submodule_evidence_args() {
+        assert_eq!(
+            unique_work_status_args(),
+            vec![
+                "status",
+                "--porcelain=v1",
+                "--ignored=matching",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+            ]
+        );
     }
 
     #[test]
