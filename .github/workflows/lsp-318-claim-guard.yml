@@ -21,6 +21,7 @@ on:
       - 'xtask/src/tasks/lsp_318_matrix.rs'
       - 'xtask/tests/list_commands_cli.rs'
       - 'xtask/tests/lsp_318_changelog_totality.rs'
+      - 'xtask/tests/fixtures/lsp-318-changelog/**'
   push:
     branches: [main, master]
     paths:
@@ -42,6 +43,7 @@ on:
       - 'xtask/src/tasks/lsp_318_matrix.rs'
       - 'xtask/tests/list_commands_cli.rs'
       - 'xtask/tests/lsp_318_changelog_totality.rs'
+      - 'xtask/tests/fixtures/lsp-318-changelog/**'
   workflow_dispatch: {}
 
 concurrency:
