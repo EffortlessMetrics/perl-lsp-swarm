@@ -65,7 +65,20 @@ jobs:
         run: git diff --check
 
       - name: Test compiler harness
-        run: cargo test -p perl-core-harness --all-targets --locked
+        shell: bash
+        run: |
+          set +e
+          cargo test -p perl-core-harness --all-targets --locked 2>&1 | tee .agent-7725-test.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            git config user.name "EffortlessSteven"
+            git config user.email "git@effortlesssteven.com"
+            git add .agent-7725-test.log
+            git commit -m "chore(agent): capture compiler-harness test failure [skip ci]"
+            git push origin HEAD:${GITHUB_REF_NAME}
+            exit "$status"
+          fi
 
       - name: Lint compiler harness library
         run: cargo clippy -p perl-core-harness --lib --locked -- -D warnings
@@ -75,6 +88,7 @@ jobs:
         run: |
           rm .github/workflows/agent-7725-exact-git-widths.yml
           rm scripts/agent_7725_patch.py
+          rm -f .agent-7725-test.log
           git config user.name "EffortlessSteven"
           git config user.email "git@effortlesssteven.com"
           git add -A
