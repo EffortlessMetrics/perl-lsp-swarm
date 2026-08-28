@@ -59,8 +59,7 @@ fn exact_heading_positions(document: &str, heading: &str) -> Vec<usize> {
     let mut offset = 0;
     let mut positions = Vec::new();
     for line in document.split_inclusive('\n') {
-        let content =
-            line.trim_end_matches(|character| character == '\r' || character == '\n');
+        let content = line.trim_end_matches(['\r', '\n']);
         if content == heading {
             positions.push(offset);
         }
@@ -242,8 +241,7 @@ fn publication_contract_is_current() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn ratchet_rejects_missing_or_reordered_template_sections()
-    -> Result<(), Box<dyn std::error::Error>>
-{
+    -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let template = read(&root, TEMPLATE_PATH)?;
 
@@ -271,8 +269,7 @@ fn ratchet_rejects_missing_or_reordered_template_sections()
 
 #[test]
 fn ratchet_rejects_weakened_proof_and_provider_drift()
-    -> Result<(), Box<dyn std::error::Error>>
-{
+    -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let template = read(&root, TEMPLATE_PATH)?;
     let weakened = template.replacen(
