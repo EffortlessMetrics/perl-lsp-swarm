@@ -74,8 +74,14 @@
         "module_resolution",
         "workspace_symbols",
         "rename",
+        "safe_delete",
         "hover",
         "goto_definition",
+        "signature_help",
+        "code_lens",
+        "folding_range",
+        "semantic_tokens",
+        "code_actions",
         "infra",
         "ai_completion"
       ]
