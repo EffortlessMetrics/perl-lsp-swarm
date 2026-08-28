@@ -498,6 +498,10 @@ fn nightly_manual_dispatch_inputs_are_boolean_and_job_selectors_are_exclusive() 
             definition.get("type").and_then(Value::as_str) == Some("boolean"),
             "nightly dispatch input `{input}` must declare `type: boolean`"
         );
+        ensure!(
+            definition.get("default").and_then(Value::as_bool) == Some(false),
+            "nightly dispatch input `{input}` must default to false for fail-safe manual routing"
+        );
     }
 
     for (job, input) in routed_jobs {
