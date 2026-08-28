@@ -233,9 +233,7 @@ fn load_baseline_opt(root: &Path) -> Option<SubsystemBaseline> {
 }
 
 fn load_baseline(root: &Path) -> Result<SubsystemBaseline> {
-    let path = root.join(BASELINE_PATH);
-    let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
+    ratchet::load_baseline(root, "editor_ux")
 }
 
 fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
@@ -883,11 +881,47 @@ mod tests {
             Err(error) => error,
         };
         check_true(
-            error.to_string().contains("parsing"),
+            error.to_string().contains("parse baseline"),
             "malformed baseline error missing context",
         )?;
         check_true(!output_path.exists(), "malformed baseline created scorecard artifact")?;
         check_true(!status_path.exists(), "malformed baseline created status artifact")
+    }
+
+    #[test]
+    fn mismatched_baseline_schema_returns_before_writing_artifacts() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let baseline_path = root.path().join(BASELINE_PATH);
+        let baseline_parent = baseline_path
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("baseline path has no parent"))?;
+        fs::create_dir_all(baseline_parent)?;
+        let mut baseline = baseline_with_floor_metrics(BTreeMap::new());
+        baseline.schema_version = 999;
+        fs::write(&baseline_path, serde_json::to_string_pretty(&baseline)?)?;
+
+        fs::write(root.path().join("measurements.json"), minimal_measurement_json())?;
+        let output_path = root.path().join("scorecard.json");
+        let status_path = root.path().join("status.md");
+        let result = run_at(
+            root.path(),
+            UxScorecardFormat::Human,
+            Some(PathBuf::from("measurements.json")),
+            Some(PathBuf::from("scorecard.json")),
+            Some(PathBuf::from("status.md")),
+            true,
+        );
+
+        let error = match result {
+            Ok(()) => return Err(color_eyre::eyre::eyre!("schema mismatch must fail")),
+            Err(error) => error,
+        };
+        check_true(
+            error.to_string().contains("schema version mismatch"),
+            "schema mismatch error missing context",
+        )?;
+        check_true(!output_path.exists(), "schema mismatch created scorecard artifact")?;
+        check_true(!status_path.exists(), "schema mismatch created status artifact")
     }
 
     #[test]
