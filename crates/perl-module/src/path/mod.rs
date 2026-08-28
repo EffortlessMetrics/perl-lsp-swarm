@@ -38,9 +38,7 @@ pub fn is_lookup_safe_module_name(module_name: &str) -> bool {
     }
 
     let normalized = normalize_package_separator(module_name);
-    normalized
-        .split("::")
-        .all(|part| part != ".." && is_module_identifier_segment(part))
+    normalized.split("::").all(|part| part != ".." && is_module_identifier_segment(part))
 }
 
 /// Convert a module path/key into a module name.

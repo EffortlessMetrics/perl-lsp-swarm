@@ -67,7 +67,12 @@ pub fn is_module_identifier_char(ch: char) -> bool {
 }
 
 pub(crate) fn is_module_identifier_segment(segment: &str) -> bool {
-    parse_identifier_segment(segment, 0).is_some_and(|end| end == segment.len())
+    let mut chars = segment.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    (first == '_' || is_xid_start(first)) && chars.all(|ch| is_xid_continue(ch) || ch == '_')
 }
 
 fn separator_len_at(text: &str, index: usize) -> Option<usize> {
