@@ -26,6 +26,10 @@ on:
         description: Exact head commit SHA; must equal the GitHub dispatch SHA
         required: true
         type: string
+      expected_head_sha:
+        description: Exact generated PR head SHA; must equal the dispatch subject.
+        required: false
+        type: string
 
 # Cancel in-progress runs for PR events on new pushes; let push/merge_group runs complete.
 # The preflight SHA-staleness check provides additional skip logic for superseded SHAs.
@@ -55,7 +59,7 @@ jobs:
       - name: Verify dispatched CI subject
         if: github.event_name == 'workflow_dispatch'
         env:
-          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha || inputs.head_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1220,6 +1224,13 @@ jobs:
     # no-ops for draft/superseded routes and fails closed otherwise.
     if: always()
     steps:
+      - name: Reject failed dispatched CI entry guard
+        if: github.event_name == 'workflow_dispatch' && needs.draft-pr-check.result != 'success'
+        shell: bash
+        run: |
+          echo '::error::The dispatched CI entry guard failed; refusing aggregate success'
+          exit 1
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Gate summary

@@ -658,6 +658,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
+      - name: Reject failed dispatched Rust entry guard
+        if: github.event_name == 'workflow_dispatch' && needs.route-rust-small.result != 'success'
+        shell: bash
+        run: |
+          echo '::error::The dispatched Rust entry guard failed; refusing aggregate success'
+          exit 1
+
       - name: Checkout rustfmt prevention contract
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

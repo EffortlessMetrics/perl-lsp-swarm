@@ -40,20 +40,42 @@ fi
 generated_metadata="$(
   gh api \
     "repos/${GITHUB_REPOSITORY}/pulls/${GENERATED_PR_NUMBER}" \
-    --jq '[.head.repo.full_name, .base.repo.full_name, .base.ref] | @tsv'
+    --jq '[.head.repo.full_name, .head.ref, .head.sha, .base.repo.full_name, .base.ref] | @tsv'
 )"
-IFS=$'\t' read -r generated_head_repo generated_base_repo generated_base_ref <<< "$generated_metadata"
-if [[ -z "$generated_head_repo" || -z "$generated_base_repo" || -z "$generated_base_ref" ]]; then
+IFS=$'\t' read -r generated_head_repo generated_head_ref generated_head_sha generated_base_repo generated_base_ref <<< "$generated_metadata"
+if [[ -z "$generated_head_repo" || -z "$generated_head_ref" || -z "$generated_head_sha" ||
+      -z "$generated_base_repo" || -z "$generated_base_ref" ]]; then
   echo "::error::Generated PR metadata is incomplete"
   exit 1
 fi
-if [[ "$generated_head_repo" != "$GITHUB_REPOSITORY" ]]; then
+if [[ "$generated_head_repo" != "$GITHUB_REPOSITORY" ||
+      "$generated_head_ref" != "$GENERATED_HEAD_REF" ||
+      "$generated_head_sha" != "$GENERATED_HEAD_SHA" ]]; then
   echo "::error::Generated PR head is not in the expected repository"
   exit 1
 fi
 if [[ "$generated_base_repo" != "$EXPECTED_BASE_REPOSITORY" ||
       "$generated_base_ref" != "$EXPECTED_BASE_REF" ]]; then
   echo "::error::Generated PR base is not the expected repository and branch"
+  exit 1
+fi
+
+# workflow_dispatch accepts a branch or tag, not a commit SHA. Re-read the
+# branch tip as one pre-dispatch compare-and-swap check and repeat it directly
+# before each request. The receiver-side expected_head_sha guard remains the
+# final fail-closed protection for a movement after this check.
+validate_generated_ref() {
+  local current_head_sha
+  current_head_sha="$(
+    gh api \
+      "repos/${GITHUB_REPOSITORY}/git/ref/heads/${GENERATED_HEAD_REF}" \
+      --jq '.object.sha'
+  )" || return 1
+  [[ "$current_head_sha" == "$GENERATED_HEAD_SHA" ]]
+}
+
+if ! validate_generated_ref; then
+  echo "::error::Generated PR branch moved or could not be read before dispatch"
   exit 1
 fi
 
@@ -78,13 +100,20 @@ fi
 set +e
 failed=0
 for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml; do
+  if ! validate_generated_ref; then
+    echo "::error::Generated PR branch moved or could not be read before dispatching $workflow"
+    failed=1
+    break
+  fi
   if [[ "$workflow" == "ci.yml" ]]; then
     if gh workflow run "$workflow" --ref "$GENERATED_HEAD_REF" \
       -f "base_sha=$VERIFIED_SOURCE_SHA" \
-      -f "head_sha=$GENERATED_HEAD_SHA"; then
+      -f "head_sha=$GENERATED_HEAD_SHA" \
+      -f "expected_head_sha=$GENERATED_HEAD_SHA"; then
       continue
     fi
-  elif gh workflow run "$workflow" --ref "$GENERATED_HEAD_REF"; then
+  elif gh workflow run "$workflow" --ref "$GENERATED_HEAD_REF" \
+    -f "expected_head_sha=$GENERATED_HEAD_SHA"; then
     continue
   fi
   echo "::error::Failed to dispatch $workflow"

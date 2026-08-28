@@ -1070,6 +1070,13 @@ jobs:
       # #6807: read the failed lane's job log to classify runner evictions.
       actions: read
     steps:
+      - name: Reject failed dispatched ripr entry guard
+        if: github.event_name == 'workflow_dispatch' && needs.route-ripr.result != 'success'
+        shell: bash
+        run: |
+          echo '::error::The dispatched ripr entry guard failed; refusing aggregate success'
+          exit 1
+
       # The aggregator classifies lane termination through the shared,
       # unit-tested classifier in scripts/ci/ (#6807, #12563, complementing
       # #12771's bounded auto-retry handoff).
