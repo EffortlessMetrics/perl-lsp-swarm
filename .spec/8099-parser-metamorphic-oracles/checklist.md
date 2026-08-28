@@ -2,12 +2,15 @@
 
 Base pin: `main@a9664af790888333efbe50a042fa060f3cc2d171` (2026-08-27).
 Controller: #8099 (`IMPLEMENTATION_READY` at the latest current-main review).
-This spec-only slice is disjoint from the active guard-taxonomy and heredoc
-region-scanning parser PRs; it changes only `.spec/8099-parser-metamorphic-oracles/`.
+This first implementation slice is disjoint from the active guard-taxonomy and
+heredoc region-scanning parser PRs. It changes the #8099 spec packet, the parser
+status renderer and generated status row, and one focused xtask policy test.
 
 ## Evidence captured
 
-- [x] Current parser status inspected: 50 fixtures / 29 families,
+- [x] Current denominator disagreement inspected: generated parser status says
+      52 fixtures / 30 families; committed fixture inventory says 50 / 29
+- [x] Current legacy observation inspected:
       `whitespace_invariance_rate=0.4`, sample count 46
 - [x] Current scorer call graph inventoried from variant construction through
       status rendering
@@ -30,17 +33,21 @@ region-scanning parser PRs; it changes only `.spec/8099-parser-metamorphic-oracl
 
 ### Stage 1 — freeze the legacy investigation population
 
+- [x] Add `xtask/tests/parser_accuracy_legacy_oracle_policy.rs`
+- [x] Retain every live manifest fixture in applied-or-omitted accounting
+- [x] Pin the current 46 applied legacy cases without hard-coding a stale total
+      from either generated denominator projection
 - [ ] Add `.ci/schemas/parser-accuracy-metamorphic-case.schema.json`
 - [ ] Add an internal module rooted at
       `xtask/src/tasks/metrics/parser_accuracy/metamorphic/`
-- [ ] Emit one sorted NDJSON row for every current manifest fixture under
+- [ ] Emit one sorted NDJSON row for every live manifest fixture under
       `trailing_horizontal_whitespace.legacy.v1`
 - [ ] Preserve the 46 applied legacy hash observations as `not_proven` /
       `legacy_hash_oracle_untrusted`
-- [ ] Preserve the four omitted fixtures as `not_proven` /
+- [ ] Preserve every remaining fixture as `not_proven` /
       `legacy_applicability_unclassified`
 - [ ] Emit `parser_accuracy_metamorphic_summary.json` from retained rows
-- [ ] Prove legacy rows cannot packet, floor, or render as trusted accuracy
+- [ ] Prove legacy rows cannot packet or floor
 
 ### Stage 2 — validated transformations and coordinate maps
 
@@ -71,16 +78,20 @@ region-scanning parser PRs; it changes only `.spec/8099-parser-metamorphic-oracl
 
 ### Stage 4 — packets, status, and admission
 
+- [x] Update `xtask/src/tasks/update_status/parser/accuracy.rs` so the three
+      legacy hash rows render as `investigation_only` /
+      `legacy_oracle_untrusted`
+- [x] Exclude legacy investigations from trusted measured-row accounting and
+      retain additional investigation counts separately
+- [x] Add unit coverage proving the old `whitespace_invariance_rate=0.4` form
+      cannot render
+- [x] Regenerate the affected parser status row for the current committed input
 - [ ] Route every required typed mismatch into #8031 with one bounded packet
 - [ ] Treat a missing required packet as evaluation-integrity failure
-- [ ] Update `xtask/src/tasks/update_status/parser/accuracy.rs` so legacy hash
-      rows render as `investigation_only`/`legacy_oracle_untrusted`
 - [ ] Derive status and committed packet detail/count from the same artifact
 - [ ] Keep all non-pass terminal states visible in denominator summaries
 - [ ] Activate no floor until mutation calibration and required packet coverage
       are green
-- [ ] Regenerate and commit affected status artifacts through the maintained
-      `cargo xtask update-status` route
 
 ### Stage 5 — consumptive retirement
 
@@ -97,6 +108,7 @@ region-scanning parser PRs; it changes only `.spec/8099-parser-metamorphic-oracl
 ```bash
 cargo fmt --all -- --check
 cargo clippy -p xtask --all-targets --locked -- -D warnings
+cargo test -p xtask --test parser_accuracy_legacy_oracle_policy --locked
 cargo test -p xtask --all-targets --locked
 cargo xtask metrics parser-accuracy --json
 cp target/metrics/parser_accuracy_metamorphic_cases.ndjson /tmp/cases.first.ndjson
@@ -108,9 +120,10 @@ cargo xtask update-status
 git diff --check
 ```
 
-The implementation proof must also run the focused #7038 structural fixtures,
-#7008/#7052 edit rows, schema checks, failure-packet checks, shuffled-order
-control, and deliberate mutation controls named in `acceptance.md`.
+The retained-artifact implementation must also run the focused #7038 structural
+fixtures, #7008/#7052 edit rows, schema checks, failure-packet checks,
+shuffled-order control, and deliberate mutation controls named in
+`acceptance.md`.
 
 ## Explicit non-goals for this slice
 
