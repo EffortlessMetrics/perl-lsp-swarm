@@ -30,6 +30,7 @@ unicode-ident = "1.0.22"
 url = { workspace = true }
 perl-parser-core = { workspace = true }
 perl-workspace = { workspace = true }
+regex.workspace = true
 
 [dev-dependencies]
 proptest = { workspace = true }

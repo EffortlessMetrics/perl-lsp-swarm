@@ -1299,7 +1299,11 @@ impl LspServer {
         if let NodeKind::Use { module, .. } = &node.kind
             && !module.is_empty()
         {
-            return Self::lookup_safe_module_name(module);
+            // The parser retains a version directive in the module field for
+            // `use Foo 1.23`. Hover resolution must use only the module head;
+            // the version remains parser/compiler data, not a filesystem name.
+            let module_head = module.split_ascii_whitespace().next()?;
+            return Self::lookup_safe_module_name(module_head);
         }
 
         // Recurse into container nodes
