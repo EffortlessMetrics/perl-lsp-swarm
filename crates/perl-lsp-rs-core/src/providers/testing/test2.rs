@@ -33,7 +33,9 @@
 //! `Importer`. Otherwise the module's full default set is used. Positive names
 //! are trusted verbatim (added to scope even if not in our table), which keeps
 //! the LSP from emitting false "unknown subroutine" diagnostics for tools we do
-//! not enumerate. Exclusions and renames are applied on top of the default set.
+//! not enumerate. A reviewed non-importing namespace such as `Test2::Suite`
+//! remains empty even when arguments are supplied. Exclusions and renames are
+//! applied on top of the default set.
 
 use regex::Regex;
 use std::collections::BTreeSet;
@@ -429,6 +431,13 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
         && trimmed_args.ends_with(')')
         && trimmed_args[1..trimmed_args.len() - 1].trim().is_empty()
     {
+        return Some(ResolvedImport { symbols: BTreeSet::new(), pragmas: None });
+    }
+
+    // `Test2::Suite` is only the distribution namespace. A plain import is a
+    // no-op, and supplying arguments still creates no local names because the
+    // package defines no importer.
+    if module == "Test2::Suite" {
         return Some(ResolvedImport { symbols: BTreeSet::new(), pragmas: None });
     }
 
