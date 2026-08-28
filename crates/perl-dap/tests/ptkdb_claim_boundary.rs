@@ -2,9 +2,7 @@
 //! ptkdb compatibility claim.
 
 use perl_dap::backend::external_peer::{ExternalDebuggerPeerBackend, PeerSessionToken};
-use perl_dap::backend::{
-    DebugBackend, DebugBackendCapabilities, InitializeBackendParams,
-};
+use perl_dap::backend::{DebugBackend, DebugBackendCapabilities, InitializeBackendParams};
 use perl_dap::model::{DebugEvent, OutputCategory, StopReason};
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
@@ -32,10 +30,7 @@ fn child_stderr(child: &mut Child) -> String {
 
 fn unique_temp_marker(name: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    Ok(std::env::temp_dir().join(format!(
-        "perl-dap-ptkdb-{name}-{}-{nonce}",
-        std::process::id()
-    )))
+    Ok(std::env::temp_dir().join(format!("perl-dap-ptkdb-{name}-{}-{nonce}", std::process::id())))
 }
 
 fn accept_plugin(
@@ -187,10 +182,7 @@ exit 0;
     let mut events = Vec::new();
     while Instant::now() < deadline {
         events.extend(backend.drain_events());
-        if events
-            .iter()
-            .any(|event| matches!(event, DebugEvent::Terminated { .. }))
-        {
+        if events.iter().any(|event| matches!(event, DebugEvent::Terminated { .. })) {
             break;
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -222,11 +214,7 @@ exit 0;
     let stops: Vec<_> = events
         .iter()
         .filter_map(|event| match event {
-            DebugEvent::Stopped {
-                reason,
-                position: Some(position),
-                ..
-            } => Some((
+            DebugEvent::Stopped { reason, position: Some(position), .. } => Some((
                 reason.clone(),
                 position.source.path.to_string_lossy().to_string(),
                 position.line,
@@ -242,9 +230,7 @@ exit 0;
         ]
     );
     assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, DebugEvent::Terminated { exit_code: None })),
+        events.iter().any(|event| matches!(event, DebugEvent::Terminated { exit_code: None })),
         "missing bounded termination event: {events:?}"
     );
 
@@ -279,10 +265,7 @@ exit 0;
         .output()?;
 
     let stderr = String::from_utf8(output.stderr)?;
-    assert!(
-        output.status.success(),
-        "unpinned ptkdb rejection harness failed: {stderr}"
-    );
+    assert!(output.status.success(), "unpinned ptkdb rejection harness failed: {stderr}");
     assert!(
         stderr.contains(
             "live plugin requires Devel::ptkdb 1.1091; observed 1.1090 -- leaving ptkdb untouched"
