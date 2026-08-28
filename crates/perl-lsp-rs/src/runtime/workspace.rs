@@ -1685,15 +1685,22 @@ impl LspServer {
 
         let mut loaded_content: Option<String> = None;
 
-        // Re-index the file if it is a Perl source file.
+        // Clear any prior disk-backed facts before classifying the current
+        // path. This is required when an indexed extensionless Perl script
+        // loses its shebang: it is no longer a Perl source, but its old
+        // symbols must not remain searchable. Open documents returned above
+        // and therefore retain buffer authority.
         #[cfg(feature = "workspace")]
-        if let Some(coordinator) = self.coordinator()
-            && is_perl_source_uri_on_disk(uri)
-        {
-            if loaded_content.is_none() {
+        if let Some(coordinator) = self.coordinator() {
+            let is_perl_source = is_perl_source_uri_on_disk(uri);
+            if is_perl_source && loaded_content.is_none() {
                 loaded_content = read_watched_file_content(uri, "re-indexing");
             }
 
+            // Re-check after the disk read/classification. If didOpen raced
+            // this watcher event, do not clear its prior disk facts here;
+            // the open buffer remains authoritative and its own lifecycle
+            // will reconcile the index.
             if self.document_is_open(uri) {
                 self.record_backing_file_transition(uri, BackingFileTransition::Changed);
                 tracing::debug!(
@@ -1701,22 +1708,23 @@ impl LspServer {
                      buffer remains authoritative; disk re-index skipped (#8041)",
                     uri
                 );
-                if let Some(coordinator) = self.coordinator() {
-                    coordinator.notify_parse_complete(uri);
-                }
+                coordinator.notify_parse_complete(uri);
                 return;
             }
 
             let workspace_index = coordinator.index();
-            if let Ok(url) = url::Url::parse(uri)
-                && let Some(content) = loaded_content.as_ref()
-            {
-                // Clear old index data before re-indexing
-                workspace_index.clear_file(uri);
-                match workspace_index.index_file(url, content.clone()) {
-                    Ok(()) => tracing::debug!("Re-indexed file: {}", uri),
-                    Err(e) => {
-                        tracing::warn!("Failed to re-index file {}: {}", uri, e);
+            workspace_index.clear_file(uri);
+
+            // Re-index the file if it is a Perl source file.
+            if is_perl_source {
+                if let Ok(url) = url::Url::parse(uri)
+                    && let Some(content) = loaded_content.as_ref()
+                {
+                    match workspace_index.index_file(url, content.clone()) {
+                        Ok(()) => tracing::debug!("Re-indexed file: {}", uri),
+                        Err(e) => {
+                            tracing::warn!("Failed to re-index file {}: {}", uri, e);
+                        }
                     }
                 }
             }
@@ -2961,6 +2969,18 @@ mod tests {
             .find_symbols("changed_tool");
         assert_eq!(changed.len(), 1, "watched changes must re-index an extensionless Perl script");
 
+        std::fs::write(&old_path, "plain text after the shebang is removed\n")?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": old_uri.to_string(), "type": 2 }]
+        })))?;
+        let stale = server
+            .coordinator()
+            .ok_or("missing index coordinator")?
+            .index()
+            .find_symbols("changed_tool");
+        assert!(stale.is_empty(), "removing the shebang must evict stale workspace symbols");
+
+        std::fs::write(&old_path, "#!/usr/bin/env perl\nsub changed_tool { 1 }\n1;\n")?;
         std::fs::rename(&old_path, &new_path)?;
         server.handle_did_rename_files(Some(json!({
             "files": [{ "oldUri": old_uri.to_string(), "newUri": new_uri.to_string() }]

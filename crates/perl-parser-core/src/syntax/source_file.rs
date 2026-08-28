@@ -181,16 +181,21 @@ fn is_extensionless_perl_script(path: &Path) -> bool {
 }
 
 fn has_perl_shebang(path: &Path) -> bool {
-    let Ok(metadata) = std::fs::metadata(path) else {
+    let Ok(file) = std::fs::File::open(path) else {
+        // Permission and other open failures are deliberately fail-closed.
+        return false;
+    };
+    // Validate the object that was actually opened. Checking metadata on the
+    // path before opening would leave a TOCTOU window in which a regular file
+    // could be replaced by a directory or another object. Handle metadata
+    // also makes symlink retargeting fail closed when the resolved target is
+    // not a regular file.
+    let Ok(metadata) = file.metadata() else {
         return false;
     };
     if !metadata.is_file() {
         return false;
     }
-
-    let Ok(file) = std::fs::File::open(path) else {
-        return false;
-    };
 
     let mut prefix = Vec::with_capacity(SHEBANG_PROBE_BYTES);
     let mut limited = file.take(SHEBANG_PROBE_BYTES as u64);
@@ -388,6 +393,22 @@ mod tests {
         assert!(!is_perl_source_path(&shell_script));
         assert!(!is_perl_source_path(&perl_named_text));
         assert!(!is_perl_source_path(&directory_path));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_symlink_when_its_opened_target_is_not_regular()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir()?;
+        let target = directory.path().join("target-directory");
+        let link = directory.path().join("perl-tool");
+        std::fs::create_dir(&target)?;
+        symlink(&target, &link)?;
+
+        assert!(!is_perl_source_path(&link));
         Ok(())
     }
 
