@@ -6,6 +6,8 @@ on:
       - fix/13228-perl-5-42-logical-xor
     paths:
       - .github/workflows/zz-patch-13228.yml
+      - .github/patch-13228.py
+      - .github/patch-13228-token-tests.py
 
 permissions:
   contents: write
@@ -13,7 +15,7 @@ permissions:
 jobs:
   patch:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -29,249 +31,44 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "EffortlessSteven"
-          git config user.email "git@effortlesssteven.com"
-
-          python3 <<'PY'
+          python3 - <<'PY'
           from pathlib import Path
-          import re
 
-          def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
-              p = Path(path)
-              text = p.read_text()
-              actual = text.count(old)
-              if actual != expected:
-                  raise SystemExit(f"{path}: expected {expected} occurrences, found {actual}: {old!r}")
-              p.write_text(text.replace(old, new))
-
-          def replace_regex(path: str, pattern: str, replacement: str, expected: int) -> None:
-              p = Path(path)
-              text = p.read_text()
-              updated, actual = re.subn(pattern, replacement, text)
-              if actual != expected:
-                  raise SystemExit(f"{path}: expected {expected} regex replacements, found {actual}: {pattern!r}")
-              p.write_text(updated)
-
-          kind = "crates/perl-token/src/kind.rs"
-          replace_exact(
-              kind,
-              "    /// Logical OR and assign: `||=`\n    LogicalOrAssign,\n    /// Defined-or and assign: `//=`\n",
-              "    /// Logical OR and assign: `||=`\n    LogicalOrAssign,\n    /// Logical XOR and assign (Perl 5.42+): `^^=`\n    LogicalXorAssign,\n    /// Defined-or and assign: `//=`\n",
-          )
-          replace_exact(
-              kind,
-              "    /// Logical OR: `||`\n    Or,\n    /// Logical NOT: `!`\n",
-              "    /// Logical OR: `||`\n    Or,\n    /// Logical XOR (Perl 5.40+): `^^`\n    LogicalXor,\n    /// Logical NOT: `!`\n",
-          )
-          replace_exact(
-              kind,
-              '    ("||=", TokenKind::LogicalOrAssign),\n    ("//=", TokenKind::DefinedOrAssign),\n',
-              '    ("||=", TokenKind::LogicalOrAssign),\n    ("^^=", TokenKind::LogicalXorAssign),\n    ("//=", TokenKind::DefinedOrAssign),\n',
-          )
-          replace_exact(
-              kind,
-              '    ("||", TokenKind::Or),\n    ("!", TokenKind::Not),\n',
-              '    ("||", TokenKind::Or),\n    ("^^", TokenKind::LogicalXor),\n    ("!", TokenKind::Not),\n',
-          )
-          replace_exact(
-              kind,
-              "            | TokenKind::LogicalAndAssign\n            | TokenKind::LogicalOrAssign\n            | TokenKind::DefinedOrAssign\n",
-              "            | TokenKind::LogicalAndAssign\n            | TokenKind::LogicalOrAssign\n            | TokenKind::LogicalXorAssign\n            | TokenKind::DefinedOrAssign\n",
-              expected=2,
-          )
-          replace_exact(
-              kind,
-              "            | TokenKind::And\n            | TokenKind::Or\n            | TokenKind::Not\n",
-              "            | TokenKind::And\n            | TokenKind::Or\n            | TokenKind::LogicalXor\n            | TokenKind::Not\n",
-              expected=2,
-          )
-          replace_exact(
-              kind,
-              '            "||=" => Some(TokenKind::LogicalOrAssign),\n            "//=" => Some(TokenKind::DefinedOrAssign),\n',
-              '            "||=" => Some(TokenKind::LogicalOrAssign),\n            "^^=" => Some(TokenKind::LogicalXorAssign),\n            "//=" => Some(TokenKind::DefinedOrAssign),\n',
-          )
-          replace_exact(
-              kind,
-              '            "||" => Some(TokenKind::Or),\n            "!" => Some(TokenKind::Not),\n',
-              '            "||" => Some(TokenKind::Or),\n            "^^" => Some(TokenKind::LogicalXor),\n            "!" => Some(TokenKind::Not),\n',
-          )
-          replace_exact(
-              kind,
-              '            TokenKind::LogicalOrAssign => "\'||=\'",\n            TokenKind::DefinedOrAssign => "\'//=\'",\n',
-              '            TokenKind::LogicalOrAssign => "\'||=\'",\n            TokenKind::LogicalXorAssign => "\'^^=\'",\n            TokenKind::DefinedOrAssign => "\'//=\'",\n',
-          )
-          replace_exact(
-              kind,
-              '            TokenKind::Or => "\'||\'",\n            TokenKind::Not => "\'!\'",\n',
-              '            TokenKind::Or => "\'||\'",\n            TokenKind::LogicalXor => "\'^^\'",\n            TokenKind::Not => "\'!\'",\n',
-          )
-          replace_exact(kind, "const TOKEN_KIND_ALL: [TokenKind; 132] = [", "const TOKEN_KIND_ALL: [TokenKind; 134] = [")
-          replace_exact(
-              kind,
-              "    TokenKind::LogicalAndAssign,\n    TokenKind::LogicalOrAssign,\n    TokenKind::DefinedOrAssign,\n",
-              "    TokenKind::LogicalAndAssign,\n    TokenKind::LogicalOrAssign,\n    TokenKind::LogicalXorAssign,\n    TokenKind::DefinedOrAssign,\n",
-          )
-          replace_exact(
-              kind,
-              "    TokenKind::And,\n    TokenKind::Or,\n    TokenKind::Not,\n",
-              "    TokenKind::And,\n    TokenKind::Or,\n    TokenKind::LogicalXor,\n    TokenKind::Not,\n",
-          )
-
-          operator_classification = "crates/perl-lexer/src/lexer/helpers/operator_classification.rs"
-          replace_exact(
-              operator_classification,
-              'const COMPOUND_SECOND_CHARS: &[u8] = b"=<>&|+->.~*:";',
-              'const COMPOUND_SECOND_CHARS: &[u8] = b"=<>&|^+->.~*:";',
-          )
-          replace_exact(
-              operator_classification,
-              "        (b'&', b'&') | (b'|', b'|') => true,",
-              "        (b'&', b'&') | (b'|', b'|') | (b'^', b'^') => true,",
-          )
-          replace_exact(
-              operator_classification,
-              "            | ('|', '|')\n",
-              "            | ('|', '|')\n            | ('^', '^')\n",
-          )
-
-          lexer = "crates/perl-lexer/src/lib.rs"
-          replace_exact(
-              lexer,
-              "// Check for three-character operators like **=, <<=, >>=",
-              "// Check for three-character operators like **=, <<=, >>=, ^^=",
-              expected=2,
-          )
-          replace_regex(
-              lexer,
-              r"(?m)^(\s*)\| \('>', '>', Some\('='\)\)$",
-              r"\1| ('>', '>', Some('='))\n\1| ('^', '^', Some('='))",
-              expected=2,
-          )
-
-          helpers = "crates/perl-parser-core/src/engine/parser/helpers.rs"
-          replace_exact(
-              helpers,
-              "        kind.is_some_and(|token| matches!(token, TokenKind::Or | TokenKind::DefinedOr))",
-              "        kind.is_some_and(|token| {\n            matches!(token, TokenKind::Or | TokenKind::LogicalXor | TokenKind::DefinedOr)\n        })",
-          )
-
-          parser_root = Path("crates/perl-parser-core/src/engine/parser")
-          assignment_map = 'TokenKind::LogicalOrAssign => Some("||="),\n'
-          assignment_map_add = assignment_map + '                TokenKind::LogicalXorAssign => Some("^^="),\n'
-          option_map = 'Some(TokenKind::LogicalOrAssign) => Some("||="),\n'
-          option_map_add = option_map + '                Some(TokenKind::LogicalXorAssign) => Some("^^="),\n'
-          map_count = 0
-          option_count = 0
-          for p in parser_root.rglob("*.rs"):
-              text = p.read_text()
-              if assignment_map in text and "TokenKind::LogicalXorAssign => Some" not in text:
-                  count = text.count(assignment_map)
-                  text = text.replace(assignment_map, assignment_map_add)
-                  map_count += count
-              if option_map in text and "Some(TokenKind::LogicalXorAssign) => Some" not in text:
-                  count = text.count(option_map)
-                  text = text.replace(option_map, option_map_add)
-                  option_count += count
-              text, inserted = re.subn(
-                  r"(?m)^(\s*)\| TokenKind::LogicalOrAssign\n(\s*)\| TokenKind::DefinedOrAssign$",
-                  r"\1| TokenKind::LogicalOrAssign\n\1| TokenKind::LogicalXorAssign\n\2| TokenKind::DefinedOrAssign",
-                  text,
-              )
-              p.write_text(text)
-          if map_count < 2:
-              raise SystemExit(f"expected at least two parser assignment maps, updated {map_count}")
-          if option_count < 1:
-              raise SystemExit(f"expected at least one parser optional assignment map, updated {option_count}")
-
-          pest_paths = [
-              "crates/perl-parser-pest/src/grammar.pest",
-              "archive/crates/tree-sitter-perl-rs/src/grammar.pest",
-          ]
-          for pest in pest_paths:
-              replace_exact(pest, 'logical_xor_op = { "xor" }', 'logical_xor_op = { "^^" | "xor" }')
-              replace_exact(pest, '    "&&=" | "||=" | "//=" |', '    "&&=" | "||=" | "^^=" | "//=" |')
-
-          grammar = "tree-sitter-perl/grammar.js"
-          replace_exact(grammar, "        choice('||', '//'),", "        choice('||', '^^', '//'),")
-          replace_exact(grammar, "        '&&=', '||=', '//=',", "        '&&=', '||=', '^^=', '//=',")
-
-          lexer_test = Path("crates/perl-lexer/tests/perl_5_40_42_logical_xor.rs")
-          lexer_test.write_text(r'''//! Perl 5.40/5.42 logical XOR tokenization contract.
-
-use perl_parser_core::tokens::token_stream::TokenStream;
-use perl_tdd_support::must;
-use perl_token::TokenKind;
-
-#[test]
-fn logical_xor_uses_longest_valid_operator_spelling() -> Result<(), Box<dyn std::error::Error>> {
-    let mut stream = TokenStream::new("$a ^ $b; $a ^= $b; $a ^^ $b; $a ^^= $b;");
-    let mut operators = Vec::new();
-
-    loop {
-        let token = must(stream.next());
-        match token.kind() {
-            TokenKind::BitwiseXor
-            | TokenKind::XorAssign
-            | TokenKind::LogicalXor
-            | TokenKind::LogicalXorAssign => operators.push(token.kind()),
-            TokenKind::Eof => break,
-            _ => {}
-        }
-    }
-
-    assert_eq!(
-        operators,
-        vec![
-            TokenKind::BitwiseXor,
-            TokenKind::XorAssign,
-            TokenKind::LogicalXor,
-            TokenKind::LogicalXorAssign,
-        ]
-    );
-    Ok(())
-}
-''')
-
-          parser_test = Path("crates/perl-parser-core/tests/perl_5_40_42_logical_xor.rs")
-          parser_test.write_text(r'''//! Perl 5.40 binary `^^` and Perl 5.42 assigning `^^=`.
-
-mod cpan_test_helpers;
-use cpan_test_helpers::assert_clean_parse;
-
-#[test]
-fn parses_binary_logical_xor() {
-    assert_clean_parse("my $value = $left ^^ $right;");
-}
-
-#[test]
-fn parses_logical_xor_assignment() {
-    assert_clean_parse("$value ^^= expensive_check();");
-}
-
-#[test]
-fn parses_logical_xor_in_declaration_and_condition_paths() {
-    assert_clean_parse("my $value ^^= $fallback; if ($left || $middle ^^ $right // $fallback) { 1; }");
-}
-''')
+          source = Path('.github/patch-13228.py').read_text()
+          start = source.index('# Keep exhaustive/manual token test tables')
+          end = source.index('# ---------------------------------------------------------------------------\n# Longest-match lexer recognition')
+          Path('/tmp/patch-13228-core.py').write_text(source[:start] + source[end:])
           PY
-
+          python3 /tmp/patch-13228-core.py
+          python3 .github/patch-13228-token-tests.py
           cargo fmt --all
           git diff --check
 
-          git add \
-            crates/perl-token/src/kind.rs \
-            crates/perl-lexer/src/lib.rs \
-            crates/perl-lexer/src/lexer/helpers/operator_classification.rs \
-            crates/perl-lexer/tests/perl_5_40_42_logical_xor.rs \
-            crates/perl-parser-core/src/engine/parser \
-            crates/perl-parser-core/tests/perl_5_40_42_logical_xor.rs \
-            crates/perl-parser-pest/src/grammar.pest \
-            archive/crates/tree-sitter-perl-rs/src/grammar.pest \
-            tree-sitter-perl/grammar.js
-          git commit -m "fix(parser): support modern logical xor (#13228)"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+      - name: Refresh and verify token snapshots
+        shell: bash
+        run: |
+          set -euo pipefail
+          UPDATE_SNAPSHOTS=1 cargo test --locked -p perl-token --all-targets
+          cargo test --locked -p perl-token --all-targets
 
-      - name: Show remaining operator tables
+      - name: Compile touched parser fronts
+        shell: bash
+        run: |
+          cargo check --locked --all-targets \
+            -p perl-token \
+            -p perl-lexer \
+            -p perl-parser-core \
+            -p perl-parser-pest
+
+      - name: Run focused logical XOR proofs
+        shell: bash
+        run: |
+          cargo test --locked -p perl-lexer --test perl_5_40_42_logical_xor
+          cargo test --locked -p perl-parser-core --test perl_5_40_42_logical_xor
+          cargo test --locked -p perl-parser-pest --all-targets
+          cargo xtask ci-hygiene check-v2-bundle-sync
+
+      - name: Inventory remaining explicit operator tables
         shell: bash
         run: |
           rg -n 'LogicalOrAssign|DefinedOrAssign|TokenKind::Or|TokenKind::DefinedOr|\|\|=|\^\^' \
@@ -284,18 +81,12 @@ fn parses_logical_xor_in_declaration_and_condition_paths() {
             tree-sitter-perl \
             archive/crates/tree-sitter-perl-rs/src/grammar.pest || true
 
-      - name: Focused compile proof
+      - name: Commit verified source patch
         shell: bash
         run: |
-          cargo check --locked --all-targets \
-            -p perl-token \
-            -p perl-lexer \
-            -p perl-parser-core \
-            -p perl-parser-pest
-
-      - name: Focused test proof
-        shell: bash
-        run: |
-          cargo test --locked -p perl-token --all-targets
-          cargo test --locked -p perl-lexer --test perl_5_40_42_logical_xor
-          cargo test --locked -p perl-parser-core --test perl_5_40_42_logical_xor
+          set -euo pipefail
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add -A
+          git commit -m "fix(parser): support modern logical xor (#13228)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
