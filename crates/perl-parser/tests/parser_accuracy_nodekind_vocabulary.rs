@@ -11,7 +11,7 @@
 
 use perl_parser::NodeKind;
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use std::fmt;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -184,6 +184,69 @@ fn manifest_preserves_optional_nodekind_collections_and_rejects_misspelled_keys(
         parse_manifest(misspelled_forbidden_nodes).is_err(),
         "a misspelled forbidden_nodes key must not be silently ignored"
     );
+
+    let misspelled_forbidden_parent_kind = r#"{
+        "fixtures": [{
+            "id": "fixture",
+            "forbidden_nodes": [{
+                "id": "no_block",
+                "kind": "Block",
+                "line": 1,
+                "parent_knd": "Program"
+            }]
+        }]
+    }"#;
+    assert!(
+        parse_manifest(misspelled_forbidden_parent_kind).is_err(),
+        "a misspelled forbidden_nodes parent_kind key must not be silently ignored"
+    );
+}
+
+#[test]
+fn manifest_rejects_arbitrary_unknown_json_keys_at_each_validated_level() {
+    let mut root = json!({ "fixtures": [] });
+    root.as_object_mut()
+        .expect("test manifest root is an object")
+        .insert("unknown_root_field_generated".to_string(), json!("unknown_root_value"));
+
+    let mut fixture = json!({ "id": "fixture" });
+    fixture
+        .as_object_mut()
+        .expect("test fixture is an object")
+        .insert("unknown_fixture_field_generated".to_string(), json!("unknown_fixture_value"));
+    let fixture_manifest = json!({ "fixtures": [fixture] });
+
+    let mut ast_row = json!({ "id": "expectation", "kind": "String", "line": 1 });
+    ast_row
+        .as_object_mut()
+        .expect("test AST row is an object")
+        .insert("unknown_ast_row_field_generated".to_string(), json!("unknown_ast_row_value"));
+    let ast_fixture = json!({ "id": "fixture", "ast_expectations": [ast_row] });
+    let ast_manifest = json!({ "fixtures": [ast_fixture] });
+
+    let mut forbidden_row = json!({ "id": "forbidden", "kind": "Block", "line": 1 });
+    forbidden_row.as_object_mut().expect("test forbidden row is an object").insert(
+        "unknown_forbidden_row_field_generated".to_string(),
+        json!("unknown_forbidden_row_value"),
+    );
+    let forbidden_fixture = json!({ "id": "fixture", "forbidden_nodes": [forbidden_row] });
+    let forbidden_manifest = json!({ "fixtures": [forbidden_fixture] });
+
+    let cases = [
+        ("root", root, "unknown_root_field_generated"),
+        ("fixture", fixture_manifest, "unknown_fixture_field_generated"),
+        ("AST row", ast_manifest, "unknown_ast_row_field_generated"),
+        ("forbidden row", forbidden_manifest, "unknown_forbidden_row_field_generated"),
+    ];
+    for (location, manifest, unknown_key) in cases {
+        let rendered = manifest.to_string();
+        let error = parse_manifest(&rendered)
+            .expect_err("an arbitrary unknown JSON key must be rejected by schema validation");
+        assert!(
+            error.to_string().contains(unknown_key),
+            "{location} validation diagnostic must identify generated key `{unknown_key}`: {error}"
+        );
+    }
 }
 
 #[test]
