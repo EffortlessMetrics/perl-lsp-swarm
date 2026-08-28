@@ -100,11 +100,7 @@ fn source_slice<'a>(
     subject: &str,
 ) -> Result<&'a str, Box<dyn Error>> {
     source.get(start..end).ok_or_else(|| {
-        format!(
-            "{subject} range {start}..{end} is outside source length {}",
-            source.len()
-        )
-        .into()
+        format!("{subject} range {start}..{end} is outside source length {}", source.len()).into()
     })
 }
 
@@ -139,15 +135,9 @@ fn postfix_modifiers_preserve_exact_flat_hir_condition_and_label() -> TestResult
             case.flat_source
         );
         let (item, shell) = modifiers.first().copied().ok_or_else(|| {
-            format!(
-                "postfix modifier shell is missing for {:?}",
-                case.flat_source
-            )
+            format!("postfix modifier shell is missing for {:?}", case.flat_source)
         })?;
-        assert_eq!(
-            shell.modifier, case.modifier,
-            "wrong modifier for {:?}", case.flat_source
-        );
+        assert_eq!(shell.modifier, case.modifier, "wrong modifier for {:?}", case.flat_source);
         assert_eq!(
             shell.label.as_deref(),
             case.flat_label,
@@ -302,10 +292,7 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
 fn prefix_control_flow_does_not_mint_postfix_modifier_proof() {
     let branch_file = lower("if ($enabled) { $result = $value; }\n");
     assert!(
-        branch_file
-            .items
-            .iter()
-            .any(|item| matches!(&item.kind, HirKind::BranchShell(_))),
+        branch_file.items.iter().any(|item| matches!(&item.kind, HirKind::BranchShell(_))),
         "prefix if control must retain its branch shell"
     );
     assert!(
@@ -318,10 +305,7 @@ fn prefix_control_flow_does_not_mint_postfix_modifier_proof() {
 
     let loop_file = lower("while ($ready) { $result = $value; }\n");
     assert!(
-        loop_file
-            .items
-            .iter()
-            .any(|item| matches!(&item.kind, HirKind::LoopShell(_))),
+        loop_file.items.iter().any(|item| matches!(&item.kind, HirKind::LoopShell(_))),
         "prefix loop control must retain its loop shell"
     );
     assert!(
