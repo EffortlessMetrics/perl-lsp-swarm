@@ -232,7 +232,15 @@ if (-not [string]::IsNullOrWhiteSpace($Branch) -and -not $Abandoned) {
         }
 
         if ($mergedBranches -contains $Branch -or $verifiedMergedPr) {
-            if (Test-BranchDeletionAdmission -PullRequest $PrNumber -Repository $canonical) {
+            # Re-read origin immediately before admitting and require it to be
+            # the URL this run bound its PR lookup to. Origin is mutable config;
+            # a value read once at the top is not evidence about the endpoint the
+            # deletion will reach.
+            $originNow = (& git -C $canonical remote get-url origin 2>$null)
+            if (([string]$originNow).Trim() -ne ([string]$originUrl).Trim()) {
+                Write-Host "branch not deleted because origin changed during this run: $Branch"
+            }
+            elseif (Test-BranchDeletionAdmission -PullRequest $PrNumber -Repository $canonical) {
                 # The admission covers the REMOTE branch. Deleting the local ref
                 # is a separate act, so prove the local tip is the admitted
                 # remote tip first; unpushed commits are unsalvaged work no

@@ -141,11 +141,39 @@ fn run(args: Args) -> Result<()> {
             if !outcome.admission.admits_deletion() {
                 std::process::exit(RETAIN_EXIT_CODE);
             }
+
+            // Re-read every live subject immediately before deleting, after the
+            // reporting above has done its I/O. The first read authorized; this
+            // one is what the deletion actually stands on, so a child opened, a
+            // tip moved, a remote repointed or a worktree claimed in between
+            // retains instead of being deleted.
+            //
+            // This NARROWS the window to the gap between this read and the push;
+            // it does not close it. A child opened inside that gap is still
+            // auto-closed — the residual documented on `branch_deletion_command`,
+            // which needs an integration lock or deferred deletion to remove.
+            let recollected = collect_request(&commands, pr, &remote)?;
+            let recheck = evaluate(&recollected.request);
+            if !recheck.admission.admits_deletion() {
+                eprintln!(
+                    "branch-deletion-admission: retaining on re-check immediately before deletion: {}",
+                    recheck.detail
+                );
+                std::process::exit(RETAIN_EXIT_CODE);
+            }
+            if recheck.admitted_sha != outcome.admitted_sha {
+                eprintln!(
+                    "branch-deletion-admission: retaining — the admitted tip changed between admission ({:?}) and deletion ({:?})",
+                    outcome.admitted_sha, recheck.admitted_sha
+                );
+                std::process::exit(RETAIN_EXIT_CODE);
+            }
+
             execute_admitted_deletion(
                 &commands,
                 &SystemDeletion,
-                &outcome,
-                &collected.remote_identity,
+                &recheck,
+                &recollected.remote_identity,
             )?;
             Ok(())
         }
