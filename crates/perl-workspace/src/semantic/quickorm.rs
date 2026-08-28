@@ -147,14 +147,21 @@ fn walk_direct_statement(
             context.table_package_active = false;
         }
         NodeKind::ExpressionStatement { expression } if context.table_package_active => {
+            if !is_direct_table_or_view_builder(expression) {
+                return;
+            }
+
+            // QuickORM removes its DSL imports after any table-package table or
+            // view build, including a build whose name is not statically known.
+            // Consume the authority before deciding whether this declaration is
+            // precise enough to emit a source-backed fact.
+            context.table_package_active = false;
+
             let Some(anchor) = direct_table_or_view_builder_anchor(expression) else {
                 return;
             };
             let package = context.current_package.as_deref().unwrap_or("main");
             push_qorm_table_fact(package, anchor, file_id, facts);
-            // QuickORM removes its DSL imports after the table or view package
-            // is built, so a second direct builder has no QuickORM authority.
-            context.table_package_active = false;
         }
         // Runtime-controlled and bare lexical blocks are not package-level
         // table declarations. Do not recurse into them or let their package /
@@ -163,20 +170,24 @@ fn walk_direct_statement(
     }
 }
 
-fn direct_table_or_view_builder_anchor(expression: &Node) -> Option<&Node> {
+fn is_direct_table_or_view_builder(expression: &Node) -> bool {
     let NodeKind::FunctionCall { name, args } = &expression.kind else {
+        return false;
+    };
+    matches!(name.as_str(), "table" | "view")
+        && !args.is_empty()
+        && args.iter().skip(1).any(contains_builder_body)
+}
+
+fn direct_table_or_view_builder_anchor(expression: &Node) -> Option<&Node> {
+    let NodeKind::FunctionCall { args, .. } = &expression.kind else {
         return None;
     };
-    if !matches!(name.as_str(), "table" | "view") || args.is_empty() {
+    if !is_direct_table_or_view_builder(expression) {
         return None;
     }
 
-    let anchor = static_table_name_anchor(args.first()?)?;
-    if !args.iter().skip(1).any(contains_builder_body) {
-        return None;
-    }
-
-    Some(anchor)
+    static_table_name_anchor(args.first()?)
 }
 
 fn static_table_name_anchor(node: &Node) -> Option<&Node> {
@@ -550,6 +561,26 @@ table users => sub {
         assert_eq!(fact.anchor.provenance, Provenance::FrameworkSynthesis);
         assert_eq!(fact.anchor.confidence, Confidence::Medium);
         assert!(fact.anchor.span_end_byte > fact.anchor.span_start_byte);
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_builder_consumes_table_package_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = generated_facts_from_source(
+            r#"
+package MyApp::Schema::User;
+use DBIx::QuickORM type => 'table';
+table $runtime_name => sub {};
+table users => sub {};
+1;
+"#,
+        )?;
+
+        assert!(
+            facts.is_empty(),
+            "the first direct builder consumes QuickORM's imported DSL authority"
+        );
         Ok(())
     }
 
