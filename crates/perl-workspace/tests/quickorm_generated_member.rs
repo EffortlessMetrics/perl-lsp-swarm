@@ -3,8 +3,8 @@ use perl_workspace::{NodeKind, Parser};
 use url::Url;
 
 #[test]
-fn quickorm_qorm_table_reaches_generated_member_surfaces(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn quickorm_qorm_table_reaches_generated_member_surfaces()
+    -> Result<(), Box<dyn std::error::Error>> {
     let source = r#"
 package MyApp::Schema::User;
 use DBIx::QuickORM type => 'table';
@@ -37,7 +37,7 @@ table users => sub {
     let uri = Url::parse("file:///lib/MyApp/Schema/User.pm")?;
     index
         .index_file(uri, source.to_string())
-        .map_err(std::io::Error::other)?;
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
 
     let generated = index.search_generated_workspace_symbols("qorm_table", None);
     assert_eq!(
@@ -62,17 +62,12 @@ table users => sub {
     );
 
     assert!(
-        index
-            .search_source_symbols("qorm_table", None)
-            .is_empty(),
+        index.search_source_symbols("qorm_table", None).is_empty(),
         "qorm_table must not enter the exact source-symbol slice"
     );
 
     let members = index.get_generated_package_members("MyApp::Schema::User");
-    let member_names: Vec<&str> = members
-        .iter()
-        .map(|member| member.name.as_str())
-        .collect();
+    let member_names: Vec<&str> = members.iter().map(|member| member.name.as_str()).collect();
     assert_eq!(member_names, ["qorm_table"]);
     for unearned_member in ["users", "id", "name", "email"] {
         assert!(

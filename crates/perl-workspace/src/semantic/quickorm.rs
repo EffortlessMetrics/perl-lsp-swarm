@@ -133,10 +133,7 @@ fn direct_table_builder_anchor(expression: &Node) -> Option<&Node> {
 
 fn static_table_name_anchor(node: &Node) -> Option<&Node> {
     match &node.kind {
-        NodeKind::String {
-            value,
-            interpolated: false,
-        } if !value.trim().is_empty() => Some(node),
+        NodeKind::String { value, interpolated: false } if !value.trim().is_empty() => Some(node),
         NodeKind::Identifier { name } if !name.trim().is_empty() => Some(node),
         NodeKind::Binary { op, left, .. } if op == "=>" => static_table_name_anchor(left),
         _ => None,
@@ -145,7 +142,7 @@ fn static_table_name_anchor(node: &Node) -> Option<&Node> {
 
 fn contains_builder_body(node: &Node) -> bool {
     if matches!(
-        node.kind,
+        &node.kind,
         NodeKind::Subroutine { .. } | NodeKind::Block { .. } | NodeKind::HashLiteral { .. }
     ) {
         return true;
@@ -161,10 +158,7 @@ fn push_qorm_table_fact(
     facts: &mut Vec<GeneratedMemberFact>,
 ) {
     let canonical_name = format!("{package}::{QORM_TABLE_MEMBER}");
-    if facts
-        .iter()
-        .any(|fact| fact.entity.canonical_name == canonical_name)
-    {
+    if facts.iter().any(|fact| fact.entity.canonical_name == canonical_name) {
         return;
     }
 
@@ -213,10 +207,7 @@ fn classify_import_shape(args: &[String]) -> QuickOrmImportShape {
     }
 
     let raw_args = args.join(" ");
-    if raw_args
-        .chars()
-        .any(|ch| matches!(ch, '{' | '}' | '[' | ']'))
-    {
+    if raw_args.chars().any(|ch| matches!(ch, '{' | '}' | '[' | ']')) {
         return QuickOrmImportShape::Dynamic;
     }
 
@@ -245,7 +236,13 @@ fn normalized_import_tokens(args: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn stable_id(label: &str, file_id: FileId, anchor_start: usize, package: &str, name: &str) -> u64 {
+fn stable_id(
+    label: &str,
+    file_id: FileId,
+    anchor_start: usize,
+    package: &str,
+    name: &str,
+) -> u64 {
     const FNV_OFFSET: u64 = 14_695_981_039_346_656_037;
     const FNV_PRIME: u64 = 1_099_511_628_211;
 
@@ -271,9 +268,10 @@ mod tests {
 
     fn parse_source(source: &str) -> Result<Node, Box<dyn std::error::Error>> {
         let mut parser = Parser::new(source);
-        parser
-            .parse()
-            .map_err(|error| format!("failed to parse QuickORM source: {error:?}").into())
+        let ast = parser.parse().map_err(|error| {
+            std::io::Error::other(format!("failed to parse QuickORM source: {error:?}"))
+        })?;
+        Ok(ast)
     }
 
     fn generated_facts_from_source(
@@ -298,8 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn parser_normalizes_table_import_to_two_tokens(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn parser_normalizes_table_import_to_two_tokens() -> Result<(), Box<dyn std::error::Error>> {
         let ast = parse_source(
             "package User; use DBIx::QuickORM type => 'table'; table users => sub {};",
         )?;
@@ -324,8 +321,8 @@ mod tests {
     }
 
     #[test]
-    fn table_package_emits_only_fixed_qorm_table_member(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn table_package_emits_only_fixed_qorm_table_member()
+    -> Result<(), Box<dyn std::error::Error>> {
         let source = r#"
 package MyApp::Schema::User;
 use DBIx::QuickORM type => 'table';
@@ -347,9 +344,7 @@ table users => sub {
         assert_eq!(fact.anchor.provenance, Provenance::FrameworkSynthesis);
         assert_eq!(fact.anchor.confidence, Confidence::Medium);
         assert_eq!(
-            source.get(
-                fact.anchor.span_start_byte as usize..fact.anchor.span_end_byte as usize
-            ),
+            source.get(fact.anchor.span_start_byte as usize..fact.anchor.span_end_byte as usize),
             Some("users")
         );
         Ok(())
@@ -374,8 +369,8 @@ table users => sub {
     }
 
     #[test]
-    fn runtime_nested_and_incomplete_builders_emit_nothing(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn runtime_nested_and_incomplete_builders_emit_nothing()
+    -> Result<(), Box<dyn std::error::Error>> {
         for source in [
             "package Nested; use DBIx::QuickORM type => 'table'; sub later { table users => sub {}; }",
             "package Conditional; use DBIx::QuickORM type => 'table'; if ($enabled) { table users => sub {}; }",
@@ -391,8 +386,8 @@ table users => sub {
     }
 
     #[test]
-    fn bare_lexical_block_does_not_leak_package_or_framework_state(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn bare_lexical_block_does_not_leak_package_or_framework_state()
+    -> Result<(), Box<dyn std::error::Error>> {
         let facts = generated_facts_from_source(
             r#"
 package MyApp::Schema::User;
