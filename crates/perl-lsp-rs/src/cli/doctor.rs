@@ -986,10 +986,23 @@ impl CargoProvenance {
 fn classify_cargo_provenance(cargo_path: &str) -> CargoProvenance {
     let normalized = cargo_path.to_lowercase().replace('\\', "/");
     if normalized.contains(".cargo/bin") || normalized.contains(".rustup") {
-        CargoProvenance::RustupShim
-    } else {
-        CargoProvenance::NonRustup
+        return CargoProvenance::RustupShim;
     }
+    // A rustup proxy under a custom CARGO_HOME (the repository explicitly
+    // supports that layout) lives in "$CARGO_HOME/bin" and still honors
+    // rust-toolchain.toml, so it must not be labeled non_rustup.
+    if let Ok(cargo_home) = std::env::var("CARGO_HOME") {
+        let home_bin = std::path::PathBuf::from(&cargo_home)
+            .join("bin")
+            .display()
+            .to_string()
+            .to_lowercase()
+            .replace('\\', "/");
+        if normalized.starts_with(&home_bin) {
+            return CargoProvenance::RustupShim;
+        }
+    }
+    CargoProvenance::NonRustup
 }
 
 fn probe_native_cargo() -> CargoToolchainReport {
@@ -1005,18 +1018,43 @@ fn probe_native_cargo() -> CargoToolchainReport {
     )
 }
 
+/// Standard Git for Windows install locations probed when `bash.exe` is not
+/// on PATH: a stock Git install is supported by this repository (its
+/// baseline scripts invoke the absolute path), so it must not read as
+/// "Git Bash missing".
+fn standard_git_bash_location() -> Option<PathBuf> {
+    if cfg!(windows) {
+        [r"C:\\Program Files\\Git\\bin\\bash.exe", r"C:\\Program Files (x86)\\Git\\bin\\bash.exe"]
+            .iter()
+            .map(PathBuf::from)
+            .find(|candidate| candidate.exists())
+    } else {
+        None
+    }
+}
+
 fn probe_git_bash_cargo() -> CargoToolchainReport {
-    let Some(bash_exe) = resolve_tool_on_path("bash") else {
+    let bash_exe = resolve_tool_on_path("bash").or_else(standard_git_bash_location);
+    let Some(bash_exe) = bash_exe else {
         return unreachable_cargo_report(
             FLAVOR_GIT_BASH,
-            "no bash.exe on PATH (Git Bash not detected)",
+            "no bash.exe on PATH and no Git Bash at the standard install locations",
         );
     };
-    if classify_windows_bash_path(&bash_exe.to_string_lossy()) == WindowsBashKind::WslShim {
-        return unreachable_cargo_report(
-            FLAVOR_GIT_BASH,
-            "PATH bash.exe resolves to a WSL shim (System32/WindowsApps), not Git Bash",
-        );
+    match classify_windows_bash_path(&bash_exe.to_string_lossy()) {
+        WindowsBashKind::WslShim => {
+            return unreachable_cargo_report(
+                FLAVOR_GIT_BASH,
+                "PATH bash.exe resolves to a WSL shim (System32/WindowsApps), not Git Bash",
+            );
+        }
+        WindowsBashKind::OtherProvider => {
+            return unreachable_cargo_report(
+                FLAVOR_GIT_BASH,
+                "PATH bash.exe resolves to an unrecognized POSIX provider, not Git Bash",
+            );
+        }
+        WindowsBashKind::PosixProvider => {}
     }
     let mut command = Command::new(&bash_exe);
     command.args(["-c", SHELL_CARGO_PROBE_SCRIPT]);
@@ -1186,7 +1224,17 @@ fn common_perl_candidate_paths(windows_host: bool) -> Vec<PathBuf> {
 }
 
 fn probe_perl_identity(windows_host: bool) -> PerlIdentityReport {
-    let Some(binary) = resolve_tool_on_path("perl") else {
+    // A perl absent from PATH is not necessarily absent from the machine:
+    // the production DAP probes the same well-known default install
+    // locations, so the doctor must check them before declaring Perl
+    // missing and prescribing an install.
+    let binary = match resolve_tool_on_path("perl") {
+        Some(binary) => Some(binary),
+        None => common_perl_candidate_paths(windows_host)
+            .into_iter()
+            .find(|candidate| candidate.exists()),
+    };
+    let Some(binary) = binary else {
         return PerlIdentityReport {
             status: STATUS_MISSING,
             path: None,
@@ -1223,7 +1271,16 @@ fn probe_perl_identity(windows_host: bool) -> PerlIdentityReport {
         .map(|candidate| classify_perl_identity(&candidate.display().to_string(), windows_host))
         .collect();
     let other_identities = other_named_identities(identity, &discovered);
-    let status = if other_identities.is_empty() { STATUS_PRESENT } else { STATUS_DIVERGENT };
+    // A resolved perl that could not execute is an indeterminate probe
+    // failure, never a healthy prerequisite: probe_error wins over both
+    // present and identity-divergence classification.
+    let status = if version.is_none() {
+        STATUS_PROBE_ERROR
+    } else if other_identities.is_empty() {
+        STATUS_PRESENT
+    } else {
+        STATUS_DIVERGENT
+    };
 
     PerlIdentityReport {
         status,
@@ -1297,7 +1354,7 @@ fn cargo_report_from_output(
             Some(binary),
             &decode_shell_output(&process_output.stdout),
         ),
-        Ok(_) | Err(_) => failed_probe_cargo_report(flavor, output),
+        Ok(_) | Err(_) => failed_probe_cargo_report(flavor, Some(binary), output),
     }
 }
 
@@ -1315,11 +1372,21 @@ fn shell_cargo_report_from_output(
             let version_text = lines.collect::<Vec<_>>().join(" ");
             finish_reachable_cargo_report(flavor, cargo_path, &version_text)
         }
-        Ok(_) | Err(_) => failed_probe_cargo_report(flavor, output),
+        // The shell probe failed before resolving a cargo path, so there is
+        // no identity to preserve: the detail still reports probe_error.
+        Ok(_) | Err(_) => failed_probe_cargo_report(flavor, None, output),
     }
 }
 
-fn failed_probe_cargo_report(flavor: &'static str, output: ProbeOutput) -> CargoToolchainReport {
+/// A candidate cargo was resolved but could not be run (nonzero exit or
+/// timeout). That is an indeterminate execution failure, not an absent
+/// prerequisite: it reports `probe_error` while preserving the resolved
+/// identity instead of a misleading "missing" with an install suggestion.
+fn failed_probe_cargo_report(
+    flavor: &'static str,
+    binary: Option<PathBuf>,
+    output: ProbeOutput,
+) -> CargoToolchainReport {
     let detail = match output {
         Ok(process_output) => truncate_for_detail(
             &format!(
@@ -1331,7 +1398,17 @@ fn failed_probe_cargo_report(flavor: &'static str, output: ProbeOutput) -> Cargo
         ),
         Err(spawn_error) => truncate_for_detail(&spawn_error, DETAIL_MAX_CHARS),
     };
-    unreachable_cargo_report(flavor, &detail)
+    CargoToolchainReport {
+        flavor,
+        status: STATUS_PROBE_ERROR,
+        path: binary.as_ref().map(|binary| binary.display().to_string()),
+        version: None,
+        provenance: PROVENANCE_UNKNOWN,
+        meets_workspace_pin: None,
+        honors_toolchain_file: None,
+        error: Some(detail),
+        fix: None,
+    }
 }
 
 fn finish_reachable_cargo_report(
@@ -1420,13 +1497,26 @@ fn git_bash_flavor_report() -> BashFlavorReport {
                 fix: Some(FIX_BASH_INSTALL_GIT_WINDOWS.to_string()),
             }
         }
+        Some(bash_exe)
+            if classify_windows_bash_path(&bash_exe.to_string_lossy())
+                == WindowsBashKind::PosixProvider =>
+        {
+            BashFlavorReport {
+                flavor: FLAVOR_GIT_BASH,
+                status: STATUS_PRESENT,
+                bash_path: Some(bash_exe.display().to_string()),
+                runs_repo_entrypoints: Some(true),
+                note: "repository .sh entrypoints run under this native POSIX bash".to_string(),
+                fix: None,
+            }
+        }
         Some(bash_exe) => BashFlavorReport {
             flavor: FLAVOR_GIT_BASH,
-            status: STATUS_PRESENT,
+            status: STATUS_MISSING,
             bash_path: Some(bash_exe.display().to_string()),
-            runs_repo_entrypoints: Some(true),
-            note: "repository .sh entrypoints run under this native POSIX bash".to_string(),
-            fix: None,
+            runs_repo_entrypoints: None,
+            note: "PATH bash.exe resolves to an unrecognized POSIX provider; repository                    .sh entrypoints are not proven to run under it".to_string(),
+            fix: Some(FIX_BASH_INSTALL_GIT_WINDOWS.to_string()),
         },
     }
 }
