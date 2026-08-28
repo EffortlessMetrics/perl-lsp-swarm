@@ -1447,7 +1447,7 @@ mod tests {
             "1.1.1",
             "App",
             0,
-            "dancer2-dsl.1-1.v2",
+            "dancer2-dsl.1-1.v3",
         );
         assert_eq!(fact.envelope.kind, SemanticFactKind::RouteHandlerContext);
         assert_eq!(fact.status(), SemanticFactStatus::Exact);

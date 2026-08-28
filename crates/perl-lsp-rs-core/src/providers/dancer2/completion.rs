@@ -16,9 +16,7 @@
 
 use super::activation::Dancer2FileActivations;
 use super::facts::CanonicalDancer2FileFacts;
-use perl_semantic_facts::framework_adapters::dancer2::{
-    DANCER2_DSL_CONTRACT_VERSION, Dancer2KeywordState, DslKeywordScope,
-};
+use perl_semantic_facts::framework_adapters::dancer2::{Dancer2KeywordState, DslKeywordScope};
 
 /// Sort penalty applied to Dancer2 keyword completion items so ordinary
 /// lexical/workspace results rank ahead of framework keywords.
@@ -67,6 +65,7 @@ pub fn keyword_completion_candidates(
         _ => return Vec::new(),
     };
     let inside_handler = facts.inside_handler_context(offset);
+    let dsl_contract_version = activation.facts.dsl_contract_version;
     let mut candidates = Vec::new();
     for keyword in &activation.facts.keywords {
         if keyword.state != Dancer2KeywordState::Imported {
@@ -93,9 +92,9 @@ pub fn keyword_completion_candidates(
                     DslKeywordScope::RouteHandlerOnly => "route handler only",
                     _ => "unknown",
                 },
-                DANCER2_DSL_CONTRACT_VERSION
+                dsl_contract_version
             ),
-            dsl_contract_version: DANCER2_DSL_CONTRACT_VERSION,
+            dsl_contract_version,
         });
     }
     candidates
@@ -117,9 +116,16 @@ mod tests {
     use perl_semantic_facts::{FileId, SourceGeneration};
 
     fn setup(source: &'static str) -> (Dancer2FileActivations, CanonicalDancer2FileFacts) {
+        setup_with_version(source, "1.1.1")
+    }
+
+    fn setup_with_version(
+        source: &'static str,
+        framework_version: &str,
+    ) -> (Dancer2FileActivations, CanonicalDancer2FileFacts) {
         let mut parser = Parser::new(source);
         let ast = parser.parse().expect("fixture must parse");
-        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", framework_version);
         let activations =
             file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
@@ -142,16 +148,11 @@ mod tests {
             keyword_offset,
             &none_declared,
         );
-        let labels: Vec<&str> = candidates.iter().map(|candidate| candidate.label.as_str()).collect();
-        for expected in [
-            "get",
-            "app",
-            "dancer_version",
-            "mime",
-            "prepare_app",
-            "to_app",
-            "template",
-        ] {
+        let labels: Vec<&str> =
+            candidates.iter().map(|candidate| candidate.label.as_str()).collect();
+        for expected in
+            ["get", "app", "dancer_version", "mime", "prepare_app", "to_app", "template"]
+        {
             assert!(labels.contains(&expected), "missing {expected} in {labels:?}");
         }
         for handler_only in ["params", "uri_for", "redirect", "cookie", "content_type"] {
@@ -180,7 +181,8 @@ mod tests {
             handler_offset,
             &none_declared,
         );
-        let labels: Vec<&str> = candidates.iter().map(|candidate| candidate.label.as_str()).collect();
+        let labels: Vec<&str> =
+            candidates.iter().map(|candidate| candidate.label.as_str()).collect();
         for expected in [
             "params",
             "body_parameters",
@@ -196,11 +198,37 @@ mod tests {
     }
 
     #[test]
+    fn dancer2_1_0_omits_uri_for_route_and_uses_v1_0_contract() {
+        let source = "use Dancer2;
+get '/x' => sub { params; };
+";
+        let (activations, facts) = setup_with_version(source, "1.0.0");
+        let handler_offset = source.find("params").expect("handler body offset");
+        let candidates = keyword_completion_candidates(
+            &activations,
+            &facts,
+            "main",
+            handler_offset,
+            &none_declared,
+        );
+        assert!(
+            candidates.iter().all(|candidate| candidate.label != "uri_for_route"),
+            "Dancer2 1.0.x must not receive a v1.1 keyword"
+        );
+        let uri_for = candidates
+            .iter()
+            .find(|candidate| candidate.label == "uri_for")
+            .expect("v1.0 request helper");
+        assert_eq!(uri_for.dsl_contract_version, "dancer2-dsl.1-0.v3");
+    }
+
+    #[test]
     fn excluded_keyword_is_never_offered() {
         let (activations, facts) = setup("use Dancer2 '!get';\npost '/x' => sub { 1 };\n");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", 40, &none_declared);
-        let labels: Vec<&str> = candidates.iter().map(|candidate| candidate.label.as_str()).collect();
+        let labels: Vec<&str> =
+            candidates.iter().map(|candidate| candidate.label.as_str()).collect();
         assert!(!labels.contains(&"get"), "excluded `get` offered: {labels:?}");
         assert!(labels.contains(&"post"));
     }
@@ -217,11 +245,9 @@ mod tests {
             handler_offset,
             &none_declared,
         );
-        let labels: Vec<&str> = candidates.iter().map(|candidate| candidate.label.as_str()).collect();
-        assert!(
-            !labels.contains(&"uri_for_route"),
-            "excluded `uri_for_route` offered: {labels:?}"
-        );
+        let labels: Vec<&str> =
+            candidates.iter().map(|candidate| candidate.label.as_str()).collect();
+        assert!(!labels.contains(&"uri_for_route"), "excluded `uri_for_route` offered: {labels:?}");
         assert!(labels.contains(&"uri_for"), "unrelated request helper remains imported");
         assert!(labels.contains(&"params"), "unrelated request helper remains imported");
     }
@@ -233,7 +259,8 @@ mod tests {
             keyword_completion_candidates(&activations, &facts, "main", 30, &|name: &str| {
                 name == "get"
             });
-        let labels: Vec<&str> = candidates.iter().map(|candidate| candidate.label.as_str()).collect();
+        let labels: Vec<&str> =
+            candidates.iter().map(|candidate| candidate.label.as_str()).collect();
         assert!(!labels.contains(&"get"), "local `sub get` owns the name");
         assert!(labels.contains(&"post"));
         assert!(

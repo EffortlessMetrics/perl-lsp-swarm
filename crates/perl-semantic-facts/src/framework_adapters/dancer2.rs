@@ -40,14 +40,18 @@ pub const DANCER2_ADAPTER_ID: AdapterId = AdapterId(0x0044_4E43);
 
 /// Versioned identity of the reviewed default-DSL keyword contract.
 ///
-/// The keyword table and its global/route-handler-only split match the
-/// Dancer2 v1.1.1 `Dancer2::Core::DSL::dsl_keywords` registration at
-/// `PerlDancer/Dancer2@36bdd7aa4e9b97585ad545180a2135fe26278ad1`.
-/// v3 completes that registry vocabulary, corrects `redirect` and `cookie`
-/// scope, preserves the four upstream-deprecated exports, and removes
-/// route/hook names that the reviewed DSL does not register as keywords
-/// (#13089).
+/// The table is the reviewed Dancer2 1.x union: the v1.0.0 registry at
+/// `PerlDancer/Dancer2@ab2a50a478f81b005d0a6f4f1ff2a1f6f9ce1aa5`
+/// is the base, while `uri_for_route` was introduced by
+/// `PerlDancer/Dancer2@1211dbf5e19ffbe46026ddf983c444ce1f5c0b6d`
+/// and shipped in v1.1.0. Facts are filtered against the observed
+/// framework version before publication. v3 also corrects `redirect`
+/// and `cookie` scope, preserves the four upstream-deprecated exports,
+/// and removes route/hook names that the reviewed DSL does not register
+/// as keywords (#13089).
 pub const DANCER2_DSL_CONTRACT_VERSION: &str = "dancer2-dsl.1-1.v3";
+const DANCER2_DSL_1_0_CONTRACT_VERSION: &str = "dancer2-dsl.1-0.v3";
+const DANCER2_URI_FOR_ROUTE_VERSION_CONSTRAINT: &str = ">=1.1.0,<2.0.0";
 
 /// Reviewed versioned-descriptor schema revision for this adapter. Tracks
 /// [`FRAMEWORK_ADAPTER_SCHEMA_VERSION`](crate::framework::FRAMEWORK_ADAPTER_SCHEMA_VERSION):
@@ -86,12 +90,13 @@ const fn deprecated_kw(name: &'static str, scope: DslKeywordScope) -> Dancer2Dsl
     Dancer2DslKeyword { name, scope, deprecated: true }
 }
 
-/// Reviewed default Dancer2 DSL keyword contract (Dancer2 v1.1.1).
+/// Reviewed default Dancer2 1.x DSL keyword union.
 ///
-/// Entries intentionally follow the upstream `dsl_keywords` registration
-/// order so review can compare the two tables without reconstructing a second
-/// grouping. Hook names such as `before` and `after` are operands to `hook`,
-/// not imported DSL keywords.
+/// Entries intentionally follow the v1.1.1 upstream `dsl_keywords`
+/// registration order so review can compare the two tables without
+/// reconstructing a second grouping. Per-activation facts filter additions
+/// that were unavailable at the observed framework version. Hook names such
+/// as `before` and `after` are operands to `hook`, not imported DSL keywords.
 pub const DANCER2_DSL_KEYWORDS: &[Dancer2DslKeyword] = &[
     kw("any", GLOBAL),
     kw("app", GLOBAL),
@@ -176,6 +181,28 @@ pub const DANCER2_DSL_KEYWORDS: &[Dancer2DslKeyword] = &[
     kw("vars", ROUTE),
     kw("warning", GLOBAL),
 ];
+
+fn supports_uri_for_route(framework_version: &str) -> bool {
+    matches!(
+        crate::framework::version_constraint_matches(
+            DANCER2_URI_FOR_ROUTE_VERSION_CONSTRAINT,
+            framework_version,
+        ),
+        Some(true)
+    )
+}
+
+fn keyword_is_available_in_version(keyword: &Dancer2DslKeyword, framework_version: &str) -> bool {
+    keyword.name != "uri_for_route" || supports_uri_for_route(framework_version)
+}
+
+fn dsl_contract_version_for(framework_version: &str) -> &'static str {
+    if supports_uri_for_route(framework_version) {
+        DANCER2_DSL_CONTRACT_VERSION
+    } else {
+        DANCER2_DSL_1_0_CONTRACT_VERSION
+    }
+}
 
 /// Build the Dancer2 adapter descriptor.
 ///
@@ -597,20 +624,21 @@ pub fn dancer2_activation_facts(
                 dsl,
                 dsl_contract_version: DANCER2_DSL_CONTRACT_VERSION,
                 keywords: Vec::new(),
-                unknown_exclusions: unknown_exclusions(evidence),
+                unknown_exclusions: unknown_exclusions(evidence, None),
             };
         }
     };
 
+    let dsl_contract_version = dsl_contract_version_for(&framework_version);
     let appname = dancer2_application_identity(package_name, evidence.appname.as_ref());
     let boundary_reason = dynamic_boundary_reason(&appname, &dsl, evidence);
     if let Some(reason) = boundary_reason {
         return Dancer2ActivationFacts {
             state: Dancer2ActivationState::DynamicBoundary { reason },
             dsl,
-            dsl_contract_version: DANCER2_DSL_CONTRACT_VERSION,
+            dsl_contract_version,
             keywords: Vec::new(),
-            unknown_exclusions: unknown_exclusions(evidence),
+            unknown_exclusions: unknown_exclusions(evidence, Some(&framework_version)),
         };
     }
 
@@ -618,8 +646,9 @@ pub fn dancer2_activation_facts(
         AppNameSelection::Literal(name) => name.clone(),
         _ => package_name.map(ToOwned::to_owned).unwrap_or_default(),
     };
+    let keywords = default_keyword_facts(evidence, &framework_version);
+    let unknown_exclusions = unknown_exclusions(evidence, Some(&framework_version));
 
-    let keywords = default_keyword_facts(evidence);
     Dancer2ActivationFacts {
         state: Dancer2ActivationState::Exact {
             application_name,
@@ -627,9 +656,9 @@ pub fn dancer2_activation_facts(
             source_generation,
         },
         dsl,
-        dsl_contract_version: DANCER2_DSL_CONTRACT_VERSION,
+        dsl_contract_version,
         keywords,
-        unknown_exclusions: unknown_exclusions(evidence),
+        unknown_exclusions,
     }
 }
 
@@ -662,9 +691,13 @@ fn dynamic_boundary_reason(
     }
 }
 
-fn default_keyword_facts(evidence: &Dancer2ImportEvidence) -> Vec<Dancer2KeywordImportFact> {
+fn default_keyword_facts(
+    evidence: &Dancer2ImportEvidence,
+    framework_version: &str,
+) -> Vec<Dancer2KeywordImportFact> {
     DANCER2_DSL_KEYWORDS
         .iter()
+        .filter(|keyword| keyword_is_available_in_version(keyword, framework_version))
         .map(|keyword| Dancer2KeywordImportFact {
             keyword: keyword.name.to_string(),
             scope: keyword.scope,
@@ -678,11 +711,29 @@ fn default_keyword_facts(evidence: &Dancer2ImportEvidence) -> Vec<Dancer2Keyword
         .collect()
 }
 
-fn unknown_exclusions(evidence: &Dancer2ImportEvidence) -> Vec<String> {
+fn keyword_is_reviewed_for_version(
+    keyword: &Dancer2DslKeyword,
+    framework_version: Option<&str>,
+) -> bool {
+    match framework_version {
+        Some(version) => keyword_is_available_in_version(keyword, version),
+        None => true,
+    }
+}
+
+fn unknown_exclusions(
+    evidence: &Dancer2ImportEvidence,
+    framework_version: Option<&str>,
+) -> Vec<String> {
     evidence
         .excluded_keywords
         .iter()
-        .filter(|excluded| !DANCER2_DSL_KEYWORDS.iter().any(|keyword| &keyword.name == excluded))
+        .filter(|excluded| {
+            !DANCER2_DSL_KEYWORDS.iter().any(|keyword| {
+                keyword.name == excluded.as_str()
+                    && keyword_is_reviewed_for_version(keyword, framework_version)
+            })
+        })
         .cloned()
         .collect()
 }
@@ -713,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn keyword_table_matches_reviewed_upstream_registration() {
+    fn keyword_table_matches_reviewed_v1_1_registration() {
         let expected: &[(&str, DslKeywordScope, bool)] = &[
             ("any", GLOBAL, false),
             ("app", GLOBAL, false),
@@ -808,19 +859,33 @@ mod tests {
     #[test]
     fn reviewed_keyword_exclusion_is_known_and_preserved() {
         let evidence = parse_dancer2_import_args(&["!uri_for_route".to_string()]);
-        let facts = default_keyword_facts(&evidence);
+        let facts = default_keyword_facts(&evidence, "1.1.1");
         let uri_for_route = facts
             .iter()
             .find(|fact| fact.keyword == "uri_for_route")
             .expect("reviewed keyword fact");
         assert_eq!(uri_for_route.state, Dancer2KeywordState::Excluded);
-        assert!(unknown_exclusions(&evidence).is_empty());
+        assert!(unknown_exclusions(&evidence, Some("1.1.1")).is_empty());
+        assert_eq!(dsl_contract_version_for("1.1.1"), DANCER2_DSL_CONTRACT_VERSION);
+    }
+
+    #[test]
+    fn uri_for_route_is_not_imported_before_v1_1() {
+        let evidence = parse_dancer2_import_args(&["!uri_for_route".to_string()]);
+        let facts = default_keyword_facts(&evidence, "1.0.0");
+        assert_eq!(facts.len(), DANCER2_DSL_KEYWORDS.len() - 1);
+        assert!(
+            facts.iter().all(|fact| fact.keyword != "uri_for_route"),
+            "Dancer2 1.0.x did not register `uri_for_route`"
+        );
+        assert_eq!(unknown_exclusions(&evidence, Some("1.0.0")), vec!["uri_for_route".to_string()]);
+        assert_eq!(dsl_contract_version_for("1.0.0"), DANCER2_DSL_1_0_CONTRACT_VERSION);
     }
 
     #[test]
     fn non_keyword_hook_name_remains_an_unknown_exclusion() {
         let evidence = parse_dancer2_import_args(&["!before".to_string()]);
-        assert_eq!(unknown_exclusions(&evidence), vec!["before".to_string()]);
+        assert_eq!(unknown_exclusions(&evidence, Some("1.1.1")), vec!["before".to_string()]);
     }
 
     #[test]
