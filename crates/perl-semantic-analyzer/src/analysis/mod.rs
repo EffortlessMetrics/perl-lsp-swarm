@@ -4,6 +4,9 @@
 pub mod call_result_materializer;
 /// Bounded syntax-level callable exit summaries.
 pub mod callable_exit;
+/// Callable-local semantic summary assembly (#12674, I02): joins existing
+/// canonical HIR/PIR facts by identity into validated per-callable packets.
+pub mod callable_semantic_summary;
 /// Class model for Moose/Moo/Mouse intelligence.
 pub mod class_model;
 /// Registry-backed Dancer2 activation-site extraction (#8914).

@@ -47,20 +47,20 @@ use tasks::{
     incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
     install_surface_check, integration_proof, intent_diff_gate, issue_plan, layer_check,
     lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate,
-    metrics, module_train, module_train_live, native_critic, native_format, native_product_surface,
-    native_tooling, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust,
-    parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee,
-    populate_book, pre_push_plan, prep_crates_io_launch, product_health_rail_contract,
-    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
-    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
-    quality_baseline, quality_gate, queue_health, queue_snapshot, receipts, release,
-    release_artifact_check, release_evidence, release_notes, release_turnkey, repo_hygiene,
-    ripr_evidence, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
-    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
-    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
-    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
-    validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
+    metrics, module_train, module_train_live, native_critic, native_format, native_neovim_train,
+    native_product_surface, native_tooling, oracle_fixture_manifest, oracle_receipt_schema,
+    oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet,
+    perl_core_harness, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
+    product_health_rail_contract, protocol_type_substrate_matrix, provider_confidence_matrix,
+    provider_promotion_ledger, publication_facts, publish, publish_closure, publish_manifest_check,
+    publish_receipts, quality_baseline, quality_gate, queue_health, queue_snapshot, receipts,
+    release, release_artifact_check, release_evidence, release_notes, release_turnkey,
+    repo_hygiene, ripr_evidence, rust_small_proof, seam_diff, semantic_inline_next_edit,
+    semantic_inline_receipts, semantic_scorecard, semantic_shadow_compare, semantic_token_classes,
+    session_receipt, shadow_parity, srp_microcrates, supported_editor_inline_smoke,
+    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
+    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
+    ux_scorecard, validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
@@ -155,6 +155,13 @@ enum Commands {
     /// declared adaptations of the landed programme train manifests.
     CheckTrainEdgeContract,
 
+    /// Validate the stable native Neovim implementation train manifest
+    /// (native_neovim_train.v1, #11392): the closed schema, graph shift-left
+    /// rejection law with named diagnostics, the shuffled determinism
+    /// control, and every discriminating invalid fixture.
+    #[command(name = "check-native-neovim-train")]
+    CheckNativeNeovimTrain,
+
     /// Validate the dependency-neutral product-health rail/adapter registry contract.
     #[command(name = "check-product-health-rail-contract")]
     CheckProductHealthRailContract,
@@ -207,6 +214,18 @@ enum Commands {
     EditorCompat {
         #[command(subcommand)]
         command: EditorCompatCommand,
+    },
+
+    /// Provision and verify the content-bound Vim + vim-lsp host test
+    /// instrument (vim_vim_lsp_host_toolchain.v1, #11372): the pinned Vim
+    /// release bytes plus the #11369-pinned vim-lsp subject, acquired,
+    /// digest-verified, cached under exact-identity keys, revalidated on
+    /// every use, and handed off as ephemeral roles. Test-instrument
+    /// identity only: no support verdict, journey, or receipt.
+    #[command(name = "vim-host-toolchain")]
+    VimHostToolchain {
+        #[command(subcommand)]
+        command: VimHostToolchainCommand,
     },
 
     /// Validate the shared adversarial review-packet, review-finding, and
@@ -552,7 +571,8 @@ enum Commands {
         no_build: bool,
     },
 
-    /// Regenerate public Shields endpoint JSON for README badges.
+    /// Deprecated compatibility delegate for the Python badge endpoint owner.
+    #[command(hide = true)]
     Badges {
         /// Check committed endpoints for drift without updating badges/.
         #[arg(long)]
@@ -1121,9 +1141,48 @@ enum Commands {
         #[arg(long, default_value = "auto")]
         base: String,
 
+        /// Immutable CI subject receipt. When supplied, the exact receipt
+        /// identity replaces mutable base/HEAD discovery.
+        #[arg(long)]
+        subject: Option<PathBuf>,
+
+        /// Repository root override for hermetic fixtures.
+        #[arg(long)]
+        root: Option<PathBuf>,
+
         /// Output format: `json` or `text` (default: json).
         #[arg(long, default_value = "json")]
         format: String,
+    },
+
+    /// Resolve one immutable GitHub-event subject and bounded input receipt (#8042).
+    CiSubject {
+        /// Event kind (`pull_request`, `push`, `merge_group`,
+        /// `workflow_dispatch`, or `explicit`). Defaults to
+        /// `GITHUB_EVENT_NAME`, then `explicit`.
+        #[arg(long)]
+        event_name: Option<String>,
+        /// GitHub event JSON. Defaults to `GITHUB_EVENT_PATH`.
+        #[arg(long)]
+        event_path: Option<PathBuf>,
+        /// Expected owner/name. Defaults to `GITHUB_REPOSITORY`.
+        #[arg(long)]
+        repository: Option<String>,
+        /// Exact GitHub workflow SHA. Defaults to `GITHUB_SHA`.
+        #[arg(long)]
+        github_sha: Option<String>,
+        /// Exact base SHA for explicit/workflow-dispatch subjects.
+        #[arg(long)]
+        base_sha: Option<String>,
+        /// Exact head SHA for explicit/workflow-dispatch subjects.
+        #[arg(long)]
+        head_sha: Option<String>,
+        /// Bounded semantic receipt path.
+        #[arg(long)]
+        receipt: PathBuf,
+        /// Repository root override for hermetic fixtures.
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
 
     /// Run the thin exact-head repository contract advisory (issue #3987).
@@ -1134,6 +1193,10 @@ enum Commands {
         /// Head git ref or full SHA for the evaluated range.
         #[arg(long, default_value = "HEAD")]
         head: String,
+        /// Immutable CI subject receipt. When supplied, its exact identity
+        /// and changed-input digest replace independent event resolution.
+        #[arg(long)]
+        subject: Option<PathBuf>,
         /// JSON receipt output path.
         #[arg(long, default_value = "target/receipts/ci-contract.json")]
         receipt: PathBuf,
@@ -2113,6 +2176,18 @@ enum Commands {
         ratchet_check: bool,
     },
 
+    /// Run the canonical Rust Small proof lane in one repository command (#8407).
+    ///
+    /// Executes locked fetch, workspace check, parser smokes, LSP smoke,
+    /// references scorecard census + replay, and diff hygiene with pinned argv,
+    /// failing closed on any omitted or failing step. Every routed Rust Small
+    /// job in `.github/workflows/em-ci-routed-rust.yml` invokes this single
+    /// definition, so the aggregate required check means one proof on all
+    /// routes; the yml keeps only runner instrumentation and the #12320
+    /// pinned `cargo fmt` literal. Typed step receipts remain issue #8408.
+    #[command(name = "rust-small-proof")]
+    RustSmallProof,
+
     /// Publish/check 0.13.2 semantic scorecard artifacts from deterministic fixtures.
     SemanticScorecard {
         /// Optional path to semantic fixture manifest JSON.
@@ -2208,6 +2283,10 @@ enum Commands {
         /// Base git ref used for scope-aware PR-fast planning
         #[arg(long)]
         base: Option<String>,
+
+        /// Immutable CI subject receipt used for scope-aware planning.
+        #[arg(long)]
+        subject: Option<PathBuf>,
 
         /// List available gates without running them
         #[arg(long, short)]
@@ -2637,6 +2716,37 @@ enum EditorCompatCommand {
 }
 
 #[derive(Subcommand)]
+enum VimHostToolchainCommand {
+    /// Acquire (or revalidate) the pinned toolchain under --output and write
+    /// the deterministic identity manifest. Network is used only for
+    /// immutable subjects missing from the cache; an existing valid entry is
+    /// a pure offline revalidation, and any drift deletes and rebuilds.
+    Provision {
+        /// Output/cache root directory for the provisioned toolchain.
+        #[arg(long)]
+        output: PathBuf,
+
+        /// Offline vim-lsp acquisition: clone the pinned commit from this
+        /// local checkout instead of the governed upstream URL. The subject
+        /// identity law is identical in both modes.
+        #[arg(long)]
+        vim_lsp_source: Option<PathBuf>,
+
+        /// Execution-environment label recorded in identity.
+        #[arg(long, default_value = "local_runner")]
+        environment: String,
+    },
+    /// Offline revalidation of one provisioned identity manifest against its
+    /// sibling subjects: recomputes every digest and refuses any drift as a
+    /// typed instrument failure. Never touches the network.
+    Verify {
+        /// Path to a provisioned vim_vim_lsp_host_toolchain.v1.json.
+        #[arg(long)]
+        manifest: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum VimEditorCompatCommand {
     /// Execute a hermetic host journey: start exact Vim headless, load the
     /// pinned vim-lsp, register the canonical perllsp --stdio server, attach
@@ -2655,6 +2765,12 @@ enum VimEditorCompatCommand {
     /// reload route, project config through the restart route, client
     /// settings through the live push channel, stale generation rejection,
     /// and provider ownership — against the governed freshness fixture.
+    /// `save-format` (#11396) runs the seven-cell format-on-save journey —
+    /// the documented BufWritePre autocmd owner over the canonical sync
+    /// format action, one-save-one-invocation cardinality, exact applied and
+    /// legitimate no-change bytes, distinct disabled/refused/failure
+    /// dispositions, and stale-result rejection — against the governed save
+    /// fixture.
     Run {
         /// Exact client subject id (see
         /// `xtask::vim_host_run::VimClientSubject::known_ids`).
@@ -2662,13 +2778,13 @@ enum VimEditorCompatCommand {
         subject: String,
 
         /// Hermetic journey to execute: host-lifecycle, bootstrap-diagnostics,
-        /// or freshness-generations.
+        /// freshness-generations, or save-format.
         #[arg(long, default_value = "host-lifecycle")]
         journey: String,
 
-        /// Fixture variant for the bootstrap-diagnostics and
-        /// freshness-generations journeys (canonical must pass; the negative
-        /// controls must fail with their typed reason).
+        /// Fixture variant for the bootstrap-diagnostics,
+        /// freshness-generations, and save-format journeys (canonical must
+        /// pass; the negative controls must fail with their typed reason).
         #[arg(long, default_value = "canonical")]
         fixture_variant: String,
 
@@ -2706,7 +2822,8 @@ enum NonRustCommand {
     /// `docs/policy/NON_RUST_INVENTORY.md`.
     Inventory {
         /// Check classification and newly added files without rewriting outputs.
-        /// The generated Markdown snapshot may be stale during concurrent merges.
+        /// Require the generated Markdown snapshot to match the committed snapshot
+        /// after line-ending normalization.
         #[arg(long)]
         check: bool,
 
@@ -2890,6 +3007,13 @@ enum CpanCorpusCommand {
         /// runs and lets cpanm skip already-installed modules.
         #[arg(long)]
         reset: bool,
+
+        /// Stop cleanly once this many minutes have elapsed, keeping completed
+        /// batches installed and emitting CPAN_CORPUS_INSTALL_COMPLETE=false.
+        /// Lets a scheduled warm lane end below runner preemption while
+        /// checkpointing forward progress (#12823).
+        #[arg(long)]
+        time_budget_minutes: Option<u64>,
     },
 
     /// Run parser corpus sweep against installed CPAN modules
@@ -4635,6 +4759,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
+        Commands::CheckNativeNeovimTrain => native_neovim_train::run(),
         Commands::CheckProductHealthRailContract => product_health_rail_contract::run(),
         Commands::CheckAgentImplementationPacket { update_golden } => {
             agent_implementation_packet::run(update_golden)
@@ -4656,6 +4781,43 @@ fn run_cli(cli: Cli) -> Result<()> {
             println!("validated {validated} specialized vim/vim-lsp observations");
             Ok(())
         }
+        Commands::VimHostToolchain { command } => match command {
+            VimHostToolchainCommand::Provision { output, vim_lsp_source, environment } => {
+                let repo_root = utils::project_root().map_err(|error| eyre!(error.to_string()))?;
+                let inputs = xtask::vim_host_toolchain::ProvisionInputs {
+                    output_root: output,
+                    repo_root: repo_root.clone(),
+                    authority: xtask::vim_host_toolchain::SubjectAuthoritySource::RepoRoot(
+                        repo_root,
+                    ),
+                    vim_lsp_source,
+                    vim_archive_source: None,
+                    vim_archive_expected_sha256: None,
+                    vim_executable_expected_sha256: None,
+                    execution_environment: environment,
+                };
+                let outcome = xtask::vim_host_toolchain::provision(
+                    &inputs,
+                    &xtask::vim_host_toolchain::probe_vim_version,
+                )
+                .map_err(|error| eyre!("{error}"))?;
+                println!("{}", xtask::vim_host_toolchain::render_handoff(&outcome));
+                Ok(())
+            }
+            VimHostToolchainCommand::Verify { manifest } => {
+                xtask::vim_host_toolchain::verify_layout(
+                    &manifest,
+                    &xtask::vim_host_toolchain::probe_vim_version,
+                )
+                .map_err(|error| eyre!("{error}"))?;
+                println!(
+                    "verified: {} identity holds for {}",
+                    xtask::vim_host_toolchain::SCHEMA_VERSION,
+                    manifest.display()
+                );
+                Ok(())
+            }
+        },
         Commands::EditorCompat { command } => match command {
             EditorCompatCommand::Vim { command } => match command {
                 VimEditorCompatCommand::Run {
@@ -4670,6 +4832,65 @@ fn run_cli(cli: Cli) -> Result<()> {
                 } => {
                     let repo_root =
                         utils::project_root().map_err(|error| eyre!(error.to_string()))?;
+                    if journey == "save-format" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_save_format_run::SaveFormatFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_save_format_run::host_save_format_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim save-format run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} driver_failure={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.driver_failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.driver_failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
+                                        outcome.driver_failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim save-format run did not pass: {result:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     if journey == "freshness-generations" {
                         // Same subject law as the host-lifecycle path: an
                         // unknown subject id is a typed error before any run,
@@ -4791,7 +5012,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                     if journey != "host-lifecycle" {
                         return Err(eyre!(
                             "unknown journey {journey}: known journeys are host-lifecycle, \
-                             bootstrap-diagnostics, freshness-generations"
+                             bootstrap-diagnostics, freshness-generations, save-format"
                         ));
                     }
                     let outcome = xtask::vim_host_run::host_run_from_cli(
@@ -5213,11 +5434,36 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CiBaseline { branch, days, limit, output } => {
             ci_metrics::run_ci_baseline(branch, days, limit, output)
         }
-        Commands::CiScope { base, format } => {
-            ci_scope::run(ci_scope::CiScopeConfig { base, format })
+        Commands::CiScope { base, subject, root, format } => {
+            ci_scope::run(ci_scope::CiScopeConfig { base, subject, root, format })
         }
-        Commands::CiContract { base, head, receipt, summary } => {
-            ci_contract::run(ci_contract::CiContractConfig { base, head, receipt, summary })
+        Commands::CiSubject {
+            event_name,
+            event_path,
+            repository,
+            github_sha,
+            base_sha,
+            head_sha,
+            receipt,
+            root,
+        } => tasks::ci_subject::run(tasks::ci_subject::CiSubjectConfig {
+            event_name,
+            event_path,
+            repository,
+            github_sha,
+            base_sha,
+            head_sha,
+            receipt,
+            root,
+        }),
+        Commands::CiContract { base, head, subject, receipt, summary } => {
+            ci_contract::run(ci_contract::CiContractConfig {
+                base,
+                head,
+                subject,
+                receipt,
+                summary,
+            })
         }
         Commands::CommandEvidence { command } => match command {
             CommandEvidenceCommand::Run {
@@ -5757,7 +6003,13 @@ fn run_cli(cli: Cli) -> Result<()> {
                     }
                     cpan_corpus::fetch_list(&config)
                 }
-                CpanCorpusCommand::Install { dist_list, install_dir, verbose, reset } => {
+                CpanCorpusCommand::Install {
+                    dist_list,
+                    install_dir,
+                    verbose,
+                    reset,
+                    time_budget_minutes,
+                } => {
                     if let Some(dl) = dist_list {
                         config.dist_list = dl;
                     }
@@ -5766,6 +6018,17 @@ fn run_cli(cli: Cli) -> Result<()> {
                         config.install_dir = id;
                     }
                     config.verbose = verbose;
+                    config.time_budget = match time_budget_minutes {
+                        None => None,
+                        Some(mins) => {
+                            let secs = mins.checked_mul(60).ok_or_else(|| {
+                                color_eyre::eyre::eyre!(
+                                    "--time-budget-minutes {mins} overflows the budget clock"
+                                )
+                            })?;
+                            Some(std::time::Duration::from_secs(secs))
+                        }
+                    };
                     cpan_corpus::install(&config)
                 }
                 CpanCorpusCommand::Sweep { output, enforce, verbose, install_dir } => {
@@ -5973,6 +6236,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::SemanticScorecard { manifest, output, status_md, check } => {
             semantic_scorecard::run(manifest, output, status_md, check)
         }
+        Commands::RustSmallProof => rust_small_proof::run(),
         Commands::SemanticShadowCompare { output, status_md, check } => {
             semantic_shadow_compare::run(output, status_md, check)
         }
@@ -5999,6 +6263,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             gate_policy,
             gate,
             base,
+            subject,
             list,
             explain_denominator,
             explain_disposition,
@@ -6015,6 +6280,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             gate_policy: Some(gate_policy),
             gate_filter: gate,
             base_ref: base,
+            subject,
             output_format: format,
             emit_receipt: receipt,
             receipt_path,

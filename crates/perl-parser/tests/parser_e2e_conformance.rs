@@ -116,7 +116,13 @@ fn real_perl_valid_programs_parse_cleanly_end_to_end() -> Result<(), Box<dyn std
                 my $message = Local::Greeter::greet('Ada', qw(z b a));
                 $message =~ s/\s+/ /g;
             "#,
-            expected_fragments: &["Local::Greeter", "sub greet", "map", "sort", "substitution"],
+            expected_fragments: &[
+                "Local::Greeter",
+                "(sub (name greet)",
+                "map",
+                "sort",
+                "substitution",
+            ],
         },
         ValidProgramCase {
             name: "heredoc_eval_and_postfix_conditionals",

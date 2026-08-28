@@ -4,6 +4,7 @@
 //! child cleanup implementation is shared with the `perl-lsp-rs` process suite.
 //! This target proves that the installable facade—not a compatibility binary or
 //! PATH fallback—is the process completing the public contract.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 #[path = "support/real_process.rs"]
 mod real_process;
