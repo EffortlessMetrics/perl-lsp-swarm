@@ -7,6 +7,7 @@ fn test2_imports_recognizes_bundles_and_tools() {
     assert!(is_test2_module("Test2::V0"));
     assert!(is_test2_module("Test2::V1"));
     assert!(is_test2_module("Test2::Bundle::Extended"));
+    assert!(is_test2_module("Test2::Suite"));
     assert!(is_test2_module("Test2::Tools::Basic"));
     assert!(is_test2_module("Test2::Tools::Compare"));
     assert!(is_test2_module("Test2::Plugin::UTF8"));
@@ -22,12 +23,48 @@ fn test2_imports_bundle_classification() {
     assert!(is_test2_bundle("Test2::V0"));
     assert!(is_test2_bundle("Test2::V1"));
     assert!(is_test2_bundle("Test2::Bundle::Extended"));
-    assert!(is_test2_bundle("Test2::Suite"));
+    assert!(is_test2_bundle("Test2::Bundle::More"));
+    assert!(is_test2_bundle("Test2::Bundle::Simple"));
 
-    // Individual tool modules do NOT turn on strict/warnings.
+    // The distribution namespace and individual modules are not bundles.
+    assert!(!is_test2_bundle("Test2::Suite"));
     assert!(!is_test2_bundle("Test2::Tools::Basic"));
     assert!(!is_test2_bundle("Test2::Plugin::UTF8"));
     assert!(!is_test2_bundle("Test2::API"));
+}
+
+#[test]
+fn test2_suite_is_a_non_importing_distribution_namespace() {
+    let defaults = module_default_exports("Test2::Suite").expect("known namespace");
+    assert!(defaults.is_empty(), "Test2::Suite defines no default exports");
+
+    let facts = Test2Facts::from_source("use Test2::Suite;\n");
+    assert!(facts.uses_test2(), "the namespace is still recognized as Test2");
+    assert!(!facts.uses_test2_bundle(), "Test2::Suite is not a bundle");
+    assert!(facts.imported_symbols.is_empty());
+    assert_eq!((facts.strict, facts.warnings), (false, false));
+}
+
+#[test]
+fn first_party_bundles_have_exact_exports_and_pragma_contracts() {
+    let v0 = module_default_exports("Test2::V0").expect("V0 defaults");
+    let extended =
+        module_default_exports("Test2::Bundle::Extended").expect("Extended defaults");
+    assert_eq!(extended, v0, "Extended is the legacy V0 alias");
+
+    let more = Test2Facts::from_source("use Test2::Bundle::More;\n");
+    for expected in ["ok", "BAIL_OUT", "is_deeply", "cmp_ok", "subtest"] {
+        assert!(more.is_imported(expected), "More should export {expected}");
+    }
+    assert!(!more.is_imported("bail_out"), "More exports the BAIL_OUT alias");
+    assert_eq!((more.strict, more.warnings), (false, false));
+
+    let simple = Test2Facts::from_source("use Test2::Bundle::Simple;\n");
+    assert_eq!(
+        simple.imported_symbols,
+        ["done_testing", "ok", "plan", "skip_all"].into_iter().map(str::to_string).collect()
+    );
+    assert_eq!((simple.strict, simple.warnings), (false, false));
 }
 
 #[test]
@@ -165,13 +202,7 @@ fn v1_short_flag_predicate_boundary_discriminators() {
 
 #[test]
 fn v1_import_all_predicate_exact_module_match_boundary() {
-    // `resolve_import`'s `v1_import_all` boundary (test2.rs:324) is
-    // `module == "Test2::V1" && (...)`. Hold the raw args fixed at `-import`
-    // and flip only the module name: for Test2::V1 this pulls in the full bare
-    // tool set (V0_DEFAULT); for any other Test2 module, `-import` is not a
-    // recognized option and has no effect on that module's own default set.
-    // This proves the predicate needs an *exact* "Test2::V1" match, not "any
-    // bundle" or "any Test2 module reachable via is_test2_module".
+    // `resolve_import`'s `v1_import_all` boundary is an exact module check.
     let v1 = resolve_import("Test2::V1", "-import").expect("Test2::V1 recognized");
     assert!(v1.symbols.contains("subtest"), "-import brings the full bare set into Test2::V1");
     assert!(v1.symbols.contains("ok"));
@@ -180,18 +211,12 @@ fn v1_import_all_predicate_exact_module_match_boundary() {
         resolve_import("Test2::Tools::Basic", "-import").expect("Test2::Tools::Basic recognized");
     assert!(
         !basic.symbols.contains("subtest"),
-        "-import has no special meaning outside Test2::V1; Test2::Tools::Basic keeps its own          fixed default set"
+        "-import has no special meaning outside Test2::V1; Test2::Tools::Basic keeps its own fixed default set"
     );
 }
 
 #[test]
 fn v1_pragma_default_predicate_exact_module_match_boundary() {
-    // `resolve_import`'s bundle-pragma boundary (test2.rs:336) is
-    // `module == "Test2::V1"`. Hold the raw args fixed (empty import list) and
-    // flip only the module name between two bundles: Test2::V1 (no pragmas by
-    // default) and Test2::Suite (pragmas on by default, like Test2::V0). This
-    // proves the predicate needs an *exact* "Test2::V1" match, not "any
-    // bundle".
     let v1 = resolve_import("Test2::V1", "").expect("Test2::V1 recognized");
     assert_eq!(
         v1.pragmas,
@@ -199,11 +224,12 @@ fn v1_pragma_default_predicate_exact_module_match_boundary() {
         "Test2::V1 enables no pragmas by default"
     );
 
-    let suite = resolve_import("Test2::Suite", "").expect("Test2::Suite recognized");
+    let extended =
+        resolve_import("Test2::Bundle::Extended", "").expect("legacy V0 alias recognized");
     assert_eq!(
-        suite.pragmas,
+        extended.pragmas,
         Some(Test2Pragmas { strict: true, warnings: true }),
-        "Test2::Suite (a bundle that is not Test2::V1) enables both pragmas by default"
+        "Test2::Bundle::Extended inherits the V0 pragma contract"
     );
 }
 
@@ -294,6 +320,88 @@ fn test2_imports_standalone_tool_has_no_pragmas() {
     // A bare tool import does not enable strict/warnings.
     assert!(!facts.strict);
     assert!(!facts.warnings);
+}
+
+#[test]
+fn classic_compare_standalone_defaults_do_not_reuse_the_v0_subset() {
+    let defaults =
+        module_default_exports("Test2::Tools::ClassicCompare").expect("known tool");
+    assert_eq!(
+        defaults,
+        &["is", "is_deeply", "isnt", "like", "unlike", "cmp_ok"]
+    );
+
+    let facts = Test2Facts::from_source("use Test2::Tools::ClassicCompare;\n");
+    for expected in defaults {
+        assert!(facts.is_imported(expected), "ClassicCompare should import {expected}");
+    }
+    assert_eq!((facts.strict, facts.warnings), (false, false));
+}
+
+#[test]
+fn test2_api_has_no_defaults_but_trusts_explicit_imports() {
+    let defaults = module_default_exports("Test2::API").expect("known API module");
+    assert!(defaults.is_empty());
+
+    let plain = Test2Facts::from_source("use Test2::API;\n");
+    assert!(plain.imported_symbols.is_empty());
+
+    let explicit = Test2Facts::from_source("use Test2::API qw/context intercept/;\n");
+    assert!(explicit.is_imported("context"));
+    assert!(explicit.is_imported("intercept"));
+}
+
+#[test]
+fn additional_first_party_tools_expose_reviewed_defaults() {
+    for (module, expected) in [
+        (
+            "Test2::Tools::AsyncSubtest",
+            &[
+                "async_subtest",
+                "fork_subtest",
+                "thread_subtest",
+            ][..],
+        ),
+        ("Test2::Tools::GenTemp", &["gen_temp"][..]),
+        ("Test2::Tools::Grab", &["grab"][..]),
+    ] {
+        let defaults = module_default_exports(module).expect("known first-party tool");
+        assert_eq!(defaults, expected, "wrong defaults for {module}");
+        let facts = Test2Facts::from_source(&format!("use {module};\n"));
+        for symbol in expected {
+            assert!(facts.is_imported(symbol), "{module} should import {symbol}");
+        }
+        assert_eq!((facts.strict, facts.warnings), (false, false));
+    }
+}
+
+#[test]
+fn spec_and_tester_preserve_default_vs_optional_exports() {
+    let spec = Test2Facts::from_source("use Test2::Tools::Spec;\n");
+    for expected in ["describe", "cases", "tests", "before_each", "after_all"] {
+        assert!(spec.is_imported(expected), "Spec should default-import {expected}");
+    }
+    assert!(!spec.is_imported("mini"), "mini is optional");
+    assert!(!spec.is_imported("include_workflow"), "include_workflow is optional");
+
+    let spec_all = resolve_import("Test2::Tools::Spec", "':ALL'").expect("known tool");
+    assert!(spec_all.symbols.contains("mini"));
+    assert!(spec_all.symbols.contains("include_workflow"));
+    assert!(spec_all.symbols.contains("spec_defaults"));
+
+    let tester = Test2Facts::from_source("use Test2::Tools::Tester;\n");
+    assert!(tester.imported_symbols.is_empty(), "Tester exports nothing by default");
+    let tester_all =
+        resolve_import("Test2::Tools::Tester", "':ALL'").expect("known tester tool");
+    assert_eq!(
+        tester_all.symbols,
+        ["event_groups", "facets", "filter_events"].into_iter().map(str::to_string).collect()
+    );
+}
+
+#[test]
+fn dynamic_target_tool_does_not_receive_invented_static_defaults() {
+    assert!(module_default_exports("Test2::Tools::Target").is_none());
 }
 
 #[test]
