@@ -1,7 +1,6 @@
 use crate::support::ast_has_error;
 use crate::{
-    IncrementalMetrics, InputEdit, Node, ParseDiagnostic, ReparseMode, SemanticOverlay,
-    TreeCursor,
+    IncrementalMetrics, InputEdit, Node, ParseDiagnostic, ReparseMode, SemanticOverlay, TreeCursor,
 };
 use perl_ast::Node as AstNode;
 use perl_parser_core::incremental::IncrementalState;
