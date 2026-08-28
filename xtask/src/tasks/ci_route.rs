@@ -3096,11 +3096,8 @@ mod tests {
                 Some(NON_LCOV_COVERAGE_SKIP_REASON)
             );
         }
-        let docs_receipt = route_receipt(
-            "origin/main",
-            "HEAD",
-            vec!["badges/README.md".to_string()],
-        )?;
+        let docs_receipt =
+            route_receipt("origin/main", "HEAD", vec!["badges/README.md".to_string()])?;
         assert_eq!(docs_receipt.changed_surfaces, vec!["docs"]);
         assert!(proof_pack_ids(&docs_receipt).contains(&"docs"));
         Ok(())

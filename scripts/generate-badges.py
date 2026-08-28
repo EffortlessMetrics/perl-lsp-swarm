@@ -22,6 +22,8 @@ STDERR_DIAGNOSTIC_LIMIT = 2_048
 PRODUCER_STDOUT_LIMIT = 64 * 1_024
 PRODUCER_STDERR_LIMIT = 64 * 1_024
 STREAM_READ_CHUNK_SIZE = 8 * 1_024
+WINDOWS_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+WINDOWS_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 EXPECTED_COUNT_FIELDS = (
     "unsuppressed_exposure_gaps",
     "unsuppressed_test_efficiency_findings",
@@ -46,6 +48,120 @@ class RiprOutputLimitExceeded(RuntimeError):
         self.args = (f"{self.args[0]}; cleanup incomplete: {detail}",)
 
 
+class WindowsProcessJob:
+    """Own a Windows process tree independently of the leader's lifetime."""
+
+    def __init__(self) -> None:
+        if os.name != "nt":
+            raise OSError("Windows process jobs are only available on Windows")
+
+        import ctypes
+        from ctypes import wintypes
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [
+                ("read_operations", ctypes.c_ulonglong),
+                ("write_operations", ctypes.c_ulonglong),
+                ("other_operations", ctypes.c_ulonglong),
+                ("read_bytes", ctypes.c_ulonglong),
+                ("write_bytes", ctypes.c_ulonglong),
+                ("other_bytes", ctypes.c_ulonglong),
+            ]
+
+        class BasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("per_process_user_time_limit", ctypes.c_longlong),
+                ("per_job_user_time_limit", ctypes.c_longlong),
+                ("limit_flags", wintypes.DWORD),
+                ("minimum_working_set_size", ctypes.c_size_t),
+                ("maximum_working_set_size", ctypes.c_size_t),
+                ("active_process_limit", wintypes.DWORD),
+                ("affinity", ctypes.c_size_t),
+                ("priority_class", wintypes.DWORD),
+                ("scheduling_class", wintypes.DWORD),
+            ]
+
+        class ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("basic_limit_information", BasicLimitInformation),
+                ("io_info", IoCounters),
+                ("process_memory_limit", ctypes.c_size_t),
+                ("job_memory_limit", ctypes.c_size_t),
+                ("peak_process_memory_used", ctypes.c_size_t),
+                ("peak_job_memory_used", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        limits = ExtendedLimitInformation()
+        limits.basic_limit_information.limit_flags = (
+            WINDOWS_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        )
+        if not kernel32.SetInformationJobObject(
+            handle,
+            WINDOWS_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(limits),
+            ctypes.sizeof(limits),
+        ):
+            error = ctypes.WinError(ctypes.get_last_error())
+            kernel32.CloseHandle(handle)
+            raise error
+
+        self._ctypes = ctypes
+        self._kernel32 = kernel32
+        self._handle = handle
+
+    def assign(self, process: subprocess.Popen[bytes]) -> None:
+        if not self._kernel32.AssignProcessToJobObject(
+            self._handle, self._ctypes.c_void_p(process._handle)
+        ):
+            raise self._ctypes.WinError(self._ctypes.get_last_error())
+
+    def terminate(self) -> str | None:
+        if self._handle is None:
+            return "Windows process job was already closed"
+        if self._kernel32.TerminateJobObject(self._handle, 1):
+            return None
+        return f"TerminateJobObject failed: {self._ctypes.WinError(self._ctypes.get_last_error())}"
+
+    def close(self) -> str | None:
+        if self._handle is None:
+            return None
+        handle = self._handle
+        self._handle = None
+        if self._kernel32.CloseHandle(handle):
+            return None
+        return f"CloseHandle(job) failed: {self._ctypes.WinError(self._ctypes.get_last_error())}"
+
+
+WINDOWS_JOB_LAUNCHER = """
+import subprocess
+import sys
+
+if sys.stdin.buffer.read(1) != b"1":
+    raise SystemExit(125)
+raise SystemExit(subprocess.run(sys.argv[1:]).returncode)
+"""
+
+
 def bounded_stderr(stderr: str) -> str:
     normalized = stderr.strip()
     if len(normalized) <= STDERR_DIAGNOSTIC_LIMIT:
@@ -54,12 +170,19 @@ def bounded_stderr(stderr: str) -> str:
 
 
 def terminate_process_tree(
-    process: subprocess.Popen[bytes], *, windows: bool | None = None
+    process: subprocess.Popen[bytes],
+    *,
+    windows: bool | None = None,
+    windows_job: WindowsProcessJob | None = None,
 ) -> list[str]:
     """Best-effort tree termination that never masks the triggering failure."""
     failures: list[str] = []
     is_windows = os.name == "nt" if windows is None else windows
-    if is_windows:
+    if is_windows and windows_job is not None:
+        job_failure = windows_job.terminate()
+        if job_failure is not None:
+            failures.append(job_failure)
+    elif is_windows:
         try:
             result = subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
@@ -113,6 +236,54 @@ def terminate_process_tree(
     return failures
 
 
+def start_ripr_process(
+    command: list[str], root: Path
+) -> tuple[subprocess.Popen[bytes], WindowsProcessJob | None]:
+    """Start RIPR with tree ownership established before it can spawn children."""
+    if os.name != "nt":
+        return (
+            subprocess.Popen(
+                command,
+                cwd=root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            ),
+            None,
+        )
+
+    job = WindowsProcessJob()
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-c", WINDOWS_JOB_LAUNCHER, *command],
+            cwd=root,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        )
+        job.assign(process)
+        if process.stdin is None:
+            raise OSError("Windows RIPR launcher stdin was not created")
+        process.stdin.write(b"1")
+        process.stdin.close()
+        return process, job
+    except BaseException:
+        if process is not None:
+            job.terminate()
+            try:
+                process.kill()
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=TERMINATION_GRACE_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        job.close()
+        raise
+
+
 def finish_readers(
     readers: list[threading.Thread], streams: list[BinaryIO]
 ) -> str | None:
@@ -150,22 +321,13 @@ def read_bounded_stream(
 def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
     ripr = os.environ.get("RIPR_BIN", "ripr")
     command = [ripr, "check", "--root", str(root), "--format", "repo-badge-json"]
-    platform_options: dict[str, object]
-    if os.name == "nt":
-        platform_options = {
-            "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-        }
-    else:
-        platform_options = {"start_new_session": True}
-    process = subprocess.Popen(
-        command,
-        cwd=root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        **platform_options,
-    )
+    process, windows_job = start_ripr_process(command, root)
     if process.stdout is None or process.stderr is None:
-        cleanup = terminate_process_tree(process)
+        cleanup = terminate_process_tree(process, windows_job=windows_job)
+        if windows_job is not None:
+            close_failure = windows_job.close()
+            if close_failure is not None:
+                cleanup.append(close_failure)
         suffix = f"; cleanup incomplete: {'; '.join(cleanup)}" if cleanup else ""
         raise RuntimeError(f"ripr output pipes were not created{suffix}")
 
@@ -208,10 +370,35 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
             break
         time.sleep(0.01)
 
-    cleanup_failures = terminate_process_tree(process) if failure is not None else []
+    cleanup_failures = (
+        terminate_process_tree(process, windows_job=windows_job)
+        if failure is not None
+        else []
+    )
     reader_failure = finish_readers(readers, [process.stdout, process.stderr])
     if reader_failure is not None:
         cleanup_failures.append(reader_failure)
+
+    # A prompt-exiting producer can make both readers terminal immediately after
+    # the loop's last empty queue observation. Readers are joined above, so this
+    # second observation is the race-free authority before any result is accepted.
+    if failure is None:
+        try:
+            stream_name, limit = overflow.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            failure = RiprOutputLimitExceeded(stream_name, limit)
+            cleanup_failures.extend(
+                terminate_process_tree(process, windows_job=windows_job)
+            )
+
+    if windows_job is not None:
+        close_failure = windows_job.close()
+        if close_failure is not None:
+            cleanup_failures.append(close_failure)
+            if failure is None:
+                failure = RuntimeError("ripr process cleanup was incomplete")
 
     stderr = stderr_bytes.decode("utf-8", errors="replace")
     if failure is not None:

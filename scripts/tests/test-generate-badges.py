@@ -43,6 +43,8 @@ if observed != {"argv": expected, "cwd": root}:
 if os.environ.get("FAKE_RIPR_SPAWN_CHILD") == "1":
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
     Path(os.environ["FAKE_RIPR_CHILD_PID"]).write_text(str(child.pid), encoding="utf-8")
+    if os.environ.get("FAKE_RIPR_EXIT_AFTER_CHILD") == "1":
+        raise SystemExit(0)
 if os.environ.get("FAKE_RIPR_HANG") == "1":
     time.sleep(300)
 stdout_bytes = int(os.environ.get("FAKE_RIPR_STDOUT_BYTES", "0"))
@@ -56,6 +58,10 @@ if stderr_bytes:
 if os.environ.get("FAKE_RIPR_AFTER_OUTPUT_HANG") == "1":
     time.sleep(300)
 print(os.environ["FAKE_RIPR_PAYLOAD"])
+trailing_stdout_bytes = int(os.environ.get("FAKE_RIPR_TRAILING_STDOUT_BYTES", "0"))
+if trailing_stdout_bytes:
+    sys.stdout.write(" " * trailing_stdout_bytes)
+    sys.stdout.flush()
 print(os.environ.get("FAKE_RIPR_STDERR", ""), file=sys.stderr)
 raise SystemExit(int(os.environ.get("FAKE_RIPR_EXIT", "0")))
 '''
@@ -343,6 +349,61 @@ class GenerateBadgesTests(unittest.TestCase):
     def test_oversized_stderr_is_bounded_and_terminates_process_tree(self):
         self.assert_output_overflow_terminates_tree("stderr")
 
+    def assert_prompt_exit_overflow_is_rejected(self, stream_name: str):
+        with tempfile.TemporaryDirectory() as directory:
+            root, _, fake, _ = self.make_fixture(directory)
+            payload = json.dumps({"counts": VALID_COUNTS})
+            env = self.fake_env(root, fake, {"counts": VALID_COUNTS})
+            limit = getattr(generator, f"PRODUCER_{stream_name.upper()}_LIMIT")
+            if stream_name == "stdout":
+                env["FAKE_RIPR_TRAILING_STDOUT_BYTES"] = str(
+                    limit + 1 - len((payload + "\n").encode("utf-8"))
+                )
+            else:
+                env["FAKE_RIPR_STDERR_BYTES"] = str(limit + 1)
+            previous = os.environ.copy()
+            os.environ.update(env)
+            try:
+                with self.assertRaisesRegex(
+                    generator.RiprOutputLimitExceeded,
+                    rf"{stream_name} exceeded {limit} bytes",
+                ) as raised:
+                    generator.generate(root, check=False, ripr_timeout_seconds=15)
+            finally:
+                os.environ.clear()
+                os.environ.update(previous)
+            self.assertLessEqual(
+                raised.exception.retained_stdout_bytes,
+                generator.PRODUCER_STDOUT_LIMIT,
+            )
+            self.assertLessEqual(
+                raised.exception.retained_stderr_bytes,
+                generator.PRODUCER_STDERR_LIMIT,
+            )
+
+    def test_prompt_exit_oversized_stdout_is_rejected(self):
+        self.assert_prompt_exit_overflow_is_rejected("stdout")
+
+    def test_prompt_exit_oversized_stderr_is_rejected(self):
+        self.assert_prompt_exit_overflow_is_rejected("stderr")
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object behavior")
+    def test_windows_dead_leader_live_child_is_terminated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, _, fake, _ = self.make_fixture(directory)
+            env = self.fake_env(root, fake, {"counts": VALID_COUNTS})
+            env["FAKE_RIPR_SPAWN_CHILD"] = "1"
+            env["FAKE_RIPR_EXIT_AFTER_CHILD"] = "1"
+            previous = os.environ.copy()
+            os.environ.update(env)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "process tree was terminated"):
+                    generator.generate(root, check=False, ripr_timeout_seconds=3)
+            finally:
+                os.environ.clear()
+                os.environ.update(previous)
+            self.assert_fake_child_stopped(root, "dead-leader")
+
     def test_cleanup_failure_is_preserved_through_generate_on_overflow(self):
         with tempfile.TemporaryDirectory() as directory:
             root, _, fake, _ = self.make_fixture(directory)
@@ -353,8 +414,8 @@ class GenerateBadgesTests(unittest.TestCase):
             os.environ.update(env)
             original_cleanup = generator.terminate_process_tree
 
-            def cleanup_with_failure(process):
-                original_cleanup(process)
+            def cleanup_with_failure(process, **kwargs):
+                original_cleanup(process, **kwargs)
                 return ["simulated cleanup failure"]
 
             try:
