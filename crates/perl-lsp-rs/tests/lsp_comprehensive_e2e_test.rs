@@ -442,17 +442,22 @@ fn test_e2e_http_completion_respects_pod_and_heredoc_boundaries() -> TestResult 
     let mut ctx = TestContext::new();
     ctx.initialize();
 
-    assert_post_completion(
+    assert_no_post_completion(
         &mut ctx,
         "file:///test/http-pod-begin.pl",
         "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=begin comment\ndocumentation\n=end comment\n$http->po",
     )?;
     assert_post_completion(
         &mut ctx,
+        "file:///test/http-pod-begin-cut.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=begin comment\ndocumentation\n=end comment\n=cut\n$http->po",
+    )?;
+    assert_post_completion(
+        &mut ctx,
         "file:///test/http-pod-for.pl",
         "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=for comment\ndocumentation\n\n=cut\n$http->po",
     )?;
-    assert_post_completion(
+    assert_no_post_completion(
         &mut ctx,
         "file:///test/http-pod-for-blank-line.pl",
         "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=for comment\ndocumentation\n\n$http->po",
@@ -477,10 +482,15 @@ fn test_e2e_http_completion_respects_pod_and_heredoc_boundaries() -> TestResult 
         "file:///test/http-indented-pod.pl",
         "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n  =begin comment\n  =for comment\n  =cut\n$http->po",
     )?;
-    assert_post_completion(
+    assert_no_post_completion(
         &mut ctx,
         "file:///test/http-malformed-pod.pl",
         "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=begin\nnot a valid POD region\n$http->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-pod-cutlery.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=pod\ndocs\n=cutlery\nnot code\n$http->po",
     )?;
     assert_no_post_completion(
         &mut ctx,

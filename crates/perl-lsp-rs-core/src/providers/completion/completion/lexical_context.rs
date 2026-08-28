@@ -1,51 +1,35 @@
 use perl_parser_core::syntax::text_line::is_identifier_byte;
 use std::cmp::Ordering;
 
+/// Bounded local POD boundary for completion (#13241, HTTP-client scope).
+///
+/// Canonical broad boundary: any column-zero alphabetic `=command` directive
+/// enters POD, and only an exact column-zero `=cut` (followed by whitespace or
+/// end of line) returns the source to Perl code. `=end` and the blank line
+/// ending a `=for` paragraph close an inner POD construct only; they never
+/// resume executable code, and unknown alphabetic commands stay opaque POD.
+///
+/// #13244 owns migrating completion onto the generation-bound canonical
+/// `SourceRegionIndex` and deleting this local bridge.
 #[derive(Default)]
-enum PodState<'a> {
+enum PodState {
     #[default]
     Code,
-    CutTerminated,
-    Begin(&'a str),
-    ForParagraph,
+    Pod,
 }
 
-fn advance_pod_state<'a>(state: &mut PodState<'a>, line: &'a str) -> bool {
+fn advance_pod_state(state: &mut PodState, line: &str) -> bool {
     match state {
         PodState::Code => {
-            if let Some(format) = pod_begin_format(line) {
-                *state = PodState::Begin(format);
-                true
-            } else if pod_for_has_target(line) {
-                *state = PodState::ForParagraph;
-                true
-            } else if is_pod_start_marker(line) {
-                *state = PodState::CutTerminated;
+            if pod_directive(line).is_some() {
+                *state = PodState::Pod;
                 true
             } else {
                 false
             }
         }
-        PodState::CutTerminated => {
+        PodState::Pod => {
             if is_pod_end_marker(line) {
-                *state = PodState::Code;
-            } else if let Some(format) = pod_begin_format(line) {
-                *state = PodState::Begin(format);
-            }
-            true
-        }
-        PodState::Begin(format) => {
-            if pod_end_format(line) == Some(*format) {
-                *state = PodState::Code;
-            }
-            true
-        }
-        PodState::ForParagraph => {
-            if is_pod_end_marker(line) {
-                *state = PodState::Code;
-            } else if line.trim().is_empty() {
-                // `=for` is a single command paragraph; code resumes after
-                // its terminating blank line.
                 *state = PodState::Code;
             }
             true
@@ -139,6 +123,9 @@ fn position_within_line(position: usize, line_start: usize, line_end: usize) -> 
 }
 
 /// Heuristic to check if position is inside a regex literal.
+///
+/// Only the pattern section counts: the replacement section of `s///` and
+/// `tr///` is string-like, so variable completion stays available there.
 pub(super) fn is_in_regex(source: &str, position: usize) -> bool {
     if invalid_string_position(source, position) {
         return false;
@@ -146,10 +133,29 @@ pub(super) fn is_in_regex(source: &str, position: usize) -> bool {
 
     let mut literal_state = LiteralScanState::default();
     literal_state.scan_segment(source.as_bytes(), 0, position);
-    literal_state
-        .literal
-        .as_ref()
-        .is_some_and(|literal| literal.kind == QuoteLikeLiteralKind::Regex)
+    literal_state.literal.as_ref().is_some_and(|literal| {
+        literal.kind == QuoteLikeLiteralKind::Regex && literal.in_pattern_section()
+    })
+}
+
+/// True when `position` sits strictly inside an open regex pattern body.
+///
+/// Unlike [`is_in_regex`], this excludes the opening-delimiter position itself
+/// (`m/|` is a pattern position, while probing at `m|/` is not yet inside the
+/// literal body), so regex flag detection does not hijack pattern completion.
+fn is_inside_entered_regex_body(source: &str, position: usize) -> bool {
+    if invalid_string_position(source, position) {
+        return false;
+    }
+
+    let mut literal_state = LiteralScanState::default();
+    literal_state.scan_segment(source.as_bytes(), 0, position);
+    let Some(literal) = literal_state.literal.as_ref() else {
+        return false;
+    };
+    literal.kind == QuoteLikeLiteralKind::Regex
+        && literal.in_pattern_section()
+        && literal_state.current_literal_body_start.is_some_and(|body_start| body_start < position)
 }
 
 /// Return true when the cursor is positioned in the flag region after a closing regex delimiter.
@@ -161,7 +167,10 @@ pub(crate) fn is_in_regex_flags(source: &str, position: usize) -> bool {
     let flag_chars: &[char] = &['g', 'i', 'm', 's', 'x', 'e', 'r', 'a', 'd', 'u', 'p', 'l', 'c'];
     let without_flags = before.trim_end_matches(|c: char| flag_chars.contains(&c));
     let close_pos = without_flags.len();
-    if close_pos >= 2 && without_flags.ends_with('/') && is_in_regex(source, close_pos - 1) {
+    if close_pos >= 2
+        && without_flags.ends_with('/')
+        && is_inside_entered_regex_body(source, close_pos - 1)
+    {
         return true;
     }
 
@@ -726,6 +735,9 @@ enum QuoteLikeLiteralKind {
 struct ActiveLiteral {
     opener: u8,
     closer: u8,
+    /// Total delimiter-separated sections the literal was opened with
+    /// (`1` for `m//`/`qr//`, `2` for `s///` and `tr///`).
+    sections: usize,
     sections_remaining: usize,
     depth: usize,
     awaiting_section_opener: bool,
@@ -737,11 +749,18 @@ impl ActiveLiteral {
         Self {
             opener: literal.opener,
             closer: literal.closer,
+            sections: literal.sections,
             sections_remaining: literal.sections,
             depth: 1,
             awaiting_section_opener: false,
             kind: literal.kind,
         }
+    }
+
+    /// True while the scan is inside the pattern (first) section. The
+    /// replacement section of `s///`/`tr///` is string-like, not regex.
+    fn in_pattern_section(&self) -> bool {
+        self.sections_remaining == self.sections
     }
 
     fn is_string_like(&self) -> bool {
@@ -806,6 +825,9 @@ struct LiteralScanState {
     in_backtick: bool,
     literal: Option<ActiveLiteral>,
     pending_literal_body_start: Option<usize>,
+    /// Source offset where the currently open literal's body begins, used to
+    /// distinguish "at the opening delimiter" from "inside the body".
+    current_literal_body_start: Option<usize>,
     escaped: bool,
 }
 
@@ -844,6 +866,7 @@ impl LiteralScanState {
             if let Some(active_literal) = self.literal.as_mut() {
                 if active_literal.advance(byte, &mut self.escaped) {
                     self.literal = None;
+                    self.current_literal_body_start = None;
                     if started_active && resumed_code_index.is_none() {
                         resumed_code_index = Some(index + 1);
                     }
@@ -881,6 +904,7 @@ impl LiteralScanState {
                     if let Some(literal_start) = quote_like_literal_start(bytes, index) {
                         let consumed = literal_start.consumed;
                         self.literal = Some(ActiveLiteral::new(literal_start));
+                        self.current_literal_body_start = Some(index + consumed);
                         let body_start = index + consumed;
                         match body_start.cmp(&end) {
                             Ordering::Greater => {
@@ -894,6 +918,7 @@ impl LiteralScanState {
                     if let Some(literal_start) = slash_regex_literal_start(bytes, index) {
                         let consumed = literal_start.consumed;
                         self.literal = Some(ActiveLiteral::new(literal_start));
+                        self.current_literal_body_start = Some(index + consumed);
                         index += consumed;
                         continue;
                     }
@@ -1369,11 +1394,6 @@ fn is_in_multiline_literal(source: &str, position: usize) -> bool {
     state.is_active()
 }
 
-fn is_pod_start_marker(line: &str) -> bool {
-    pod_directive(line)
-        .is_some_and(|directive| !matches!(directive, "=cut" | "=begin" | "=for" | "=end"))
-}
-
 fn is_pod_end_marker(line: &str) -> bool {
     pod_directive(line) == Some("=cut")
 }
@@ -1382,21 +1402,6 @@ fn pod_directive(line: &str) -> Option<&str> {
     let token = line.split_ascii_whitespace().next()?;
     (line.starts_with('=') && token.as_bytes().get(1).is_some_and(u8::is_ascii_alphabetic))
         .then_some(token)
-}
-
-fn pod_begin_format(line: &str) -> Option<&str> {
-    (pod_directive(line) == Some("=begin"))
-        .then(|| line.split_ascii_whitespace().nth(1))
-        .flatten()
-        .filter(|format| !format.starts_with('#'))
-}
-
-fn pod_end_format(line: &str) -> Option<&str> {
-    (pod_directive(line) == Some("=end")).then(|| line.split_ascii_whitespace().nth(1)).flatten()
-}
-
-fn pod_for_has_target(line: &str) -> bool {
-    pod_directive(line) == Some("=for") && line.split_ascii_whitespace().nth(1).is_some()
 }
 
 #[cfg(test)]
@@ -1587,11 +1592,42 @@ mod tests {
     }
 
     #[test]
-    fn for_paragraph_ends_at_blank_line() {
+    fn begin_end_region_stays_pod_until_cut() {
+        let source =
+            "=begin comment\ndocumentation\n=end comment\n\n$http = HTTP::Tiny->new;\n$http->po";
+        assert!(is_in_pod(source, source.len()), "=end must not resume code without =cut");
+
+        let cut_source = "=begin comment\ndocs\n=end comment\n=cut\nmy $after = ";
+        assert!(!is_in_pod(cut_source, cut_source.len()), "=cut must resume code");
+    }
+
+    #[test]
+    fn for_paragraph_blank_line_stays_pod_until_cut() {
         let source = "use HTTP::Tiny;\n=for comment\ndocumentation\n\nmy $http = HTTP::Tiny->new;\n$http->po";
-        assert!(!is_in_pod(source, source.len()));
+        assert!(
+            is_in_pod(source, source.len()),
+            "a =for paragraph's blank line must not resume code without =cut"
+        );
         assert!(!is_in_string(source, source.len()));
         assert!(!is_in_heredoc(source, source.len()));
+
+        let cut_source = "=for comment\ndocs\n\n=cut\nmy $after = ";
+        assert!(!is_in_pod(cut_source, cut_source.len()), "=cut must resume code");
+    }
+
+    #[test]
+    fn cutlery_and_unknown_commands_stay_pod() {
+        let cutlery = "=pod\ndocs\n=cutlery\nstill documentation";
+        assert!(is_in_pod(cutlery, cutlery.len()), "=cutlery is not =cut");
+
+        let unknown = "=foobar custom\nmy $http = HTTP::Tiny->new;\n$http->po";
+        assert!(
+            is_in_pod(unknown, unknown.len()),
+            "unknown column-zero alphabetic commands must stay opaque POD"
+        );
+
+        let eof_before_cut = "=for comment\ndocumentation\n";
+        assert!(is_in_pod(eof_before_cut, eof_before_cut.len()));
     }
 
     #[test]

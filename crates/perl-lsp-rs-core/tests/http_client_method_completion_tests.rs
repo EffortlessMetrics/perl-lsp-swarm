@@ -130,20 +130,31 @@ fn textual_constructor_mentions_outside_code_do_not_activate_catalog() {
 }
 
 #[test]
-fn pod_regions_resume_code_after_matching_end_and_for_paragraph() {
+fn begin_end_region_without_cut_stays_pod() {
     let begin_source = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=begin comment\ndocumentation\n=end comment\n\n$http->po";
     let begin_labels = labels(&completions_at_end(begin_source));
     assert!(
-        has_label(&begin_labels, "post"),
-        "code after =end must be reachable: {begin_labels:?}"
+        !has_label(&begin_labels, "post"),
+        "a closed =begin/=end region must not resume code without =cut: {begin_labels:?}"
     );
 }
 
 #[test]
-fn for_paragraph_resumes_code_after_blank_line() {
+fn for_paragraph_blank_line_stays_pod_until_cut() {
     let source = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=for comment\ntext\n\n$http->po";
     let item_labels = labels(&completions_at_end(source));
-    assert!(has_label(&item_labels, "post"), "unexpected labels: {item_labels:?}");
+    assert!(
+        !has_label(&item_labels, "post"),
+        "a =for paragraph's blank line must not resume code without =cut: {item_labels:?}"
+    );
+
+    let cut_source =
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=for comment\ntext\n\n=cut\n$http->po";
+    let cut_labels = labels(&completions_at_end(cut_source));
+    assert!(
+        has_label(&cut_labels, "post"),
+        "a real =cut must resume code after a =for paragraph: {cut_labels:?}"
+    );
 }
 
 #[test]

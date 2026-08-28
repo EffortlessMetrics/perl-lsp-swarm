@@ -180,6 +180,10 @@ pub const HTTP_TINY_METHODS: &[(&str, &str)] = &[
 ];
 
 /// Common instance methods documented by `LWP::UserAgent`.
+///
+/// `put` and `delete` are real `LWP::UserAgent` instance methods since LWP
+/// 6.56 (2023); verified against a live Perl oracle (`perl -MLWP::UserAgent`,
+/// LWP 6.82: `defined *LWP::UserAgent::put{CODE}` / `...::delete{CODE}`).
 pub const LWP_USER_AGENT_METHODS: &[(&str, &str)] = &[
     ("request", "Send an HTTP request"),
     ("simple_request", "Send one HTTP request without redirects"),
@@ -475,6 +479,14 @@ fn expression_calls_constructor(expression: &str, module: &str) -> bool {
     false
 }
 
+/// Infer an HTTP client receiver type from the binding's latest constructor
+/// assignment.
+///
+/// Claim bound: this is a bounded local bridge over exact same-name scalar
+/// assignments only. Aliases (`my $alias = $http`) and reblessed/derived
+/// namespaces are intentionally unresolved and fail closed (no completion);
+/// parser/semantic-flow backing arrives with #13244, which also owns
+/// migrating this inference onto the canonical workspace facts.
 fn infer_imported_constructor_receiver_type(
     context: &CompletionContext,
     source: &str,
@@ -802,16 +814,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pod_for_is_one_paragraph_and_begin_ends_at_matching_end() {
-        let begin = "=begin comment\ndocs\n=end comment\nmy $code = 1;";
-        assert!(!is_in_pod(begin, begin.len()));
+    fn pod_regions_stay_pod_until_exact_cut() {
+        let begin_uncut = "=begin comment\ndocs\n=end comment\nmy $code = 1;";
+        assert!(is_in_pod(begin_uncut, begin_uncut.len()));
+        assert!(!is_code_position(begin_uncut, begin_uncut.find("my $code").unwrap()));
+
+        let begin_cut = "=begin comment\ndocs\n=end comment\n=cut\nmy $code = 1;";
+        assert!(!is_in_pod(begin_cut, begin_cut.len()));
+        assert!(is_code_position(begin_cut, begin_cut.find("my $code").unwrap()));
 
         let for_body = "=for comment\ndocs\n$code";
         assert!(is_in_pod(for_body, for_body.len()));
 
-        let for_code = "=for comment\ndocs\n\nmy $code = 1;";
-        assert!(!is_in_pod(for_code, for_code.len()));
-        assert!(is_code_position(for_code, for_code.find("my $code").unwrap()));
+        let for_blank_line = "=for comment\ndocs\n\nmy $code = 1;";
+        assert!(is_in_pod(for_blank_line, for_blank_line.len()));
+        assert!(!is_code_position(for_blank_line, for_blank_line.find("my $code").unwrap()));
     }
 
     #[test]
@@ -827,9 +844,13 @@ mod tests {
     }
 
     #[test]
-    fn malformed_begin_does_not_suppress_following_code() {
+    fn targetless_begin_starts_pod_until_cut() {
         let source = "=begin\nnot documentation\nmy $code = 1;";
-        assert!(!is_in_pod(source, source.len()));
-        assert!(is_code_position(source, source.find("my $code").unwrap()));
+        assert!(is_in_pod(source, source.len()));
+        assert!(!is_code_position(source, source.find("my $code").unwrap()));
+
+        let cut_source = "=begin\nnot documentation\n=cut\nmy $code = 1;";
+        assert!(!is_in_pod(cut_source, cut_source.len()));
+        assert!(is_code_position(cut_source, cut_source.find("my $code").unwrap()));
     }
 }

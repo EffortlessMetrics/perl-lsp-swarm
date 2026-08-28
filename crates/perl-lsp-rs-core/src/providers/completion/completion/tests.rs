@@ -94,7 +94,7 @@ fn production_method_completion_ignores_pod_looking_heredoc_content()
 }
 
 #[test]
-fn production_method_completion_accepts_real_for_and_rejects_malformed_or_reassigned_context()
+fn production_method_completion_accepts_real_cut_and_rejects_pod_or_reassigned_context()
 -> Result<(), Box<dyn std::error::Error>> {
     let for_source = "use HTTP::Tiny;\n=for comment\ndocumentation\n\n=cut\nmy $http = HTTP::Tiny->new;\n$http->po";
     let for_provider = completion_provider(for_source)?;
@@ -110,11 +110,11 @@ fn production_method_completion_accepts_real_for_and_rejects_malformed_or_reassi
         "use HTTP::Tiny;\n=begin\nnot a valid region\nmy $http = HTTP::Tiny->new;\n$http->po";
     let malformed_provider = completion_provider(malformed_source)?;
     assert!(
-        malformed_provider
+        !malformed_provider
             .get_completions(malformed_source, malformed_source.len())
             .iter()
             .any(|item| item.label == "post"),
-        "malformed =begin must not permanently suppress constructor inference"
+        "a targetless =begin without =cut must keep the trailing code in POD"
     );
 
     let reassigned_source =
