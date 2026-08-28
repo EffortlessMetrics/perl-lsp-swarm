@@ -55,7 +55,10 @@ fn diagnostic_tags_are_lsp_safe_and_deterministic() -> Result<(), Box<dyn std::e
 
         assert_eq!(
             tags.contains(&DiagnosticTag::Deprecated),
-            matches!(code, DiagnosticCode::DeprecatedDefined | DiagnosticCode::DeprecatedArrayBase)
+            matches!(
+                code,
+                DiagnosticCode::DeprecatedDefined | DiagnosticCode::DeprecatedArrayBase
+            )
         );
         assert_eq!(
             tags.contains(&DiagnosticTag::Unnecessary),
