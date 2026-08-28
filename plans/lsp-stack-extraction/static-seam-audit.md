@@ -26,6 +26,12 @@ leverage:
 - current request, response, dispatch, cancellation, and serving paths consume
   it through the public protocol re-export.
 
+The cleaner `protocol::document_version` helper is not the better first move.
+Repository search at the audited revision found only its definition and public
+re-export, so moving it first would prove crate mechanics without proving an
+integrated compatibility seam. `JsonRpcId` wins because live protocol and
+runtime paths already depend on its current public identity.
+
 The current `jsonrpc.rs` file is mixed. Its request, response, and error models
 are language-neutral, but `JsonRpcError` directly implements
 `perl_parser_core::ErrorClass`. Moving the file would import the Perl parser
@@ -86,8 +92,10 @@ Disposition:
 
 Moving `JsonRpcError` first and relocating its `ErrorClass` implementation back
 to `perl-lsp-rs-core` would not work. Rust's orphan rules would then prohibit
-implementing an external trait for an external type. Product classification
-must remain behind a local function or local wrapper.
+implementing an external trait for an external type. The trait-owning
+`perl-parser-core` crate could implement the trait, but only by depending on the
+future stack, reversing the intended dependency direction. Product
+classification must therefore remain behind a local function or local wrapper.
 
 `perl-lsp-rs::runtime::dispatch::response::classify_jsonrpc_error` already
 demonstrates that ownership shape.
@@ -213,8 +221,9 @@ moving it.
 ### `runtime::cancellation` — mixed; later candidate
 
 Atomic token and registry mechanics are reusable. Current names, provider
-cleanup context, raw JSON parameters, metrics/cache policy, and the direct
-`JsonRpcId` dependency are product-owned.
+cleanup context, raw JSON parameters, and metrics/cache policy are
+product-owned. Its `JsonRpcId` dependency is language-neutral but makes this a
+later candidate until protocol ownership stabilizes.
 
 Use embedded model/property/concurrency tests and app cancellation-dispatch
 tests. Revisit after JSON-RPC identity and model ownership are stable.
