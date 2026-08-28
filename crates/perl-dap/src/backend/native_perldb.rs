@@ -296,32 +296,69 @@ impl SetFunctionBreakpointsParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::EvaluateContext;
     use crate::model::{DebugBreakpoint, DebugSource};
     use anyhow::ensure;
     use std::io::Write;
 
     #[test]
-    fn capabilities_fail_closed_to_proven_native_methods() -> anyhow::Result<()> {
-        let backend = NativePerlDbBackend::new();
+    fn capabilities_follow_observed_native_method_support() -> anyhow::Result<()> {
+        let mut backend = NativePerlDbBackend::new();
         let caps = backend.capabilities();
-        let expected = DebugBackendCapabilities {
-            source_breakpoints: true,
-            conditional_breakpoints: false,
-            hit_conditions: false,
-            logpoints: false,
-            function_breakpoints: false,
-            data_breakpoints: false,
-            evaluate: false,
-            variables: false,
-            scopes: false,
-            stack_trace: false,
-            continue_execution: false,
-            stepping: false,
-            pause: false,
-            set_variable: false,
-            control_mode: ControlMode::DapControlled,
-        };
-        ensure!(caps == expected, "native capabilities widened beyond proven methods: {caps:?}");
+
+        let mut file = must(tempfile::NamedTempFile::new());
+        must(writeln!(file, "my $x = 1;"));
+        let source = DebugSource::from_path(file.path());
+        let source_breakpoints = backend
+            .set_breakpoints(SetBackendBreakpointsParams {
+                source: source.clone(),
+                breakpoints: vec![DebugBreakpoint {
+                    id: None,
+                    source,
+                    line: 1,
+                    column: None,
+                    condition: None,
+                    hit_condition: None,
+                    log_message: None,
+                }],
+            })
+            .is_ok();
+        ensure!(
+            caps.source_breakpoints == source_breakpoints,
+            "source_breakpoints capability diverged from set_breakpoints behavior"
+        );
+
+        let stack_trace_supported = !matches!(
+            backend.stack_trace(StackTraceParams {
+                thread_id: ThreadId(1),
+                start_frame: None,
+                levels: None,
+            }),
+            Err(BackendError::Unsupported(_))
+        );
+        let scopes_supported =
+            !matches!(backend.scopes(FrameId(1)), Err(BackendError::Unsupported(_)));
+        let variables_supported =
+            !matches!(backend.variables(VariablesRef(1)), Err(BackendError::Unsupported(_)));
+        let evaluate_supported = !matches!(
+            backend.evaluate(EvaluateParams {
+                expression: "$x".to_string(),
+                frame_id: None,
+                context: EvaluateContext::Repl,
+            }),
+            Err(BackendError::Unsupported(_))
+        );
+        let mut observed = DebugBackendCapabilities::none();
+        observed.source_breakpoints = source_breakpoints;
+        observed.stack_trace = stack_trace_supported;
+        observed.scopes = scopes_supported;
+        observed.variables = variables_supported;
+        observed.evaluate = evaluate_supported;
+        observed.control_mode = ControlMode::DapControlled;
+        ensure!(
+            caps == observed,
+            "native capabilities diverged from observed method support: {caps:?} vs {observed:?}"
+        );
         Ok(())
     }
 
