@@ -590,6 +590,9 @@ fn apply_lsp_whitespace_options(content: &str, options: &FormattingOptions) -> S
     if options.trim_final_newlines.unwrap_or(false) {
         while output.ends_with('\n') {
             output.pop();
+            if output.ends_with('\r') {
+                output.pop();
+            }
         }
     }
     if options.insert_final_newline.unwrap_or(false) && !output.ends_with('\n') {

@@ -253,6 +253,7 @@ fn native_projection_insert_final_newline_preserves_crlf_after_generated_layout(
         FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
     let mut formatting_options = options();
     formatting_options.insert_final_newline = Some(true);
+    formatting_options.trim_final_newlines = Some(true);
     let source = "while($n){next;}\r\n";
 
     let decision = provider.format_document_decision(
@@ -263,6 +264,10 @@ fn native_projection_insert_final_newline_preserves_crlf_after_generated_layout(
 
     assert_eq!(decision.document.text, "while ($n) {\r\n    next;\r\n}\r\n");
     assert_eq!(decision.document.edits.len(), 1);
+    assert!(decision.document.text.ends_with("}\r\n"));
+    assert!(!decision.document.text.ends_with("}\r\n\r\n"));
+    assert!(decision.document.edits[0].new_text.ends_with("}\r\n"));
+    assert!(!decision.document.edits[0].new_text.ends_with("}\r\n\r\n"));
     assert!(!decision.document.edits[0].new_text.contains("\r\n\n"));
     Ok(())
 }
