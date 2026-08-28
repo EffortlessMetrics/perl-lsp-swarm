@@ -89,23 +89,19 @@ jobs:
                   '''    if !module_was_used_before(source, position, module) {''',
               ),
               (
-                  '''    let receiver_type = infer_imported_api_receiver_type(context, source, used_modules)
-              .map(str::to_owned)''',
-                  '''    let receiver_type = infer_imported_api_receiver_type(context, source)
-              .map(str::to_owned)''',
+                  'infer_imported_api_receiver_type(context, source, used_modules)',
+                  'infer_imported_api_receiver_type(context, source)',
               ),
               (
-                  '''    let static_api_methods =
-              imported_static_methods(context.receiver_prefix(), source, context.position, used_modules);''',
-                  '''    let static_api_methods =
-              imported_static_methods(context.receiver_prefix(), source, context.position);''',
+                  'imported_static_methods(context.receiver_prefix(), source, context.position, used_modules)',
+                  'imported_static_methods(context.receiver_prefix(), source, context.position)',
               ),
           ]
 
           for old, new in replacements:
               count = text.count(old)
               if count != 1:
-                  raise SystemExit(f'expected exactly one replacement, found {count}: {old[:80]!r}')
+                  raise SystemExit(f'expected exactly one replacement, found {count}: {old[:100]!r}')
               text = text.replace(old, new, 1)
 
           path.write_text(text)
