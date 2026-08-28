@@ -336,7 +336,8 @@ my $y = 2;
             ensure!(KNOWN_FLAGS.contains(&flag), "canonical marker flag {flag:?} is missing");
         }
 
-        let result = check_sections(&[section_with_flags(&canonical_flags)], &LintConfig::default());
+        let result =
+            check_sections(&[section_with_flags(&canonical_flags)], &LintConfig::default());
         ensure!(result.is_ok(), "canonical marker flags produced lint errors: {:?}", result.errors);
         ensure!(
             result.warnings.is_empty(),
