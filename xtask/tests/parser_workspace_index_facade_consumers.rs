@@ -150,19 +150,44 @@ fn record_forbidden_ident(ident: &str, compat: bool, hits: &mut Vec<String>) {
     }
 }
 
-/// Record the leading identifier of one brace-group member span, descending
-/// into nested groups (for example `workspace::{workspace_index::Location}`).
+/// Record the leading identifier of one brace-group member span, threading
+/// its `::` continuations (so a compat escape-hatch infix inside the group,
+/// e.g. `{compat::workspace_index::WorkspaceIndex}`, stays detected) and
+/// descending into nested groups (for example
+/// `workspace::{workspace_index::Location}`).
 fn record_member(chars: &[char], start: usize, end: usize, compat: bool, hits: &mut Vec<String>) {
     let member_start = skip_whitespace(chars, start);
     if member_start >= end {
         return;
     }
     let ident = read_identifier(chars, member_start, end);
-    record_forbidden_ident(&ident, compat, hits);
+    let mut thread_compat = compat;
+    if ident == "compat" && !thread_compat {
+        thread_compat = true;
+    }
+    record_forbidden_ident(&ident, thread_compat, hits);
     let mut cursor = member_start + ident.len();
+    loop {
+        cursor = skip_whitespace(chars, cursor);
+        if !(cursor + 1 < end && chars[cursor] == ':' && chars[cursor + 1] == ':') {
+            break;
+        }
+        cursor = skip_whitespace(chars, cursor + 2);
+        let segment_end = skip_to_identifier_end(chars, cursor).min(end);
+        let segment = read_identifier(chars, cursor, segment_end);
+        if segment.is_empty() {
+            break;
+        }
+        if segment == "compat" && !thread_compat {
+            thread_compat = true;
+        } else {
+            record_forbidden_ident(&segment, thread_compat, hits);
+        }
+        cursor = segment_end;
+    }
     while cursor < end {
         if chars[cursor] == '{' {
-            cursor = scan_brace_group(chars, cursor + 1, compat, hits);
+            cursor = scan_brace_group(chars, cursor + 1, thread_compat, hits);
         } else {
             cursor += 1;
         }
@@ -413,6 +438,15 @@ fn compat_escape_hatch_paths_are_rejected() {
             "perl_parser::compat::document_store".to_string(),
             "perl_parser::compat::workspace_index".to_string(),
         ]
+    );
+
+    let grouped_at_head =
+        "use perl_parser::{compat::workspace_index::WorkspaceIndex};\n";
+    let grouped_hits = forbidden_facade_references(&code_without_comments(grouped_at_head));
+    assert_eq!(
+        grouped_hits,
+        vec!["perl_parser::compat::workspace_index".to_string()],
+        "a compat escape hatch grouped at the crate head must stay detected"
     );
 
     let spaced = "use perl_parser :: compat :: workspace_index ;\n";
