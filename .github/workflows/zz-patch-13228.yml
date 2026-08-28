@@ -52,6 +52,14 @@ jobs:
           if adjusted != 2:
               raise SystemExit(f'expected to adjust two token role tables, adjusted {adjusted}')
           source = '\n'.join(lines) + '\n'
+          source = source.replace(
+              "'    \"&&=\" | \"||=\" | \"//=\" |'",
+              "'    | \"&&=\" | \"||=\" | \"//=\" |'",
+          )
+          source = source.replace(
+              "'    \"&&=\" | \"||=\" | \"^^=\" | \"//=\" |'",
+              "'    | \"&&=\" | \"||=\" | \"^^=\" | \"//=\" |'",
+          )
 
           start = source.index('# Keep exhaustive/manual token test tables')
           end = source.index('# ---------------------------------------------------------------------------\n# Longest-match lexer recognition')
