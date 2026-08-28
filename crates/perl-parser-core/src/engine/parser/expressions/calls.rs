@@ -20,7 +20,7 @@ impl<'a> Parser<'a> {
         }
         // In non-stmt-start context for print/etc., only allow the unambiguous forms:
         // 1. `{ $fh }` block-form filehandle
-        // 2. `$var $something` (two sigiled tokens, no comma) — indirect $fh
+        // 2. `$var $something` (two consecutive sigiled tokens, no comma) — indirect $fh
         if !self.at_stmt_start && is_filehandle_builtin {
             // Clone the needed info to avoid multiple borrows of self.tokens.
             let next_kind = self.tokens.peek_second().ok().map(|t| t.kind());
@@ -37,14 +37,15 @@ impl<'a> Parser<'a> {
                         }
                 // Form 2: variable filehandle `print $fh $msg` (no comma after $fh)
                 if next_text.as_deref().unwrap_or("").starts_with('$') {
-                    // If next-next starts with $ or @ or is a string, it's likely
-                    // `print $fh $msg` — no comma between filehandle and message.
-                    // A comma means it's a regular `print $var, $other` list.
+                    // If next-next starts with a sigil, string, or number, it is likely
+                    // `print $fh EXPR` — no comma between filehandle and message.
+                    // A comma means it is a regular `print $var, $other` list.
                     if third_kind != Some(TokenKind::Comma)
                         && let Some(ref txt) = third_text
                             && (txt.starts_with('$')
                                 || txt.starts_with('@')
-                                || third_kind == Some(TokenKind::String))
+                                || third_kind == Some(TokenKind::String)
+                                || third_kind == Some(TokenKind::Number))
                             {
                                 return true;
                             }
@@ -134,6 +135,7 @@ impl<'a> Parser<'a> {
                     return matches!(
                         third.kind(),
                         TokenKind::String       // print $fh "x"
+                        | TokenKind::Number       // print $fh 1
                         | TokenKind::LeftParen    // print $fh ($x)
                     ) || third_text.starts_with('$')    // print $fh $x
                       || third_text.starts_with('@')    // print $fh @array
