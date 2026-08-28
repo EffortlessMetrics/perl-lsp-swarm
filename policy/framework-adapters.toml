@@ -194,12 +194,14 @@ generated_label_required = true
 rename_policy = "block_generated_member_by_default"
 safe_delete_policy = "block_generated_member_by_default"
 provider_surfaces = [
+  "completion",
   "workspace_symbols",
 ]
 supported_forms = [
   "use DBIx::QuickORM type => 'table'",
   "use DBIx::QuickORM type => 'orm'",
   "direct package-level table/view builder -> qorm_table",
+  "canonical generated-member method completion",
 ]
 blocked_forms = [
   "filtered_import",
@@ -208,6 +210,7 @@ blocked_forms = [
   "dynamic_import_configuration",
   "nested_or_runtime_controlled_builder",
   "manual_column_or_columns_accessor_projection",
+  "quickorm_local_method_catalog",
 ]
 blocks = [
   "generated_no_source",
@@ -217,7 +220,7 @@ blocks = [
   "ambiguous_identity",
   "unsupported_fact_class",
 ]
-claim_boundary = "DBIx::QuickORM emits only the source-anchored qorm_table generated member for exact unfiltered table-package builders; filtered configuration, runtime-controlled builders, and manual column metadata remain blocked or unmodeled."
+claim_boundary = "DBIx::QuickORM emits only the source-anchored qorm_table generated member for exact unfiltered table-package builders; canonical workspace-symbol and method-completion consumers may present that fact, while filtered configuration, runtime-controlled builders, local method catalogues, and manual column metadata remain blocked or unmodeled."
 
 [[adapter]]
 framework = "Catalyst"
