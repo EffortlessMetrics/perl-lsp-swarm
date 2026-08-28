@@ -123,7 +123,6 @@ impl UxClient {
         let resp_clone = Arc::clone(&responses);
         let transport_error_clone = Arc::clone(&transport_error);
         let capability_violations_clone = Arc::clone(&capability_violations);
-        let closing_clone = Arc::clone(&closing);
         let client_capabilities_clone = client_capabilities.clone();
         let _stdout_thread = std::thread::Builder::new()
             .name("ux-lsp-stdout".into())
@@ -139,12 +138,7 @@ impl UxClient {
                         &client_capabilities_clone,
                     );
                     if let Err(error) = routed {
-                        if !closing_clone.load(Ordering::Acquire) {
-                            let mut guard = transport_error_clone
-                                .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner());
-                            *guard = Some(format!("{error:#}"));
-                        }
+                        record_transport_error(&transport_error_clone, &error);
                         break;
                     }
                 }
@@ -380,6 +374,37 @@ impl UxClient {
         self.transport_error.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Ask the child process to shut down and require a successful exit.
+    ///
+    /// This is intentionally available to focused process-level tests so they
+    /// can distinguish a clean LSP shutdown from a merely dropped child.
+    pub fn shutdown_and_wait(&self, timeout: Duration) -> Result<()> {
+        self.closing.store(true, Ordering::Release);
+
+        {
+            let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(status) = child.try_wait().context("Failed to inspect perl-lsp exit")? {
+                return require_clean_exit(status);
+            }
+        }
+
+        self.send_shutdown_messages()?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            let status = {
+                let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
+                child.try_wait().context("Failed to wait for perl-lsp exit")?
+            };
+            if let Some(status) = status {
+                return require_clean_exit(status);
+            }
+            if Instant::now() >= deadline {
+                return Err(anyhow!("Timed out waiting for perl-lsp clean exit"));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     /// Clone capability violations observed by the transport loop.
     pub fn peek_capability_violations(&self) -> Vec<CapabilityViolation> {
         self.capability_violations.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -417,6 +442,16 @@ impl UxClient {
 
     fn wait_for_response(&self, id: u64, timeout: Duration) -> Result<Value> {
         wait_for_response_queue(&self.responses, &self.transport_error, id, timeout)
+    }
+
+    fn send_shutdown_messages(&self) -> Result<()> {
+        let mut stdin = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
+        write_lsp_message(
+            &mut *stdin,
+            &json!({"jsonrpc":"2.0","id":999998,"method":"shutdown","params":{}}),
+        )?;
+        write_lsp_message(&mut *stdin, &json!({"jsonrpc":"2.0","method":"exit"}))?;
+        Ok(())
     }
 }
 
@@ -476,28 +511,10 @@ fn merge_json(target: &mut Value, overlay: &Value) {
 
 impl Drop for UxClient {
     fn drop(&mut self) {
-        // Best-effort graceful shutdown.
-        self.closing.store(true, Ordering::Release);
-        let shutdown = r#"{"jsonrpc":"2.0","id":999998,"method":"shutdown","params":{}}"#;
-        let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
-        if let Ok(mut stdin) = self.stdin.lock() {
-            for body in [shutdown, exit] {
-                let hdr = format!("Content-Length: {}\r\n\r\n", body.len());
-                let _ = stdin.write_all(hdr.as_bytes());
-                let _ = stdin.write_all(body.as_bytes());
-                let _ = stdin.flush();
-            }
-        }
-        // Wait briefly for graceful exit then force-kill.
-        for _ in 0..50 {
-            if let Ok(mut child) = self.child.lock()
-                && child.try_wait().ok().flatten().is_some()
-            {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        if let Ok(mut child) = self.child.lock() {
+        let _ = self.shutdown_and_wait(Duration::from_millis(500));
+        if let Ok(mut child) = self.child.lock()
+            && child.try_wait().ok().flatten().is_none()
+        {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -513,7 +530,7 @@ fn read_one_message(reader: &mut impl BufRead) -> Result<Value> {
         let mut line = String::new();
         let n = reader.read_line(&mut line)?;
         if n == 0 {
-            return Err(anyhow!("EOF reading LSP headers"));
+            return Err(NormalEof.into());
         }
         let trimmed = line.trim_end();
         if trimmed.is_empty() {
@@ -528,6 +545,35 @@ fn read_one_message(reader: &mut impl BufRead) -> Result<Value> {
     let mut body = vec![0u8; len];
     reader.read_exact(&mut body)?;
     serde_json::from_slice(&body).context("Failed to parse LSP JSON body")
+}
+
+#[derive(Debug)]
+struct NormalEof;
+
+impl std::fmt::Display for NormalEof {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("normal EOF")
+    }
+}
+
+impl std::error::Error for NormalEof {}
+
+fn record_transport_error(slot: &Mutex<Option<String>>, error: &anyhow::Error) {
+    if is_normal_eof(error) {
+        return;
+    }
+    let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard.is_none() {
+        *guard = Some(format!("{error:#}"));
+    }
+}
+
+fn is_normal_eof(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<NormalEof>().is_some()
+}
+
+fn require_clean_exit(status: std::process::ExitStatus) -> Result<()> {
+    if status.success() { Ok(()) } else { Err(anyhow!("perl-lsp exited unsuccessfully: {status}")) }
 }
 
 fn write_lsp_message(writer: &mut impl Write, message: &Value) -> Result<()> {
@@ -651,9 +697,15 @@ fn server_request_decision(message: &Value, capabilities: &Value) -> Option<Serv
             } else {
                 "unregisterations"
             };
-            if let Some(capability) = dynamic_registration_capability(message, field, capabilities)
-            {
-                return Some(capability_violation(message, method, &capability));
+            if let Some(issue) = dynamic_registration_issue(message, field, capabilities) {
+                return Some(match issue {
+                    DynamicRegistrationIssue::Capability(capability) => {
+                        capability_violation(message, method, &capability)
+                    }
+                    DynamicRegistrationIssue::Malformed(reason) => {
+                        invalid_params(message, method, &reason)
+                    }
+                });
             }
             None
         }
@@ -737,6 +789,20 @@ fn capability_violation(message: &Value, method: &str, capability: &str) -> Serv
     }
 }
 
+fn invalid_params(message: &Value, method: &str, reason: &str) -> ServerRequestDecision {
+    ServerRequestDecision {
+        response: json!({
+            "jsonrpc": "2.0",
+            "id": message.get("id").cloned().unwrap_or(Value::Null),
+            "error": {
+                "code": -32602,
+                "message": format!("Invalid params for {method}: {reason}")
+            }
+        }),
+        capability_violation: None,
+    }
+}
+
 fn capability_is_advertised(capabilities: &Value, path: &str) -> bool {
     let pointer = format!("/{}", path.replace('.', "/"));
     match capabilities.pointer(&pointer) {
@@ -746,28 +812,49 @@ fn capability_is_advertised(capabilities: &Value, path: &str) -> bool {
     }
 }
 
-fn dynamic_registration_capability(
+enum DynamicRegistrationIssue {
+    Capability(String),
+    Malformed(String),
+}
+
+fn dynamic_registration_issue(
     message: &Value,
     field: &str,
     capabilities: &Value,
-) -> Option<String> {
+) -> Option<DynamicRegistrationIssue> {
     let Some(registrations) =
         message.pointer(&format!("/params/{field}")).and_then(Value::as_array)
     else {
-        return Some(format!("/params/{field}"));
+        return Some(DynamicRegistrationIssue::Malformed(format!("missing /params/{field} array")));
     };
     if registrations.is_empty() {
-        return Some("dynamic registration payload".to_owned());
+        return Some(DynamicRegistrationIssue::Malformed(
+            "registration array must not be empty".to_owned(),
+        ));
     }
     for registration in registrations {
+        let Some(id) = registration.get("id").and_then(Value::as_str) else {
+            return Some(DynamicRegistrationIssue::Malformed(
+                "every registration must include a string id".to_owned(),
+            ));
+        };
+        if id.is_empty() {
+            return Some(DynamicRegistrationIssue::Malformed(
+                "every registration id must be non-empty".to_owned(),
+            ));
+        }
         let Some(method) = registration.get("method").and_then(Value::as_str) else {
-            return Some("dynamic registration method".to_owned());
+            return Some(DynamicRegistrationIssue::Malformed(
+                "every registration must include a string method".to_owned(),
+            ));
         };
         let Some(capability) = registration_capability_path(method) else {
-            return Some(format!("dynamic registration for {method}"));
+            return Some(DynamicRegistrationIssue::Malformed(format!(
+                "unsupported dynamic registration method {method}"
+            )));
         };
         if !capability_is_advertised(capabilities, capability) {
-            return Some(capability.to_owned());
+            return Some(DynamicRegistrationIssue::Capability(capability.to_owned()));
         }
     }
     None
@@ -996,6 +1083,18 @@ mod tests {
     }
 
     #[test]
+    fn normal_eof_is_not_recorded_as_transport_failure() -> Result<()> {
+        let mut reader = BufReader::new(&b""[..]);
+        let error = read_one_message(&mut reader).expect_err("empty stdout should be EOF");
+        assert!(is_normal_eof(&error));
+
+        let transport_error = Mutex::new(None);
+        record_transport_error(&transport_error, &error);
+        assert!(transport_error.lock().unwrap_or_else(|e| e.into_inner()).is_none());
+        Ok(())
+    }
+
+    #[test]
     fn known_server_requests_receive_results() {
         let capabilities = capabilities_with(json!({
             "workspace": {
@@ -1190,6 +1289,29 @@ mod tests {
         assert_eq!(response["id"], "refresh-1");
         assert_eq!(response["result"], Value::Null);
         assert!(response.get("error").is_none());
+    }
+
+    #[test]
+    fn dynamic_registration_requires_a_non_empty_id() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 15,
+            "method": "client/registerCapability",
+            "params": {
+                "registrations": [{ "method": "textDocument/completion" }]
+            }
+        });
+        let capabilities = capabilities_with(json!({
+            "textDocument": { "completion": { "dynamicRegistration": true } }
+        }));
+        let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
+
+        assert_eq!(response["id"], 15);
+        assert_eq!(response["error"]["code"], -32602);
+        assert_eq!(
+            response["error"]["message"],
+            "Invalid params for client/registerCapability: every registration must include a string id"
+        );
     }
 
     fn capabilities_with(overrides: Value) -> Value {

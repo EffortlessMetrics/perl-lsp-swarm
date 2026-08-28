@@ -82,6 +82,17 @@ fn main() -> io::Result<()> {
         return Err(protocol_error(format!("expected initialized, got {initialized}")));
     }
 
+    if let Ok(mode) = std::env::var("UX_FIXTURE_PROTOCOL_FAILURE") {
+        let output = match mode.as_str() {
+            "malformed-frame" => "Content-Length: nope\r\n\r\n{}",
+            "invalid-json" => "Content-Length: 8\r\n\r\nnot json",
+            _ => return Err(protocol_error(format!("unknown protocol failure mode: {mode}"))),
+        };
+        writer.write_all(output.as_bytes())?;
+        writer.flush()?;
+        return Ok(());
+    }
+
     let requests = [
         json!({
             "jsonrpc": "2.0",

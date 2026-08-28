@@ -43,7 +43,8 @@ inventory:
 
 The harness behaves as an active LSP client rather than only recording server
 output. It preserves every server request for assertions through
-`harness.client.peek_server_requests()` and sends a deterministic JSON-RPC
+`harness.client.peek_server_requests()` and records capability violations through
+`harness.client.peek_capability_violations()`. It sends a deterministic JSON-RPC
 response:
 
 - capability-permitted registration, unregistration, progress creation, and refresh requests are acknowledged;
@@ -54,8 +55,9 @@ response:
 - workspace edits report `applied: false` because the harness does not perform hidden filesystem mutation; and
 - unsupported methods receive JSON-RPC `Method not found` (`-32601`).
 
-This keeps the active test-client transport moving while retaining the exact
-request id, method, params, response, and capability decision as test evidence.
+The child-process fixture validates exact response IDs and envelopes. The public
+`UxClient` evidence accessors expose request payloads and capability violations;
+they do not expose a general client-response or selected-policy ledger.
 
 The stdout transport loop is fail-fast. Malformed framing, invalid JSON, or a
 failure while writing a deterministic client response is retained as transport
