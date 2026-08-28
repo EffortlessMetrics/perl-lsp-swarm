@@ -1,7 +1,7 @@
 {
   "schema": "train_edge_contract.adaptations.v1",
   "schema_version": 1,
-  "description": "Declared class-to-kind adaptations binding landed programme train manifests to the shared train_edge_contract.v1 vocabulary. Programme manifests keep their own bytes; this table binds their local dependency classes to the shared semantic kinds without rewriting them. A manifest class with no declared adaptation row fails closed.",
+  "description": "Declared class-to-kind adaptations binding landed programme train manifests to the shared train_edge_contract.v1 vocabulary. Programme manifests keep their own bytes; this table binds their local dependency classes to the shared semantic kinds without rewriting them. A manifest class with no declared adaptation row fails closed. Binding scope per bundle is the declared dependency table only: programme-local release_gates/fan_in compositions are owned and fail-closed-validated by each programme's own named-diagnostics gate (native Neovim: check-native-neovim-train), never silently mirrored here.",
   "adaptations": [
     {
       "programme_schema": "emacs_train.v1",
@@ -49,6 +49,47 @@
       "programme_schema": "module_train.v1",
       "class": "evidence",
       "kind": "requires_behavior_for_claim"
+    },
+    {
+      "programme_schema": "native_neovim_train.v1",
+      "class": "requires_implementation",
+      "kind": "requires_implementation"
+    },
+    {
+      "programme_schema": "native_neovim_train.v1",
+      "class": "requires_behavior_for_claim",
+      "kind": "requires_behavior_for_claim"
+    },
+    {
+      "programme_schema": "native_neovim_train.v1",
+      "class": "consumes_if_available",
+      "kind": "consumes_if_available"
+    },
+    {
+      "programme_schema": "native_neovim_train.v1",
+      "class": "nonblocking_sidecar",
+      "kind": "nonblocking_sidecar"
+    },
+    {
+      "programme_schema": "native_neovim_train.v1",
+      "class": "external_submission",
+      "kind": "external_checkpoint",
+      "stage": "external_submission",
+      "rationale": "The Neovim train stages upstream nvim-lspconfig/Mason contributions through the exact common external stages; internal packet state never satisfies them (#11392)."
+    },
+    {
+      "programme_schema": "native_neovim_train.v1",
+      "class": "external_acceptance",
+      "kind": "external_checkpoint",
+      "stage": "external_acceptance",
+      "rationale": "Maintainer acceptance is observed externally only; prepared, submitted, accepted, and released/public stay separate checkpoints."
+    },
+    {
+      "programme_schema": "native_neovim_train.v1",
+      "class": "released_public",
+      "kind": "external_checkpoint",
+      "stage": "released_public_availability",
+      "rationale": "Released public package/channel availability gates install channels and the optional virtual-document backend; a local artifact never substitutes."
     }
   ],
   "manifests": [
@@ -63,6 +104,10 @@
     {
       "bundle": ".spec/11625-module-train-graph",
       "programme_schema": "module_train.v1"
+    },
+    {
+      "bundle": ".spec/11392-native-neovim-train-graph",
+      "programme_schema": "native_neovim_train.v1"
     }
   ]
 }

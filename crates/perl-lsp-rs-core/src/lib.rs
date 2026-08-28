@@ -24,6 +24,9 @@ pub mod config;
 /// Checked scope/precedence/validation authority consumed by configuration generations.
 #[path = "configuration_authority/checked.rs"]
 pub(crate) mod configuration_authority;
+/// Crate-private, versioned configuration observation model (#10813); fixture
+/// producers only until #10386 consumes it.
+mod configuration_observation;
 /// Parser for Perl::Critic output emitted by external lint runs.
 pub mod critic_parser;
 /// Registry-driven, native-first external-tool doctor projection.
@@ -50,6 +53,8 @@ pub mod protocol;
 pub mod providers;
 /// Request lifecycle, scheduling, and runtime orchestration infrastructure.
 pub mod runtime;
+/// Ticket-owned fresh-full semantic construction cell (#12151).
+pub mod semantic_construction;
 /// Ticket-bound immutable file semantic snapshot envelope (#12150).
 pub mod semantic_snapshot;
 /// Integrations for external tools such as `perlcritic` and `perltidy`.

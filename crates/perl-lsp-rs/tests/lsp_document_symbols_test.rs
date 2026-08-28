@@ -208,6 +208,82 @@ fn test_document_symbols_include_test2_subtests() -> TestResult {
     Ok(())
 }
 
+/// Regression guard for #1792: a subtest declared inside a named sub is
+/// lexically scoped to that sub, so the outline must nest it under the sub's
+/// symbol instead of appending it flat at the top level. Only what the parse
+/// proves is modeled: the containment comes from the AST, never invented.
+#[test]
+fn test_document_symbols_subtest_inside_named_sub_nests_lexically() -> TestResult {
+    let server = setup_server();
+
+    let content = "use Test2::V0;\n\
+        sub helper {\n\
+            subtest 'inside helper' => sub {\n\
+                ok(1);\n\
+            };\n\
+        }\n\
+        done_testing;\n";
+
+    open_document(&server, "file:///t/scoped.t", content);
+
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "textDocument/documentSymbol".to_string(),
+        params: Some(json!({ "textDocument": { "uri": "file:///t/scoped.t" } })),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(3)),
+    };
+
+    let response = server.handle_request(request).ok_or("No response from server")?;
+    let result = response.result.ok_or("Missing result")?;
+    let symbols = result.as_array().ok_or("Result is not an array")?;
+
+    // The subtest must NOT appear at the top level next to the sub that
+    // contains it — the parse proves it lives inside `helper`.
+    let top_level_subtest = symbols.iter().find(|s| s["name"].as_str() == Some("inside helper"));
+    assert!(
+        top_level_subtest.is_none(),
+        "subtest inside a named sub must not appear at the outline top level"
+    );
+
+    // ...instead it nests under the lexically enclosing sub symbol.
+    let helper = symbols
+        .iter()
+        .find(|s| s["name"].as_str() == Some("helper"))
+        .ok_or("helper subroutine symbol not found")?;
+    let children = helper["children"].as_array().ok_or("helper has no children array")?;
+    let nested = children
+        .iter()
+        .find(|s| s["name"].as_str() == Some("inside helper"))
+        .ok_or("subtest not nested under its lexically enclosing sub")?;
+
+    assert_eq!(nested["detail"].as_str(), Some("subtest"));
+    assert_eq!(nested["kind"], 12); // Function — same kind as other outline callables
+
+    // Ranges follow source-backed wire ranges: the selection range points at
+    // the name argument, and both ranges stay contained in helper's range.
+    let nested_range_start_line =
+        nested["range"]["start"]["line"].as_u64().ok_or("no range start line")?;
+    let nested_range_end_line =
+        nested["range"]["end"]["line"].as_u64().ok_or("no range end line")?;
+    let nested_sel_start_line =
+        nested["selectionRange"]["start"]["line"].as_u64().ok_or("no selection start line")?;
+    let helper_range_start_line =
+        helper["range"]["start"]["line"].as_u64().ok_or("no helper start line")?;
+    let helper_range_end_line =
+        helper["range"]["end"]["line"].as_u64().ok_or("no helper end line")?;
+    assert!(
+        nested_sel_start_line >= nested_range_start_line,
+        "selection range must sit at or after the full range start"
+    );
+    assert!(
+        nested_range_start_line >= helper_range_start_line
+            && nested_range_end_line <= helper_range_end_line,
+        "nested subtest range must be contained in the enclosing sub range"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn test_document_symbols_plack_builder_chain() -> TestResult {
     let server = setup_server();

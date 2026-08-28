@@ -1,8 +1,8 @@
 //! Shadow NodeKind structural registry: production parity and negative controls.
 //!
-//! These tests prove the check-mode checker fails for realistic wrong
-//! registries. They do not cut over production traversal, FieldId, rendering,
-//! or status.
+//! These tests prove the checker fails for realistic wrong registries. Production
+//! FieldId membership and field-aware traversal are owned by the registry after
+//! #8424. Schema identity and freshness-gated status live in `kind_schema_identity`.
 
 use perl_ast::kind_schema::{
     ChildFieldSpec, FieldCardinality, GrammarInputWitness, GrammarNameSpec, KindBody,
@@ -29,7 +29,7 @@ fn row_index(kind_name: &str) -> Result<usize, Box<dyn std::error::Error>> {
     NODE_KIND_STRUCTURAL_REGISTRY
         .iter()
         .position(|row| row.kind_name == kind_name)
-        .ok_or_else(|| format!("{kind_name} missing from the shadow registry").into())
+        .ok_or_else(|| format!("{kind_name} missing from the structural registry").into())
 }
 
 #[test]
@@ -44,7 +44,7 @@ fn registry_serialization_is_deterministic() {
     let second = serialize_kind_schema(NODE_KIND_STRUCTURAL_REGISTRY);
     assert_eq!(first, second, "schema serialization must be byte-stable");
     assert!(first.starts_with("# perl-ast NodeKind structural schema v1\n"));
-    assert!(first.contains("mode=shadow-check"));
+    assert!(first.contains("mode=production-traversal"));
     let names: Vec<_> = NODE_KIND_STRUCTURAL_REGISTRY.iter().map(|row| row.kind_name).collect();
     assert_eq!(names, NodeKind::ALL_KIND_NAMES);
 }
@@ -339,6 +339,29 @@ fn vacuous_grammar_witness_fails() {
         )),
         "{report}"
     );
+}
+
+#[test]
+fn unused_field_id_inventory_fails() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rows = NODE_KIND_STRUCTURAL_REGISTRY.to_vec();
+    let owned: Vec<Vec<_>> = rows
+        .iter()
+        .map(|row| {
+            row.children.iter().copied().filter(|child| child.field != FieldId::ARGS).collect()
+        })
+        .collect();
+    for (row, children) in rows.iter_mut().zip(owned.iter()) {
+        row.children = children;
+    }
+    let report = report_for(&rows);
+    assert!(
+        report.mismatches.iter().any(|mismatch| matches!(
+            mismatch,
+            KindSchemaMismatch::UnusedFieldIdInventory { field } if field == "args"
+        )),
+        "{report}"
+    );
+    Ok(())
 }
 
 #[test]

@@ -13,7 +13,7 @@ fn lex_to_tokens(source: &str) -> Vec<Token> {
     let mut tokens = Vec::new();
     loop {
         match stream.next() {
-            Ok(t) if t.kind == TokenKind::Eof => break,
+            Ok(t) if t.kind() == TokenKind::Eof => break,
             Ok(t) => tokens.push(t),
             Err(_) => break,
         }

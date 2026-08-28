@@ -210,7 +210,7 @@ pub enum ParseSnapshotValidationError {
 fn classify_output(output: &ParseOutput) -> ParseTerminalDisposition {
     if output.diagnostics.iter().any(|error| matches!(error, ParseError::Cancelled)) {
         ParseTerminalDisposition::Cancelled
-    } else if output.terminated_early
+    } else if output.terminated_early()
         || output.diagnostics.iter().any(|error| {
             matches!(error, ParseError::RecursionLimit | ParseError::NestingTooDeep { .. })
         })
@@ -228,6 +228,7 @@ fn classify_output(output: &ParseOutput) -> ParseTerminalDisposition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_parser_core::error::ParseStopCause;
     use perl_parser_core::parser::Parser;
 
     fn parse(source: &str) -> ParseOutput {
@@ -314,7 +315,12 @@ mod tests {
         assert_eq!(cancelled.disposition(), ParseTerminalDisposition::Cancelled);
 
         let mut exhausted = parse(source);
-        exhausted.terminated_early = true;
+        // Simulated budget exhaustion through the only checked mutation path;
+        // the derived `terminated_early` projection follows automatically.
+        exhausted.set_stop_cause(Some(ParseStopCause::NestingOrDepthBudgetExhausted {
+            limit: 512,
+            usage: 513,
+        }));
         let exhausted = ParseSnapshot::from_output(
             source,
             ParseGeneration::INITIAL,
