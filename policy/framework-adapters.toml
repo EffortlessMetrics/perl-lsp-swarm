@@ -7,7 +7,7 @@ schema_version = 1
 policy = "framework-adapters"
 owner = "perl-lsp maintainers"
 status = "advisory"
-updated = "2026-05-20"
+updated = "2026-08-27"
 spec = "docs/specs/PLSP-SPEC-0024-framework-fact-adapters.md"
 fact_provenance_spec = "docs/specs/PLSP-SPEC-0017-fact-provenance-and-source-backing.md"
 edit_authorization_spec = "docs/specs/PLSP-SPEC-0018-edit-authorization-contract.md"
@@ -183,6 +183,43 @@ blocks = [
   "unsupported_fact_class",
 ]
 claim_boundary = "DBIx::Class support is deferred to a static source-backed subset; runtime schema loading remains dynamic."
+
+[[adapter]]
+framework = "DBIx::QuickORM"
+fact_class = "explicit_table_column_generated_member"
+state = "shadow"
+fact_provenance = "SourceBackedGenerated"
+source_anchor_required = true
+generated_label_required = true
+rename_policy = "blocked_until_class_specific_receipt"
+safe_delete_policy = "blocked_until_class_specific_receipt"
+provider_surfaces = []
+supported_forms = [
+  "use DBIx::QuickORM type => 'table'",
+  "table static_name => sub { ... }",
+  "column static_name => sub { ... }",
+  "columns(static_names, sub { ... })",
+]
+blocked_forms = [
+  "plain_schema_import_inline_row_identity",
+  "dynamic_table_name",
+  "dynamic_column_name",
+  "autofill_runtime_schema",
+  "autorow_generated_class",
+  "autoname_field_accessor",
+  "autoname_link_accessor",
+  "link_accessor",
+  "runtime_schema_mutation",
+]
+blocks = [
+  "generated_no_source",
+  "dynamic_boundary",
+  "ambiguous_identity",
+  "stale_fact",
+  "low_confidence",
+  "unsupported_fact_class",
+]
+claim_boundary = "DBIx::QuickORM shadow facts cover only statically named columns in explicit table classes; runtime schema fill, generated row classes, naming hooks, links, and edit authorization remain blocked."
 
 [[adapter]]
 framework = "Catalyst"
