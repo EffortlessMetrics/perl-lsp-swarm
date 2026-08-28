@@ -1,20 +1,23 @@
 # Plan: #11549 — Conjunctive install-route classification and preferred-route selection
 
-> Status: REVIEWED PLAN (refreshed 2026-08-28 against #11549, #11575, and PR
-> #12858). The plan is not an accepted executable input contract until the
-> validated route schema/catalog owned by #10333/#10334 exists.
+> Status: REVIEWED PLAN (refreshed 2026-08-28 against #11549, #11575, and the
+> current dependency issues). The plan is not an accepted executable input
+> contract until the validated route schema/catalog owned by #10333 exists.
 
 ## 0. Claim and entry
 
-**Claim:** perl-lsp's install surfaces assert route facts along three
-independent conjunctive dimensions (Windows ARM64, SHA256SUMS enforcement,
-product-unit membership) plus a four-name subject-identity field. Today those
-dimensions are asserted inconsistently across 13 prose surfaces (70 claim rows,
-12 findings), and no mechanism selects which install route a user should be
-told to take. #11549 delivers (1) a conjunctive route classifier derived
-  deterministically from the validated route catalog owned by #10333/#10334, and (2) a preferred-route
-selection whose *ordering* is explicit, human-owned product data — never
-derived.
+**Claim:** perl-lsp's install surfaces assert route facts across seven
+independent hard dimensions: identity/topology, platform/target,
+product-unit/lifecycle, integrity/provenance, freshness/channel/publication,
+PATH/session/execution, and receipt binding. Today those dimensions are
+asserted inconsistently across 13 prose surfaces (70 claim rows, 12 findings),
+and no mechanism selects which install route a user should be told to take.
+  Issue #11549 delivers (1) a conjunctive route classifier derived
+deterministically
+from the validated route schema/catalog owned by #10333, sequenced through
+Issue #10334, with the canonical route denominator supplied by #11434 and evidence
+producers such as #11432, and (2) a preferred-route selection whose *ordering*
+is explicit, human-owned product data — never derived.
 
 **Entry flow:** `$prepare-issue` → this plan → `$prepare-proof`/`$build-candidate`
 in a later lane. Sibling state at authoring time:
@@ -23,13 +26,14 @@ in a later lane. Sibling state at authoring time:
   `docs/distribution/INSTALL_CLAIM_SURFACES.md` — 13 surfaces (S01–S13), 70
   claim rows (C101–C1309), 12 findings (FND-1–FND-12). Its "Family handoff
   notes → For #11549" section is the direct requirement source.
-- #12858 (the former #11548 catalog attempt) is **closed unmerged and
-  superseded**. Its `4501c89fc` branch is not an accepted input contract: the
-  issue records missing exact route rows, projection contexts, producer joins,
-  publication/channel bindings, and fail-closed route states. **Dependency:**
-  #11549 starts only after the validated route schema/catalog owned by #10333
-  and #10334 is available. Its exact route rows, projection contexts, and
-  producer bindings replace every illustrative mapping in this plan.
+- Dependency map: **#10333 owns the route schema/catalog** and is currently
+  open and blocked by #11164; **#10334 owns sequencing/fan-in** and is not the
+  schema authority; **#11434 owns the canonical route denominator**; and
+  **#11432 plus the other named producers own evidence inputs**. #11549 starts
+  only after those authorities publish a validated contract. The closed,
+  superseded #12858 attempt is historical context only and cannot supply route
+  rows, projection contexts, producer joins, publication/channel bindings, or
+  fail-closed route states.
 
 **Non-goals:** judging/rewriting prose wording strength (#10342), canonical
 fragment generation (#10339), release receipts themselves (#7831 family),
@@ -92,7 +96,8 @@ Derived from `docs/distribution/INSTALL_CLAIM_SURFACES.md`
 
 Define a **route** as a named acquisition path a user can be told to take.
 The exact route denominator, route IDs, projection contexts, and producer joins
-must come from the validated catalog owned by #10333/#10334. The following are
+must come from the validated catalog owned by #10333, sequenced/fanned in by
+Issue #10334 and closed over the canonical denominator from #11434. The following are
 planning families only; they are not an accepted catalog or a claim-to-route
 join and must not be implemented as a hard-coded substitute:
 
@@ -115,9 +120,10 @@ independence frame — a rule, not a route).
 ### 2.2 Classification = conjunction of independent per-dimension verdicts
 
 For each exact catalog route row and projection context, classification is the
-**AND-join over all required hard dimensions**. Never reduce to a scalar or
-infer a route from prose claim count. The hard dimensions include, as
-applicable:
+**AND-join over all seven required hard dimensions**. Never reduce to a scalar
+or infer a route from prose claim count. The seven dimensions below are the
+authoritative aggregation; a missing or unjoined required dimension yields
+`unproven`, and no dimension may be silently absorbed into another:
 
 1. **Identity and topology** — product units yielded (`perllsp` / `perl-dap` /
    `extension`) + identity names bound, honoring the collision map
@@ -132,7 +138,8 @@ applicable:
 3. **Product-unit and lifecycle completeness** — server/adapter membership,
    installation, first-use, repair, upgrade, rollback, and removal cells do
    not compensate for one another.
-4. **Integrity and provenance** — `sha256sums_enforcement` mode. A contradiction inside
+4. **Integrity and provenance** — `sha256sums_enforcement` mode and independent
+   provenance/checksum identity. A contradiction inside
    the conjunction (C207 fail-closed vs C1005 fail-open on the same
    `scripts/install.sh`) resolves **pessimistically to `contradicted`**, never
    to the optimistic value, until `distribution-docs-sync` lands FND-7.
@@ -159,7 +166,8 @@ schema-closed:
 
 - Extend the xtask generator (new subcommand, e.g.
   `cargo xtask install-route-classification build --write`) that **consumes
-  `distribution/public_release_claims.v2.json`** (input digest recorded) plus a
+  the exact validated route schema/catalog published by #10333** (input
+  digest and producer revisions recorded) plus a
   small curated **route-join table** (`policy/install-route-join.toml` or a
   static map in the generator, using the same kind of explicit
   `dimension_overrides(claim_id)` and `restatement_group(claim_id)` as static
@@ -171,9 +179,11 @@ schema-closed:
   testable. The only curated inputs are: route→claim join, the anti-claim
   identity map, and the pessimistic-contradiction rule. **Preference ordering
   is NOT derived here** (§3).
-- Sequencing note: do not build against the closed #12858 branch. Start from
-  the validated #10333/#10334 catalog and re-derive the exact route joins,
-  projection contexts, and falsifier fixtures if that input contract changes.
+- Sequencing note: #10334 fans in the producer evidence but does not replace
+  #10333's schema authority; #11434 supplies denominator closure and #11432
+  supplies its named evidence producer. Do not build against the closed #12858
+  branch. Re-derive exact route joins, projection contexts, and falsifier
+  fixtures if the validated input contract changes.
 
 ---
 
@@ -241,7 +251,8 @@ is product authority and must remain reviewable data, not emergent constants.
 Each falsifier distinguishes a correct classifier/selector from a plausible
 wrong one. All are cheap (pure functions over catalog + table; no network,
 no installs). Claim IDs and route names below are examples carried forward
-from the #11575 inventory; once #10333/#10334 lands, each fixture must be
+from the #11575 inventory; once #10333's schema is validated, #10334's fan-in
+is complete, and #11434 closes the denominator, each fixture must be
 rebound to the exact catalog row, route ID, and projection context rather than
 assuming the former prose-row denominator.
 
@@ -294,6 +305,33 @@ assuming the former prose-row denominator.
    X must never satisfy another route's receipt requirement (e.g., GitHub
    Releases v0.17.0 receipt must not make `homebrew-tap` `proven_current`).
    An implementation with a global "release exists" fact fails.
+10. **Independent checksum/provenance binding.** A route with matching
+    `SHA256SUMS` text but no independently bound artifact and release identity
+    must remain `unproven`; a checksum string copied from a different channel
+    must not satisfy the integrity/provenance axis.
+11. **Candidate versus installed state.** A candidate artifact that has been
+    built or uploaded but has no installed, verified product-unit observation
+    must not satisfy installation or first-use cells. Conversely, an installed
+    local build must not be emitted as a public publication receipt.
+12. **PATH/session/execution isolation.** A route that resolves only through
+    the current shell's PATH, an inherited session, or an ambient working
+    directory must remain unproven for a fresh-process route. A fresh lookup,
+    transport, cleanup, and settled process must each be present; one cannot
+    stand in for the others.
+13. **Lifecycle closure.** A route with install and first-use evidence but no
+    repair, upgrade, rollback, or removal cell remains incomplete. A lifecycle
+    cell from another product unit or channel must not close this route.
+14. **Publication and verification separation.** A private/candidate upload or
+    an unverified public listing must not become `proven_current`; publication,
+    checksum/provenance verification, and currentness are separate predicates.
+15. **No-route and ambiguity closure.** If every route fails a hard dimension,
+    output must be an explicit no-route result with reasons. If two exact rows
+    or contexts are ambiguous, selection must refuse rather than choose by
+    input order, prose frequency, or a fallback command.
+16. **Context and fallback isolation.** An editor route must not satisfy a CI,
+    server-only, or manual context without an explicit catalog projection.
+    Missing preferred policy or a failed hard filter must not silently fall back
+    to `latest`, an unpinned command, or another context's route.
 
 ---
 
@@ -333,10 +371,12 @@ artifact (S/M), slice 2 = selection + policy table (S), sharing §2.1's join
 table. Do NOT pull FND-7/FND-11 doc syncs or #10342 linting into this claim.
 
 **Hard prerequisite check at build time:** require the validated route
-schema/catalog from #10333/#10334, including exact route IDs, projection
-contexts, producer joins, publication/channel bindings, and fail-closed route
-states. If it is absent or structurally changes, stop at `NOT_PROVEN` and
-re-derive §2 and its fixtures; do not substitute the closed #12858 attempt.
+schema/catalog from #10333, with #10334's fan-in complete, #11434's canonical
+denominator, and the relevant #11432/evidence-producer revisions. Require exact
+route IDs, projection contexts, producer joins, publication/channel bindings,
+and fail-closed route states. If any authority is absent or structurally
+changes, stop at `NOT_PROVEN` and re-derive §2 and its fixtures; do not
+substitute the closed #12858 attempt.
 
 **Proof strategy:** all §4 falsifiers as focused `cargo test -p xtask` cases
 plus the byte-identity regen check; `just doctor`, `cargo fmt -p xtask --
@@ -346,12 +386,16 @@ standard gates.
 
 **Residual risks:**
 
-- The #10333/#10334 route schema/catalog may change before implementation →
-  re-derive §2.1, hard-dimension bindings, and affected fixtures; the human
-  preference rulings remain separate.
-- H1–H7 unanswered → implementer proceeds on proposed defaults but must mark
-  the policy table rows `provisional(human-pending)` in the artifact so the
-  authority gap is machine-visible, not silent.
+- The #10333 route schema/catalog may change before implementation, or #10334
+  fan-in/#11434 denominator closure may be incomplete → re-derive §2.1,
+  hard-dimension bindings, and affected fixtures; the human preference rulings
+  remain separate.
+- H1–H7 are proposed defaults only, not maintainer rulings. Until each is
+  explicitly ruled in the authoritative issue, all seven rows are
+  **non-operative**: the plan and any resulting artifact remain
+  `provisional(human-pending)` and **non-preferred**. The implementer must not
+  turn a proposed default into a recommendation, and the authority gap must
+  remain machine-visible rather than silently choosing it.
 - Prose drift (new surfaces) after inventory audit commit `20174d50c` →
   denominator closure falsifier catches unmodeled rows only after the inventory
   itself is re-audited (#11575 cadence), so the check is bounded by that
