@@ -53,9 +53,10 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// against `FormatIdentity::content_digest` byte-for-byte.
 #[must_use]
 pub fn source_digest(source: &str) -> String {
-    let hash = source.as_bytes().iter().fold(FNV_OFFSET_BASIS, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
-    });
+    let hash = source
+        .as_bytes()
+        .iter()
+        .fold(FNV_OFFSET_BASIS, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME));
     format!("source-v1:{hash:016x}")
 }
 
@@ -187,17 +188,12 @@ pub fn identity_row(spec: &SubjectSpec, config_fingerprint: &str, toolchain: &st
 /// `NATIVE_PIPELINE_TOOLCHAIN_TAG` overrides for cross-run labeling.
 #[must_use]
 pub fn toolchain_tag() -> String {
-    if let Ok(override_tag) = std::env::var("NATIVE_PIPELINE_TOOLCHAIN_TAG") {
-        if !override_tag.is_empty() {
-            return override_tag;
-        }
+    if let Some(override_tag) =
+        std::env::var("NATIVE_PIPELINE_TOOLCHAIN_TAG").ok().filter(|tag| !tag.is_empty())
+    {
+        return override_tag;
     }
-    format!(
-        "rust-{}-{}-{}",
-        std::env::consts::ARCH,
-        std::env::consts::OS,
-        std::env::consts::FAMILY
-    )
+    format!("rust-{}-{}-{}", std::env::consts::ARCH, std::env::consts::OS, std::env::consts::FAMILY)
 }
 
 fn static_family(family: &str) -> Option<&'static str> {
@@ -212,7 +208,8 @@ fn static_indent(indent: &str) -> Option<&'static str> {
     INDENTS.iter().copied().find(|candidate| *candidate == indent)
 }
 
-fn join_lines(lines: &[String], line_ending: &str) -> String {    let separator = match line_ending {
+fn join_lines(lines: &[String], line_ending: &str) -> String {
+    let separator = match line_ending {
         "crlf" => "\r\n",
         "bare-cr" => "\r",
         _ => "\n",

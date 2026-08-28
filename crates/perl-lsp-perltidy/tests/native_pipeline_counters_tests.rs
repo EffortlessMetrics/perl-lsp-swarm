@@ -48,8 +48,12 @@ fn unset_collector_leaves_outcomes_byte_identical() {
 
         let plain = NativeFormatter::new().format_document_typed(&source, &config, &context);
         let mut counters = NativePipelineCounters::default();
-        let counted = NativeFormatter::new()
-            .format_document_typed_with_counters(&source, &config, &context, &mut counters);
+        let counted = NativeFormatter::new().format_document_typed_with_counters(
+            &source,
+            &config,
+            &context,
+            &mut counters,
+        );
 
         assert_eq!(
             plain, counted,
@@ -58,7 +62,8 @@ fn unset_collector_leaves_outcomes_byte_identical() {
 
         let end_line = source.split_inclusive('\n').count() as u32;
         let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(end_line, 0));
-        let plain_range = NativeFormatter::new().format_range_typed(&source, range, &config, &context);
+        let plain_range =
+            NativeFormatter::new().format_range_typed(&source, range, &config, &context);
         let mut range_counters = NativePipelineCounters::default();
         let counted_range = NativeFormatter::new().format_range_typed_with_counters(
             &source,
@@ -153,10 +158,7 @@ fn no_change_subjects_count_zero_edits_with_full_pipeline() {
 /// `detector_flags_known_quadratic_series` red — the detector weakening is
 /// therefore itself observable.
 fn is_superlinear(_n: u64, two_n: u64, four_n: u64) -> bool {
-    four_n
-        > two_n
-            .saturating_mul(SCALING_RATIO_BOUND_V1)
-            .saturating_add(SCALING_ABSOLUTE_SLACK_V1)
+    four_n > two_n.saturating_mul(SCALING_RATIO_BOUND_V1).saturating_add(SCALING_ABSOLUTE_SLACK_V1)
 }
 
 #[test]
@@ -183,7 +185,7 @@ fn scaling_cohort_ratios_stay_within_bounded_envelope() {
         for spec in &rows {
             let source = spec.source();
             let mut counters = NativePipelineCounters::default();
-            NativeFormatter::new().format_document_typed_with_counters(
+            let _applied = NativeFormatter::new().format_document_typed_with_counters(
                 &source,
                 &FormatConfig::default(),
                 &FormatContext::default(),
@@ -200,16 +202,34 @@ fn scaling_cohort_ratios_stay_within_bounded_envelope() {
         // Constant counters: the pipeline stage topology must not scale.
         assert_eq!(four_n.1.parse_gate_invocations, two_n.1.parse_gate_invocations);
         assert_eq!(two_n.1.parse_gate_invocations, n.1.parse_gate_invocations);
-        assert_eq!(four_n.1.peak_depth, n.1.peak_depth, "peak depth must stay bounded for {family}");
+        assert_eq!(
+            four_n.1.peak_depth, n.1.peak_depth,
+            "peak depth must stay bounded for {family}"
+        );
         assert_eq!(four_n.1.pipeline_invocations, 1);
         assert_eq!(two_n.1.pipeline_invocations, 1);
 
         // Linear-or-bounded counters at every doubling.
         let series = [
-            ("gate_nodes_observed", n.1.gate_nodes_observed, two_n.1.gate_nodes_observed, four_n.1.gate_nodes_observed),
-            ("lines_processed", n.1.lines_processed, two_n.1.lines_processed, four_n.1.lines_processed),
+            (
+                "gate_nodes_observed",
+                n.1.gate_nodes_observed,
+                two_n.1.gate_nodes_observed,
+                four_n.1.gate_nodes_observed,
+            ),
+            (
+                "lines_processed",
+                n.1.lines_processed,
+                two_n.1.lines_processed,
+                four_n.1.lines_processed,
+            ),
             ("edits_derived", n.1.edits_derived, two_n.1.edits_derived, four_n.1.edits_derived),
-            ("replacement_bytes", n.1.replacement_bytes, two_n.1.replacement_bytes, four_n.1.replacement_bytes),
+            (
+                "replacement_bytes",
+                n.1.replacement_bytes,
+                two_n.1.replacement_bytes,
+                four_n.1.replacement_bytes,
+            ),
         ];
         for (name, n_value, two_n_value, four_n_value) in series {
             assert!(
@@ -266,7 +286,12 @@ fn refusal_and_opaque_rows_remain_cost_bounded() {
             assert_eq!(four_n.parse_gate_invocations, 1);
         }
         let series = [
-            ("gate_nodes_observed", n.gate_nodes_observed, two_n.gate_nodes_observed, four_n.gate_nodes_observed),
+            (
+                "gate_nodes_observed",
+                n.gate_nodes_observed,
+                two_n.gate_nodes_observed,
+                four_n.gate_nodes_observed,
+            ),
             ("lines_processed", n.lines_processed, two_n.lines_processed, four_n.lines_processed),
         ];
         for (name, n_value, two_n_value, four_n_value) in series {
@@ -274,6 +299,28 @@ fn refusal_and_opaque_rows_remain_cost_bounded() {
                 !is_superlinear(n_value, two_n_value, four_n_value),
                 "{family}.{name} grew superlinearly: N={n_value} 2N={two_n_value} 4N={four_n_value}"
             );
+        }
+
+        // Every admitted line-ending convention stays cost-bounded too: a
+        // refusal or opaque flood must not slip through on a variant row.
+        for line_ending in perf_subjects::LINE_ENDINGS {
+            let variant = perf_subjects::line_ending_row(family, line_ending, 16);
+            assert!(
+                variant.is_some(),
+                "line-ending row {family}/{line_ending} must be constructible"
+            );
+            let Some(spec) = variant else { continue };
+            let source = spec.source();
+            let mut counters = NativePipelineCounters::default();
+            let _typed = NativeFormatter::new().format_document_typed_with_counters(
+                &source,
+                &FormatConfig::default(),
+                &FormatContext::default(),
+                &mut counters,
+            );
+            assert_eq!(counters.pipeline_invocations, 1);
+            assert_eq!(counters.edits_derived, 0);
+            assert_eq!(counters.replacement_bytes, 0);
         }
     }
 }
@@ -296,7 +343,7 @@ fn derived_output_growth_trips_before_product_envelope() {
         for spec in &rows {
             let source = spec.source();
             let mut counters = NativePipelineCounters::default();
-            NativeFormatter::new().format_document_typed_with_counters(
+            let _applied = NativeFormatter::new().format_document_typed_with_counters(
                 &source,
                 &FormatConfig::default(),
                 &FormatContext::default(),
@@ -308,8 +355,30 @@ fn derived_output_growth_trips_before_product_envelope() {
                 spec.units
             );
         }
+
+        // Indentation variants — including the exact line-width boundary —
+        // ride the same schema-v1 envelope.
+        for indent in perf_subjects::INDENTS {
+            let variant = perf_subjects::indent_row("delimited", indent, 16);
+            assert!(variant.is_some(), "indent row delimited/{indent} must be constructible");
+            let Some(spec) = variant else { continue };
+            let source = spec.source();
+            let mut counters = NativePipelineCounters::default();
+            let _applied = NativeFormatter::new().format_document_typed_with_counters(
+                &source,
+                &FormatConfig::default(),
+                &FormatContext::default(),
+                &mut counters,
+            );
+            assert!(
+                !trip(source.len() as u64, counters.replacement_bytes),
+                "delimited/{indent} exceeded the schema-v1 envelope"
+            );
+        }
     }
-    assert!(MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1 >= 1);
+    // The envelope constant itself stays version-pinned; loosening it is a
+    // schema-major event with required before/after receipts (NPC-010).
+    assert_eq!(MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1, 4);
 }
 
 // ---------------------------------------------------------------------------
@@ -327,8 +396,10 @@ impl perl_lsp_rs_core::tooling::SubprocessRuntime for RecordingRuntime {
         _program: &str,
         _args: &[&str],
         _stdin: Option<&[u8]>,
-    ) -> Result<perl_lsp_rs_core::tooling::SubprocessOutput, perl_lsp_rs_core::tooling::SubprocessError>
-    {
+    ) -> Result<
+        perl_lsp_rs_core::tooling::SubprocessOutput,
+        perl_lsp_rs_core::tooling::SubprocessError,
+    > {
         self.invoked.store(true, Ordering::SeqCst);
         Ok(perl_lsp_rs_core::tooling::SubprocessOutput {
             stdout: b"my $external = 1;\n".to_vec(),
@@ -348,8 +419,8 @@ fn formatting_options() -> perl_lsp_rs_core::providers::formatting::FormattingOp
     }
 }
 
-fn native_provider(
-) -> perl_lsp_rs_core::providers::formatting::FormattingProvider<RecordingRuntime> {
+fn native_provider() -> perl_lsp_rs_core::providers::formatting::FormattingProvider<RecordingRuntime>
+{
     perl_lsp_rs_core::providers::formatting::FormattingProvider::new(RecordingRuntime {
         invoked: Arc::new(AtomicBool::new(false)),
     })
@@ -365,8 +436,12 @@ fn document_request_parses_exactly_once() -> Result<(), Box<dyn std::error::Erro
         SubjectSpec { family: "statement", line_ending: "lf", indent: "tabs", units: 4 }.source();
     for content in [statement, "my $x = ;\n".to_string()] {
         let mut counters = NativePipelineCounters::default();
-        let counted =
-            provider.format_document_decision_with_counters(&content, &options, &context, &mut counters)?;
+        let counted = provider.format_document_decision_with_counters(
+            &content,
+            &options,
+            &context,
+            &mut counters,
+        )?;
         assert_eq!(counters.pipeline_invocations, 1, "one pipeline per document request");
         let expected_gates =
             u64::from(counted.outcome.reason != FormatReasonCode::SourceParseError) + 1;
@@ -398,8 +473,13 @@ fn range_request_parses_exactly_once() -> Result<(), Box<dyn std::error::Error>>
     for content in [statement, "my $x = ;\n".to_string()] {
         let range = perl_lsp_rs_core::providers::formatting::FormatRange::whole_document(&content);
         let mut counters = NativePipelineCounters::default();
-        let counted = provider
-            .format_range_decision_with_counters(&content, &range, &options, &context, &mut counters)?;
+        let counted = provider.format_range_decision_with_counters(
+            &content,
+            &range,
+            &options,
+            &context,
+            &mut counters,
+        )?;
         assert_eq!(counters.pipeline_invocations, 1, "one pipeline per range request");
 
         let plain = provider.format_range_decision(&content, &range, &options, &context)?;
@@ -435,8 +515,7 @@ fn subject_identity_is_recorded_for_receipt_consumption() {
         assert_eq!(row["engine"], perf_subjects::SUBJECT_ENGINE);
         assert_eq!(row["bench_id"], spec.bench_id());
         assert!(
-            row["subject"]["content_digest"].as_str()
-                == Some(spec.content_digest().as_str())
+            row["subject"]["content_digest"].as_str() == Some(spec.content_digest().as_str())
                 && spec.content_digest().starts_with("source-v1:"),
             "subject digest must be pinned for {}",
             spec.id()
@@ -493,12 +572,12 @@ fn bench_target_enrolls_native_pipeline_benchmark() -> Result<(), Box<dyn std::e
         "BENCH_TARGETS must enroll perl-lsp-perltidy:native_pipeline_benchmark (declared-superset contract)"
     );
     assert!(
-        workflow
-            .contains(&format!("--expect-id \"{}\"", perf_subjects::REPRESENTATIVE_BENCH_ID)),
+        workflow.contains(&format!("--expect-id \"{}\"", perf_subjects::REPRESENTATIVE_BENCH_ID)),
         "the extract step must require the representative native pipeline bench id"
     );
 
-    let manifest = std::fs::read_to_string(repo_root().join("crates/perl-lsp-perltidy/Cargo.toml"))?;
+    let manifest =
+        std::fs::read_to_string(repo_root().join("crates/perl-lsp-perltidy/Cargo.toml"))?;
     let bench_section = manifest
         .split("[[bench]]")
         .nth(1)
@@ -576,19 +655,19 @@ fn job_timeouts(workflow: &str) -> Vec<(String, u64)> {
     let mut jobs = Vec::new();
     let mut current_job = String::new();
     for line in workflow.lines() {
-        if let Some(job) = line.strip_prefix("  ") {
-            if let Some((name, rest)) = job.split_once(':') {
-                if rest.trim().is_empty() && !name.contains(' ') && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-                    current_job = name.to_string();
-                }
-            }
+        if let Some(job) = line.strip_prefix("  ")
+            && let Some((name, rest)) = job.split_once(':')
+            && rest.trim().is_empty()
+            && !name.contains(' ')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
+            current_job = name.to_string();
         }
-        if let Some((key, value)) = line.trim().split_once(':') {
-            if key.trim() == "timeout-minutes" {
-                if let Ok(minutes) = value.trim().parse::<u64>() {
-                    jobs.push((current_job.clone(), minutes));
-                }
-            }
+        if let Some((key, value)) = line.trim().split_once(':')
+            && key.trim() == "timeout-minutes"
+            && let Ok(minutes) = value.trim().parse::<u64>()
+        {
+            jobs.push((current_job.clone(), minutes));
         }
     }
     jobs
@@ -599,10 +678,7 @@ fn no_timeout_or_budget_constant_exceeds_base_pin_maxima() -> Result<(), Box<dyn
 {
     let workflow = nightly_workflow()?;
     let timeouts = job_timeouts(&workflow);
-    assert!(
-        timeouts.len() >= 13,
-        "the ratchet must see every job timeout in ci-nightly.yml"
-    );
+    assert!(timeouts.len() >= 13, "the ratchet must see every job timeout in ci-nightly.yml");
     for (job, minutes) in timeouts {
         let max = base_pin_max_timeout_minutes(&job);
         assert!(

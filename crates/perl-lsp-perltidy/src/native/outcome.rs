@@ -1,11 +1,11 @@
 #[cfg(test)]
 use super::implementation::TextPosition;
+use super::implementation::counters::{NativePipelineCounters, PipelineCollectorScope};
 use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
     TextRange, TrailingComma, format_simple_line, range_includes_line,
 };
-use super::implementation::counters::{NativePipelineCounters, PipelineCollectorScope};
 use serde::{Deserialize, Serialize};
 
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -235,14 +235,19 @@ impl NativeFormatter {
         context: &FormatContext,
         counters: &mut NativePipelineCounters,
     ) -> TypedFormatResult {
-        counters.observe_pipeline_invocation();
-        let scope = PipelineCollectorScope::install();
+        let scope = PipelineCollectorScope::install_if_none();
         let started = std::time::Instant::now();
         let result = <Self as PerlFormatter>::format_document(self, source, config);
-        scope.merge_into(counters);
+        if let Some(scope) = scope {
+            scope.merge_into(counters);
+        }
         counters.observe_edits_derived(
             u64::try_from(result.edits.len()).unwrap_or(u64::MAX),
-            result.edits.iter().map(|edit| edit.new_text.len() as u64).fold(0_u64, u64::saturating_add),
+            result
+                .edits
+                .iter()
+                .map(|edit| edit.new_text.len() as u64)
+                .fold(0_u64, u64::saturating_add),
         );
         counters.observe_elapsed(started.elapsed());
         classify_native_result(source, config, context, FormatRequestTarget::Document, result)
@@ -286,8 +291,7 @@ impl NativeFormatter {
         context: &FormatContext,
         counters: &mut NativePipelineCounters,
     ) -> TypedFormatResult {
-        counters.observe_pipeline_invocation();
-        let scope = PipelineCollectorScope::install();
+        let scope = PipelineCollectorScope::install_if_none();
         let started = std::time::Instant::now();
         let result = if valid_range(source, range) {
             <Self as PerlFormatter>::format_range(self, source, range, config)
@@ -298,10 +302,16 @@ impl NativeFormatter {
                 "native range formatting refused because the requested UTF-16 range is invalid",
             )
         };
-        scope.merge_into(counters);
+        if let Some(scope) = scope {
+            scope.merge_into(counters);
+        }
         counters.observe_edits_derived(
             u64::try_from(result.edits.len()).unwrap_or(u64::MAX),
-            result.edits.iter().map(|edit| edit.new_text.len() as u64).fold(0_u64, u64::saturating_add),
+            result
+                .edits
+                .iter()
+                .map(|edit| edit.new_text.len() as u64)
+                .fold(0_u64, u64::saturating_add),
         );
         counters.observe_elapsed(started.elapsed());
         classify_native_result(

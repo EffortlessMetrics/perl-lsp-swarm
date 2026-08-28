@@ -51,8 +51,7 @@ pub const SCALING_ABSOLUTE_SLACK_V1: u64 = 8;
 /// for `source_bytes` (NPC-006).
 #[must_use]
 pub fn exceeds_replacement_envelope_v1(source_bytes: u64, replacement_bytes: u64) -> bool {
-    replacement_bytes
-        > source_bytes.saturating_mul(MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1)
+    replacement_bytes > source_bytes.saturating_mul(MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1)
 }
 
 /// Deterministic, allocation-light work counters for one native formatting
@@ -163,36 +162,48 @@ pub(crate) fn count_parse_nodes(root: &perl_parser_core::Node) -> u64 {
 ///
 /// Installed by the counters-aware typed entries around exactly one pipeline
 /// pass; nested installs restore the previous state on drop.
-pub(crate) struct PipelineCollectorScope {
+pub struct PipelineCollectorScope {
     previous: Option<NativePipelineCounters>,
     active: bool,
 }
 
 impl PipelineCollectorScope {
     /// Install a fresh collector scope for the current thread.
-    pub(crate) fn install() -> Self {
+    pub fn install() -> Self {
         let previous = ACTIVE_COLLECTOR
             .with(|cell| cell.borrow_mut().replace(NativePipelineCounters::default()));
         Self { previous, active: true }
     }
 
+    /// Install a collector scope only when none is active. Typed entries use
+    /// this so a caller that owns a wider scope (for example an LSP provider
+    /// decision spanning the whole request) keeps one collector across every
+    /// pipeline the decision runs — making adapter double-invocation visible.
+    /// `None` means a wider scope is already recording; the caller must then
+    /// skip its own merge.
+    pub fn install_if_none() -> Option<Self> {
+        let active = ACTIVE_COLLECTOR.with(|cell| cell.borrow().is_some());
+        if active { None } else { Some(Self::install()) }
+    }
+
     /// Fold everything recorded inside the scope into `counters` and restore
     /// the previous scope state.
-    pub(crate) fn merge_into(mut self, counters: &mut NativePipelineCounters) {
+    pub fn merge_into(mut self, counters: &mut NativePipelineCounters) {
         let recorded = ACTIVE_COLLECTOR.with(|cell| cell.borrow_mut().take());
         let previous = self.detach();
         ACTIVE_COLLECTOR.with(|cell| *cell.borrow_mut() = previous);
 
         let recorded = recorded.unwrap_or_default();
+        counters.pipeline_invocations =
+            counters.pipeline_invocations.saturating_add(recorded.pipeline_invocations);
         counters.parse_gate_invocations =
             counters.parse_gate_invocations.saturating_add(recorded.parse_gate_invocations);
         counters.gate_nodes_observed =
             counters.gate_nodes_observed.saturating_add(recorded.gate_nodes_observed);
         counters.lines_processed =
             counters.lines_processed.saturating_add(recorded.lines_processed);
-        counters.delimited_groups_fitted = counters
-            .delimited_groups_fitted
-            .saturating_add(recorded.delimited_groups_fitted);
+        counters.delimited_groups_fitted =
+            counters.delimited_groups_fitted.saturating_add(recorded.delimited_groups_fitted);
         counters.peak_depth = counters.peak_depth.max(recorded.peak_depth);
     }
 

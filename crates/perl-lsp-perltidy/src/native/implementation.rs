@@ -77,8 +77,7 @@ impl NativeFormatter {
         counters::record_with(|counters| {
             counters.observe_parse_gate(
                 counters::count_parse_nodes(&output.ast),
-                u64::try_from(output.budget_usage.max_depth_reached)
-                    .unwrap_or(u64::MAX),
+                u64::try_from(output.budget_usage.max_depth_reached).unwrap_or(u64::MAX),
             );
         });
 
@@ -180,6 +179,10 @@ impl NativeFormatter {
 
 impl PerlFormatter for NativeFormatter {
     fn format_document(&self, source: &str, config: &FormatConfig) -> FormatResult {
+        // Counted inside the pipeline so an adapter double-invoke — even one
+        // that bypasses the counters-aware typed entry — records a second
+        // pipeline invocation (NPC-003 mutation control).
+        counters::record_with(|counters| counters.observe_pipeline_invocation());
         if matches!(config.mode, FormatterMode::Off) {
             return FormatResult::unchanged(source);
         }
@@ -207,6 +210,8 @@ impl PerlFormatter for NativeFormatter {
     }
 
     fn format_range(&self, source: &str, range: TextRange, config: &FormatConfig) -> FormatResult {
+        // Same adapter double-invoke detection as `format_document`.
+        counters::record_with(|counters| counters.observe_pipeline_invocation());
         if matches!(config.mode, FormatterMode::Off) {
             return FormatResult::unchanged(source);
         }

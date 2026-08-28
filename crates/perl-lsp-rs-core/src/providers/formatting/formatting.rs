@@ -324,8 +324,13 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         let mut config = native_format_config(options, self.perltidy_config.as_ref(), false);
         config.mode = self.mode;
         let mut typed = match counters {
-            Some(counters) => NativeFormatter::new()
-                .format_range_typed_with_counters(content, native_range, &config, context, counters),
+            Some(counters) => NativeFormatter::new().format_range_typed_with_counters(
+                content,
+                native_range,
+                &config,
+                context,
+                counters,
+            ),
             None => {
                 NativeFormatter::new().format_range_typed(content, native_range, &config, context)
             }

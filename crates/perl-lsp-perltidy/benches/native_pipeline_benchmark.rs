@@ -15,6 +15,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr)]
 
+// The subject registry is a shared superset surface: the canary tests consume
+// the scaling/variant constructors while this bench consumes the enrolled
+// cohort, so per-target dead-code analysis necessarily sees unused items.
+#[allow(dead_code)]
 #[path = "support/perf_subjects.rs"]
 mod perf_subjects;
 
@@ -22,8 +26,8 @@ use std::hint::black_box;
 use std::path::PathBuf;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use perl_lsp_perltidy::native::{FormatConfig, FormatContext, NativeFormatter};
 use perf_subjects::{BENCH_GROUP, SubjectSpec, bench_rows, identity_row, toolchain_tag};
+use perl_lsp_perltidy::native::{FormatConfig, FormatContext, NativeFormatter};
 
 /// Fail closed when the receipt identity file cannot be written: a bench run
 /// without per-subject identity rows is exactly the aggregate-only evidence
@@ -51,11 +55,7 @@ fn build_subject_identities() -> Vec<serde_json::Value> {
     let probe = SubjectSpec { family: "delimited", line_ending: "lf", indent: "tabs", units: 1 };
     let probe_source = probe.source();
     let fingerprint = NativeFormatter::new()
-        .format_document_typed(
-            &probe_source,
-            &FormatConfig::default(),
-            &FormatContext::default(),
-        )
+        .format_document_typed(&probe_source, &FormatConfig::default(), &FormatContext::default())
         .outcome
         .identity
         .config_fingerprint;
