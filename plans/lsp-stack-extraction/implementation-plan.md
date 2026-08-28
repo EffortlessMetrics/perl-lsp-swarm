@@ -4,6 +4,7 @@ Status: planned
 Owner: perl-lsp maintainers
 Linked ADR: [PLSP-ADR-0004](../../docs/adr/PLSP-ADR-0004-lsp-stack-extraction.md)
 Linked spec: [PLSP-SPEC-0028](../../docs/specs/PLSP-SPEC-0028-lsp-stack-extraction.md)
+Static seam audit: [PR 2 audit](static-seam-audit.md)
 
 ## Purpose
 
@@ -98,6 +99,10 @@ Revert the docs-only PR. No runtime rollback is needed because no code moved.
 
 ### PR 2: Static seam audit
 
+Status: tracked by [#13054](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13054)
+
+Audit artifact: [static seam audit](static-seam-audit.md)
+
 Goal:
 
 Classify candidate protocol/runtime files as language-neutral, Perl-specific,
@@ -118,6 +123,7 @@ Proof:
 
 ```bash
 git diff --check
+cargo xtask docs-check
 ```
 
 Rollback:
@@ -129,6 +135,15 @@ Revert the audit doc. Do not move code based on a reverted audit.
 Goal:
 
 Prove the first candidate extraction set can compile without Perl dependencies.
+
+Audit input:
+
+- reconcile JSON-RPC error classification before treating
+  `protocol/jsonrpc.rs` as dependency-clean
+- keep the `$/perl-lsp/clientResponse` compatibility shim outside low-level
+  framing
+- verify the source again at the PR's own base; the PR 2 audit is a reviewed
+  classification, not build proof
 
 Allowed changes:
 
