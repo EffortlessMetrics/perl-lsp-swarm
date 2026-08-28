@@ -56,19 +56,25 @@ unit is source-only; an LSP+DAP unit must expose both selectors.
 ### C2 — Proposed LSP4IJ Windows wire semantics
 
 The LSP4IJ projection must use an explicit command vector, not a bare command
-resolved through `PATH`. The following is the proposed wire-level semantics for
-the future projection; it is not a claim about the canonical LSP4IJ schema or
-serialization. Before implementation, the lane must pin the current LSP4IJ
-schema authority (release or commit, exact path, and digest) and establish
-whether the relevant field is string-valued or an argument array. A current
-schema/serialization oracle must then confirm that the representation preserves
-this vector and its quoting semantics.
+resolved through `PATH`. This prohibition includes the shell: the `cmd.exe`
+image must be resolved before launch through the trusted Windows system
+directory (the canonical `%SystemRoot%\System32\cmd.exe`) or an equivalent
+trusted OS resolver, then canonicalized and verified as the expected system
+image. The resolver must fail closed if `%SystemRoot%` is missing, malformed,
+reparse-redirected, or does not yield the expected system `cmd.exe`; it must not
+fall back to the current directory or `PATH`. The following is the proposed
+wire-level semantics for the future projection; it is not a claim about the
+canonical LSP4IJ schema or serialization. Before implementation, the lane must
+pin the current LSP4IJ schema authority (release or commit, exact path, and
+digest) and establish whether the relevant field is string-valued or an
+argument array. A current schema/serialization oracle must then confirm that
+the representation preserves this vector and its quoting semantics.
 
 After LSP4IJ substitutes `${BASE_DIR}` with the absolute installation directory,
 the proposed effective vector is:
 
 ```text
-cmd.exe
+<SYSTEM_ROOT>\System32\cmd.exe
 /d
 /s
 /c
@@ -81,7 +87,7 @@ command-line encoding must be preserved when the vector is rendered as one
 process command line. The resulting command-line shape is:
 
 ```text
-cmd.exe /d /s /c ""C:\Program Files\perl-lsp\perllsp.cmd" --stdio"
+<SYSTEM_ROOT>\System32\cmd.exe /d /s /c ""C:\Program Files\perl-lsp\perllsp.cmd" --stdio"
 ```
 
 The LSP template must preserve the `--stdio` argument and must not replace the
@@ -103,7 +109,7 @@ the LSP and DAP selectors.
 If the LSP4IJ field is string-valued, its unescaped value must render as:
 
 ```text
-cmd.exe /d /s /c ""${BASE_DIR}\perllsp.cmd" --stdio"
+<SYSTEM_ROOT>\System32\cmd.exe /d /s /c ""${BASE_DIR}\perllsp.cmd" --stdio"
 ```
 
 Until the pinned schema and string-vs-argv oracle have confirmed this mapping,
@@ -112,8 +118,10 @@ permission to edit a template.
 
 ### C3 — Proposed LSP4IJ DAP wire semantics
 
-The DAP projection uses the same selector and shell boundary, with no implicit
-PATH lookup or independent executable:
+The DAP projection uses the same trusted shell resolution and selector
+boundary, with no implicit PATH lookup or independent executable. `cmd.exe` in
+the vector below means the canonical system image established by C2, never a
+PATH-resolved token:
 
 This is proposed wire-level semantics, not an assertion of the canonical LSP4IJ
 schema or serialization. The implementation lane must use the same pinned schema
@@ -121,7 +129,7 @@ authority and string-vs-argv oracle required by C2, and must review the LSP and
 DAP representations together.
 
 ```text
-cmd.exe
+<SYSTEM_ROOT>\System32\cmd.exe
 /d
 /s
 /c
@@ -132,7 +140,7 @@ After the LSP4IJ DAP placeholder `<<insert base directory>>` is substituted,
 the resulting command-line shape is:
 
 ```text
-cmd.exe /d /s /c ""C:\Program Files\perl-lsp\perl-dap.cmd""
+<SYSTEM_ROOT>\System32\cmd.exe /d /s /c ""C:\Program Files\perl-lsp\perl-dap.cmd""
 ```
 
 The exact LSP4IJ field encoding may be a command string or a structured argument
@@ -142,7 +150,7 @@ corresponding LSP and DAP template values must be reviewed together.
 If the DAP field is string-valued, its unescaped value must render as:
 
 ```text
-cmd.exe /d /s /c ""<<insert base directory>>\perl-dap.cmd""
+<SYSTEM_ROOT>\System32\cmd.exe /d /s /c ""<<insert base directory>>\perl-dap.cmd""
 ```
 
 Until that schema and serialization confirmation exists, the DAP projection is
@@ -200,6 +208,9 @@ both LSP and DAP:
 - the substituted base directory and selector path are validated before command
   construction, and canonicalization/reparse resolution proves that the final
   selector and executable remain contained by the intended install root;
+- the shell image is resolved from the trusted Windows system location (or an
+  equivalent trusted OS resolver), canonicalized, and proven not to come from
+  the current directory or `PATH`;
 - the launched process reaches the install-root `.cmd` selector and then the
   selected candidate member;
 - a stale executable with a different identity in `PATH` is not selected;
