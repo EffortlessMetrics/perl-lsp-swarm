@@ -53,11 +53,7 @@ fn ordinary_heredoc_rejects_trailing_whitespace_near_miss() -> R {
     let source = "<<'END'\nbody\nEND   \nEND\nmy $x = 1;\n";
     let tokens = PerlLexer::with_body_tokens(source).collect_tokens();
 
-    require_eq(
-        body_slice(source, &tokens)?,
-        "body\nEND   \n",
-        "ordinary heredoc body",
-    )?;
+    require_eq(body_slice(source, &tokens)?, "body\nEND   \n", "ordinary heredoc body")?;
     require_clean_continuation(source, &tokens, "my $x = 1;")
 }
 
@@ -66,11 +62,7 @@ fn indented_heredoc_allows_leading_but_not_trailing_whitespace() -> R {
     let source = "<<~'END'\n  body\n  END \t\n  END\nmy $x = 1;\n";
     let tokens = PerlLexer::with_body_tokens(source).collect_tokens();
 
-    require_eq(
-        body_slice(source, &tokens)?,
-        "  body\n  END \t\n",
-        "indented heredoc body",
-    )?;
+    require_eq(body_slice(source, &tokens)?, "  body\n  END \t\n", "indented heredoc body")?;
     require_clean_continuation(source, &tokens, "my $x = 1;")
 }
 
