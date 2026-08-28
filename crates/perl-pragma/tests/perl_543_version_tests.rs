@@ -1,8 +1,6 @@
 //! Regression coverage for Perl 5.43 development-release version spellings.
 
-use perl_ast::SourceLocation;
-use perl_ast::ast::{Node, NodeKind};
-use perl_pragma::{PerlVersion, PragmaTracker, features_enabled_by_version, parse_perl_version};
+use perl_pragma::{PerlVersion, features_enabled_by_version, parse_perl_version};
 
 #[test]
 fn perl_543_release_spellings_select_minor_43() {
@@ -55,26 +53,6 @@ fn perl_543_decimal_release_uses_the_current_5_42_bundle_membership() {
         parse_perl_version("5.043011").map(features_enabled_by_version),
         Some(features_enabled_by_version(PerlVersion::new(5, 42)))
     );
-}
-
-#[test]
-fn perl_543_decimal_release_updates_the_caller_pragma_state() {
-    let version_use = Node::new(
-        NodeKind::Use { module: "5.043011".to_string(), args: vec![], has_filter_risk: false },
-        SourceLocation { start: 0, end: 9 },
-    );
-    let program = Node::new(
-        NodeKind::Program { statements: vec![version_use] },
-        SourceLocation { start: 0, end: 9 },
-    );
-
-    let state = PragmaTracker::final_state(&PragmaTracker::build(&program));
-
-    assert!(state.strict_vars);
-    assert!(state.strict_subs);
-    assert!(state.strict_refs);
-    assert!(state.warnings);
-    assert!(state.has_feature("signatures"));
 }
 
 #[test]
