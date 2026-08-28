@@ -72,8 +72,11 @@ pub fn run_with_receipt_dir(json: bool, receipt_dir: Option<&Path>) -> Result<()
 }
 
 fn validate_run_inputs(root: &Path, receipt_dir: Option<&Path>) -> Result<()> {
-    let default_receipt_dir = root.join(DEFAULT_RECEIPT_DIR);
-    let receipts_dir = receipt_dir.unwrap_or(&default_receipt_dir);
+    let Some(receipts_dir) = receipt_dir else {
+        // The no-argument command intentionally retains the legacy fixture-inventory
+        // behavior. Receipt validation is opt-in through an explicit directory.
+        return Ok(());
+    };
     validate_scorecard_inputs(
         receipts_dir,
         &root.join(FIXTURE_MATRIX_PATH),
@@ -177,11 +180,8 @@ fn load_receipt_validator(receipt_schema: &Path) -> Result<jsonschema::Validator
 }
 
 /// Identify malformed UX run candidates without claiming every JSON receipt in
-/// the shared directory. Malformed recognized UX markers are always rejected,
-/// including when a distinctive timing marker is the only marker present.
-/// Otherwise, a candidate is UX-shaped when it has a complete identity-bearing
-/// marker set, while non-UX kinds without UX identity fields remain compatible
-/// with timing-bearing companion receipts.
+/// the shared directory. Malformed signature fields fail closed, while valid
+/// shared timing/report fields remain compatible with unrelated companion receipts.
 fn looks_like_ux_scenario_run(value: &Value) -> bool {
     let Some(object) = value.as_object() else {
         return false;
@@ -193,11 +193,6 @@ fn looks_like_ux_scenario_run(value: &Value) -> bool {
         .filter(|field| object.contains_key(*field))
         .collect();
     let has_distinctive = UX_RUN_DISTINCTIVE_FIELDS.iter().any(|field| object.contains_key(*field));
-    let has_malformed_marker = signature_fields.iter().any(|field| malformed_marker(object, field));
-    if has_malformed_marker {
-        return true;
-    }
-
     let kind = object.get("kind").and_then(Value::as_str);
     if kind.is_some_and(|kind| KNOWN_NON_UX_COMPANION_KINDS.contains(&kind)) {
         return false;
@@ -206,8 +201,18 @@ fn looks_like_ux_scenario_run(value: &Value) -> bool {
     let has_ux_identity = ["workflow_id", "scenario_file", "test_name", "ci_tier", "assertions"]
         .iter()
         .any(|field| object.contains_key(*field));
+    let has_malformed_marker = signature_fields.iter().any(|field| malformed_marker(object, field));
+    if has_malformed_marker {
+        return true;
+    }
+
     let is_unknown_non_ux_companion =
         kind.is_some_and(|kind| kind != "ux_scenario_run") && !has_ux_identity;
+    let has_explicit_ux_identity = kind == Some("ux_scenario_run") || has_ux_identity;
+
+    if !has_explicit_ux_identity {
+        return false;
+    }
 
     !is_unknown_non_ux_companion && signature_fields.len() >= 3 && has_distinctive
 }
@@ -318,29 +323,13 @@ mod tests {
     }
 
     #[test]
-    fn default_receipt_dir_is_validated_when_argument_is_none() -> Result<()> {
+    fn default_receipt_dir_is_not_validated_when_argument_is_none() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let receipts = temp.path().join(DEFAULT_RECEIPT_DIR);
         fs::create_dir_all(&receipts)?;
         fs::write(receipts.join("broken.json"), "{")?;
 
-        let schema = temp.path().join(RECEIPT_SCHEMA_PATH);
-        if let Some(parent) = schema.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::copy(checked_in_receipt_schema(), &schema)?;
-
-        let matrix = temp.path().join(FIXTURE_MATRIX_PATH);
-        if let Some(parent) = matrix.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&matrix, r#"{"workflows":[{"id":"known","scenario_file":"known.rs"}]}"#)?;
-
-        let error = validation_error(
-            validate_run_inputs(temp.path(), None),
-            "the default receipt directory bypassed scorecard validation",
-        )?;
-        assert!(format!("{error:#}").contains("broken.json"));
+        validate_run_inputs(temp.path(), None)?;
         Ok(())
     }
 
@@ -483,6 +472,26 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_report_with_three_markers_and_no_ux_identity_remains_ignored() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&receipts)?;
+        fs::write(
+            receipts.join("external-report.json"),
+            r#"{
+                "result":"pass",
+                "duration_ms":10,
+                "operation_timings":[],
+                "canonical_repro":"external-tool --check"
+            }"#,
+        )?;
+        let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+
+        validate_scorecard_inputs(&receipts, &matrix, &checked_in_receipt_schema())?;
+        Ok(())
+    }
+
+    #[test]
     fn one_malformed_ux_marker_fails_closed() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let receipts = temp.path().join("receipts");
@@ -517,6 +526,34 @@ mod tests {
             "receipt-shaped JSON with a valid result and invalid duration unexpectedly passed",
         )?;
         assert!(format!("{error:#}").contains("unsupported or malformed kind"));
+        Ok(())
+    }
+
+    #[test]
+    fn no_receipt_dir_preserves_legacy_validation_boundary() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let default_receipts = temp.path().join("target/receipts/editor-ux");
+        fs::create_dir_all(&default_receipts)?;
+        fs::write(default_receipts.join("broken.json"), "{")?;
+
+        let schema = temp.path().join(RECEIPT_SCHEMA_PATH);
+        if let Some(parent) = schema.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(checked_in_receipt_schema(), &schema)?;
+
+        let matrix = temp.path().join(FIXTURE_MATRIX_PATH);
+        if let Some(parent) = matrix.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&matrix, r#"{"workflows":[{"id":"known","scenario_file":"known.rs"}]}"#)?;
+
+        validate_run_inputs(temp.path(), None)?;
+        let error = validation_error(
+            validate_run_inputs(temp.path(), Some(&default_receipts)),
+            "explicit receipt directory unexpectedly bypassed validation",
+        )?;
+        assert!(format!("{error:#}").contains("broken.json"));
         Ok(())
     }
 
