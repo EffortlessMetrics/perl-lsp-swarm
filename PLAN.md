@@ -1,9 +1,8 @@
 # Plan: #11549 — Conjunctive install-route classification and preferred-route selection
 
-> Status: LOCAL DRAFT (prepared 2026-08-27 on branch `codex/11549-planner` from
-> `origin/main` `a9664af79`). Post to #11549 when gh budget restores. GitHub API
-> was unavailable at authoring time; every fact below is sourced from local git
-> objects (`origin/main` and branch `codex/11548-claims-v2`), cited inline.
+> Status: REVIEWED PLAN (refreshed 2026-08-28 against #11549, #11575, and PR
+> #12858). The plan is not an accepted executable input contract until the
+> validated route schema/catalog owned by #10333/#10334 exists.
 
 ## 0. Claim and entry
 
@@ -13,7 +12,7 @@ product-unit membership) plus a four-name subject-identity field. Today those
 dimensions are asserted inconsistently across 13 prose surfaces (70 claim rows,
 12 findings), and no mechanism selects which install route a user should be
 told to take. #11549 delivers (1) a conjunctive route classifier derived
-deterministically from the #11548 v2 catalog, and (2) a preferred-route
+  deterministically from the validated route catalog owned by #10333/#10334, and (2) a preferred-route
 selection whose *ordering* is explicit, human-owned product data — never
 derived.
 
@@ -24,18 +23,13 @@ in a later lane. Sibling state at authoring time:
   `docs/distribution/INSTALL_CLAIM_SURFACES.md` — 13 surfaces (S01–S13), 70
   claim rows (C101–C1309), 12 findings (FND-1–FND-12). Its "Family handoff
   notes → For #11549" section is the direct requirement source.
-- #11548 v2 catalog **NOT landed**; flying on branch `codex/11548-claims-v2`
-  (head `4501c89fc`, merge-base current with main). It adds
-  `distribution/public_release_claims.v2.json` (generated, 70 claims / 13
-  surfaces / 12 findings / 10 dimensioned rows),
-  `schemas/public_release_claims.v2.schema.json`, generator
-  `cargo xtask public-release-claims-v2 {build,check,list,explain}`, and a
-  `scripts/validate_public_release_claims_v2.py` gate. The schema's own
-  description says: *"this schema is the current catalog shape for install-route
-  consumers (#11549 classifier)"* and FND-4's `owner_route` is
-  `"#11549-classifier"`. **Dependency:** #11549 builds on the #11548 branch; if
-  #11548 lands first, rebase point moves but nothing in this plan changes. If
-  #11548's shape changes materially, only §2's join table needs re-derivation.
+- #12858 (the former #11548 catalog attempt) is **closed unmerged and
+  superseded**. Its `4501c89fc` branch is not an accepted input contract: the
+  issue records missing exact route rows, projection contexts, producer joins,
+  publication/channel bindings, and fail-closed route states. **Dependency:**
+  #11549 starts only after the validated route schema/catalog owned by #10333
+  and #10334 is available. Its exact route rows, projection contexts, and
+  producer bindings replace every illustrative mapping in this plan.
 
 **Non-goals:** judging/rewriting prose wording strength (#10342), canonical
 fragment generation (#10339), release receipts themselves (#7831 family),
@@ -97,25 +91,22 @@ Derived from `docs/distribution/INSTALL_CLAIM_SURFACES.md`
 ### 2.1 Route subject model
 
 Define a **route** as a named acquisition path a user can be told to take.
-Ten routes are enumerable from the claim rows (every route below lists its
-backing claim IDs — this is the join table):
+The exact route denominator, route IDs, projection contexts, and producer joins
+must come from the validated catalog owned by #10333/#10334. The following are
+planning families only; they are not an accepted catalog or a claim-to-route
+join and must not be implemented as a hard-coded substitute:
 
 | route_id | Backing claims | Notes |
 | --- | --- | --- |
-| `vscode-marketplace` | C102, C901, C902, C1003, C1101, C1202, C1203, C1204, C1301 | Extension; managed binary download (C1203 `channel: latest` default, FND-3) |
-| `manual-archive` | C103, C206, C215, C1006, C1204, C1303 | GitHub release archive; C1303/FND-12 is a **no-checksum variant** — distinct sub-mode |
-| `homebrew-tap` | C104, C213, C1206, C1304, C1305, C1308 | Owned tap; formula freshness unproven (C1304/C1305 `omitted_caveats`) |
-| `cargo-registry` | C203 (anti-claim), C214, C701, C702, C1302, C1304, C1306, C1307, C1308 | `cargo install perllsp`; C203 rejects foreign `perl-lsp` |
-| `cargo-git` | C1207 | Unpinned `--git` (FND-6) |
-| `github-action` | C301, C302, C303, C401–C406, C501–C503, C601 | Composite action; FND-1/2/3 concentrated here |
-| `posix-bootstrap` | C103, C204, C205, C207, C1004, C1005, C1206 | Identity-bound curl; fail-closed canonical C207 vs C1005 drift |
-| `powershell-installer` | C105, C209, C210, C211 | Broken against published assets (#5461/#4348); FND-9/FND-10 |
-| `source-build` | C208, C214, C1007, C1302 | Server-only under `BUILD_FROM_SOURCE=1` (C208); local path variants |
-| `unproven-channels` | C212 | Scoop/Chocolatey/winget (`search`-verify only); Docker per Distribution Matrix |
+| VS Code Marketplace / Open VSX | Extension and managed-binary acquisition | Exact route rows and gallery context come from the catalog |
+| Identity-bound archive / POSIX bootstrap | Release archive and bootstrap variants | Checksum and publication bindings come from the catalog |
+| Homebrew / Cargo registry / unpinned Cargo git | Separate channel subjects | No cross-channel inference |
+| Setup Action release/source modes | CI-oriented route families | Explicit ref and product-unit context |
+| Windows zip / source-local builds | Platform and product-unit variants | Receipt-bound support remains separate |
+| Unproven channels | Scoop, Chocolatey, winget, Docker, or other deferred channels | Only catalog-provided channels may enter here |
 
 Out-of-scope rows (must be *explicitly* excluded, not silently unjoined):
-C801 (diagnostic advice), C901/C902 deferral framing keeps C902's currentness
-claim joined to marketplace, C1001/C1002/C1008 (probes/posture), C1102
+C801 (diagnostic advice), C1001/C1002/C1008 (probes/posture), C1102
 (virtual-workspace note), C1201/C101 (`volatile_number` badges), C1309
 (`lsp-mcp` adjacent tool), C106/C216 (verification semantics — join as
 post-install probes metadata, not route selection), C703 (channel
@@ -123,31 +114,38 @@ independence frame — a rule, not a route).
 
 ### 2.2 Classification = conjunction of independent per-dimension verdicts
 
-For each route, classification is the **AND-join over all claim rows that
-reference the route, evaluated per independent dimension**. Never reduce to a
-scalar. Five verdict axes:
+For each exact catalog route row and projection context, classification is the
+**AND-join over all required hard dimensions**. Never reduce to a scalar or
+infer a route from prose claim count. The hard dimensions include, as
+applicable:
 
-1. **Identity axis** — product units yielded (`perllsp` / `perl-dap` /
+1. **Identity and topology** — product units yielded (`perllsp` / `perl-dap` /
    `extension`) + identity names bound, honoring the collision map
    (`perl-lsp` → rejected-foreign). Source: `product_units` dimensions (C208,
    C209, C210) + C203/C1101.
-2. **Platform axis** — per-OS/arch coverage with the **three-way**
+2. **Platform and target** — per-OS/arch coverage with the **three-way**
    `windows_arm64` record (`user_prose`, `tracked_source`,
    `published_receipt`) kept separate exactly as #11548's schema already models
    it. Effective support = **receipt-bound**: `tracked_source=built` does NOT
    yield `supported` while `published_receipt=absent` (FND-4 disposition owned
    here).
-3. **Integrity axis** — `sha256sums_enforcement` mode. A contradiction inside
+3. **Product-unit and lifecycle completeness** — server/adapter membership,
+   installation, first-use, repair, upgrade, rollback, and removal cells do
+   not compensate for one another.
+4. **Integrity and provenance** — `sha256sums_enforcement` mode. A contradiction inside
    the conjunction (C207 fail-closed vs C1005 fail-open on the same
    `scripts/install.sh`) resolves **pessimistically to `contradicted`**, never
    to the optimistic value, until `distribution-docs-sync` lands FND-7.
-4. **Freshness axis** — worst-of joined drift statuses, mapped:
+5. **Freshness, channel, and publication** — worst-of joined drift statuses,
+   currentness, public publication, and public verification remain separate:
    any joined `mutable_pin` | `cross_surface_drift` | `source_drift` |
    `stale_example` | `future_example` caps the route below `proven_current`;
    `pending` yields `pending_gate(issue)`; `volatile_number` is inert (does not
    gate routes; FND-8 is copy metadata).
-5. **Receipt axis** — channel-independence: each route inherits exactly the
-   receipt channel(s) its claims cite; no cross-channel inference (C201/C703).
+6. **PATH, session, and execution** — fresh-process resolution, exact host
+   lookup, transport, cleanup, and process settlement are explicit dimensions.
+7. **Receipt axis** — channel-independence: each route inherits exactly the
+   receipt channel(s) its catalog row cites; no cross-channel inference (C201/C703).
 
 Resulting **route verdict enum** (suggested):
 `proven_current` · `receipt_bound_partial{dimension, values}` ·
@@ -172,9 +170,9 @@ Follow the #11548 pattern exactly — deterministic, generated, schema-closed:
   testable. The only curated inputs are: route→claim join, the anti-claim
   identity map, and the pessimistic-contradiction rule. **Preference ordering
   is NOT derived here** (§3).
-- Sequencing note: if #11548 hasn't landed when work starts, build against its
-  branch and rebase; the join table (§2.1) is the only #11548-shape-coupled
-  artifact.
+- Sequencing note: do not build against the closed #12858 branch. Start from
+  the validated #10333/#10334 catalog and re-derive the exact route joins,
+  projection contexts, and falsifier fixtures if that input contract changes.
 
 ---
 
@@ -241,7 +239,10 @@ is product authority and must remain reviewable data, not emergent constants.
 
 Each falsifier distinguishes a correct classifier/selector from a plausible
 wrong one. All are cheap (pure functions over catalog + table; no network,
-no installs).
+no installs). Claim IDs and route names below are examples carried forward
+from the #11575 inventory; once #10333/#10334 lands, each fixture must be
+rebound to the exact catalog row, route ID, and projection context rather than
+assuming the former prose-row denominator.
 
 1. **Receipt-binding (FND-4, the falsifier #11548 explicitly deferred here).**
    Query `(windows, aarch64, {perllsp}, editor)`. Wrong implementations join
@@ -282,10 +283,11 @@ no installs).
    byte-identical across runs and machines: classification output contains no
    timestamps, ambient state, or catalog-order dependence beyond stable claim
    IDs. Any run-to-run diff fails.
-8. **Denominator closure (mirrors #11548's missing-producer-omits-route
-   pattern).** Every one of the 70 claim rows is either joined to ≥1 route or
-   listed in the explicit out-of-scope set (§2.1). A join referencing an
-   unknown claim ID, or an unjoined and unexcluded row, fails the check.
+8. **Denominator closure.** Every exact route row and projection context in the
+   validated catalog is classified exactly once. A join referencing an unknown
+   claim or route ID, or an unjoined row, fails the check. The 70 prose claim
+   rows from #11575 are evidence inputs and do not define the classifier's
+   route denominator by themselves.
 9. **Cross-channel inference block (C201/C703).** A claim's receipt on channel
    X must never satisfy another route's receipt requirement (e.g., GitHub
    Releases v0.17.0 receipt must not make `homebrew-tap` `proven_current`).
@@ -320,17 +322,19 @@ can be one word.
 `feat(distribution): add conjunctive install-route classification and preferred-route selection (#11549)`
 
 **Sizing: M** — one candidate writer, one coherent claim. Roughly: route-join
-table + verdict derivation (~250–400 lines incl. static tables, following
-#11548's `xtask/src/public_release_claims.rs` idiom), artifact + closed schema +
+table + verdict derivation (~250–400 lines incl. static tables, following the
+existing catalog-generator idiom), artifact + closed schema +
 regen-check wiring (~150–250), selection filter + context policy table
 (~100–200), and falsifier tests (§4) (~300). No production-crate changes; no
 doc rewrites. **Optional split if review prefers:** slice 1 = classification
 artifact (S/M), slice 2 = selection + policy table (S), sharing §2.1's join
 table. Do NOT pull FND-7/FND-11 doc syncs or #10342 linting into this claim.
 
-**Hard prerequisite check at build time:** if `codex/11548-claims-v2` has landed,
-consume landed `distribution/public_release_claims.v2.json`; otherwise branch
-from it and state the stacking in the PR body.
+**Hard prerequisite check at build time:** require the validated route
+schema/catalog from #10333/#10334, including exact route IDs, projection
+contexts, producer joins, publication/channel bindings, and fail-closed route
+states. If it is absent or structurally changes, stop at `NOT_PROVEN` and
+re-derive §2 and its fixtures; do not substitute the closed #12858 attempt.
 
 **Proof strategy:** all §4 falsifiers as focused `cargo test -p xtask` cases
 plus the byte-identity regen check; `just doctor`, `cargo fmt -p xtask --
@@ -339,9 +343,11 @@ plus the byte-identity regen check; `just doctor`, `cargo fmt -p xtask --
 standard gates.
 
 **Residual risks:**
-- #11548 branch may still move (schema/claim-ID changes) → re-derive §2.1 join
-  table only; plan logic unaffected.
-- H1–H5 unanswered → implementer proceeds on proposed defaults but must mark
+
+- The #10333/#10334 route schema/catalog may change before implementation →
+  re-derive §2.1, hard-dimension bindings, and affected fixtures; the human
+  preference rulings remain separate.
+- H1–H7 unanswered → implementer proceeds on proposed defaults but must mark
   the policy table rows `provisional(human-pending)` in the artifact so the
   authority gap is machine-visible, not silent.
 - Prose drift (new surfaces) after inventory audit commit `20174d50c` →

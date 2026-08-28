@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12256 |
-| Rust-family files | 3745 |
-| Non-Rust files | 8511 |
-| Allowlisted | 6276 |
+| Total tracked files | 12261 |
+| Rust-family files | 3747 |
+| Non-Rust files | 8514 |
+| Allowlisted | 6279 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 480 |
-| documentation | 2775 |
+| documentation | 2776 |
 | generated | 2 |
 | production | 333 |
 | test | 2033 |
-| tooling | 653 |
+| tooling | 655 |
 | unclassified | 2235 |
 
 ## Unclassified files
@@ -3405,6 +3405,7 @@
 | `LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `NOW_NEXT_LATER.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `PLAN.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `RELEASE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `RELEASE_HISTORY.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6613,6 +6614,7 @@
 | `scripts/fuzz-bounded` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/gate-local.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/gen-xlarge-workspace.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/generate-badges.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/generate-badges.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/generate-receipt.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/generate-receipts.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6736,6 +6738,7 @@
 | `scripts/tests/test-forbid-fatal-constructs-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-gate-local-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-generate-badges-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-generate-badges.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-generate-receipt.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-ignored-test-count-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-bootstrap-identity.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
