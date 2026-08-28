@@ -70,7 +70,14 @@ jobs:
             echo "run_ci=false" >> "$GITHUB_OUTPUT"
             # Drafts are excluded by run_ci; ready_for_review recomputes scope.
             echo "api_scope=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Draft PR detected — skipping CI jobs until ready for review"
+            {
+              echo "### Draft PR CI posture"
+              echo
+              echo "- \`Rust formatting\` and \`Conflict marker check\` still run against this exact draft head."
+              echo "- Other CI jobs are intentionally deferred while the PR remains draft."
+              echo "- A skipped job is not verification. Mark the PR ready for review to run the full merge-required suite."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Draft PR detected — running rustfmt and conflict-marker feedback; deferring full CI until ready for review"
           else
             base_sha="${{ github.event.pull_request.base.sha }}"
             pr_number="${{ github.event.pull_request.number }}"
@@ -468,7 +475,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     needs: [draft-pr-check, preflight-latest-check]
-    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    # `preflight-latest-check` is intentionally skipped for drafts. `always()`
+    # lets this cheap exact-head check run anyway while preserving the normal
+    # ready/push freshness route.
+    if: >-
+      always() &&
+      (
+        (github.event_name == 'pull_request' && github.event.pull_request.draft == true) ||
+        (
+          needs.draft-pr-check.outputs.run_ci == 'true' &&
+          needs.preflight-latest-check.outputs.is_latest == 'true'
+        )
+      )
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
