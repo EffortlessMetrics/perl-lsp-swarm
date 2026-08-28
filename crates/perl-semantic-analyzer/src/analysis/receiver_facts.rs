@@ -723,6 +723,18 @@ mod tests {
         }
     }
 
+    fn hash_of_array_shape_fact(slot: &str, index: usize, package: &str) -> TypeFact {
+        let mut slots = BTreeMap::new();
+        slots.insert(slot.to_string(), array_shape_fact(index, package));
+        TypeFact {
+            ty: PerlType::Hash { key: Box::new(PerlType::Any), value: Box::new(PerlType::Any) },
+            confidence: Confidence::High,
+            evidence: vec![TypeEvidence::Literal],
+            dynamic_boundary: None,
+            shape: Some(ShapeFact::Hash(super::super::type_facts::HashShape::new(slots, None))),
+        }
+    }
+
     fn object_field_shape_fact(field: &str, field_package: &str) -> TypeFact {
         let mut fields = BTreeMap::new();
         fields.insert(field.to_string(), object_fact(field_package, Confidence::Medium));
@@ -785,6 +797,60 @@ mod tests {
             call,
             ReceiverFactContext::new(Some(engine.environment())).with_source(code),
         ))
+    }
+
+    #[test]
+    fn nested_hash_of_array_slot_admits_through_recursive_container_resolution()
+    -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact(
+            "groups".to_string(),
+            hash_of_array_shape_fact("staff", 0, "My::Group"),
+        );
+
+        let fact = receiver_fact_for("$groups{staff}[0]->render();", "render", &env)?;
+
+        // The [0] receiver resolves through the recursive container walk:
+        // $groups env fact -> {staff} slot fact -> [0] element fact.
+        assert_eq!(fact.kind, ReceiverKind::ArrayIndex);
+        assert_eq!(fact.package.as_deref(), Some("My::Group"));
+        assert_eq!(fact.confidence, Confidence::High);
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Exact);
+        Ok(())
+    }
+
+    #[test]
+    fn nested_hashref_of_array_slot_admits_through_recursive_container_resolution()
+    -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact(
+            "config".to_string(),
+            hash_of_array_shape_fact("db", 1, "My::Handle"),
+        );
+
+        let fact = receiver_fact_for("$config->{db}[1]->call();", "call", &env)?;
+
+        assert_eq!(fact.kind, ReceiverKind::ArrayIndex);
+        assert_eq!(fact.package.as_deref(), Some("My::Handle"));
+        assert_eq!(fact.confidence, Confidence::High);
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Exact);
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_variable_hash_container_discriminates_the_env_lookup_seam() -> Result<(), String> {
+        let env = TypeEnvironment::new();
+
+        let fact = receiver_fact_for("$mystery{staff}->render();", "render", &env)?;
+
+        // The variable-identity base case runs, finds no environment fact,
+        // and the hash receiver falls back without inventing a package.
+        assert_eq!(fact.kind, ReceiverKind::HashSlot);
+        assert_eq!(fact.package, None);
+        assert_eq!(fact.confidence, Confidence::Low);
+        assert_eq!(fact.freshness, ReceiverFactFreshness::Unknown);
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
+        Ok(())
     }
 
     #[test]
