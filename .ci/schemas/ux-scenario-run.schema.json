@@ -187,7 +187,8 @@
         "matrix_drift",
         "baseline_drift",
         "new_test_bug",
-        "unknown"
+        "unknown",
+        null
       ]
     },
     "route": {
