@@ -125,36 +125,18 @@ mod tests {
     #[test]
     fn strict_requires_every_strict_category() {
         let cases = [
-            (
-                "vars",
-                perl_pragma::PragmaState {
-                    strict_vars: false,
-                    strict_subs: true,
-                    strict_refs: true,
-                    ..Default::default()
-                },
-            ),
-            (
-                "subs",
-                perl_pragma::PragmaState {
-                    strict_vars: true,
-                    strict_subs: false,
-                    strict_refs: true,
-                    ..Default::default()
-                },
-            ),
-            (
-                "refs",
-                perl_pragma::PragmaState {
-                    strict_vars: true,
-                    strict_subs: true,
-                    strict_refs: false,
-                    ..Default::default()
-                },
-            ),
+            ("vars", false, true, true),
+            ("subs", true, false, true),
+            ("refs", true, true, false),
         ];
 
-        for (missing_category, state) in cases {
+        for (missing_category, strict_vars, strict_subs, strict_refs) in cases {
+            let state = perl_pragma::PragmaState {
+                strict_vars,
+                strict_subs,
+                strict_refs,
+                ..Default::default()
+            };
             let facts = CompileEffectFacts::from_pragma_state(test_file_id(), &state, None);
             assert!(
                 !facts.strict,
