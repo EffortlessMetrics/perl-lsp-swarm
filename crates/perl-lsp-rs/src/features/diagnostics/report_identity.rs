@@ -175,6 +175,7 @@ pub struct PullReportSubject {
     exclude: BTreeSet<String>,
     legacy_policy_digest: Option<ContentDigest>,
     facts_generation: Option<u64>,
+    project_version: Option<String>,
     resolver_roots: BTreeSet<String>,
     projection: DiagnosticProjectionFragment,
     critic_enabled: bool,
@@ -228,6 +229,7 @@ pub fn pull_report_subject(
         engine: context.critic_engine,
         profile,
         facts_generation: context.facts_generation,
+        project_version: context.project_version.clone(),
         projection: context.projection,
         critic_enabled: context.perlcritic_enabled,
         legacy_policy_digest,
@@ -319,6 +321,11 @@ impl PullReportSubject {
         push_str(&mut canonical, "position_encoding", self.projection.position_encoding.as_token());
         push_u64(&mut canonical, "markup_messages", u64::from(self.projection.markup_messages));
         push_u64(&mut canonical, "critic_enabled", u64::from(self.critic_enabled));
+        push_str(
+            &mut canonical,
+            "project_version",
+            self.project_version.as_deref().unwrap_or("<none>"),
+        );
         push_set(&mut canonical, "resolver_roots", &self.resolver_roots);
 
         let digest = ContentDigest::of_bytes(canonical.as_bytes());
@@ -490,6 +497,14 @@ mod tests {
         let mut context = baseline_context.clone();
         context.facts_generation = Some(9);
         assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
+
+        // Project compatibility target: config-only changes must invalidate the ID.
+        let mut context = baseline_context.clone();
+        context.project_version = Some("5.20".to_string());
+        let project_id = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        assert_ne!(baseline, project_id);
+        context.project_version = Some("5.38".to_string());
+        assert_ne!(project_id, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
 
         // Resolver environment.
         let mut context = baseline_context.clone();
