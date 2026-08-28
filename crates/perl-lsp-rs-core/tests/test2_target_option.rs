@@ -63,6 +63,30 @@ fn false_scalar_targets_do_not_generate_class() -> TestResult {
 }
 
 #[test]
+fn empty_scalar_targets_preserve_following_exports() -> TestResult {
+    for target in ["''", "\"\""] {
+        let resolved = resolve_import("Test2::V0", &format!("-target => {target}, ok"))
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+        assert!(resolved.symbols.contains("ok"));
+        assert!(!resolved.symbols.contains("CLASS"));
+        assert!(!resolved.symbols.contains("is"));
+    }
+    Ok(())
+}
+
+#[test]
+fn dynamic_and_uncertain_numeric_targets_do_not_generate_class() -> TestResult {
+    for target in ["$target", "0.0", "0e0", "+0", "-0"] {
+        let resolved = resolve_import("Test2::V0", &format!("-target => {target}"))
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+        assert!(!resolved.symbols.contains("CLASS"), "target {target:?} is not proven truthy");
+    }
+    Ok(())
+}
+
+#[test]
 fn named_hash_targets_preserve_defaults_and_generate_helpers() -> TestResult {
     let args = "-target => { pkg => 'Widget', other => 'Gadget' }";
     for (module, expected_default) in [("Test2::V0", "is"), ("Test2::V1", "T2")] {
@@ -91,6 +115,19 @@ fn wrapped_hash_targets_ignore_structural_tokens() -> TestResult {
         assert!(resolved.symbols.contains("other"));
         assert!(!resolved.symbols.contains("Widget"));
         assert!(!resolved.symbols.contains("Gadget"));
+    }
+    Ok(())
+}
+
+#[test]
+fn whitespace_separated_hash_wrappers_preserve_helpers() -> TestResult {
+    for args in ["-target => ( { pkg => 'Widget' } )", "-target => + { pkg => 'Widget' }"] {
+        let resolved = resolve_import("Test2::V0", args)
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+        assert!(resolved.symbols.contains("pkg"));
+        assert!(!resolved.symbols.contains("CLASS"));
+        assert!(!resolved.symbols.contains("Widget"));
     }
     Ok(())
 }

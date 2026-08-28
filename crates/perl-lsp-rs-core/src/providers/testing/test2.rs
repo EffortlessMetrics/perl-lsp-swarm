@@ -435,6 +435,16 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                     let opens = value.matches('{').count() as isize;
                     let closes = value.matches('}').count() as isize;
                     if !saw_hash && opens == 0 {
+                        // Parentheses and unary-plus may be separated from a
+                        // hash opener by whitespace (`( { ... } )` and
+                        // `+ { ... }`). They are structural only when the
+                        // nearby tokens prove that this is a hash target;
+                        // otherwise the first atom is the scalar target.
+                        if is_structural_target_atom(value)
+                            && target_starts_hash(&atoms, atom_index - 1)
+                        {
+                            continue;
+                        }
                         if scalar_target_is_truthy(value) {
                             target_helpers.insert("CLASS".to_string());
                         }
@@ -627,7 +637,9 @@ fn tokenize_import_args(raw: &str) -> Vec<String> {
         let piece = piece.replace("=>", " ");
         for tok in piece.split_whitespace() {
             let cleaned = strip_quotes(tok);
-            if !cleaned.is_empty() {
+            // An empty quoted value is still an argument. Dropping it would
+            // make the following export look like `-target`'s value.
+            if !cleaned.is_empty() || is_quoted_token(tok) {
                 out.push(cleaned.to_string());
             }
         }
@@ -710,6 +722,31 @@ fn strip_quotes(tok: &str) -> &str {
     tok
 }
 
+/// Whether `tok` is a complete single- or double-quoted token, including the
+/// intentionally empty string literal.
+fn is_quoted_token(tok: &str) -> bool {
+    let tok = tok.trim();
+    let bytes = tok.as_bytes();
+    bytes.len() >= 2
+        && (bytes[0] == b'\'' || bytes[0] == b'"')
+        && bytes[0] == bytes[bytes.len() - 1]
+}
+
+/// Whether an atom contains only target-expression wrapper punctuation.
+fn is_structural_target_atom(atom: &str) -> bool {
+    !atom.is_empty() && atom.chars().all(|c| matches!(c, '+' | '{' | '}' | '(' | ')'))
+}
+
+/// Look ahead through separated wrapper punctuation for a hash opener.
+fn target_starts_hash(atoms: &[String], start: usize) -> bool {
+    atoms
+        .iter()
+        .skip(start + 1)
+        .take(4)
+        .take_while(|atom| is_structural_target_atom(atom))
+        .any(|atom| atom.contains('{'))
+}
+
 /// Whether a scalar `-target` literal creates Test2::Tools::Target helpers.
 ///
 /// Perl's false scalar values do not install the target helpers. Keep this
@@ -717,12 +754,36 @@ fn strip_quotes(tok: &str) -> &str {
 /// resolver's proof boundary rather than being guessed as truthy or falsey.
 fn scalar_target_is_truthy(raw: &str) -> bool {
     let trimmed = raw.trim();
-    if trimmed == "undef" || trimmed == "0" {
+    if trimmed == "undef" || is_definitely_false_numeric(trimmed) {
         return false;
     }
 
     let value = strip_quotes(trimmed);
-    !value.is_empty() && value != "0"
+    if value.is_empty() || value == "0" {
+        return false;
+    }
+    // Variables and operators require evaluation. Do not guess their Perl
+    // truthiness from source spelling.
+    if trimmed
+        .chars()
+        .next()
+        .is_some_and(|c| matches!(c, '$' | '@' | '%' | '&' | '+' | '-' | '(' | '{' | '['))
+    {
+        return false;
+    }
+    // A nonempty quoted string (other than Perl's false string `"0"`) and a
+    // bare package name are safely established truthy literals. Numeric forms
+    // not covered above remain deliberately outside this resolver's boundary.
+    if is_quoted_token(trimmed) || is_bareword(value) {
+        return true;
+    }
+    false
+}
+
+/// Recognize only numeric spellings whose value is definitely false in Perl.
+/// Other numeric-looking forms stay outside the inference boundary.
+fn is_definitely_false_numeric(raw: &str) -> bool {
+    matches!(raw, "0" | "+0" | "-0" | "0.0" | "0e0" | "0E0" | "0.0e0" | "0.0E0")
 }
 
 /// Extract `use ...;` statements from Perl source, respecting quotes and `#`
