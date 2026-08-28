@@ -1,0 +1,382 @@
+//! Property/fuzz harness proof for formatter safety invariants (#10301).
+//!
+//! Rows FPH-001..FPH-010 from `.spec/10301-formatter-property-fuzz-harness/`.
+//! The shared invariant core lives in
+//! `tests/support/formatter_property_harness/` and is consumed verbatim by the
+//! cargo-fuzz target `fuzz/fuzz_targets/perl_tidy_formatter.rs`. The checker
+//! binds only canonical production APIs (`format_*_typed`) and the independent
+//! byte-edit oracle (`apply_edits_exact`); it never reuses production edit
+//! application, never spawns a process, and never reads a clock.
+//!
+//! Determinism: every case is a pure function of `(seed, index)`; receipts are
+//! normalized and digested without wall-clock input. Boundedness is asserted
+//! per case (`MAX_SUBJECT_BYTES`, `MAX_PLAN_EDITS`, `MAX_SUBJECT_LINES`).
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
+
+use std::fs;
+
+use proptest::prelude::*;
+use proptest::test_runner::{Config as ProptestConfig, FileFailurePersistence};
+
+#[path = "support/formatter_property_harness/mod.rs"]
+mod formatter_property_harness;
+
+use formatter_property_harness::{
+    dormant_registry, family_registry, generate_case, generate_invalidation_case, record_for,
+    run_case, DormantStatus, GeneratedCase, HARNESS_SCHEMA_VERSION, MAX_PLAN_EDITS,
+    MAX_SUBJECT_BYTES, MAX_SUBJECT_LINES,
+};
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+const REGRESSION_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/formatter_property_harness_tests.proptest-regressions"
+);
+
+const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
+
+/// Reason classes that legitimately carry no plan (every stable reason except
+/// the two success classes).
+const REFUSAL_REASON_CLASSES: [&str; 9] = [
+    "formatter_disabled",
+    "unsupported_syntax",
+    "literal_preservation_unsupported",
+    "source_parse_error",
+    "formatted_output_parse_error",
+    "unsafe_range",
+    "stale_source",
+    "invalid_configuration",
+    "instrument_failure",
+];
+
+fn harness_proptest_config() -> ProptestConfig {
+    ProptestConfig {
+        cases: std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(48),
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(REGRESSION_FILE))),
+        ..ProptestConfig::default()
+    }
+}
+
+fn arb_valid_case() -> impl Strategy<Value = GeneratedCase> {
+    (any::<u64>(), 0usize..48usize).prop_map(|(seed, index)| generate_case(seed, index))
+}
+
+fn arb_invalidation_case() -> impl Strategy<Value = GeneratedCase> {
+    (any::<u64>(), 0usize..16usize).prop_map(|(seed, index)| generate_invalidation_case(seed, index))
+}
+
+/// FPH-009 source pin: the harness module and the fuzz target must never
+/// reference the subprocess adapter, process spawning, or a wall clock.
+#[test]
+fn harness_module_does_not_reference_external_oracle() -> TestResult {
+    let harness_source = fs::read_to_string(format!(
+        "{MANIFEST_DIR}/tests/support/formatter_property_harness/mod.rs"
+    ))?;
+    let fuzz_source =
+        fs::read_to_string(format!("{MANIFEST_DIR}/../../fuzz/fuzz_targets/perl_tidy_formatter.rs"))?;
+
+    let banned_in_harness = [
+        "PerlTidyFormatter",
+        "with_os_runtime",
+        "run_command",
+        "std::process",
+        "process::Command",
+        "Command::new",
+        "std::thread",
+        "thread::spawn",
+        "Instant",
+        "SystemTime",
+    ];
+    for token in banned_in_harness {
+        assert!(
+            !harness_source.contains(token),
+            "harness module must not reference {token} (FPH-009)"
+        );
+    }
+
+    let banned_in_fuzz =
+        ["PerlTidyFormatter", "with_os_runtime", "std::process", "process::Command", "Command::new"];
+    for token in banned_in_fuzz {
+        assert!(
+            !fuzz_source.contains(token),
+            "fuzz target must not reference {token} (FPH-009)"
+        );
+    }
+    Ok(())
+}
+
+/// FPH-001: every admitted family is a registry variant and every variant
+/// carries at least one generator/mutator disposition; promoting a family
+/// without a disposition fails the suite. Deleting any single registry
+/// disposition reintroduces this failure. A bounded seeded run must also
+/// exercise every registered family and every disposition (generators stay
+/// wired; random-byte rejection-dominant generation cannot replace them).
+#[test]
+fn every_admitted_family_has_a_registered_disposition() -> TestResult {
+    let registry = family_registry();
+    assert!(!registry.is_empty(), "family registry must not be empty");
+    let mut all_dispositions: Vec<&str> = Vec::new();
+    for record in registry {
+        let family_name = record.family.name();
+        assert!(
+            !record.dispositions.is_empty(),
+            "family {family_name} has no generator/mutator disposition (FPH-001)"
+        );
+        for disposition in record.dispositions {
+            assert!(
+                disposition.starts_with("generator.") || disposition.starts_with("mutator."),
+                "disposition {disposition} of {family_name} is not a generator/mutator tag"
+            );
+            all_dispositions.push(disposition);
+        }
+    }
+
+    let mut covered_families: Vec<&'static str> = Vec::new();
+    let mut covered_dispositions: Vec<&'static str> = Vec::new();
+    for seed in 0..8_u64 {
+        for index in 0..48_usize {
+            let case = generate_case(seed, index);
+            assert_eq!(case.schema_version, HARNESS_SCHEMA_VERSION);
+            run_case(&case)?;
+            if !covered_families.contains(&case.family.name()) {
+                covered_families.push(case.family.name());
+            }
+            if !covered_dispositions.contains(&case.disposition) {
+                covered_dispositions.push(case.disposition);
+            }
+        }
+    }
+
+    for record in registry {
+        assert!(
+            covered_families.contains(&record.family.name()),
+            "family {} is registered but never generated by the bounded run (FPH-001)",
+            record.family.name()
+        );
+        for disposition in record.dispositions {
+            assert!(
+                covered_dispositions.contains(&disposition),
+                "disposition {disposition} is registered but never exercised (FPH-001)"
+            );
+        }
+    }
+    assert!(!all_dispositions.is_empty());
+    Ok(())
+}
+
+/// FPH-002: two runs of the same seed/case through fresh formatter contexts
+/// produce identical typed outcomes, change summaries, and edit plans.
+#[test]
+fn two_fresh_runs_are_identical_typed_outcomes() -> TestResult {
+    for seed in [0_u64, 7, 0xdead_beef_cafe_f00d] {
+        for index in [0_usize, 21, 47] {
+            let case = generate_case(seed, index);
+            let first = run_case(&case)?;
+            let second = run_case(&case)?;
+            assert_eq!(
+                first.normalized, second.normalized,
+                "receipt must be identical for identical (seed, index)"
+            );
+            assert_eq!(first.digest, second.digest);
+        }
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(harness_proptest_config())]
+
+    /// FPH-002/FPH-007 over the drawn case space: identical inputs produce
+    /// identical generated cases and identical normalized receipts.
+    #[test]
+    fn generated_cases_are_reproducible(seed in any::<u64>(), index in 0usize..48usize) {
+        let case_a = generate_case(seed, index);
+        let case_b = generate_case(seed, index);
+        prop_assert_eq!(&case_a, &case_b);
+        let receipt_a = run_case(&case_a).map_err(|violation| TestCaseError::fail(violation.to_string()))?;
+        let receipt_b = run_case(&case_b).map_err(|violation| TestCaseError::fail(violation.to_string()))?;
+        prop_assert_eq!(receipt_a.normalized, receipt_b.normalized);
+        prop_assert_eq!(receipt_a.digest, receipt_b.digest);
+    }
+
+    /// FPH-003a: every applied plan, applied through the independent oracle,
+    /// reproduces the rendered bytes exactly.
+    #[test]
+    fn applied_plan_independently_applies_to_rendered_bytes(case in arb_valid_case()) {
+        let receipt = run_case(&case).map_err(|violation| TestCaseError::fail(violation.to_string()))?;
+        if receipt.outcome_disposition == "applied" {
+            prop_assert!(receipt.applied_application_verified);
+        }
+    }
+
+    /// FPH-003b: applied plans are ordered, pairwise non-overlapping, and
+    /// contained in the requested target (any widening would have to be
+    /// exactly recorded, and none is admitted on today's tree).
+    #[test]
+    fn applied_edits_are_ordered_nonoverlapping_and_target_contained(case in arb_valid_case()) {
+        let receipt = run_case(&case).map_err(|violation| TestCaseError::fail(violation.to_string()))?;
+        if receipt.outcome_disposition == "applied" {
+            prop_assert!(receipt.plan_ordering_verified);
+        }
+    }
+
+    /// FPH-004: the second pass from a fresh context never re-applies and
+    /// keeps the rendered bytes stable; line-level families must classify as
+    /// a legitimate already-formatted no-change with zero edits.
+    #[test]
+    fn second_pass_is_legitimate_nochange(case in arb_valid_case()) {
+        let receipt = run_case(&case).map_err(|violation| TestCaseError::fail(violation.to_string()))?;
+        let record = record_for(case.family);
+        if let Some(second) = &receipt.second_pass {
+            prop_assert_ne!(second.disposition, "applied");
+            prop_assert_ne!(second.disposition, "failed_or_not_proven");
+            prop_assert_eq!(second.edit_count, 0);
+            prop_assert!(second.bytes_stable);
+            if !record.renders_closed_blocks {
+                prop_assert_eq!(second.disposition, "no_change");
+            } else {
+                prop_assert!(
+                    second.disposition == "no_change" || second.disposition == "refused",
+                    "rendered-block families may only stabilize or refuse, got {}",
+                    second.disposition
+                );
+            }
+        }
+    }
+
+    /// FPH-005: refused/not-proven outcomes never carry a plan, and their
+    /// reason is one of the stable refusal classes; deliberately invalid or
+    /// recovered subjects map only to typed refusals.
+    #[test]
+    fn refusals_carry_no_plan_and_exact_reason_class(case in arb_invalidation_case()) {
+        let receipt = run_case(&case).map_err(|violation| TestCaseError::fail(violation.to_string()))?;
+        prop_assert!(
+            receipt.outcome_disposition == "refused"
+                || receipt.outcome_disposition == "failed_or_not_proven",
+            "deliberately invalid subject produced {}",
+            receipt.outcome_disposition
+        );
+        prop_assert_eq!(receipt.plan_edit_count, 0);
+        prop_assert!(
+            REFUSAL_REASON_CLASSES.contains(&receipt.outcome_reason),
+            "refusal reason {} is not a stable refusal class",
+            receipt.outcome_reason
+        );
+    }
+
+    /// FPH-006: line-ending conventions survive LF/CRLF/bare-CR/mixed
+    /// variants and every emitted UTF-16 range is valid for the exact subject
+    /// geometry.
+    #[test]
+    fn line_endings_and_utf16_geometry_survive_variants(case in arb_valid_case()) {
+        let receipt = run_case(&case).map_err(|violation| TestCaseError::fail(violation.to_string()))?;
+        prop_assert!(receipt.line_endings_preserved);
+        if receipt.outcome_disposition == "applied" {
+            prop_assert!(receipt.utf16_geometry_verified);
+        }
+    }
+
+    /// FPH-007: generation is bounded; receipts carry schema, seed, family,
+    /// disposition, target, and line-ending identity and are identical for
+    /// identical inputs.
+    #[test]
+    fn generated_case_receipt_is_deterministic_and_bounded(seed in any::<u64>(), index in 0usize..48usize) {
+        let case = generate_case(seed, index);
+        prop_assert!(case.subject.text.len() <= MAX_SUBJECT_BYTES);
+        prop_assert!(case.subject.text.lines().count() <= MAX_SUBJECT_LINES);
+        prop_assert_eq!(case.schema_version, HARNESS_SCHEMA_VERSION);
+        let receipt = run_case(&case).map_err(|violation| TestCaseError::fail(violation.to_string()))?;
+        prop_assert!(receipt.plan_edit_count <= MAX_PLAN_EDITS);
+        let seed_field = format!("seed={seed}");
+        let family_field = format!("family={}", case.family.name());
+        prop_assert!(receipt.normalized.contains(&seed_field));
+        prop_assert!(receipt.normalized.contains("schema=1"));
+        prop_assert!(receipt.normalized.contains(&family_field));
+        prop_assert!(!receipt.digest.is_empty());
+    }
+}
+
+/// FPH-008: dormant invariant slots exist as registered dispositions and fail
+/// closed as not-proven on today's tree; none claims proven coverage.
+#[test]
+fn dormant_invariants_report_not_proven_until_dependencies_land() -> TestResult {
+    let dormant = dormant_registry();
+    assert!(dormant.len() >= 4, "expected the registered dormant slots to be present");
+    let mut seen_ids: Vec<&str> = Vec::new();
+    for entry in dormant {
+        assert!(!seen_ids.contains(&entry.id), "duplicate dormant id {}", entry.id);
+        seen_ids.push(entry.id);
+        assert!(!entry.gate.is_empty(), "dormant slot {} must name its gate", entry.id);
+        assert!(
+            !entry.owning_issues.is_empty(),
+            "dormant slot {} must name its owning issues",
+            entry.id
+        );
+        assert_eq!(
+            entry.status(),
+            DormantStatus::NotProven,
+            "dormant slot {} must fail closed on today's tree",
+            entry.id
+        );
+    }
+    for expected in [
+        "cancellation_budget_interruption",
+        "structural_preservation_beyond_parse_success",
+        "protected_region_hash_preservation",
+        "strict_second_pass_typed_idempotence_for_rendered_blocks",
+    ] {
+        assert!(
+            seen_ids.contains(&expected),
+            "dormant slot {expected} is missing from the registry"
+        );
+    }
+    Ok(())
+}
+
+/// FPH-010: the cargo-fuzz target drives the same invariant core from
+/// structured byte mutations, is declared in the fuzz manifest with the
+/// missing perltidy dependency, and one minimized committed regression entry
+/// is replayed deterministically through the same core.
+#[test]
+fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
+    let fuzz_manifest = fs::read_to_string(format!("{MANIFEST_DIR}/../../fuzz/Cargo.toml"))?;
+    assert!(
+        fuzz_manifest.contains("perl-lsp-perltidy"),
+        "fuzz manifest must depend on perl-lsp-perltidy (FPH-010)"
+    );
+    assert!(
+        fuzz_manifest.contains("name = \"perl_tidy_formatter\""),
+        "fuzz manifest must declare the perl_tidy_formatter target (FPH-010)"
+    );
+
+    let fuzz_source =
+        fs::read_to_string(format!("{MANIFEST_DIR}/../../fuzz/fuzz_targets/perl_tidy_formatter.rs"))?;
+    assert!(
+        fuzz_source.contains("formatter_property_harness"),
+        "fuzz target must include the shared invariant core (FPH-010)"
+    );
+    assert!(
+        fuzz_source.contains("fuzz_target!"),
+        "fuzz target must be a libfuzzer target (FPH-010)"
+    );
+    assert!(
+        fuzz_source.contains("run_case"),
+        "fuzz target must drive the shared checker (FPH-010)"
+    );
+
+    let regression_file = fs::read_to_string(REGRESSION_FILE)?;
+    let mut committed_seed: Option<u64> = None;
+    for line in regression_file.lines() {
+        let Some(rest) = line.strip_prefix("cc ") else { continue };
+        let hex = rest.split_whitespace().next().unwrap_or("");
+        assert_eq!(hex.len(), 64, "committed regression seed must be 64 hex chars");
+        committed_seed = Some(u64::from_str_radix(hex, 16)?);
+    }
+    let seed = committed_seed.ok_or("committed regression file must carry one cc seed entry")?;
+
+    for index in 0..16_usize {
+        run_case(&generate_case(seed, index))?;
+    }
+    Ok(())
+}

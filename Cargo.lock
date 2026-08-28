@@ -1860,6 +1860,7 @@ dependencies = [
  "perl-parser-core",
  "perl-subprocess-runtime",
  "perl-tdd-support",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",
