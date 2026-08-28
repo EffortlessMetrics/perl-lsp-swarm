@@ -293,10 +293,7 @@ mod tests {
         let regular_file_candidate = TempDir::new("file-after-missing")?;
         let command = "ci-hygiene-probe";
         let missing_entry = missing_entry_root.path().join("not-created");
-        fs::write(
-            regular_file_candidate.path().join(command_candidate_name(command)),
-            b"",
-        )?;
+        fs::write(regular_file_candidate.path().join(command_candidate_name(command)), b"")?;
         let path = joined_path(&[missing_entry.as_path(), regular_file_candidate.path()])?;
 
         assert!(command_exists_in_path(command, Some(path.as_os_str())));
