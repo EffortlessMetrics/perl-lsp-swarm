@@ -622,6 +622,18 @@ fn rename_expected_edits_match(
     observed_rename_edits(resp).is_some_and(|observed| observed == expected_edits)
 }
 
+fn rename_edit_count_at_least_passes(
+    resp: &Value,
+    expected_uri: &str,
+    min: usize,
+    expected: Option<&[RenameExpectedEdit]>,
+) -> bool {
+    !rename_is_null(resp)
+        && observed_rename_edits(resp).is_some()
+        && rename_total_edit_count(resp) >= min
+        && rename_expected_edits_match(resp, expected_uri, expected)
+}
+
 /// Run all rename gold fixtures and assert every assertion passes.
 /// Reports rename success rate to stdout under --nocapture.
 #[test]
@@ -668,9 +680,12 @@ fn test_rename_gold_corpus() -> TestResult {
                     rename_is_null(&resp) && assertion.expected_edits.is_none()
                 }
                 RenameAssertionKind::RenameEditCountAtLeast { min } => {
-                    response_edits_are_well_formed
-                        && rename_total_edit_count(&resp) >= *min
-                        && expected_edits_ok
+                    rename_edit_count_at_least_passes(
+                        &resp,
+                        &uri,
+                        *min,
+                        assertion.expected_edits.as_deref(),
+                    )
                 }
             };
 
@@ -849,6 +864,33 @@ mod rename_oracle_tests {
         if rename_expected_edits_match(&resp, "file:///gold/rename_subroutine.pl", Some(&[])) {
             return Err("non-empty rename edit passed explicit empty exact mode".into());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn rename_count_assertion_rejects_null_and_error_at_zero_minimum() -> TestResult {
+        let null_response = json!({"result": null});
+        if rename_edit_count_at_least_passes(
+            &null_response,
+            "file:///gold/rename_subroutine.pl",
+            0,
+            None,
+        ) {
+            return Err("null rename response passed a zero-minimum count assertion".into());
+        }
+
+        let error_response = json!({
+            "error": {"code": -32603, "message": "rename failed"}
+        });
+        if rename_edit_count_at_least_passes(
+            &error_response,
+            "file:///gold/rename_subroutine.pl",
+            0,
+            None,
+        ) {
+            return Err("error rename response passed a zero-minimum count assertion".into());
+        }
+
         Ok(())
     }
 
