@@ -25,7 +25,9 @@ pub fn module_name_to_path(module_name: &str) -> String {
 /// Rejects path-shaped input, traversal segments, sigils, and other values that must not
 /// reach filesystem existence checks. Package segments use the lexer-compatible Unicode XID
 /// class, intentionally excluding the token parser's emoji and join-control extensions because
-/// those values are not safe filesystem lookup module names.
+/// those values are not safe filesystem lookup module names. XID continuations, including
+/// combining marks, remain accepted: for example, `Foo::Bar\u{0301}` is one lookup-safe name,
+/// not a partial `Foo::Bar` extraction.
 #[must_use]
 pub fn is_lookup_safe_module_name(module_name: &str) -> bool {
     if module_name.is_empty() {

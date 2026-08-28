@@ -67,6 +67,15 @@ fn direct_reference_rejects_partial_token_before_combining_mark_suffix() {
 }
 
 #[test]
+fn direct_require_preserves_combining_mark_suffix_reference() {
+    let line = "require Foo::Bar\u{0301};";
+    let cursor = line.find("Bar").unwrap_or(0);
+
+    let reference = find_module_reference(line, cursor);
+    assert_eq!(reference.map(|value| value.module_name), Some("Foo::Bar\u{0301}"));
+}
+
+#[test]
 fn direct_reference_keeps_standalone_token_control() {
     let line = "use Foo::Bar;";
     let cursor = line.find("Bar").unwrap_or(0);
