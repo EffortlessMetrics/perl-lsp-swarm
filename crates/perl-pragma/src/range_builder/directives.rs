@@ -1,9 +1,9 @@
-use super::TrackedPragmaState;
 use crate::{
     PragmaState, add_disabled_warning_category, apply_builtin_imports_if_changed,
     apply_feature_state, conditional_pragma_target, normalized_pragma_token, parse_perl_version,
     pragma_arg_items,
 };
+use super::TrackedPragmaState;
 use std::ops::Range;
 
 pub(super) fn apply_use_directive(
