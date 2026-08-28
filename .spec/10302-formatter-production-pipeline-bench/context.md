@@ -18,7 +18,7 @@ variance, adapter double-invocation, helper-only benchmarking). Installed
 first-useful journeys record end-to-end latency only and cannot localize a
 regression.
 
-## Governing evidence (2026-08-28, origin/main@a9664af790888333efbe50a042fa060f3cc2d171; candidate head ad04447af4eec899e0feee9b4500d7a590a18917)
+## Governing evidence (2026-08-28, origin/main@a9664af790888333efbe50a042fa060f3cc2d171; candidate head f709f1d19f2c0c0c1ac844040d732d50914c1252)
 
 - Production seams to pin invocation counts against:
   `crates/perl-lsp-rs-core/src/providers/formatting/formatting.rs`

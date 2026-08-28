@@ -1,7 +1,7 @@
 # Checklist: #10302 production-path formatter performance receipt
 
 Base pin: `origin/main@a9664af790888333efbe50a042fa060f3cc2d171` (2026-08-28).
-Candidate head: `ad04447af4eec899e0feee9b4500d7a590a18917` (PR #13190).
+Candidate head: `f709f1d19f2c0c0c1ac844040d732d50914c1252` (PR #13190).
 Composition sibling: #10301 fuzz/property spec
 (`.spec/10301-formatter-property-fuzz-harness/`) — disjoint file set.
 PR #13190 delivers a bounded runtime-counter and benchmark-enrollment slice.
