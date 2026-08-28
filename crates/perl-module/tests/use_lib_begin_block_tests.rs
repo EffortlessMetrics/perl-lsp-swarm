@@ -10,12 +10,8 @@ fn begin_block_leading_use_lib_is_active_for_following_use() {
     let source = "BEGIN {\n    use lib 'local/lib';\n    use Local::Thing;\n}\n";
     let offset = source.find("use Local::Thing;").unwrap_or(source.len());
 
-    let paths = resolve_use_lib_paths_from_source_at_offset(
-        source,
-        offset,
-        Path::new("/workspace"),
-        None,
-    );
+    let paths =
+        resolve_use_lib_paths_from_source_at_offset(source, offset, Path::new("/workspace"), None);
 
     assert_eq!(paths, vec!["local/lib".to_string()]);
 }
@@ -40,12 +36,7 @@ fn begin_block_leading_no_lib_cancels_path_for_following_use() {
     let source = "BEGIN {\n    no lib 'local/lib';\n    use Local::Thing;\n}\n";
     let offset = source.find("use Local::Thing;").unwrap_or(source.len());
 
-    let cancelled = no_lib_cancelled_paths_at_offset(
-        source,
-        offset,
-        Path::new("/workspace"),
-        None,
-    );
+    let cancelled = no_lib_cancelled_paths_at_offset(source, offset, Path::new("/workspace"), None);
 
     assert_eq!(cancelled, vec!["local/lib".to_string()]);
 }
@@ -55,12 +46,8 @@ fn begin_block_unterminated_use_lib_remains_active_while_editing() {
     let source = "BEGIN {\n    use lib 'local/lib'\n    use Local::Thing;\n}\n";
     let offset = source.find("use Local::Thing;").unwrap_or(source.len());
 
-    let paths = resolve_use_lib_paths_from_source_at_offset(
-        source,
-        offset,
-        Path::new("/workspace"),
-        None,
-    );
+    let paths =
+        resolve_use_lib_paths_from_source_at_offset(source, offset, Path::new("/workspace"), None);
 
     assert_eq!(paths, vec!["local/lib".to_string()]);
 }
