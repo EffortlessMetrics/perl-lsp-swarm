@@ -20,6 +20,20 @@ pub use super::lsp_stats_impl::{
 
 const RECEIPT_SCHEMA_PATH: &str = ".ci/schemas/ux-scenario-run.schema.json";
 const FIXTURE_MATRIX_PATH: &str = "crates/perl-lsp-ux-tests/fixtures/editor_ux_fixture_matrix.json";
+const RECEIPT_MARKER_FIELDS: &[&str] = &[
+    "schema_version",
+    "measured_at",
+    "run_identity",
+    "workflow_id",
+    "scenario_file",
+    "test_name",
+    "ci_tier",
+    "result",
+    "duration_ms",
+    "assertions",
+    "canonical_repro",
+    "friendly_repro",
+];
 
 #[derive(Debug, Deserialize)]
 struct FixtureMatrix {
@@ -100,7 +114,7 @@ fn validate_scorecard_inputs(
     for candidate in read_receipt_candidates(receipts_dir)? {
         let kind = candidate.value.get("kind").and_then(Value::as_str);
         if kind != Some("ux_scenario_run") {
-            if serde_json::from_value::<UxScenarioRunReceipt>(candidate.value.clone()).is_ok() {
+            if is_receipt_shaped(&candidate.value) {
                 bail!(
                     "receipt-shaped JSON {} has unsupported kind {:?}",
                     candidate.path.display(),
@@ -136,6 +150,16 @@ fn validate_scorecard_inputs(
     }
 
     Ok(())
+}
+
+fn is_receipt_shaped(value: &Value) -> bool {
+    value.as_object().is_some_and(|object| {
+        object.contains_key("workflow_id")
+            && RECEIPT_MARKER_FIELDS
+                .iter()
+                .filter(|field| **field != "workflow_id")
+                .any(|field| object.contains_key(*field))
+    })
 }
 
 fn read_receipt_candidates(receipts_dir: &Path) -> Result<Vec<ReceiptCandidate>> {
@@ -196,6 +220,23 @@ mod tests {
                 "ci_tier": { "enum": ["pr", "nightly", "release"] },
                 "result": { "enum": ["pass", "fail", "quarantined", "skipped"] },
                 "duration_ms": { "type": "number", "minimum": 0 },
+                "time_to_first_useful_result_ms": { "type": ["number", "null"], "minimum": 0 },
+                "operation_timings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["operation"],
+                        "properties": {
+                            "operation": { "type": "string", "minLength": 1 },
+                            "time_to_first_useful_result_ms": {
+                                "type": ["number", "null"],
+                                "minimum": 0
+                            },
+                            "timing_status": { "enum": ["missing_request_start"] }
+                        },
+                        "additionalProperties": false
+                    }
+                },
                 "assertions": { "type": "object" },
                 "canonical_repro": { "type": "string", "minLength": 1 },
                 "friendly_repro": { "type": "string", "minLength": 1 }
@@ -298,6 +339,46 @@ mod tests {
             "receipt-shaped JSON with the wrong kind unexpectedly passed",
         )?;
         assert!(format!("{error:#}").contains("unsupported kind"));
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_receipt_shaped_json_with_wrong_kind_fails_before_deserialization() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&receipts)?;
+        fs::write(
+            receipts.join("malformed.json"),
+            r#"{"kind":"other_receipt","workflow_id":"known","duration_ms":"not-a-number"}"#,
+        )?;
+        let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+        let schema = write_schema(temp.path())?;
+
+        let error = validation_error(
+            validate_scorecard_inputs(&receipts, &matrix, &schema),
+            "malformed receipt-shaped JSON unexpectedly passed",
+        )?;
+        assert!(format!("{error:#}").contains("unsupported kind"));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_null_timing_fields_are_accepted() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&receipts)?;
+        write_receipt(&receipts, "null-timing.json", "known", "known.rs")?;
+        let path = receipts.join("null-timing.json");
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
+        value["time_to_first_useful_result_ms"] = Value::Null;
+        value["operation_timings"] = serde_json::json!([
+            { "operation": "completion", "time_to_first_useful_result_ms": null }
+        ]);
+        fs::write(&path, serde_json::to_string_pretty(&value)?)?;
+        let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+        let schema = write_schema(temp.path())?;
+
+        validate_scorecard_inputs(&receipts, &matrix, &schema)?;
         Ok(())
     }
 

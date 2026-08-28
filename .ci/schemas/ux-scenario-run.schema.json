@@ -106,7 +106,10 @@
       "minimum": 0
     },
     "time_to_first_useful_result_ms": {
-      "type": "number",
+      "type": [
+        "number",
+        "null"
+      ],
       "minimum": 0
     },
     "operation_timings": {
@@ -122,7 +125,10 @@
             "minLength": 1
           },
           "time_to_first_useful_result_ms": {
-            "type": "number",
+            "type": [
+              "number",
+              "null"
+            ],
             "minimum": 0
           },
           "timing_status": {
