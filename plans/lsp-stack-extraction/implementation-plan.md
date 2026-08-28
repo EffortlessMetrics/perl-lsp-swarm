@@ -233,6 +233,33 @@ Rollback:
 Revert the move and restore imports. Keep any added regression test if it
 captures a real bug.
 
+### Interstitial Set B boundary-prep PRs
+
+Before PR 6, prepare and prove the foundational JSON-RPC set in separate,
+reviewable changes:
+
+1. move `ErrorClass` implementations and `ErrorCategory` mapping to the
+   current-app boundary
+2. separate standards-only errors and method names from provider, product, and
+   test extensions
+3. preserve current public re-exports and JSON-RPC wire behavior
+4. re-run a PR 3-style dependency audit for the resulting Set B
+5. move the neutral JSON-RPC primitives only after that audit passes
+
+These are not transport changes and must not be bundled with framing. An
+in-place blocker-removal PR may change module ownership inside
+`perl-lsp-rs-core`, but it must not move behavior into `lsp-stack` before the
+dependency audit is green.
+
+Minimum proof:
+
+```bash
+./scripts/cargo-safe test -p perl-lsp-rs-core --profile agent --locked
+./scripts/cargo-safe test -p perl-lsp-rs --test lsp_registration_tests --profile agent --locked
+./scripts/cargo-safe check -p perl-lsp-rs --all-targets --profile agent --locked
+git diff --check
+```
+
 ### PR 6: Transport/framing move
 
 Goal:
