@@ -18,29 +18,20 @@
 #[path = "../../crates/perl-lsp-perltidy/tests/support/formatter_property_harness/mod.rs"]
 mod formatter_property_harness;
 
-use formatter_property_harness::{generate_case, generate_invalidation_case, run_case};
+use formatter_property_harness::{case_from_fuzz_input, run_case};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    if data.len() < 9 {
-        return;
-    }
-
-    let mut seed_bytes = [0_u8; 8];
-    seed_bytes.copy_from_slice(&data[..8]);
-    let seed = u64::from_le_bytes(seed_bytes);
-    let selector = data[8];
-    let index = usize::from(selector & 0x3f) % 64;
-
-    let case = if selector & 0x80 != 0 {
-        generate_invalidation_case(seed, index)
-    } else {
-        generate_case(seed, index)
-    };
+    // The decode lives in the shared harness core so the committed focused
+    // regressions replay the exact same `(seed, selector)` mapping.
+    let Some(case) = case_from_fuzz_input(data) else { return };
 
     if let Err(violation) = run_case(&case) {
         panic!(
-            "formatter property violation (structured seed {seed}, index {index}): {violation}"
+            "formatter property violation (structured seed {}, family {}, disposition {}): {violation}",
+            case.seed,
+            case.family.name(),
+            case.disposition
         );
     }
 });

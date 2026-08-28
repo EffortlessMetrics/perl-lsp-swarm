@@ -43,8 +43,12 @@ pub const MAX_SUBJECT_LINES: usize = 8;
 /// Indentation prefixes used by the indent mutator.
 const INDENTS: [&str; 3] = ["", "  ", "\t"];
 
-/// Trailing comment suffixes used by the trailing-comment mutator.
-const COMMENTS: [&str; 3] = ["", " # note", " # keep 1"];
+/// Trailing comment suffixes used by the trailing-comment mutator. The
+/// non-ASCII entries keep the UTF-16 geometry checks discriminating: a
+/// 2-byte BMP character (`πλ`) makes byte and UTF-16 columns diverge, and the
+/// supplementary characters (`😀𝕏`, two UTF-16 units / four UTF-8 bytes each)
+/// make byte, Unicode-scalar, and UTF-16 columns three distinct geometries.
+const COMMENTS: [&str; 5] = ["", " # note", " # keep 1", " # πλ", " # 😀𝕏"];
 
 /// Admitted construct family identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +76,46 @@ pub enum Family {
 }
 
 impl Family {
+    /// Exhaustive position pin: adding a `Family` variant makes this match
+    /// non-exhaustive (compile error), so the variant cannot exist without
+    /// touching this enumeration. Each arm returns the variant's position in
+    /// [`Family::ALL`]; the compile-time alignment check below proves `ALL`
+    /// lists every variant exactly at its pinned position, so the registry
+    /// cannot drift from the enum in either direction (FPH-001).
+    const fn pinned_index(self) -> usize {
+        match self {
+            Family::LexicalDeclaration => 0,
+            Family::PlainAssignment => 1,
+            Family::ReturnStatement => 2,
+            Family::LoopControl => 3,
+            Family::ModuleSurface => 4,
+            Family::ConditionalBlock => 5,
+            Family::LoopBlock => 6,
+            Family::ForEachBlock => 7,
+            Family::CStyleForBlock => 8,
+            Family::SubroutineBlock => 9,
+        }
+    }
+
+    /// Independently enumerated admitted families — deliberately not derived
+    /// from `family_registry()` or `FAMILY_TABLE`, so the FPH-001 pin in
+    /// `every_admitted_family_has_a_registered_disposition` can compare all
+    /// three surfaces in both directions: a variant added here but missing a
+    /// registry row or table row is red, and a registry/table row whose
+    /// variant was deleted cannot compile.
+    pub const ALL: &'static [Family] = &[
+        Family::LexicalDeclaration,
+        Family::PlainAssignment,
+        Family::ReturnStatement,
+        Family::LoopControl,
+        Family::ModuleSurface,
+        Family::ConditionalBlock,
+        Family::LoopBlock,
+        Family::ForEachBlock,
+        Family::CStyleForBlock,
+        Family::SubroutineBlock,
+    ];
+
     /// Stable registry name for receipts and pinning.
     pub fn name(self) -> &'static str {
         match self {
@@ -89,6 +133,20 @@ impl Family {
     }
 }
 
+// Compile-time FPH-001 alignment: every `ALL` entry sits exactly at the
+// position its exhaustive `pinned_index` arm declares. A variant added to
+// `ALL` out of order, or an index arm retargeted without moving `ALL`, fails
+// to compile.
+const _: () = {
+    let mut index = 0;
+    while index < Family::ALL.len() {
+        if Family::ALL[index].pinned_index() != index {
+            panic!("Family::ALL order drifted from the exhaustive pinned_index enumeration");
+        }
+        index += 1;
+    }
+};
+
 /// One registry row: an admitted family plus its generator/mutator
 /// dispositions. A family with no disposition must fail the suite (FPH-001),
 /// and each disposition here is deterministically exercised by
@@ -104,28 +162,37 @@ pub struct FamilyRecord {
     pub dispositions: &'static [&'static str],
 }
 
-struct FamilyVariants {
-    family: Family,
-    renders_closed_blocks: bool,
+/// Unformatted/already-formatted variants for one family. Visible to the
+/// FPH-001 pin, which checks bidirectional identity against `Family::ALL`.
+#[derive(Debug, Clone)]
+pub struct FamilyVariants {
+    pub family: Family,
+    pub renders_closed_blocks: bool,
     /// Unformatted (compact) one-liner forms.
-    compact: &'static [&'static str],
+    pub compact: &'static [&'static str],
     /// Already-formatted forms; line-level families only. Block families have
     /// no single-line already-formatted rendering, so they reuse `compact`.
-    spaced: &'static [&'static str],
+    pub spaced: &'static [&'static str],
 }
 
 const FAMILY_TABLE: [FamilyVariants; 10] = [
     FamilyVariants {
         family: Family::LexicalDeclaration,
         renders_closed_blocks: false,
-        compact: &["my$x=1;", "our@list=(1,2);", "my($a,$b)=@_;"],
-        spaced: &["my $x = 1;", "our @list = (1, 2);", "my ($a, $b) = @_;"],
+        compact: &["my$x=1;", "our@list=(1,2);", "my($a,$b)=@_;", "my$s=\"πθ\";", "my$t=\"😀\";"],
+        spaced: &[
+            "my $x = 1;",
+            "our @list = (1, 2);",
+            "my ($a, $b) = @_;",
+            "my $s = \"πθ\";",
+            "my $t = \"😀\";",
+        ],
     },
     FamilyVariants {
         family: Family::PlainAssignment,
         renders_closed_blocks: false,
-        compact: &["$count=0;", "$name=\"demo\";", "$sum=$a+$b;"],
-        spaced: &["$count = 0;", "$name = \"demo\";", "$sum = $a + $b;"],
+        compact: &["$count=0;", "$name=\"demo\";", "$sum=$a+$b;", "$u=\"π\";"],
+        spaced: &["$count = 0;", "$name = \"demo\";", "$sum = $a + $b;", "$u = \"π\";"],
     },
     FamilyVariants {
         family: Family::ReturnStatement,
@@ -181,8 +248,13 @@ const FAMILY_TABLE: [FamilyVariants; 10] = [
     },
 ];
 
-fn variants_for(family: Family) -> &'static FamilyVariants {
-    FAMILY_TABLE.iter().find(|variants| variants.family == family).unwrap_or(&FAMILY_TABLE[0])
+/// Fail-closed variant-table lookup: a family without a `FAMILY_TABLE` row is
+/// a registry drift (FPH-001), never a valid-looking substitute row.
+pub fn variants_for(family: Family) -> Result<&'static FamilyVariants, Violation> {
+    FAMILY_TABLE.iter().find(|variants| variants.family == family).ok_or_else(|| Violation {
+        rule: "registry.missing_family_variants",
+        detail: format!("family {} has no FAMILY_TABLE row", family.name()),
+    })
 }
 
 /// The admitted-family registry. Deleting any single disposition entry turns
@@ -250,14 +322,13 @@ pub fn family_registry() -> &'static [FamilyRecord] {
     ]
 }
 
-/// Registry row for one admitted family.
-pub fn record_for(family: Family) -> &'static FamilyRecord {
-    const MISSING: FamilyRecord = FamilyRecord {
-        family: Family::LexicalDeclaration,
-        renders_closed_blocks: false,
-        dispositions: &[],
-    };
-    family_registry().iter().find(|record| record.family == family).unwrap_or(&MISSING)
+/// Registry row for one admitted family. Fails closed: a family without a
+/// registry row is a drift violation (FPH-001), never a `MISSING` substitute.
+pub fn record_for(family: Family) -> Result<&'static FamilyRecord, Violation> {
+    family_registry().iter().find(|record| record.family == family).ok_or_else(|| Violation {
+        rule: "registry.missing_family_record",
+        detail: format!("family {} has no family_registry row", family.name()),
+    })
 }
 
 /// Line-ending variants exercised across generated subjects.
@@ -440,7 +511,13 @@ impl SplitMix64 {
 pub fn generate_case(seed: u64, index: usize) -> GeneratedCase {
     let registry = family_registry();
     let record = &registry[index % registry.len()];
-    let variants = variants_for(record.family);
+    // Fail closed on generator-side drift: a registry row without a variant
+    // table row is FPH-001 and must fail loudly here, not fall back to
+    // `FAMILY_TABLE[0]`.
+    let variants = match variants_for(record.family) {
+        Ok(variants) => variants,
+        Err(violation) => panic!("FPH-001 generator drift: {violation}"),
+    };
     let mut rng = SplitMix64::new(seed ^ (index as u64).rotate_left(17));
 
     let disposition = record.dispositions[(index / registry.len()) % record.dispositions.len()];
@@ -451,7 +528,23 @@ pub fn generate_case(seed: u64, index: usize) -> GeneratedCase {
     let indent = INDENTS[rng.pick(INDENTS.len())];
     let comment = COMMENTS[rng.pick(COMMENTS.len())];
 
-    let line_count = if variants.renders_closed_blocks { 1 } else { 1 + rng.pick(3) };
+    let line_ending = pick_line_ending(&mut rng);
+    let final_newline = if rng.chance(60) {
+        FinalNewline::Preserve
+    } else if rng.chance(50) {
+        FinalNewline::Insert
+    } else {
+        FinalNewline::Trim
+    };
+
+    let mut line_count = if variants.renders_closed_blocks { 1 } else { 1 + rng.pick(3) };
+    // The selected convention must exist in the emitted bytes: bare-CR and
+    // mixed separators are only written *between* lines, so a one-line subject
+    // would make the line-ending profile pure metadata. Force at least one
+    // interior separator (FPH-006).
+    if matches!(line_ending, LineEndingKind::BareCr | LineEndingKind::Mixed) && line_count < 2 {
+        line_count = 2;
+    }
 
     let mut lines: Vec<String> = Vec::with_capacity(line_count);
     for offset in 0..line_count {
@@ -465,21 +558,28 @@ pub fn generate_case(seed: u64, index: usize) -> GeneratedCase {
         lines.push(line);
     }
 
-    let line_ending = pick_line_ending(&mut rng);
-    let final_newline = if rng.chance(60) {
-        FinalNewline::Preserve
-    } else if rng.chance(50) {
-        FinalNewline::Insert
-    } else {
-        FinalNewline::Trim
-    };
     let text = compose_text(&lines, line_ending);
 
     let range_eligible = !variants.renders_closed_blocks
         && line_ending != LineEndingKind::BareCr
         && final_newline == FinalNewline::Preserve;
+    // Range targets are load-bearing only when the requested range excludes
+    // source lines: an interior single-line range on a 3+-line subject keeps
+    // unchanged lines on both sides, so a formatter that silently widens the
+    // target to the whole document fails the containment check (FPH-003).
+    // Line-level families below three lines keep the full-document range.
     let target = if range_eligible && rng.chance(45) {
-        TargetRequest::Range { range: full_document_range(&text) }
+        if line_count >= 3 {
+            let interior_line = 1 + rng.pick(line_count - 2);
+            TargetRequest::Range {
+                range: TextRange::new(
+                    perl_lsp_perltidy::native::TextPosition::new(interior_line as u32, 0),
+                    perl_lsp_perltidy::native::TextPosition::new(interior_line as u32 + 1, 0),
+                ),
+            }
+        } else {
+            TargetRequest::Range { range: full_document_range(&text) }
+        }
     } else {
         TargetRequest::Document
     };
@@ -567,6 +667,30 @@ pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
         },
         expects_refusal: true,
     }
+}
+
+/// Decode a cargo-fuzz input into exactly the case the fuzz target would run:
+/// the first eight little-endian bytes select the seed, the ninth byte selects
+/// the case index (low six bits) and the invalidation path (bit 7).
+///
+/// Both the fuzz target and the committed regression replay in
+/// `fuzz_target_and_regression_pipeline_are_wired` call this one decoder, so a
+/// crash artifact's full `(seed, selector)` pair — including invalidation-path
+/// and index >= 16 crashes — is reconstructible and replayable (FPH-010).
+pub fn case_from_fuzz_input(data: &[u8]) -> Option<GeneratedCase> {
+    if data.len() < 9 {
+        return None;
+    }
+    let mut seed_bytes = [0_u8; 8];
+    seed_bytes.copy_from_slice(&data[..8]);
+    let seed = u64::from_le_bytes(seed_bytes);
+    let selector = data[8];
+    let index = usize::from(selector & 0x3f) % 64;
+    Some(if selector & 0x80 != 0 {
+        generate_invalidation_case(seed, index)
+    } else {
+        generate_case(seed, index)
+    })
 }
 
 fn pick_line_ending(rng: &mut SplitMix64) -> LineEndingKind {
@@ -666,6 +790,20 @@ fn full_document_range(text: &str) -> TextRange {
 fn line_in_scope(range: &TextRange, line: u32) -> bool {
     line >= range.start.line
         && (line < range.end.line || (line == range.end.line && range.end.character > 0))
+}
+
+/// Target containment for an edit *end* position. A zero-width end at
+/// `(line, 0)` sits on the boundary before `line`'s first character: it
+/// touches no line-`line` content, so containment only requires line
+/// `line - 1` to be in scope. This keeps the checker unable to reject a
+/// correct plan that ends at a line start (e.g. an EOF-spanning edit over a
+/// final terminator) while starts stay strictly scoped.
+fn edit_end_in_scope(range: &TextRange, end: (u32, u32)) -> bool {
+    if end.1 == 0 && end.0 > 0 {
+        line_in_scope(range, end.0 - 1)
+    } else {
+        line_in_scope(range, end.0)
+    }
 }
 
 // ── Receipt naming ──────────────────────────────────────────────────────────
@@ -788,6 +926,17 @@ pub fn run_case(case: &GeneratedCase) -> Result<CaseReceipt, Violation> {
                         detail: format!("no-change outcome carries {plan_edit_count} edits"),
                     });
                 }
+                // The unchanged-result contract: `changed == false` with zero
+                // edits must leave the exact source bytes in `formatted`. A
+                // formatter that quietly substitutes different (even stable)
+                // output while claiming no change fails here (FPH-002).
+                if result.formatted != source {
+                    return Err(Violation {
+                        rule: "nochange.preserves_source_bytes",
+                        detail: "no-change outcome rendered different bytes than the source"
+                            .to_string(),
+                    });
+                }
                 (false, true, true)
             }
             FormatDisposition::Refused | FormatDisposition::FailedOrNotProven => {
@@ -822,22 +971,31 @@ pub fn run_case(case: &GeneratedCase) -> Result<CaseReceipt, Violation> {
     }
 
     // Line-ending survival: asserted for every generated convention except
-    // two honest carve-outs, each a registered fail-closed dormant slot
+    // honest carve-outs, each a registered fail-closed dormant slot
     // (FPH-008) rather than a vacuous pass:
     //   - bare CR: today's tree drops the bare CR of a parsed single-line
-    //     subject while reporting `Applied`;
-    //   - CRLF-only subjects rendered through a block family: the inserted
-    //     wrap lines are always LF, changing the convention set (evidence
-    //     honestly reports ChangedByFormatter).
-    // The Insert/Trim final-newline policies own the final terminator by
-    // contract, so policy-driven `ChangedByFormatter` evidence is recorded
-    // rather than treated as a violation either.
+    //     subject while reporting `Applied` (`bare_cr_line_ending_preservation`);
+    //   - subjects rendered through a block family whose convention set
+    //     contains CRLF or bare CR: the inserted wrap lines and touched
+    //     separators are always LF, changing the convention set
+    //     (`wrap_line_separators_follow_source_convention`);
+    //   - Insert/Trim final-newline policies own the final terminator by
+    //     contract, so policy-driven `ChangedByFormatter` evidence is
+    //     recorded rather than treated as a violation
+    //     (`final_newline_policy_owns_terminator`).
     let line_endings_preserved =
         matches!(outcome.safety.line_endings, FormatLineEndingDisposition::Preserved);
     let policy_owns_terminator = case.profile.final_newline != FinalNewline::Preserve;
     let bare_cr_subject = case.profile.line_ending == LineEndingKind::BareCr;
-    let wrap_inserts_foreign_separator = record_for(case.family).renders_closed_blocks
-        && (case.profile.line_ending == LineEndingKind::Crlf || !case.subject.text.contains('\n'));
+    let record = record_for(case.family)?;
+    // Block-family rendering inserts wrap lines with LF and normalizes the
+    // separators it touches (between-statement separators included) to LF
+    // today, so any block subject whose convention set contains CRLF or bare
+    // CR loses those conventions. Registered dormant slot
+    // `wrap_line_separators_follow_source_convention`; LF-only block subjects
+    // keep the preservation assertion.
+    let wrap_inserts_foreign_separator =
+        record.renders_closed_blocks && case.profile.line_ending != LineEndingKind::Lf;
     if matches!(outcome.safety.line_endings, FormatLineEndingDisposition::NotChecked) {
         return Err(Violation {
             rule: "safety.line_endings_evidence",
@@ -857,7 +1015,6 @@ pub fn run_case(case: &GeneratedCase) -> Result<CaseReceipt, Violation> {
             ),
         });
     }
-
     // Mandatory second pass from a fresh context (FPH-004).
     let second_pass = if matches!(
         outcome.disposition,
@@ -891,7 +1048,7 @@ pub fn run_case(case: &GeneratedCase) -> Result<CaseReceipt, Violation> {
                 detail: format!("second pass reported {pass_disposition}"),
             });
         }
-        let record = record_for(case.family);
+        let record = record_for(case.family)?;
         // Bare-CR subjects live entirely in the dormant line-ending domain:
         // an Insert pass over bare-CR text produces `\r`-inside-`\n` lines
         // that the safe-subset line admission does not cover, so their second
@@ -1065,7 +1222,7 @@ fn check_plan_ordering_and_geometry(
         let contained = match &case.target {
             TargetRequest::Document => true,
             TargetRequest::Range { range } => {
-                line_in_scope(range, start.0) && line_in_scope(range, end.0)
+                line_in_scope(range, start.0) && edit_end_in_scope(range, end)
             }
         };
         if !contained {
@@ -1161,7 +1318,9 @@ pub fn dormant_registry() -> &'static [DormantInvariant] {
         DormantInvariant {
             id: "strict_second_pass_typed_idempotence_for_rendered_blocks",
             gate: "already-formatted classification admits rendered closing-brace lines",
-            owning_issues: &["10301"],
+            // Live conversion owner; #10301 (the harness claim itself) closes
+            // with this PR and must not be the only named owner.
+            owning_issues: &["13205"],
         },
         DormantInvariant {
             id: "bare_cr_line_ending_preservation",
@@ -1170,7 +1329,12 @@ pub fn dormant_registry() -> &'static [DormantInvariant] {
         },
         DormantInvariant {
             id: "wrap_line_separators_follow_source_convention",
-            gate: "block rendering inserts separators using the source's existing convention(s); today inserted wrap lines are always LF, changing the convention set of CRLF-only subjects",
+            gate: "block rendering inserts separators and normalizes the separators it touches using the source's existing convention(s); today both are always LF, changing the convention set of any CRLF/mixed subject",
+            owning_issues: &["8048"],
+        },
+        DormantInvariant {
+            id: "final_newline_policy_owns_terminator",
+            gate: "typed line-ending evidence distinguishes a policy-owned final-terminator change (Insert/Trim) from a line-ending convention change, so the FPH-006 exemption converts from contract scope to proven evidence",
             owning_issues: &["8048"],
         },
     ]

@@ -22,9 +22,9 @@ use proptest::test_runner::{Config as ProptestConfig, FileFailurePersistence};
 mod formatter_property_harness;
 
 use formatter_property_harness::{
-    DormantStatus, GeneratedCase, HARNESS_SCHEMA_VERSION, LineEndingKind, MAX_PLAN_EDITS,
-    MAX_SUBJECT_BYTES, MAX_SUBJECT_LINES, dormant_registry, family_registry, generate_case,
-    generate_invalidation_case, record_for, run_case,
+    DormantStatus, Family, GeneratedCase, HARNESS_SCHEMA_VERSION, LineEndingKind, MAX_PLAN_EDITS,
+    MAX_SUBJECT_BYTES, MAX_SUBJECT_LINES, case_from_fuzz_input, dormant_registry, family_registry,
+    generate_case, generate_invalidation_case, record_for, run_case, variants_for,
 };
 use perl_lsp_perltidy::native::FinalNewline;
 
@@ -36,6 +36,27 @@ const REGRESSION_FILE: &str = concat!(
 );
 
 const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
+
+/// Independent FPH-001 catalog, maintained in this test surface only. The
+/// harness module's registry, variant table, and `Family::ALL` are all
+/// compared against these literals in both directions, so deleting a family,
+/// a disposition, or a table row — or renaming a family — cannot keep the
+/// suite green by self-validating a reduced registry.
+const PINNED_FAMILY_COUNT: usize = 10;
+const PINNED_FAMILY_NAMES: [&str; PINNED_FAMILY_COUNT] = [
+    "lexical_declaration",
+    "plain_assignment",
+    "return_statement",
+    "loop_control",
+    "module_surface",
+    "conditional_block",
+    "loop_block",
+    "for_each_block",
+    "c_style_for_block",
+    "subroutine_block",
+];
+/// 3 + 2 + 2 + 2 + 2 + 3 + 2 + 2 + 2 + 2 registered dispositions.
+const PINNED_DISPOSITION_TOTAL: usize = 22;
 
 /// Reason classes that legitimately carry no plan (every stable reason except
 /// the two success classes).
@@ -101,9 +122,14 @@ fn harness_module_does_not_reference_external_oracle() -> TestResult {
     let banned_in_fuzz = [
         "PerlTidyFormatter",
         "with_os_runtime",
+        "run_command",
         "std::process",
         "process::Command",
         "Command::new",
+        "std::thread",
+        "thread::spawn",
+        "Instant",
+        "SystemTime",
     ];
     for token in banned_in_fuzz {
         assert!(!fuzz_source.contains(token), "fuzz target must not reference {token} (FPH-009)");
@@ -113,20 +139,44 @@ fn harness_module_does_not_reference_external_oracle() -> TestResult {
 
 /// FPH-001: every admitted family is a registry variant and every variant
 /// carries at least one generator/mutator disposition; promoting a family
-/// without a disposition fails the suite. Deleting any single registry
-/// disposition reintroduces this failure. A bounded seeded run must also
-/// exercise every registered family and every disposition (generators stay
-/// wired; random-byte rejection-dominant generation cannot replace them).
+/// without a disposition fails the suite. The comparison is anchored to the
+/// independent catalog above, not to the registry validating itself:
+/// - `Family::ALL` (exhaustively pinned by `Family::pinned_index`, a compile
+///   error on any new variant) must equal the pinned name catalog, so a new
+///   variant cannot stay invisible;
+/// - registry and variant-table rows must exist for every `ALL` entry and
+///   carry that entry's identity (fail-closed lookups, no `MISSING`
+///   substitutes), and vice versa;
+/// - the disposition total is pinned, so deleting any single entry — even
+///   with the walk re-deriving everything from the reduced registry — is red;
+/// - a bounded seeded run must exercise every pinned family and disposition
+///   (generators stay wired; random-byte rejection-dominant generation cannot
+///   replace them).
 #[test]
 fn every_admitted_family_has_a_registered_disposition() -> TestResult {
     let registry = family_registry();
     assert!(!registry.is_empty(), "family registry must not be empty");
+    assert_eq!(
+        Family::ALL.len(),
+        PINNED_FAMILY_COUNT,
+        "admitted-family enumeration drifted from the pinned catalog (FPH-001)"
+    );
+
+    // Addition/deletion path: the enum enumeration, the registry, and the
+    // variant table must describe exactly the pinned family set, and every
+    // lookup must return the row carrying that family's own identity.
+    let mut registry_names: Vec<&str> = Vec::new();
     let mut all_dispositions: Vec<&str> = Vec::new();
     for record in registry {
         let family_name = record.family.name();
         assert!(
             !record.dispositions.is_empty(),
             "family {family_name} has no generator/mutator disposition (FPH-001)"
+        );
+        let generator_tag = format!("generator.{family_name}");
+        assert!(
+            record.dispositions.contains(&generator_tag.as_str()),
+            "family {family_name} lacks its {generator_tag} disposition (FPH-001)"
         );
         for disposition in record.dispositions {
             assert!(
@@ -135,14 +185,63 @@ fn every_admitted_family_has_a_registered_disposition() -> TestResult {
             );
             all_dispositions.push(disposition);
         }
+        registry_names.push(family_name);
+    }
+    assert_eq!(
+        all_dispositions.len(),
+        PINNED_DISPOSITION_TOTAL,
+        "registered disposition count drifted from the pinned catalog (FPH-001)"
+    );
+
+    for family in Family::ALL {
+        let record = record_for(*family)?;
+        assert_eq!(
+            record.family,
+            *family,
+            "registry row for {} does not carry the family's own identity (FPH-001)",
+            family.name()
+        );
+        let variants = variants_for(*family)?;
+        assert_eq!(
+            variants.family,
+            *family,
+            "variant-table row for {} does not carry the family's own identity (FPH-001)",
+            family.name()
+        );
+        assert!(
+            !variants.compact.is_empty(),
+            "family {} has no generator variants wired (FPH-001)",
+            family.name()
+        );
+    }
+    for name in PINNED_FAMILY_NAMES {
+        assert!(
+            registry_names.contains(&name),
+            "pinned family {name} is missing from the registry (FPH-001)"
+        );
+    }
+    for record in registry {
+        assert!(
+            Family::ALL.contains(&record.family),
+            "registry family {} is absent from the pinned enumeration (FPH-001)",
+            record.family.name()
+        );
     }
 
     let mut covered_families: Vec<&'static str> = Vec::new();
-    let mut covered_dispositions: Vec<&'static str> = Vec::new();
+    let mut covered_dispositions: Vec<&str> = Vec::new();
     for seed in 0..8_u64 {
         for index in 0..48_usize {
             let case = generate_case(seed, index);
             assert_eq!(case.schema_version, HARNESS_SCHEMA_VERSION);
+            // The generated bytes must carry the selected line-ending
+            // convention, so FPH-006's line-ending half is asserted against
+            // the subject, not against generator metadata alone.
+            assert!(
+                convention_present_in_bytes(case.profile.line_ending, &case.subject.text),
+                "subject does not contain its selected {} convention",
+                case.profile.line_ending.name()
+            );
             run_case(&case)?;
             if !covered_families.contains(&case.family.name()) {
                 covered_families.push(case.family.name());
@@ -153,6 +252,14 @@ fn every_admitted_family_has_a_registered_disposition() -> TestResult {
         }
     }
 
+    // Coverage is judged against the independent pinned catalog, not the
+    // registry: a reduced registry would otherwise validate itself green.
+    for name in PINNED_FAMILY_NAMES {
+        assert!(
+            covered_families.contains(&name),
+            "pinned family {name} is registered but never generated by the bounded run (FPH-001)"
+        );
+    }
     for record in registry {
         assert!(
             covered_families.contains(&record.family.name()),
@@ -166,8 +273,27 @@ fn every_admitted_family_has_a_registered_disposition() -> TestResult {
             );
         }
     }
+    assert_eq!(
+        covered_families.len(),
+        PINNED_FAMILY_COUNT,
+        "the bounded run must cover every pinned admitted family (FPH-001)"
+    );
     assert!(!all_dispositions.is_empty());
     Ok(())
+}
+
+/// Whether the emitted subject bytes actually contain the selected
+/// line-ending convention (bare CR and mixed separators exist only between
+/// lines, so the generator forces multi-line subjects for those variants).
+fn convention_present_in_bytes(kind: LineEndingKind, text: &str) -> bool {
+    match kind {
+        LineEndingKind::Lf => text.contains('\n'),
+        LineEndingKind::Crlf => text.contains("\r\n"),
+        LineEndingKind::BareCr => text.contains('\r') && !text.contains('\n'),
+        LineEndingKind::Mixed => {
+            text.contains("\r\n") && text.contains('\n') && !text.replace("\r\n", "").contains('\r')
+        }
+    }
 }
 
 /// FPH-002: two runs of the same seed/case through fresh formatter contexts
@@ -236,7 +362,8 @@ proptest! {
     #[test]
     fn second_pass_is_legitimate_nochange(case in arb_valid_case()) {
         let receipt = run_case(&case).map_err(|violation| TestCaseError::fail(violation.to_string()))?;
-        let record = record_for(case.family);
+        let record = record_for(case.family)
+            .map_err(|violation| TestCaseError::fail(violation.to_string()))?;
         let bare_cr_subject = case.profile.line_ending == LineEndingKind::BareCr;
         if let Some(second) = &receipt.second_pass {
             prop_assert_ne!(second.disposition, "applied");
@@ -276,20 +403,25 @@ proptest! {
     }
 
     /// FPH-006: line-ending conventions survive LF/CRLF/mixed variants and
-    /// every emitted UTF-16 range is valid for the exact subject geometry.
-    /// Honest carve-outs, each a registered fail-closed dormant slot
-    /// (FPH-008) rather than a vacuous pass: bare-CR preservation, CRLF-only
-    /// subjects rendered through a block family (inserted wrap lines are
-    /// always LF today), and the Insert/Trim final-newline policies that own
-    /// the final terminator by contract.
+    /// every emitted UTF-16 range is valid for the exact subject geometry
+    /// (generated subjects carry non-ASCII — BMP and supplementary —
+    /// content, so byte, Unicode-scalar, and UTF-16 columns are distinct
+    /// geometries and a byte-based emitter fails the range checks). Honest
+    /// carve-outs, each a registered fail-closed dormant slot (FPH-008)
+    /// rather than a vacuous pass: bare-CR preservation, block-family
+    /// subjects whose convention set contains CRLF or bare CR (inserted wrap
+    /// lines and touched separators are always LF today), and the Insert/Trim
+    /// final-newline policies that own the final terminator by contract
+    /// (`final_newline_policy_owns_terminator`).
     #[test]
     fn line_endings_and_utf16_geometry_survive_variants(case in arb_valid_case()) {
         let receipt = run_case(&case).map_err(|violation| TestCaseError::fail(violation.to_string()))?;
         let bare_cr = case.profile.line_ending == LineEndingKind::BareCr;
         let policy_owns_terminator = case.profile.final_newline != FinalNewline::Preserve;
-        let wrap_inserts_foreign_separator = record_for(case.family).renders_closed_blocks
-            && (case.profile.line_ending == LineEndingKind::Crlf
-                || !case.subject.text.contains('\n'));
+        let record = record_for(case.family)
+            .map_err(|violation| TestCaseError::fail(violation.to_string()))?;
+        let wrap_inserts_foreign_separator = record.renders_closed_blocks
+            && case.profile.line_ending != LineEndingKind::Lf;
         prop_assert!(
             receipt.line_endings_preserved || bare_cr || policy_owns_terminator
                 || wrap_inserts_foreign_separator
@@ -324,7 +456,7 @@ proptest! {
 #[test]
 fn dormant_invariants_report_not_proven_until_dependencies_land() -> TestResult {
     let dormant = dormant_registry();
-    assert!(dormant.len() >= 6, "expected the registered dormant slots to be present");
+    assert!(dormant.len() >= 7, "expected the registered dormant slots to be present");
     let mut seen_ids: Vec<&str> = Vec::new();
     for entry in dormant {
         assert!(!seen_ids.contains(&entry.id), "duplicate dormant id {}", entry.id);
@@ -349,12 +481,20 @@ fn dormant_invariants_report_not_proven_until_dependencies_land() -> TestResult 
         "strict_second_pass_typed_idempotence_for_rendered_blocks",
         "bare_cr_line_ending_preservation",
         "wrap_line_separators_follow_source_convention",
+        "final_newline_policy_owns_terminator",
     ] {
         assert!(
             seen_ids.contains(&expected),
             "dormant slot {expected} is missing from the registry"
         );
     }
+    // The rendered-block dormancy's conversion owner must outlive the claim
+    // this PR closes (#10301): it points at the explicit follow-up issue.
+    let rendered_block = dormant
+        .iter()
+        .find(|entry| entry.id == "strict_second_pass_typed_idempotence_for_rendered_blocks")
+        .expect("rendered-block dormancy is in the expected list above");
+    assert_eq!(rendered_block.owning_issues, ["13205"]);
     Ok(())
 }
 
@@ -392,18 +532,69 @@ fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
 
     let regression_file = fs::read_to_string(REGRESSION_FILE)?;
     let mut committed_seed: Option<u64> = None;
+    let mut fuzz_replays: Vec<(u64, u8)> = Vec::new();
     for line in regression_file.lines() {
-        let Some(rest) = line.strip_prefix("cc ") else { continue };
-        let hex = rest.split_whitespace().next().unwrap_or("");
-        assert_eq!(hex.len(), 64, "committed regression seed must be 64 hex chars");
-        // The harness consumes the low 128 bits' leading word; the full
-        // 256-bit entry stays wire-compatible with the lexer convention.
-        committed_seed = Some(u64::from_str_radix(&hex[..16], 16)?);
+        if let Some(rest) = line.strip_prefix("cc ") {
+            let hex = rest.split_whitespace().next().unwrap_or("");
+            assert_eq!(hex.len(), 64, "committed regression seed must be 64 hex chars");
+            // The harness consumes the low 128 bits' leading word; the full
+            // 256-bit entry stays wire-compatible with the lexer convention.
+            committed_seed = Some(u64::from_str_radix(&hex[..16], 16)?);
+        }
+        // Committed fuzz crash artifacts: `seed` is the little-endian seed
+        // the cargo-fuzz input carries in its first eight bytes, `selector`
+        // is the ninth byte naming the case index (low six bits) and the
+        // invalidation path (bit 7). Both fields are replayed through the
+        // same decoder the fuzz target uses, so an invalidation-path or
+        // index >= 16 crash is reconstructible — not just seeds 0..16 of the
+        // valid path.
+        if let Some(rest) = line.strip_prefix("# fuzz-replay seed=") {
+            let (seed_hex, selector_part) = rest
+                .split_once(" selector=")
+                .expect("fuzz-replay entry must carry seed and selector");
+            assert_eq!(seed_hex.len(), 16, "fuzz-replay seed must be 16 hex chars");
+            assert_eq!(selector_part.len(), 2, "fuzz-replay selector must be 2 hex chars");
+            fuzz_replays
+                .push((u64::from_str_radix(seed_hex, 16)?, u8::from_str_radix(selector_part, 16)?));
+        }
     }
     let seed = committed_seed.ok_or("committed regression file must carry one cc seed entry")?;
 
     for index in 0..16_usize {
         run_case(&generate_case(seed, index))?;
     }
+
+    // Full-fidelity replay of every committed fuzz artifact through the
+    // shared `(seed, selector)` decoder.
+    assert!(
+        fuzz_replays.len() >= 3,
+        "committed fuzz-replay entries must cover the valid path, the invalidation path, and an index >= 16"
+    );
+    let mut replayed_invalidation = false;
+    let mut replayed_high_index = false;
+    for (replay_seed, selector) in fuzz_replays {
+        let index = usize::from(selector & 0x3f);
+        if selector & 0x80 != 0 {
+            replayed_invalidation = true;
+        }
+        if index >= 16 {
+            replayed_high_index = true;
+        }
+        let mut data = Vec::with_capacity(9);
+        data.extend_from_slice(&replay_seed.to_le_bytes());
+        data.push(selector);
+        let case = case_from_fuzz_input(&data)
+            .ok_or("committed fuzz-replay input must decode to a generated case")?;
+        assert_eq!(case.seed, replay_seed);
+        run_case(&case)?;
+    }
+    assert!(
+        replayed_invalidation,
+        "committed fuzz-replay entries must cover the invalidation path (FPH-010)"
+    );
+    assert!(
+        replayed_high_index,
+        "committed fuzz-replay entries must cover an index >= 16 (FPH-010)"
+    );
     Ok(())
 }
