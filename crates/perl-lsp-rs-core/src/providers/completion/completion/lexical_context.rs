@@ -11,6 +11,7 @@ pub(super) fn is_in_string(source: &str, position: usize) -> bool {
         std::collections::VecDeque::new();
     let mut literal_state = LiteralScanState::default();
     let mut in_pod_block = false;
+    let mut in_for_paragraph = false;
     let mut line_start = 0usize;
 
     for raw_line in source.split_inclusive('\n') {
@@ -34,8 +35,12 @@ pub(super) fn is_in_string(source: &str, position: usize) -> bool {
             if position_within_line(position, line_start, line_end) {
                 return false;
             }
-            if is_pod_end_marker(line) {
+            if in_for_paragraph && line.trim().is_empty() {
                 in_pod_block = false;
+                in_for_paragraph = false;
+            } else if is_pod_end_marker(line) {
+                in_pod_block = false;
+                in_for_paragraph = false;
             }
             line_start = line_end;
             continue;
@@ -46,6 +51,7 @@ pub(super) fn is_in_string(source: &str, position: usize) -> bool {
                 return false;
             }
             in_pod_block = true;
+            in_for_paragraph = line.starts_with("=for");
             line_start = line_end;
             continue;
         }
@@ -270,6 +276,7 @@ fn is_in_heredoc_with_boundary(source: &str, position: usize, include_closing_li
     let mut active_delimiters: std::collections::VecDeque<HeredocDelimiter> =
         std::collections::VecDeque::new();
     let mut in_pod_block = false;
+    let mut in_for_paragraph = false;
     let mut literal_state = LiteralScanState::default();
     let mut line_start = 0usize;
 
@@ -289,6 +296,7 @@ fn is_in_heredoc_with_boundary(source: &str, position: usize, include_closing_li
         } else {
             if is_pod_end_marker(line) {
                 in_pod_block = false;
+                in_for_paragraph = false;
                 if position >= line_start && position < line_end {
                     return false;
                 }
@@ -300,6 +308,10 @@ fn is_in_heredoc_with_boundary(source: &str, position: usize, include_closing_li
                 if position >= line_start && position < line_end {
                     return false;
                 }
+                if in_for_paragraph && line.trim().is_empty() {
+                    in_pod_block = false;
+                    in_for_paragraph = false;
+                }
                 line_start = line_end;
                 continue;
             }
@@ -307,6 +319,7 @@ fn is_in_heredoc_with_boundary(source: &str, position: usize, include_closing_li
             let started_in_literal = literal_state.is_active();
             if is_pod_start_marker(line) && !started_in_literal {
                 in_pod_block = true;
+                in_for_paragraph = line.starts_with("=for");
                 if position >= line_start && position < line_end {
                     return false;
                 }
@@ -1455,6 +1468,7 @@ fn is_pod_start_marker(line: &str) -> bool {
 fn is_pod_end_marker(line: &str) -> bool {
     // Per perlpod: `=cut` must also appear at column 0.
     line.strip_prefix("=cut")
+        .or_else(|| line.strip_prefix("=end"))
         .is_some_and(|rest| rest.chars().next().is_none_or(char::is_whitespace))
 }
 

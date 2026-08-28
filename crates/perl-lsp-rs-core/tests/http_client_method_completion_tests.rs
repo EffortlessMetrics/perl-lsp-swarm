@@ -99,3 +99,30 @@ fn textual_constructor_mentions_outside_code_do_not_activate_catalog() {
         );
     }
 }
+
+#[test]
+fn pod_regions_resume_code_after_matching_end_and_for_paragraph() {
+    let begin_source = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=begin comment\ndocumentation\n=end comment\n\n$http->po";
+    let begin_labels = labels(&completions_at_end(begin_source));
+    assert!(
+        has_label(&begin_labels, "post"),
+        "code after =end must be reachable: {begin_labels:?}"
+    );
+}
+
+#[test]
+fn constructor_inference_respects_lexical_shadowing_and_scope_exit() {
+    let outer_shadowed = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n{\n    my $http = Other::Client->new;\n    $http->po\n}";
+    let outer_shadowed_labels = labels(&completions_at_end(outer_shadowed));
+    assert!(
+        !has_label(&outer_shadowed_labels, "post"),
+        "inner binding must not inherit the outer constructor"
+    );
+
+    let inner_does_not_leak = "use HTTP::Tiny;\n{\n    my $http = HTTP::Tiny->new;\n}\n$http->po";
+    let inner_does_not_leak_labels = labels(&completions_at_end(inner_does_not_leak));
+    assert!(
+        !has_label(&inner_does_not_leak_labels, "post"),
+        "a block-local constructor must not type an out-of-scope receiver"
+    );
+}

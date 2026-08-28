@@ -3,8 +3,9 @@
 //! Provides context-aware method completion including DBI and common client APIs.
 
 use super::lexical_context::{is_in_comment, is_in_heredoc, is_in_regex, is_in_string};
+use super::scope_distance;
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
-use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
+use perl_semantic_analyzer::symbol::{Symbol, SymbolKind, SymbolTable};
 use std::borrow::Cow;
 use std::collections::HashSet;
 
@@ -280,26 +281,59 @@ pub fn infer_receiver_type(context: &CompletionContext, source: &str) -> Option<
     None
 }
 
-fn is_simple_scalar_receiver(receiver: &str) -> bool {
-    receiver.strip_prefix('$').is_some_and(|name| {
-        !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
-    })
-}
-
 fn is_in_pod_block(source: &str, position: usize) -> bool {
     let source_before_position = source.get(..position).unwrap_or(source);
-    let mut in_pod = false;
+    enum PodState<'a> {
+        Code,
+        CutTerminated,
+        Begin(&'a str),
+        ForParagraph,
+    }
 
-    for line in source_before_position.lines() {
-        let directive = line.split_ascii_whitespace().next();
-        if directive == Some("=cut") {
-            in_pod = false;
-        } else if directive.is_some_and(|word| word.starts_with('=')) {
-            in_pod = true;
+    let mut state = PodState::Code;
+    for line in source_before_position.split_inclusive('\n') {
+        let content = line.strip_suffix('\n').unwrap_or(line);
+        let directive = content.split_ascii_whitespace().next();
+
+        match state {
+            PodState::Code => match directive {
+                Some("=pod") | Some("=head1") | Some("=head2") | Some("=head3")
+                | Some("=head4") | Some("=over") | Some("=item") | Some("=back") => {
+                    state = PodState::CutTerminated;
+                }
+                Some("=begin") => {
+                    state = PodState::Begin(
+                        content.split_ascii_whitespace().nth(1).unwrap_or_default(),
+                    );
+                }
+                Some("=for") => state = PodState::ForParagraph,
+                _ => {}
+            },
+            PodState::CutTerminated => {
+                if directive == Some("=cut") {
+                    state = PodState::Code;
+                } else if directive == Some("=begin") {
+                    state = PodState::Begin(
+                        content.split_ascii_whitespace().nth(1).unwrap_or_default(),
+                    );
+                }
+            }
+            PodState::Begin(format) => {
+                if directive == Some("=end")
+                    && content.split_ascii_whitespace().nth(1) == Some(format)
+                {
+                    state = PodState::Code;
+                }
+            }
+            PodState::ForParagraph => {
+                if content.trim().is_empty() || directive == Some("=cut") {
+                    state = PodState::Code;
+                }
+            }
         }
     }
 
-    in_pod
+    !matches!(state, PodState::Code)
 }
 
 fn is_code_position(source: &str, position: usize) -> bool {
@@ -310,46 +344,68 @@ fn is_code_position(source: &str, position: usize) -> bool {
         || is_in_pod_block(source, position))
 }
 
-fn assignment_expression_before_receiver<'a>(
+fn binding_at_position<'a>(
+    symbol_table: &'a SymbolTable,
     receiver: &str,
-    source_before_receiver: &'a str,
+    scope_id: usize,
+    position: usize,
+) -> Option<&'a Symbol> {
+    let name = receiver.strip_prefix('$')?;
+    let candidates = symbol_table.find_symbol(name, scope_id, SymbolKind::scalar());
+    let defining_scope = candidates.first()?.scope_id;
+    candidates
+        .into_iter()
+        .filter(|symbol| symbol.scope_id == defining_scope && symbol.location.start <= position)
+        .max_by_key(|symbol| symbol.location.start)
+}
+
+fn latest_assignment_for_binding<'a>(
+    symbol_table: &SymbolTable,
+    source: &'a str,
+    receiver: &str,
+    binding: &Symbol,
+    end: usize,
 ) -> Option<&'a str> {
-    if !is_simple_scalar_receiver(receiver) {
-        return None;
-    }
+    let scope_end = symbol_table
+        .scopes
+        .get(&binding.scope_id)
+        .map(|scope| scope.location.end)
+        .filter(|scope_end| *scope_end > binding.location.start)
+        .unwrap_or(end)
+        .min(end);
+    let search_start = binding.location.start.min(scope_end);
+    let mut expression = None;
 
-    let mut search_end = source_before_receiver.len();
-    while let Some(receiver_pos) = source_before_receiver[..search_end].rfind(receiver) {
-        if !is_code_position(source_before_receiver, receiver_pos) {
-            search_end = receiver_pos;
+    for (offset, _) in source[search_start..scope_end].match_indices(receiver) {
+        let receiver_pos = search_start + offset;
+        if !is_code_position(source, receiver_pos) {
             continue;
         }
-
-        let after_receiver = &source_before_receiver[receiver_pos + receiver.len()..];
-        if after_receiver
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
-        {
-            search_end = receiver_pos;
-            continue;
-        }
-
-        let after_receiver = after_receiver.trim_start();
-        let Some(expression) = after_receiver.strip_prefix('=') else {
-            search_end = receiver_pos;
+        let occurrence_scope =
+            scope_distance::scope_at_position(symbol_table, source, receiver_pos);
+        let Some(occurrence_binding) =
+            binding_at_position(symbol_table, receiver, occurrence_scope, receiver_pos)
+        else {
             continue;
         };
-        if expression.chars().next().is_some_and(|c| matches!(c, '=' | '>' | '~')) {
-            search_end = receiver_pos;
+        if occurrence_binding.scope_id != binding.scope_id
+            || occurrence_binding.location.start != binding.location.start
+        {
             continue;
         }
 
-        let statement_end = expression.find(';').unwrap_or(expression.len());
-        return Some(expression[..statement_end].trim());
+        let after_receiver = source[receiver_pos + receiver.len()..].trim_start();
+        let Some(assignment) = after_receiver.strip_prefix('=') else {
+            continue;
+        };
+        if assignment.chars().next().is_some_and(|c| matches!(c, '=' | '>' | '~')) {
+            continue;
+        }
+        let statement_end = assignment.find(';').unwrap_or(assignment.len());
+        expression = Some(assignment[..statement_end].trim());
     }
 
-    None
+    expression
 }
 
 fn expression_calls_constructor(expression: &str, module: &str) -> bool {
@@ -369,13 +425,21 @@ fn expression_calls_constructor(expression: &str, module: &str) -> bool {
 fn infer_imported_constructor_receiver_type(
     context: &CompletionContext,
     source: &str,
+    symbol_table: &SymbolTable,
     used_modules: &HashSet<String>,
 ) -> Option<&'static str> {
     let receiver = context.receiver_prefix().trim_end_matches("->");
     let source_before_cursor = source.get(..context.position).unwrap_or(source);
     let receiver_pos = source_before_cursor.rfind(receiver)?;
-    let expression =
-        assignment_expression_before_receiver(receiver, &source_before_cursor[..receiver_pos])?;
+    let binding =
+        binding_at_position(symbol_table, receiver, context.cursor_scope_id, receiver_pos)?;
+    let expression = latest_assignment_for_binding(
+        symbol_table,
+        source,
+        receiver,
+        binding,
+        receiver_pos + receiver.len(),
+    )?;
 
     ["HTTP::Tiny", "LWP::UserAgent"].into_iter().find(|&module| {
         used_modules.contains(module) && expression_calls_constructor(expression, module)
@@ -596,9 +660,10 @@ pub fn add_method_completions(
     }
 
     // Exact imported constructor evidence takes priority over naming heuristics.
-    let receiver_type = infer_imported_constructor_receiver_type(context, source, used_modules)
-        .map(str::to_owned)
-        .or_else(|| infer_receiver_type(context, source));
+    let receiver_type =
+        infer_imported_constructor_receiver_type(context, source, symbol_table, used_modules)
+            .map(str::to_owned)
+            .or_else(|| infer_receiver_type(context, source));
 
     let static_api_methods = imported_static_methods(context.receiver_prefix(), used_modules);
     let instance_api_methods = known_instance_methods(receiver_type.as_deref());
@@ -675,5 +740,23 @@ pub fn add_method_completions(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pod_for_is_one_paragraph_and_begin_ends_at_matching_end() {
+        let begin = "=begin comment\ndocs\n=end comment\nmy $code = 1;";
+        assert!(!is_in_pod_block(begin, begin.len()));
+
+        let for_body = "=for comment\ndocs\n$code";
+        assert!(is_in_pod_block(for_body, for_body.len()));
+
+        let for_code = "=for comment\ndocs\n\nmy $code = 1;";
+        assert!(!is_in_pod_block(for_code, for_code.len()));
+        assert!(is_code_position(for_code, for_code.find("my $code").unwrap()));
     }
 }
