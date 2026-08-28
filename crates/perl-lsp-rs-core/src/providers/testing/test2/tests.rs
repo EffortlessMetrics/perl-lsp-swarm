@@ -43,6 +43,12 @@ fn test2_suite_is_a_non_importing_distribution_namespace() {
     assert!(!facts.uses_test2_bundle(), "Test2::Suite is not a bundle");
     assert!(facts.imported_symbols.is_empty());
     assert_eq!((facts.strict, facts.warnings), (false, false));
+
+    let explicit = Test2Facts::from_source("use Test2::Suite qw(ok);\n");
+    assert!(
+        explicit.imported_symbols.is_empty(),
+        "explicit arguments cannot create exports from a namespace with no importer"
+    );
 }
 
 #[test]
