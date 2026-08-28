@@ -1,6 +1,6 @@
 #[cfg(test)]
 use super::implementation::TextPosition;
-use super::implementation::counters::{NativePipelineCounters, PipelineCollectorScope};
+use super::implementation::counters::{self, NativePipelineCounters, PipelineCollectorScope};
 use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
