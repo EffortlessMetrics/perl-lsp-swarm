@@ -58,6 +58,21 @@ fn named_writer_is_profile_bound_and_not_object_pad() {
 }
 
 #[test]
+fn native_bare_writer_requires_perl_5_42() {
+    let mut parser = Parser::new("use v5.40; class TooOld { field $value :writer; }");
+    let ast = must(parser.parse());
+    let models = ClassModelBuilder::new().build(&ast);
+    let model = must_some(models.iter().find(|model| model.name == "TooOld"));
+    let field = must_some(model.fields.first());
+
+    assert_eq!(field.writer, None, "bare native writer is unsupported before Perl 5.42");
+    assert!(
+        !model.methods.iter().any(|method| method.synthetic && method.name == "set_value"),
+        "unsupported bare writer must not synthesize the default method"
+    );
+}
+
+#[test]
 fn named_writer_attributes_are_fail_closed_and_source_ordered() {
     let mut parser = Parser::new(
         r#"

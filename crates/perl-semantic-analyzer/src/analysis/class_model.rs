@@ -1262,7 +1262,13 @@ impl ClassModelBuilder {
     /// `:mutator`) are identical for both frameworks.
     fn try_extract_field_declaration(&mut self, statement: &Node) -> Option<usize> {
         let allow_named_writer = self.native_named_writers_allowed(statement.location.start);
-        let field = Self::object_pad_field_from_statement(statement, allow_named_writer)?;
+        let allow_bare_writer =
+            self.current_framework == Framework::ObjectPad || allow_named_writer;
+        let field = Self::object_pad_field_from_statement(
+            statement,
+            allow_named_writer,
+            allow_bare_writer,
+        )?;
         let location = field.location;
         let field_name = field.name.clone();
         let traits = field.attributes.clone();
@@ -1272,8 +1278,12 @@ impl ClassModelBuilder {
         if let Some(reader) = Self::object_pad_reader_name(&field_name, &traits) {
             self.current_methods.push(MethodInfo::synthetic(reader, location, None));
         }
-        if let Some(writer) = Self::object_pad_writer_name(&field_name, &traits, allow_named_writer)
-        {
+        if let Some(writer) = Self::object_pad_writer_name(
+            &field_name,
+            &traits,
+            allow_named_writer,
+            allow_bare_writer,
+        ) {
             self.current_methods.push(MethodInfo::synthetic_writer(writer, location));
         }
         if let Some(accessor) = Self::object_pad_accessor_name(&field_name, &traits) {
@@ -1305,6 +1315,7 @@ impl ClassModelBuilder {
     fn object_pad_field_from_statement(
         statement: &Node,
         allow_named_writer: bool,
+        allow_bare_writer: bool,
     ) -> Option<FieldInfo> {
         let NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } =
             &statement.kind
@@ -1345,8 +1356,12 @@ impl ClassModelBuilder {
         };
 
         field.reader = Self::object_pad_reader_name(&field.name, &field.attributes);
-        field.writer =
-            Self::object_pad_writer_name(&field.name, &field.attributes, allow_named_writer);
+        field.writer = Self::object_pad_writer_name(
+            &field.name,
+            &field.attributes,
+            allow_named_writer,
+            allow_bare_writer,
+        );
         field.accessor = Self::object_pad_accessor_name(&field.name, &field.attributes);
         field.mutator = Self::object_pad_mutator_name(&field.name, &field.attributes);
 
@@ -1365,9 +1380,13 @@ impl ClassModelBuilder {
         field_name: &str,
         traits: &[String],
         allow_named_writer: bool,
+        allow_bare_writer: bool,
     ) -> Option<String> {
         for trait_name in traits {
             if trait_name == "writer" {
+                if !allow_bare_writer {
+                    return None;
+                }
                 return Some(format!("set_{}", Self::object_pad_public_name(field_name)));
             }
 
