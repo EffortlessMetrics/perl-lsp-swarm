@@ -533,6 +533,47 @@ mod tests {
     }
 
     #[test]
+    fn current_projection_matches_authoritative_method_support() -> anyhow::Result<()> {
+        let projection = NativeMethodSupportProjection::current();
+        let expected = [
+            ("source_breakpoints", projection.source_breakpoints, NativeMethodSupport::NotProven),
+            (
+                "conditional_breakpoints",
+                projection.conditional_breakpoints,
+                NativeMethodSupport::NotProven,
+            ),
+            ("hit_conditions", projection.hit_conditions, NativeMethodSupport::NotProven),
+            ("logpoints", projection.logpoints, NativeMethodSupport::NotProven),
+            (
+                "function_breakpoints",
+                projection.function_breakpoints,
+                NativeMethodSupport::NotProven,
+            ),
+            ("data_breakpoints", projection.data_breakpoints, NativeMethodSupport::Unsupported),
+            ("evaluate", projection.evaluate, NativeMethodSupport::Unsupported),
+            ("variables", projection.variables, NativeMethodSupport::Unsupported),
+            ("scopes", projection.scopes, NativeMethodSupport::Unsupported),
+            ("stack_trace", projection.stack_trace, NativeMethodSupport::Unsupported),
+            (
+                "continue_execution",
+                projection.continue_execution,
+                NativeMethodSupport::RuntimeUnavailable,
+            ),
+            ("stepping", projection.stepping, NativeMethodSupport::RuntimeUnavailable),
+            ("pause", projection.pause, NativeMethodSupport::RuntimeUnavailable),
+            ("set_variable", projection.set_variable, NativeMethodSupport::Unsupported),
+        ];
+
+        for (field, actual, expected) in expected {
+            ensure!(
+                actual == expected,
+                "{field} current support changed: {actual:?} != {expected:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn set_breakpoints_validates_via_ast_without_a_process() {
         // setBreakpoints uses the AST validator + on-disk source, no live perl.
         let mut file = must(tempfile::NamedTempFile::new());
