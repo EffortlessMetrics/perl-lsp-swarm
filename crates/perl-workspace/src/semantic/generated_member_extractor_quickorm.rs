@@ -16,11 +16,36 @@ use crate::{Node, NodeKind};
 use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, EntityFact, EntityId, EntityKind, FileId, Provenance,
 };
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Default)]
 struct QuickOrmWalkCtx {
     current_package: Option<String>,
-    explicit_table_class_active: bool,
+    explicit_table_packages: BTreeSet<String>,
+}
+
+impl QuickOrmWalkCtx {
+    fn package(&self) -> &str {
+        self.current_package.as_deref().unwrap_or("main")
+    }
+
+    fn table_builder_active(&self) -> bool {
+        self.explicit_table_packages.contains(self.package())
+    }
+
+    fn replace_current_builder(&mut self, active: bool) {
+        let package = self.package().to_string();
+        if active {
+            self.explicit_table_packages.insert(package);
+        } else {
+            self.explicit_table_packages.remove(&package);
+        }
+    }
+
+    fn consume_current_builder(&mut self) {
+        let package = self.package().to_string();
+        self.explicit_table_packages.remove(&package);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,38 +93,41 @@ fn walk_quickorm(
             }
         }
         NodeKind::Block { statements } => {
-            let mut block_ctx = ctx.clone();
+            // `package` is lexical to the block, but imported functions live in
+            // package symbol tables. Restore only the current package; builder
+            // installation/removal remains visible through its package key.
+            let saved_package = ctx.current_package.clone();
             for statement in statements {
-                walk_quickorm(statement, file_id, &mut block_ctx, out);
+                walk_quickorm(statement, file_id, ctx, out);
             }
+            ctx.current_package = saved_package;
         }
         NodeKind::Package { name, block, .. } => {
             if let Some(block) = block {
-                let saved = ctx.clone();
+                let saved_package = ctx.current_package.clone();
                 ctx.current_package = Some(name.clone());
-                ctx.explicit_table_class_active = false;
                 walk_quickorm(block, file_id, ctx, out);
-                *ctx = saved;
+                ctx.current_package = saved_package;
             } else {
                 ctx.current_package = Some(name.clone());
-                ctx.explicit_table_class_active = false;
             }
         }
         NodeKind::Use { module, args, .. } if module == "DBIx::QuickORM" => {
             // Every import creates and installs a fresh builder in the caller.
             // A later plain import therefore replaces a table builder with the
             // default ORM builder instead of preserving table-class activation.
-            ctx.explicit_table_class_active = is_explicit_table_class_import(args);
+            ctx.replace_current_builder(is_explicit_table_class_import(args));
         }
         NodeKind::No { module, .. } if module == "DBIx::QuickORM" => {
-            ctx.explicit_table_class_active = false;
+            ctx.consume_current_builder();
         }
-        NodeKind::ExpressionStatement { expression } if ctx.explicit_table_class_active => {
+        NodeKind::ExpressionStatement { expression } if ctx.table_builder_active() => {
             // In a type=table builder, the first table() call removes the DSL
-            // functions from the package. Close the candidate after any table
-            // invocation, even when its identity is too dynamic to model.
+            // functions from the package. Close the package candidate after
+            // any table invocation, even when its identity is too dynamic to
+            // model safely.
             if extract_table_declaration(expression, file_id, ctx, out) {
-                ctx.explicit_table_class_active = false;
+                ctx.consume_current_builder();
             }
         }
         NodeKind::Subroutine { .. } | NodeKind::Method { .. } => {}
@@ -112,26 +140,33 @@ fn walk_quickorm(
 }
 
 fn is_explicit_table_class_import(args: &[String]) -> bool {
-    normalized_import_args(args) == ["type", "table"]
+    let normalized = normalized_import_args(args);
+    matches!(
+        normalized.as_slice(),
+        [type_key, table_value] if type_key == "type" && table_value == "table"
+    )
 }
 
 fn normalized_import_args(args: &[String]) -> Vec<String> {
-    args.iter()
-        .flat_map(|arg| expand_symbol_list(arg))
-        .filter_map(|arg| normalize_import_arg(&arg))
-        .collect()
+    let mut normalized = Vec::new();
+
+    for arg in args {
+        let trimmed = arg.trim();
+        if let Some(words) = parse_qw_words(trimmed) {
+            normalized.extend(words.into_iter().filter_map(|word| normalize_import_value(&word)));
+        } else if !matches!(trimmed, "" | "," | "=>")
+            && let Some(value) = normalize_import_value(trimmed)
+        {
+            normalized.push(value);
+        }
+    }
+
+    normalized
 }
 
-fn normalize_import_arg(raw: &str) -> Option<String> {
-    let trimmed = raw
-        .trim()
-        .trim_matches(|ch| matches!(ch, '\'' | '"' | '(' | ')' | '[' | ']' | '{' | '}'))
-        .trim();
-    if trimmed.is_empty() || matches!(trimmed, "," | "=>") {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+fn normalize_import_value(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_matches('\'').trim_matches('"').trim();
+    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
 }
 
 /// Inspect one expression and return whether it consumed the one-shot table DSL.
@@ -237,8 +272,7 @@ fn emit_candidate(
     let Some(name) = normalize_static_field_name(&candidate.name) else {
         return;
     };
-    let package = ctx.current_package.as_deref().unwrap_or("main");
-    push_field(package, &name, &candidate, file_id, out);
+    push_field(ctx.package(), &name, &candidate, file_id, out);
 }
 
 fn single_static_name_candidate(node: &Node) -> Option<NameCandidate> {
@@ -258,9 +292,6 @@ fn collect_static_name_candidates(node: &Node) -> Vec<NameCandidate> {
                 span_end: node.location.end,
             })
             .collect(),
-        NodeKind::ArrayLiteral { elements } => {
-            elements.iter().flat_map(collect_static_name_candidates).collect()
-        }
         NodeKind::Binary { op, left, right } if op == "," => {
             let mut names = collect_static_name_candidates(left);
             names.extend(collect_static_name_candidates(right));
@@ -289,29 +320,28 @@ fn normalize_symbol_name(raw: &str) -> Option<String> {
 }
 
 fn expand_symbol_list(raw: &str) -> Vec<String> {
-    let raw = raw.trim();
+    parse_qw_words(raw).unwrap_or_else(|| normalize_symbol_name(raw).into_iter().collect())
+}
 
-    if let Some(delimited) = raw.strip_prefix("qw")
-        && let Some(open) = delimited.chars().next()
-    {
-        let close = match open {
-            '(' => ')',
-            '{' => '}',
-            '[' => ']',
-            '<' => '>',
-            delimiter => delimiter,
-        };
-        if let Some(inner) = delimited.strip_prefix(open).and_then(|body| body.strip_suffix(close))
-        {
-            return inner
-                .split_whitespace()
-                .filter(|name| !name.is_empty())
-                .map(str::to_string)
-                .collect();
-        }
-    }
-
-    normalize_symbol_name(raw).into_iter().collect()
+fn parse_qw_words(raw: &str) -> Option<Vec<String>> {
+    let delimited = raw.trim().strip_prefix("qw")?.trim_start();
+    let open = delimited.chars().next()?;
+    let close = match open {
+        '(' => ')',
+        '{' => '}',
+        '[' => ']',
+        '<' => '>',
+        delimiter if !delimiter.is_ascii_alphanumeric() && !delimiter.is_whitespace() => delimiter,
+        _ => return None,
+    };
+    let inner = delimited.strip_prefix(open)?.strip_suffix(close)?;
+    Some(
+        inner
+            .split_whitespace()
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 fn push_field(
@@ -444,6 +474,12 @@ use DBIx::QuickORM qw(type table);
 table users => sub { column id => sub { primary_key }; };
 1;
 "#,
+            r#"
+package My::ORM::Table::Parenthesized;
+use DBIx::QuickORM(type => 'table');
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
         ] {
             let facts = candidate_facts(source);
             assert!(
@@ -454,18 +490,41 @@ table users => sub { column id => sub { primary_key }; };
     }
 
     #[test]
-    fn case_changed_import_parameters_do_not_activate_the_candidate() {
+    fn qw_punctuation_is_a_value_not_import_syntax() {
         let facts = candidate_facts(
             r#"
 package My::ORM::Table::User;
-use DBIx::QuickORM TYPE => 'TABLE';
-
+use DBIx::QuickORM qw(type => table);
 table users => sub { column id => sub { primary_key }; };
 1;
 "#,
         );
 
         assert!(!has_name(&facts, "My::ORM::Table::User::id"));
+    }
+
+    #[test]
+    fn case_or_extra_import_parameters_do_not_activate_the_candidate() {
+        for source in [
+            r#"
+package My::ORM::Table::Case;
+use DBIx::QuickORM TYPE => 'TABLE';
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+            r#"
+package My::ORM::Table::Extra;
+use DBIx::QuickORM type => 'table', skip => [];
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+        ] {
+            let facts = candidate_facts(source);
+            assert!(
+                !facts.iter().any(|fact| fact.entity.canonical_name.ends_with("::id")),
+                "unsupported import list must remain blocked: {source}"
+            );
+        }
     }
 
     #[test]
@@ -492,52 +551,51 @@ table users => sub { column id => sub { primary_key }; };
     }
 
     #[test]
-    fn lexical_block_restores_outer_package_and_activation() {
+    fn package_builder_state_survives_blocks_and_package_reentry() {
+        let facts = candidate_facts(
+            r#"
+package Outer;
+{
+    use DBIx::QuickORM type => 'table';
+    package Inner;
+    use DBIx::QuickORM type => 'table';
+}
+
+package Outer;
+table outer => sub { column outer_id => sub { primary_key }; };
+
+package Inner;
+table inner => sub { column inner_id => sub { primary_key }; };
+1;
+"#,
+        );
+
+        assert!(has_name(&facts, "Outer::outer_id"));
+        assert!(has_name(&facts, "Inner::inner_id"));
+    }
+
+    #[test]
+    fn later_plain_import_replaces_only_the_current_package_builder() {
         let facts = candidate_facts(
             r#"
 package Outer;
 use DBIx::QuickORM type => 'table';
-if (1) {
-    package Inner;
-}
-table users => sub { column id => sub { primary_key }; };
-1;
-"#,
-        );
 
-        assert!(has_name(&facts, "Outer::id"));
-        assert!(!has_name(&facts, "Inner::id"));
-    }
-
-    #[test]
-    fn later_plain_import_replaces_table_class_activation() {
-        let facts = candidate_facts(
-            r#"
-package My::ORM::Table::User;
+package Inner;
 use DBIx::QuickORM type => 'table';
 use DBIx::QuickORM;
 
-table users => sub { column id => sub { primary_key }; };
+package Outer;
+table outer => sub { column outer_id => sub { primary_key }; };
+
+package Inner;
+table inner => sub { column inner_id => sub { primary_key }; };
 1;
 "#,
         );
 
-        assert!(!has_name(&facts, "My::ORM::Table::User::id"));
-    }
-
-    #[test]
-    fn customized_import_symbols_remain_outside_the_candidate_contract() {
-        let facts = candidate_facts(
-            r#"
-package My::ORM::Table::User;
-use DBIx::QuickORM type => 'table', rename => { column => 'field' };
-
-table users => sub { column id => sub { primary_key }; };
-1;
-"#,
-        );
-
-        assert!(!has_name(&facts, "My::ORM::Table::User::id"));
+        assert!(has_name(&facts, "Outer::outer_id"));
+        assert!(!has_name(&facts, "Inner::inner_id"));
     }
 
     #[test]
@@ -555,6 +613,28 @@ table admins => sub { column admin_id => sub { primary_key }; };
 
         assert!(has_name(&facts, "My::ORM::Table::User::id"));
         assert!(!has_name(&facts, "My::ORM::Table::User::admin_id"));
+    }
+
+    #[test]
+    fn dynamic_table_names_consume_but_do_not_publish_the_table_builder() {
+        let facts = candidate_facts(
+            r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+my $table_name = 'users';
+
+table $table_name => sub {
+    column dynamic_id => sub { primary_key };
+};
+table users => sub {
+    column later_id => sub { primary_key };
+};
+1;
+"#,
+        );
+
+        assert!(!has_name(&facts, "My::ORM::Table::User::dynamic_id"));
+        assert!(!has_name(&facts, "My::ORM::Table::User::later_id"));
     }
 
     #[test]
@@ -595,55 +675,17 @@ schema app => sub {
     }
 
     #[test]
-    fn dynamic_table_names_consume_but_do_not_publish_the_table_builder() {
-        let facts = candidate_facts(
-            r#"
-package My::ORM::Table::User;
-use DBIx::QuickORM type => 'table';
-my $table_name = 'users';
-
-table $table_name => sub {
-    column dynamic_id => sub { primary_key };
-};
-table users => sub {
-    column later_id => sub { primary_key };
-};
-1;
-"#,
-        );
-
-        assert!(!has_name(&facts, "My::ORM::Table::User::dynamic_id"));
-        assert!(!has_name(&facts, "My::ORM::Table::User::later_id"));
-    }
-
-    #[test]
-    fn interpolated_table_names_remain_a_dynamic_boundary() {
-        let facts = candidate_facts(
-            r#"
-package My::ORM::Table::User;
-use DBIx::QuickORM type => 'table';
-my $suffix = 'users';
-
-table "app_$suffix" => sub {
-    column id => sub { primary_key };
-};
-1;
-"#,
-        );
-
-        assert!(!has_name(&facts, "My::ORM::Table::User::id"));
-    }
-
-    #[test]
-    fn dynamic_column_names_remain_a_dynamic_boundary() {
+    fn dynamic_and_interpolated_column_names_remain_unmodeled() {
         let facts = candidate_facts(
             r#"
 package My::ORM::Table::User;
 use DBIx::QuickORM type => 'table';
 my $column_name = 'nickname';
+my $suffix = 'name';
 
 table users => sub {
     column $column_name => sub { type VARCHAR };
+    column "display_$suffix" => sub { type VARCHAR };
 };
 1;
 "#,
@@ -651,24 +693,25 @@ table users => sub {
 
         assert!(!has_name(&facts, "My::ORM::Table::User::nickname"));
         assert!(!has_name(&facts, "My::ORM::Table::User::column_name"));
+        assert!(!has_name(&facts, "My::ORM::Table::User::display_name"));
     }
 
     #[test]
-    fn interpolated_column_names_remain_a_dynamic_boundary() {
+    fn arrayref_column_names_are_not_scalar_dsl_arguments() {
         let facts = candidate_facts(
             r#"
 package My::ORM::Table::User;
 use DBIx::QuickORM type => 'table';
-my $suffix = 'name';
 
 table users => sub {
-    column "display_$suffix" => sub { type VARCHAR };
+    columns([qw/name email/], sub { type VARCHAR });
 };
 1;
 "#,
         );
 
-        assert!(!has_name(&facts, "My::ORM::Table::User::display_name"));
+        assert!(!has_name(&facts, "My::ORM::Table::User::name"));
+        assert!(!has_name(&facts, "My::ORM::Table::User::email"));
     }
 
     #[test]
