@@ -1,5 +1,6 @@
 name: Temporary PerlTidy unterminated CRLF proof
 
+# Branch-local proof transport; removed before review.
 on:
   push:
     branches:
@@ -40,165 +41,176 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          implementation = Path("crates/perl-lsp-perltidy/src/native/implementation.rs")
-          text = implementation.read_text(encoding="utf-8")
+          def lines(*items: str) -> str:
+              return "\n".join(items) + "\n"
 
-          document_old = """        let mut formatted = String::with_capacity(source.len());
-
-          for line in source.split_inclusive('\\n') {
-              let (body, line_ending) = split_line_ending(line);
-              let formatted_body =
-                  format_simple_line(body, config).unwrap_or_else(|| body.to_string());
-              formatted.push_str(&preserve_generated_line_endings(formatted_body, line_ending));
-              formatted.push_str(line_ending);
-          }
-          """
-          document_new = """        let mut formatted = String::with_capacity(source.len());
-              let inferred_line_ending = inferred_generated_line_ending(source);
-
-              for line in source.split_inclusive('\\n') {
-                  let (body, line_ending) = split_line_ending(line);
-                  let generated_line_ending = if line_ending.is_empty() {
-                      inferred_line_ending
-                  } else {
-                      line_ending
-                  };
-                  let formatted_body =
-                      format_simple_line(body, config).unwrap_or_else(|| body.to_string());
-                  formatted.push_str(&preserve_generated_line_endings(
-                      formatted_body,
-                      generated_line_ending,
-                  ));
-                  formatted.push_str(line_ending);
-              }
-          """
-
-          range_old = """        let mut formatted = String::with_capacity(source.len());
-              let mut edits = Vec::new();
-
-              for (line_index, line) in source.split_inclusive('\\n').enumerate() {
-                  let line_index = line_index as u32;
-                  let (body, line_ending) = split_line_ending(line);
-                  let formatted_body = if range_includes_line(range, line_index) {
-          """
-          range_new = """        let mut formatted = String::with_capacity(source.len());
-              let mut edits = Vec::new();
-              let inferred_line_ending = inferred_generated_line_ending(source);
-
-              for (line_index, line) in source.split_inclusive('\\n').enumerate() {
-                  let line_index = line_index as u32;
-                  let (body, line_ending) = split_line_ending(line);
-                  let generated_line_ending = if line_ending.is_empty() {
-                      inferred_line_ending
-                  } else {
-                      line_ending
-                  };
-                  let formatted_body = if range_includes_line(range, line_index) {
-          """
-
-          range_call_old = """                let formatted_line = preserve_generated_line_endings(formatted_line, line_ending);
-          """
-          range_call_new = """                let formatted_line =
-                      preserve_generated_line_endings(formatted_line, generated_line_ending);
-          """
-
-          helper_old = """fn preserve_generated_line_endings(formatted: String, source_line_ending: &str) -> String {
-          """
-          helper_new = """fn inferred_generated_line_ending(source: &str) -> &'static str {
-              let bytes = source.as_bytes();
-              let Some(last_lf) = bytes.iter().rposition(|byte| *byte == b'\\n') else {
-                  return "\\n";
-              };
-
-              if last_lf > 0 && bytes[last_lf - 1] == b'\\r' {
-                  "\\r\\n"
-              } else {
-                  "\\n"
-              }
-          }
-
-          fn preserve_generated_line_endings(formatted: String, source_line_ending: &str) -> String {
-          """
-
-          replacements = (
-              (document_old, document_new, "document line-ending context"),
-              (range_old, range_new, "range line-ending context"),
-              (range_call_old, range_call_new, "range normalization call"),
-              (helper_old, helper_new, "line-ending inference helper seam"),
-          )
-          for old, new, label in replacements:
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
               count = text.count(old)
               if count != 1:
                   raise SystemExit(f"expected exactly one {label}; found {count}")
-              text = text.replace(old, new, 1)
+              return text.replace(old, new, 1)
 
+          implementation = Path("crates/perl-lsp-perltidy/src/native/implementation.rs")
+          text = implementation.read_text(encoding="utf-8")
+
+          document_intro_old = lines(
+              "        let mut formatted = String::with_capacity(source.len());",
+              "",
+              r"        for line in source.split_inclusive('\n') {",
+              "            let (body, line_ending) = split_line_ending(line);",
+          )
+          document_intro_new = lines(
+              "        let mut formatted = String::with_capacity(source.len());",
+              "        let inferred_line_ending = inferred_generated_line_ending(source);",
+              "",
+              r"        for line in source.split_inclusive('\n') {",
+              "            let (body, line_ending) = split_line_ending(line);",
+              "            let generated_line_ending = if line_ending.is_empty() {",
+              "                inferred_line_ending",
+              "            } else {",
+              "                line_ending",
+              "            };",
+          )
+          document_call_old = lines(
+              "            formatted.push_str(&preserve_generated_line_endings(formatted_body, line_ending));",
+          )
+          document_call_new = lines(
+              "            formatted.push_str(&preserve_generated_line_endings(",
+              "                formatted_body,",
+              "                generated_line_ending,",
+              "            ));",
+          )
+
+          range_intro_old = lines(
+              "        let mut formatted = String::with_capacity(source.len());",
+              "        let mut edits = Vec::new();",
+              "",
+              r"        for (line_index, line) in source.split_inclusive('\n').enumerate() {",
+              "            let line_index = line_index as u32;",
+              "            let (body, line_ending) = split_line_ending(line);",
+          )
+          range_intro_new = lines(
+              "        let mut formatted = String::with_capacity(source.len());",
+              "        let mut edits = Vec::new();",
+              "        let inferred_line_ending = inferred_generated_line_ending(source);",
+              "",
+              r"        for (line_index, line) in source.split_inclusive('\n').enumerate() {",
+              "            let line_index = line_index as u32;",
+              "            let (body, line_ending) = split_line_ending(line);",
+              "            let generated_line_ending = if line_ending.is_empty() {",
+              "                inferred_line_ending",
+              "            } else {",
+              "                line_ending",
+              "            };",
+          )
+          range_call_old = lines(
+              "                let formatted_line = preserve_generated_line_endings(formatted_line, line_ending);",
+          )
+          range_call_new = lines(
+              "                let formatted_line =",
+              "                    preserve_generated_line_endings(formatted_line, generated_line_ending);",
+          )
+
+          helper_marker = lines(
+              "fn preserve_generated_line_endings(formatted: String, source_line_ending: &str) -> String {",
+          )
+          helper_replacement = lines(
+              "fn inferred_generated_line_ending(source: &str) -> &'static str {",
+              "    let bytes = source.as_bytes();",
+              r"    let Some(last_lf) = bytes.iter().rposition(|byte| *byte == b'\n') else {",
+              r"        return \"\n\";",
+              "    };",
+              "",
+              r"    if last_lf > 0 && bytes[last_lf - 1] == b'\r' {",
+              r"        \"\r\n\"",
+              "    } else {",
+              r"        \"\n\"",
+              "    }",
+              "}",
+              "",
+              "fn preserve_generated_line_endings(formatted: String, source_line_ending: &str) -> String {",
+          )
+
+          replacements = (
+              (document_intro_old, document_intro_new, "document line-ending context"),
+              (document_call_old, document_call_new, "document normalization call"),
+              (range_intro_old, range_intro_new, "range line-ending context"),
+              (range_call_old, range_call_new, "range normalization call"),
+              (helper_marker, helper_replacement, "line-ending inference helper seam"),
+          )
+          for old, new, label in replacements:
+              text = replace_once(text, old, new, label)
           implementation.write_text(text, encoding="utf-8")
 
           tests = Path("crates/perl-lsp-perltidy/tests/native_formatter_line_ending_tests.rs")
           test_text = tests.read_text(encoding="utf-8")
-          marker = """#[test]
-          fn generated_layout_keeps_lf_sources_lf_only() {
-          """
-          additions = r'''#[test]
-          fn unterminated_last_line_inherits_crlf_document_convention() {
-              let formatter = NativeFormatter::new();
-              let source = "my $before = 1;\r\nwhile($n){next;}";
-
-              let result = formatter.format_document_typed(
-                  source,
-                  &FormatConfig::default(),
-                  &FormatContext::default(),
-              );
-
-              assert_eq!(result.outcome.disposition, FormatDisposition::Applied);
-              assert_eq!(
-                  result.result.formatted,
-                  concat!(
-                      "my $before = 1;\r\n",
-                      "while ($n) {\r\n",
-                      "    next;\r\n",
-                      "}",
-                  )
-              );
-              assert_eq!(
-                  result.outcome.safety.line_endings,
-                  FormatLineEndingDisposition::Preserved
-              );
-              assert_crlf_only(&result.result.formatted);
-              assert!(!result.result.formatted.ends_with('\n'));
-          }
-
-          #[test]
-          fn range_on_unterminated_last_line_inherits_crlf_for_result_and_edit() {
-              let formatter = NativeFormatter::new();
-              let source = "my $before = 1;\r\nwhile($n){next;}";
-              let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 16));
-
-              let result = formatter.format_range(source, range, &FormatConfig::default());
-
-              assert!(result.changed);
-              assert_eq!(result.edits.len(), 1);
-              assert_eq!(result.edits[0].new_text, "while ($n) {\r\n    next;\r\n}");
-              assert_eq!(
-                  result.formatted,
-                  concat!(
-                      "my $before = 1;\r\n",
-                      "while ($n) {\r\n",
-                      "    next;\r\n",
-                      "}",
-                  )
-              );
-              assert_crlf_only(&result.formatted);
-              assert!(!result.formatted.ends_with('\n'));
-          }
-
-          #[test]
-          fn generated_layout_keeps_lf_sources_lf_only() {
-          '''
-          count = test_text.count(marker)
-          if count != 1:
-              raise SystemExit(f"expected one LF control marker; found {count}")
-          test_text = test_text.replace(marker, additions, 1)
+          test_marker = lines(
+              "#[test]",
+              "fn generated_layout_keeps_lf_sources_lf_only() {",
+          )
+          test_additions = lines(
+              "#[test]",
+              "fn unterminated_last_line_inherits_crlf_document_convention() {",
+              "    let formatter = NativeFormatter::new();",
+              r"    let source = \"my $before = 1;\r\nwhile($n){next;}\";",
+              "",
+              "    let result = formatter.format_document_typed(",
+              "        source,",
+              "        &FormatConfig::default(),",
+              "        &FormatContext::default(),",
+              "    );",
+              "",
+              "    assert_eq!(result.outcome.disposition, FormatDisposition::Applied);",
+              "    assert_eq!(",
+              "        result.result.formatted,",
+              "        concat!(",
+              r"            \"my $before = 1;\r\n\",",
+              r"            \"while ($n) {\r\n\",",
+              r"            \"    next;\r\n\",",
+              r"            \"}\",",
+              "        )",
+              "    );",
+              "    assert_eq!(",
+              "        result.outcome.safety.line_endings,",
+              "        FormatLineEndingDisposition::Preserved",
+              "    );",
+              "    assert_crlf_only(&result.result.formatted);",
+              r"    assert!(!result.result.formatted.ends_with('\n'));",
+              "}",
+              "",
+              "#[test]",
+              "fn range_on_unterminated_last_line_inherits_crlf_for_result_and_edit() {",
+              "    let formatter = NativeFormatter::new();",
+              r"    let source = \"my $before = 1;\r\nwhile($n){next;}\";",
+              "    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 16));",
+              "",
+              "    let result = formatter.format_range(source, range, &FormatConfig::default());",
+              "",
+              "    assert!(result.changed);",
+              "    assert_eq!(result.edits.len(), 1);",
+              r"    assert_eq!(result.edits[0].new_text, \"while ($n) {\r\n    next;\r\n}\");",
+              "    assert_eq!(",
+              "        result.formatted,",
+              "        concat!(",
+              r"            \"my $before = 1;\r\n\",",
+              r"            \"while ($n) {\r\n\",",
+              r"            \"    next;\r\n\",",
+              r"            \"}\",",
+              "        )",
+              "    );",
+              "    assert_crlf_only(&result.formatted);",
+              r"    assert!(!result.formatted.ends_with('\n'));",
+              "}",
+              "",
+              "#[test]",
+              "fn generated_layout_keeps_lf_sources_lf_only() {",
+          )
+          test_text = replace_once(
+              test_text,
+              test_marker,
+              test_additions,
+              "LF control insertion marker",
+          )
           tests.write_text(test_text, encoding="utf-8")
           PY
 
