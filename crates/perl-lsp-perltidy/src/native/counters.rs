@@ -234,7 +234,11 @@ impl PipelineCollectorScope {
             counters.lines_processed.saturating_add(recorded.lines_processed);
         counters.delimited_groups_fitted =
             counters.delimited_groups_fitted.saturating_add(recorded.delimited_groups_fitted);
+        counters.edits_derived = counters.edits_derived.saturating_add(recorded.edits_derived);
+        counters.replacement_bytes =
+            counters.replacement_bytes.saturating_add(recorded.replacement_bytes);
         counters.peak_depth = counters.peak_depth.max(recorded.peak_depth);
+        counters.elapsed = counters.elapsed.saturating_add(recorded.elapsed);
     }
 
     fn detach(&mut self) -> Option<NativePipelineCounters> {
@@ -249,5 +253,44 @@ impl Drop for PipelineCollectorScope {
             let previous = self.detach();
             ACTIVE_COLLECTOR.with(|cell| *cell.borrow_mut() = previous);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NativePipelineCounters, PipelineCollectorScope, record_with};
+    use std::time::Duration;
+
+    #[test]
+    fn scope_merge_preserves_every_counter_field() {
+        let scope = PipelineCollectorScope::install();
+        record_with(|recorded| {
+            recorded.pipeline_invocations = 1;
+            recorded.parse_gate_invocations = 2;
+            recorded.source_parse_gate_invocations = 1;
+            recorded.formatted_output_parse_gate_invocations = 1;
+            recorded.gate_nodes_observed = 3;
+            recorded.lines_processed = 4;
+            recorded.delimited_groups_fitted = 5;
+            recorded.edits_derived = 6;
+            recorded.replacement_bytes = 7;
+            recorded.peak_depth = 8;
+            recorded.elapsed = Duration::from_nanos(9);
+        });
+
+        let mut counters = NativePipelineCounters::default();
+        scope.merge_into(&mut counters);
+
+        assert_eq!(counters.pipeline_invocations, 1);
+        assert_eq!(counters.parse_gate_invocations, 2);
+        assert_eq!(counters.source_parse_gate_invocations, 1);
+        assert_eq!(counters.formatted_output_parse_gate_invocations, 1);
+        assert_eq!(counters.gate_nodes_observed, 3);
+        assert_eq!(counters.lines_processed, 4);
+        assert_eq!(counters.delimited_groups_fitted, 5);
+        assert_eq!(counters.edits_derived, 6);
+        assert_eq!(counters.replacement_bytes, 7);
+        assert_eq!(counters.peak_depth, 8);
+        assert_eq!(counters.elapsed, Duration::from_nanos(9));
     }
 }
