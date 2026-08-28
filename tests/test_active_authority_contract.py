@@ -38,6 +38,75 @@ CLAUDE_AGENT_ROSTER = ".claude/agents/README.md"
 CLAUDE_AGENT_GLOB = ".claude/agents/**"
 RETIRED_LANE_AGENT = ".claude/agents/lane-orchestrator.md"
 
+PARITY_SKILLS = (
+    "address-review-comments",
+    "build-candidate",
+    "deliver-goal",
+    "deliver-pr",
+    "final-challenge",
+    "finish-pr",
+    "improve-test-suite",
+    "merge-reconcile",
+    "orchestrate-work",
+    "prepare-issue",
+    "prepare-proof",
+    "review-candidate",
+    "review-pr",
+    "review-tests",
+    "simplify-candidate",
+    "verify-live-ci",
+)
+
+KNOWN_SKILLS = frozenset(
+    {
+        "deliver-goal",
+        "deliver-pr",
+        "prepare-issue",
+        "prepare-proof",
+        "build-candidate",
+        "finish-pr",
+        "find-or-create-issue",
+        "research-issue",
+        "review-issue",
+        "issue-to-plan",
+        "research-plan",
+        "review-plan",
+        "compile-spec",
+        "spec-to-test",
+        "review-tests",
+        "build-from-proof",
+        "improve-test-suite",
+        "simplify-candidate",
+        "review-candidate",
+        "publish-pr",
+        "address-review-comments",
+        "final-challenge",
+        "review-pr",
+        "verify-live-ci",
+        "merge-reconcile",
+        "orchestrate-work",
+    }
+)
+
+SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
+    "address-review-comments": ("NOT_PROVEN", "final-challenge"),
+    "build-candidate": ("CANDIDATE_READY", "NOT_PROVEN", "prepare-proof"),
+    "deliver-goal": ("IN_FLIGHT", "deliver-pr", "NOT_PROVEN"),
+    "deliver-pr": ("IN_FLIGHT", "NOT_PROVEN", "finish-pr"),
+    "final-challenge": ("CANDIDATE_READY_FOR_REVIEW", "NOT_PROVEN", "review-pr"),
+    "finish-pr": ("REVIEW_CURRENT", "CHANGES_REQUIRED", "INTEGRATION_READY", "NOT_PROVEN"),
+    "improve-test-suite": ("NOT_PROVEN", "review-tests", "simplify-candidate"),
+    "merge-reconcile": ("REVIEW_CURRENT", "INTEGRATION_READY", "PR_IN_FLIGHT", "NOT_PROVEN", "--match-head-commit"),
+    "orchestrate-work": ("NOT_PROVEN", "deliver-pr", "review-pr", "verify-live-ci"),
+    "prepare-issue": ("PLAN_READY", "NOT_PROVEN", "prepare-proof"),
+    "prepare-proof": ("PROOF_READY", "NOT_PROVEN", "build-candidate"),
+    "review-candidate": ("CANDIDATE_READY", "NOT_PROVEN", "prepare-proof"),
+    "review-pr": ("REVIEW_CURRENT", "CHANGES_REQUIRED", "NOT_PROVEN", "semantic-review:v1", "verify-live-ci"),
+    "review-tests": ("NOT_PROVEN", "build-candidate", "prepare-proof"),
+    "simplify-candidate": ("ALREADY_MINIMAL", "NOT_PROVEN", "review-candidate"),
+    "verify-live-ci": ("REVIEW_CURRENT", "INTEGRATION_READY", "PR_IN_FLIGHT", "MERGE_BLOCKED", "NOT_PROVEN"),
+}
+
 # Every path that must re-run this contract, under both workflow events.
 TRIGGER_PATHS = (
     CONTRIBUTING,
@@ -61,11 +130,19 @@ JUST_CALL = re.compile(r"\bjust ([a-z0-9][a-z0-9-]*)")
 JUST_RECIPE_DEF = re.compile(r"^([a-z0-9_][a-z0-9_-]*)(?:\s+[^\n]*?)?:(?!=)", re.MULTILINE)
 FLOW_ROSTER_HEADING = "Choose the narrowest applicable public flow:"
 FLOW_BULLET = re.compile(r"^- `\$?([a-z][a-z-]*)`", re.MULTILINE)
+BACKTICK_SKILL = re.compile(r"`\$?([a-z][a-z0-9-]*)`")
 RETIRED_ACTIVE_SKILL_AUTHORITY = (
     re.compile(r"\blane root\b"),
     re.compile(r"\blane-root\b"),
     re.compile(r"\blane owner\b"),
 )
+SUBORDINATE_AUTHORITY = re.compile(
+    r"\b(?:the|a|one)\s+(?:claim|lane)(?:[- ](?:root|orchestrator|coordinator|owner))"
+    r"\b[^.]{0,100}\b(?:owns?|retains?|decides?|joins?|posts?|selects?|routes?|runs?)\b",
+    re.IGNORECASE,
+)
+CODEX_ROOT_AUTHORITY = re.compile(r"\b(?:accountable root|Codex root|main/root(?: Codex)? (?:thread|orchestrator))\b")
+CLAUDE_ROOT_AUTHORITY = re.compile(r"\bmain Claude thread\b")
 
 
 def read(path: str) -> str:
@@ -151,6 +228,12 @@ def declared_flows(text: str) -> tuple[str, ...]:
     roster, _, _ = tail.partition("\n\n\n")
     section = roster.split("\n\n")[1] if len(roster.split("\n\n")) > 1 else roster
     return tuple(FLOW_BULLET.findall(section))
+
+
+def skill_references(text: str) -> frozenset[str]:
+    """Normalize provider-local `$skill`/`skill` references to one semantic set."""
+
+    return frozenset(token for token in BACKTICK_SKILL.findall(text) if token in KNOWN_SKILLS)
 
 
 def just_recipes(text: str) -> frozenset[str]:
@@ -389,7 +472,8 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
 
         for skill_root in ACTIVE_SKILL_ROOTS:
             for skill_path in sorted((ROOT / skill_root).rglob("SKILL.md")):
-                lowered = active_text(str(skill_path), is_text=False).lower()
+                surface = active_text(str(skill_path), is_text=False)
+                lowered = surface.lower()
                 relative = skill_path.relative_to(ROOT).as_posix()
                 for retired in RETIRED_ACTIVE_SKILL_AUTHORITY:
                     self.assertIsNone(
@@ -397,6 +481,10 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
                         f"{relative} restored retired claim-orchestration authority "
                         f"{retired.pattern!r}",
                     )
+                self.assertIsNone(
+                    SUBORDINATE_AUTHORITY.search(surface),
+                    f"{relative} assigned decision authority to a subordinate claim/lane actor",
+                )
 
         self.assertFalse(
             (ROOT / RETIRED_LANE_AGENT).exists(),
@@ -406,6 +494,32 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
         self.assertIn("main Claude thread owns orchestration", roster)
         for agent in ("`researcher`", "`builder`", "`reviewer`"):
             self.assertIn(agent, roster)
+
+    def test_provider_skill_route_and_semantic_parity(self) -> None:
+        for skill in PARITY_SKILLS:
+            codex_path = f".agents/skills/{skill}/SKILL.md"
+            claude_path = f".claude/skills/{skill}/SKILL.md"
+            codex = active_text(codex_path)
+            claude = active_text(claude_path)
+
+            self.assertEqual(
+                skill_references(codex),
+                skill_references(claude),
+                f"{skill} provider implementations disagree on callable skill references",
+            )
+            self.assertRegex(
+                codex,
+                CODEX_ROOT_AUTHORITY,
+                f"{codex_path} does not positively retain orchestration in the Codex root",
+            )
+            self.assertRegex(
+                claude,
+                CLAUDE_ROOT_AUTHORITY,
+                f"{claude_path} does not positively retain orchestration in the main Claude thread",
+            )
+            for marker in SEMANTIC_PARITY_MARKERS[skill]:
+                self.assertIn(marker, codex, f"{codex_path} is missing semantic invariant {marker!r}")
+                self.assertIn(marker, claude, f"{claude_path} is missing semantic invariant {marker!r}")
 
     def test_documented_worktree_root_is_ignored(self) -> None:
         protocol = active_text(WORKTREE_PROTOCOL)
@@ -459,6 +573,10 @@ class RatchetSelfTests(unittest.TestCase):
         self.assertNotIn(
             "Behind-only movement requires no action.", prose_text(fenced, is_text=True)
         )
+
+    def test_subordinate_authority_detector_rejects_renamed_actor(self) -> None:
+        self.assertIsNotNone(SUBORDINATE_AUTHORITY.search("The claim coordinator owns review disposition."))
+        self.assertIsNone(SUBORDINATE_AUTHORITY.search("A claim is a logical frame held by the root."))
 
     def test_one_sided_path_removal_is_detected(self) -> None:
         both = (
