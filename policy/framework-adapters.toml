@@ -187,7 +187,7 @@ claim_boundary = "DBIx::Class support is deferred to a static source-backed subs
 [[adapter]]
 framework = "DBIx::QuickORM"
 fact_class = "explicit_table_column_generated_member"
-state = "shadow"
+state = "planned"
 fact_provenance = "SourceBackedGenerated"
 source_anchor_required = true
 generated_label_required = true
@@ -219,7 +219,7 @@ blocks = [
   "low_confidence",
   "unsupported_fact_class",
 ]
-claim_boundary = "DBIx::QuickORM shadow facts cover only statically named columns in explicit table classes; runtime schema fill, generated row classes, naming hooks, links, and edit authorization remain blocked."
+claim_boundary = "DBIx::QuickORM has a parser-backed, non-published candidate extractor for statically named columns in explicit table classes. Canonical shards, live providers, runtime schema fill, generated row classes, naming hooks, links, and edit authorization remain blocked pending separate admission proof."
 
 [[adapter]]
 framework = "Catalyst"
