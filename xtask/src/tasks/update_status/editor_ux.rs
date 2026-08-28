@@ -362,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn scenario_14_terminal_dispositions_do_not_render_as_active_blockers() -> Result<()> {
+    fn scenario_14_rows_split_terminal_dispositions_from_active_proof_debt() -> Result<()> {
         let root = crate::utils::project_root()?;
         let ledger = load_flake_ledger(&root)?;
         let scenario_14_entries: Vec<&UxFlakeEntry> = ledger
@@ -372,9 +372,15 @@ mod tests {
             .collect();
 
         assert_eq!(scenario_14_entries.len(), 11, "expected the 11 historical Scenario 14 rows");
-        for entry in scenario_14_entries {
-            assert_eq!(entry.state, "resolved", "{} must have a terminal state", entry.test);
+        for entry in &scenario_14_entries {
             assert_ne!(entry.issue, Some(7570), "{} must not route to unrelated #7570", entry.test);
+        }
+
+        // Ten rows carry terminal dispositions with proof runs.
+        let resolved: Vec<&&UxFlakeEntry> =
+            scenario_14_entries.iter().filter(|entry| entry.state == "resolved").collect();
+        assert_eq!(resolved.len(), 10, "ten Scenario 14 rows must stay terminally resolved");
+        for entry in resolved {
             assert!(
                 matches!(
                     entry.disposition.as_deref(),
@@ -386,16 +392,37 @@ mod tests {
             );
         }
 
+        // The FindBin row stays active proof debt: its replacement tolerates
+        // the consumer divergence it claims to guard, so it must keep routing
+        // to #10015 instead of masquerading as resolved.
+        let findbin = scenario_14_entries
+            .iter()
+            .find(|entry| entry.test.ends_with("scenario_14_findbin_relative"))
+            .ok_or_else(|| eyre!("FindBin row missing from ledger"))?;
+        assert_eq!(findbin.state, "active");
+        assert_eq!(findbin.disposition.as_deref(), Some("not_proven"));
+        assert_eq!(findbin.issue, Some(10015));
+        assert!(findbin.owner.is_some(), "active FindBin row must name an owner");
+
+        // Scorecard rendering: only the unproven row surfaces as a current
+        // blocker; resolved history must not.
         let blockers = load_active_known_blockers(&root)?;
+        let blocker_names: std::collections::BTreeSet<&str> =
+            blockers.iter().filter_map(|entry| entry["test_name"].as_str()).collect();
         assert!(
-            blockers.iter().all(|entry| {
-                !entry["test_name"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .starts_with("ux_scenario_14_inc_conformance::")
-            }),
-            "resolved Scenario 14 history must not render as a current scorecard blocker"
+            blocker_names.contains("ux_scenario_14_inc_conformance::scenario_14_findbin_relative"),
+            "the unproven FindBin row must render as a current scorecard blocker"
         );
+        for entry in &scenario_14_entries {
+            if entry.test.ends_with("scenario_14_findbin_relative") {
+                continue;
+            }
+            assert!(
+                !blocker_names.contains(entry.test.as_str()),
+                "resolved row {} must not render as a current scorecard blocker",
+                entry.test
+            );
+        }
         Ok(())
     }
 }

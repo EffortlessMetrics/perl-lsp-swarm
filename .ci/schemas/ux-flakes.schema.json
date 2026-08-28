@@ -42,8 +42,11 @@
       "type": "object",
       "required": [
         "command",
+        "verification_state",
         "verification_pr",
         "verified_sha",
+        "verified_artifact_blob",
+        "unverified_reason",
         "replacement_tests"
       ],
       "additionalProperties": false,
@@ -52,6 +55,13 @@
           "type": "string",
           "minLength": 1,
           "description": "Hard-fail command used to verify the maintained executable contract."
+        },
+        "verification_state": {
+          "enum": [
+            "verified",
+            "unverified"
+          ],
+          "description": "Whether an exact-head verification run actually justifies the disposition. `unverified` is the honest classification for rows with no binding verifying commit; null is never acceptable."
         },
         "verification_pr": {
           "type": [
@@ -67,7 +77,23 @@
             "null"
           ],
           "pattern": "^[0-9a-f]{40}$",
-          "description": "Exact commit SHA verified by the hard-fail lane, when recorded."
+          "description": "Exact 40-hex commit whose evidence run justified the disposition. Required (non-null) when verification_state is verified; must be null when unverified."
+        },
+        "verified_artifact_blob": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}$",
+          "description": "Git blob id of the replacement-test source at verified_sha. The quarantine contract test re-verifies this binding and fails when the artifact drifts or the sha does not carry the recorded blob."
+        },
+        "unverified_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "Named reason no verifying commit exists yet. Required (non-null) when verification_state is unverified; must be null when verified."
         },
         "replacement_tests": {
           "type": "array",
@@ -78,7 +104,62 @@
           },
           "description": "Maintained executable tests that now own the historical intent."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "verification_state": {
+                "const": "verified"
+              }
+            },
+            "required": [
+              "verification_state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "verified_sha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "verified_artifact_blob": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "unverified_reason": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "verification_state": {
+                "const": "unverified"
+              }
+            },
+            "required": [
+              "verification_state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "verified_sha": {
+                "type": "null"
+              },
+              "verified_artifact_blob": {
+                "type": "null"
+              },
+              "unverified_reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
     },
     "flakeEntry": {
       "type": "object",

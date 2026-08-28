@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "description": "Registry of known-flaky or known-blocked UX scenario tests. Active entries inform CI triage and quarantine; resolved entries retain a terminal disposition, executable replacement mapping, and verification route as institutional memory. Schema: .ci/schemas/ux-flakes.schema.json",
+  "description": "Registry of known-flaky or known-blocked UX scenario tests. Active entries inform CI triage and quarantine; resolved entries retain a terminal disposition, executable replacement mapping, and verification route as institutional memory. Verified dispositions are bound to an exact verified_sha plus the replacement-source blob at that commit; crates/perl-lsp-ux-tests/tests/quarantine_registry_contract.rs re-verifies the binding and fails on fabrication or artifact drift. Schema: .ci/schemas/ux-flakes.schema.json",
   "entries": [
     {
       "test": "ux_scenario_14_inc_conformance::scenario_14_relative_include_path",
@@ -21,8 +21,11 @@
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
+        "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": null,
+        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
+        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_relative_include_path"
         ]
@@ -48,8 +51,11 @@
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
+        "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": null,
+        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
+        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_relative_include_path",
           "scenario_14_perl5lib_completion_gating_matrix"
@@ -76,8 +82,11 @@
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
+        "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": null,
+        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
+        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_use_lib_lexical"
         ]
@@ -103,8 +112,11 @@
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
+        "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": null,
+        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
+        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_external_include_paths_unauthorized_zero_visibility"
         ]
@@ -130,8 +142,11 @@
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
+        "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": null,
+        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
+        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_no_lib_cancellation",
           "scenario_14_no_lib_cancellation_workspace_index"
@@ -143,28 +158,31 @@
       "test": "ux_scenario_14_inc_conformance::scenario_14_findbin_relative",
       "crate": "perl-lsp-ux-tests",
       "subsystem": "editor_ux",
-      "state": "resolved",
-      "disposition": "resolved_by_intent",
+      "state": "active",
+      "disposition": "not_proven",
       "failure_mode": "FindBin-relative module resolution is environment-dependent; goto-definition may not resolve in harness environment",
       "failure_class": "provider_regression",
       "component": "module_resolution",
-      "issue": null,
-      "owner": null,
+      "issue": 10015,
+      "owner": "@maintainer",
       "first_seen": "2026-04-30",
       "scope": "pr",
       "quarantine_effect": "non_blocking_pr",
       "expires_after_days": null,
-      "resolved_in": 13167,
-      "resolved_at": "2026-08-27",
+      "resolved_in": null,
+      "resolved_at": null,
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
+        "verification_state": "unverified",
         "verification_pr": 13167,
         "verified_sha": null,
+        "verified_artifact_blob": null,
+        "unverified_reason": "The mapped replacement scenario_14_findbin_relative tolerates the no-PL701 + empty goto-definition consumer divergence (logs INFO and returns Ok) and never asserts completion_ok, so it does not discriminate the stated consumer-consistency contract (review thread 3880058194 on this PR). No verifying commit exists; the row stays active/not_proven until the replacement fails on that divergence.",
         "replacement_tests": [
           "scenario_14_findbin_relative"
         ]
       },
-      "notes": "The maintained contract is consumer consistency under an environment-dependent FindBin capability, not unconditional end-to-end resolution in every harness environment."
+      "notes": "Reclassified from resolved_by_intent to active/not_proven: the maintained test does not yet fail on the divergence class its disposition claims to prove. The maintained contract is consumer consistency under an environment-dependent FindBin capability; proof for that contract is still owed under #10015."
     },
     {
       "test": "ux_scenario_14_inc_conformance::scenario_14_system_inc",
@@ -185,8 +203,11 @@
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
+        "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": null,
+        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
+        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_perl5lib_env"
         ]
@@ -212,8 +233,11 @@
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
+        "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": null,
+        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
+        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_nested_module_relative_include_path"
         ]
@@ -239,8 +263,11 @@
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
+        "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": null,
+        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
+        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_include_path_missing_module_consistency"
         ]
@@ -266,8 +293,11 @@
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
+        "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": null,
+        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
+        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_include_path_missing_module_completion_consistency"
         ]
@@ -293,8 +323,11 @@
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
+        "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": null,
+        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
+        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_perl5lib_completion_gating_matrix",
           "scenario_14_perl5lib_completion_without_system_inc",
@@ -306,17 +339,17 @@
   ],
   "summary": {
     "total": 11,
-    "active": 0,
-    "resolved": 11,
+    "active": 1,
+    "resolved": 10,
     "by_subsystem": {
       "editor_ux": 11
     },
     "by_disposition": {
       "still_failing": 0,
       "stabilized": 6,
-      "resolved_by_intent": 3,
+      "resolved_by_intent": 2,
       "folded": 2,
-      "not_proven": 0
+      "not_proven": 1
     }
   }
 }
