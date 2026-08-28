@@ -40,7 +40,12 @@ on:
   # PRs, they only burn the 10 GB quota.
   schedule:
     - cron: '23 11 * * *'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      expected_head_sha:
+        description: Exact generated PR head SHA; must equal the dispatch subject.
+        required: false
+        type: string
 
 concurrency:
   group: ripr-${{ github.event.pull_request.number || github.ref }}
@@ -69,6 +74,18 @@ jobs:
       reason: ${{ steps.route.outputs.reason }}
       fallback_allowed: ${{ steps.route.outputs.fallback_allowed }}
     steps:
+      - name: Verify dispatched ripr subject
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ || "$GITHUB_SHA" != "$EXPECTED_HEAD_SHA" ]]; then
+            echo "::error::Dispatched ripr subject $GITHUB_SHA does not match expected subject $EXPECTED_HEAD_SHA"
+            exit 1
+          fi
+
       - name: Decide target runner
         id: route
         env:

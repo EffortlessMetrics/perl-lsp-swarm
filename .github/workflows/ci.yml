@@ -41,64 +41,8 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # workflow_dispatch resolves a branch or tag before the run starts.  The
-  # producer supplies the immutable generated PR head separately; fail closed
-  # before any gated job if the dispatch resolved a different commit.
-  dispatch-subject:
-    name: Verify dispatched CI subject
-    runs-on: ubuntu-24.04
-    timeout-minutes: 3
-    if: always()
-    steps:
-      - name: Verify exact dispatched subject
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
-        run: |
-          set -euo pipefail
-          if [[ ! "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::workflow_dispatch head_sha is missing or malformed"
-            exit 1
-          fi
-          if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::GitHub supplied an invalid dispatched commit SHA"
-            exit 1
-          fi
-          if [[ "$GITHUB_SHA" != "$EXPECTED_HEAD_SHA" ]]; then
-            echo "::error::Dispatched commit $GITHUB_SHA does not match expected subject $EXPECTED_HEAD_SHA"
-            exit 1
-          fi
-
-      - name: Checkout and reverify exact dispatched subject
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Verify checked-out subject
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
-        run: |
-          set -euo pipefail
-          checked_out_sha="$(git rev-parse 'HEAD^{commit}')"
-          if [[ "$checked_out_sha" != "$GITHUB_SHA" || "$checked_out_sha" != "$EXPECTED_HEAD_SHA" ]]; then
-            echo "::error::Checked-out subject $checked_out_sha is not the validated dispatch subject"
-            exit 1
-          fi
-
-      - name: Non-dispatch event does not require a manual subject
-        if: github.event_name != 'workflow_dispatch'
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-        run: echo "workflow_dispatch subject binding not applicable to $EVENT_NAME"
-
   draft-pr-check:
     name: Draft PR guard
-    needs: dispatch-subject
-    if: always() && needs.dispatch-subject.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     outputs:
@@ -108,6 +52,18 @@ jobs:
       # public-api-pr / semver-pr compatibility rails below.
       api_scope: ${{ steps.guard.outputs.api_scope }}
     steps:
+      - name: Verify dispatched CI subject
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ || "$GITHUB_SHA" != "$EXPECTED_HEAD_SHA" ]]; then
+            echo "::error::Dispatched CI subject $GITHUB_SHA does not match expected subject $EXPECTED_HEAD_SHA"
+            exit 1
+          fi
+
       - name: Checkout for docs-only detection
         if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1259,7 +1215,6 @@ jobs:
       - check-all-targets
       - ux-tests
       - merge-gate-shards
-      - dispatch-subject
     # A required dependent job must always start: a skipped job is treated as
     # successful by GitHub protection. The classifier emits explicit scoped
     # no-ops for draft/superseded routes and fails closed otherwise.
@@ -1682,12 +1637,22 @@ jobs:
     name: Rust formatting
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    needs: dispatch-subject
-    if: always() && needs.dispatch-subject.result == 'success'
     env:
       SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
       RECEIPT_PATH: target/receipts/rustfmt/rustfmt-check.json
     steps:
+      - name: Verify dispatched formatter subject
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ || "$GITHUB_SHA" != "$EXPECTED_HEAD_SHA" ]]; then
+            echo "::error::Dispatched formatter subject $GITHUB_SHA does not match expected subject $EXPECTED_HEAD_SHA"
+            exit 1
+          fi
+
       - name: Checkout exact formatter subject
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

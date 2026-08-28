@@ -198,10 +198,6 @@ grep -Fq 'EXPECTED_BASE_REPOSITORY: ${{ github.repository }}' "$WORKFLOW" \
   || fail "workflow does not pass expected base repository"
 grep -Fq 'EXPECTED_BASE_REF: ${{ github.event.repository.default_branch }}' "$WORKFLOW" \
   || fail "workflow does not pass expected base branch"
-grep -Fq 'EVENT_NAME: ${{ github.event_name }}' "$CI_WORKFLOW" \
-  || fail "ci workflow does not pass event name through env"
-grep -Fq 'run: echo "workflow_dispatch subject binding not applicable to $EVENT_NAME"' "$CI_WORKFLOW" \
-  || fail "ci workflow still embeds event name in interpreter source"
 ! grep -Fq '.head.sha' "$DISPATCHER" \
   || fail "dispatcher restored mutable head SHA lookup"
 ! grep -Fq '.head.ref' "$DISPATCHER" \

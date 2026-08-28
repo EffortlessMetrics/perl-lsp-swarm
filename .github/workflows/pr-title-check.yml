@@ -3,7 +3,12 @@ name: PR Title Check
 on:
   pull_request_target:
     types: [opened, edited, reopened, synchronize]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      expected_head_sha:
+        description: Exact generated PR head SHA; must equal the dispatch subject.
+        required: false
+        type: string
 
 permissions:
   pull-requests: write
@@ -16,6 +21,18 @@ jobs:
       labels: [self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]
     timeout-minutes: 5
     steps:
+      - name: Verify dispatched title-check subject
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ || "$GITHUB_SHA" != "$EXPECTED_HEAD_SHA" ]]; then
+            echo "::error::Dispatched title-check subject $GITHUB_SHA does not match expected subject $EXPECTED_HEAD_SHA"
+            exit 1
+          fi
+
       - name: Check PR title
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
