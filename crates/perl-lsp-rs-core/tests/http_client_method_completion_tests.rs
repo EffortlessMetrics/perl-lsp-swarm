@@ -62,18 +62,40 @@ fn lwp_user_agent_constructor_assignment_enables_instance_catalog() {
     assert!(has_label(&item_labels, "request"));
     assert!(has_label(&item_labels, "requests_redirectable"));
     assert!(!has_label(&item_labels, "get"), "typed API methods should respect the method prefix");
+
+    let put_labels =
+        labels(&completions_at_end("use LWP::UserAgent;\nmy $ua = LWP::UserAgent->new;\n$ua->put"));
+    assert!(has_label(&put_labels, "put"));
+    let delete_labels = labels(&completions_at_end(
+        "use LWP::UserAgent;\nmy $ua = LWP::UserAgent->new;\n$ua->delete",
+    ));
+    assert!(has_label(&delete_labels, "delete"));
 }
 
 #[test]
 fn constructor_inference_is_import_receiver_and_assignment_bounded() {
-    let sources = [
+    let mut sources: Vec<String> = [
         "my $http = HTTP::Tiny->new;\n$http->po",
         "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http = Other::Client->new;\n$http->po",
         "use HTTP::Tiny;\nmy $http_client = HTTP::Tiny->new;\n$http->po",
-    ];
+        "use HTTP::Tiny;\nmy ($http, $other) = (HTTP::Tiny->new, 1);\n$http->po",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new()->get($url);\n$http->po",
+        "use HTTP::Tiny;\nmy $http = Other::Client->new;\nsub reset { $http = HTTP::Tiny->new; }\n$http->po",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    for operator in [
+        ".=", "x=", "+=", "-=", "*=", "/=", "%=", "**=", "<<=", ">>=", "&=", "|=", "^=", "&&=",
+        "||=", "//=",
+    ] {
+        sources.push(format!(
+            "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http {operator} 1;\n$http->po"
+        ));
+    }
 
     for source in sources {
-        let item_labels = labels(&completions_at_end(source));
+        let item_labels = labels(&completions_at_end(&source));
         assert!(
             !has_label(&item_labels, "post"),
             "constructor evidence should stay bounded in {source:?}"
@@ -87,8 +109,15 @@ fn textual_constructor_mentions_outside_code_do_not_activate_catalog() {
         "use HTTP::Tiny;\nmy $text = '$http = HTTP::Tiny->new';\n$http->po",
         "use HTTP::Tiny;\n# $http = HTTP::Tiny->new;\n$http->po",
         "use HTTP::Tiny;\nmy $pattern = qr/$http = HTTP::Tiny->new/;\n$http->po",
+        "use HTTP::Tiny;\nmy $pattern = qr{$http = HTTP::Tiny->new()};\n$http->po",
         "use HTTP::Tiny;\nmy $text = <<'END';\n$http = HTTP::Tiny->new;\nEND\n$http->po",
         "use HTTP::Tiny;\n=pod\n$http = HTTP::Tiny->new;\n=cut\n$http->po",
+        "use HTTP::Tiny;\n=encoding utf8\n$http = HTTP::Tiny->new;\n$http->po",
+        "use HTTP::Tiny;\n=head5 Deep\n$http = HTTP::Tiny->new;\n$http->po",
+        "use HTTP::Tiny;\n=head6 Deeper\n$http = HTTP::Tiny->new;\n$http->po",
+        "use HTTP::Tiny;\n=pod\n=end comment\n$http = HTTP::Tiny->new;\n$http->po",
+        "use HTTP::Tiny;\nmy $http;\n__DATA__\n$http = HTTP::Tiny->new;\n$http->po",
+        "use HTTP::Tiny;\nmy $http;\n__END__\n$http = HTTP::Tiny->new;\n$http->po",
     ];
 
     for source in sources {
@@ -98,4 +127,49 @@ fn textual_constructor_mentions_outside_code_do_not_activate_catalog() {
             "non-code constructor text should stay quiet in {source:?}"
         );
     }
+}
+
+#[test]
+fn begin_end_region_without_cut_stays_pod() {
+    let begin_source = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=begin comment\ndocumentation\n=end comment\n\n$http->po";
+    let begin_labels = labels(&completions_at_end(begin_source));
+    assert!(
+        !has_label(&begin_labels, "post"),
+        "a closed =begin/=end region must not resume code without =cut: {begin_labels:?}"
+    );
+}
+
+#[test]
+fn for_paragraph_blank_line_stays_pod_until_cut() {
+    let source = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=for comment\ntext\n\n$http->po";
+    let item_labels = labels(&completions_at_end(source));
+    assert!(
+        !has_label(&item_labels, "post"),
+        "a =for paragraph's blank line must not resume code without =cut: {item_labels:?}"
+    );
+
+    let cut_source =
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=for comment\ntext\n\n=cut\n$http->po";
+    let cut_labels = labels(&completions_at_end(cut_source));
+    assert!(
+        has_label(&cut_labels, "post"),
+        "a real =cut must resume code after a =for paragraph: {cut_labels:?}"
+    );
+}
+
+#[test]
+fn constructor_inference_respects_lexical_shadowing_and_scope_exit() {
+    let outer_shadowed = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n{\n    my $http = Other::Client->new;\n    $http->po\n}";
+    let outer_shadowed_labels = labels(&completions_at_end(outer_shadowed));
+    assert!(
+        !has_label(&outer_shadowed_labels, "post"),
+        "inner binding must not inherit the outer constructor"
+    );
+
+    let inner_does_not_leak = "use HTTP::Tiny;\n{\n    my $http = HTTP::Tiny->new;\n}\n$http->po";
+    let inner_does_not_leak_labels = labels(&completions_at_end(inner_does_not_leak));
+    assert!(
+        !has_label(&inner_does_not_leak_labels, "post"),
+        "a block-local constructor must not type an out-of-scope receiver"
+    );
 }

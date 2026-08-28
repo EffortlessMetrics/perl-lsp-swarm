@@ -2,9 +2,11 @@
 //!
 //! Provides context-aware method completion including DBI and common client APIs.
 
-use super::lexical_context::{is_in_comment, is_in_heredoc, is_in_regex, is_in_string};
+use super::lexical_context::{is_in_comment, is_in_heredoc, is_in_pod, is_in_regex, is_in_string};
+use super::scope_distance;
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
-use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
+use perl_lexer::find_data_marker_byte_lexed;
+use perl_semantic_analyzer::symbol::{Symbol, SymbolKind, SymbolTable};
 use std::borrow::Cow;
 use std::collections::HashSet;
 
@@ -178,6 +180,10 @@ pub const HTTP_TINY_METHODS: &[(&str, &str)] = &[
 ];
 
 /// Common instance methods documented by `LWP::UserAgent`.
+///
+/// `put` and `delete` are real `LWP::UserAgent` instance methods since LWP
+/// 6.56 (2023); verified against a live Perl oracle (`perl -MLWP::UserAgent`,
+/// LWP 6.82: `defined *LWP::UserAgent::put{CODE}` / `...::delete{CODE}`).
 pub const LWP_USER_AGENT_METHODS: &[(&str, &str)] = &[
     ("request", "Send an HTTP request"),
     ("simple_request", "Send one HTTP request without redirects"),
@@ -362,34 +368,13 @@ pub fn infer_receiver_type(context: &CompletionContext, source: &str) -> Option<
     None
 }
 
-fn is_simple_scalar_receiver(receiver: &str) -> bool {
-    receiver.strip_prefix('$').is_some_and(|name| {
-        !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
-    })
-}
-
-fn is_in_pod_block(source: &str, position: usize) -> bool {
-    let source_before_position = source.get(..position).unwrap_or(source);
-    let mut in_pod = false;
-
-    for line in source_before_position.lines() {
-        let directive = line.split_ascii_whitespace().next();
-        if directive == Some("=cut") {
-            in_pod = false;
-        } else if directive.is_some_and(|word| word.starts_with('=')) {
-            in_pod = true;
-        }
-    }
-
-    in_pod
-}
-
 fn is_code_position(source: &str, position: usize) -> bool {
     !(is_in_string(source, position)
         || is_in_comment(source, position)
         || is_in_heredoc(source, position)
         || is_in_regex(source, position)
-        || is_in_pod_block(source, position))
+        || is_in_pod(source, position)
+        || find_data_marker_byte_lexed(source).is_some_and(|marker| position >= marker))
 }
 
 fn is_module_identifier_char(c: char) -> bool {
@@ -480,46 +465,133 @@ fn module_imported_symbol_before(
     })
 }
 
-fn assignment_expression_before_receiver<'a>(
+fn binding_at_position<'a>(
+    symbol_table: &'a SymbolTable,
     receiver: &str,
-    source_before_receiver: &'a str,
+    scope_id: usize,
+    position: usize,
+) -> Option<&'a Symbol> {
+    let name = receiver.strip_prefix('$')?;
+    let candidates = symbol_table.find_symbol(name, scope_id, SymbolKind::scalar());
+    let mut visible = candidates.into_iter().filter(|symbol| symbol.location.start <= position);
+    let first = visible.next()?;
+    let defining_scope = first.scope_id;
+    std::iter::once(first)
+        .chain(visible)
+        .filter(|symbol| symbol.scope_id == defining_scope)
+        .max_by_key(|symbol| symbol.location.start)
+}
+
+fn latest_assignment_for_binding<'a>(
+    symbol_table: &SymbolTable,
+    source: &'a str,
+    receiver: &str,
+    binding: &Symbol,
+    cursor_scope_id: usize,
+    end: usize,
 ) -> Option<&'a str> {
-    if !is_simple_scalar_receiver(receiver) {
-        return None;
-    }
+    let scope_end = symbol_table
+        .scopes
+        .get(&binding.scope_id)
+        .map(|scope| scope.location.end)
+        .filter(|scope_end| *scope_end > binding.location.start)
+        .unwrap_or(end)
+        .min(end);
+    let search_start = binding.location.start.min(scope_end);
+    let mut expression = None;
 
-    let mut search_end = source_before_receiver.len();
-    while let Some(receiver_pos) = source_before_receiver[..search_end].rfind(receiver) {
-        if !is_code_position(source_before_receiver, receiver_pos) {
-            search_end = receiver_pos;
+    for (offset, _) in source[search_start..scope_end].match_indices(receiver) {
+        let receiver_pos = search_start + offset;
+        if !is_code_position(source, receiver_pos) {
             continue;
         }
-
-        let after_receiver = &source_before_receiver[receiver_pos + receiver.len()..];
-        if after_receiver
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
-        {
-            search_end = receiver_pos;
-            continue;
-        }
-
-        let after_receiver = after_receiver.trim_start();
-        let Some(expression) = after_receiver.strip_prefix('=') else {
-            search_end = receiver_pos;
+        let occurrence_scope =
+            scope_distance::scope_at_position(symbol_table, source, receiver_pos);
+        let Some(occurrence_binding) =
+            binding_at_position(symbol_table, receiver, occurrence_scope, receiver_pos)
+        else {
             continue;
         };
-        if expression.chars().next().is_some_and(|c| matches!(c, '=' | '>' | '~')) {
-            search_end = receiver_pos;
+        if occurrence_binding.scope_id != binding.scope_id
+            || occurrence_binding.location.start != binding.location.start
+        {
+            continue;
+        }
+        if assignment_is_in_unrelated_subroutine(symbol_table, occurrence_scope, cursor_scope_id) {
             continue;
         }
 
-        let statement_end = expression.find(';').unwrap_or(expression.len());
-        return Some(expression[..statement_end].trim());
+        let after_receiver = source[receiver_pos + receiver.len()..].trim_start();
+        let Some((assignment, compound)) = assignment_after_receiver(after_receiver) else {
+            if is_list_assignment_target(after_receiver) {
+                // A list assignment also replaces the receiver's value, even though
+                // the assignment operator is not immediately after the scalar.
+                expression = Some("");
+            }
+            continue;
+        };
+        if compound {
+            // Compound assignment changes the receiver's value, so an earlier
+            // constructor assignment is no longer reliable type evidence.
+            expression = Some("");
+            continue;
+        }
+        let statement_end = assignment.find(';').unwrap_or(assignment.len());
+        expression = Some(assignment[..statement_end].trim());
     }
 
+    expression
+}
+
+fn assignment_is_in_unrelated_subroutine(
+    symbol_table: &SymbolTable,
+    occurrence_scope_id: usize,
+    cursor_scope_id: usize,
+) -> bool {
+    let mut current = occurrence_scope_id;
+    while let Some(scope) = symbol_table.scopes.get(&current) {
+        if scope.kind == perl_semantic_analyzer::symbol::ScopeKind::Subroutine {
+            let mut cursor_scope = cursor_scope_id;
+            while let Some(cursor) = symbol_table.scopes.get(&cursor_scope) {
+                if cursor.id == scope.id {
+                    return false;
+                }
+                let Some(parent) = cursor.parent else {
+                    break;
+                };
+                cursor_scope = parent;
+            }
+            return true;
+        }
+        let Some(parent) = scope.parent else {
+            break;
+        };
+        current = parent;
+    }
+    false
+}
+
+fn assignment_after_receiver(after_receiver: &str) -> Option<(&str, bool)> {
+    for operator in [
+        "**=", "<<=", ">>=", "&&=", "||=", "//=", ".=", "x=", "+=", "-=", "*=", "/=", "%=", "&=",
+        "|=", "^=", "=",
+    ] {
+        if let Some(rhs) = after_receiver.strip_prefix(operator) {
+            if operator == "=" && rhs.chars().next().is_some_and(|c| matches!(c, '=' | '>' | '~')) {
+                return None;
+            }
+            return Some((rhs, operator != "="));
+        }
+    }
     None
+}
+
+fn is_list_assignment_target(after_receiver: &str) -> bool {
+    let Some(equal_pos) = after_receiver.find('=') else {
+        return false;
+    };
+    let left_hand_side = after_receiver[..equal_pos].trim();
+    left_hand_side.starts_with(',') || left_hand_side.starts_with(')')
 }
 
 fn expression_calls_static_method(expression: &str, module: &str, method: &str) -> bool {
@@ -534,10 +606,6 @@ fn expression_calls_static_method(expression: &str, module: &str, method: &str) 
     };
 
     after_method.chars().next().is_none_or(|c| c == '(' || c.is_whitespace())
-}
-
-fn expression_calls_constructor(expression: &str, module: &str) -> bool {
-    expression_calls_static_method(expression, module, "new")
 }
 
 fn expression_calls_function(expression: &str, function: &str) -> bool {
@@ -555,15 +623,127 @@ fn expression_calls_function(expression: &str, function: &str) -> bool {
     }
 }
 
-fn infer_imported_api_receiver_type(
+fn expression_calls_constructor(expression: &str, module: &str) -> bool {
+    let Some(after_module) = expression.strip_prefix(module) else {
+        return false;
+    };
+    let Some(after_arrow) = after_module.trim_start().strip_prefix("->") else {
+        return false;
+    };
+    let Some(after_new) = after_arrow.trim_start().strip_prefix("new") else {
+        return false;
+    };
+
+    let after_new = after_new.trim_start();
+    if after_new.is_empty() {
+        return true;
+    }
+    if !after_new.starts_with('(') {
+        return false;
+    }
+
+    let mut depth = 0usize;
+    let mut escaped = false;
+    let mut quote = None;
+    for (index, byte) in after_new.bytes().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if byte == b'\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if byte == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(byte, b'\'' | b'"') {
+            quote = Some(byte);
+            continue;
+        }
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return after_new[index + 1..].trim().is_empty();
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Infer a `Path::Tiny` receiver type from imported factory evidence.
+///
+/// Claim bound (#13192): factory evidence is gated on an active `Path::Tiny`
+/// import, including version-only (`use Path::Tiny 0.150;`) and symbol-list
+/// (`use Path::Tiny qw(path);`) forms, and takes priority over constructor
+/// evidence and naming heuristics. Exact same-name scalar bindings only;
+/// aliases fail closed.
+fn infer_imported_factory_receiver_type(
     context: &CompletionContext,
     source: &str,
+    symbol_table: &SymbolTable,
 ) -> Option<&'static str> {
     let receiver = context.receiver_prefix().trim_end_matches("->");
     let source_before_cursor = source.get(..context.position).unwrap_or(source);
     let receiver_pos = source_before_cursor.rfind(receiver)?;
-    let expression =
-        assignment_expression_before_receiver(receiver, &source_before_cursor[..receiver_pos])?;
+    let binding =
+        binding_at_position(symbol_table, receiver, context.cursor_scope_id, receiver_pos)?;
+    let expression = latest_assignment_for_binding(
+        symbol_table,
+        source,
+        receiver,
+        binding,
+        context.cursor_scope_id,
+        receiver_pos + receiver.len(),
+    )?;
+
+    if module_was_used_before(source, context.position, "Path::Tiny")
+        && ((module_imported_symbol_before(source, context.position, "Path::Tiny", "path")
+            && expression_calls_function(expression, "path"))
+            || ["new", "cwd", "rootdir", "tempfile", "tempdir"]
+                .into_iter()
+                .any(|method| expression_calls_static_method(expression, "Path::Tiny", method)))
+    {
+        return Some("Path::Tiny");
+    }
+
+    None
+}
+
+/// Infer an HTTP client receiver type from the binding's latest constructor
+/// assignment.
+///
+/// Claim bound: this is a bounded local bridge over exact same-name scalar
+/// assignments only. Aliases (`my $alias = $http`) and reblessed/derived
+/// namespaces are intentionally unresolved and fail closed (no completion);
+/// parser/semantic-flow backing arrives with #13244, which also owns
+/// migrating this inference onto the canonical workspace facts.
+fn infer_imported_constructor_receiver_type(
+    context: &CompletionContext,
+    source: &str,
+    symbol_table: &SymbolTable,
+    used_modules: &HashSet<String>,
+) -> Option<&'static str> {
+    let receiver = context.receiver_prefix().trim_end_matches("->");
+    let source_before_cursor = source.get(..context.position).unwrap_or(source);
+    let receiver_pos = source_before_cursor.rfind(receiver)?;
+    let binding =
+        binding_at_position(symbol_table, receiver, context.cursor_scope_id, receiver_pos)?;
+    let expression = latest_assignment_for_binding(
+        symbol_table,
+        source,
+        receiver,
+        binding,
+        context.cursor_scope_id,
+        receiver_pos + receiver.len(),
+    )?;
 
     if module_was_used_before(source, context.position, "Path::Tiny")
         && ((module_imported_symbol_before(source, context.position, "Path::Tiny", "path")
@@ -797,8 +977,12 @@ pub fn add_method_completions(
         }
     }
 
-    // Exact imported API-factory evidence takes priority over naming heuristics.
-    let receiver_type = infer_imported_api_receiver_type(context, source)
+    // Exact imported factory evidence, then constructor evidence, take
+    // priority over naming heuristics.
+    let receiver_type = infer_imported_factory_receiver_type(context, source, symbol_table)
+        .or_else(|| {
+            infer_imported_constructor_receiver_type(context, source, symbol_table, used_modules)
+        })
         .map(str::to_owned)
         .or_else(|| infer_receiver_type(context, source));
 
@@ -878,5 +1062,51 @@ pub fn add_method_completions(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pod_regions_stay_pod_until_exact_cut() {
+        let begin_uncut = "=begin comment\ndocs\n=end comment\nmy $code = 1;";
+        assert!(is_in_pod(begin_uncut, begin_uncut.len()));
+        assert!(!is_code_position(begin_uncut, begin_uncut.find("my $code").unwrap()));
+
+        let begin_cut = "=begin comment\ndocs\n=end comment\n=cut\nmy $code = 1;";
+        assert!(!is_in_pod(begin_cut, begin_cut.len()));
+        assert!(is_code_position(begin_cut, begin_cut.find("my $code").unwrap()));
+
+        let for_body = "=for comment\ndocs\n$code";
+        assert!(is_in_pod(for_body, for_body.len()));
+
+        let for_blank_line = "=for comment\ndocs\n\nmy $code = 1;";
+        assert!(is_in_pod(for_blank_line, for_blank_line.len()));
+        assert!(!is_code_position(for_blank_line, for_blank_line.find("my $code").unwrap()));
+    }
+
+    #[test]
+    fn pod_state_ignores_heredoc_directives_and_invalid_indentation() {
+        let source =
+            "my $text = <<'END';\n=begin comment\n=for comment\n=end comment\nEND\nmy $code = 1;";
+        assert!(!is_in_pod(source, source.len()));
+        assert!(is_code_position(source, source.find("my $code").unwrap()));
+
+        let indented = "  =pod\nnot documentation\nmy $code = 1;";
+        assert!(!is_in_pod(indented, indented.len()));
+        assert!(is_code_position(indented, indented.find("my $code").unwrap()));
+    }
+
+    #[test]
+    fn targetless_begin_starts_pod_until_cut() {
+        let source = "=begin\nnot documentation\nmy $code = 1;";
+        assert!(is_in_pod(source, source.len()));
+        assert!(!is_code_position(source, source.find("my $code").unwrap()));
+
+        let cut_source = "=begin\nnot documentation\n=cut\nmy $code = 1;";
+        assert!(!is_in_pod(cut_source, cut_source.len()));
+        assert!(is_code_position(cut_source, cut_source.find("my $code").unwrap()));
     }
 }
