@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: Run Codex's cumulative substantive pull-request review, orchestrating useful adversarial lenses and publishing one evidence-backed judgment before live integration.
+description: Run Codex's cumulative substantive pull-request review from the accountable root, orchestrating useful adversarial lenses and publishing one evidence-backed judgment before live integration.
 ---
 
 # Review PR
@@ -9,9 +9,9 @@ Run the substantive review in Codex. This skill is the operational review proced
 do not defer the work to a shared method document, a bot summary, green CI, or the fact
 that the root session read the diff.
 
-The Codex lane root owns the cumulative judgment and GitHub review. Focused native
-workers may gather evidence or challenge one dimension, but they do not authorize
-merge and their verdicts are not votes.
+The Codex **root owns the cumulative judgment and GitHub review** for the selected
+root-held claim frame. Focused workers may gather evidence or challenge one dimension,
+but they do not authorize merge and their verdicts are not votes.
 
 ## Authoritative inputs
 
@@ -26,9 +26,9 @@ receipt machinery, or post a status-only exact-head comment.
 
 ## Review orchestration
 
-### Lane-root decisions
+### Root-retained decisions
 
-The lane root retains:
+The root retains:
 
 - review scope and which dimensions are materially current or stale;
 - which worker evidence is credible, duplicated, contradictory, or incomplete;
@@ -37,7 +37,7 @@ The lane root retains:
   prerequisite blocks, or the claim is superseded;
 - the one cumulative submitted review and next route.
 
-### Useful read-only work
+### Useful read-only programmes
 
 First determine whether `$finish-pr` or an earlier invocation already produced current
 joined adversarial evidence. Reuse it when claim, production path, authority, proof,
@@ -48,11 +48,7 @@ When an applicable lens is absent, stale, contradictory, or materially changed, 
 `$orchestrate-work` only for missing dimensions:
 
 - **claim-vs-code** — extract each property the PR title and body assert, then verify
-  each against the diff. Run this first on irreversible or security-boundary changes:
-  it is cheap, requires no build, and catches the case where the body asserts a
-  property the diff does not deliver. A pin naming a version but resolving to a
-  different commit, a guard described as covering a set it only partly covers, and a
-  claim of a clean tree that means a clean *tracked* tree are all this shape;
+  each against the diff;
 - `$review-tests` for proof discrimination, historical-defect controls,
   schema/validator agreement, and false-green tests;
 - `$review-candidate` for cumulative implementation correctness, semantic ownership,
@@ -67,33 +63,14 @@ A useful worker brief names the exact PR/candidate, controlling claim, establish
 facts, authorities, one read-only question, named `$skill`, realistic falsifiers,
 required evidence, uncertainty, and non-goals.
 
-**Decompose the claim into individually checkable propositions and check each one.**
-A claim such as "the guard binds publishing to a clean tree" is a chain, and a chain
-fails if any single link does. Split it — the guard runs before every publish attempt;
-the guard's notion of dirty covers the set that gets packaged; the packaged set has no
-member the guard cannot see — then check each proposition separately against source,
-reporting it as confirmed, refuted, or `NOT_PROVEN`. This separates a worker that
-agrees from a worker that found the one link that does not hold.
+Decompose broad claims into individually checkable propositions. Check each proposition
+against direct evidence and report it as confirmed, refuted, or `NOT_PROVEN`. Give
+review programmes concrete attack hypotheses rather than vague "is this correct?"
+prompts.
 
-Supply concrete attack hypotheses, phrased as the specific way the claim would fail if
-it were wrong. "Check whether the guard is correct" returns agreement; "can a failed
-first attempt leave the tree dirty for attempts 2 and 3?" returns a defect or a
-reasoned refutation, and both are useful. When the integrating reviewer already holds a
-positive read, submit that read for falsification rather than asserting it on its own
-authority.
-
-**Differing directions beat additional workers.** When two lenses examine one surface,
-give them different sources, oracles, methods, or threat models. Two reviewers once
-examined the same flag on the same line and reached opposite verdicts: one cleared
-`git ls-files --exclude-standard` while reasoning about build artifacts, the other found
-that a gitignored file matched by a crate's packaging-include pattern still gets
-packaged. Same evidence, different threat model, different answer — and the second was
-right. Workers briefed the same way share a blind spot, so their agreement is not
-corroboration. An external oracle, a production-path trace, and a proof-discrimination
-pass over one seam are three directions; three workers asked "is this correct?" are
-one.
-
-Do not ask vague workers to repeat the same review.
+Differing directions beat additional workers. When two lenses examine one surface, give
+them different sources, oracles, methods, threat models, environments, or useful
+attention surfaces. Repeated same-framing answers are not corroboration.
 
 ### Mutation owner and join
 
@@ -101,10 +78,10 @@ The construction context must not be the only detection surface supporting a
 substantive merge. Independence comes from changed source, oracle, threat model, method,
 environment, or attention—not merely identity.
 
-Join evidence rather than counting answers. Resolve contradictions against source and
-proof, reject unsupported confidence, and inspect load-bearing seams before publishing
-the cumulative judgment. One candidate writer repairs accepted findings through
-`$address-review-comments`; read-only reviewers do not mutate.
+Join evidence in the root rather than counting answers. Resolve contradictions against
+source and proof, reject unsupported confidence, and inspect load-bearing seams before
+publishing the cumulative judgment. One candidate writer repairs accepted findings
+through `$address-review-comments`; read-only reviewers do not mutate.
 
 ### Return packet
 
@@ -114,10 +91,8 @@ findings with severity/evidence/disposition, contradictions, prior dispositions,
 limitations/`NOT_PROVEN`, GitHub-fact snapshot, substantive review result, and next
 route.
 
-Each lens returns its attempted angles with outcomes, including those that came back
-refuted. A worker reporting only what it found hides where it looked, leaving the
-integrating reviewer unable to tell whether two lenses covered one surface from the
-same direction or from different ones.
+Each lens returns attempted angles with outcomes, including refuted hypotheses. A worker
+reporting only findings hides where it looked.
 
 ## Required review procedure
 
@@ -134,8 +109,7 @@ same direction or from different ones.
    whether hosted proof exercised the claim.
 4. **Challenge external and semantic truth.** Verify user-visible, language, protocol,
    platform, dependency, and release claims against competent authority. Confirm the
-   correct semantic owner rather than creating a second parser/readiness/schema/
-   compatibility authority.
+   correct semantic owner rather than creating a second authority.
 5. **Challenge claim honesty, complexity, risk, and rollback.** Keep title, body, code,
    tests, docs, and generated evidence inside one acceptance-and-rollback claim. Do not
    let rejection, fallback, limitation, safe refusal, or partial implementation conceal
@@ -144,45 +118,17 @@ same direction or from different ones.
    mergeability, rulesets, queue state, and prerequisites as a snapshot. They inform
    integration but do not create substantive review.
 7. **Publish the review.** Post file/line-anchored material findings and the cumulative
-   conclusion as one submitted review with
-   `scripts/reviews/inline --pr <n> --body <summary> [--findings <file>]`, which takes
-   findings as a JSON array of objects carrying a repo-relative path, a line in the
-   diff, an optional multi-line range start, and a body — on stdin or from a file.
-   Submit as `COMMENT`; this repository does not submit `APPROVE`. The
-   post is atomic — one unaddressable location aborts the whole review rather than
-   silently dropping a finding — so correct the location and resubmit rather than
-   falling back to a single top-level comment, which loses file/line anchoring and
-   cannot be dispositioned per finding. `scripts/reviews/inline` never resolves
-   anything; resolution stays in `scripts/reviews/disposition`.
+   conclusion as one submitted review with `scripts/reviews/inline`. Submit as
+   `COMMENT`; this repository does not submit `APPROVE`. Correct unaddressable locations
+   rather than dropping inline anchors.
 
+A `COMMENTED` review is only a GitHub fact. When the cumulative conclusion is
+`REVIEW_CURRENT`, append the repository's semantic-review marker generated by
+`scripts/ci/check-pr-semantic-review-currentness.py` so the useful review can be checked
+for semantic currentness without exact-head ceremony.
 
-   A `COMMENTED` review is only a GitHub fact; it does not become substantive merely
-   because a human submitted it. When the cumulative conclusion is `REVIEW_CURRENT`,
-   append one subject-bound marker generated from the current PR diff:
-
-   ```bash
-   python3 scripts/ci/check-pr-semantic-review-currentness.py      <pr> <owner/repo> --emit-marker
-   ```
-
-   Put the emitted `<!-- semantic-review:v1 ... -->` marker in the same review body
-   after the useful review record below. The marker binds the judgment to the PR's
-   merge base, reviewed head, and cumulative binary diff; it is not an exact-head
-   ceremony. The checker may carry it across a later push only when every later edit is
-   whitespace-only in an already-reviewed `.md` or `.txt` file. Any code, configuration,
-   path, mode, or material prose change requires focused review and a new marker.
-
-   Attribute a failing check before recording it, in both directions. A cancelled run
-   reached no verdict and is not evidence; a genuine failure at a superseded SHA
-   remains a finding until the named seam changed, so revalidate that seam at the
-   current head. Base ownership requires the same gate, the same failure signature,
-   and that signature at this PR's merge base — not at current `main`; short of that
-   the failure is `NOT_PROVEN`, and a base failing a different test leaves the
-   candidate owning its own.
-
-   **The integrating reviewer posts.** A skill run that only answers a bounded review
-   question returns file/line-anchored findings as evidence and does not write to
-   GitHub itself. One cumulative judgment is published per review pass, not one per
-   lens.
+**The accountable root posts the cumulative review.** A bounded review programme returns
+file/line-anchored findings as evidence and does not publish an unjoined verdict.
 
 ## Substantive review results
 
@@ -208,62 +154,11 @@ certification cannot create `REVIEW_CURRENT`.
 
 ## Useful GitHub review record
 
-Proportionality governs which form this record takes. The full record below, with the
-`semantic-review:v1` marker, is required when the cumulative diff crosses a production
-seam or an irrevocable boundary (production code, contracts, CI semantics, merge or
-release machinery). A mechanical, zero-thread lane — lint-site collapse, generated
-regeneration, allowlist row removal, comment-only edits — may instead publish a
-bounded two-line record: the proposition checked and the command or evidence that
-settled it. The two-line record carries **no** `semantic-review:v1` marker: the
-checker's marker grammar requires the full heading set, so a reduced record cannot
-parse. Proportionality therefore never applies to a lane whose currentness is already
-in question — whenever the semantic-currentness backstop engages, the full record
-plus a valid marker is the only admissible form. The two-tier practice is real at
-fleet volume; what is not sanctioned is a zero-content review on a substantive diff.
-
-```markdown
-## Review scope
-- Claim, cumulative seams, live consumers, prior findings, and applicable risk reviewed
-
-## Propositions checked
-<!-- Present when the claim decomposes into more than one substantive proposition;
-     omitted for mechanical changes such as a typo, a rename, or a lockfile bump. -->
-- One entry per proposition, each naming the hypothesis attacked, its outcome —
-  confirmed | refuted | NOT_PROVEN — and the source or command that settled it. A lens
-  name with a bare verdict is not an entry: it carries no more information than an
-  angle that was never attempted.
-- Refuted propositions belong here rather than being dropped — they record what was
-  attacked and survived. Two reviewers reporting only findings look like agreement;
-  two reporting their propositions reveal whether they checked the same one
-
-## Evidence and falsifiers
-- Commands, tests, fixtures, sources, or authorities used
-- Realistic wrong behavior challenged
-
-## Findings
-- Material findings with severity, affected claim, and evidence
-
-<!-- Or: ## No material findings -->
-
-## Prior finding dispositions
-- fixed | refuted | superseded | follow-up, with evidence
-
-## What this establishes
-- Conclusions supported by the review
-
-## Residual risk / not proved
-- Local uncertainty, excluded surfaces, and instrument limitations
-
-## Current GitHub facts
-- Checks, threads, draft/ready state, mergeability, and prerequisites as a snapshot
-
-## Substantive review result
-- REVIEW_CURRENT | CHANGES_REQUIRED | NOT_PROVEN | BLOCKED_BY_PREREQUISITE |
-  SUPERSEDED_OR_CLOSE
-
-## Next action
-- Repair, focused re-review, live integration evaluation, closeout, or named follow-up
-```
+For substantive changes, record review scope, propositions checked, evidence/falsifiers,
+findings or no-material-findings, prior dispositions, what the review establishes,
+residual risk/`NOT_PROVEN`, current GitHub facts, substantive result, and next action.
+Mechanical changes may use a bounded record when the semantic-currentness backstop does
+not require the full marker grammar.
 
 Do not submit only `LGTM`, `review complete`, reviewer identity, head SHA, check
 summary, or status line. A clean review is valid when it records what was examined,
@@ -276,10 +171,8 @@ and one cumulative review because those remain useful after the review context e
 ## Semantic currentness
 
 - later commit alone does not invalidate review;
-- base movement alone is not a finding. This repository squash-merges; a conflict-free
-  candidate behind `main` needs no rebase, branch update, CI replay, or review refresh.
-  Do not raise "behind by N" or "rebuild on current main" as a blocker. A real conflict
-  or an actual combined-tree failure does change this; name the seam, not the distance;
+- base movement alone is not a finding. A conflict-free candidate behind `main` needs
+  no rebase, branch update, CI replay, or review refresh;
 - finding repair requires checking that finding, proof, and changed seam;
 - material claim, production-route, authority, proof, compatibility, risk, or rollback
   change requires affected review;
@@ -287,8 +180,7 @@ and one cumulative review because those remain useful after the review context e
   trigger full review unless a conclusion changes;
 - conflict/combined-tree repair receives focused review of the affected interaction.
 
-Do not restart a full deep review or duplicate a still-current review merely to show
-activity.
+Do not restart a full review or duplicate a still-current review merely to show activity.
 
 ## Routes
 
