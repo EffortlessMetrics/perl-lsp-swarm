@@ -144,6 +144,75 @@ fn range_formatting_after_heredoc_terminator_remains_eligible() {
 }
 
 #[test]
+fn range_formatting_does_not_treat_identifier_shift_as_heredoc() {
+    let formatter = NativeFormatter::new();
+    let source = "my $x = $a << EOF;\nmy$y=1;\n";
+    let following_code = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+
+    let result = formatter.format_range(source, following_code, &FormatConfig::default());
+
+    assert!(!result.changed);
+    assert_eq!(result.formatted, source);
+    assert!(result.edits.is_empty());
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.code == "native.format.parse_incomplete" })
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|diagnostic| { diagnostic.code != "native.format.literal_preserve_region" })
+    );
+}
+
+#[test]
+fn incomplete_near_miss_queued_heredocs_are_not_completed_spans() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<A, <<B;\nbody\nA trailing\n";
+    let near_miss = TextRange::new(TextPosition::new(2, 0), TextPosition::new(3, 0));
+
+    let result = formatter.format_range(source, near_miss, &FormatConfig::default());
+
+    assert!(!result.changed);
+    assert_eq!(result.formatted, source);
+    assert!(result.edits.is_empty());
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|diagnostic| { diagnostic.code != "native.format.literal_preserve_region" })
+    );
+}
+
+#[test]
+fn malformed_heredoc_opener_does_not_create_completed_preserve_span() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<;\nmy$x=1;\n";
+    let following_code = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+
+    let result = formatter.format_range(source, following_code, &FormatConfig::default());
+
+    assert!(!result.changed);
+    assert_eq!(result.formatted, source);
+    assert!(result.edits.is_empty());
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.code == "native.format.parse_error" })
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|diagnostic| { diagnostic.code != "native.format.literal_preserve_region" })
+    );
+}
+
+#[test]
 fn quote_like_and_comment_markers_do_not_hide_following_code() {
     let formatter = NativeFormatter::new();
     let source = "print <<A, q{<<B}; # comment <<C\nbody\nA\nmy$x=1;\n";
