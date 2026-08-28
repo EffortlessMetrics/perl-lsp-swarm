@@ -40,22 +40,27 @@ jobs:
           from pathlib import Path
 
           path = Path('crates/perl-lsp-rs-core/src/providers/completion/completion/lexical_context.rs')
-          text = path.read_text()
-          old = '''            if in_for_paragraph && line.trim().is_empty() {
-                  in_pod_block = false;
-                  in_for_paragraph = false;
-              } else if is_pod_end_marker(line) {
-                  in_pod_block = false;
-                  in_for_paragraph = false;
-              }'''
-          new = '''            if (in_for_paragraph && line.trim().is_empty()) || is_pod_end_marker(line) {
-                  in_pod_block = false;
-                  in_for_paragraph = false;
-              }'''
-          count = text.count(old)
-          if count != 1:
-              raise SystemExit(f'expected exactly one POD exit branch, found {count}')
-          path.write_text(text.replace(old, new, 1))
+          lines = path.read_text().splitlines(keepends=True)
+          old = [
+              '            if in_for_paragraph && line.trim().is_empty() {\n',
+              '                in_pod_block = false;\n',
+              '                in_for_paragraph = false;\n',
+              '            } else if is_pod_end_marker(line) {\n',
+              '                in_pod_block = false;\n',
+              '                in_for_paragraph = false;\n',
+              '            }\n',
+          ]
+          starts = [index for index in range(len(lines)) if lines[index:index + len(old)] == old]
+          if len(starts) != 1:
+              raise SystemExit(f'expected exactly one POD exit branch, found {len(starts)}')
+          start = starts[0]
+          lines[start:start + len(old)] = [
+              '            if (in_for_paragraph && line.trim().is_empty()) || is_pod_end_marker(line) {\n',
+              '                in_pod_block = false;\n',
+              '                in_for_paragraph = false;\n',
+              '            }\n',
+          ]
+          path.write_text(''.join(lines))
           PY
 
           cargo fmt -p perl-lsp-rs-core
