@@ -4,12 +4,12 @@ use super::super::{JsonRpcError, JsonRpcId, JsonRpcResponse, Value};
 use super::request_cancellation::finalize_cancellation_state;
 use perl_parser_core::ErrorCategory;
 
-/// Provisionally classify a JsonRpcError by its error code (#4980 PR-1).
+/// Legacy Perl-adapter classification for a finalized JSON-RPC error.
 ///
-/// Once JsonRpcError implements ErrorClass directly, this function should
-/// delegate to `error.error_class()`. Until then, we classify by the
-/// well-known JSON-RPC / LSP error codes so the tracing layer captures
-/// structured error category data without string sniffing.
+/// [`JsonRpcError`] intentionally owns only wire facts. This adapter keeps the
+/// current tracing categories stable while #7612 replaces code-only inference
+/// with originating classification and provenance. Do not move this policy
+/// back into the generic protocol type.
 fn classify_jsonrpc_error(error: &JsonRpcError) -> ErrorCategory {
     match error.code {
         // -32700 Parse error: malformed JSON — protocol violation.
