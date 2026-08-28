@@ -40,14 +40,9 @@ fn http_tiny_constructor_assignment_enables_instance_catalog() {
 
     assert!(has_label(&item_labels, "post"));
     assert!(has_label(&item_labels, "post_form"));
-    assert!(
-        !has_label(&item_labels, "get"),
-        "typed API methods should respect the method prefix"
-    );
+    assert!(!has_label(&item_labels, "get"), "typed API methods should respect the method prefix");
 
-    let post = items
-        .iter()
-        .find(|item| item.label.as_ref() == "post");
+    let post = items.iter().find(|item| item.label.as_ref() == "post");
     assert!(post.is_some(), "post completion should be present");
     if let Some(post) = post {
         assert_eq!(
@@ -66,10 +61,7 @@ fn lwp_user_agent_constructor_assignment_enables_instance_catalog() {
 
     assert!(has_label(&item_labels, "request"));
     assert!(has_label(&item_labels, "requests_redirectable"));
-    assert!(
-        !has_label(&item_labels, "get"),
-        "typed API methods should respect the method prefix"
-    );
+    assert!(!has_label(&item_labels, "get"), "typed API methods should respect the method prefix");
 }
 
 #[test]
