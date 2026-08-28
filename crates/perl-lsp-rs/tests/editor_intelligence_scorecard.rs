@@ -745,6 +745,49 @@ mod rename_oracle_tests {
         }]
     }
 
+    fn expected_basic() -> Vec<RenameExpectedEdit> {
+        vec![
+            RenameExpectedEdit {
+                line: 5,
+                character: 7,
+                end_line: 5,
+                end_character: 13,
+                new_text: "$total".to_string(),
+            },
+            RenameExpectedEdit {
+                line: 6,
+                character: 4,
+                end_line: 6,
+                end_character: 10,
+                new_text: "$total".to_string(),
+            },
+            RenameExpectedEdit {
+                line: 7,
+                character: 18,
+                end_line: 7,
+                end_character: 24,
+                new_text: "$total".to_string(),
+            },
+            RenameExpectedEdit {
+                line: 8,
+                character: 11,
+                end_line: 8,
+                end_character: 17,
+                new_text: "$total".to_string(),
+            },
+        ]
+    }
+
+    fn basic_response_with_entries(entries: Value) -> Value {
+        json!({
+            "result": {
+                "changes": {
+                    "file:///gold/rename_basic.pl": entries
+                }
+            }
+        })
+    }
+
     fn response(range: Value, new_text: &str) -> Value {
         json!({
             "result": {
@@ -796,6 +839,49 @@ mod rename_oracle_tests {
             Some(expected().as_slice()),
         ) {
             return Err("wrong-text rename edit passed the oracle".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rename_basic_oracle_rejects_wrong_occurrence() -> TestResult {
+        let wrong = json!([
+            {
+                "range": {
+                    "start": {"line": 5, "character": 7},
+                    "end": {"line": 5, "character": 13}
+                },
+                "newText": "$total"
+            },
+            {
+                "range": {
+                    "start": {"line": 6, "character": 4},
+                    "end": {"line": 6, "character": 10}
+                },
+                "newText": "$total"
+            },
+            {
+                "range": {
+                    "start": {"line": 7, "character": 17},
+                    "end": {"line": 7, "character": 23}
+                },
+                "newText": "$total"
+            },
+            {
+                "range": {
+                    "start": {"line": 8, "character": 11},
+                    "end": {"line": 8, "character": 17}
+                },
+                "newText": "$total"
+            }
+        ]);
+        let resp = basic_response_with_entries(wrong);
+        if rename_expected_edits_match(
+            &resp,
+            "file:///gold/rename_basic.pl",
+            Some(expected_basic().as_slice()),
+        ) {
+            return Err("wrong rename_basic occurrence passed the exact oracle".into());
         }
         Ok(())
     }
