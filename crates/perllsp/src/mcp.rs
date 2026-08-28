@@ -131,12 +131,30 @@ mod tests {
 
     #[test]
     fn explicit_mcp_grammar_rejects_ambiguous_or_lsp_arguments() {
-        assert!(parse_invocation(&args(&[])).is_err());
-        assert!(parse_invocation(&args(&["--socket", "--stdio"])).is_err());
-        assert!(parse_invocation(&args(&["--stdio", "--stdio"])).is_err());
-        assert!(parse_invocation(&args(&["--workspace", "--stdio"])).is_err());
-        assert!(parse_invocation(&args(&["--stdio", "--help"])).is_err());
-        assert!(parse_invocation(&args(&["--mcp", "--stdio"])).is_err());
+        assert_eq!(
+            parse_invocation(&args(&[])),
+            Err("`perllsp mcp` requires the explicit `--stdio` transport")
+        );
+        assert_eq!(
+            parse_invocation(&args(&["--socket", "--stdio"])),
+            Err("unknown `perllsp mcp` argument")
+        );
+        assert_eq!(
+            parse_invocation(&args(&["--stdio", "--stdio"])),
+            Err("`perllsp mcp` accepts `--stdio` only once")
+        );
+        assert_eq!(
+            parse_invocation(&args(&["--workspace", "--stdio"])),
+            Err("`perllsp mcp --workspace` requires a root path")
+        );
+        assert_eq!(
+            parse_invocation(&args(&["--stdio", "--help"])),
+            Err("`perllsp mcp --help` cannot be combined with launch options")
+        );
+        assert_eq!(
+            parse_invocation(&args(&["--mcp", "--stdio"])),
+            Err("`--mcp` is not a transport alias; use the `mcp` subcommand")
+        );
     }
 
     #[test]

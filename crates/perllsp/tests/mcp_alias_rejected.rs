@@ -67,3 +67,27 @@ fn reserved_mcp_help_is_protocol_clean() -> Result<(), Box<dyn std::error::Error
     assert!(!stdout.contains("Content-Length"), "protocol framing leaked into help: {stdout}");
     Ok(())
 }
+
+#[test]
+fn bare_mcp_subcommand_is_rejected_at_process_level() -> Result<(), Box<dyn std::error::Error>> {
+    let output = run_perllsp(&["mcp"])?;
+
+    if output.status.success() {
+        return Err("bare `perllsp mcp` unexpectedly succeeded".into());
+    }
+    if !output.stdout.is_empty() {
+        return Err(format!("protocol stdout was not empty: {:?}", output.stdout).into());
+    }
+
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("error: `perllsp mcp` requires the explicit `--stdio` transport"),
+        "missing exact rejection reason: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage: perllsp mcp --stdio [--workspace <ROOT>]"),
+        "missing usage after rejection: {stderr}"
+    );
+    assert!(!stderr.contains("Content-Length"), "LSP framing leaked into rejection: {stderr}");
+    Ok(())
+}
