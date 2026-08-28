@@ -365,6 +365,63 @@ $obj->  # Complete methods
     Ok(())
 }
 
+/// The POD/literal completion rules must survive the production LSP request boundary.
+#[test]
+fn test_e2e_http_completion_respects_pod_and_heredoc_boundaries() -> TestResult {
+    fn assert_post_completion(ctx: &mut TestContext, uri: &str, source: &str) -> TestResult {
+        ctx.open_document(uri, source);
+        let line = source.lines().count().saturating_sub(1) as u32;
+        let character =
+            source.lines().last().ok_or("completion source has no final line")?.len() as u32;
+        let result = ctx
+            .send_request(
+                "textDocument/completion",
+                Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character }
+                })),
+            )
+            .ok_or("production completion request returned no result")?;
+        let items = result["items"].as_array().ok_or("expected completion items")?;
+        assert!(
+            items.iter().any(|item| item["label"] == "post"),
+            "expected HTTP::Tiny post completion for {source:?}, got {items:?}"
+        );
+        Ok(())
+    }
+
+    let mut ctx = TestContext::new();
+    ctx.initialize();
+
+    assert_post_completion(
+        &mut ctx,
+        "file:///test/http-pod-begin.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=begin comment\ndocumentation\n=end comment\n$http->po",
+    )?;
+    assert_post_completion(
+        &mut ctx,
+        "file:///test/http-pod-for.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=for comment\ndocumentation\n\n$http->po",
+    )?;
+    assert_post_completion(
+        &mut ctx,
+        "file:///test/http-heredoc-pod-looking.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\nmy $text = <<'END';\n=begin comment\nEND\n$http->po",
+    )?;
+    assert_post_completion(
+        &mut ctx,
+        "file:///test/http-indented-pod.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n  =begin comment\n  =for comment\n  =cut\n$http->po",
+    )?;
+    assert_post_completion(
+        &mut ctx,
+        "file:///test/http-malformed-pod.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=begin\nnot a valid POD region\n$http->po",
+    )?;
+
+    Ok(())
+}
+
 /// Test 4: Go to Definition
 #[test]
 fn test_e2e_go_to_definition() -> TestResult {
