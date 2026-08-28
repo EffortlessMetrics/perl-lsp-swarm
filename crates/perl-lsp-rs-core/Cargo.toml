@@ -30,7 +30,8 @@ perl-source-identity.workspace = true
 lsp-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-# Collision-resistant content digests for observation identity (#10813).
+# Collision-resistant content digests for observation identity (#10813);
+# also the EffectiveLspSurface input-digest receipt binding (#9665).
 sha2.workspace = true
 
 # Provider crate dependencies (Wave G1a: 15 providers absorbed)
@@ -57,7 +58,6 @@ perl-pragma.workspace = true
 perl-symbol.workspace = true
 perl-parser.workspace = true
 rustc-hash = "2.1.2"
-# EffectiveLspSurface input-digest receipt binding (#9665).
 thiserror.workspace = true
 toml = "1.1.2"
 ureq = { version = "3", features = ["json"], optional = true }
