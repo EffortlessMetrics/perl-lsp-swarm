@@ -343,6 +343,35 @@ class GenerateBadgesTests(unittest.TestCase):
     def test_oversized_stderr_is_bounded_and_terminates_process_tree(self):
         self.assert_output_overflow_terminates_tree("stderr")
 
+    def test_cleanup_failure_is_preserved_through_generate_on_overflow(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, _, fake, _ = self.make_fixture(directory)
+            env = self.fake_env(root, fake, {"counts": VALID_COUNTS})
+            env["FAKE_RIPR_AFTER_OUTPUT_HANG"] = "1"
+            env["FAKE_RIPR_STDOUT_BYTES"] = str(generator.PRODUCER_STDOUT_LIMIT * 4)
+            previous = os.environ.copy()
+            os.environ.update(env)
+            original_cleanup = generator.terminate_process_tree
+
+            def cleanup_with_failure(process):
+                original_cleanup(process)
+                return ["simulated cleanup failure"]
+
+            try:
+                with mock.patch.object(
+                    generator,
+                    "terminate_process_tree",
+                    side_effect=cleanup_with_failure,
+                ):
+                    with self.assertRaisesRegex(
+                        generator.RiprOutputLimitExceeded,
+                        "cleanup incomplete: simulated cleanup failure",
+                    ):
+                        generator.generate(root, check=False, ripr_timeout_seconds=15)
+            finally:
+                os.environ.clear()
+                os.environ.update(previous)
+
     def test_windows_taskkill_timeout_is_reported_without_masking_trigger(self):
         class FakeProcess:
             pid = 123
@@ -364,8 +393,15 @@ class GenerateBadgesTests(unittest.TestCase):
             generator.subprocess,
             "run",
             side_effect=subprocess.TimeoutExpired("taskkill", 1),
-        ):
+        ) as taskkill:
             failures = generator.terminate_process_tree(process, windows=True)
+        taskkill.assert_called_once_with(
+            ["taskkill", "/PID", "123", "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=generator.TERMINATION_GRACE_SECONDS,
+            check=False,
+        )
         self.assertTrue(process.killed)
         self.assertIn("taskkill timed out", failures)
 
