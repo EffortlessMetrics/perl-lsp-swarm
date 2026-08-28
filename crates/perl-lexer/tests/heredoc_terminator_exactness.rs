@@ -128,11 +128,15 @@ fn prefix_suffix_comment_and_non_line_whitespace_are_near_misses() -> R {
 }
 
 #[test]
-fn exact_label_at_eof_is_unterminated() -> R {
-    // Current perlop documents a terminator as the label immediately followed
-    // by a newline; an exact label at EOF is therefore intentionally recovery.
+fn exact_label_at_eof_remains_a_terminator() -> R {
+    // Preserve the lexer contract and executable Perl behavior for an exact
+    // label at EOF, while still rejecting every non-exact suffix above.
     let source = "<<END\nbody\nEND";
-    let tokens = PerlLexer::new(source).collect_tokens();
+    let tokens = PerlLexer::with_body_tokens(source).collect_tokens();
 
-    require_unterminated_payload(source, &tokens, "body\nEND")
+    require_eq(body_slice(source, &tokens)?, "body\n", "EOF heredoc body")?;
+    require(
+        tokens.iter().all(|token| !matches!(&token.token_type, TokenType::UnknownRest)),
+        "exact label at EOF was incorrectly classified as unterminated",
+    )
 }

@@ -229,7 +229,10 @@ impl<'a> PerlLexer<'a> {
         }
         cursor = label_end;
 
-        if cursor < self.input_bytes.len() && matches!(self.input_bytes[cursor], b'\n' | b'\r') {
+        if cursor == self.input_bytes.len()
+            || (cursor < self.input_bytes.len()
+                && matches!(self.input_bytes[cursor], b'\n' | b'\r'))
+        {
             Some(cursor)
         } else {
             None
