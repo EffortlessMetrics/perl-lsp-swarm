@@ -1,11 +1,18 @@
-# Plan: #11549 — Conjunctive install-route classification and preferred-route selection
+# Install-Route Classification Implementation Plan
 
-> Status: DURABLE TRACKED PLAN (refreshed 2026-08-28 against #11549, #11575, and
-> the current dependency issues). This file is repository-carried planning
-> authority for scope, prerequisites, and proof obligations; issue #11549 is
-> the authority for human product rulings. It is not an executable input
-> contract until the validated route schema from #10333 and catalog composition
-> from #10334 exist; #10333 explicitly excludes route population.
+Status: durable tracked plan, refreshed 2026-08-28 — a provisional design that
+is non-operative for selection while H1–H7 are human-pending and is not an
+executable input contract until the validated route schema from issue #10333
+and the catalog composition from issue #10334 exist (#10333 explicitly
+excludes route population)
+Owner: perl-lsp maintainers
+Tracker: [#11549](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11549)
+References: [#10333](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10333) (route schema/validation boundary), [#10334](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10334) (catalog composition and sequencing/fan-in), [#11434](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11434) (canonical denominator), [#11432](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11432) (evidence producers), [#11575](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11575) (landed inventory), [#11164](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11164) (current #10333 blocker); superseded [#12858](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/12858) is historical context only
+
+Subject: conjunctive install-route classification and preferred-route
+selection. Issue #11549 is the authority for human product rulings; this file
+is repository-carried planning authority for scope, prerequisites, and proof
+obligations.
 
 ## 0. Claim and entry
 
@@ -49,6 +56,20 @@ must stop at `provisional(human-pending)` for the selection surface.
   superseded #12858 attempt is historical context only and cannot supply route
   rows, projection contexts, producer joins, publication/channel bindings, or
   fail-closed route states.
+- **Dependency state: OPEN-UNRESOLVED.** #12858 — the only PR ever opened for
+  #11548's v2 route catalog — was closed unmerged as superseded on
+  2026-08-27 with an explicit do-not-pin/do-not-fixture disposition, and
+  **no successor PR exists** (re-verified 2026-08-28 via PR search). The
+  #11548 v2-catalog input this plan consumes is therefore not in flight
+  anywhere. **Wake event:** the opening of a successor #11548 v2-catalog PR,
+  or #10334 publishing the composed catalog under #10333's schema/validation
+  boundary, re-bases this plan — §2.1's
+  route families, the §2.1.1 closure denominators, and the §4 fixtures are
+  then re-derived and rebound to exact catalog rows before any implementation
+  lane starts. Until that event, every route join, projection context, and
+  the 70-row denominator below are **provisional prose-audit derivations**
+  from the landed #11575 inventory — planning fixtures, not accepted
+  contract inputs.
 
 **Non-goals:** judging/rewriting prose wording strength (#10342), canonical
 fragment generation (#10339), release receipts themselves (#7831 family),
@@ -60,8 +81,9 @@ cutover, which owns FND-10's allowlist), and any doc rewrite (FND-11 belongs to
 
 ## 1. What the inventory says the classifier must honor
 
-The generated inventory delta is part of this plan only because adding tracked
-`PLAN.md` requires regenerating its report. The two `generate-badges` rows also
+The generated inventory delta is part of this plan only because adding the
+tracked plan file `plans/install-route-classification/implementation-plan.md`
+requires regenerating its report. The two `generate-badges` rows also
 added by that regeneration describe `scripts/generate-badges.py` and
 `scripts/tests/test-generate-badges.py`, which already exist on `origin/main` and
 were absent from the base report; this PR does not add or modify those sources.
@@ -124,7 +146,9 @@ The exact route denominator, route IDs, projection contexts, and producer joins
 must come from the validated catalog composed by #10334 under #10333's schema and
 validation boundary (which excludes route population), then closed over the
 canonical denominator from #11434. The following are
-planning families only; they are not an accepted catalog or a claim-to-route
+planning families only — provisional prose-audit derivations from the landed
+issue #11575 inventory while the catalog dependency of §0 is OPEN-UNRESOLVED;
+they are not an accepted catalog or a claim-to-route
 join and must not be implemented as a hard-coded substitute:
 
 | route_id | Backing claims | Notes |
@@ -261,7 +285,7 @@ EXPECTED_CLAIMS = tuple(
               list(range(301, 304)) + list(range(401, 407)) +
               list(range(501, 504)) + [601] + list(range(701, 704)) + [801] +
               list(range(901, 903)) + list(range(1001, 1009)) + [1101, 1102] +
-              list(range(1201, 1209)) + list(range(1301, 1310)))
+              list(range(1201, 1209)) + list(range(1301, 1310))))
 EXPECTED_FINDINGS = tuple(f"FND-{n}" for n in range(1, 13))
 C202_PROJECTIONS = [
     ("VS_Code_extension", "VS_Code_compatible_managed_client"),
@@ -313,7 +337,9 @@ WRONG_REGISTRY_CATALOG = tuple(
     } if row["route_id"] == "r_4f8c2a" else row
     for row in FIXTURE_CATALOG
 )
-DUPLICATE_ID_CATALOG = FIXTURE_CATALOG + FIXTURE_CATALOG[:1]
+DUPLICATE_ID_CATALOG = FIXTURE_CATALOG + tuple(
+    row for row in FIXTURE_CATALOG if row["route_id"] == "r_4f8c2a"
+)
 
 def resolve_catalog_route(catalog_rows, route_id):
     matches = [row for row in catalog_rows if row["route_id"] == route_id]
@@ -803,7 +829,10 @@ assuming the former prose-row denominator.
    unknown ID, duplicate disposition, missing ID, range shorthand, or an
    unjoined row fails the check. The 70 prose claim rows from #11575 are the
    closed audit denominator; they do not define the classifier's route
-   denominator by themselves.
+   denominator by themselves. That manifest is a provisional prose-audit
+   derivation under §0's OPEN-UNRESOLVED dependency state, not an accepted
+   v2 input contract; it is re-derived at the §0 wake event and rebound to
+   the validated catalog rows before any implementation lane starts.
 11. **Cross-channel inference block (C201/C703).** A claim's receipt on channel
    X must never satisfy another route's receipt requirement (e.g., GitHub
    Releases v0.17.0 receipt must not make `homebrew-tap` `proven_current`).

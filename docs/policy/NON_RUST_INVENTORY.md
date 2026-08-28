@@ -3405,7 +3405,6 @@
 | `LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `NOW_NEXT_LATER.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `PLAN.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `RELEASE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `RELEASE_HISTORY.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6269,6 +6268,7 @@
 | `justfile` | tooling | `non-rust-justfile` | release/ci |
 | `plans/compiler-program/implementation-plan.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `plans/editor-trust-ux-closeout/implementation-plan.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `plans/install-route-classification/implementation-plan.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `plans/lsp-freshness/implementation-plan.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `plans/lsp-stack-extraction/implementation-plan.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `plans/real-perl-editor-trust/README.md` | documentation | `non-rust-root-governance-docs` | docs |
