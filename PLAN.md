@@ -112,7 +112,7 @@ join and must not be implemented as a hard-coded substitute:
 
 | route_id | Backing claims | Notes |
 | --- | --- | --- |
-| VS Code Marketplace / Open VSX | Extension and managed-binary acquisition | Exact route rows and gallery context come from the catalog; C1208 is a distinct Open VSX projection |
+| VS Code Marketplace; Open VSX | Separate extension and managed-binary acquisition channels | Exact route rows, registry identity, and gallery contexts come from the catalog; C1202 and C1208 cannot share a receipt or route projection |
 | Identity-bound archive / POSIX bootstrap | Release archive and bootstrap variants | Checksum and publication bindings come from the catalog |
 | Homebrew / Cargo registry / unpinned Cargo git | Separate channel subjects | No cross-channel inference |
 | Setup Action release/source modes | CI-oriented route families | Explicit ref and product-unit context |
@@ -180,12 +180,15 @@ For the six rows raised by review, the provisional ledger disposition is literal
 C107 → `project(generic-client PATH, generic-client editor context)`;
 C108 → `exclude(non_install_dependency, external formatting/critic tools)`;
 C201 → `exclude(channel_rule, channel-independence frame)`;
-C202 → `project_all((VS_Code_extension, VS_Code_compatible_managed_client),
-(manual_archive, macOS_or_Linux_or_Windows_manual_archive),
-(other_editor_download, generic_LSP_client),
-(local_cargo, local_testing_or_prerelease_validation))`); C1205 → `exclude(non_install_dependency, internal
-deployment guidance)`; and C1208 → `project(open-vsx, Open VSX-compatible
-marketplace context)`. These are required
+C202 → four distinct projection records:
+`project(VS_Code_extension, VS_Code_compatible_managed_client)`,
+`project(manual_archive, macOS_or_Linux_or_Windows_manual_archive)`,
+`project(other_editor_download, generic_LSP_client)`, and
+`project(local_cargo, local_testing_or_prerelease_validation)`. Each record must
+carry its own exact catalog route ID after #10333 publishes the catalog; labels
+on a reused route/context tuple do not satisfy this requirement. C1205 →
+`exclude(non_install_dependency, internal deployment guidance)`; and C1208 →
+`project(open-vsx, Open VSX-compatible marketplace context)`. These are required
 dispositions for the future validated catalog ledger; they are not permission to
 invent route IDs before #10333 publishes that catalog.
 
@@ -193,8 +196,9 @@ invent route IDs before #10333 publishes that catalog.
 
 The following is the complete literal audit manifest for the landed #11575
 inventory. The future join/exclusion ledger must contain exactly one disposition
-for every ID below; these lines are the auditable denominator, not shorthand or
-examples. A disposition is either `project(route_id, projection_context)` or
+record for every ID below; C202's one project disposition expands to four
+distinct projection records. These lines are the auditable denominator, not
+shorthand or examples. A disposition is either `project(route_id, projection_context)` or
 `exclude(reason, rationale)`, and no ID may appear in both forms.
 
 | Inventory surface | Literal claim IDs |
@@ -220,11 +224,16 @@ route-independent constraint, or an explicit exclusion with an allowed reason.
 In particular, FND-5 is a `route-independent constraint` for the mutable
 `INTERNAL_DEPLOYMENT.md` links represented by C1205; it is not silently omitted.
 
-This is an executable closure contract now, not a future reminder. At
-implementation time, the checked-in ledger must pass this pure check using only
-the inventory and ledger files:
+The closure contract is a future executable acceptance fixture, not proof that a
+production ledger exists in this planning PR. The fixture below is deliberately
+self-contained and list-based: repeated IDs are observable, and C202's four
+projections cannot overwrite one another in a dictionary. Its synthetic route
+IDs are test data only; the implementation must replace them with distinct opaque
+IDs from #10333 and validate the catalog digest before accepting the ledger.
 
 ```python
+from collections import Counter
+
 EXPECTED_CLAIMS = tuple(
     f"C{n}"
     for n in (list(range(101, 109)) + list(range(201, 217)) +
@@ -233,58 +242,91 @@ EXPECTED_CLAIMS = tuple(
               list(range(901, 903)) + list(range(1001, 1009)) + [1101, 1102] +
               list(range(1201, 1209)) + list(range(1301, 1310)))
 EXPECTED_FINDINGS = tuple(f"FND-{n}" for n in range(1, 13))
+C202_PROJECTIONS = [
+    ("VS_Code_extension", "VS_Code_compatible_managed_client"),
+    ("manual_archive", "macOS_or_Linux_or_Windows_manual_archive"),
+    ("other_editor_download", "generic_LSP_client"),
+    ("local_cargo", "local_testing_or_prerelease_validation"),
+]
 ALLOWED_EXCLUSIONS = {
     "diagnostic_surface", "verification_metadata", "channel_rule",
     "volatile_metadata", "adjacent_product", "non_install_dependency",
 }
 
-def validate_closure(rows, ledger):
-    ids = [row["id"] for row in rows]
+def fixture_ledger():
+    rows = []
+    for item_id in EXPECTED_CLAIMS:
+        if item_id == "C202":
+            rows.extend({
+                "id": item_id, "kind": "project",
+                "exact_catalog_route_id": f"fixture-route-{route}",
+                "exact_projection_context": context,
+            } for route, context in C202_PROJECTIONS)
+        elif item_id == "C1208":
+            rows.append({
+                "id": item_id, "kind": "project",
+                "exact_catalog_route_id": "fixture-route-open-vsx",
+                "exact_projection_context": "Open_VSX_compatible_marketplace_context",
+            })
+        else:
+            rows.append({
+                "id": item_id, "kind": "project",
+                "exact_catalog_route_id": f"fixture-route-{item_id}",
+                "exact_projection_context": f"fixture-context-{item_id}",
+            })
+    rows.extend({
+        "id": f"FND-{number}", "kind": "constrain",
+        "route_independent": True, "exact_reason": f"fixture-FND-{number}",
+    } for number in range(1, 13))
+    return rows
+
+def validate_closure(inventory_rows, ledger_rows):
     expected = set(EXPECTED_CLAIMS + EXPECTED_FINDINGS)
+    inventory_ids = [row["id"] for row in inventory_rows]
+    ledger_ids = [row["id"] for row in ledger_rows]
     if len(EXPECTED_CLAIMS) != 70 or len(set(EXPECTED_CLAIMS)) != 70:
         raise ValueError("invalid 70-claim manifest")
     if len(EXPECTED_FINDINGS) != 12 or len(set(EXPECTED_FINDINGS)) != 12:
         raise ValueError("invalid 12-finding manifest")
-    if len(ids) != len(set(ids)):
-        raise ValueError("duplicate inventory ID")
-    if set(ids) != set(EXPECTED_CLAIMS):
-        raise ValueError("missing or unknown claim ID")
-    if set(ledger) != expected or len(ledger) != 82:
-        raise ValueError("missing or unknown ledger ID")
-    for item_id in EXPECTED_CLAIMS + EXPECTED_FINDINGS:
-        entry = ledger[item_id]
-        if entry["kind"] == "project":
-            if not entry.get("exact_catalog_route_id") or not entry.get("exact_projection_context"):
-                raise ValueError(f"{item_id}: incomplete projection")
-        elif entry["kind"] == "constrain":
-            if not entry.get("route_independent") or not entry.get("exact_reason"):
-                raise ValueError(f"{item_id}: incomplete constraint")
-        elif entry["kind"] == "exclude":
-            if entry.get("reason") not in ALLOWED_EXCLUSIONS or not entry.get("rationale"):
-                raise ValueError(f"{item_id}: incompatible exclusion")
+    if Counter(inventory_ids) != Counter(EXPECTED_CLAIMS):
+        raise ValueError("missing, duplicate, or unknown inventory claim ID")
+    expected_counts = Counter({item_id: 1 for item_id in expected})
+    expected_counts["C202"] = 4
+    if Counter(ledger_ids) != expected_counts:
+        raise ValueError("missing, duplicate, or unknown ledger ID")
+    for row in ledger_rows:
+        if row["kind"] == "project":
+            if not row.get("exact_catalog_route_id") or not row.get("exact_projection_context"):
+                raise ValueError(f"{row['id']}: incomplete projection")
+        elif row["kind"] == "constrain":
+            if not row.get("route_independent") or not row.get("exact_reason"):
+                raise ValueError(f"{row['id']}: incomplete constraint")
+        elif row["kind"] == "exclude":
+            if row.get("reason") not in ALLOWED_EXCLUSIONS or not row.get("rationale"):
+                raise ValueError(f"{row['id']}: incompatible exclusion")
         else:
-            raise ValueError(f"{item_id}: invalid disposition")
-    if ledger["C202"].get("projections") != [
-        ("VS_Code_extension", "VS_Code_compatible_managed_client"),
-        ("manual_archive", "macOS_or_Linux_or_Windows_manual_archive"),
-        ("other_editor_download", "generic_LSP_client"),
-        ("local_cargo", "local_testing_or_prerelease_validation"),
-    ]:
-        raise ValueError("C202 requires its four ordered route/context projections")
-    if ledger["C1208"].get("exact_projection_context") != "Open_VSX_compatible_marketplace_context":
-        raise ValueError("C1208 must remain Open VSX scoped")
-    if ledger["FND-5"] != {
-        "kind": "constrain", "route_independent": True,
-        "exact_reason": "mutable_internal_deployment_links",
-    }:
-        raise ValueError("FND-5 must remain route-independent")
+            raise ValueError(f"{row['id']}: invalid disposition")
+    c202_rows = [row for row in ledger_rows if row["id"] == "C202"]
+    if [(row["exact_catalog_route_id"].removeprefix("fixture-route-"),
+         row["exact_projection_context"]) for row in c202_rows] != C202_PROJECTIONS:
+        raise ValueError("C202 requires four distinct ordered route/context tuples")
+    if len({row["exact_catalog_route_id"] for row in c202_rows}) != 4:
+        raise ValueError("C202 route IDs must not be reused")
+    c1208_rows = [row for row in ledger_rows if row["id"] == "C1208"]
+    if len(c1208_rows) != 1 or c1208_rows[0]["exact_projection_context"] != "Open_VSX_compatible_marketplace_context":
+        raise ValueError("C1208 must remain a separate Open VSX projection")
     return True
+
+assert validate_closure(
+    [{"id": item_id} for item_id in EXPECTED_CLAIMS], fixture_ledger()
+)
 ```
 
-The check reports sorted missing, duplicate, unknown, and incompatible IDs before
-failing (the production harness should collect those errors rather than stop at the
+The fixture rejects missing, duplicate, unknown, and incompatible IDs before
+acceptance (the production harness should collect those errors rather than stop at the
 first one). It validates every literal claim and finding ID individually, including
-all 82 ledger keys, rather than trusting a count or range shorthand. Thus the complete 70-claim / 12-finding closure check is executable
+all 82 ledger IDs and C202's four records, rather than trusting a count or range
+shorthand. Thus the complete 70-claim / 12-finding closure check is executable
 before route classification exists; only exact catalog route IDs and projection
 contexts remain gated on #10333. A prose manifest or count without this
 set-equality and compatibility check does not satisfy closure.
@@ -395,33 +437,39 @@ schema-closed:
 ## 3. Preferred-route selection: algorithm options and tradeoffs
 
 Selection input is an exact context tuple:
-`(editor_family, editor_identity, os, os_version, arch, target_triple, libc,
-platform_capabilities, desired_product_units, context, risk_posture)`, where
+`(editor_family, editor_identity, target_registry, os, os_version, arch,
+target_triple, libc, platform_capabilities, desired_product_units, context,
+risk_posture)`, where
 `editor_family` distinguishes VS Code-compatible managed clients from generic
 LSP clients (Emacs, Neovim, Helix, Sublime, and other clients),
+`target_registry` distinguishes VS Marketplace from Open VSX (C1202 and C1208
+are never one receipt or one selectable route),
 `target_triple`/`libc` distinguishes GNU from musl projections,
 `platform_capabilities` includes Windows ARM emulation capability/version, and
-`risk_posture` is either `strict` or `permissive`. `strict` may select only
-`proven_current` routes with independent integrity/provenance and complete
-lifecycle evidence. `permissive` uses the same hard filter and may select only
-`proven_current` or `receipt_bound_partial` routes whose seven dimensions contain
-no `contradicted`, `unproven`, or capability-incompatible result; partial evidence
-must be explicitly annotated. `pending_gate` is diagnostic-only and never
-selected. Its deterministic output order is: selected route, non-selected
-`receipt_bound_partial` diagnostics sorted by integrity, lifecycle, publication,
-and exact route ID, then pending diagnostics sorted by issue ID; all remaining
-routes are omitted with reasons. A permissive partial route is eligible only when
-every dimension is `proven_current` or `receipt_bound_partial`, with explicit
-integrity/provenance, product-unit/lifecycle, and freshness/channel/publication
-receipts, and no capability-incompatible result. Missing, contradicted, unproven,
-or pending evidence makes it ineligible; permissive mode never upgrades partial
-integrity, lifecycle, or publication evidence. This diagnostic ordering is
-mechanical and non-operative while H1-H7 remain human-pending.
-Strict mode emits no diagnostic fallback. Unknown context fields refuse selection
-rather than guessing. Once H1–H7 are explicitly
-ruled, output may be an ordered route recommendation with per-route verdicts and
-gate citations. Before then, any selection output is only a provisional diagnostic;
-it must not recommend or silently order a route.
+`risk_posture` is either `strict` or `permissive`.
+
+`strict` selects exactly one `proven_current` route with independent
+integrity/provenance and complete lifecycle evidence; zero candidates returns
+`no_route` with sorted reasons. `permissive` first uses the same hard filter, then
+selects a `proven_current` route when one exists. If none exists, it may select
+exactly one `receipt_bound_partial` route only when every dimension is
+`proven_current` or `receipt_bound_partial` and integrity/provenance,
+product-unit/lifecycle, and freshness/channel/publication receipts are explicit.
+The result is labeled `partial` and never upgrades missing evidence. A
+`pending_gate` or `unproven` route is never selected.
+
+Permissive ambiguity is deterministic and defined: distinct eligible candidates
+are returned in canonical order `(integrity, lifecycle, publication, exact
+catalog route ID)` with `selection=deferred_human_order`, rather than being
+silently chosen or refused merely because more than one exists. Once H1–H7 are
+ruled, the applicable human-authored policy may choose from that ordered set.
+Duplicate exact route/context rows are a catalog error and return `NOT_PROVEN`
+with the duplicate IDs. Unknown context or registry fields return `no_route`
+with a sorted reason; they never fall back to another registry, `latest`, or an
+unpinned command. Pending diagnostics are sorted by issue ID and all remaining
+routes are omitted with reasons. These outputs are mechanical and non-operative
+while H1–H7 remain human-pending; H7(c) can add only a verify-first,
+not-selectable-until-verified diagnostic for deferred channels.
 
 ### Option A — Static precedence table (curated data only)
 
@@ -617,10 +665,14 @@ assuming the former prose-row denominator.
     catalog or claim input order. A scalar-only result, or a result that drops
     the lifecycle failure, fails.
 20. **Selection-context and risk isolation.** Identical requests differing only
-    in editor family, target/libc, observed Windows emulation capability, or
-    `strict` versus `permissive` must either select the corresponding valid
-    projection or refuse explicitly. A route that ignores any supplied field
-    fails; `permissive` must not turn a contradiction into a selection.
+    in editor family, target registry, target/libc, observed Windows emulation
+    capability, or `strict` versus `permissive` must produce the corresponding
+    observable result: strict selects only one proven-current projection (or
+    `no_route` with reasons); permissive selects a proven-current projection, or
+    one explicitly annotated receipt-bound partial projection when eligible, and
+    otherwise returns the deterministic candidate/diagnostic set described in
+    §3. A route that ignores any supplied field fails; permissive must not turn a
+    contradiction, unproven route, or H7 verify-first diagnostic into a selection.
 
 ---
 
