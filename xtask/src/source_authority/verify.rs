@@ -42,7 +42,7 @@ pub fn verify_manifest(
     repo_root: &Path,
 ) -> Result<Receipt, color_eyre::eyre::Report> {
     let mut violations = Vec::new();
-    let packet_root = repo_root.join(&manifest.packet_root);
+    let packet_root = contain_packet_root(manifest, repo_root, &mut violations);
 
     if manifest.schema_version != SOURCE_AUTHORITY_SCHEMA_VERSION {
         violations.push(Violation {
@@ -65,7 +65,11 @@ pub fn verify_manifest(
         });
     }
 
-    verify_input_table(manifest, &packet_root, repo_root, &mut violations);
+    if let Some(packet_root) = packet_root.as_deref() {
+        verify_input_table(manifest, packet_root, repo_root, &mut violations);
+    }
+    // A failed containment already emitted its violation; the packet tree is
+    // never dereferenced.
     verify_generator_surface(manifest, repo_root, &mut violations)?;
 
     let verdict = if violations.is_empty() { "clean" } else { "blocked" };
@@ -76,6 +80,81 @@ pub fn verify_manifest(
         checked_generators: manifest.generators.len(),
         violations,
     })
+}
+
+/// Contain the manifest-controlled packet root before anything dereferences
+/// it. Subjects are individually normalized elsewhere, but the root itself is
+/// also manifest-controlled: an absolute value would replace the repository
+/// root, `..` segments would escape it, and a symlinked root could redirect
+/// the packet walk outside the checkout. The root therefore gets the same
+/// lexical normalization as subjects plus a canonical containment check, and
+/// the manifest file must be a single plain file name. Any failure is a
+/// violation and the tree is never walked.
+fn contain_packet_root(
+    manifest: &SourceAuthorityManifest,
+    repo_root: &Path,
+    violations: &mut Vec<Violation>,
+) -> Option<PathBuf> {
+    let root = match normalized_subject_path(&manifest.packet_root) {
+        Ok(root) => root,
+        Err(detail) => {
+            violations.push(Violation {
+                code: "invalid_packet_root".into(),
+                subject: manifest.packet_root.clone(),
+                detail,
+            });
+            return None;
+        }
+    };
+    if !is_single_file_name(&manifest.manifest_file) {
+        violations.push(Violation {
+            code: "invalid_manifest_file".into(),
+            subject: manifest.manifest_file.clone(),
+            detail: "manifest_file must be a single plain file name at the packet root".into(),
+        });
+    }
+    let canonical_repo = match repo_root.canonicalize() {
+        Ok(canonical) => canonical,
+        Err(error) => {
+            violations.push(Violation {
+                code: "repo_root_unreadable".into(),
+                subject: manifest.packet_root.clone(),
+                detail: format!("repository root cannot be canonicalized: {error}"),
+            });
+            return None;
+        }
+    };
+    let joined = repo_root.join(normalize_separators(&root));
+    match joined.canonicalize() {
+        Ok(canonical_root) if canonical_root.starts_with(&canonical_repo) => Some(joined),
+        Ok(canonical_root) => {
+            violations.push(Violation {
+                code: "packet_root_escapes_repository".into(),
+                subject: manifest.packet_root.clone(),
+                detail: format!(
+                    "packet root resolves to {} outside the repository (absolute path, \
+                     traversal, or symlink escape); refusing to dereference it",
+                    canonical_root.display()
+                ),
+            });
+            None
+        }
+        Err(error) => {
+            violations.push(Violation {
+                code: "packet_root_unreadable".into(),
+                subject: manifest.packet_root.clone(),
+                detail: format!("packet root does not exist or cannot be canonicalized: {error}"),
+            });
+            None
+        }
+    }
+}
+
+/// Whether `name` is one plain path component: no separators, no dot
+/// segments, and non-empty.
+fn is_single_file_name(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\\')
 }
 
 fn verify_input_table(
@@ -128,6 +207,16 @@ fn verify_input_table(
             continue;
         }
         let subject_path = packet_root.join(normalize_separators(&input.subject));
+        if subject_traverses_symlink(packet_root, &input.subject) {
+            violations.push(Violation {
+                code: "symlinked_subject".into(),
+                subject: input.subject.clone(),
+                detail: "subject path traverses a symbolic link; packet content must be \
+                         ordinary in-repository files"
+                    .into(),
+            });
+            continue;
+        }
         match fs::read(&subject_path) {
             Ok(raw) => match normalized_digest(&raw) {
                 Ok(actual) if actual == input.digest => {}
@@ -458,8 +547,11 @@ fn generator_scan_files(root: &Path) -> Result<Vec<PathBuf>, color_eyre::eyre::R
     Ok(files)
 }
 
-/// Deterministically list every regular file under `root`, excluding
-/// `excluded_name` at the root level.
+/// Deterministically list every regular entry under `root`, excluding
+/// `excluded_name` at the root level. Symbolic links are never traversed:
+/// entry types are resolved without following links, so a symlinked directory
+/// cannot redirect the walk and a symlinked file is surfaced to the
+/// unclassified-content and subject checks instead of being dereferenced.
 fn walk_packet_tree(root: &Path, excluded_name: &str) -> std::io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -468,7 +560,7 @@ fn walk_packet_tree(root: &Path, excluded_name: &str) -> std::io::Result<Vec<Pat
             let entry = entry?;
             let path = entry.path();
             let name = entry.file_name();
-            if path.is_dir() {
+            if entry.file_type()?.is_dir() {
                 stack.push(path);
             } else if dir.as_path() != root || name.to_string_lossy() != excluded_name {
                 files.push(path);
@@ -510,6 +602,23 @@ fn normalized_subject_path(subject: &str) -> Result<String, String> {
         return Err("subject path has no segments".into());
     }
     Ok(segments.join("/"))
+}
+
+/// Whether the subject path traverses a symbolic link in any component
+/// between the packet root and the subject file, so a declared read cannot be
+/// redirected outside the packet tree.
+fn subject_traverses_symlink(packet_root: &Path, subject: &str) -> bool {
+    let mut current = packet_root.to_path_buf();
+    for segment in normalize_separators(subject).split('/') {
+        current.push(segment);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return true,
+            Ok(_) => {}
+            // A missing component is reported by the subject read itself.
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 fn normalize_separators(path: &str) -> String {
@@ -704,6 +813,76 @@ mod verify_tests {
         escaped.generators.push(GeneratorPath { path: "../outside/tool.sh".into() });
         let receipt = verify_manifest(&escaped, &root).map_err(|error| error.to_string())?;
         assert!(has(&receipt, "invalid_generator_path"));
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_controlled_packet_roots_are_lexically_rejected() -> TestResult {
+        let (dir, root) = tree(&[("a.txt", b"one\n")])?;
+        // An absolute root would replace the repository root entirely.
+        let mut absolute = manifest(vec![input("first", "a.txt")]);
+        let absolute_root = if cfg!(windows) {
+            dir.path().ancestors().nth(1).unwrap_or(dir.path()).to_string_lossy().into_owned()
+        } else {
+            "/etc".to_string()
+        };
+        absolute.packet_root = absolute_root;
+        let receipt = verify_manifest(&absolute, &root).map_err(|error| error.to_string())?;
+        assert!(has(&receipt, "invalid_packet_root"), "{:?}", receipt.violations);
+        assert!(!has(&receipt, "stale_digest"), "an uncontained root is never dereferenced");
+
+        // Traversal segments would escape the checkout.
+        let mut traversal = manifest(vec![input("first", "a.txt")]);
+        traversal.packet_root = "packets/../..".into();
+        let receipt = verify_manifest(&traversal, &root).map_err(|error| error.to_string())?;
+        assert!(has(&receipt, "invalid_packet_root"));
+        assert!(!has(&receipt, "unclassified_content"));
+
+        // A root that simply does not exist fails closed without reads.
+        let mut missing = manifest(vec![input("first", "a.txt")]);
+        missing.packet_root = "packets-absent".into();
+        let receipt = verify_manifest(&missing, &root).map_err(|error| error.to_string())?;
+        assert!(has(&receipt, "packet_root_unreadable"));
+        assert!(
+            !has(&receipt, "missing_subject"),
+            "subjects are not read when the root failed containment"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_file_must_be_a_single_file_name() -> TestResult {
+        let (_dir, root) = tree(&[])?;
+        let mut shaped = manifest(Vec::new());
+        shaped.manifest_file = "../evil.v1.json".into();
+        let receipt = verify_manifest(&shaped, &root).map_err(|error| error.to_string())?;
+        assert!(has(&receipt, "invalid_manifest_file"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_packet_root_is_contained() -> TestResult {
+        let (dir, root) = tree(&[("a.txt", b"one\n")])?;
+        let outside = dir.path().join("outside-sandbox");
+        std::os::unix::fs::symlink("/etc", &outside)?;
+        let mut escaped = manifest(vec![input("first", "a.txt")]);
+        escaped.packet_root = "outside-sandbox".into();
+        let receipt = verify_manifest(&escaped, &root).map_err(|error| error.to_string())?;
+        assert!(has(&receipt, "packet_root_escapes_repository"), "{:?}", receipt.violations);
+        assert!(!has(&receipt, "missing_subject"), "an escaped root is never dereferenced");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_subject_is_rejected_without_being_read() -> TestResult {
+        let (dir, root) = tree(&[("a.txt", b"one\n")])?;
+        std::os::unix::fs::symlink("/etc/hostname", dir.path().join("packets").join("link.txt"))?;
+        let inputs = vec![input("linked", "link.txt")];
+        let receipt =
+            verify_manifest(&manifest(inputs), &root).map_err(|error| error.to_string())?;
+        assert!(has(&receipt, "symlinked_subject"), "{:?}", receipt.violations);
         Ok(())
     }
 }

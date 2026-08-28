@@ -199,21 +199,16 @@ pub struct SourceAuthorityManifest {
 
 /// Normalize raw bytes into the canonical form that digests bind.
 ///
-/// Deterministic across platforms and editors: require UTF-8, unify CRLF/CR
-/// into LF, strip trailing spaces and tabs per line, collapse trailing blank
-/// lines to exactly one final newline.
+/// Deterministic across platforms: require UTF-8 and unify CRLF/CR into LF.
+/// Everything else binds exactly. Trailing spaces and tabs and trailing blank
+/// lines are semantic — two trailing spaces are a Markdown hard break in
+/// rendered bodies, and trailing whitespace is part of patch hunk content —
+/// so editor whitespace repair must not silently keep an authority digest
+/// "current" while the bound bytes changed.
 pub fn normalize_content(raw: &[u8]) -> Result<Vec<u8>, std::str::Utf8Error> {
     let text = std::str::from_utf8(raw)?;
     let unified = text.replace("\r\n", "\n").replace('\r', "\n");
-    let mut normalized = String::with_capacity(unified.len());
-    for line in unified.split('\n') {
-        normalized.push_str(line.trim_end_matches([' ', '\t']));
-        normalized.push('\n');
-    }
-    while normalized.ends_with("\n\n") {
-        normalized.pop();
-    }
-    Ok(normalized.into_bytes())
+    Ok(unified.into_bytes())
 }
 
 /// SHA-256 hex digest over the normalized content of raw bytes.
@@ -276,12 +271,18 @@ mod model_tests {
     }
 
     #[test]
-    fn normalization_is_platform_and_editor_stable() {
-        let crlf = b"# heading  \r\nbody line\r\n\r\n\r\n";
+    fn digests_unify_line_endings_but_bind_trailing_bytes() {
+        // Line-ending spellings of one document share a digest.
         let lf = b"# heading\nbody line\n";
-        let lone_cr = b"# heading  \nbody line\n";
-        assert_eq!(normalized_digest(crlf), normalized_digest(lf));
-        assert_eq!(normalized_digest(crlf), normalized_digest(lone_cr));
+        assert_eq!(normalized_digest(b"# heading\r\nbody line\r\n"), normalized_digest(lf));
+        assert_eq!(normalized_digest(b"# heading\rbody line\r"), normalized_digest(lf));
+        // Trailing whitespace is semantic and must change the digest: two
+        // trailing spaces are a Markdown hard break, a trailing tab is patch
+        // hunk content.
+        assert_ne!(normalized_digest(b"# heading  \nbody line\n"), normalized_digest(lf));
+        assert_ne!(normalized_digest(b"# heading\t\n"), normalized_digest(b"# heading\n"));
+        // Trailing blank lines are bound as well.
+        assert_ne!(normalized_digest(b"# heading\nbody line\n\n"), normalized_digest(lf));
     }
 
     #[test]

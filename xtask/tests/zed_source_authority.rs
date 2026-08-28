@@ -174,20 +174,107 @@ fn rendered_external_bodies_are_structurally_distinct_from_evidence() -> anyhow:
 }
 
 #[test]
-fn digests_bind_normalized_content_across_line_endings() -> anyhow::Result<()> {
-    let crlf = b"# heading  \r\nbody\r\n\r\n";
+fn digests_unify_line_endings_but_bind_trailing_bytes() -> anyhow::Result<()> {
+    let crlf = b"# heading\r\nbody\r\n";
     let lf = b"# heading\nbody\n";
     let crlf_digest = normalized_digest(crlf)?;
     if crlf_digest != normalized_digest(lf)? {
         bail!("CRLF and LF spellings of one document must share a digest");
     }
-    if normalize_content(crlf)? != b"# heading\nbody\n" {
-        bail!("normalization must strip trailing blanks and trailing blank lines");
+    // Trailing whitespace is semantic: two trailing spaces are a Markdown
+    // hard break in rendered bodies, and trailing whitespace is part of
+    // patch hunk content. The digest must change when those bytes change.
+    let hard_break = b"# heading  \nbody\n";
+    if normalized_digest(hard_break)? == normalized_digest(lf)? {
+        bail!("a Markdown hard break must not share a digest with the plain heading");
+    }
+    if normalize_content(hard_break)? != b"# heading  \nbody\n" {
+        bail!("normalization must preserve trailing whitespace bytes");
+    }
+    if normalized_digest(b"# heading\nbody\n\n")? == normalized_digest(lf)? {
+        bail!("trailing blank lines must not share a digest with the bounded document");
     }
     if normalized_digest(&[0xff, 0xfe]).is_ok() {
         bail!("binary content cannot ride through the text digest");
     }
     Ok(())
+}
+
+#[test]
+fn hard_break_edit_in_a_rendered_body_breaks_currentness() -> anyhow::Result<()> {
+    // A rendered PR body whose declared digest was taken without the Markdown
+    // hard break: adding two trailing spaces changes the rendered document,
+    // so the packet must go stale instead of silently staying "current".
+    let tree = SyntheticTree::new(&[("pr-body.md", b"release notes  \nsecond line\n")])?;
+    let declared = input("pr-body", "pr-body.md", b"release notes\nsecond line\n");
+
+    let receipt = tree.verify(vec![declared])?;
+    require_code(&receipt, "stale_digest")
+}
+
+#[test]
+fn patch_hunk_trailing_whitespace_breaks_currentness() -> anyhow::Result<()> {
+    // Patch hunk content binds exactly: a context line that gained a
+    // trailing tab is different patch text and must go stale.
+    let tree = SyntheticTree::new(&[("defaults.patch", b"@@ -1 +1 @@\n-context\n+next\n")])?;
+    let declared = input("defaults-patch", "defaults.patch", b"@@ -1 +1 @@\n-context \n+next\n");
+
+    let receipt = tree.verify(vec![declared])?;
+    require_code(&receipt, "stale_digest")
+}
+
+#[test]
+fn manifest_controlled_roots_cannot_escape_the_repository() -> anyhow::Result<()> {
+    let tree = SyntheticTree::new(&[("evidence.txt", b"evidence\n")])?;
+
+    // An absolute root would replace the repository root entirely.
+    let mut absolute = tree.manifest(vec![input("evidence", "evidence.txt", b"evidence\n")]);
+    absolute.packet_root = if cfg!(windows) { "C:\\Windows" } else { "/etc" }.to_string();
+    let receipt = run_verify(&absolute, &tree.root)?;
+    require_code(&receipt, "invalid_packet_root")?;
+    refuse_code(&receipt, "stale_digest")?;
+
+    // Traversal segments would escape the checkout before the walk.
+    let mut traversal = tree.manifest(vec![input("evidence", "evidence.txt", b"evidence\n")]);
+    traversal.packet_root = "packets/../../..".to_string();
+    let receipt = run_verify(&traversal, &tree.root)?;
+    require_code(&receipt, "invalid_packet_root")
+}
+
+#[test]
+fn symlinked_packet_root_is_contained_outside_the_checkout() -> anyhow::Result<()> {
+    if cfg!(windows) {
+        // Creating symlinks on Windows needs elevated privileges; the
+        // in-crate suite covers this seam on Unix runners.
+        return Ok(());
+    }
+    let dir = TempDir::new()?;
+    let packets = dir.path().join("packets");
+    fs::create_dir_all(&packets)?;
+    fs::write(packets.join("evidence.txt"), b"evidence\n")?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("/etc", dir.path().join("escape"))?;
+
+    let escaped = SourceAuthorityManifest {
+        schema_version: SOURCE_AUTHORITY_SCHEMA_VERSION.to_string(),
+        packet_root: "escape".to_string(),
+        external_write_policy: "maintainer_manual_checkpoint_only".to_string(),
+        manifest_file: "source-authority.v1.json".to_string(),
+        generators: Vec::new(),
+        inputs: vec![input("evidence", "evidence.txt", b"evidence\n")],
+    };
+    let receipt = run_verify(&escaped, &dir.path())?;
+    require_code(&receipt, "packet_root_escapes_repository")?;
+    refuse_code(&receipt, "missing_subject")
+}
+
+#[test]
+fn manifest_file_must_be_a_single_plain_file_name() -> anyhow::Result<()> {
+    let tree = SyntheticTree::new(&[])?;
+    let mut shaped = tree.manifest(Vec::new());
+    shaped.manifest_file = "../evil.v1.json".to_string();
+    let receipt = run_verify(&shaped, &tree.root)?;
+    require_code(&receipt, "invalid_manifest_file")
 }
 
 #[test]

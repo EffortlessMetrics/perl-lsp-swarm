@@ -20,13 +20,14 @@ const PACKET_ROOT: &str = ".ci/fixtures/zed-perl-upstream";
 const MANIFEST_FILE: &str = "source-authority.v1.json";
 /// Declared generators copied beside each mutated tree so digest and
 /// generator-surface checks stay satisfiable while one input is attacked.
-const GENERATORS: [&str; 8] = [
+const GENERATORS: [&str; 9] = [
     "scripts/apply-zed-perl-upstream.sh",
     "scripts/apply-zed-core-perl-defaults.sh",
     "scripts/check-zed-core-perl-defaults.sh",
     "scripts/check-zed-registry-update-packet.sh",
     "scripts/check-zed-upstream-candidate.sh",
     "scripts/check-zed-upstream-submission-packet.sh",
+    "scripts/zed_assets/dap_contract.py",
     "scripts/zed_host/finalize.py",
     "scripts/zed_host/prepare.py",
 ];
