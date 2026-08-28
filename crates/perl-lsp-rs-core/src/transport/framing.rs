@@ -78,19 +78,22 @@ impl perl_parser_core::ErrorClass for FramingError {
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct ContentLengthFramer {
     buf: Vec<u8>,
+    discard_remaining: usize,
 }
 
 impl ContentLengthFramer {
     /// Create a new empty framer.
     #[must_use]
     pub fn new() -> Self {
-        Self { buf: Vec::new() }
+        Self { buf: Vec::new(), discard_remaining: 0 }
     }
 
     /// Append raw transport bytes.
     pub fn push(&mut self, bytes: &[u8]) {
         self.buf.extend_from_slice(bytes);
-        self.resync_if_needed();
+        if self.discard_remaining == 0 {
+            self.resync_if_needed();
+        }
     }
 
     pub(crate) const fn buffered_bytes(&self) -> usize {
@@ -99,6 +102,7 @@ impl ContentLengthFramer {
 
     pub(crate) fn clear(&mut self) {
         self.buf.clear();
+        self.discard_remaining = 0;
     }
 
     /// Attempt to extract one complete message body.
@@ -108,6 +112,12 @@ impl ContentLengthFramer {
     /// - `Ok(None)` when more bytes are needed
     /// - `Err(...)` for malformed headers or disallowed sizes
     pub fn try_next(&mut self) -> Result<Option<Vec<u8>>, FramingError> {
+        if self.discard_remaining > 0 {
+            self.discard_rejected_body();
+            if self.discard_remaining > 0 {
+                return Ok(None);
+            }
+        }
         self.resync_if_needed();
 
         let Some(start) = find_header_start(&self.buf) else {
@@ -173,7 +183,10 @@ impl ContentLengthFramer {
         };
 
         if length > MAX_FRAME_SIZE {
-            self.consume_header_block(header_end, header_len);
+            let drain_to = (header_end + header_len).min(self.buf.len());
+            self.buf.drain(..drain_to);
+            self.discard_remaining = length;
+            self.discard_rejected_body();
             return Err(FramingError::FrameTooLarge { len: length });
         }
 
@@ -203,6 +216,15 @@ impl ContentLengthFramer {
         let drain_to = (header_end + header_len).min(self.buf.len());
         self.buf.drain(..drain_to);
         self.resync_if_needed();
+    }
+
+    fn discard_rejected_body(&mut self) {
+        let discarded = self.discard_remaining.min(self.buf.len());
+        self.buf.drain(..discarded);
+        self.discard_remaining -= discarded;
+        if self.discard_remaining == 0 {
+            self.resync_if_needed();
+        }
     }
 
     fn resync_if_needed(&mut self) {
@@ -255,6 +277,9 @@ fn parse_content_length(header: &str) -> ContentLengthParse {
         };
 
         if name.trim().eq_ignore_ascii_case("Content-Length") {
+            if found.is_some() {
+                return ContentLengthParse::Invalid;
+            }
             match value.trim().parse::<usize>() {
                 Ok(length) => found = Some(length),
                 Err(_) => return ContentLengthParse::Invalid,
@@ -378,8 +403,8 @@ pub fn log_response(response: &JsonRpcResponse) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContentLengthFramer, ContentLengthMessageReader, FramingError, MAX_FRAME_SIZE,
-        MAX_HEADER_BYTES, log_response, read_message, write_message, write_notification,
+        log_response, read_message, write_message, write_notification, ContentLengthFramer,
+        ContentLengthMessageReader, FramingError, MAX_FRAME_SIZE, MAX_HEADER_BYTES,
     };
     use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcResponse};
     use perl_parser_core::{ErrorCategory, ErrorClass};
@@ -1567,6 +1592,38 @@ mod tests {
         assert!(
             matches!(framer.try_next(), Err(FramingError::FrameTooLarge { .. })),
             "expected FrameTooLarge for Content-Length > MAX_FRAME_SIZE"
+        );
+    }
+
+    #[test]
+    fn framer_rejects_duplicate_content_length_headers() {
+        let mut framer = ContentLengthFramer::new();
+        framer.push(b"Content-Length: 1\r\nContent-Length: 1\r\n\r\nx");
+        assert!(
+            matches!(framer.try_next(), Err(FramingError::InvalidContentLength)),
+            "duplicate Content-Length headers must be rejected"
+        );
+    }
+
+    #[test]
+    fn framer_discards_oversized_body_before_resynchronizing() {
+        let embedded = b"Content-Length: 4\r\n\r\nnope";
+        let mut rejected_body = vec![b'x'; MAX_FRAME_SIZE + 1];
+        rejected_body[..embedded.len()].copy_from_slice(embedded);
+
+        let mut wire = format!("Content-Length: {}\r\n\r\n", rejected_body.len()).into_bytes();
+        wire.extend_from_slice(&rejected_body);
+
+        let follow_up = b"safe";
+        wire.extend_from_slice(format!("Content-Length: {}\r\n\r\n", follow_up.len()).as_bytes());
+        wire.extend_from_slice(follow_up);
+
+        let mut framer = ContentLengthFramer::new();
+        framer.push(&wire);
+        assert!(matches!(framer.try_next(), Err(FramingError::FrameTooLarge { .. })));
+        assert!(
+            matches!(framer.try_next(), Ok(Some(body)) if body == follow_up),
+            "bytes inside a rejected oversized body must not be redispatched"
         );
     }
 

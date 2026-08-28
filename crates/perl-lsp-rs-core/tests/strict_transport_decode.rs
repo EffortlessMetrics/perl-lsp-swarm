@@ -1,9 +1,9 @@
 //! Regression coverage for strict incoming transport decoding (#7596).
 
 use perl_lsp_rs_core::protocol::JsonRpcRequest;
-use perl_lsp_rs_core::transport::framing::{MAX_FRAME_SIZE, read_message};
+use perl_lsp_rs_core::transport::framing::{read_message, MAX_FRAME_SIZE};
 use perl_lsp_rs_core::transport::{
-    ContentLengthMessageReader, FramingError, IncomingMessageError, frame,
+    frame, ContentLengthMessageReader, FramingError, IncomingMessageError,
 };
 use serde_json::Value;
 use std::error::Error;
@@ -497,7 +497,9 @@ fn strict_reader_propagates_underlying_io_failure() -> TestResult {
 
 #[test]
 fn oversized_frame_is_reported_and_following_frame_is_recoverable() -> TestResult {
-    let mut stream = format!("Content-Length: {}\r\n\r\n", MAX_FRAME_SIZE + 1).into_bytes();
+    let oversized_body = vec![b'x'; MAX_FRAME_SIZE + 1];
+    let mut stream = format!("Content-Length: {}\r\n\r\n", oversized_body.len()).into_bytes();
+    stream.extend_from_slice(&oversized_body);
     stream.extend(frame(&request_body(16, "shutdown", "{}")));
     let mut input = Cursor::new(stream);
     let mut reader = ContentLengthMessageReader::new();

@@ -6,8 +6,8 @@
 //! `register_progress_request` maps progress tokens to request IDs.
 
 use super::{
-    Arc, BufRead, BufReader, ContentLengthMessageReader, JsonRpcRequest, LspServer, Ordering, Read,
-    io, log_response, scheduler,
+    io, log_response, scheduler, Arc, BufRead, BufReader, ContentLengthMessageReader,
+    JsonRpcRequest, LspServer, Ordering, Read,
 };
 use crate::protocol::JsonRpcId;
 use crate::transport::IncomingMessageError;
@@ -76,7 +76,7 @@ impl LspServer {
     /// dropped. Workers drain remaining items and exit. `spawn_blocking` tasks
     /// cannot be aborted — they run to completion.
     pub async fn serve_async(self: Arc<Self>, mut rx: tokio::sync::mpsc::Receiver<JsonRpcRequest>) {
-        use scheduler::{RequestClass, classify};
+        use scheduler::{classify, RequestClass};
 
         let sched = scheduler::Scheduler::new(Arc::clone(&self));
 
@@ -232,15 +232,13 @@ mod strict_ingress_tests {
     }
 
     #[test]
-    fn serving_ingress_rejects_malformed_frames_and_reaches_valid_request()
-    -> Result<(), Box<dyn Error>> {
+    fn serving_ingress_rejects_malformed_frames_and_reaches_valid_request(
+    ) -> Result<(), Box<dyn Error>> {
         let mut invalid_utf8 =
-            br#"{"jsonrpc":"2.0","id":1,"method":"shutdown","params":{"ignored":"safe"}}"#
-                .to_vec();
-        let string_end = invalid_utf8
-            .iter()
-            .rposition(|byte| *byte == b'"')
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing string terminator"))?;
+            br#"{"jsonrpc":"2.0","id":1,"method":"shutdown","params":{"ignored":"safe"}}"#.to_vec();
+        let string_end = invalid_utf8.iter().rposition(|byte| *byte == b'"').ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "missing string terminator")
+        })?;
         invalid_utf8.insert(string_end, 0xff);
         let malformed_json = br#"{"jsonrpc":"2.0","method":"invalid""#;
         let invalid_version = br#"{"jsonrpc":"1.0","id":1,"method":"invalid","params":{}}"#;
@@ -286,8 +284,8 @@ mod strict_ingress_tests {
     }
 
     #[test]
-    fn message_helper_recovers_after_malformed_frame_in_buffered_input()
-    -> Result<(), Box<dyn Error>> {
+    fn message_helper_recovers_after_malformed_frame_in_buffered_input(
+    ) -> Result<(), Box<dyn Error>> {
         let mut invalid_utf8 =
             br#"{"jsonrpc":"2.0","id":1,"method":"invalid","params":{"text":"safe"}}"#.to_vec();
         let string_end = invalid_utf8.iter().rposition(|byte| *byte == b'"').ok_or_else(|| {
