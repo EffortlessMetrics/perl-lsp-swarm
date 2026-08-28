@@ -87,6 +87,30 @@ fn dynamic_and_uncertain_numeric_targets_do_not_generate_class() -> TestResult {
 }
 
 #[test]
+fn quoted_truthy_strings_are_distinct_from_unquoted_false_literals() -> TestResult {
+    for target in ["'undef'", "\"0.0\"", "'package_name'"] {
+        let resolved = resolve_import("Test2::V0", &format!("-target => {target}"))
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+        assert!(
+            resolved.symbols.contains("CLASS"),
+            "quoted non-empty target {target:?} must install CLASS"
+        );
+    }
+
+    for target in ["undef", "0.0"] {
+        let resolved = resolve_import("Test2::V0", &format!("-target => {target}"))
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+        assert!(
+            !resolved.symbols.contains("CLASS"),
+            "unquoted false target {target:?} must not install CLASS"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn named_hash_targets_preserve_defaults_and_generate_helpers() -> TestResult {
     let args = "-target => { pkg => 'Widget', other => 'Gadget' }";
     for (module, expected_default) in [("Test2::V0", "is"), ("Test2::V1", "T2")] {
@@ -147,6 +171,21 @@ fn parenthesized_scalar_targets_consume_only_the_target_value() -> TestResult {
         assert!(!falsey.symbols.contains("CLASS"));
         assert!(falsey.symbols.contains("ok"));
         assert!(!falsey.symbols.contains("is"));
+    }
+    Ok(())
+}
+
+#[test]
+fn unsupported_parenthesized_target_expressions_do_not_generate_class() -> TestResult {
+    for target in ["('Foo', 'Bar')", "($target)", "(foo())"] {
+        let resolved = resolve_import("Test2::V0", &format!("-target => {target}, ok"))
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+        assert!(
+            !resolved.symbols.contains("CLASS"),
+            "unsupported parenthesized target {target:?} must remain unproven"
+        );
+        assert!(resolved.symbols.contains("ok"));
     }
     Ok(())
 }

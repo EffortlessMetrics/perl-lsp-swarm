@@ -402,7 +402,10 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
 
     while let Some(atom) = atoms.get(atom_index) {
         atom_index += 1;
-        let atom = atom.trim();
+        // Keep quote delimiters in tokenizer atoms so `-target` can preserve
+        // Perl's distinction between a quoted string and an unquoted literal.
+        // Other import entries still use their unquoted spelling for matching.
+        let atom = strip_quotes(atom.trim());
         if atom.is_empty() {
             continue;
         }
@@ -647,11 +650,12 @@ fn tokenize_import_args(raw: &str) -> Vec<String> {
     for piece in expanded.split([',']) {
         let piece = piece.replace("=>", " ");
         for tok in piece.split_whitespace() {
-            let cleaned = strip_quotes(tok);
             // An empty quoted value is still an argument. Dropping it would
             // make the following export look like `-target`'s value.
-            if !cleaned.is_empty() || is_quoted_token(tok) {
-                out.push(cleaned.to_string());
+            if !tok.is_empty() {
+                // Preserve quote delimiters: they are semantic for scalar
+                // `-target` truthiness (`'undef'` is true, `undef` is false).
+                out.push(tok.to_string());
             }
         }
     }
@@ -795,11 +799,20 @@ fn consume_parenthesized_scalar(atoms: &[String], start: usize) -> Option<(usize
 /// resolver's proof boundary rather than being guessed as truthy or falsey.
 fn scalar_target_is_truthy(raw: &str) -> bool {
     let trimmed = raw.trim();
+    let quoted = is_quoted_token(trimmed);
+    let value = strip_quotes(trimmed);
+
+    // A quoted non-empty string is truthy except for Perl's one false string,
+    // "0". In particular, quoted spellings such as 'undef' and '0.0' must not
+    // be confused with their unquoted false/dynamic counterparts.
+    if quoted {
+        return !value.is_empty() && value != "0";
+    }
+
     if trimmed == "undef" || is_definitely_false_numeric(trimmed) {
         return false;
     }
 
-    let value = strip_quotes(trimmed);
     if value.is_empty() || value == "0" {
         return false;
     }
