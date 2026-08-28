@@ -185,11 +185,7 @@ fn classify_inheritance(module: &str, args: &[String]) -> Option<DbixClassInheri
     } else {
         DbixClassInheritanceForm::Parent
     };
-    let tokens: Vec<&str> = args
-        .iter()
-        .map(|arg| arg.trim())
-        .filter(|arg| !arg.is_empty() && !matches!(*arg, "," | "=>" | "(" | ")" | "-norequire"))
-        .collect();
+    let tokens = static_parent_tokens(args);
 
     if tokens.is_empty() {
         return Some(DbixClassInheritanceEvidence::Recovered {
@@ -228,6 +224,25 @@ fn classify_inheritance(module: &str, args: &[String]) -> Option<DbixClassInheri
     })
 }
 
+/// Collect candidate parent spellings from `use base`/`use parent` arguments.
+/// The parser folds `qw(WORD ...)` lists into one `qw(...)` token; their
+/// contents are static words, not runtime-computed parent expressions.
+fn static_parent_tokens(args: &[String]) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for arg in args {
+        let arg = arg.trim();
+        if arg.is_empty() || matches!(arg, "," | "=>" | "(" | ")" | "-norequire") {
+            continue;
+        }
+        if let Some(inner) = arg.strip_prefix("qw(").and_then(|rest| rest.strip_suffix(')')) {
+            tokens.extend(inner.split_whitespace().map(str::to_string));
+            continue;
+        }
+        tokens.push(arg.to_string());
+    }
+    tokens
+}
+
 fn table_evidence(
     expression: &Node,
     statement: &Node,
@@ -247,17 +262,20 @@ fn table_evidence(
     };
     match &argument.kind {
         NodeKind::String { value, .. } => {
-            if value.contains('$') || value.contains('@') {
+            // The parser stores raw token text, so a quoted spelling still
+            // carries its delimiters here.
+            let spelling = unquote(value);
+            if spelling.contains('$') || spelling.contains('@') {
                 Some(DbixTableEvidence::Dynamic {
-                    reason: format!("table/source spelling `{value}` interpolates at runtime"),
+                    reason: format!("table/source spelling `{spelling}` interpolates at runtime"),
                 })
-            } else if value.trim().is_empty() {
+            } else if spelling.trim().is_empty() {
                 Some(DbixTableEvidence::Recovered {
                     reason: "table/source spelling is empty".to_string(),
                 })
             } else {
                 Some(DbixTableEvidence::Static {
-                    name: value.clone(),
+                    name: spelling.trim().to_string(),
                     anchor_id: AnchorId(statement.location.start as u64),
                     source_range: source_range(argument),
                 })
@@ -265,7 +283,7 @@ fn table_evidence(
         }
         NodeKind::Identifier { name } if !name.trim().is_empty() => {
             Some(DbixTableEvidence::Static {
-                name: name.clone(),
+                name: name.trim().to_string(),
                 anchor_id: AnchorId(statement.location.start as u64),
                 source_range: source_range(argument),
             })
@@ -363,6 +381,38 @@ mod tests {
             site.inheritance,
             DbixClassInheritanceEvidence::Exact { form: DbixClassInheritanceForm::Parent, .. }
         ));
+    }
+
+    #[test]
+    fn folded_qw_word_list_is_a_static_exact_parent_form() {
+        let found = sites(
+            "package App::Schema::Result::User;\nuse base qw(DBIx::Class::Core);\n__PACKAGE__->table('users');\n",
+        );
+        let site = site_for(&found, "App::Schema::Result::User");
+        assert!(matches!(
+            site.inheritance,
+            DbixClassInheritanceEvidence::Exact { form: DbixClassInheritanceForm::Base, .. }
+        ));
+    }
+
+    #[test]
+    fn quoted_and_padded_table_spellings_normalize_to_one_identity() {
+        let double_quoted = sites(
+            "package App::Schema::Result::User;\nuse base 'DBIx::Class::Core';\n__PACKAGE__->table(\"users\");\n",
+        );
+        let padded = sites(
+            "package App::Schema::Result::User;\nuse base 'DBIx::Class::Core';\n__PACKAGE__->table(' users '); \n",
+        );
+        let site = site_for(&double_quoted, "App::Schema::Result::User");
+        let DbixTableEvidence::Static { name, .. } = &site.table else {
+            panic!("double-quoted table spelling must stay static");
+        };
+        assert_eq!(name, "users");
+        let site = site_for(&padded, "App::Schema::Result::User");
+        let DbixTableEvidence::Static { name, .. } = &site.table else {
+            panic!("padded table spelling must stay static");
+        };
+        assert_eq!(name, "users");
     }
 
     #[test]

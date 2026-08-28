@@ -563,7 +563,7 @@ pub fn dbix_result_profile_facts(
 
     let (table_name, table_anchor_id, table_range) = match table {
         DbixTableEvidence::Static { name, anchor_id, source_range } => {
-            (name, *anchor_id, *source_range)
+            (name.trim(), *anchor_id, *source_range)
         }
         DbixTableEvidence::Missing => {
             facts.outcome = DbixResultProfileOutcome::Absent {
