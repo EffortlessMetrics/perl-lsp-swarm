@@ -160,6 +160,23 @@ fn factory_inference_is_import_receiver_and_latest_assignment_bounded() {
 }
 
 #[test]
+fn trailing_dereference_yields_plain_string_and_does_not_arm_catalog() {
+    let sources = [
+        "use Path::Tiny;\nmy $file = path(\"notes.txt\")->stringify;\n$file->sl",
+        "use Path::Tiny;\nmy $file = Path::Tiny->new(\"x\")->canonpath;\n$file->sl",
+    ];
+
+    for source in sources {
+        let item_labels = labels(&completions_at_end(source));
+        assert!(
+            !has_label(&item_labels, "slurp"),
+            "a call chain continuing past the factory yields a plain string, not a \
+             Path::Tiny object, so the instance catalog must stay quiet in {source:?}"
+        );
+    }
+}
+
+#[test]
 fn textual_path_factory_mentions_outside_code_do_not_activate_catalog() {
     let sources = [
         "use Path::Tiny;\nmy $text = '$file = path(\"notes.txt\")';\n$file->sl",

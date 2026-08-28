@@ -605,7 +605,12 @@ fn expression_calls_static_method(expression: &str, module: &str, method: &str) 
         return false;
     };
 
-    after_method.chars().next().is_none_or(|c| c == '(' || c.is_whitespace())
+    match after_method.chars().next() {
+        None => true,
+        Some('(') => call_arguments_end_expression(after_method),
+        Some(c) if c.is_whitespace() => call_ends_at_indirect_arguments(after_method),
+        _ => false,
+    }
 }
 
 fn expression_calls_function(expression: &str, function: &str) -> bool {
@@ -614,38 +619,38 @@ fn expression_calls_function(expression: &str, function: &str) -> bool {
     };
 
     match after_function.chars().next() {
-        Some('(') => true,
-        Some(c) if c.is_whitespace() => {
-            let argument = after_function.trim_start();
-            !argument.is_empty() && !argument.starts_with("=>")
-        }
+        Some('(') => call_arguments_end_expression(after_function),
+        Some(c) if c.is_whitespace() => call_ends_at_indirect_arguments(after_function),
         _ => false,
     }
 }
 
-fn expression_calls_constructor(expression: &str, module: &str) -> bool {
-    let Some(after_module) = expression.strip_prefix(module) else {
-        return false;
-    };
-    let Some(after_arrow) = after_module.trim_start().strip_prefix("->") else {
-        return false;
-    };
-    let Some(after_new) = after_arrow.trim_start().strip_prefix("new") else {
-        return false;
-    };
-
-    let after_new = after_new.trim_start();
-    if after_new.is_empty() {
-        return true;
+/// Arming evidence for an indirect (whitespace-separated) argument form:
+/// parenthesized arguments must close and end the expression, while paren-less
+/// arguments terminate with the expression itself.
+fn call_ends_at_indirect_arguments(after_name: &str) -> bool {
+    let argument = after_name.trim_start();
+    if argument.starts_with('(') {
+        return call_arguments_end_expression(argument);
     }
-    if !after_new.starts_with('(') {
-        return false;
+    !argument.is_empty() && !argument.starts_with("=>")
+}
+
+/// Whether a call's argument list both closes and ends the expression: after
+/// the balanced close parenthesis (quote/escape aware) only whitespace may
+/// follow. A method-call chain continuing past the call
+/// (`path("x")->stringify`) produces a derived plain value, so it rejects and
+/// factory evidence never arms a catalog for the wrong receiver type.
+fn call_arguments_end_expression(after_name: &str) -> bool {
+    let after_name = after_name.trim_start();
+    if !after_name.starts_with('(') {
+        return after_name.is_empty();
     }
 
     let mut depth = 0usize;
     let mut escaped = false;
     let mut quote = None;
-    for (index, byte) in after_new.bytes().enumerate() {
+    for (index, byte) in after_name.bytes().enumerate() {
         if escaped {
             escaped = false;
             continue;
@@ -669,13 +674,27 @@ fn expression_calls_constructor(expression: &str, module: &str) -> bool {
             b')' => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    return after_new[index + 1..].trim().is_empty();
+                    return after_name[index + 1..].trim().is_empty();
                 }
             }
             _ => {}
         }
     }
     false
+}
+
+fn expression_calls_constructor(expression: &str, module: &str) -> bool {
+    let Some(after_module) = expression.strip_prefix(module) else {
+        return false;
+    };
+    let Some(after_arrow) = after_module.trim_start().strip_prefix("->") else {
+        return false;
+    };
+    let Some(after_new) = after_arrow.trim_start().strip_prefix("new") else {
+        return false;
+    };
+
+    call_arguments_end_expression(after_new)
 }
 
 /// Infer a `Path::Tiny` receiver type from imported factory evidence.
@@ -721,15 +740,18 @@ fn infer_imported_factory_receiver_type(
 /// assignment.
 ///
 /// Claim bound: this is a bounded local bridge over exact same-name scalar
-/// assignments only. Aliases (`my $alias = $http`) and reblessed/derived
-/// namespaces are intentionally unresolved and fail closed (no completion);
-/// parser/semantic-flow backing arrives with #13244, which also owns
-/// migrating this inference onto the canonical workspace facts.
+/// assignments only. `Path::Tiny` factory evidence is owned exclusively by
+/// [`infer_imported_factory_receiver_type`], which runs first at dispatch;
+/// this inference covers the remaining constructor-built clients
+/// (`HTTP::Tiny`, `LWP::UserAgent`) through the hardened
+/// ends-at-close-paren boundary matcher. Aliases (`my $alias = $http`) and
+/// reblessed/derived namespaces are intentionally unresolved and fail closed
+/// (no completion); parser/semantic-flow backing arrives with #13244, which
+/// also owns migrating this inference onto the canonical workspace facts.
 fn infer_imported_constructor_receiver_type(
     context: &CompletionContext,
     source: &str,
     symbol_table: &SymbolTable,
-    used_modules: &HashSet<String>,
 ) -> Option<&'static str> {
     let receiver = context.receiver_prefix().trim_end_matches("->");
     let source_before_cursor = source.get(..context.position).unwrap_or(source);
@@ -744,16 +766,6 @@ fn infer_imported_constructor_receiver_type(
         context.cursor_scope_id,
         receiver_pos + receiver.len(),
     )?;
-
-    if module_was_used_before(source, context.position, "Path::Tiny")
-        && ((module_imported_symbol_before(source, context.position, "Path::Tiny", "path")
-            && expression_calls_function(expression, "path"))
-            || ["new", "cwd", "rootdir", "tempfile", "tempdir"]
-                .into_iter()
-                .any(|method| expression_calls_static_method(expression, "Path::Tiny", method)))
-    {
-        return Some("Path::Tiny");
-    }
 
     ["HTTP::Tiny", "LWP::UserAgent"].into_iter().find(|&module| {
         module_was_used_before(source, context.position, module)
@@ -925,7 +937,6 @@ pub fn add_method_completions(
     context: &CompletionContext,
     source: &str,
     symbol_table: &SymbolTable,
-    used_modules: &HashSet<String>,
 ) {
     let mut seen: HashSet<&str> = HashSet::new();
 
@@ -980,9 +991,7 @@ pub fn add_method_completions(
     // Exact imported factory evidence, then constructor evidence, take
     // priority over naming heuristics.
     let receiver_type = infer_imported_factory_receiver_type(context, source, symbol_table)
-        .or_else(|| {
-            infer_imported_constructor_receiver_type(context, source, symbol_table, used_modules)
-        })
+        .or_else(|| infer_imported_constructor_receiver_type(context, source, symbol_table))
         .map(str::to_owned)
         .or_else(|| infer_receiver_type(context, source));
 
