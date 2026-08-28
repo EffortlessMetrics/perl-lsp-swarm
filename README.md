@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/EffortlessMetrics/perl-lsp/releases"><img src="https://img.shields.io/github/v/release/EffortlessMetrics/perl-lsp?sort=semver&label=release" alt="GitHub release" /></a>
-  <a href="https://crates.io/crates/perl-lsp-rs"><img src="https://img.shields.io/crates/d/perl-lsp-rs.svg?label=crates.io downloads" alt="crates.io downloads" /></a>
+  <a href="https://crates.io/crates/perl-lsp-rs"><img src="https://img.shields.io/crates/d/perl-lsp-rs.svg?label=crates.io%20downloads" alt="crates.io downloads" /></a>
   <a href="https://docs.rs/perl-lsp-rs"><img src="https://docs.rs/perl-lsp-rs/badge.svg" alt="docs.rs" /></a>
 </p>
 
@@ -20,7 +20,7 @@
   <!-- perl-lsp:vs-marketplace-installs-badge:start -->
   <a href="https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs"><img src="https://img.shields.io/badge/VS%20Marketplace-656%20installs-0078D4" alt="VS Marketplace installs" /></a>
   <!-- perl-lsp:vs-marketplace-installs-badge:end -->
-  <a href="https://open-vsx.org/extension/EffortlessMetrics.perl-lsp-rs"><img src="https://img.shields.io/open-vsx/dt/EffortlessMetrics/perl-lsp-rs?label=Open%20VSX%20downloads" alt="Open VSX downloads" /></a>
+  <a href="https://open-vsx.org/extension/EffortlessMetrics/perl-lsp-rs"><img src="https://img.shields.io/open-vsx/dt/EffortlessMetrics/perl-lsp-rs?label=Open%20VSX%20downloads" alt="Open VSX downloads" /></a>
 </p>
 
 <p align="center">
