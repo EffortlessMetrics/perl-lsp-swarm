@@ -6,6 +6,9 @@ on:
       - chatgpt/http-client-method-completion
     paths:
       - .github/workflows/pr-13181-clippy-fix.yml
+  pull_request:
+    paths:
+      - .github/workflows/pr-13181-clippy-fix.yml
 
 permissions:
   contents: write
