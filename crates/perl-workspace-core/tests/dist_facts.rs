@@ -51,6 +51,42 @@ fn builder_extracts_meta_json_facts() {
 }
 
 #[test]
+fn builder_retains_meta_v1_configure_build_and_runtime_phases() {
+    let model = build(
+        "meta-v1-phases",
+        &[(
+            "META.json",
+            r#"{
+                "configure_requires": {"ExtUtils::MakeMaker": "6.64"},
+                "build_requires": {"Test::More": "0.88"},
+                "requires": {"Carp": "0"}
+            }"#,
+        )],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    let facts = model
+        .dist_metadata
+        .iter()
+        .find(|d| d.source == perl_workspace_core::DistMetadataSource::MetaJson)
+        .unwrap();
+
+    let mapped = facts
+        .prereqs
+        .iter()
+        .map(|p| (p.module.as_str(), p.phase.as_str(), p.relation.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        mapped,
+        vec![
+            ("Test::More", "build", "requires"),
+            ("ExtUtils::MakeMaker", "configure", "requires"),
+            ("Carp", "runtime", "requires"),
+        ],
+        "builder -> DistMetadata -> META.json extraction preserves all canonical phases"
+    );
+}
+
+#[test]
 fn builder_extracts_cpanfile_facts() {
     let model = build(
         "cpan",
