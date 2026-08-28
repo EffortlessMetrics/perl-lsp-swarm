@@ -263,9 +263,9 @@ table users => sub {
     let fact = facts.first().ok_or("missing qorm_table fact")?;
     assert_eq!(fact.entity.kind, EntityKind::GeneratedMember);
     assert_eq!(fact.entity.provenance, Provenance::FrameworkSynthesis);
-    assert_eq!(fact.entity.confidence, Confidence::Medium);
+    assert_eq!(fact.entity.confidence, Confidence::High);
     assert_eq!(fact.anchor.provenance, Provenance::FrameworkSynthesis);
-    assert_eq!(fact.anchor.confidence, Confidence::Medium);
+    assert_eq!(fact.anchor.confidence, Confidence::High);
     assert!(fact.anchor.span_end_byte > fact.anchor.span_start_byte);
     Ok(())
 }

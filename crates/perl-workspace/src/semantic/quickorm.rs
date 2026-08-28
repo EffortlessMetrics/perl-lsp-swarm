@@ -348,7 +348,10 @@ fn push_qorm_table_fact(
         span_end_byte: span_end.min(u32::MAX as usize) as u32,
         scope_id: None,
         provenance: Provenance::FrameworkSynthesis,
-        confidence: Confidence::Medium,
+        // Exact source-backed QuickORM configuration, direct package-level
+        // builder shape, and a source anchor satisfy the policy requirement
+        // for live generated workspace symbols.
+        confidence: Confidence::High,
     };
     let entity = EntityFact {
         id: entity_id,
@@ -357,7 +360,7 @@ fn push_qorm_table_fact(
         anchor_id: Some(anchor_id),
         scope_id: None,
         provenance: Provenance::FrameworkSynthesis,
-        confidence: Confidence::Medium,
+        confidence: Confidence::High,
     };
 
     facts.push(GeneratedMemberFact { entity, anchor });

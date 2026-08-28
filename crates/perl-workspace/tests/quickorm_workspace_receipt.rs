@@ -30,7 +30,7 @@ table "users" => sub {
         .find(|entity| entity.canonical_name == "MyApp::Schema::User::qorm_table")
         .ok_or("missing QuickORM qorm_table entity")?;
     assert_eq!(entity.provenance, perl_semantic_facts::Provenance::FrameworkSynthesis);
-    assert_eq!(entity.confidence, perl_semantic_facts::Confidence::Medium);
+    assert_eq!(entity.confidence, perl_semantic_facts::Confidence::High);
 
     let anchor_id = entity.anchor_id.ok_or("entity lacks anchor")?;
     let anchor = shard
@@ -69,6 +69,54 @@ table "users" => sub {
         "literal table-package configuration must not be stored as a dynamic import"
     );
 
+    Ok(())
+}
+
+#[test]
+fn workspace_index_receipts_cover_bare_block_package_restore()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/BareBlock.pm")?;
+    let source = r#"
+package MyApp::Schema::Outer;
+use DBIx::QuickORM type => 'table';
+{
+    package MyApp::Schema::Inner;
+    use DBIx::QuickORM type => 'table';
+    table inner_users => sub {};
+}
+table outer_users => sub {};
+1;
+"#;
+
+    index.index_file(uri, source.to_string())?;
+    let generated = index.search_generated_workspace_symbols("qorm_table", None);
+    let mut qualified_names: Vec<_> =
+        generated.iter().filter_map(|symbol| symbol.qualified_name.as_deref()).collect();
+    qualified_names.sort_unstable();
+    assert_eq!(
+        qualified_names,
+        ["MyApp::Schema::Inner::qorm_table", "MyApp::Schema::Outer::qorm_table",]
+    );
+    Ok(())
+}
+
+#[test]
+fn workspace_index_receipts_keep_perl_interpolation_dynamic()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (name, table_name) in [("Namespaced", "$::prefix_users"), ("Special", "$^O")] {
+        let index = WorkspaceIndex::new();
+        let uri = Url::parse(&format!("file:///lib/MyApp/Schema/{name}.pm"))?;
+        let source = format!(
+            "package MyApp::Schema::{name};\nuse DBIx::QuickORM type => 'table';\ntable \"{table_name}\" => sub {{}};\n1;\n"
+        );
+
+        index.index_file(uri, source)?;
+        assert!(
+            index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
+            "interpolated table name {table_name} must not reach generated workspace symbols"
+        );
+    }
     Ok(())
 }
 
