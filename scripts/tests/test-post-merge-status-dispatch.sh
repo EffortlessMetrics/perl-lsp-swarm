@@ -42,7 +42,7 @@ grep -Fq 'Verify dispatched formatter subject' "$ci_workflow" \
 grep -Fq 'if [[ ! "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ || "$GITHUB_SHA" != "$EXPECTED_HEAD_SHA" ]]' "$ci_workflow" \
   || fail 'ci.yml must fail closed on malformed or raced dispatch subjects'
 
-for workflow in em-ci-routed-rust.yml ripr.yml pr-title-check.yml; do
+for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml; do
   workflow_path="$ROOT/.github/workflows/$workflow"
   if grep -Fq 'dispatch-subject:' "$workflow_path" || grep -Fq 'needs: dispatch-subject' "$workflow_path"; then
     fail "$workflow must not add a dispatch-subject prerequisite job"

@@ -1637,8 +1637,6 @@ jobs:
     name: Rust formatting
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    needs: dispatch-subject
-    if: always() && needs.dispatch-subject.result == 'success'
     env:
       SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
       RECEIPT_PATH: target/receipts/rustfmt/rustfmt-check.json
