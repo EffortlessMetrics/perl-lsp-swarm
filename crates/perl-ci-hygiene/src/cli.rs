@@ -176,12 +176,9 @@ mod tests {
 
         assert_eq!(
             args,
-            owned(&[
-                "--fail-on-regression",
-                "--threshold=-0.5",
-                "baseline.json",
-                "candidate.json",
-            ])
+            owned(
+                &["--fail-on-regression", "--threshold=-0.5", "baseline.json", "candidate.json"]
+            )
         );
         Ok(())
     }
@@ -200,10 +197,7 @@ mod tests {
             return Err(eyre!("expected test-capped command"));
         };
 
-        assert_eq!(
-            cargo_args,
-            owned(&["--workspace", "--all-targets", "parser::tests"])
-        );
+        assert_eq!(cargo_args, owned(&["--workspace", "--all-targets", "parser::tests"]));
         Ok(())
     }
 
@@ -236,21 +230,14 @@ mod tests {
         };
 
         assert!(!inventory);
-        assert_eq!(
-            identity_registry,
-            Some(PathBuf::from("policy/panic-test-identities.json"))
-        );
+        assert_eq!(identity_registry, Some(PathBuf::from("policy/panic-test-identities.json")));
         Ok(())
     }
 
     #[test]
     fn edge_case_flags_are_independent() -> Result<()> {
-        let cli = Cli::try_parse_from([
-            "perl-ci-hygiene",
-            "test-edge-cases",
-            "--bench",
-            "--coverage",
-        ])?;
+        let cli =
+            Cli::try_parse_from(["perl-ci-hygiene", "test-edge-cases", "--bench", "--coverage"])?;
         let CliCommand::TestEdgeCases { bench, coverage } = cli.command else {
             return Err(eyre!("expected test-edge-cases command"));
         };
@@ -268,11 +255,7 @@ mod tests {
         };
         assert!(!default_check);
 
-        let check_cli = Cli::try_parse_from([
-            "perl-ci-hygiene",
-            "generate-badges",
-            "--check",
-        ])?;
+        let check_cli = Cli::try_parse_from(["perl-ci-hygiene", "generate-badges", "--check"])?;
         let CliCommand::GenerateBadges { check } = check_cli.command else {
             return Err(eyre!("expected generate-badges command"));
         };
@@ -288,11 +271,8 @@ mod tests {
         };
         assert_eq!(default_dir, None);
 
-        let selected_cli = Cli::try_parse_from([
-            "perl-ci-hygiene",
-            "check-doc-paths",
-            "docs/reference",
-        ])?;
+        let selected_cli =
+            Cli::try_parse_from(["perl-ci-hygiene", "check-doc-paths", "docs/reference"])?;
         let CliCommand::CheckDocPaths { docs_dir } = selected_cli.command else {
             return Err(eyre!("expected check-doc-paths command"));
         };
@@ -302,8 +282,7 @@ mod tests {
 
     #[test]
     fn scalar_and_boolean_inputs_reach_their_variants() -> Result<()> {
-        let version_cli =
-            Cli::try_parse_from(["perl-ci-hygiene", "bump-version", "0.18.0"])?;
+        let version_cli = Cli::try_parse_from(["perl-ci-hygiene", "bump-version", "0.18.0"])?;
         let CliCommand::BumpVersion { version } = version_cli.command else {
             return Err(eyre!("expected bump-version command"));
         };
@@ -315,8 +294,7 @@ mod tests {
         };
         assert!(list);
 
-        let fatal_cli =
-            Cli::try_parse_from(["perl-ci-hygiene", "forbid-fatal-constructs", "-v"])?;
+        let fatal_cli = Cli::try_parse_from(["perl-ci-hygiene", "forbid-fatal-constructs", "-v"])?;
         let CliCommand::ForbidFatalConstructs { verbose } = fatal_cli.command else {
             return Err(eyre!("expected forbid-fatal-constructs command"));
         };
