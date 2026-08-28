@@ -390,6 +390,28 @@ fn test_e2e_http_completion_respects_pod_and_heredoc_boundaries() -> TestResult 
         Ok(())
     }
 
+    fn assert_no_post_completion(ctx: &mut TestContext, uri: &str, source: &str) -> TestResult {
+        ctx.open_document(uri, source);
+        let line = source.lines().count().saturating_sub(1) as u32;
+        let character =
+            source.lines().last().ok_or("completion source has no final line")?.len() as u32;
+        let result = ctx
+            .send_request(
+                "textDocument/completion",
+                Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character }
+                })),
+            )
+            .ok_or("production completion request returned no result")?;
+        let items = result["items"].as_array().ok_or("expected completion items")?;
+        assert!(
+            !items.iter().any(|item| item["label"] == "post"),
+            "POD/heredoc content must not offer HTTP::Tiny methods for {source:?}, got {items:?}"
+        );
+        Ok(())
+    }
+
     let mut ctx = TestContext::new();
     ctx.initialize();
 
@@ -401,7 +423,17 @@ fn test_e2e_http_completion_respects_pod_and_heredoc_boundaries() -> TestResult 
     assert_post_completion(
         &mut ctx,
         "file:///test/http-pod-for.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=for comment\ndocumentation\n\n=cut\n$http->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-pod-for-inside.pl",
         "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=for comment\ndocumentation\n\n$http->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-heredoc-inside.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\nmy $text = <<'END';\n$http->po",
     )?;
     assert_post_completion(
         &mut ctx,

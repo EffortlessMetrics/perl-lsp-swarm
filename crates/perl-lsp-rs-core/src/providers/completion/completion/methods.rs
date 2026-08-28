@@ -340,10 +340,13 @@ fn latest_assignment_for_binding<'a>(
         }
 
         let after_receiver = source[receiver_pos + receiver.len()..].trim_start();
-        let Some(assignment) = after_receiver.strip_prefix('=') else {
+        let Some((assignment, compound)) = assignment_after_receiver(after_receiver) else {
             continue;
         };
-        if assignment.chars().next().is_some_and(|c| matches!(c, '=' | '>' | '~')) {
+        if compound {
+            // Compound assignment changes the receiver's value, so an earlier
+            // constructor assignment is no longer reliable type evidence.
+            expression = Some("");
             continue;
         }
         let statement_end = assignment.find(';').unwrap_or(assignment.len());
@@ -351,6 +354,21 @@ fn latest_assignment_for_binding<'a>(
     }
 
     expression
+}
+
+fn assignment_after_receiver(after_receiver: &str) -> Option<(&str, bool)> {
+    for operator in [
+        "**=", "<<=", ">>=", "&&=", "||=", "//=", ".=", "+=", "-=", "*=", "/=", "%=", "&=", "|=",
+        "^=", "=",
+    ] {
+        if let Some(rhs) = after_receiver.strip_prefix(operator) {
+            if operator == "=" && rhs.chars().next().is_some_and(|c| matches!(c, '=' | '>' | '~')) {
+                return None;
+            }
+            return Some((rhs, operator != "="));
+        }
+    }
+    None
 }
 
 fn expression_calls_constructor(expression: &str, module: &str) -> bool {

@@ -96,15 +96,14 @@ fn production_method_completion_ignores_pod_looking_heredoc_content()
 #[test]
 fn production_method_completion_accepts_real_for_and_rejects_malformed_or_reassigned_context()
 -> Result<(), Box<dyn std::error::Error>> {
-    let for_source =
-        "use HTTP::Tiny;\n=for comment\ndocumentation\n\nmy $http = HTTP::Tiny->new;\n$http->po";
+    let for_source = "use HTTP::Tiny;\n=for comment\ndocumentation\n\n=cut\nmy $http = HTTP::Tiny->new;\n$http->po";
     let for_provider = completion_provider(for_source)?;
     assert!(
         for_provider
             .get_completions(for_source, for_source.len())
             .iter()
             .any(|item| item.label == "post"),
-        "a real =for paragraph must not suppress following code"
+        "code after =cut must remain reachable after a =for paragraph"
     );
 
     let malformed_source =

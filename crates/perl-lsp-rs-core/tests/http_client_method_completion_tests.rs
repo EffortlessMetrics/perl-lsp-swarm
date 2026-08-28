@@ -70,6 +70,8 @@ fn constructor_inference_is_import_receiver_and_assignment_bounded() {
         "my $http = HTTP::Tiny->new;\n$http->po",
         "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http = Other::Client->new;\n$http->po",
         "use HTTP::Tiny;\nmy $http_client = HTTP::Tiny->new;\n$http->po",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http .= \"text\";\n$http->po",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http += 1;\n$http->po",
     ];
 
     for source in sources {
@@ -108,6 +110,18 @@ fn pod_regions_resume_code_after_matching_end_and_for_paragraph() {
         has_label(&begin_labels, "post"),
         "code after =end must be reachable: {begin_labels:?}"
     );
+}
+
+#[test]
+fn for_paragraph_requires_cut_before_code_resumes() {
+    let inside_pod =
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=for comment\ntext\n\n$http->po";
+    let inside_labels = labels(&completions_at_end(inside_pod));
+    assert!(!has_label(&inside_labels, "post"));
+
+    let after_cut = format!("{inside_pod}\n=cut\n$http->po");
+    let after_cut_labels = labels(&completions_at_end(&after_cut));
+    assert!(has_label(&after_cut_labels, "post"));
 }
 
 #[test]
