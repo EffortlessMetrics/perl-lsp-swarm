@@ -102,6 +102,11 @@ export { formatIssueDiagnosticInfo } from './supportCommands';
 import { ExtensionLanguageClientLifecycle } from './extensionComposition';
 import type { LifecycleState } from './languageClientLifecycle';
 import {
+  StaleDocumentReplayError,
+  replayOpenPerlDocumentsWhenReady,
+} from './languageClientDocumentSync';
+import { settleLspProviderCall } from './lspProviderCall';
+import {
   CrashRecoveryArbiter,
   type CrashObservationSource,
   type CrashRecoveryDecision,
@@ -175,6 +180,10 @@ let streamingController: StreamingCompletionController | undefined;
 let languageClientLifecycle:
   | ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent>
   | undefined;
+// The extension lifecycle and CrashRecoveryArbiter are the sole restart owners.
+// Disable vscode-languageclient's independent connection-close restart loop so
+// one server crash cannot create overlapping replacement clients/processes.
+const LANGUAGE_CLIENT_CONNECTION_OPTIONS = Object.freeze({ maxRestartCount: 0 });
 /**
  * The single owner of "should perllsp be running?" (#8180). Extension
  * activation composes it; nothing else may start the language client directly.
@@ -216,7 +225,6 @@ export function createBinaryIdentityCommand(
 
 const languageClientStartupMetrics = new LanguageClientStartupMetrics();
 const activeDocumentReadiness = new ActiveDocumentReadiness();
-let latestLanguageClientGeneration = 0;
 const featureActivationMetrics = new FeatureActivationMetrics();
 
 export function getLanguageClientStartupMetrics(): LanguageClientStartupMetricsSnapshot {
@@ -407,6 +415,11 @@ export function _setLanguageClientLifecycleForTest(
   lifecycle: ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent> | undefined,
 ): void {
   languageClientLifecycle = lifecycle;
+}
+
+/** Test helper exposing the production connection-close ownership policy. */
+export function _languageClientConnectionOptionsForTest(): Readonly<{ maxRestartCount: number }> {
+  return LANGUAGE_CLIENT_CONNECTION_OPTIONS;
 }
 
 /**
@@ -831,7 +844,7 @@ async function runExtensionActivation(
       return lifecycle.serverPath;
     },
     reinstallServerBinary: () => reinstallServerBinary(context),
-    restartServer: () => restartServer(context),
+    restartServer: () => restartServerFromExplicitRecovery(context),
     showBinaryIdentity: createBinaryIdentityCommand(
       () => client ?? languageClientLifecycle?.client,
       (context.extension.packageJSON.version as string) ?? 'unknown',
@@ -1747,11 +1760,20 @@ function createLanguageClientLifecycle(
       languageClientStartupMetrics.setServerVersion(
         startedClient.initializeResult?.serverInfo?.version,
       );
-      await finalizeStartedLanguageClient(context, startedClient, latestLanguageClientGeneration);
+      const generation = languageClientLifecycle?.snapshot.generation;
+      if (generation === undefined) {
+        throw new Error('Language-client lifecycle is unavailable during startup finalization.');
+      }
+      await finalizeStartedLanguageClient(context, startedClient, generation);
     },
-    onFailed: () => {
+    onFailed: (snapshot) => {
       languageClientStartupMetrics.finishServerStart('error');
       languageClientStartupMetrics.finishInitialize('error');
+      const message =
+        snapshot.error instanceof Error ? snapshot.error.message : String(snapshot.error);
+      outputChannel.error(
+        `[lifecycle] Language client failed to start (generation ${snapshot.generation}): ${message}`,
+      );
     },
     onStateChange: (snapshot) => {
       languageClientStartupMetrics.setLifecycleState(snapshot.state);
@@ -1794,11 +1816,39 @@ async function finalizeStartedLanguageClient(
   startedClient: LanguageClient,
   generation: number,
 ): Promise<void> {
+  const isCurrent = (): boolean =>
+    languageClientLifecycle?.controller.isCurrent(startedClient, generation) === true;
+  const assertCurrent = (): void => {
+    if (!isCurrent()) {
+      throw new StaleDocumentReplayError();
+    }
+  };
+
+  assertCurrent();
   // A LanguageClient restart does not replay didOpen for documents that VS Code
   // kept open while the previous client was stopped. Rehydrate those documents
   // before providers issue requests against the new server.
   if (generation > 1) {
-    await synchronizeOpenPerlDocuments(startedClient);
+    const openPerlDocuments = vscode.workspace.textDocuments
+      .filter(
+        (document) =>
+          document.languageId === 'perl' &&
+          (document.uri.scheme === 'file' || document.uri.scheme === 'untitled'),
+      )
+      .map((document) => ({
+        uri: document.uri.toString(),
+        languageId: document.languageId,
+        version: document.version,
+        text: document.getText(),
+      }));
+    await replayOpenPerlDocumentsWhenReady(
+      startedClient,
+      openPerlDocuments,
+      LanguageClientState.Running,
+      isCurrent,
+      2000,
+    );
+    assertCurrent();
   }
 
   // This hook is part of the lifecycle controller so initial startup and
@@ -1819,6 +1869,7 @@ async function finalizeStartedLanguageClient(
   });
 
   await refreshTestAdapter(context);
+  assertCurrent();
   refreshStreamingController(startedClient);
   try {
     await syncLanguageClientConfiguration(startedClient);
@@ -1826,28 +1877,9 @@ async function finalizeStartedLanguageClient(
     const message = error instanceof Error ? error.message : String(error);
     outputChannel.error(`[configuration] initial synchronization failed: ${message}`);
   }
+  assertCurrent();
   lastStartupDiagnosis = undefined;
   outputChannel.info('Perl Language Server started successfully');
-}
-
-async function synchronizeOpenPerlDocuments(client: LanguageClient): Promise<void> {
-  for (const document of vscode.workspace.textDocuments) {
-    if (
-      document.languageId !== 'perl' ||
-      (document.uri.scheme !== 'file' && document.uri.scheme !== 'untitled')
-    ) {
-      continue;
-    }
-
-    await client.sendNotification('textDocument/didOpen', {
-      textDocument: {
-        uri: document.uri.toString(),
-        languageId: document.languageId,
-        version: document.version,
-        text: document.getText(),
-      },
-    });
-  }
 }
 
 async function initializeLanguageClient(context: vscode.ExtensionContext): Promise<boolean> {
@@ -1943,7 +1975,6 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
 
 function createLanguageClient(serverPath: string): LanguageClient {
   const generation = activeDocumentReadiness.beginGeneration();
-  latestLanguageClientGeneration = generation;
   healthWidget?.seedIndexReadinessState('building');
   const serverOptions: ServerOptions = {
     run: {
@@ -1963,6 +1994,7 @@ function createLanguageClient(serverPath: string): LanguageClient {
   );
 
   const clientOptions: LanguageClientOptions = {
+    connectionOptions: LANGUAGE_CLIENT_CONNECTION_OPTIONS,
     documentSelector: [
       { scheme: 'file', language: 'perl' },
       { scheme: 'untitled', language: 'perl' },
@@ -1974,81 +2006,150 @@ function createLanguageClient(serverPath: string): LanguageClient {
     traceOutputChannel: outputChannel,
     middleware: {
       provideCompletionItem: async (document, position, context, token, next) => {
-        try {
-          const result = await next(document, position, context, token);
-          recordLspProviderOutcome('Completion', document, result);
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('Completion', error);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
         }
+        return settleLspProviderCall(
+          async () => {
+            const result = await next(document, position, context, token);
+            recordLspProviderOutcome('Completion', document, result);
+            return result;
+          },
+          null,
+          (error) => handleLspProviderError('Completion', error),
+        );
       },
       provideDefinition: async (document, position, token, next) => {
-        try {
-          const result = await next(document, position, token);
-          recordLspProviderOutcome('Definition', document, result);
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('Definition', error);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
         }
+        return settleLspProviderCall(
+          async () => {
+            const result = await next(document, position, token);
+            recordLspProviderOutcome('Definition', document, result);
+            return result;
+          },
+          null,
+          (error) => handleLspProviderError('Definition', error),
+        );
       },
       provideHover: async (document, position, token, next) => {
-        try {
-          const result = await next(document, position, token);
-          recordLspProviderOutcome('Hover', document, result);
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('Hover', error);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
         }
+        return settleLspProviderCall(
+          async () => {
+            const result = await next(document, position, token);
+            recordLspProviderOutcome('Hover', document, result);
+            return result;
+          },
+          null,
+          (error) => handleLspProviderError('Hover', error),
+        );
       },
       provideReferences: async (document, position, options, token, next) => {
-        try {
-          const result = await next(document, position, options, token);
-          recordLspProviderOutcome('References', document, result);
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('References', error);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
         }
+        return settleLspProviderCall(
+          async () => {
+            const result = await next(document, position, options, token);
+            recordLspProviderOutcome('References', document, result);
+            return result;
+          },
+          null,
+          (error) => handleLspProviderError('References', error),
+        );
       },
       provideDocumentSymbols: async (document, token, next) => {
-        try {
-          const result = await next(document, token);
-          recordLspProviderOutcome('Symbols', document, result);
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('Symbols', error);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
         }
+        return settleLspProviderCall(
+          async () => {
+            const result = await next(document, token);
+            recordLspProviderOutcome('Symbols', document, result);
+            return result;
+          },
+          null,
+          (error) => handleLspProviderError('Symbols', error),
+        );
       },
       provideRenameEdits: async (document, position, newName, token, next) => {
-        try {
-          const result = await next(document, position, newName, token);
-          recordLspProviderOutcome('Rename', document, result, 'safe_refusal');
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('Rename', error);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
         }
+        return settleLspProviderCall(
+          async () => {
+            const result = await next(document, position, newName, token);
+            recordLspProviderOutcome('Rename', document, result, 'safe_refusal');
+            return result;
+          },
+          null,
+          (error) => handleLspProviderError('Rename', error),
+        );
       },
       provideCodeLenses: async (document, token, next) => {
-        const lenses = await next(document, token);
-        return lenses?.map(rewriteTestLensCommand);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return [];
+        }
+        try {
+          const lenses = await next(document, token);
+          return lenses?.map(rewriteTestLensCommand);
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return [];
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return [];
+          }
+          outputChannel?.warn(`[provider] CodeLens failed: ${message}`);
+          return [];
+        }
       },
       resolveCodeLens: async (codeLens, token, next) => {
-        const resolved = await next(codeLens, token);
-        return rewriteTestLensCommand(resolved ?? codeLens);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return rewriteTestLensCommand(codeLens);
+        }
+        try {
+          const resolved = await next(codeLens, token);
+          return rewriteTestLensCommand(resolved ?? codeLens);
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return rewriteTestLensCommand(codeLens);
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return rewriteTestLensCommand(codeLens);
+          }
+          outputChannel?.warn(`[provider] CodeLens resolve failed: ${message}`);
+          return rewriteTestLensCommand(codeLens);
+        }
       },
       provideDocumentFormattingEdits: async (document, options, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
         try {
           const edits = await next(document, options, token);
           const presentation = presentFormattingProviderOutcome(edits?.length ?? 0);
           healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
           return edits;
         } catch (err: unknown) {
+          if (isRequestCancellation(err)) {
+            return null;
+          }
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('Client got disposed')) {
+            return null;
+          }
           const code =
             err && typeof err === 'object' && 'code' in err
               ? (err as { code: unknown }).code
               : undefined;
           // Do not notify for request cancellations (code -32800)
           if (code !== -32800) {
-            const msg = err instanceof Error ? err.message : String(err);
             handleFormattingError(msg, outputChannel);
             const presentation = presentFormattingProviderError(msg);
             healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
@@ -2057,23 +2158,198 @@ function createLanguageClient(serverPath: string): LanguageClient {
         }
       },
       provideDocumentRangeFormattingEdits: async (document, range, options, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
         try {
           const edits = await next(document, range, options, token);
           const presentation = presentFormattingProviderOutcome(edits?.length ?? 0, true);
           healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
           return edits;
         } catch (err: unknown) {
+          if (isRequestCancellation(err)) {
+            return null;
+          }
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('Client got disposed')) {
+            return null;
+          }
           const code =
             err && typeof err === 'object' && 'code' in err
               ? (err as { code: unknown }).code
               : undefined;
           if (code !== -32800) {
-            const msg = err instanceof Error ? err.message : String(err);
             handleFormattingError(msg, outputChannel);
             const presentation = presentFormattingProviderError(msg, true);
             healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
           }
           return null;
+        }
+      },
+      provideFoldingRanges: async (document, context, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return [];
+        }
+        try {
+          const result = await next(document, context, token);
+          return result ?? [];
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return [];
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return [];
+          }
+          outputChannel?.warn(`[provider] FoldingRanges failed: ${message}`);
+          return [];
+        }
+      },
+      provideInlayHints: async (document, range, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return [];
+        }
+        try {
+          const result = await next(document, range, token);
+          return result ?? [];
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return [];
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return [];
+          }
+          outputChannel?.warn(`[provider] InlayHints failed: ${message}`);
+          return [];
+        }
+      },
+      provideDocumentSemanticTokens: async (document, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
+        try {
+          return (await next(document, token)) ?? null;
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return null;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return null;
+          }
+          outputChannel?.warn(`[provider] SemanticTokens failed: ${message}`);
+          return null;
+        }
+      },
+      provideDocumentRangeSemanticTokens: async (document, range, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
+        try {
+          return (await next(document, range, token)) ?? null;
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return null;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return null;
+          }
+          outputChannel?.warn(`[provider] RangeSemanticTokens failed: ${message}`);
+          return null;
+        }
+      },
+      provideDocumentSemanticTokensEdits: async (document, previousResultId, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
+        try {
+          return (await next(document, previousResultId, token)) ?? null;
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return null;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return null;
+          }
+          outputChannel?.warn(`[provider] SemanticTokensEdits failed: ${message}`);
+          return null;
+        }
+      },
+      provideCodeActions: async (document, range, context, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return [];
+        }
+        try {
+          const result = await next(document, range, context, token);
+          return result ?? [];
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return [];
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return [];
+          }
+          outputChannel?.warn(`[provider] CodeActions failed: ${message}`);
+          return [];
+        }
+      },
+      resolveCodeAction: async (item, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return item;
+        }
+        try {
+          return (await next(item, token)) ?? item;
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return item;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return item;
+          }
+          outputChannel?.warn(`[provider] CodeAction resolve failed: ${message}`);
+          return item;
+        }
+      },
+      provideDocumentLinks: async (document, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return [];
+        }
+        try {
+          const result = await next(document, token);
+          return result ?? [];
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return [];
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return [];
+          }
+          outputChannel?.warn(`[provider] DocumentLinks failed: ${message}`);
+          return [];
+        }
+      },
+      resolveDocumentLink: async (link, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return link;
+        }
+        try {
+          return (await next(link, token)) ?? link;
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return link;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return link;
+          }
+          outputChannel?.warn(`[provider] DocumentLink resolve failed: ${message}`);
+          return link;
         }
       },
       handleWorkDoneProgress: (token, params, next) => {
@@ -2130,15 +2406,11 @@ function recordLspProviderOutcome(
   healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
 }
 
-function handleLspProviderError(label: string, error: unknown): null {
-  if (isRequestCancellation(error)) {
-    return null;
-  }
+function handleLspProviderError(label: string, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   const presentation = presentLspProviderError(label, message);
   healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
   outputChannel?.warn(`[provider] ${label} failed: ${message}`);
-  return null;
 }
 
 function isRequestCancellation(error: unknown): boolean {
@@ -2438,6 +2710,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
     !client &&
     !currentServerPath &&
     !lifecycle.hasPendingServerPathOverride &&
+    lifecycle.snapshot.generation === 0 &&
     lifecycle.snapshot.state === 'stopped'
   ) {
     if (!serverDemand) {
@@ -2517,6 +2790,11 @@ async function restartServer(_context: vscode.ExtensionContext) {
   } finally {
     userInitiatedStopPending = false;
   }
+}
+
+async function restartServerFromExplicitRecovery(context: vscode.ExtensionContext): Promise<void> {
+  crashRecoveryArbiter.resetForExplicitRecovery();
+  await restartServer(context);
 }
 
 function shouldFormatOnSave(document: vscode.TextDocument): boolean {
@@ -2905,6 +3183,12 @@ async function recoverFromObservedCrash(
   );
 
   if (decision.disposition === 'crash_budget_exhausted') {
+    // The raw client has stopped, but the lifecycle snapshot otherwise still
+    // advertises its last accepted `running` generation. Retire that dead
+    // client before presenting the manual-recovery boundary so exhaustion is
+    // observably terminal and an explicit retry starts from `stopped`.
+    disposeClientIntegrations();
+    await languageClientLifecycle?.stop();
     await reportCrashBudgetExhausted();
     return;
   }
@@ -3037,8 +3321,7 @@ async function reportCrashBudgetExhausted(): Promise<void> {
     // A manual restart is an explicit user restart (#7845): it resets the
     // automatic crash-recovery budget without ever having consumed it.
     // restartServer never rejects; it surfaces its own failure dialogs.
-    crashRecoveryArbiter.resetForExplicitRecovery();
-    await restartServer(context);
+    await restartServerFromExplicitRecovery(context);
   } else if (selection === 'Run Health Check') {
     const serverPath = currentServerPath ?? undefined;
     await vscode.commands.executeCommand('perl-lsp.runHealthCheck', serverPath);
