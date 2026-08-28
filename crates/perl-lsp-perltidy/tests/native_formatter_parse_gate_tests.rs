@@ -318,9 +318,9 @@ fn range_format_clean_lines_succeeds_when_heredoc_is_elsewhere_in_document() {
     );
 }
 
-/// Range-format that covers a line with a heredoc marker must still bail.
+/// Range-format that covers an unclosed heredoc remains owned by the parse gate.
 #[test]
-fn range_format_bails_when_range_contains_heredoc() {
+fn range_format_parse_gates_when_range_contains_unclosed_heredoc() {
     let formatter = NativeFormatter::new();
     // Line 0 is clean; line 1 has a heredoc start.
     let source = "my $x = 1;\nprint <<'EOF';\n";
@@ -331,12 +331,9 @@ fn range_format_bails_when_range_contains_heredoc() {
     assert!(!result.changed);
     assert!(result.edits.is_empty());
     assert!(
-        result
-            .diagnostics
-            .first()
-            .is_some_and(|d| d.code == "native.format.literal_preserve_region"
-                && d.message.contains("heredoc")),
-        "expected heredoc literal_preserve_region diagnostic; got: {:?}",
+        result.diagnostics.first().is_some_and(|d| d.code.starts_with("native.format.parse_")
+            && d.code != "native.format.literal_preserve_region"),
+        "expected parse-gate diagnostic; got: {:?}",
         result.diagnostics,
     );
 }

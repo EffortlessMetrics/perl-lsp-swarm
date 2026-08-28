@@ -44,6 +44,64 @@ fn native_range_formatter_refuses_real_heredoc_body_with_utf8_prefix() {
 }
 
 #[test]
+fn native_range_formatter_refuses_real_heredoc_terminator_with_crlf() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<'EOF';\r\nraw { text }\r\nEOF\r\nmy$x=1;\r\n";
+
+    let result = formatter.format_range(source, line_range(2), &FormatConfig::default());
+
+    assert_heredoc_refusal(&result, source);
+}
+
+#[test]
+fn native_range_formatter_refuses_final_heredoc_terminator_without_newline() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<'EOF';\nraw { text }\nEOF";
+
+    let result = formatter.format_range(source, line_range(2), &FormatConfig::default());
+
+    assert_heredoc_refusal(&result, source);
+}
+
+#[test]
+fn unterminated_heredoc_remains_owned_by_parse_gate() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<'EOF';\nraw { text }\n";
+
+    let result = formatter.format_range(source, line_range(1), &FormatConfig::default());
+
+    assert!(!result.changed);
+    assert_eq!(result.formatted, source);
+    assert!(result.edits.is_empty());
+    assert!(
+        result.diagnostics.first().is_some_and(|diagnostic| {
+            diagnostic.code.starts_with("native.format.parse_") && diagnostic.code != PRESERVE_CODE
+        }),
+        "expected parse-gate ownership; got {:?}",
+        result.diagnostics,
+    );
+}
+
+#[test]
+fn native_document_formatter_keeps_unterminated_heredoc_on_parse_gate() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<'EOF';\nraw { text }\n";
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+
+    assert!(!result.changed);
+    assert_eq!(result.formatted, source);
+    assert!(result.edits.is_empty());
+    assert!(
+        result.diagnostics.first().is_some_and(|diagnostic| {
+            diagnostic.code.starts_with("native.format.parse_") && diagnostic.code != PRESERVE_CODE
+        }),
+        "expected parse-gate ownership; got {:?}",
+        result.diagnostics,
+    );
+}
+
+#[test]
 fn marker_like_text_in_strings_and_comments_remains_format_eligible() {
     let formatter = NativeFormatter::new();
     let cases = [

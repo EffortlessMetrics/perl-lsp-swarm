@@ -1772,18 +1772,50 @@ fn heredoc_preserve_region_overlapping(
     use perl_lexer::TokenType;
 
     let mut lexer = perl_lexer::PerlLexer::with_body_tokens(source);
+    let mut pending_starts = std::collections::VecDeque::new();
     while let Some(token) = lexer.next_token() {
-        if matches!(&token.token_type, TokenType::EOF) {
-            return false;
-        }
-        if matches!(&token.token_type, TokenType::HeredocStart | TokenType::HeredocBody(_))
-            && token.start < range_byte_end
-            && token.end > range_byte_start
+        let protected_end = match &token.token_type {
+            TokenType::EOF => return false,
+            TokenType::HeredocStart => {
+                pending_starts.push_back((token.start, token.end));
+                continue;
+            }
+            // The lexer ends HeredocBody immediately before the physical
+            // terminator line. Include that line in the formatter's protected
+            // interval, including a final terminator without a newline.
+            TokenType::HeredocBody(_) => physical_line_end(source, token.end),
+            _ => continue,
+        };
+        if let Some((opener_start, opener_end)) = pending_starts.pop_front()
+            && opener_start < range_byte_end
+            && opener_end > range_byte_start
         {
+            return true;
+        }
+        if token.start < range_byte_end && protected_end > range_byte_start {
             return true;
         }
     }
     false
+}
+
+fn physical_line_end(source: &str, line_start: usize) -> usize {
+    let bytes = source.as_bytes();
+    let mut line_end = line_start.min(bytes.len());
+    while line_end < bytes.len() && !matches!(bytes[line_end], b'\n' | b'\r') {
+        line_end += 1;
+    }
+    if line_end < bytes.len() {
+        if bytes[line_end] == b'\r' {
+            line_end += 1;
+            if line_end < bytes.len() && bytes[line_end] == b'\n' {
+                line_end += 1;
+            }
+        } else {
+            line_end += 1;
+        }
+    }
+    line_end
 }
 
 fn token_literal_preserve_region_overlapping(
@@ -1901,12 +1933,21 @@ mod tests {
         let after_start = source
             .find("my$y=2")
             .ok_or_else(|| std::io::Error::other("missing post-heredoc code"))?;
+        let terminator_start = source
+            .find("\nEOF\n")
+            .map(|offset| offset + 1)
+            .ok_or_else(|| std::io::Error::other("missing heredoc terminator"))?;
 
         assert!(heredoc_preserve_region_overlapping(source, opener_start, opener_start + 2));
         assert!(heredoc_preserve_region_overlapping(
             source,
             body_start,
             body_start + "my$x=1".len()
+        ));
+        assert!(heredoc_preserve_region_overlapping(
+            source,
+            terminator_start,
+            terminator_start + "EOF".len()
         ));
         assert!(!heredoc_preserve_region_overlapping(source, after_start, source.len()));
 
@@ -1929,9 +1970,11 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let source = "print <<'EOF';\nmy$x=1;\nEOF\nmy$y=2;\n";
         let body = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+        let terminator = TextRange::new(TextPosition::new(2, 0), TextPosition::new(3, 0));
         let after = TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0));
 
         assert_eq!(literal_preserve_region_for_range(source, body), Some("heredoc"));
+        assert_eq!(literal_preserve_region_for_range(source, terminator), Some("heredoc"));
         assert_eq!(literal_preserve_region_for_range(source, after), None);
 
         Ok(())
@@ -2087,12 +2130,12 @@ mod tests {
     }
 
     #[test]
-    fn literal_preserve_region_for_range_detects_heredoc_inside_range()
+    fn literal_preserve_region_for_range_leaves_unclosed_heredoc_to_parse_gate()
     -> Result<(), Box<dyn std::error::Error>> {
         // Heredoc start on line 1, range covers line 1.
         let source = "my $x = 1;\nprint <<'EOF';\n";
         let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
-        assert_eq!(literal_preserve_region_for_range(source, range), Some("heredoc"));
+        assert_eq!(literal_preserve_region_for_range(source, range), None);
 
         Ok(())
     }
