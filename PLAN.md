@@ -158,8 +158,17 @@ reason incompatible with its claim kind. This prevents arbitrary exclusions from
 hiding route-relevant claims. The accepted join must explicitly dispose of
 currently unlisted rows such as C107, C108, C1205, and C1208: generic-client and
 Open VSX rows must be projected when route-relevant, while non-install dependency
-or metadata rows may be excluded only with a compatible explicit reason. The same
-exact-once rule applies to FND-1 through FND-12: each finding must be joined to a
+or metadata rows may be excluded only with a compatible explicit reason. `C202` is
+one inventory claim with four required projections, not one preferred route: (1) a
+VS Code-compatible extension/managed-client projection, (2) a published
+manual-archive projection, (3) a generic-client/other-editor download projection,
+and (4) a local Cargo/source-build projection. Each projection must bind to its own
+exact catalog route ID and compatible context; the four rows may not be collapsed,
+inferred across editor families, or ordered from the prose claim. The catalog
+contract owns the eventual opaque IDs, so these are semantic projection
+requirements only until #10333 publishes them.
+
+The same exact-once rule applies to FND-1 through FND-12: each finding must be joined to a
 route, recorded as a route-independent constraint, or explicitly excluded with a
 compatible reason. This oracle is the acceptance condition for inventory
 traceability; the 70-row prose count and the planning-family table are not
@@ -169,8 +178,8 @@ For the six rows raised by review, the provisional ledger disposition is literal
 C107 → `project(generic-client PATH, generic-client editor context)`;
 C108 → `exclude(non_install_dependency, external formatting/critic tools)`;
 C201 → `exclude(channel_rule, channel-independence frame)`;
-C202 → `project(vs-code-marketplace, VS Code-compatible managed-client /
-published-extension context)`; C1205 → `exclude(non_install_dependency, internal
+C202 → `project_all(VS_Code_managed_client, published_manual_archive,
+generic_other_editor, local_cargo_source_build)`); C1205 → `exclude(non_install_dependency, internal
 deployment guidance)`; and C1208 → `project(open-vsx, Open VSX-compatible
 marketplace context)`. These are required
 dispositions for the future validated catalog ledger; they are not permission to
@@ -211,25 +220,65 @@ This is an executable closure contract now, not a future reminder. At
 implementation time, the checked-in ledger must pass this pure check using only
 the inventory and ledger files:
 
-```text
-claim_ids = parse_literal_ids(INSTALL_CLAIM_SURFACES.md)
-finding_ids = [FND-1, FND-2, FND-3, FND-4, FND-5, FND-6, FND-7, FND-8,
-               FND-9, FND-10, FND-11, FND-12]
-require sort(unique(claim_ids)) == sort(claim_ids) and len(claim_ids) == 70
-require sort(unique(finding_ids)) == sort(finding_ids) and len(finding_ids) == 12
-require ledger.keys == set(claim_ids + finding_ids)
-require every ledger[id] has exactly one of:
-  project(exact_catalog_route_id, exact_projection_context)
-  constrain(route_independent, exact_reason)
-  exclude(compatible_closed_reason, rationale)
-require no range shorthand, unknown key, duplicate key, missing context, or
-        claim-kind/reason incompatibility
-require C1208 == project(open-vsx, Open_VSX_compatible_marketplace_context)
-require FND-5 == constrain(route_independent, mutable_internal_deployment_links)
+```python
+EXPECTED_CLAIMS = tuple(
+    f"C{n}"
+    for n in (list(range(101, 109)) + list(range(201, 217)) +
+              list(range(301, 304)) + list(range(401, 407)) +
+              list(range(501, 504)) + [601] + list(range(701, 704)) + [801] +
+              list(range(901, 903)) + list(range(1001, 1009)) + [1101, 1102] +
+              list(range(1201, 1209)) + list(range(1301, 1310)))
+EXPECTED_FINDINGS = tuple(f"FND-{n}" for n in range(1, 13))
+ALLOWED_EXCLUSIONS = {
+    "diagnostic_surface", "verification_metadata", "channel_rule",
+    "volatile_metadata", "adjacent_product", "non_install_dependency",
+}
+
+def validate_closure(rows, ledger):
+    ids = [row["id"] for row in rows]
+    expected = set(EXPECTED_CLAIMS + EXPECTED_FINDINGS)
+    if len(EXPECTED_CLAIMS) != 70 or len(set(EXPECTED_CLAIMS)) != 70:
+        raise ValueError("invalid 70-claim manifest")
+    if len(EXPECTED_FINDINGS) != 12 or len(set(EXPECTED_FINDINGS)) != 12:
+        raise ValueError("invalid 12-finding manifest")
+    if len(ids) != len(set(ids)):
+        raise ValueError("duplicate inventory ID")
+    if set(ids) != set(EXPECTED_CLAIMS):
+        raise ValueError("missing or unknown claim ID")
+    if set(ledger) != expected or len(ledger) != 82:
+        raise ValueError("missing or unknown ledger ID")
+    for item_id in EXPECTED_CLAIMS + EXPECTED_FINDINGS:
+        entry = ledger[item_id]
+        if entry["kind"] == "project":
+            if not entry.get("exact_catalog_route_id") or not entry.get("exact_projection_context"):
+                raise ValueError(f"{item_id}: incomplete projection")
+        elif entry["kind"] == "constrain":
+            if not entry.get("route_independent") or not entry.get("exact_reason"):
+                raise ValueError(f"{item_id}: incomplete constraint")
+        elif entry["kind"] == "exclude":
+            if entry.get("reason") not in ALLOWED_EXCLUSIONS or not entry.get("rationale"):
+                raise ValueError(f"{item_id}: incompatible exclusion")
+        else:
+            raise ValueError(f"{item_id}: invalid disposition")
+    if ledger["C202"].get("projections") != [
+        "VS_Code_managed_client", "published_manual_archive",
+        "generic_other_editor", "local_cargo_source_build",
+    ]:
+        raise ValueError("C202 requires all four projections")
+    if ledger["C1208"].get("exact_projection_context") != "Open_VSX_compatible_marketplace_context":
+        raise ValueError("C1208 must remain Open VSX scoped")
+    if ledger["FND-5"] != {
+        "kind": "constrain", "route_independent": True,
+        "exact_reason": "mutable_internal_deployment_links",
+    }:
+        raise ValueError("FND-5 must remain route-independent")
+    return True
 ```
 
 The check reports sorted missing, duplicate, unknown, and incompatible IDs before
-failing. Thus the complete 70-claim / 12-finding closure check is executable
+failing (the production harness should collect those errors rather than stop at the
+first one). It validates every literal claim and finding ID individually, including
+all 82 ledger keys, rather than trusting a count or range shorthand. Thus the complete 70-claim / 12-finding closure check is executable
 before route classification exists; only exact catalog route IDs and projection
 contexts remain gated on #10333. A prose manifest or count without this
 set-equality and compatibility check does not satisfy closure.
@@ -353,8 +402,15 @@ lifecycle evidence. `permissive` uses the same hard filter and may select only
 no `contradicted`, `unproven`, or capability-incompatible result; partial evidence
 must be explicitly annotated. `pending_gate` is diagnostic-only and never
 selected. Its deterministic output order is: selected route, non-selected
-`receipt_bound_partial` diagnostics sorted by exact route ID, then pending
-diagnostics sorted by issue ID; all remaining routes are omitted with reasons.
+`receipt_bound_partial` diagnostics sorted by integrity, lifecycle, publication,
+and exact route ID, then pending diagnostics sorted by issue ID; all remaining
+routes are omitted with reasons. A permissive partial route is eligible only when
+every dimension is `proven_current` or `receipt_bound_partial`, with explicit
+integrity/provenance, product-unit/lifecycle, and freshness/channel/publication
+receipts, and no capability-incompatible result. Missing, contradicted, unproven,
+or pending evidence makes it ineligible; permissive mode never upgrades partial
+integrity, lifecycle, or publication evidence. This diagnostic ordering is
+mechanical and non-operative while H1-H7 remain human-pending.
 Strict mode emits no diagnostic fallback. Unknown context fields refuse selection
 rather than guessing. Once H1–H7 are explicitly
 ruled, output may be an ordered route recommendation with per-route verdicts and
@@ -396,11 +452,14 @@ Mechanical **hard filter** eliminates routes whose verdict disqualifies them
 for the request (platform unsupported per receipt; integrity mode below floor
 (`fail_open_conditional`/`contradicted` fails; `verify_present_no_mode` is
 context-tolerant); product-unit mismatch; identity-collision rejection).
-Survivors are ordered by a **small explicit context policy table** seeded from
-the de facto order already taught by S02's C202 enumeration (extension →
-manual archive → other-editor download → local cargo), with CI context seeded
-from S03 (pinned action first). Option A's table, but only where prose already
-implies an order + a refusal rule that is pure derivation.
+Survivors are ordered only by a **small explicit context policy table** whose
+entries are authored after the applicable H1-H7 ruling. C202 supplies four
+projection contexts (VS Code-compatible managed client, published manual archive,
+generic/other-editor client, and local Cargo/source build), but supplies no order;
+its prose enumeration is not a convenience-first default. CI context likewise
+requires an explicit ruling and policy entry; S03's pinned-action wording cannot
+seed a recommendation by itself. Before the rulings, Option C may emit only the
+mechanical verdict diagnostics defined above and no preferred route.
 
 - **Pros:** the filter is provable and conjunctive (matches the issue title);
   curated data stays small (one order per context, not per platform×units);
@@ -464,13 +523,33 @@ assuming the former prose-row denominator.
    appear as `pending_gate(#5461/#4348)`/`not_recommended`; under H2(b), its
    intentional omission must be recorded as the ruled policy. An implementation
    that treats either ruling as the other fails.
-7. **Determinism.** The eventual catalog-owner regeneration check must produce
+7. **Drift-status fixture semantics.** The fixture harness must construct one
+   otherwise-identical exact route/context row for each status and assert the
+   following result without relying on prose parsing or a scalar quality score:
+
+   | Input `drift_status` | Required freshness result | Required additional assertion |
+   | --- | --- | --- |
+   | `current` | `proven_current` candidate | publication and independent verification are still checked separately |
+   | `pending` | `pending_gate(issue)` | route is diagnostic-only and never eligible |
+   | `stale_example` | `unproven` | current competitors are not downgraded by input order |
+   | `future_example` | `unproven` | future prose cannot satisfy currentness |
+   | `mutable_pin` | `unproven` | selection may annotate/demote but cannot hide the failure |
+   | `cross_surface_drift` | `unproven` | another surface/channel cannot repair the row |
+   | `source_drift` | `unproven` | tracked-source disagreement cannot be treated as current |
+   | `volatile_number` | `proven_current` candidate with inert metadata | volatility is retained and FND-8 is reported; it is neither a downgrade nor an upgrade |
+
+   The harness must run two-row permutations for every status, including
+   `volatile_number`, and assert that input order does not change the fixed
+   result (`pending_gate` > `unproven` > `proven_current`). Removing the inert
+   status must leave the same result. A fixture that only lists the eight names,
+   or treats `volatile_number` as `unproven`, is incomplete.
+8. **Determinism.** The eventual catalog-owner regeneration check must produce
    byte-identical classification output across repeated runs and supported
    environments. The output contains no timestamps or other ambient state, and
    catalog ordering is normalized rather than observed; any run-to-run diff
    fails. The concrete command and owning package remain deferred until the
    validated catalog contract selects them.
-8. **Denominator and inventory closure.** Every exact route row and projection
+9. **Denominator and inventory closure.** Every exact route row and projection
    context in the validated catalog is classified exactly once, and every one of
    the literal claim IDs C101, C102, C103, C104, C105, C106, C107, C108, C201,
    C202, C203, C204, C205, C206, C207, C208, C209, C210, C211, C212, C213,
@@ -485,43 +564,43 @@ assuming the former prose-row denominator.
    unjoined row fails the check. The 70 prose claim rows from #11575 are the
    closed audit denominator; they do not define the classifier's route
    denominator by themselves.
-9. **Cross-channel inference block (C201/C703).** A claim's receipt on channel
+10. **Cross-channel inference block (C201/C703).** A claim's receipt on channel
    X must never satisfy another route's receipt requirement (e.g., GitHub
    Releases v0.17.0 receipt must not make `homebrew-tap` `proven_current`).
    An implementation with a global "release exists" fact fails.
-10. **Independent checksum/provenance binding.** A route with matching
+11. **Independent checksum/provenance binding.** A route with matching
     `SHA256SUMS` text but no independently bound artifact and release identity
     must remain `unproven`; a checksum string copied from a different channel
     must not satisfy the integrity/provenance axis.
-11. **Candidate versus installed state.** A candidate artifact that has been
+12. **Candidate versus installed state.** A candidate artifact that has been
     built or uploaded but has no installed, verified product-unit observation
     must not satisfy installation or first-use cells. Conversely, an installed
     local build must not be emitted as a public publication receipt.
-12. **PATH/session/execution isolation.** A route that resolves only through
+13. **PATH/session/execution isolation.** A route that resolves only through
     the current shell's PATH, an inherited session, or an ambient working
     directory must remain unproven for a fresh-process route. A fresh lookup,
     transport, cleanup, and settled process must each be present; one cannot
     stand in for the others.
-13. **Lifecycle closure.** A route with install and first-use evidence but no
+14. **Lifecycle closure.** A route with install and first-use evidence but no
     repair, upgrade, rollback, or removal cell remains incomplete. A lifecycle
     cell from another product unit or channel must not close this route.
-14. **Publication and verification separation.** A private/candidate upload or
+15. **Publication and verification separation.** A private/candidate upload or
     an unverified public listing must not become `proven_current`; publication,
     checksum/provenance verification, and currentness are separate predicates.
-15. **No-route and ambiguity closure.** If every route fails a hard dimension,
+16. **No-route and ambiguity closure.** If every route fails a hard dimension,
     output must be an explicit no-route result with reasons. If two exact rows
     or contexts are ambiguous, selection must refuse rather than choose by
     input order, prose frequency, or a fallback command.
-16. **Context and fallback isolation.** An editor route must not satisfy a CI,
+17. **Context and fallback isolation.** An editor route must not satisfy a CI,
     server-only, or manual context without an explicit catalog projection.
     Missing preferred policy or a failed hard filter must not silently fall back
     to `latest`, an unpinned command, or another context's route.
-17. **Composite simultaneous failures.** A fixture with integrity contradiction
+18. **Composite simultaneous failures.** A fixture with integrity contradiction
     and incomplete lifecycle must retain both dimension verdicts in the fixed
     vector and produce the same `overall=contradicted` summary regardless of
     catalog or claim input order. A scalar-only result, or a result that drops
     the lifecycle failure, fails.
-18. **Selection-context and risk isolation.** Identical requests differing only
+19. **Selection-context and risk isolation.** Identical requests differing only
     in editor family, target/libc, observed Windows emulation capability, or
     `strict` versus `permissive` must either select the corresponding valid
     projection or refuse explicitly. A route that ignores any supplied field
@@ -549,6 +628,29 @@ be emitted.
 | H7 | Unproven channels (`unproven-channels`: scoop/choco/winget C212, Docker) in selection output | (a) never selected, visible in a "unproven" appendix; (b) fully omitted; (c) visible with a verify-first instruction but never selectable | `human-pending`; no selection | Either dead output weight or an implied endorsement the receipts don't back |
 
 *(Count: 7 EXPLICIT-HUMAN rows.)*
+
+When issue #11549 explicitly rules H7(c), the approved registry action is exactly
+`verify-first`: the registry may list the deferred channel with its opaque catalog
+route ID, verification command or receipt type, verification status, and
+`not-selectable-until-verified` marker. The action must be evaluated against the
+current artifact and channel before selection; a registry listing, a verify-first
+instruction, or a successful check on another channel is not publication or
+support evidence. H7(c) therefore permits an actionable verification path, never
+an implicit route recommendation, and remains unavailable until the ruling is
+recorded in the authoritative issue.
+
+### Deferred catalog route-ID compatibility
+
+All route IDs supplied by #10333 are opaque contract values. Until that contract
+exists, this plan uses semantic projection names only and must not mint IDs. When
+the catalog lands, the join and ledger validator must require every referenced ID
+to exist in that catalog, reject unknown IDs and reused IDs, and validate the
+catalog version/input digest recorded with the ledger. A catalog migration may
+provide an explicit old-to-new compatibility map with one-to-one entries and a
+removal date; it may not silently reinterpret an ID, fall back by route name, or
+carry a deferred ID forward. Changed IDs or projection contexts invalidate the
+affected joins and fixtures and require re-derivation, ending in `NOT_PROVEN` until
+the ledger is rebound.
 
 ---
 
