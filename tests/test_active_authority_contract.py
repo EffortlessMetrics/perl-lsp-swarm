@@ -20,6 +20,21 @@ SELF_TEST = "tests/test_active_authority_contract.py"
 ROUTE_AUTHORITIES = ("AGENTS.md", "CLAUDE.md")
 JUSTFILE = "justfile"
 GITIGNORE = ".gitignore"
+ORCHESTRATION_SKILL_SURFACES = (
+    ".agents/skills/deliver-goal/SKILL.md",
+    ".agents/skills/deliver-pr/SKILL.md",
+    ".agents/skills/orchestrate-work/SKILL.md",
+    ".claude/skills/deliver-goal/SKILL.md",
+    ".claude/skills/deliver-pr/SKILL.md",
+    ".claude/skills/orchestrate-work/SKILL.md",
+)
+SHARED_ORCHESTRATION_SURFACES = (
+    "docs/agents/DEVELOPMENT_METHOD.md",
+    "docs/agents/SKILL_CONTRACT.md",
+)
+CLAUDE_AGENT_ROSTER = ".claude/agents/README.md"
+CLAUDE_AGENT_GLOB = ".claude/agents/**"
+RETIRED_LANE_AGENT = ".claude/agents/lane-orchestrator.md"
 
 # Every path that must re-run this contract, under both workflow events.
 TRIGGER_PATHS = (
@@ -29,6 +44,9 @@ TRIGGER_PATHS = (
     WORKTREE_PROTOCOL,
     "AGENTS.md",
     "CLAUDE.md",
+    *ORCHESTRATION_SKILL_SURFACES,
+    CLAUDE_AGENT_GLOB,
+    *SHARED_ORCHESTRATION_SURFACES,
     JUSTFILE,
     GITIGNORE,
     SELF_TEST,
@@ -338,6 +356,38 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
                 copilot,
                 f"{COPILOT} omits public flow `{flow}` named by {' and '.join(ROUTE_AUTHORITIES)}",
             )
+
+    def test_root_owns_claim_orchestration(self) -> None:
+        for authority in ROUTE_AUTHORITIES:
+            text = prose_text(authority)
+            self.assertIn(
+                "accountable orchestrator",
+                text,
+                f"{authority} no longer names the root as accountable orchestrator",
+            )
+            self.assertIn(
+                "logical claim frames",
+                text,
+                f"{authority} no longer keeps logical claim state in the root",
+            )
+
+        for surface in ORCHESTRATION_SKILL_SURFACES + SHARED_ORCHESTRATION_SURFACES:
+            lowered = active_text(surface).lower()
+            for retired in ("campaign root", "lane root", "lane-orchestrator"):
+                self.assertNotIn(
+                    retired,
+                    lowered,
+                    f"{surface} restored retired nested orchestration marker {retired!r}",
+                )
+
+        self.assertFalse(
+            (ROOT / RETIRED_LANE_AGENT).exists(),
+            "the retired lane-orchestrator profile returned as an active Claude agent",
+        )
+        roster = prose_text(CLAUDE_AGENT_ROSTER)
+        self.assertIn("main Claude thread owns orchestration", roster)
+        for agent in ("`researcher`", "`builder`", "`reviewer`"):
+            self.assertIn(agent, roster)
 
     def test_documented_worktree_root_is_ignored(self) -> None:
         protocol = active_text(WORKTREE_PROTOCOL)
