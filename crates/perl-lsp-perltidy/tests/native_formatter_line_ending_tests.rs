@@ -126,3 +126,18 @@ fn generated_layout_keeps_lf_sources_lf_only() {
     assert_eq!(result.formatted, "while ($n) {\n    next;\n}\n");
     assert!(!result.formatted.contains('\r'));
 }
+
+#[test]
+fn insert_final_newline_uses_crlf_after_generated_layout() {
+    let formatter = NativeFormatter::new();
+    let config = FormatConfig {
+        final_newline: perl_lsp_perltidy::FinalNewline::Insert,
+        ..FormatConfig::default()
+    };
+    let source = "while($n){next;}\r\n";
+
+    let result = formatter.format_document(source, &config);
+
+    assert_eq!(result.formatted, "while ($n) {\r\n    next;\r\n}\r\n");
+    assert_crlf_only(&result.formatted);
+}

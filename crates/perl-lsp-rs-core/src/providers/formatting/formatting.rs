@@ -593,7 +593,7 @@ fn apply_lsp_whitespace_options(content: &str, options: &FormattingOptions) -> S
         }
     }
     if options.insert_final_newline.unwrap_or(false) && !output.ends_with('\n') {
-        output.push('\n');
+        output.push_str(if output.contains("\r\n") { "\r\n" } else { "\n" });
     }
 
     output

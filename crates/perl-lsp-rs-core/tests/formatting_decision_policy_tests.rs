@@ -245,3 +245,24 @@ fn compatibility_projection_preserves_existing_successful_document_output()
     assert_eq!(document.edits[0].new_text, "my $x = 1;\n");
     Ok(())
 }
+
+#[test]
+fn native_projection_insert_final_newline_preserves_crlf_after_generated_layout()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider =
+        FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
+    let mut formatting_options = options();
+    formatting_options.insert_final_newline = Some(true);
+    let source = "while($n){next;}\r\n";
+
+    let decision = provider.format_document_decision(
+        source,
+        &formatting_options,
+        &FormatContext::default(),
+    )?;
+
+    assert_eq!(decision.document.text, "while ($n) {\r\n    next;\r\n}\r\n");
+    assert_eq!(decision.document.edits.len(), 1);
+    assert!(!decision.document.edits[0].new_text.contains("\r\n\n"));
+    Ok(())
+}

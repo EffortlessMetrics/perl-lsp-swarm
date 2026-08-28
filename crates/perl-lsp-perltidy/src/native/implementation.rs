@@ -164,7 +164,7 @@ impl NativeFormatter {
             FinalNewline::Preserve => source.to_string(),
             FinalNewline::Insert => {
                 let trimmed = source.trim_end_matches(['\n', '\r']);
-                format!("{trimmed}\n")
+                format!("{trimmed}{}", inferred_generated_line_ending(source))
             }
             FinalNewline::Trim => source.trim_end_matches(['\n', '\r']).to_string(),
         }
