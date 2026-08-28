@@ -2,13 +2,14 @@
 //!
 //! This module proves one bounded successor-ORM subset without admitting it to
 //! canonical shards or live providers: explicit DBIx::QuickORM table classes
-//! with statically named `column` or `columns` declarations inside the table
-//! builder.
+//! with default DSL names and statically named `column` or `columns`
+//! declarations inside the table builder.
 //!
-//! Runtime schema fill, generated row classes, naming hooks, relationship
-//! accessors, dynamic identities, and edit authorization remain blocked. The
-//! production [`super::generated_member_extractor`] path deliberately does not
-//! call this candidate extractor.
+//! Runtime schema fill, generated row classes, import-symbol customization,
+//! naming hooks, relationship accessors, dynamic identities, and edit
+//! authorization remain blocked. The production
+//! [`super::generated_member_extractor`] path deliberately does not call this
+//! candidate extractor.
 
 use super::generated_member_extractor::GeneratedMemberFact;
 use crate::{Node, NodeKind};
@@ -76,7 +77,10 @@ fn walk_quickorm(
             }
         }
         NodeKind::Use { module, args, .. } if module == "DBIx::QuickORM" => {
-            ctx.explicit_table_class_active |= is_explicit_table_class_import(args);
+            // Every import creates and installs a fresh builder in the caller.
+            // A later plain import therefore replaces a table builder with the
+            // default ORM builder instead of preserving table-class activation.
+            ctx.explicit_table_class_active = is_explicit_table_class_import(args);
         }
         NodeKind::No { module, .. } if module == "DBIx::QuickORM" => {
             ctx.explicit_table_class_active = false;
@@ -100,7 +104,12 @@ fn is_explicit_table_class_import(args: &[String]) -> bool {
         .filter(|arg| !arg.is_empty() && arg != "," && arg != "=>")
         .collect();
 
-    normalized.windows(2).any(|pair| pair[0] == "type" && pair[1] == "table")
+    let table_type = normalized.windows(2).any(|pair| pair[0] == "type" && pair[1] == "table");
+    let customizes_symbols = normalized
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "rename" | "skip" | "only"));
+
+    table_type && !customizes_symbols
 }
 
 fn normalize_use_arg(raw: &str) -> String {
@@ -130,9 +139,11 @@ fn extract_table_declaration(
 }
 
 fn is_static_table_name(node: &Node) -> bool {
-    collect_name_candidates(node)
-        .into_iter()
-        .any(|candidate| normalize_static_member_name(&candidate.name).is_some())
+    let mut candidates = collect_name_candidates(node).into_iter();
+    let Some(candidate) = candidates.next() else {
+        return false;
+    };
+    candidates.next().is_none() && normalize_symbol_name(&candidate.name).is_some()
 }
 
 fn is_anonymous_builder(node: &Node) -> bool {
@@ -259,16 +270,9 @@ fn normalize_symbol_name(raw: &str) -> Option<String> {
 fn expand_symbol_list(raw: &str) -> Vec<String> {
     let raw = raw.trim();
 
-    if raw.starts_with("qw(") && raw.ends_with(')') {
-        return raw[3..raw.len() - 1]
-            .split_whitespace()
-            .filter(|name| !name.is_empty())
-            .map(str::to_string)
-            .collect();
-    }
-
-    if raw.starts_with("qw") && raw.len() > 2 {
-        let open = raw.chars().nth(2).unwrap_or(' ');
+    if let Some(delimited) = raw.strip_prefix("qw")
+        && let Some(open) = delimited.chars().next()
+    {
         let close = match open {
             '(' => ')',
             '{' => '}',
@@ -276,10 +280,11 @@ fn expand_symbol_list(raw: &str) -> Vec<String> {
             '<' => '>',
             delimiter => delimiter,
         };
-        if let (Some(start), Some(end)) = (raw.find(open), raw.rfind(close))
-            && start < end
+        if let Some(inner) = delimited
+            .strip_prefix(open)
+            .and_then(|body| body.strip_suffix(close))
         {
-            return raw[start + 1..end]
+            return inner
                 .split_whitespace()
                 .filter(|name| !name.is_empty())
                 .map(str::to_string)
@@ -437,7 +442,7 @@ table users => sub { column id => sub { primary_key }; };
     }
 
     #[test]
-    fn later_plain_import_does_not_erase_explicit_table_class_activation() {
+    fn later_plain_import_replaces_table_class_activation() {
         let facts = candidate_facts(
             r#"
 package My::ORM::Table::User;
@@ -449,7 +454,22 @@ table users => sub { column id => sub { primary_key }; };
 "#,
         );
 
-        assert!(has_name(&facts, "My::ORM::Table::User::id"));
+        assert!(!has_name(&facts, "My::ORM::Table::User::id"));
+    }
+
+    #[test]
+    fn customized_import_symbols_remain_outside_the_candidate_contract() {
+        let facts = candidate_facts(
+            r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table', rename => { column => 'field' };
+
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+        );
+
+        assert!(!has_name(&facts, "My::ORM::Table::User::id"));
     }
 
     #[test]
