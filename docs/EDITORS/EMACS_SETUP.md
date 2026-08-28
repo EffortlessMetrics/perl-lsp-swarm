@@ -5,7 +5,8 @@ This guide shows how to use `perllsp` from Emacs.
 ## Recommended Support Posture
 
 - **Primary path:** Eglot, especially on Emacs 29 or later
-- **Alternative path:** manual `lsp-mode` registration for users already using that stack
+- **Alternative path:** manual `lsp-mode` registration for users already using
+  that stack
 
 Both clients launch the same server command:
 
@@ -27,10 +28,10 @@ deliberately separate:
   Emacs 29.1 or later.
 
 The source header is not a released `lsp-mode` 10.0.1 package. For package
-compatibility only, Emacs 28.1 and 28.2 can run the released 10.0.0 line; Emacs
-27 and older need an explicitly compatible historical client or an Emacs
-upgrade. These package metadata bounds do not by themselves prove the complete
-`perllsp` client journey.
+metadata only, Emacs 28.1 and 28.2 fall within the released 10.0.0 line's
+declared range; Emacs 27 and older need an explicitly compatible historical
+client or an Emacs upgrade. These package metadata bounds do not by themselves
+prove the complete `perllsp` client journey.
 
 Install `perllsp` using the project installation guide or README.
 
