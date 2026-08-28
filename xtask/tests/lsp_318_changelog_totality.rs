@@ -162,11 +162,21 @@ fn official_lsp_318_changelog_is_totally_classified() -> Result<(), Box<dyn std:
         14,
         "the June 4, 2026 LSP 3.18 changelog contains exactly 14 additions"
     );
+    assert_eq!(
+        EXPECTED_CHANGELOG_IDS.len(),
+        14,
+        "the independent expected-ID inventory must contain exactly 14 additions"
+    );
 
     let matrix = fs::read_to_string(project_root().join(MATRIX_PATH))?;
     let mut ids = BTreeSet::new();
 
     let expected_ids: BTreeSet<_> = EXPECTED_CHANGELOG_IDS.iter().copied().collect();
+    assert_eq!(
+        expected_ids.len(),
+        EXPECTED_CHANGELOG_IDS.len(),
+        "the independent expected-ID inventory contains a duplicate"
+    );
 
     for surface in OFFICIAL_CHANGELOG_SURFACES {
         assert!(ids.insert(surface.id), "duplicate official LSP 3.18 changelog id: {}", surface.id);
