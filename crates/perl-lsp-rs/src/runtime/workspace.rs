@@ -37,7 +37,7 @@ use perl_parser::workspace_index::{
     DegradationReason, EarlyExitReason, IndexState, ResourceKind, SymbolKind,
 };
 #[cfg(feature = "workspace")]
-use perl_parser_core::source_file::is_perl_source_path;
+use perl_parser_core::source_file::{is_perl_source_bytes, is_perl_source_path};
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 use perl_semantic_facts::{
     Confidence, Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFallbackState,
@@ -46,6 +46,8 @@ use perl_workspace::folder::extract_workspace_folder_change;
 #[cfg(feature = "workspace")]
 use perl_workspace::ignore::is_skipped_dir_name;
 use std::collections::{HashMap, HashSet};
+#[cfg(feature = "workspace")]
+use std::io::Read;
 
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
@@ -107,7 +109,7 @@ fn is_permission_denied_error(e: &std::io::Error) -> bool {
 }
 
 #[cfg(feature = "workspace")]
-use crate::util::read_text_file_with_encoding;
+use crate::util::{decode_text_bytes, read_text_file_with_encoding};
 #[cfg(feature = "workspace")]
 use perl_workspace::monitoring::{IndexingPhase, WorkspaceIndexingReceipt};
 
@@ -120,6 +122,14 @@ pub(crate) fn read_watched_file_content(uri: &str, purpose: &str) -> Option<Stri
             None
         }
     })
+}
+
+#[cfg(feature = "workspace")]
+fn read_perl_source_file(path: &Path) -> std::io::Result<Option<String>> {
+    let mut file = std::fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(is_perl_source_bytes(path, &bytes).then(|| decode_text_bytes(&bytes)))
 }
 
 /// RAII guard that clears the `indexing_in_progress` flag on drop.
@@ -1692,10 +1702,24 @@ impl LspServer {
         // and therefore retain buffer authority.
         #[cfg(feature = "workspace")]
         if let Some(coordinator) = self.coordinator() {
-            let is_perl_source = is_perl_source_uri_on_disk(uri);
-            if is_perl_source && loaded_content.is_none() {
-                loaded_content = read_watched_file_content(uri, "re-indexing");
-            }
+            let is_perl_source = if let Some(path) = uri_to_fs_path(uri) {
+                match read_perl_source_file(&path) {
+                    Ok(content) => {
+                        loaded_content = content;
+                        loaded_content.is_some()
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            "Failed to read file for re-indexing ({}): {}",
+                            path.display(),
+                            e
+                        );
+                        false
+                    }
+                }
+            } else {
+                false
+            };
 
             // Re-check after the disk read/classification. If didOpen raced
             // this watcher event, do not clear its prior disk facts here;
@@ -1928,11 +1952,25 @@ impl LspServer {
                 // Note: Mutation operation - use coordinator with lifecycle tracking
                 #[cfg(feature = "workspace")]
                 if let Some(coordinator) = self.coordinator()
-                    && is_perl_source_uri_on_disk(uri)
                     && let Some(path) = uri_to_fs_path(uri)
                 {
-                    match read_text_file_with_encoding(&path) {
-                        Ok(content) => {
+                    match read_perl_source_file(&path) {
+                        Ok(Some(content)) => {
+                            // The read is authoritative for classification and
+                            // content. Recheck document authority after the
+                            // potentially blocking I/O so a racing didOpen
+                            // cannot be overwritten by disk facts.
+                            if self.document_is_open(uri) {
+                                self.record_backing_file_transition(
+                                    uri,
+                                    BackingFileTransition::Changed,
+                                );
+                                tracing::debug!(
+                                    uri,
+                                    "File opened while create read was in flight — indexing skipped"
+                                );
+                                continue;
+                            }
                             coordinator.notify_change(uri);
                             if let Ok(url) = url::Url::parse(uri) {
                                 match coordinator.index().index_file(url, content) {
@@ -1946,6 +1984,7 @@ impl LspServer {
                             }
                             coordinator.notify_parse_complete(uri);
                         }
+                        Ok(None) => {}
                         Err(e) => {
                             tracing::debug!(
                                 "Failed to read new file for indexing ({}): {}",
@@ -2021,13 +2060,18 @@ impl LspServer {
                     // Index new file if it's a Perl file. When a document is
                     // open at the new URI, its buffer — not disk bytes — is
                     // authoritative for that subject, so skip disk indexing.
-                    if is_perl_source_uri_on_disk(&new_uri)
-                        && !self.document_is_open(&new_uri)
-                        && let Some(path) = uri_to_fs_path(&new_uri)
-                    {
-                        match read_text_file_with_encoding(&path) {
-                            Ok(content) => {
-                                if let Ok(url) = url::Url::parse(&new_uri) {
+                    if let Some(path) = uri_to_fs_path(&new_uri) {
+                        match read_perl_source_file(&path) {
+                            Ok(Some(content)) => {
+                                // Match the create/watcher authority rule:
+                                // disk I/O can race didOpen, so the decision
+                                // must be made again after the read completes.
+                                if self.document_is_open(&new_uri) {
+                                    tracing::debug!(
+                                        new_uri,
+                                        "File opened while rename read was in flight — indexing skipped"
+                                    );
+                                } else if let Ok(url) = url::Url::parse(&new_uri) {
                                     match coordinator.index().index_file(url, content) {
                                         Ok(()) => {
                                             tracing::debug!("Indexed renamed file: {}", new_uri)
@@ -2040,6 +2084,7 @@ impl LspServer {
                                     }
                                 }
                             }
+                            Ok(None) => {}
                             Err(e) => {
                                 tracing::debug!(
                                     "Failed to read renamed file for indexing ({}): {}",

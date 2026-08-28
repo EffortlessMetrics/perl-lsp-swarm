@@ -176,6 +176,30 @@ pub fn is_perl_source_path(path: &Path) -> bool {
     has_perl_source_extension(path) || is_extensionless_perl_script(path)
 }
 
+/// Returns `true` when `bytes` identify `path` as Perl source.
+///
+/// Callers that already opened and read a file should use this helper so the
+/// classification is made from the same object and bytes that will be parsed,
+/// rather than reopening the path and creating a probe/read TOCTOU window.
+#[must_use]
+pub fn is_perl_source_bytes(path: &Path, bytes: &[u8]) -> bool {
+    if has_perl_source_extension(path) {
+        return true;
+    }
+    if path.extension().is_some() {
+        return false;
+    }
+
+    let probe = &bytes[..bytes.len().min(SHEBANG_PROBE_BYTES)];
+    let Some(first_line) = probe.split(|byte| *byte == b'\n').next() else {
+        return false;
+    };
+    let Ok(first_line) = std::str::from_utf8(first_line) else {
+        return false;
+    };
+    is_perl_shebang_line(first_line)
+}
+
 fn is_extensionless_perl_script(path: &Path) -> bool {
     path.extension().is_none() && has_perl_shebang(path)
 }
@@ -202,7 +226,7 @@ fn has_perl_shebang(path: &Path) -> bool {
     if limited.read_to_end(&mut prefix).is_err() {
         return false;
     }
-    let first_line = prefix.split(|byte| *byte == b'\n').next().unwrap_or_default();
+    let first_line = prefix.split(|byte| *byte == b'\n').next().unwrap_or(b"");
     let Ok(first_line) = std::str::from_utf8(first_line) else {
         return false;
     };
@@ -326,7 +350,7 @@ fn hex_value(byte: u8) -> Option<u8> {
 mod tests {
     use super::{
         BINARY_PROBE_BYTES, PERL_SOURCE_EXTENSIONS, is_binary_content, is_perl_shebang_line,
-        is_perl_source_extension, is_perl_source_path, is_perl_source_uri,
+        is_perl_source_bytes, is_perl_source_extension, is_perl_source_path, is_perl_source_uri,
     };
     use std::path::Path;
 
@@ -374,6 +398,18 @@ mod tests {
         assert!(!is_perl_shebang_line("#!/usr/bin/perl6"));
         assert!(!is_perl_shebang_line("#!/bin/sh # perl"));
         assert!(!is_perl_shebang_line("use strict;"));
+    }
+
+    #[test]
+    fn classifies_already_read_bytes_without_reopening_the_path() {
+        assert!(is_perl_source_bytes(Path::new("/workspace/tool"), b"#!/usr/bin/env perl\n1;\n"));
+        assert!(!is_perl_source_bytes(Path::new("/workspace/tool"), b"#!/bin/sh\necho hi\n"));
+        assert!(!is_perl_source_bytes(Path::new("/workspace/tool"), b"\xff\xfe\x00\x00"));
+        // A recognized extension is authoritative even when the content has
+        // no shebang; extensionless paths are the only paths inspected for a
+        // Perl interpreter marker.
+        assert!(is_perl_source_bytes(Path::new("/workspace/module.pm"), b"1;\n"));
+        assert!(!is_perl_source_bytes(Path::new("/workspace/notes.txt"), b"#!/usr/bin/perl\n"));
     }
 
     #[test]
