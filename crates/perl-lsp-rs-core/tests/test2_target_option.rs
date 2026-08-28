@@ -211,6 +211,24 @@ fn unsupported_parenthesized_target_expressions_do_not_generate_class() -> TestR
 }
 
 #[test]
+fn malformed_target_structures_fail_closed_without_leaking_atoms() -> TestResult {
+    let malformed_hash =
+        resolve_import("Test2::V0", "-target => { leaked_helper => 'Widget', trailing_name")
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+    assert!(!malformed_hash.symbols.contains("leaked_helper"));
+    assert!(!malformed_hash.symbols.contains("Widget"));
+    assert!(!malformed_hash.symbols.contains("trailing_name"));
+
+    let malformed_parenthesized =
+        resolve_import("Test2::V0", "-target => ('LeakedFunction', trailing_name")
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+    assert!(!malformed_parenthesized.symbols.contains("CLASS"));
+    assert!(!malformed_parenthesized.symbols.contains("LeakedFunction"));
+    assert!(!malformed_parenthesized.symbols.contains("trailing_name"));
+    Ok(())
+}
+
+#[test]
 fn target_helpers_are_not_invented_for_tool_modules() -> TestResult {
     let resolved = resolve_import("Test2::Tools::Compare", "-target => 'Foo'")
         .ok_or_else(|| io::Error::other("Test2::Tools::Compare must be recognized"))?;

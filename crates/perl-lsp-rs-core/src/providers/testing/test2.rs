@@ -433,6 +433,8 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                 let mut brace_depth = 0_isize;
                 let mut saw_hash = false;
                 let mut expect_key = true;
+                let mut hash_closed = false;
+                let mut pending_helpers: BTreeSet<String> = BTreeSet::new();
                 while let Some(value) = atoms.get(atom_index) {
                     atom_index += 1;
                     let opens = value.matches('{').count() as isize;
@@ -457,6 +459,12 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                                     }
                                     break;
                                 }
+                                // An unclosed parenthesized target owns the
+                                // remainder of the option expression. Do not
+                                // resume ordinary export scanning and leak
+                                // its values or barewords.
+                                atom_index = atoms.len();
+                                break;
                             }
                         }
                         if scalar_target_is_truthy(value) {
@@ -473,14 +481,18 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                         strip_quotes(value.trim_matches(['+', '{', '}', '(', ')']).trim());
                     if brace_depth == 1 && !candidate.is_empty() {
                         if expect_key && is_bareword(candidate) {
-                            target_helpers.insert(candidate.to_string());
+                            pending_helpers.insert(candidate.to_string());
                         }
                         expect_key = !expect_key;
                     }
                     brace_depth -= closes;
                     if saw_hash && brace_depth <= 0 {
+                        hash_closed = true;
                         break;
                     }
+                }
+                if hash_closed {
+                    target_helpers.extend(pending_helpers);
                 }
             }
             // Other import options are flags whose effects are handled
