@@ -1,6 +1,54 @@
 use perl_parser_core::syntax::text_line::is_identifier_byte;
 use std::cmp::Ordering;
 
+#[derive(Default)]
+enum PodState<'a> {
+    #[default]
+    Code,
+    CutTerminated,
+    Begin(&'a str),
+    ForParagraph,
+}
+
+fn advance_pod_state<'a>(state: &mut PodState<'a>, line: &'a str) -> bool {
+    match state {
+        PodState::Code => {
+            if let Some(format) = pod_begin_format(line) {
+                *state = PodState::Begin(format);
+                true
+            } else if pod_for_has_target(line) {
+                *state = PodState::ForParagraph;
+                true
+            } else if is_pod_start_marker(line) {
+                *state = PodState::CutTerminated;
+                true
+            } else {
+                false
+            }
+        }
+        PodState::CutTerminated => {
+            if is_pod_end_marker(line) {
+                *state = PodState::Code;
+            } else if let Some(format) = pod_begin_format(line) {
+                *state = PodState::Begin(format);
+            }
+            true
+        }
+        PodState::Begin(format) => {
+            if pod_end_format(line) == Some(*format) {
+                *state = PodState::Code;
+            }
+            true
+        }
+        PodState::ForParagraph => {
+            if line.trim().is_empty() || is_pod_end_marker(line) {
+                *state = PodState::Code;
+            }
+            true
+        }
+    }
+}
+
 /// Simple heuristic to check if position is in a string.
 pub(super) fn is_in_string(source: &str, position: usize) -> bool {
     if invalid_string_position(source, position) {
@@ -10,8 +58,7 @@ pub(super) fn is_in_string(source: &str, position: usize) -> bool {
     let mut active_delimiters: std::collections::VecDeque<HeredocDelimiter> =
         std::collections::VecDeque::new();
     let mut literal_state = LiteralScanState::default();
-    let mut in_pod_block = false;
-    let mut in_for_paragraph = false;
+    let mut pod_state = PodState::default();
     let mut line_start = 0usize;
 
     for raw_line in source.split_inclusive('\n') {
@@ -31,27 +78,19 @@ pub(super) fn is_in_string(source: &str, position: usize) -> bool {
             continue;
         }
 
-        if in_pod_block {
+        if !matches!(pod_state, PodState::Code) {
             if position_within_line(position, line_start, line_end) {
                 return false;
             }
-            if in_for_paragraph && line.trim().is_empty() {
-                in_pod_block = false;
-                in_for_paragraph = false;
-            } else if is_pod_end_marker(line) {
-                in_pod_block = false;
-                in_for_paragraph = false;
-            }
+            advance_pod_state(&mut pod_state, line);
             line_start = line_end;
             continue;
         }
 
-        if !literal_state.is_active() && is_pod_start_marker(line) {
+        if !literal_state.is_active() && advance_pod_state(&mut pod_state, line) {
             if position_within_line(position, line_start, line_end) {
                 return false;
             }
-            in_pod_block = true;
-            in_for_paragraph = line.starts_with("=for");
             line_start = line_end;
             continue;
         }
@@ -275,8 +314,7 @@ fn is_in_heredoc_with_boundary(source: &str, position: usize, include_closing_li
     let position = position.min(source.len());
     let mut active_delimiters: std::collections::VecDeque<HeredocDelimiter> =
         std::collections::VecDeque::new();
-    let mut in_pod_block = false;
-    let mut in_for_paragraph = false;
+    let mut pod_state = PodState::default();
     let mut literal_state = LiteralScanState::default();
     let mut line_start = 0usize;
 
@@ -294,32 +332,16 @@ fn is_in_heredoc_with_boundary(source: &str, position: usize, include_closing_li
                 return true;
             }
         } else {
-            if is_pod_end_marker(line) {
-                in_pod_block = false;
-                in_for_paragraph = false;
+            if advance_pod_state(&mut pod_state, line) {
                 if position >= line_start && position < line_end {
                     return false;
-                }
-                line_start = line_end;
-                continue;
-            }
-
-            if in_pod_block {
-                if position >= line_start && position < line_end {
-                    return false;
-                }
-                if in_for_paragraph && line.trim().is_empty() {
-                    in_pod_block = false;
-                    in_for_paragraph = false;
                 }
                 line_start = line_end;
                 continue;
             }
 
             let started_in_literal = literal_state.is_active();
-            if is_pod_start_marker(line) && !started_in_literal {
-                in_pod_block = true;
-                in_for_paragraph = line.starts_with("=for");
+            if !started_in_literal && advance_pod_state(&mut pod_state, line) {
                 if position >= line_start && position < line_end {
                     return false;
                 }
@@ -479,7 +501,7 @@ fn has_future_heredoc_close(source: &str, line_end: usize, delimiter: &HeredocDe
     let mut active_delimiters: std::collections::VecDeque<HeredocDelimiter> =
         std::collections::VecDeque::new();
     let mut literal_state = LiteralScanState::default();
-    let mut in_pod_block = false;
+    let mut pod_state = PodState::default();
     let mut line_start = line_end;
 
     for raw_line in rest.split_inclusive('\n') {
@@ -495,17 +517,7 @@ fn has_future_heredoc_close(source: &str, line_end: usize, delimiter: &HeredocDe
         }
 
         let started_in_literal = literal_state.is_active();
-        let mut ignored_pod_line = in_pod_block;
-
-        if !started_in_literal {
-            if is_pod_end_marker(line) {
-                in_pod_block = false;
-                ignored_pod_line = true;
-            } else if is_pod_start_marker(line) {
-                in_pod_block = true;
-                ignored_pod_line = true;
-            }
-        }
+        let ignored_pod_line = !started_in_literal && advance_pod_state(&mut pod_state, line);
 
         if !started_in_literal && !ignored_pod_line && delimiter.matches_close(line) {
             return true;
@@ -1324,17 +1336,10 @@ pub(super) fn is_in_pod(source: &str, position: usize) -> bool {
         return false;
     }
 
-    enum PodState<'a> {
-        Code,
-        CutTerminated,
-        Begin(Option<&'a str>),
-        ForParagraph,
-    }
-
     let Some(prefix) = source.get(..position.min(source.len())) else {
         return false;
     };
-    let mut state = PodState::Code;
+    let mut state = PodState::default();
     let mut line_start = 0;
     for raw_line in prefix.split_inclusive('\n') {
         let line = strip_line_ending(raw_line);
@@ -1342,41 +1347,7 @@ pub(super) fn is_in_pod(source: &str, position: usize) -> bool {
             || is_in_multiline_literal(source, line_start);
 
         if !ignored {
-            let directive = line.split_ascii_whitespace().next();
-            state = match state {
-                PodState::Code => match directive {
-                    Some("=begin") => line
-                        .split_ascii_whitespace()
-                        .nth(1)
-                        .filter(|format| !format.starts_with('#'))
-                        .map_or(PodState::Code, |format| PodState::Begin(Some(format))),
-                    Some("=for") if line.split_ascii_whitespace().nth(1).is_some() => {
-                        PodState::ForParagraph
-                    }
-                    _ if is_pod_start_marker(line) => PodState::CutTerminated,
-                    _ => PodState::Code,
-                },
-                PodState::CutTerminated if directive == Some("=cut") => PodState::Code,
-                PodState::CutTerminated if directive == Some("=begin") => line
-                    .split_ascii_whitespace()
-                    .nth(1)
-                    .filter(|format| !format.starts_with('#'))
-                    .map_or(PodState::CutTerminated, |format| PodState::Begin(Some(format))),
-                PodState::CutTerminated => PodState::CutTerminated,
-                PodState::Begin(Some(format))
-                    if directive == Some("=end")
-                        && line.split_ascii_whitespace().nth(1) == Some(format) =>
-                {
-                    PodState::Code
-                }
-                PodState::Begin(format) => PodState::Begin(format),
-                PodState::ForParagraph if line.trim().is_empty() || directive == Some("=cut") => {
-                    PodState::Code
-                }
-                PodState::ForParagraph => PodState::ForParagraph,
-            };
-        } else if let PodState::ForParagraph = state {
-            // A heredoc/literal line is not a POD paragraph boundary.
+            advance_pod_state(&mut state, line);
         }
 
         line_start += raw_line.len();
@@ -1390,7 +1361,7 @@ fn is_in_multiline_literal(source: &str, position: usize) -> bool {
     let position = position.min(bytes.len());
     let mut active_delimiters: std::collections::VecDeque<HeredocDelimiter> =
         std::collections::VecDeque::new();
-    let mut in_pod_block = false;
+    let mut pod_state = PodState::default();
     let mut state = LiteralScanState::default();
     let mut line_start = 0usize;
 
@@ -1409,20 +1380,8 @@ fn is_in_multiline_literal(source: &str, position: usize) -> bool {
             continue;
         }
 
-        if is_pod_end_marker(line) {
-            in_pod_block = false;
-            line_start = line_end;
-            continue;
-        }
-
-        if in_pod_block {
-            line_start = line_end;
-            continue;
-        }
-
         let started_in_literal = state.is_active();
-        if is_pod_start_marker(line) && !started_in_literal {
-            in_pod_block = true;
+        if !started_in_literal && advance_pod_state(&mut pod_state, line) {
             line_start = line_end;
             continue;
         }
@@ -1451,29 +1410,35 @@ fn is_in_multiline_literal(source: &str, position: usize) -> bool {
 }
 
 fn is_pod_start_marker(line: &str) -> bool {
-    if is_pod_end_marker(line) {
-        return false;
-    }
-
-    // Per perlpod: the command paragraph must begin at column 0.
-    // Do NOT use trim_start() here — indented `=pod` is not a POD directive.
-    let Some(command) =
-        line.strip_prefix('=').and_then(|rest| rest.split_ascii_whitespace().next())
-    else {
-        return false;
-    };
-
     matches!(
-        command,
-        "=pod" | "=head1" | "=head2" | "=head3" | "=head4" | "=over" | "=item" | "=back"
+        pod_directive(line),
+        Some("=pod" | "=head1" | "=head2" | "=head3" | "=head4" | "=over" | "=item" | "=back")
     )
 }
 
 fn is_pod_end_marker(line: &str) -> bool {
-    // Per perlpod: `=cut` must also appear at column 0.
-    line.strip_prefix("=cut")
-        .or_else(|| line.strip_prefix("=end"))
-        .is_some_and(|rest| rest.chars().next().is_none_or(char::is_whitespace))
+    matches!(pod_directive(line), Some("=cut" | "=end"))
+}
+
+fn pod_directive(line: &str) -> Option<&str> {
+    let token = line.split_ascii_whitespace().next()?;
+    (line.starts_with('=') && token.as_bytes().get(1).is_some_and(u8::is_ascii_alphabetic))
+        .then_some(token)
+}
+
+fn pod_begin_format(line: &str) -> Option<&str> {
+    (pod_directive(line) == Some("=begin"))
+        .then(|| line.split_ascii_whitespace().nth(1))
+        .flatten()
+        .filter(|format| !format.starts_with('#'))
+}
+
+fn pod_end_format(line: &str) -> Option<&str> {
+    (pod_directive(line) == Some("=end")).then(|| line.split_ascii_whitespace().nth(1)).flatten()
+}
+
+fn pod_for_has_target(line: &str) -> bool {
+    pod_directive(line) == Some("=for") && line.split_ascii_whitespace().nth(1).is_some()
 }
 
 #[cfg(test)]
@@ -1634,6 +1599,25 @@ mod tests {
 
         assert_eq!(is_in_string(source, 2), false);
         assert_eq!(is_in_string(source, source.len()), false);
+    }
+
+    #[test]
+    fn indented_pod_directives_are_plain_code_text() {
+        for directive in ["=begin comment", "=for comment", "=cut"] {
+            let source = format!("  {directive}\nmy $after = ");
+            assert!(!is_in_pod(&source, source.len()), "{directive} must be column-zero");
+        }
+
+        let source = "=pod\ndocumentation\n  =cut\nstill documentation";
+        assert!(is_in_pod(&source, source.len()), "indented =cut must not close POD");
+    }
+
+    #[test]
+    fn for_paragraph_resumes_at_blank_line() {
+        let source = "use HTTP::Tiny;\n=for comment\ndocumentation\n\nmy $http = HTTP::Tiny->new;\n$http->po";
+        assert!(!is_in_pod(source, source.len()));
+        assert!(!is_in_string(source, source.len()));
+        assert!(!is_in_heredoc(source, source.len()));
     }
 
     #[test]

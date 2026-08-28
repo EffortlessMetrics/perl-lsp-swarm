@@ -131,6 +131,19 @@ fn production_method_completion_accepts_real_for_and_rejects_malformed_or_reassi
     Ok(())
 }
 
+#[test]
+fn production_method_completion_ignores_indented_pod_directives()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = "use HTTP::Tiny;\n  =begin comment\n  =for comment\n  =cut\nmy $http = HTTP::Tiny->new;\n$http->po";
+    let provider = completion_provider(source)?;
+
+    assert!(
+        provider.get_completions(source, source.len()).iter().any(|item| item.label == "post"),
+        "indented POD-looking lines must not suppress production completion"
+    );
+    Ok(())
+}
+
 fn completion_provider_with_receiver_fact(
     source: &str,
     receiver_fact: Option<perl_semantic_analyzer::analysis::type_facts::TypeFact>,
