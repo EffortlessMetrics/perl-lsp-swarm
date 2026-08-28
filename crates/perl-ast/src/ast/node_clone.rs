@@ -4,6 +4,8 @@
 //! is rebuilt only after its cloned children exist. Payload and shape copy uses
 //! a one-level derived [`NodeKind`] clone behind an operation-scoped
 //! placeholder flag so child slots do not recurse on the thread stack.
+//! The same engine powers [`Node::clone_with_mapped_locations`], keeping
+//! position-only tree rewrites exhaustive and depth-safe.
 
 use super::{Node, NodeKind, SourceLocation};
 use std::cell::Cell;
@@ -36,6 +38,24 @@ impl Clone for Node {
             return clone_slot_placeholder();
         }
         clone_node(self, &mut ())
+    }
+}
+
+impl Node {
+    /// Clone the full tree while replacing every node's source location.
+    ///
+    /// The structural walk is the same iterative canonical traversal used by
+    /// [`Clone`]. `map` is called exactly once for every node. Its invocation
+    /// order is intentionally unspecified; callers should derive each result
+    /// from the supplied location rather than from traversal order.
+    ///
+    /// This is a full owned duplication, not an in-place edit or a shared view.
+    #[must_use]
+    pub fn clone_with_mapped_locations<F>(&self, map: F) -> Self
+    where
+        F: Fn(SourceLocation) -> SourceLocation,
+    {
+        clone_node_with_location_map(self, &mut (), &map)
     }
 }
 
@@ -94,7 +114,19 @@ fn install_cloned_children(shell: &mut Node, children: Vec<Node>) {
     });
 }
 
+fn preserve_location(location: SourceLocation) -> SourceLocation {
+    location
+}
+
 pub(super) fn clone_node<O: CloneObserver>(root: &Node, observer: &mut O) -> Node {
+    clone_node_with_location_map(root, observer, &preserve_location)
+}
+
+fn clone_node_with_location_map<O, F>(root: &Node, observer: &mut O, map: &F) -> Node
+where
+    O: CloneObserver,
+    F: Fn(SourceLocation) -> SourceLocation,
+{
     enum Work<'a> {
         Enter(&'a Node),
         Assemble { source: &'a Node, child_count: usize },
@@ -119,6 +151,7 @@ pub(super) fn clone_node<O: CloneObserver>(root: &Node, observer: &mut O) -> Nod
             Work::Assemble { source, child_count } => {
                 let cloned_children = take_last_n_reversed(&mut done, child_count);
                 let mut cloned = clone_payload_shell(source);
+                cloned.location = map(source.location);
                 install_cloned_children(&mut cloned, cloned_children);
                 observer.on_rebuild();
                 done.push(cloned);
@@ -128,7 +161,11 @@ pub(super) fn clone_node<O: CloneObserver>(root: &Node, observer: &mut O) -> Nod
 
     match done.pop() {
         Some(cloned) => cloned,
-        None => clone_payload_shell(root),
+        None => {
+            let mut cloned = clone_payload_shell(root);
+            cloned.location = map(root.location);
+            cloned
+        }
     }
 }
 
@@ -211,6 +248,43 @@ mod tests {
         assert!(wide_work.max_explicit_stack_depth >= 3);
         assert_eq!(cloned_wide, wide);
         assert_eq!(wide.clone(), cloned_wide);
+    }
+
+    #[test]
+    fn mapped_location_clone_updates_every_canonical_node() {
+        let binary = Node::new(
+            NodeKind::Binary {
+                op: "+".to_string(),
+                left: Box::new(numbered("1", 0)),
+                right: Box::new(numbered("2", 2)),
+            },
+            loc(0, 3),
+        );
+        let source = program(vec![binary]);
+        let calls = Cell::new(0_u64);
+
+        let mapped = source.clone_with_mapped_locations(|location| {
+            calls.set(calls.get().saturating_add(1));
+            loc(location.start.saturating_add(10), location.end.saturating_add(10))
+        });
+
+        assert_eq!(calls.get(), 4);
+        assert_eq!(source.location, loc(0, 3), "mapping must not mutate the source tree");
+        assert_eq!(mapped.location, loc(10, 13));
+
+        let NodeKind::Program { statements } = &mapped.kind else {
+            panic!("expected Program, got {}", mapped.kind.kind_name());
+        };
+        assert_eq!(statements.len(), 1);
+        assert_eq!(statements[0].location, loc(10, 13));
+        let NodeKind::Binary { op, left, right } = &statements[0].kind else {
+            panic!("expected Binary, got {}", statements[0].kind.kind_name());
+        };
+        assert_eq!(op, "+");
+        assert_eq!(left.location, loc(10, 11));
+        assert_eq!(right.location, loc(12, 13));
+        assert!(matches!(&left.kind, NodeKind::Number { value } if value == "1"));
+        assert!(matches!(&right.kind, NodeKind::Number { value } if value == "2"));
     }
 
     #[test]
