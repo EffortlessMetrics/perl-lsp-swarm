@@ -201,7 +201,7 @@ fn every_admitted_family_has_a_registered_disposition() -> TestResult {
             "registry row for {} does not carry the family's own identity (FPH-001)",
             family.name()
         );
-        let variants = variants_for(*family)?;
+        let variants = variants_for(*family);
         assert_eq!(
             variants.family,
             *family,
@@ -493,7 +493,7 @@ fn dormant_invariants_report_not_proven_until_dependencies_land() -> TestResult 
     let rendered_block = dormant
         .iter()
         .find(|entry| entry.id == "strict_second_pass_typed_idempotence_for_rendered_blocks")
-        .expect("rendered-block dormancy is in the expected list above");
+        .ok_or("rendered-block dormancy must stay registered (FPH-008)")?;
     assert_eq!(rendered_block.owning_issues, ["13205"]);
     Ok(())
 }
@@ -551,7 +551,7 @@ fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
         if let Some(rest) = line.strip_prefix("# fuzz-replay seed=") {
             let (seed_hex, selector_part) = rest
                 .split_once(" selector=")
-                .expect("fuzz-replay entry must carry seed and selector");
+                .ok_or("fuzz-replay entry must carry seed and selector (FPH-010)")?;
             assert_eq!(seed_hex.len(), 16, "fuzz-replay seed must be 16 hex chars");
             assert_eq!(selector_part.len(), 2, "fuzz-replay selector must be 2 hex chars");
             fuzz_replays

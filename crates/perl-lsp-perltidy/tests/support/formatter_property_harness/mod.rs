@@ -133,17 +133,27 @@ impl Family {
     }
 }
 
-// Compile-time FPH-001 alignment: every `ALL` entry sits exactly at the
-// position its exhaustive `pinned_index` arm declares. A variant added to
-// `ALL` out of order, or an index arm retargeted without moving `ALL`, fails
-// to compile.
+// Compile-time FPH-001 alignment, checked twice:
+// 1. every `Family::ALL` entry sits exactly at the position its exhaustive
+//    `pinned_index` arm declares;
+// 2. `FAMILY_TABLE` has one row per pinned family, in `ALL` order — so the
+//    pinned-index lookup below is total for every live variant, a table row
+//    cannot exist without its `ALL` entry, and a variant added to the enum
+//    cannot compile without extending the exhaustive enumeration. A registry
+//    row without a table row is therefore impossible to substitute around.
 const _: () = {
     let mut index = 0;
     while index < Family::ALL.len() {
         if Family::ALL[index].pinned_index() != index {
             panic!("Family::ALL order drifted from the exhaustive pinned_index enumeration");
         }
+        if FAMILY_TABLE[index].family.pinned_index() != index {
+            panic!("FAMILY_TABLE order drifted from the exhaustive pinned_index enumeration");
+        }
         index += 1;
+    }
+    if FAMILY_TABLE.len() != Family::ALL.len() {
+        panic!("FAMILY_TABLE row count drifted from the exhaustive pinned_index enumeration");
     }
 };
 
@@ -248,13 +258,12 @@ const FAMILY_TABLE: [FamilyVariants; 10] = [
     },
 ];
 
-/// Fail-closed variant-table lookup: a family without a `FAMILY_TABLE` row is
-/// a registry drift (FPH-001), never a valid-looking substitute row.
-pub fn variants_for(family: Family) -> Result<&'static FamilyVariants, Violation> {
-    FAMILY_TABLE.iter().find(|variants| variants.family == family).ok_or_else(|| Violation {
-        rule: "registry.missing_family_variants",
-        detail: format!("family {} has no FAMILY_TABLE row", family.name()),
-    })
+/// Fail-closed variant-table lookup. `FAMILY_TABLE` is compile-time aligned
+/// to the exhaustive `pinned_index` enumeration (const check above), so the
+/// row for every live variant exists at its pinned position — no fallback
+/// substitution is possible (FPH-001).
+pub fn variants_for(family: Family) -> &'static FamilyVariants {
+    &FAMILY_TABLE[family.pinned_index()]
 }
 
 /// The admitted-family registry. Deleting any single disposition entry turns
@@ -511,13 +520,10 @@ impl SplitMix64 {
 pub fn generate_case(seed: u64, index: usize) -> GeneratedCase {
     let registry = family_registry();
     let record = &registry[index % registry.len()];
-    // Fail closed on generator-side drift: a registry row without a variant
-    // table row is FPH-001 and must fail loudly here, not fall back to
-    // `FAMILY_TABLE[0]`.
-    let variants = match variants_for(record.family) {
-        Ok(variants) => variants,
-        Err(violation) => panic!("FPH-001 generator drift: {violation}"),
-    };
+    // Fail closed on generator-side drift: the compile-time table alignment
+    // proves the variant row for every live family exists, so a registry row
+    // without variants can never fall back to another family's row.
+    let variants = variants_for(record.family);
     let mut rng = SplitMix64::new(seed ^ (index as u64).rotate_left(17));
 
     let disposition = record.dispositions[(index / registry.len()) % record.dispositions.len()];
