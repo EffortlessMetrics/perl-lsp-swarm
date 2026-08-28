@@ -411,10 +411,7 @@ fn any_module_use_before(
         search_start = after_use_start;
 
         if !is_code_position(source, use_start)
-            || source[..use_start]
-                .chars()
-                .next_back()
-                .is_some_and(is_module_identifier_char)
+            || source[..use_start].chars().next_back().is_some_and(is_module_identifier_char)
         {
             continue;
         }
@@ -434,12 +431,10 @@ fn any_module_use_before(
         }
 
         let arguments_start = module_start + module.len();
-        let statement_end = source[arguments_start..]
-            .char_indices()
-            .find_map(|(relative, ch)| {
-                let index = arguments_start + relative;
-                (ch == ';' && is_code_position(source, index)).then_some(index)
-            });
+        let statement_end = source[arguments_start..].char_indices().find_map(|(relative, ch)| {
+            let index = arguments_start + relative;
+            (ch == ';' && is_code_position(source, index)).then_some(index)
+        });
         let Some(statement_end) = statement_end else { continue };
 
         if predicate(source[arguments_start..statement_end].trim()) {
@@ -453,19 +448,14 @@ fn any_module_use_before(
 
 fn looks_like_version_argument(argument: &str) -> bool {
     let version = argument.strip_prefix('v').unwrap_or(argument);
-    !version.is_empty()
-        && version.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
+    !version.is_empty() && version.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
 }
 
 fn strip_optional_version_argument(arguments: &str) -> &str {
     let arguments = arguments.trim();
     let first_end = arguments.find(char::is_whitespace).unwrap_or(arguments.len());
     let first = &arguments[..first_end];
-    if looks_like_version_argument(first) {
-        arguments[first_end..].trim_start()
-    } else {
-        arguments
-    }
+    if looks_like_version_argument(first) { arguments[first_end..].trim_start() } else { arguments }
 }
 
 fn module_was_used_before(source: &str, position: usize, module: &str) -> bool {
@@ -578,12 +568,8 @@ fn infer_imported_api_receiver_type(
 
     if used_modules.contains("Path::Tiny")
         && module_was_used_before(source, context.position, "Path::Tiny")
-        && ((module_imported_symbol_before(
-            source,
-            context.position,
-            "Path::Tiny",
-            "path",
-        ) && expression_calls_function(expression, "path"))
+        && ((module_imported_symbol_before(source, context.position, "Path::Tiny", "path")
+            && expression_calls_function(expression, "path"))
             || ["new", "cwd", "rootdir", "tempfile", "tempdir"]
                 .into_iter()
                 .any(|method| expression_calls_static_method(expression, "Path::Tiny", method)))
@@ -820,12 +806,8 @@ pub fn add_method_completions(
         .map(str::to_owned)
         .or_else(|| infer_receiver_type(context, source));
 
-    let static_api_methods = imported_static_methods(
-        context.receiver_prefix(),
-        source,
-        context.position,
-        used_modules,
-    );
+    let static_api_methods =
+        imported_static_methods(context.receiver_prefix(), source, context.position, used_modules);
     let instance_api_methods = known_instance_methods(receiver_type.as_deref());
 
     // Choose methods based on inferred type
