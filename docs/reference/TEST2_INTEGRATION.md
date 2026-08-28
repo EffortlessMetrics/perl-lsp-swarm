@@ -33,16 +33,28 @@ product surface already consumes it.
 The first-party import facts in the current migration oracle are checked against
 the immutable [`Test-More/test-more` revision
 9545e6eebffc1662d50414bf1ed6c09fb229206d](https://github.com/Test-More/test-more/tree/9545e6eebffc1662d50414bf1ed6c09fb229206d),
-which reports version `1.302225` for the modeled `Test2::V0`, `Test2::V1`, and
-`Test2::Tools::Refcount` modules. The relevant source files are:
+which reports version `1.302225` for the modeled `Test2::V0`, `Test2::V1`,
+`Test2::Suite`, and retained `Test2::Tools` modules. The relevant source files
+are:
 
 - [`lib/Test2/V0.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/V0.pm)
 - [`lib/Test2/V1.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/V1.pm)
+- [`lib/Test2/Suite.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/Suite.pm)
 - [`lib/Test2/Tools/Refcount.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/Tools/Refcount.pm)
+- [`lib/Test2/Tools/Spec.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/Tools/Spec.pm)
+- [`lib/Test2/Tools/GenTemp.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/Tools/GenTemp.pm)
+- [`lib/Test2/Tools/Grab.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/Tools/Grab.pm)
+- [`lib/Test2/Tools/Target.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/Tools/Target.pm)
 
 This revision is the reproducible authority for this fact-table slice; a later
 upstream revision requires an explicit source review and pin update. It does not
-claim that every Test2 release or dynamic plugin is statically knowable.
+claim that every Test2 release or dynamic plugin is statically knowable. The
+revision contains no `Test2::Bundle::{Extended,More,Simple}` modules, and its
+[`Test2::AsyncSubtest`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/AsyncSubtest.pm)
+implementation is not an importing `Tools` module, so
+those former candidate facts are intentionally unmodeled. Target's generated
+caller helpers are runtime-only and are intentionally excluded from static
+completion facts.
 
 The current provider-local reader recognizes substantial Test2 import behavior,
 including examples such as:
@@ -57,7 +69,6 @@ use Test2::V0 -no_strict;
 use Test2::V0 -no_warnings;
 use Test2::V1;
 use Test2::V1 -import;
-use Test2::Bundle::More;
 use Test2::Tools::ClassicCompare;
 use Test2::Tools::Spec;
 ```
@@ -70,12 +81,15 @@ the module's full classic-comparison default set. `Test2::Tools::Refcount`
 similarly keeps `refcount` optional for its standalone defaults while exposing
 it through `:ALL`.
 
-Reviewed first-party contracts include `Test2::Bundle::Extended`,
-`Test2::Bundle::More`, `Test2::Bundle::Simple`, and statically enumerable tool
-modules. `Test2::Suite` is recognized as the distribution namespace but imports
-no symbols and supplies no caller pragmas. Modules with dynamic import behavior,
-such as `Test2::Tools::Target`, remain unknown rather than receiving invented
-static defaults.
+Reviewed first-party contracts include the pinned V0/V1 modules and the
+statically enumerable `GenTemp`, `Grab`, `Refcount`, and `Spec` tools.
+`Test2::Suite` is recognized as the distribution namespace but imports no symbols
+and supplies no caller pragmas. `Test2::Tools::Target` has no export table: its
+runtime target argument generates a caller helper (`CLASS` or a named alias),
+which the parser-backed bridge excludes rather than treating the target package
+or generated helper as a function export. The absent `Bundle::{Extended,More,Simple}` modules,
+`Test2::AsyncSubtest`, and other dynamic import behavior remain unmodeled rather
+than receiving invented static defaults.
 
 These facts are consumed by native critic behavior and by the parser-scoped
 completion bridge. For a supported normal `use Test2::V0;` import, the critic

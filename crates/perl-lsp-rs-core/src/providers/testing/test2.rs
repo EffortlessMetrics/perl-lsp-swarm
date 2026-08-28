@@ -11,16 +11,27 @@
 //! the immutable `Test-More/test-more` revision
 //! [`9545e6eebffc1662d50414bf1ed6c09fb229206d`](https://github.com/Test-More/test-more/tree/9545e6eebffc1662d50414bf1ed6c09fb229206d)
 //! rather than reasoned from the diff. The pinned source reports version
-//! `1.302225` for the modeled `Test2::V0`, `Test2::V1`, and
-//! `Test2::Tools::Refcount` modules:
+//! `1.302225` for the modeled `Test2::V0`, `Test2::V1`, `Test2::Suite`,
+//! and retained `Test2::Tools::{GenTemp,Grab,Refcount,Spec,Target}` modules:
 //!
 //! - `Test2::V0` default `@EXPORT` and the `use Test2::Tools::* qw/.../;` lines —
 //!   `lib/Test2/V0.pm`.
-//! - First-party bundle exports — `lib/Test2/Bundle/{Extended,More,Simple}.pm`.
-//! - Per-tool exports — `lib/Test2/Tools/{Basic,Compare,ClassicCompare,
-//!   AsyncSubtest,GenTemp,Grab,Spec,Tester,...}.pm` and `lib/Test2/API.pm`.
+//! - Per-tool exports — [`GenTemp.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/Tools/GenTemp.pm),
+//!   [`Grab.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/Tools/Grab.pm),
+//!   [`Spec.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/Tools/Spec.pm),
+//!   and the neighboring `Basic`, `Compare`, `ClassicCompare`, `Refcount`,
+//!   `Tester`, and `API` source files at that same immutable revision.
 //! - `Test2::Suite` is the distribution namespace and defines no importer —
-//!   `lib/Test2/Suite.pm`.
+//!   [`Suite.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/Suite.pm).
+//! - `Test2::Tools::Target` defines caller helpers (`CLASS` or named aliases)
+//!   from runtime target arguments; it has no static export table —
+//!   [`Target.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/Tools/Target.pm).
+//!   The resolver deliberately excludes those runtime-generated helpers from
+//!   its static completion claim.
+//! - `Test2::AsyncSubtest` is a non-`Tools` implementation module without a
+//!   static import contract — [`AsyncSubtest.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/AsyncSubtest.pm).
+//! - `Test2::Bundle::{Extended,More,Simple}` and `Test2::Tools::AsyncSubtest`
+//!   are not present at this pinned revision and therefore remain unmodeled.
 //! - Import-list grammar (`!name` exclusion, `:DEFAULT`/`:ALL` tags,
 //!   `name => {-as => 'alias'}` renames, `-prefix`/`-postfix`) — `exodist/Importer`.
 //! - `strict`/`warnings` default and the `-no_strict` / `-no_warnings` /
@@ -188,9 +199,6 @@ const SUBTEST_OWN: &[&str] = &["subtest_streamed", "subtest_buffered"];
 /// The `subtest` name as exposed by the `Test2::V0` bundle.
 const SUBTEST_BUNDLE: &[&str] = &["subtest"];
 
-/// `Test2::Tools::AsyncSubtest`.
-const ASYNC_SUBTEST: &[&str] = &["async_subtest", "fork_subtest", "thread_subtest"];
-
 /// `Test2::Tools::GenTemp`.
 const GEN_TEMP: &[&str] = &["gen_temp"];
 
@@ -199,78 +207,14 @@ const GRAB: &[&str] = &["grab"];
 
 /// `Test2::Tools::Spec` default exports. Its custom runtime/configuration
 /// options are deliberately outside this static fact table.
-const SPEC_DEFAULT: &[&str] = &[
-    "tests",
-    "it",
-    "case",
-    "before_all",
-    "around_all",
-    "after_all",
-    "before_case",
-    "around_case",
-    "after_case",
-    "before_each",
-    "around_each",
-    "after_each",
-    "describe",
-    "cases",
-];
+const SPEC_DEFAULT: &[&str] = &["describe", "cases"];
 
 /// `Test2::Tools::Spec` reviewed default-plus-optional export menu.
-const SPEC_ALL: &[&str] = &[
-    "tests",
-    "it",
-    "case",
-    "before_all",
-    "around_all",
-    "after_all",
-    "before_case",
-    "around_case",
-    "after_case",
-    "before_each",
-    "around_each",
-    "after_each",
-    "describe",
-    "cases",
-    "mini",
-    "iso",
-    "miso",
-    "async",
-    "masync",
-    "include_workflow",
-    "include_workflows",
-    "spec_defaults",
-];
+const SPEC_ALL: &[&str] =
+    &["describe", "cases", "include_workflow", "include_workflows", "spec_defaults"];
 
 /// `Test2::Tools::Tester` optional export menu. It exports nothing by default.
 const TESTER_ALL: &[&str] = &["facets", "filter_events", "event_groups"];
-
-/// `Test2::Bundle::More` default exports.
-const MORE_BUNDLE: &[&str] = &[
-    "ok",
-    "pass",
-    "fail",
-    "skip",
-    "todo",
-    "diag",
-    "note",
-    "plan",
-    "skip_all",
-    "done_testing",
-    "BAIL_OUT",
-    "is",
-    "isnt",
-    "like",
-    "unlike",
-    "is_deeply",
-    "cmp_ok",
-    "isa_ok",
-    "can_ok",
-    "subtest",
-];
-
-/// `Test2::Bundle::Simple` default exports.
-const SIMPLE_BUNDLE: &[&str] = &["ok", "plan", "done_testing", "skip_all"];
 
 /// The complete `Test2::V0` default `@EXPORT` set, composed from the tool
 /// modules the bundle pulls in. This is the single source of truth for
@@ -327,14 +271,7 @@ pub fn is_test2_module(module: &str) -> bool {
 /// `Test2::Bundle::*` names remain recognized by [`is_test2_module`] so explicit
 /// imports can be trusted, but they are not authoritative bundle contracts.
 pub fn is_test2_bundle(module: &str) -> bool {
-    matches!(
-        module,
-        "Test2::V0"
-            | "Test2::V1"
-            | "Test2::Bundle::Extended"
-            | "Test2::Bundle::More"
-            | "Test2::Bundle::Simple"
-    )
+    matches!(module, "Test2::V0" | "Test2::V1")
 }
 
 /// The default export set for a known Test2 module, or `None` if the module is
@@ -344,7 +281,7 @@ pub fn is_test2_bundle(module: &str) -> bool {
 /// — callers should not emit unknown-sub diagnostics for such modules.
 pub fn module_default_exports(module: &str) -> Option<&'static [&'static str]> {
     // `Test2::V0` re-exports its tools as bare subs — the recommended default set.
-    if matches!(module, "Test2::V0" | "Test2::Bundle::Extended") {
+    if module == "Test2::V0" {
         return Some(V0_DEFAULT.as_slice());
     }
     // `Test2::V1`'s only *default* export is the `T2()` handle; the bare set is
@@ -355,8 +292,6 @@ pub fn module_default_exports(module: &str) -> Option<&'static [&'static str]> {
     }
     let group: &'static [&'static str] = match module {
         "Test2::Suite" => NO_DEFAULT_EXPORTS,
-        "Test2::Bundle::More" => MORE_BUNDLE,
-        "Test2::Bundle::Simple" => SIMPLE_BUNDLE,
         "Test2::Tools::Basic" => BASIC,
         "Test2::Tools::Compare" => COMPARE_OWN_DEFAULT,
         "Test2::Tools::ClassicCompare" => CLASSIC_COMPARE_DEFAULT,
@@ -371,7 +306,6 @@ pub fn module_default_exports(module: &str) -> Option<&'static [&'static str]> {
         "Test2::Tools::Refcount" => REFCOUNT_DEFAULT,
         "Test2::Tools::Event" => EVENT,
         "Test2::Tools::Subtest" => SUBTEST_OWN,
-        "Test2::Tools::AsyncSubtest" => ASYNC_SUBTEST,
         "Test2::Tools::GenTemp" => GEN_TEMP,
         "Test2::Tools::Grab" => GRAB,
         "Test2::Tools::Spec" => SPEC_DEFAULT,
@@ -460,6 +394,15 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
         return Some(ResolvedImport { symbols: BTreeSet::new(), pragmas: None });
     }
 
+    // Target has no @EXPORT/@EXPORT_OK table. It generates caller helpers from
+    // runtime target arguments (`CLASS` or named aliases), but this static
+    // resolver deliberately excludes those helpers from its claim. Returning
+    // an empty import also prevents named target pairs from leaking their keys
+    // into completion as if they were ordinary exported functions.
+    if module == "Test2::Tools::Target" {
+        return Some(ResolvedImport { symbols: BTreeSet::new(), pragmas: None });
+    }
+
     // `Test2::V1` reaches V0 parity (the full bare tool set) only under an
     // explicit `-import` long option or an `i` short flag (standalone `-i` or
     // grouped, e.g. `-ipP` — the "work like V0" form). A plain `use Test2::V1;`
@@ -471,13 +414,11 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
     let all_set =
         if v1_import_all { Some(V0_DEFAULT.as_slice()) } else { module_all_exports(module) };
 
-    // Caller pragma resolution is module-specific. `Test2::V0` and its legacy
-    // `Test2::Bundle::Extended` alias enable strict/warnings by default and opt
-    // out via `-no_strict`/`-no_warnings`/`-no_pragmas`. `Test2::V1` enables no
-    // pragmas by default and opts in via `-pragmas`/`-p`, `-strict`, or
-    // `-warnings`. Exporter-only bundles such as More/Simple, the Suite
-    // distribution namespace, tools, plugins, and unfamiliar bundles have no
-    // reviewed caller-pragma effect here.
+    // Caller pragma resolution is module-specific. `Test2::V0` enables
+    // strict/warnings by default and opts out via `-no_strict`/`-no_warnings`/
+    // `-no_pragmas`. `Test2::V1` enables no pragmas by default and opts in via
+    // `-pragmas`/`-p`, `-strict`, or `-warnings`. Tools, plugins, and unfamiliar
+    // bundles have no reviewed caller-pragma effect here.
     let pragmas = match module {
         "Test2::V1" => {
             let all = args_contains_option(raw_args, "pragmas") || v1_short_flag(raw_args, 'p');
@@ -486,7 +427,7 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                 warnings: all || args_contains_option(raw_args, "warnings"),
             })
         }
-        "Test2::V0" | "Test2::Bundle::Extended" => {
+        "Test2::V0" => {
             let no_pragmas = args_contains_option(raw_args, "no_pragmas");
             let no_strict = no_pragmas || args_contains_option(raw_args, "no_strict");
             let no_warnings = no_pragmas || args_contains_option(raw_args, "no_warnings");

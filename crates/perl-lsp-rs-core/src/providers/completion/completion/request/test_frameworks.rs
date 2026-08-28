@@ -279,10 +279,16 @@ mod tests {
         items.iter().map(|item| item.label.as_ref()).collect()
     }
 
-    fn test2_labels(items: &[CompletionItem]) -> BTreeSet<String> {
+    // `sort_text` is assigned by this reconciliation path and distinguishes
+    // Test2 projections from unrelated generic Perl candidates. Do not use
+    // `detail` here: a bogus Test2 item with the wrong detail must still fail
+    // the exact production-result assertions.
+    fn test2_completion_labels(items: &[CompletionItem]) -> BTreeSet<String> {
         items
             .iter()
-            .filter(|item| item.detail.as_deref() == Some(TEST2_DETAIL))
+            .filter(|item| {
+                item.sort_text.as_deref().is_some_and(|sort| sort.starts_with("2_test2_"))
+            })
             .map(|item| item.label.to_string())
             .collect()
     }
@@ -359,29 +365,77 @@ mod tests {
 
     #[test]
     fn refcount_all_reaches_production_completion_with_exact_exports() {
-        let items = complete("use Test2::Tools::Refcount ':ALL';\n|", Some("lib/Example.pm"));
+        let items = complete("use Test2::Tools::Refcount ':ALL';\nis|", Some("lib/Example.pm"));
 
         assert_eq!(
-            test2_labels(&items),
+            test2_completion_labels(&items),
+            ["is_refcount", "is_oneref"].into_iter().map(str::to_string).collect()
+        );
+
+        let all_items = complete("use Test2::Tools::Refcount ':ALL';\n|", Some("lib/Example.pm"));
+        assert_eq!(
+            test2_completion_labels(&all_items),
             ["is_refcount", "is_oneref", "refcount"].into_iter().map(str::to_string).collect()
+        );
+    }
+
+    #[test]
+    fn spec_completion_uses_exact_default_and_all_exports() {
+        let defaults = complete("use Test2::Tools::Spec;\n|", Some("lib/Example.pm"));
+        assert_eq!(
+            test2_completion_labels(&defaults),
+            ["cases", "describe"].into_iter().map(str::to_string).collect()
+        );
+
+        let all = complete("use Test2::Tools::Spec ':ALL';\n|", Some("lib/Example.pm"));
+        assert_eq!(
+            test2_completion_labels(&all),
+            ["cases", "describe", "include_workflow", "include_workflows", "spec_defaults"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
         );
     }
 
     #[test]
     fn production_completion_honors_unknown_dynamic_alias_and_exclusion_boundaries() {
         let unknown = complete("use Test2::Bundle::Unknown;\ni|", Some("lib/Example.pm"));
-        assert!(test2_labels(&unknown).is_empty(), "unknown bundles have no invented exports");
+        assert!(
+            test2_completion_labels(&unknown).is_empty(),
+            "unknown bundles have no invented exports"
+        );
 
         let dynamic = complete("use Test2::Tools::Target;\ni|", Some("lib/Example.pm"));
-        assert!(test2_labels(&dynamic).is_empty(), "dynamic tools have no invented defaults");
+        assert!(
+            test2_completion_labels(&dynamic).is_empty(),
+            "dynamic tools have no invented defaults"
+        );
 
-        let alias = complete("use Test2::V0 is => {-as => 'my_is'};\n|", Some("lib/Example.pm"));
-        let alias_labels = test2_labels(&alias);
-        assert!(alias_labels.contains("my_is"));
-        assert!(!alias_labels.contains("is"), "renaming does not retain the original name");
+        let alias = complete("use Test2::V0 is => {-as => 'my_is'};\nmy_|", Some("lib/Example.pm"));
+        assert_eq!(
+            test2_completion_labels(&alias),
+            ["my_is"].into_iter().map(str::to_string).collect()
+        );
 
         let excluded = complete("use Test2::V0 ':DEFAULT', '!ok';\nok|", Some("lib/Example.pm"));
-        assert!(!test2_labels(&excluded).contains("ok"), "!ok excludes the default export");
+        assert!(test2_completion_labels(&excluded).is_empty(), "!ok excludes the default export");
+    }
+
+    #[test]
+    fn production_completion_excludes_runtime_generated_target_helpers() {
+        let positional =
+            complete("use Test2::Tools::Target 'Example::Widget';\nCL|", Some("lib/Example.pm"));
+        assert!(test2_completion_labels(&positional).is_empty());
+
+        let target_package =
+            complete("use Test2::Tools::Target 'Example::Widget';\nEx|", Some("lib/Example.pm"));
+        assert!(test2_completion_labels(&target_package).is_empty());
+
+        let named = complete(
+            "use Test2::Tools::Target pkg => 'Example::Widget';\np|",
+            Some("lib/Example.pm"),
+        );
+        assert!(test2_completion_labels(&named).is_empty());
     }
 
     #[test]

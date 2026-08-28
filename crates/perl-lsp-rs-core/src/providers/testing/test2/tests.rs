@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn test2_imports_recognizes_bundles_and_tools() {
+fn test2_imports_recognizes_supported_and_structural_modules() {
     assert!(is_test2_module("Test2::V0"));
     assert!(is_test2_module("Test2::V1"));
     assert!(is_test2_module("Test2::Bundle::Extended"));
@@ -22,9 +22,9 @@ fn test2_imports_recognizes_bundles_and_tools() {
 fn test2_imports_bundle_classification() {
     assert!(is_test2_bundle("Test2::V0"));
     assert!(is_test2_bundle("Test2::V1"));
-    assert!(is_test2_bundle("Test2::Bundle::Extended"));
-    assert!(is_test2_bundle("Test2::Bundle::More"));
-    assert!(is_test2_bundle("Test2::Bundle::Simple"));
+    assert!(!is_test2_bundle("Test2::Bundle::Extended"));
+    assert!(!is_test2_bundle("Test2::Bundle::More"));
+    assert!(!is_test2_bundle("Test2::Bundle::Simple"));
     assert!(!is_test2_bundle("Test2::Bundle::Unknown"));
 
     // The distribution namespace and individual modules are not bundles.
@@ -70,24 +70,12 @@ fn test2_suite_is_a_non_importing_distribution_namespace() {
 }
 
 #[test]
-fn first_party_bundles_have_exact_exports_and_pragma_contracts() {
+fn supported_bundles_have_exact_exports_and_pragma_contracts() {
     let v0 = module_default_exports("Test2::V0").expect("V0 defaults");
-    let extended = module_default_exports("Test2::Bundle::Extended").expect("Extended defaults");
-    assert_eq!(extended, v0, "Extended is the legacy V0 alias");
-
-    let more = Test2Facts::from_source("use Test2::Bundle::More;\n");
-    for expected in ["ok", "BAIL_OUT", "is_deeply", "cmp_ok", "subtest"] {
-        assert!(more.is_imported(expected), "More should export {expected}");
-    }
-    assert!(!more.is_imported("bail_out"), "More exports the BAIL_OUT alias");
-    assert_eq!((more.strict, more.warnings), (false, false));
-
-    let simple = Test2Facts::from_source("use Test2::Bundle::Simple;\n");
-    assert_eq!(
-        simple.imported_symbols,
-        ["done_testing", "ok", "plan", "skip_all"].into_iter().map(str::to_string).collect()
-    );
-    assert_eq!((simple.strict, simple.warnings), (false, false));
+    assert!(!v0.is_empty());
+    assert_eq!(module_default_exports("Test2::Bundle::Extended"), None);
+    assert_eq!(module_default_exports("Test2::Bundle::More"), None);
+    assert_eq!(module_default_exports("Test2::Bundle::Simple"), None);
 }
 
 #[test]
@@ -249,12 +237,8 @@ fn v1_pragma_default_predicate_exact_module_match_boundary() {
     );
 
     let extended =
-        resolve_import("Test2::Bundle::Extended", "").expect("legacy V0 alias recognized");
-    assert_eq!(
-        extended.pragmas,
-        Some(Test2Pragmas { strict: true, warnings: true }),
-        "Test2::Bundle::Extended inherits the V0 pragma contract"
-    );
+        resolve_import("Test2::Bundle::Extended", "").expect("structural bundle recognized");
+    assert_eq!(extended.pragmas, None, "unsupported bundles must not inherit V0 pragmas");
 }
 
 #[test]
@@ -404,11 +388,9 @@ fn test2_api_has_no_defaults_but_trusts_explicit_imports() {
 
 #[test]
 fn additional_first_party_tools_expose_reviewed_defaults() {
-    for (module, expected) in [
-        ("Test2::Tools::AsyncSubtest", &["async_subtest", "fork_subtest", "thread_subtest"][..]),
-        ("Test2::Tools::GenTemp", &["gen_temp"][..]),
-        ("Test2::Tools::Grab", &["grab"][..]),
-    ] {
+    for (module, expected) in
+        [("Test2::Tools::GenTemp", &["gen_temp"][..]), ("Test2::Tools::Grab", &["grab"][..])]
+    {
         let defaults = module_default_exports(module).expect("known first-party tool");
         assert_eq!(defaults, expected, "wrong defaults for {module}");
         let facts = Test2Facts::from_source(&format!("use {module};\n"));
@@ -421,17 +403,24 @@ fn additional_first_party_tools_expose_reviewed_defaults() {
 
 #[test]
 fn spec_and_tester_preserve_default_vs_optional_exports() {
+    let expected_default = ["describe", "cases"];
+    assert_eq!(module_default_exports("Test2::Tools::Spec"), Some(&expected_default[..]));
     let spec = Test2Facts::from_source("use Test2::Tools::Spec;\n");
-    for expected in ["describe", "cases", "tests", "before_each", "after_all"] {
+    for expected in expected_default {
         assert!(spec.is_imported(expected), "Spec should default-import {expected}");
     }
-    assert!(!spec.is_imported("mini"), "mini is optional");
+    assert_eq!(spec.imported_symbols.len(), expected_default.len());
+    assert!(!spec.is_imported("tests"), "tests is not an upstream export");
     assert!(!spec.is_imported("include_workflow"), "include_workflow is optional");
 
     let spec_all = resolve_import("Test2::Tools::Spec", "':ALL'").expect("known tool");
-    assert!(spec_all.symbols.contains("mini"));
-    assert!(spec_all.symbols.contains("include_workflow"));
-    assert!(spec_all.symbols.contains("spec_defaults"));
+    assert_eq!(
+        spec_all.symbols,
+        ["cases", "describe", "include_workflow", "include_workflows", "spec_defaults",]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    );
 
     let tester = Test2Facts::from_source("use Test2::Tools::Tester;\n");
     assert!(tester.imported_symbols.is_empty(), "Tester exports nothing by default");
@@ -445,6 +434,16 @@ fn spec_and_tester_preserve_default_vs_optional_exports() {
 #[test]
 fn dynamic_target_tool_does_not_receive_invented_static_defaults() {
     assert!(module_default_exports("Test2::Tools::Target").is_none());
+}
+
+#[test]
+fn target_imports_are_explicitly_excluded_from_static_completion_facts() {
+    let positional = Test2Facts::from_source("use Test2::Tools::Target 'Some::Package';\n");
+    assert!(positional.imported_symbols.is_empty());
+
+    let named = Test2Facts::from_source("use Test2::Tools::Target pkg => 'Some::Package';\n");
+    assert!(named.imported_symbols.is_empty());
+    assert!(!named.is_imported("Some::Package"));
 }
 
 #[test]
