@@ -2,9 +2,12 @@ use assert_cmd::cargo::cargo_bin_cmd;
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use tempfile::TempDir;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
+static METRICS_OUTPUT_LOCK: Mutex<()> = Mutex::new(());
 
 struct OutputRestore {
     path: PathBuf,
@@ -33,6 +36,7 @@ fn workspace_root() -> TestResult<PathBuf> {
 
 #[test]
 fn invalid_timing_receipt_fails_publicly_without_overwriting_output() -> TestResult {
+    let _lock = METRICS_OUTPUT_LOCK.lock().map_err(|_| "metrics output lock poisoned")?;
     let root = workspace_root()?;
     let output_path = root.join(".ci/metrics/editor_ux.json");
     let restore =
@@ -69,6 +73,63 @@ fn invalid_timing_receipt_fails_publicly_without_overwriting_output() -> TestRes
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(preserved_output, sentinel, "invalid input overwrote the output artifact");
+    drop(restore);
+    Ok(())
+}
+
+#[test]
+fn valid_receipt_reaches_public_aggregation_and_writes_json() -> TestResult {
+    let _lock = METRICS_OUTPUT_LOCK.lock().map_err(|_| "metrics output lock poisoned")?;
+    let root = workspace_root()?;
+    let output_path = root.join(".ci/metrics/editor_ux.json");
+    let restore =
+        OutputRestore { path: output_path.clone(), original: fs::read(&output_path).ok() };
+
+    let receipts = TempDir::new()?;
+    fs::write(
+        receipts.path().join("public-delegation.json"),
+        br#"{
+            "kind": "ux_scenario_run",
+            "schema_version": 1,
+            "measured_at": "2026-08-28T00:00:00Z",
+            "run_identity": {"sha": "abcdef12", "branch": "main"},
+            "workflow_id": "simple_file_smoke",
+            "scenario_file": "ux_scenario_01_simple_file.rs",
+            "test_name": "public_cli_delegation",
+            "ci_tier": "pr",
+            "result": "pass",
+            "duration_ms": 10.0,
+            "time_to_first_useful_result_ms": 5.0,
+            "operation_timings": [{
+                "operation": "completion",
+                "time_to_first_useful_result_ms": 5.0
+            }],
+            "assertions": {"passed": 1, "failed": 0, "basis": "instrumented"},
+            "canonical_repro": "cargo test -p perl-lsp-ux-tests public_cli_delegation",
+            "friendly_repro": "just ux-tests"
+        }"#,
+    )?;
+
+    let output = cargo_bin_cmd!("xtask")
+        .args([
+            "metrics",
+            "lsp-stats",
+            "--json",
+            "--receipt-dir",
+            receipts.path().to_str().ok_or("receipt directory path is not valid UTF-8")?,
+        ])
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "valid receipt failed public aggregation\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let generated: serde_json::Value = serde_json::from_slice(&fs::read(&output_path)?)?;
+    assert_eq!(generated["schema_version"], 1);
+    assert_eq!(generated["subsystem"], "editor_ux");
+    assert!(generated["workflows"].as_array().is_some());
     drop(restore);
     Ok(())
 }

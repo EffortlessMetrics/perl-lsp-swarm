@@ -44,6 +44,8 @@ const UX_RUN_SIGNATURE_FIELDS: &[&str] = &[
 const UX_RUN_DISTINCTIVE_FIELDS: &[&str] =
     &["operation_timings", "time_to_first_useful_result_ms", "canonical_repro", "friendly_repro"];
 
+const KNOWN_NON_UX_COMPANION_KINDS: &[&str] = &["golden_editor_workload"];
+
 #[derive(Debug, Deserialize)]
 struct FixtureMatrix {
     workflows: Vec<FixtureWorkflow>,
@@ -184,6 +186,14 @@ fn looks_like_ux_scenario_run(value: &Value) -> bool {
         return false;
     };
 
+    if object
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| KNOWN_NON_UX_COMPANION_KINDS.contains(&kind))
+    {
+        return false;
+    }
+
     let signature_fields: Vec<&str> = UX_RUN_SIGNATURE_FIELDS
         .iter()
         .copied()
@@ -213,9 +223,48 @@ fn malformed_marker(object: &serde_json::Map<String, Value>, marker: &str) -> bo
                 && !value.as_f64().is_some_and(|number| number.is_finite() && number >= 0.0)
         }
         "assertions" => !value.is_object(),
-        "operation_timings" => !value.is_array(),
+        "operation_timings" => malformed_operation_timings(value),
         _ => false,
     }
+}
+
+fn malformed_operation_timings(value: &Value) -> bool {
+    let Some(entries) = value.as_array() else {
+        return true;
+    };
+
+    entries.iter().any(|entry| {
+        let Some(entry) = entry.as_object() else {
+            return true;
+        };
+        if entry.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "operation" | "time_to_first_useful_result_ms" | "timing_status"
+            )
+        }) {
+            return true;
+        }
+        if !entry
+            .get("operation")
+            .and_then(Value::as_str)
+            .is_some_and(|operation| !operation.is_empty())
+        {
+            return true;
+        }
+        if let Some(timing) = entry.get("time_to_first_useful_result_ms")
+            && !timing.is_null()
+            && !timing.as_f64().is_some_and(|number| number.is_finite() && number >= 0.0)
+        {
+            return true;
+        }
+        if let Some(status) = entry.get("timing_status")
+            && !matches!(status.as_str(), Some("missing_request_start"))
+        {
+            return true;
+        }
+        false
+    })
 }
 
 fn read_receipt_candidates(receipts_dir: &Path) -> Result<Vec<ReceiptCandidate>> {
@@ -605,6 +654,118 @@ mod tests {
             )?;
             assert!(format!("{error:#}").contains("unsupported or malformed kind"));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_nested_timing_without_identity_or_kind_still_fails_closed() -> Result<()> {
+        let malformed_entries = [
+            serde_json::json!({
+                "operation": "hover",
+                "time_to_first_useful_result_ms": "not-a-number"
+            }),
+            serde_json::json!({ "operation": "hover", "timing_status": "unexpected" }),
+            serde_json::json!({ "operation": "" }),
+            serde_json::json!({ "operation": "hover", "unexpected": true }),
+            serde_json::json!("not-an-operation-object"),
+        ];
+
+        for (index, entry) in malformed_entries.into_iter().enumerate() {
+            for kind in [None, Some("other_receipt")] {
+                let temp = tempfile::tempdir()?;
+                let receipts = temp.path().join("receipts");
+                fs::create_dir_all(&receipts)?;
+                let mut value = serde_json::json!({
+                    "result": "pass",
+                    "operation_timings": [entry]
+                });
+                if let Some(kind) = kind {
+                    value["kind"] = Value::String(kind.to_owned());
+                }
+                fs::write(
+                    receipts.join(format!("malformed-nested-timing-{index}.json")),
+                    serde_json::to_string(&value)?,
+                )?;
+                let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+
+                let error = validation_error(
+                    validate_scorecard_inputs(&receipts, &matrix, &checked_in_receipt_schema()),
+                    "identity-free malformed nested timing unexpectedly passed the scorecard boundary",
+                )?;
+                assert!(format!("{error:#}").contains("unsupported or malformed kind"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn identity_free_and_wrong_kind_null_duration_fails_but_optional_timing_null_passes()
+    -> Result<()> {
+        for kind in [None, Some("other_receipt")] {
+            let temp = tempfile::tempdir()?;
+            let receipts = temp.path().join("receipts");
+            fs::create_dir_all(&receipts)?;
+            let mut value = serde_json::json!({ "result": "pass", "duration_ms": null });
+            if let Some(kind) = kind {
+                value["kind"] = Value::String(kind.to_owned());
+            }
+            fs::write(receipts.join("null-duration.json"), serde_json::to_string(&value)?)?;
+            let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+            let error = validation_error(
+                validate_scorecard_inputs(&receipts, &matrix, &checked_in_receipt_schema()),
+                "identity-free null duration unexpectedly passed the scorecard boundary",
+            )?;
+            assert!(format!("{error:#}").contains("unsupported or malformed kind"));
+            fs::remove_file(receipts.join("null-duration.json"))?;
+
+            for (name, optional_timing) in [
+                (
+                    "top-level-null-timing.json",
+                    serde_json::json!({
+                        "result": "pass",
+                        "time_to_first_useful_result_ms": null
+                    }),
+                ),
+                (
+                    "nested-null-timing.json",
+                    serde_json::json!({
+                        "result": "pass",
+                        "operation_timings": [{
+                            "operation": "hover",
+                            "time_to_first_useful_result_ms": null
+                        }]
+                    }),
+                ),
+            ] {
+                fs::write(receipts.join(name), serde_json::to_string(&optional_timing)?)?;
+                validate_scorecard_inputs(&receipts, &matrix, &checked_in_receipt_schema())?;
+                fs::remove_file(receipts.join(name))?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn timing_bearing_non_ux_companion_remains_ignored() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&receipts)?;
+        let companion = serde_json::json!({
+            "kind": "golden_editor_workload",
+            "result": "pass",
+            "duration_ms": 10.0,
+            "operation_timings": [{
+                "operation": "hover",
+                "time_to_first_useful_result_ms": null
+            }]
+        });
+        fs::write(
+            receipts.join("golden-editor-workload-timing.json"),
+            serde_json::to_string_pretty(&companion)?,
+        )?;
+        let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+
+        validate_scorecard_inputs(&receipts, &matrix, &checked_in_receipt_schema())?;
         Ok(())
     }
 
