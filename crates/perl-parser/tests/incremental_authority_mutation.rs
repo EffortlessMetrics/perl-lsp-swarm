@@ -110,14 +110,12 @@ fn uses_lower_tier_incremental(source: &str) -> bool {
     }
 
     compact.split(';').any(|statement| {
-        ["useperl_parser_coreas", "externcrateperl_parser_coreas"]
-            .iter()
-            .any(|prefix| {
-                statement.strip_prefix(prefix).is_some_and(|remainder| {
-                    let alias = remainder.split([':', '{', ',', '}']).next().unwrap_or_default();
-                    !alias.is_empty() && compact.contains(&format!("{alias}::incremental"))
-                })
+        ["useperl_parser_coreas", "externcrateperl_parser_coreas"].iter().any(|prefix| {
+            statement.strip_prefix(prefix).is_some_and(|remainder| {
+                let alias = remainder.split([':', '{', ',', '}']).next().unwrap_or_default();
+                !alias.is_empty() && compact.contains(&format!("{alias}::incremental"))
             })
+        })
     })
 }
 
@@ -164,14 +162,9 @@ fn discovered_reference_counts() -> Result<BTreeMap<String, usize>, Box<dyn std:
 
 #[test]
 fn detector_catches_method_associated_and_function_item_syntax() {
+    assert_eq!(lower_tier_reparse_reference_count("state.reparse(source, &edit);"), 1);
     assert_eq!(
-        lower_tier_reparse_reference_count("state.reparse(source, &edit);"),
-        1
-    );
-    assert_eq!(
-        lower_tier_reparse_reference_count(
-            "IncrementalState::reparse(&mut state, source, &edit);"
-        ),
+        lower_tier_reparse_reference_count("IncrementalState::reparse(&mut state, source, &edit);"),
         1
     );
     assert_eq!(
