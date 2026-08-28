@@ -483,6 +483,36 @@ mod tests {
     }
 
     #[test]
+    fn explicit_null_failure_class_receipt_passes_guarded_scorecard_path() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&receipts)?;
+        let path = write_receipt(
+            &receipts,
+            "null-failure-class.json",
+            "simple_file_smoke",
+            "ux_scenario_01_simple_file.rs",
+        )?;
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
+        value["failure_class"] = Value::Null;
+        fs::write(&path, serde_json::to_string_pretty(&value)?)?;
+
+        let fixture_matrix = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("crates/perl-lsp-ux-tests/fixtures/editor_ux_fixture_matrix.json");
+        let scorecard = aggregate_from_receipts(&receipts, &fixture_matrix, None)?;
+        let workflow = scorecard
+            .workflows
+            .iter()
+            .find(|workflow| workflow.id == "simple_file_smoke")
+            .ok_or("guarded scorecard omitted the receipt workflow")?;
+
+        assert_eq!(workflow.pass_rate.state, "measured");
+        assert_eq!(workflow.pass_rate.value, Some(1.0));
+        Ok(())
+    }
+
+    #[test]
     fn unknown_workflow_fails_as_matrix_drift() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let receipts = temp.path().join("receipts");
