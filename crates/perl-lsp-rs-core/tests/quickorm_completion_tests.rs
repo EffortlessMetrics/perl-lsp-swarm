@@ -11,10 +11,8 @@ fn completion_items(
     source: &str,
 ) -> Result<Vec<CompletionItem>, Box<dyn std::error::Error>> {
     let ast = Parser::new(source).parse_with_recovery().ast;
-    Ok(
-        CompletionProvider::new_with_index_and_source(&ast, source, Some(index))
-            .get_completions(source, source.len()),
-    )
+    Ok(CompletionProvider::new_with_index_and_source(&ast, source, Some(index))
+        .get_completions(source, source.len()))
 }
 
 fn labels(items: &[CompletionItem]) -> Vec<&str> {
