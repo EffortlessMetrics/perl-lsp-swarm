@@ -649,16 +649,53 @@ fn tokenize_import_args(raw: &str) -> Vec<String> {
     // Normalize fat commas and commas to a single separator, then split.
     for piece in expanded.split([',']) {
         let piece = piece.replace("=>", " ");
-        for tok in piece.split_whitespace() {
-            // An empty quoted value is still an argument. Dropping it would
-            // make the following export look like `-target`'s value.
-            if !tok.is_empty() {
-                // Preserve quote delimiters: they are semantic for scalar
-                // `-target` truthiness (`'undef'` is true, `undef` is false).
-                out.push(tok.to_string());
+        out.extend(split_import_piece(&piece));
+    }
+    out
+}
+
+/// Split one import-argument piece while keeping quoted strings intact and
+/// making wrapper punctuation independently classifiable. In particular,
+/// `('Foo')` must become `(`, `'Foo'`, `)` rather than one opaque atom.
+fn split_import_piece(piece: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+
+    let flush = |out: &mut Vec<String>, current: &mut String| {
+        if !current.is_empty() {
+            out.push(std::mem::take(current));
+        }
+    };
+
+    for ch in piece.chars() {
+        if let Some(delimiter) = quote {
+            current.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == delimiter {
+                quote = None;
             }
+            continue;
+        }
+
+        match ch {
+            '\'' | '"' => {
+                current.push(ch);
+                quote = Some(ch);
+            }
+            '(' | ')' | '{' | '}' => {
+                flush(&mut out, &mut current);
+                out.push(ch.to_string());
+            }
+            c if c.is_whitespace() => flush(&mut out, &mut current),
+            _ => current.push(ch),
         }
     }
+    flush(&mut out, &mut current);
     out
 }
 
@@ -775,17 +812,27 @@ fn consume_parenthesized_scalar(atoms: &[String], start: usize) -> Option<(usize
 
     let mut depth = 0usize;
     let mut inner: Vec<&str> = Vec::new();
+    let mut nested_expression = false;
     for (index, atom) in atoms.iter().enumerate().skip(start) {
         match atom.as_str() {
-            "(" => depth += 1,
+            "(" => {
+                if depth > 0 {
+                    nested_expression = true;
+                }
+                depth += 1;
+            }
             ")" => {
                 depth = depth.checked_sub(1)?;
                 if depth == 0 {
-                    let truthy = inner.len() == 1 && scalar_target_is_truthy(&inner[0]);
+                    let truthy = !nested_expression
+                        && inner.len() == 1
+                        && scalar_target_is_truthy(&inner[0]);
                     return Some((index + 1, truthy));
                 }
             }
+            "{" | "}" if depth > 0 => nested_expression = true,
             _ if depth == 1 => inner.push(atom.as_str()),
+            _ if depth > 1 => nested_expression = true,
             _ => {}
         }
     }
@@ -837,7 +884,36 @@ fn scalar_target_is_truthy(raw: &str) -> bool {
 /// Recognize only numeric spellings whose value is definitely false in Perl.
 /// Other numeric-looking forms stay outside the inference boundary.
 fn is_definitely_false_numeric(raw: &str) -> bool {
-    matches!(raw, "0" | "+0" | "-0" | "0.0" | "0e0" | "0E0" | "0.0e0" | "0.0E0")
+    let mut value = raw.trim();
+    if let Some(rest) = value.strip_prefix(['+', '-']) {
+        value = rest;
+    }
+
+    if let Some(hex) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
+        return !hex.is_empty()
+            && hex.chars().all(|ch| ch.is_ascii_hexdigit())
+            && hex.chars().all(|ch| ch == '0');
+    }
+
+    let (mantissa, exponent) =
+        value.split_once(['e', 'E']).map_or((value, None), |parts| (parts.0, Some(parts.1)));
+    if let Some(exponent) = exponent {
+        let exponent = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
+        if exponent.is_empty() || !exponent.chars().all(|ch| ch.is_ascii_digit()) {
+            return false;
+        }
+    }
+
+    let mut saw_digit = false;
+    let mut saw_dot = false;
+    for ch in mantissa.chars() {
+        match ch {
+            '.' if !saw_dot => saw_dot = true,
+            '0' => saw_digit = true,
+            _ => return false,
+        }
+    }
+    saw_digit && mantissa.chars().all(|ch| ch == '0' || ch == '.')
 }
 
 /// Extract `use ...;` statements from Perl source, respecting quotes and `#`

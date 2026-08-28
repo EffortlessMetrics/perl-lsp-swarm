@@ -77,12 +77,23 @@ fn empty_scalar_targets_preserve_following_exports() -> TestResult {
 
 #[test]
 fn dynamic_and_uncertain_numeric_targets_do_not_generate_class() -> TestResult {
-    for target in ["$target", "0.0", "0e0", "+0", "-0"] {
+    for target in ["$target", "0.0", "0e0", "+0", "-0", "00", "-0.0", "0e+0", "0x0"] {
         let resolved = resolve_import("Test2::V0", &format!("-target => {target}"))
             .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
 
         assert!(!resolved.symbols.contains("CLASS"), "target {target:?} is not proven truthy");
     }
+    Ok(())
+}
+
+#[test]
+fn attached_parenthesized_scalar_targets_generate_class() -> TestResult {
+    let resolved = resolve_import("Test2::V0", "-target => ('Foo'), ok")
+        .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+    assert!(resolved.symbols.contains("CLASS"));
+    assert!(resolved.symbols.contains("ok"));
+    assert!(!resolved.symbols.contains("Foo"));
     Ok(())
 }
 
@@ -177,7 +188,16 @@ fn parenthesized_scalar_targets_consume_only_the_target_value() -> TestResult {
 
 #[test]
 fn unsupported_parenthesized_target_expressions_do_not_generate_class() -> TestResult {
-    for target in ["('Foo', 'Bar')", "($target)", "(foo())"] {
+    for target in [
+        "('Foo', 'Bar')",
+        "($target)",
+        "(foo())",
+        "(( 'Foo' ))",
+        "({ pkg => 'Widget' })",
+        "('Foo' + $suffix)",
+        "('Foo'",
+        "(foo())",
+    ] {
         let resolved = resolve_import("Test2::V0", &format!("-target => {target}, ok"))
             .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
 
