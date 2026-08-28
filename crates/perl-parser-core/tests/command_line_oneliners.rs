@@ -36,11 +36,7 @@ command_line_oneliner!(lane_join_autosplit_fields, "-lane", r#"print join "\t", 
 
 command_line_oneliner!(e_grep_diamond_input, "-e", r#"print grep /needle/, <>;"#);
 
-command_line_oneliner!(
-    e_map_diamond_input,
-    "-e",
-    r#"print map { chomp; "$_\n" } <>;"#
-);
+command_line_oneliner!(e_map_diamond_input, "-e", r#"print map { chomp; "$_\n" } <>;"#);
 
 command_line_oneliner!(
     ne_end_phase_counter,
@@ -48,11 +44,7 @@ command_line_oneliner!(
     r#"$count++ if /needle/; END { print "$count\n"; }"#
 );
 
-command_line_oneliner!(
-    ne_argv_and_input_line_number,
-    "-ne",
-    r#"print "$ARGV:$.:$_" if /needle/;"#
-);
+command_line_oneliner!(ne_argv_and_input_line_number, "-ne", r#"print "$ARGV:$.:$_" if /needle/;"#);
 
 command_line_oneliner!(
     ne_begin_phase_input_record_separator,
@@ -60,26 +52,14 @@ command_line_oneliner!(
     r#"BEGIN { $/ = undef; } print length;"#
 );
 
-command_line_oneliner!(
-    e_explicit_diamond_loop,
-    "-e",
-    r#"while (<>) { print if /needle/; }"#
-);
+command_line_oneliner!(e_explicit_diamond_loop, "-e", r#"while (<>) { print if /needle/; }"#);
 
 command_line_oneliner!(e_sort_diamond_with_for_modifier, "-e", r#"print for sort <>;"#);
 
 command_line_oneliner!(e_parenthesized_split_slice, "-e", r#"print +(split)[0];"#);
 
-command_line_oneliner!(
-    ne_capture_group,
-    "-ne",
-    r#"print "$1\n" if /^(\w+)/;"#
-);
+command_line_oneliner!(ne_capture_group, "-ne", r#"print "$1\n" if /^(\w+)/;"#);
 
 command_line_oneliner!(pe_trim_whitespace, "-pe", r#"s/^\s+|\s+$//g;"#);
 
-command_line_oneliner!(
-    e_printf_special_variables,
-    "-e",
-    r#"printf "%s:%d\n", $ARGV, $.;"#
-);
+command_line_oneliner!(e_printf_special_variables, "-e", r#"printf "%s:%d\n", $ARGV, $.;"#);
