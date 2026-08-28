@@ -675,6 +675,18 @@ jobs:
     continue-on-error: true
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    # #11943 bound arm: the tier's single CARGO_TARGET_DIR measured 83 GiB on
+    # cold-cache branches (runs 32697324730 / 32697144932) against ~83-84 GiB of
+    # starting headroom, filling /dev/root to 100% mid-link (ENOSPC -> ld
+    # SIGBUS). Full DWARF (dev-profile default debuginfo=2 across every routed
+    # integration-test binary) dominates that footprint; line-tables-only keeps
+    # file/line backtraces while cutting the bulk, matching the repo-blessed
+    # [profile.agent] footprint setting. Scoped to this advisory lane only:
+    # required merge-gate shards keep full debuginfo proof and no unit is
+    # skipped or weakened — identical tests run either way.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -725,6 +737,18 @@ jobs:
           echo "CARGO_TARGET_DIR=$target_dir" >> "$GITHUB_ENV"
           echo "PR-fast CARGO_TARGET_DIR=$target_dir"
           df -h . "$target_dir" || true
+
+      # #11943 visible arm (pre-build): refuse to start the tier on a runner
+      # whose free headroom is below the measured worst-case need, naming the
+      # path in an explicit resource-exhaustion diagnostic. A degraded runner
+      # must fail here in seconds instead of dying inside `ld` with SIGBUS
+      # disguised as a compile failure 40 minutes in.
+      - name: Pre-flight disk budget guard
+        shell: bash
+        run: |
+          python3 scripts/ci/pr_smoke_disk_guard.py preflight \
+            --workspace-path . \
+            --target-dir "${CARGO_TARGET_DIR:-target}"
 
       - name: Warm xtask
         run: cargo build -p xtask --locked
@@ -844,6 +868,18 @@ jobs:
               bash -c 'du -h --max-depth=1 -- "$1" 2>/dev/null | sort -rh | head -n 20' \
               _ "${CARGO_TARGET_DIR:-target}" || true
           } >> target/receipts/logs/pr-fast-disk-pressure.log || true
+
+      # #11943 visible arm (post-run): classify gate-log exhaustion signatures
+      # into an explicit annotation naming the filled path family. Advisory
+      # only — the original gate outcome is preserved; this step never exits
+      # non-zero.
+      - name: Classify PR-fast disk exhaustion
+        if: always()
+        shell: bash
+        run: |
+          python3 scripts/ci/pr_smoke_disk_guard.py classify \
+            --logs-dir target/receipts/logs \
+            --target-dir "${CARGO_TARGET_DIR:-target}"
 
       - name: Upload PR-fast receipt
         if: always()
