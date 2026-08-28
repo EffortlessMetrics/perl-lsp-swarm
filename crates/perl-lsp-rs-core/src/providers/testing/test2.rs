@@ -440,10 +440,21 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                         // `+ { ... }`). They are structural only when the
                         // nearby tokens prove that this is a hash target;
                         // otherwise the first atom is the scalar target.
-                        if is_structural_target_atom(value)
-                            && target_starts_hash(&atoms, atom_index - 1)
-                        {
-                            continue;
+                        if is_structural_target_atom(value) {
+                            if target_starts_hash(&atoms, atom_index - 1) {
+                                continue;
+                            }
+                            if value == "(" {
+                                if let Some((next_index, truthy)) =
+                                    consume_parenthesized_scalar(&atoms, atom_index - 1)
+                                {
+                                    atom_index = next_index;
+                                    if truthy {
+                                        target_helpers.insert("CLASS".to_string());
+                                    }
+                                    break;
+                                }
+                            }
                         }
                         if scalar_target_is_truthy(value) {
                             target_helpers.insert("CLASS".to_string());
@@ -745,6 +756,36 @@ fn target_starts_hash(atoms: &[String], start: usize) -> bool {
         .take(4)
         .take_while(|atom| is_structural_target_atom(atom))
         .any(|atom| atom.contains('{'))
+}
+
+/// Consume a whitespace-separated parenthesized scalar target.
+///
+/// The import tokenizer keeps wrapper punctuation as atoms, so `( 'Foo' )`
+/// would otherwise make `(` look like the target and let `Foo` leak into the
+/// export scan. Only a balanced wrapper containing one scalar atom is inferred;
+/// other expressions are consumed but remain outside the truthiness boundary.
+fn consume_parenthesized_scalar(atoms: &[String], start: usize) -> Option<(usize, bool)> {
+    if atoms.get(start).map(String::as_str) != Some("(") {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut inner: Vec<&str> = Vec::new();
+    for (index, atom) in atoms.iter().enumerate().skip(start) {
+        match atom.as_str() {
+            "(" => depth += 1,
+            ")" => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    let truthy = inner.len() == 1 && scalar_target_is_truthy(&inner[0]);
+                    return Some((index + 1, truthy));
+                }
+            }
+            _ if depth == 1 => inner.push(atom.as_str()),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Whether a scalar `-target` literal creates Test2::Tools::Target helpers.

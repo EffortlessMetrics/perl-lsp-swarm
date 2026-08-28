@@ -133,6 +133,25 @@ fn whitespace_separated_hash_wrappers_preserve_helpers() -> TestResult {
 }
 
 #[test]
+fn parenthesized_scalar_targets_consume_only_the_target_value() -> TestResult {
+    let truthy = resolve_import("Test2::V0", "-target => ( 'Foo' ), ok")
+        .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+    assert!(truthy.symbols.contains("CLASS"));
+    assert!(truthy.symbols.contains("ok"));
+    assert!(!truthy.symbols.contains("Foo"));
+    assert!(!truthy.symbols.contains("is"));
+
+    for target in ["0", "undef", "''"] {
+        let falsey = resolve_import("Test2::V0", &format!("-target => ( {target} ), ok"))
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+        assert!(!falsey.symbols.contains("CLASS"));
+        assert!(falsey.symbols.contains("ok"));
+        assert!(!falsey.symbols.contains("is"));
+    }
+    Ok(())
+}
+
+#[test]
 fn target_helpers_are_not_invented_for_tool_modules() -> TestResult {
     let resolved = resolve_import("Test2::Tools::Compare", "-target => 'Foo'")
         .ok_or_else(|| io::Error::other("Test2::Tools::Compare must be recognized"))?;
