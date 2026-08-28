@@ -4,7 +4,8 @@
 > the current dependency issues). This file is repository-carried planning
 > authority for scope, prerequisites, and proof obligations; issue #11549 is
 > the authority for human product rulings. It is not an executable input
-> contract until the validated route schema/catalog owned by #10333 exists.
+> contract until the validated route schema from #10333 and catalog composition
+> from #10334 exist; #10333 explicitly excludes route population.
 
 ## 0. Claim and entry
 
@@ -16,8 +17,9 @@ asserted inconsistently across 13 prose surfaces (70 claim rows, 12 findings),
 and no mechanism selects which install route a user should be told to take.
   Issue #11549 delivers (1) a conjunctive route classifier derived
 deterministically
-from the validated route schema/catalog owned by #10333, sequenced through
-Issue #10334, with the canonical route denominator supplied by #11434 and evidence
+from the validated route schema and validation boundary owned by #10333, with
+catalog composition and sequencing/fan-in owned by Issue #10334, the canonical
+route denominator supplied by #11434, and evidence
 producers such as #11432, and (2) a preferred-route selection whose *ordering*
 is explicit, human-owned product data — never derived.
 
@@ -35,9 +37,10 @@ must stop at `provisional(human-pending)` for the selection surface.
   `docs/distribution/INSTALL_CLAIM_SURFACES.md` — 13 surfaces (S01–S13), 70
   claim rows (C101–C1309), 12 findings (FND-1–FND-12). Its "Family handoff
   notes → For #11549" section is the direct requirement source.
-- Dependency map: **#10333 owns the route schema/catalog** and is currently
-  open and blocked by #11164; **#10334 owns sequencing/fan-in** and is not the
-  schema authority; **#11434 owns the canonical route denominator**; and
+- Dependency map: **#10333 owns the route schema/validation boundary and
+  explicitly excludes route population** and is currently open and blocked by
+  #11164; **#10334 owns catalog composition and sequencing/fan-in** under that
+  schema contract; **#11434 owns the canonical route denominator**; and
   **#11432 plus the other named producers own evidence inputs**. #11549 starts
   only after those authorities publish a validated contract. The closed,
   superseded #12858 attempt is historical context only and cannot supply route
@@ -53,6 +56,14 @@ cutover, which owns FND-10's allowlist), and any doc rewrite (FND-11 belongs to
 ---
 
 ## 1. What the inventory says the classifier must honor
+
+The generated inventory delta is part of this plan only because adding tracked
+`PLAN.md` requires regenerating its report. The two `generate-badges` rows also
+added by that regeneration describe `scripts/generate-badges.py` and
+`scripts/tests/test-generate-badges.py`, which already exist on `origin/main` and
+were absent from the base report; this PR does not add or modify those sources.
+The count changes therefore reconcile a stale generated report rather than expand
+the implementation scope.
 
 Derived from `docs/distribution/INSTALL_CLAIM_SURFACES.md`
 (`git show origin/main:docs/distribution/INSTALL_CLAIM_SURFACES.md`):
@@ -105,8 +116,9 @@ Derived from `docs/distribution/INSTALL_CLAIM_SURFACES.md`
 
 Define a **route** as a named acquisition path a user can be told to take.
 The exact route denominator, route IDs, projection contexts, and producer joins
-must come from the validated catalog owned by #10333, sequenced/fanned in by
-Issue #10334 and closed over the canonical denominator from #11434. The following are
+must come from the validated catalog composed by #10334 under #10333's schema and
+validation boundary (which excludes route population), then closed over the
+canonical denominator from #11434. The following are
 planning families only; they are not an accepted catalog or a claim-to-route
 join and must not be implemented as a hard-coded substitute:
 
@@ -167,8 +179,8 @@ and (4) the local Cargo route in the `local_testing_or_prerelease_validation`
 context. Each projection must bind to its own exact catalog route ID and compatible
 context; the four rows may not be collapsed, inferred across editor families, or
 ordered from the prose claim. The catalog contract owns the eventual opaque IDs, so
-these semantic route roles and contexts are requirements only until #10333 publishes
-the catalog rows.
+these semantic route roles and contexts are requirements only until #10334 publishes
+catalog rows conforming to #10333's contract.
 
 The same exact-once rule applies to FND-1 through FND-12: each finding must be joined to a
 route, recorded as a route-independent constraint, or explicitly excluded with a
@@ -185,12 +197,13 @@ C202 → four distinct projection records:
 `project(manual_archive, macOS_or_Linux_or_Windows_manual_archive)`,
 `project(other_editor_download, generic_LSP_client)`, and
 `project(local_cargo, local_testing_or_prerelease_validation)`. Each record must
-carry its own exact catalog route ID after #10333 publishes the catalog; labels
+  carry its own exact catalog route ID after #10334 publishes the catalog under
+  the #10333 contract; labels
 on a reused route/context tuple do not satisfy this requirement. C1205 →
 `exclude(non_install_dependency, internal deployment guidance)`; and C1208 →
 `project(open-vsx, Open VSX-compatible marketplace context)`. These are required
 dispositions for the future validated catalog ledger; they are not permission to
-invent route IDs before #10333 publishes that catalog.
+invent route IDs before #10334 publishes that catalog under #10333's contract.
 
 #### Literal closure manifest
 
@@ -229,7 +242,8 @@ production ledger exists in this planning PR. The fixture below is deliberately
 self-contained and list-based: repeated IDs are observable, and C202's four
 projections cannot overwrite one another in a dictionary. Its synthetic route
 IDs are test data only; the implementation must replace them with distinct opaque
-IDs from #10333 and validate the catalog digest before accepting the ledger. The
+IDs from #10334 under #10333's contract and validate the catalog digest before
+accepting the ledger. The
 fixture catalog below uses one deliberately opaque ID so C1208 resolution tests
 the catalog binding, not a route-name convention.
 
@@ -254,23 +268,38 @@ ALLOWED_EXCLUSIONS = {
     "diagnostic_surface", "verification_metadata", "channel_rule",
     "volatile_metadata", "adjacent_product", "non_install_dependency",
 }
-FIXTURE_CATALOG = (
+def fixture_catalog():
+    rows = []
+    for item_id in EXPECTED_CLAIMS:
+        if item_id == "C202":
+            rows.extend({
+                "route_id": f"fixture-route-{route}",
+                "target_registry": "fixture_registry",
+                "projection_contexts": (context,),
+            } for route, context in C202_PROJECTIONS)
+        elif item_id == "C1208":
+            rows.append({
+                "route_id": "r_4f8c2a",
+                "target_registry": "open_vsx",
+                "projection_contexts": (
+                    "Open_VSX_compatible_marketplace_context",
+                ),
+            })
+        else:
+            rows.append({
+                "route_id": f"fixture-route-{item_id}",
+                "target_registry": "fixture_registry",
+                "projection_contexts": (f"fixture-context-{item_id}",),
+            })
+    return tuple(rows)
+
+FIXTURE_CATALOG = fixture_catalog()
+WRONG_REGISTRY_CATALOG = tuple(
     {
-        "route_id": "r_4f8c2a",
-        "target_registry": "open_vsx",
-        "projection_contexts": (
-            "Open_VSX_compatible_marketplace_context",
-        ),
-    },
-)
-WRONG_REGISTRY_CATALOG = (
-    {
-        "route_id": "r_wrong_registry",
+        **row,
         "target_registry": "vs_marketplace",
-        "projection_contexts": (
-            "VS_Marketplace_compatible_marketplace_context",
-        ),
-    },
+    } if row["route_id"] == "r_4f8c2a" else row
+    for row in FIXTURE_CATALOG
 )
 DUPLICATE_ID_CATALOG = FIXTURE_CATALOG + FIXTURE_CATALOG[:1]
 
@@ -280,13 +309,16 @@ def resolve_catalog_route(catalog_rows, route_id):
         raise ValueError(f"route ID must resolve exactly once: {route_id}")
     return matches[0]
 
-def require_open_vsx_route(catalog_rows, route_id, projection_context):
+def require_catalog_projection(catalog_rows, route_id, projection_context):
     route = resolve_catalog_route(catalog_rows, route_id)
-    if (
-        route["target_registry"] != "open_vsx"
-        or projection_context not in route["projection_contexts"]
-    ):
-        raise ValueError("route is not compatible with the Open VSX projection")
+    if projection_context not in route["projection_contexts"]:
+        raise ValueError("route is incompatible with its catalog context")
+    return route
+
+def require_open_vsx_route(catalog_rows, route_id, projection_context):
+    route = require_catalog_projection(catalog_rows, route_id, projection_context)
+    if route["target_registry"] != "open_vsx":
+        raise ValueError("route is not compatible with the Open VSX registry")
     return route
 
 def assert_rejected(catalog_rows, route_id, projection_context):
@@ -341,6 +373,11 @@ def validate_closure(inventory_rows, ledger_rows, catalog_rows):
         if row["kind"] == "project":
             if not row.get("exact_catalog_route_id") or not row.get("exact_projection_context"):
                 raise ValueError(f"{row['id']}: incomplete projection")
+            require_catalog_projection(
+                catalog_rows,
+                row["exact_catalog_route_id"],
+                row["exact_projection_context"],
+            )
         elif row["kind"] == "constrain":
             if not row.get("route_independent") or not row.get("exact_reason"):
                 raise ValueError(f"{row['id']}: incomplete constraint")
@@ -386,14 +423,17 @@ first one). It validates every literal claim and finding ID individually, includ
 all 82 ledger IDs and C202's four records, rather than trusting a count or range
 shorthand. Thus the complete 70-claim / 12-finding closure check is executable
 before route classification exists; only exact catalog route IDs and projection
-contexts remain gated on #10333. A prose manifest or count without this
-set-equality and compatibility check does not satisfy closure. The C1208 assertion
+contexts remain gated on #10334's catalog and #10333's contract. A prose manifest or count without this
+set-equality and compatibility check does not satisfy closure. Every project row
+also resolves its exact route ID and projection context through the fixture catalog.
+The C1208 assertion
 also proves that its opaque ID resolves to exactly one catalog row whose registry is
 Open VSX and whose projection context is compatible; an ID that resolves to the
 Marketplace row, an unknown ID, a duplicate ID, or an incompatible context fails
 the fixture. These controls exercise the future catalog contract shape only: the
 validated production catalog is not present in this planning PR, so binding this
-fixture to #10333's eventual catalog remains `NOT_PROVEN` until that contract lands.
+fixture to #10334's eventual catalog under #10333's contract remains `NOT_PROVEN`
+until those authorities land.
 
 ### 2.2 Classification = conjunction of independent per-dimension verdicts
 
@@ -478,10 +518,12 @@ schema-closed:
 - Extend the repository's eventual classification generator (the command,
   artifact filenames, schema path, and API are deliberately deferred to the
   validated contract) so it **consumes the exact validated route schema/catalog
-  published by #10333** (input digest and producer revisions recorded) plus a
+  composed by #10334 under the validated contract published by #10333**
+  (input digest and producer revisions recorded) plus a
   small curated **route-join table** (`policy/install-route-join.toml` or a
   static map in the generator). The join representation must be selected only
-  after #10333 publishes its accepted contract; this plan does not name or
+  after #10333 publishes its accepted schema contract and #10334 publishes the
+  catalog; this plan does not name or
   imply a v2 filename, module, schema, or generator API.
 - Emit the classification artifact and closed schema required by that accepted
   contract, with a regenerate-and-compare byte-identity check wired beside the
@@ -490,9 +532,10 @@ schema-closed:
   testable. The only curated inputs are: route→claim join, the anti-claim
   identity map, and the pessimistic-contradiction rule. **Preference ordering
   is NOT derived here** (§3).
-- Sequencing note: #10334 fans in the producer evidence but does not replace
-  #10333's schema authority; #11434 supplies denominator closure and #11432
-  supplies its named evidence producer. Do not build against the closed #12858
+- Composition note: #10334 composes and fans in the catalog under #10333's
+  schema/validation authority; #10333 excludes route population. #11434
+  supplies denominator closure and #11432 supplies its named evidence producer.
+  Do not build against the closed #12858
   branch or any artifact/API from that attempt. Re-derive exact route joins, projection contexts, and falsifier
   fixtures if the validated input contract changes.
 
@@ -559,7 +602,8 @@ route-classification proof in this planning PR. The future classifier harness mu
 bind the cardinality cases (`|P|`/`|Q|` equal to zero, one, and multiple), shuffle
 candidate input, include Unicode route IDs and projection contexts, and include
 duplicate route-ID/context controls before claiming the UTF-8 order or cardinality
-rules are proven. Until that harness runs against the validated #10333 catalog,
+rules are proven. Until that harness runs against the validated #10334 catalog
+under #10333's contract,
 those runtime claims remain `NOT_PROVEN`; the rules above are acceptance criteria,
 not observed production behavior.
 
@@ -626,8 +670,8 @@ preferred-route policy or emission of recommendations before all seven rulings.
 Each falsifier distinguishes a correct classifier/selector from a plausible
 wrong one. All are cheap (pure functions over catalog + table; no network,
 no installs). Claim IDs and route names below are examples carried forward
-from the #11575 inventory; once #10333's schema is validated, #10334's fan-in
-is complete, and #11434 closes the denominator, each fixture must be
+from the #11575 inventory; once #10333's schema is validated, #10334's catalog
+composition/fan-in is complete, and #11434 closes the denominator, each fixture must be
 rebound to the exact catalog row, route ID, and projection context rather than
 assuming the former prose-row denominator.
 
@@ -696,7 +740,7 @@ assuming the former prose-row denominator.
    `(other_editor_download, generic_LSP_client)`, and
    `(local_cargo, local_testing_or_prerelease_validation)`. A fixture that emits
    only the VS Code row, merges contexts, substitutes an opaque catalog ID before
-   #10333 publishes it, or changes this source order fails. This checks preservation
+   #10334 publishes it under #10333's contract, or changes this source order fails. This checks preservation
    of applicable projections; it does not make the order operative route-selection
    policy while H1–H7 remain human-pending.
 9. **Determinism.** The eventual catalog-owner regeneration check must produce
@@ -804,9 +848,10 @@ recorded in the authoritative issue.
 
 ### Deferred catalog route-ID compatibility
 
-All route IDs supplied by #10333 are opaque contract values. Until that contract
-exists, this plan uses semantic projection names only and must not mint IDs. When
-the catalog lands, the join and ledger validator must require every referenced ID
+All route IDs supplied by #10334's catalog are opaque contract values governed by
+the #10333 schema. Until those contracts exist, this plan uses semantic projection
+names only and must not mint IDs. When the catalog lands, the join and ledger
+validator must require every referenced ID
 to exist in that catalog, reject unknown IDs and reused IDs, and validate the
 catalog version/input digest recorded with the ledger. A catalog migration may
 provide an explicit old-to-new compatibility map with one-to-one entries and a
@@ -834,7 +879,8 @@ table. Do NOT pull FND-7/FND-11 doc syncs or #10342 linting into this claim.
 
 **Hard prerequisite check at build time:** require explicit rulings for H1–H7 in
 addition to the validated route
-schema/catalog from #10333, with #10334's fan-in complete, #11434's canonical
+schema/validation contract from #10333 and catalog composition/fan-in from #10334,
+with #11434's canonical
 denominator, and the relevant #11432/evidence-producer revisions. Require exact
 route IDs, projection contexts, producer joins, publication/channel bindings,
 and fail-closed route states. If any authority is absent or structurally
@@ -849,8 +895,8 @@ validated catalog contract. The owning package's formatting, lint, and test
 
 **Residual risks:**
 
-- The #10333 route schema/catalog may change before implementation, or #10334
-  fan-in/#11434 denominator closure may be incomplete → re-derive §2.1,
+- The #10333 route schema/validation contract or #10334 catalog may change before
+  implementation, or #11434 denominator closure may be incomplete → re-derive §2.1,
   hard-dimension bindings, and affected fixtures; the human preference rulings
   remain separate.
 - H1–H7 contain proposed options only, not defaults or maintainer rulings. Until
