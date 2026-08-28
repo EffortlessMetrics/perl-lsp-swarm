@@ -38,6 +38,7 @@ pub(crate) struct PushDiagnosticIdentity {
     pub(crate) normalized_uri: String,
     pub(crate) document_instance: Arc<AtomicU32>,
     pub(crate) generation: u32,
+    pub(crate) workspace_generation: u64,
 }
 
 impl PushDiagnosticIdentity {
@@ -45,11 +46,13 @@ impl PushDiagnosticIdentity {
         normalized_uri: &str,
         document_instance: &Arc<AtomicU32>,
         generation: u32,
+        workspace_generation: u64,
     ) -> Self {
         Self {
             normalized_uri: normalized_uri.to_string(),
             document_instance: Arc::clone(document_instance),
             generation,
+            workspace_generation,
         }
     }
 }
@@ -122,6 +125,12 @@ impl LspServer {
         disposition: PushDiagnosticsDisposition,
     ) -> PushDiagnosticsCommitOutcome {
         let mut committed = self.push_diagnostics_sink.committed.lock();
+
+        if self.workspace_identity_generation.load(std::sync::atomic::Ordering::SeqCst)
+            != identity.workspace_generation
+        {
+            return PushDiagnosticsCommitOutcome::RejectedSupersededGeneration;
+        }
 
         // 1+2. Exact currency at the boundary: live document instance AND
         // accepted generation, checked under one brief documents acquisition.
@@ -305,7 +314,12 @@ mod tests {
         let key = server.normalize_uri_key(uri);
         let docs = server.documents.lock();
         let doc = docs.get(&key).expect("document must be open");
-        PushDiagnosticIdentity::for_document(&key, &doc.generation, doc.current_generation())
+        PushDiagnosticIdentity::for_document(
+            &key,
+            &doc.generation,
+            doc.current_generation(),
+            server.workspace_identity_generation.load(std::sync::atomic::Ordering::SeqCst),
+        )
     }
 
     fn frame_count(buf: &StdArc<parking_lot::Mutex<Vec<u8>>>) -> usize {

@@ -141,7 +141,6 @@ use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-#[cfg(any(test, feature = "expose_lsp_test_api"))]
 use std::sync::atomic::AtomicU64;
 use std::sync::{
     Arc, Weak,
@@ -213,6 +212,8 @@ pub struct LspServer {
     /// workspaces with per-folder configuration. The old string-based approach
     /// is maintained via `workspace_folder_uris()` for backward compatibility.
     workspace_folders: Arc<Mutex<Vec<WorkspaceFolderState>>>,
+    /// Monotonic configuration/ownership generation for diagnostic snapshots.
+    pub(crate) workspace_identity_generation: Arc<AtomicU64>,
     /// Root path for module resolution
     root_path: Arc<Mutex<Option<PathBuf>>>,
     /// `.perltidyrc` profile path discovered from the workspace root during

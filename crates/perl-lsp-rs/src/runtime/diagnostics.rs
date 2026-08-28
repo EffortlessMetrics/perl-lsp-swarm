@@ -268,7 +268,10 @@ impl PullDiagnosticsOrchestrator {
         // The owning folder authority key for the report subject (#7480).
         // Absent authority stays absent: the report is then served in full
         // without a reusable result ID instead of minting an unsound one.
-        let root_key = workspace_root.as_ref().map(|path| path.to_string_lossy().into_owned());
+        let workspace_generation = server.workspace_identity_generation.load(Ordering::SeqCst);
+        let root_key = workspace_root.as_ref().map(|path| {
+            format!("{}#workspace-generation={workspace_generation}", path.to_string_lossy())
+        });
 
         // Get include paths for the document
         let include_paths: Vec<String> = server
@@ -695,6 +698,7 @@ impl LspServer {
                     doc.line_starts.clone(),
                     Arc::clone(&doc.generation),
                     doc.generation.load(Ordering::SeqCst),
+                    self.workspace_identity_generation.load(Ordering::SeqCst),
                 ))
             })
             // lock is released here
@@ -709,6 +713,7 @@ impl LspServer {
             line_starts,
             generation,
             gen_at_snapshot,
+            workspace_gen_at_snapshot,
         )) = snapshot
         else {
             return;
@@ -858,6 +863,18 @@ impl LspServer {
 
             // Add external perlcritic diagnostics (opt-in)
             self.collect_external_perlcritic_diagnostics(uri, &text, &mut diagnostics);
+
+            if self.workspace_identity_generation.load(Ordering::SeqCst)
+                != workspace_gen_at_snapshot
+            {
+                tracing::debug!(
+                    uri = %normalized_uri,
+                    workspace_gen_at_snapshot,
+                    current_workspace_gen = self.workspace_identity_generation.load(Ordering::SeqCst),
+                    "Skipping stale diagnostic publish (workspace ownership/configuration changed)"
+                );
+                return;
+            }
 
             // Add dead code diagnostics from workspace-wide symbol analysis.
             // Re-check freshness immediately before reading the index: readiness
@@ -1055,8 +1072,12 @@ impl LspServer {
         // value-only comparison, which passed for a closed-and-reopened
         // document whose stale instance counter had not moved (close/reopen
         // ABA) and left the send itself outside any currentness decision.
-        let identity =
-            PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot);
+        let identity = PushDiagnosticIdentity::for_document(
+            &normalized_uri,
+            &generation,
+            gen_at_snapshot,
+            workspace_gen_at_snapshot,
+        );
         let disposition = if lsp_diagnostics.is_empty() {
             PushDiagnosticsDisposition::Clear
         } else {
@@ -1169,8 +1190,12 @@ impl LspServer {
 
         // Accepted-ticket sink boundary (#11673): same contract as the full
         // path -- validate instance + generation at the enqueue, not before.
-        let identity =
-            PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot);
+        let identity = PushDiagnosticIdentity::for_document(
+            &normalized_uri,
+            &generation,
+            gen_at_snapshot,
+            self.workspace_identity_generation.load(Ordering::SeqCst),
+        );
         let payload = publish_diagnostics_params(uri, Some(version), &lsp_diagnostics);
         match self.commit_push_diagnostics(
             &identity,
@@ -1305,8 +1330,12 @@ impl LspServer {
         // between the snapshot above and this send could publish stale-N
         // errors after N+1 acceptance, or onto a reopened instance of the
         // same URI.
-        let identity =
-            PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot);
+        let identity = PushDiagnosticIdentity::for_document(
+            &normalized_uri,
+            &generation,
+            gen_at_snapshot,
+            self.workspace_identity_generation.load(Ordering::SeqCst),
+        );
         let payload = json!({
             "uri": uri,
             "version": version,
@@ -1457,11 +1486,12 @@ impl LspServer {
                     doc.clone(),
                     std::sync::Arc::clone(&doc.generation),
                     doc.generation.load(std::sync::atomic::Ordering::SeqCst),
+                    self.workspace_identity_generation.load(std::sync::atomic::Ordering::SeqCst),
                 )
             })
         };
 
-        if let Some((doc, generation, gen_at_snapshot)) = doc_snapshot {
+        if let Some((doc, generation, gen_at_snapshot, workspace_gen_at_snapshot)) = doc_snapshot {
             // Coarse workDoneProgress for the full pull-diagnostics path, which
             // may spawn the perlcritic subprocess over large trees. Initialized
             // here (after the document-existence check) so that immediately-
@@ -1505,6 +1535,18 @@ impl LspServer {
                 );
                 // Return an empty full report with no resultId so the client
                 // does not cache this stale result and retries on the next request.
+                return Ok(Some(Self::empty_full_diagnostic_report()));
+            }
+            if self.workspace_identity_generation.load(Ordering::SeqCst)
+                != workspace_gen_at_snapshot
+            {
+                tracing::debug!(
+                    uri = uri_str,
+                    workspace_gen_at_snapshot,
+                    current_workspace_gen =
+                        self.workspace_identity_generation.load(Ordering::SeqCst),
+                    "Skipping stale document diagnostic (workspace ownership/configuration changed)"
+                );
                 return Ok(Some(Self::empty_full_diagnostic_report()));
             }
 
@@ -1823,6 +1865,7 @@ impl LspServer {
             DocumentState,
             std::sync::Arc<std::sync::atomic::AtomicU32>,
             u32,
+            u64,
         )> = {
             let documents = self.documents.lock();
             documents
@@ -1830,7 +1873,13 @@ impl LspServer {
                 .map(|(k, v)| {
                     let generation_arc = std::sync::Arc::clone(&v.generation);
                     let gen_val = v.generation.load(std::sync::atomic::Ordering::SeqCst);
-                    (k.clone(), v.clone(), generation_arc, gen_val)
+                    (
+                        k.clone(),
+                        v.clone(),
+                        generation_arc,
+                        gen_val,
+                        self.workspace_identity_generation.load(Ordering::SeqCst),
+                    )
                 })
                 .collect()
         };
@@ -1851,7 +1900,14 @@ impl LspServer {
             "Scanning workspace diagnostics",
         );
 
-        for (i, (uri_str, doc, generation, gen_at_snapshot)) in docs_snapshot.iter().enumerate() {
+        #[cfg(test)]
+        if let Some(hook) = self.diagnostic_after_snapshot_hook.lock().as_ref() {
+            hook();
+        }
+
+        for (i, (uri_str, doc, generation, gen_at_snapshot, workspace_gen_at_snapshot)) in
+            docs_snapshot.iter().enumerate()
+        {
             // Cooperative yield every 8 documents
             if i & 0x7 == 0 {
                 std::thread::yield_now();
@@ -2011,6 +2067,18 @@ impl LspServer {
                     );
                     continue;
                 }
+                if self.workspace_identity_generation.load(Ordering::SeqCst)
+                    != *workspace_gen_at_snapshot
+                {
+                    tracing::debug!(
+                        uri = uri_str,
+                        workspace_gen_at_snapshot,
+                        current_workspace_gen =
+                            self.workspace_identity_generation.load(Ordering::SeqCst),
+                        "Skipping stale workspace diagnostic (workspace ownership/configuration changed)"
+                    );
+                    continue;
+                }
 
                 // Complete-subject result identity (#7480): derives the result
                 // ID from the evaluation and projection subject, not from
@@ -2035,6 +2103,11 @@ impl LspServer {
                     .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
                     .or_else(|| self.root_path.lock().clone())
                     .map(|path| path.to_string_lossy().into_owned());
+                if let Some(root_key) = identity_context.identity_root_key.take() {
+                    identity_context.identity_root_key = Some(format!(
+                        "{root_key}#workspace-generation={workspace_gen_at_snapshot}"
+                    ));
+                }
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
                 {
                     identity_context.facts_generation = workspace_index_tier_enabled
@@ -3248,6 +3321,31 @@ mod tests {
         assert!(reloaded_second.to_string().contains("PL900"));
         assert_ne!(reloaded_first["resultId"].as_str(), Some(first_id));
         assert_eq!(reloaded_second["resultId"].as_str(), Some(second_id));
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_diagnostics_drops_in_flight_reload_snapshot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let (server, _) = make_server_with_capture();
+        let (uri, _) = install_project_version_folder(&server, &temp, "5.20")?;
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "sub f ($x) { return $x; }\n"}
+        })))?;
+
+        let workspace_generation = std::sync::Arc::clone(&server.workspace_identity_generation);
+        *server.diagnostic_after_snapshot_hook.lock() = Some(Box::new(move || {
+            workspace_generation.fetch_add(1, Ordering::SeqCst);
+        }));
+        let report = server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("in-flight reload workspace response missing")?;
+        assert_eq!(
+            report["items"].as_array().map(Vec::len),
+            Some(0),
+            "a reload during the snapshot must discard the stale PL900 report"
+        );
         Ok(())
     }
 
