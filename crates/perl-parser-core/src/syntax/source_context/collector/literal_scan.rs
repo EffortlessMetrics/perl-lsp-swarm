@@ -76,6 +76,7 @@ pub(super) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
     let mut regions = Vec::new();
     let mut active = Vec::new();
     let mut literal_state = LiteralScanState::default();
+    let mut in_pod_block = false;
     let mut line_start = 0usize;
 
     for raw_line in source.split_inclusive('\n') {
@@ -83,28 +84,32 @@ pub(super) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
         let line = strip_line_ending(raw_line);
 
         if let Some((body_start, label, allow_indented)) = active.first().cloned() {
-            // Trailing spaces/tabs after the delimiter still close the region.
-            // `PerlLexer` ends the heredoc body on such a line; comparing only
-            // the untrimmed line left the collector scanning to EOF and
-            // reclassifying every following statement as `Heredoc`, because
-            // `Heredoc` outranks `Code` in `region_precedence`.
-            //
-            // The trimmed comparison is an *additional* way to close, never a
-            // replacement: a quoted label may itself end in whitespace
-            // (`<<"EOF "`), and trimming alone would stop that line matching.
+            // Perl requires the delimiter to occupy the whole logical line.
+            // In particular, `END   ` is body text for `<<END`; only the
+            // indentation permitted by `<<~END` is ignored.
             let candidate =
                 if allow_indented { line.trim_start_matches([' ', '\t']) } else { line };
-            let closes = candidate == label || candidate.trim_end_matches([' ', '\t']) == label;
+            let closes = candidate == label;
             if closes {
                 push_region(&mut regions, body_start, line_start, SourceRegionKind::Heredoc);
                 active.remove(0);
+                if let Some((next_body_start, _, _)) = active.first_mut() {
+                    *next_body_start = line_end;
+                }
             }
+        } else if is_pod_end_marker(line) {
+            in_pod_block = false;
+        } else if in_pod_block {
+            // POD prose is not Perl source; do not scan its punctuation.
+        } else if is_pod_start_marker(line) && !literal_state.is_active() {
+            in_pod_block = true;
         } else {
             active.extend(
                 heredoc_openers_on_line(line, &mut literal_state)
                     .into_iter()
                     .map(|(label, allow_indented)| (line_end, label, allow_indented)),
             );
+            literal_state.finish_physical_line();
         }
 
         line_start = line_end;
@@ -135,9 +140,19 @@ fn heredoc_openers_on_line(line: &str, state: &mut LiteralScanState) -> Vec<(Str
             continue;
         }
 
+        if state.skip_literal_modifiers {
+            if bytes[index].is_ascii_alphabetic() {
+                index += 1;
+                continue;
+            }
+            state.skip_literal_modifiers = false;
+        }
+
         if let Some(active_literal) = state.literal.as_mut() {
+            let was_regex = active_literal.kind == QuoteLikeLiteralKind::Regex;
             if active_literal.advance(bytes[index], &mut state.escaped) {
                 state.literal = None;
+                state.skip_literal_modifiers = was_regex;
             }
             index += 1;
             continue;
@@ -186,6 +201,14 @@ fn heredoc_openers_on_line(line: &str, state: &mut LiteralScanState) -> Vec<(Str
     }
 
     openers
+}
+
+impl LiteralScanState {
+    fn finish_physical_line(&mut self) {
+        // This scanner receives lines without their line ending. A backslash
+        // before that removed ending escapes the newline, not the next byte.
+        self.escaped = false;
+    }
 }
 
 fn heredoc_opener_at(line: &str, marker: usize) -> Option<(String, bool)> {
@@ -326,6 +349,7 @@ struct LiteralScanState {
     literal: Option<ActiveLiteral>,
     pending_literal_body_start: Option<usize>,
     escaped: bool,
+    skip_literal_modifiers: bool,
 }
 
 impl LiteralScanState {
@@ -449,7 +473,6 @@ struct ActiveLiteral {
     sections_remaining: usize,
     depth: usize,
     awaiting_section_opener: bool,
-    #[expect(dead_code, reason = "policy:5003-pr1: reserved for regex/string kind dispatch")]
     kind: QuoteLikeLiteralKind,
 }
 
@@ -949,26 +972,71 @@ mod tests {
         );
     }
 
-    /// Names the `trim_end_matches` closer seam directly rather than reaching it
-    /// through `SourceRegionIndex::build`. `PerlLexer` closes a heredoc on a
-    /// delimiter line padded with spaces or tabs; comparing the untrimmed line
-    /// left the body open to EOF, so every following statement was reclassified
-    /// as `Heredoc` (which outranks `Code` in `region_precedence`).
+    /// A plain heredoc requires an exact delimiter line. Whitespace is only
+    /// accepted before the delimiter for the `<<~` form.
     #[test]
-    fn terminator_closes_despite_trailing_spaces_or_tabs() {
-        for source in [
-            "my $x = <<EOF;\nbody\nEOF  \ntail();\n",
-            "my $x = <<EOF;\nbody\nEOF\t\ntail();\n",
-            "my $x = <<~EOF;\nbody\n    EOF \ntail();\n",
-        ] {
+    fn plain_terminator_does_not_close_on_trailing_spaces_or_tabs() {
+        for source in
+            ["my $x = <<EOF;\nbody\nEOF  \ntail();\n", "my $x = <<EOF;\nbody\nEOF\t\ntail();\n"]
+        {
             let regions = scan_heredoc_regions(source);
             assert_eq!(regions.len(), 1, "one heredoc body expected in {source:?}: {regions:?}");
             assert!(
-                regions[0].end < source.len(),
-                "a whitespace-padded terminator must close the body before EOF in {source:?}: \
+                regions[0].end == source.len(),
+                "a whitespace-padded near miss must remain open through EOF in {source:?}: \
                  {regions:?}"
             );
         }
+    }
+
+    #[test]
+    fn exact_terminator_after_near_miss_closes_the_body() -> Result<(), String> {
+        let source = "my $x = <<EOF;\nbody\nEOF   \nEOF\ntail();\n";
+        let regions = scan_heredoc_regions(source);
+        assert_eq!(regions.len(), 1, "one heredoc body expected: {regions:?}");
+        assert_eq!(
+            regions[0].end,
+            offset_of(source, "EOF\ntail").ok_or("fixture must contain a terminator")?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn queued_empty_heredocs_have_distinct_fifo_spans() -> Result<(), String> {
+        let source = "print <<A, <<B;\nA\nB\ntail();\n";
+        let regions = scan_heredoc_regions(source);
+        assert_eq!(regions.len(), 2, "both empty heredocs must be collected: {regions:?}");
+        let first_terminator = offset_of(source, "A\nB").ok_or("fixture must contain A")?;
+        let second_terminator = offset_of(source, "B\ntail").ok_or("fixture must contain B")?;
+        assert_eq!(regions[0].start, first_terminator);
+        assert_eq!(regions[0].end, first_terminator);
+        assert_eq!(regions[1].start, second_terminator);
+        assert_eq!(regions[1].end, second_terminator);
+        Ok(())
+    }
+
+    #[test]
+    fn pod_text_does_not_poison_heredoc_literal_state() {
+        let source = "=pod\ndocumentation says \"foo\n=cut\nprint <<REAL;\nbody\nREAL\ntail();\n";
+        let regions = scan_heredoc_regions(source);
+        assert_eq!(regions.len(), 1, "the code heredoc must be found: {regions:?}");
+        assert!(regions[0].end < source.len(), "the real terminator must close the region");
+    }
+
+    #[test]
+    fn regex_modifiers_do_not_start_a_phantom_literal() {
+        let source = "my $re = qr/foo/m;\nprint <<REAL;\nbody\nREAL\ntail();\n";
+        let regions = scan_heredoc_regions(source);
+        assert_eq!(regions.len(), 1, "the code heredoc must be found: {regions:?}");
+        assert!(regions[0].end < source.len(), "the real terminator must close the region");
+    }
+
+    #[test]
+    fn escaped_line_ending_does_not_escape_the_next_line_byte() {
+        let source = "my $text = \"foo\\\\\n\";\nprint <<REAL;\nbody\nREAL\ntail();\n";
+        let regions = scan_heredoc_regions(source);
+        assert_eq!(regions.len(), 1, "the code heredoc must be found: {regions:?}");
+        assert!(regions[0].end < source.len(), "the real terminator must close the region");
     }
 
     /// The trimmed comparison must be additive, not a replacement: a quoted
