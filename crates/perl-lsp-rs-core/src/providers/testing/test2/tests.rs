@@ -382,9 +382,11 @@ fn refcount_all_includes_the_optional_helper_without_changing_defaults() {
     assert!(!defaults.symbols.contains("refcount"));
 
     let all = resolve_import("Test2::Tools::Refcount", "':ALL'").expect("known Refcount tool");
-    assert!(all.symbols.contains("is_refcount"));
-    assert!(all.symbols.contains("is_oneref"));
-    assert!(all.symbols.contains("refcount"));
+    assert_eq!(
+        all.symbols,
+        ["is_refcount", "is_oneref", "refcount"].into_iter().map(str::to_string).collect(),
+        "Refcount :ALL must match the exact upstream export set"
+    );
 }
 
 #[test]

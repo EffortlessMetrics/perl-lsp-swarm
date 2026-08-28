@@ -28,6 +28,22 @@ product surface already consumes it.
 
 ### Test2 imports
 
+#### Pinned upstream authority
+
+The first-party import facts in the current migration oracle are checked against
+the immutable [`Test-More/test-more` revision
+9545e6eebffc1662d50414bf1ed6c09fb229206d](https://github.com/Test-More/test-more/tree/9545e6eebffc1662d50414bf1ed6c09fb229206d),
+which reports version `1.302225` for the modeled `Test2::V0`, `Test2::V1`, and
+`Test2::Tools::Refcount` modules. The relevant source files are:
+
+- [`lib/Test2/V0.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/V0.pm)
+- [`lib/Test2/V1.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/V1.pm)
+- [`lib/Test2/Tools/Refcount.pm`](https://github.com/Test-More/test-more/blob/9545e6eebffc1662d50414bf1ed6c09fb229206d/lib/Test2/Tools/Refcount.pm)
+
+This revision is the reproducible authority for this fact-table slice; a later
+upstream revision requires an explicit source review and pin update. It does not
+claim that every Test2 release or dynamic plugin is statically knowable.
+
 The current provider-local reader recognizes substantial Test2 import behavior,
 including examples such as:
 

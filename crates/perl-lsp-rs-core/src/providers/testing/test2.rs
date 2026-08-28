@@ -7,8 +7,12 @@
 //!
 //! # Provenance (external-truth gate)
 //!
-//! The export lists below are verified against the canonical Test2 source in
-//! `Test-More/test-more` rather than reasoned from the diff:
+//! The export lists below are verified against the canonical Test2 source at
+//! the immutable `Test-More/test-more` revision
+//! [`9545e6eebffc1662d50414bf1ed6c09fb229206d`](https://github.com/Test-More/test-more/tree/9545e6eebffc1662d50414bf1ed6c09fb229206d)
+//! rather than reasoned from the diff. The pinned source reports version
+//! `1.302225` for the modeled `Test2::V0`, `Test2::V1`, and
+//! `Test2::Tools::Refcount` modules:
 //!
 //! - `Test2::V0` default `@EXPORT` and the `use Test2::Tools::* qw/.../;` lines —
 //!   `lib/Test2/V0.pm`.
