@@ -162,9 +162,7 @@ pub fn is_perl_source_extension(extension: &str) -> bool {
 }
 
 fn has_perl_source_extension(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(is_perl_source_extension)
+    path.extension().and_then(|ext| ext.to_str()).is_some_and(is_perl_source_extension)
 }
 
 /// Returns `true` if `path` points to a recognized Perl source file.
@@ -183,12 +181,16 @@ fn is_extensionless_perl_script(path: &Path) -> bool {
 }
 
 fn has_perl_shebang(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+
     let Ok(file) = std::fs::File::open(path) else {
         return false;
     };
-    if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
-        return false;
-    }
 
     let mut prefix = Vec::with_capacity(SHEBANG_PROBE_BYTES);
     let mut limited = file.take(SHEBANG_PROBE_BYTES as u64);
@@ -211,7 +213,7 @@ fn is_perl_shebang_line(line: &str) -> bool {
     let Some(interpreter) = words.next() else {
         return false;
     };
-    let interpreter = interpreter.rsplit('/').next().unwrap_or(interpreter);
+    let interpreter = perl_interpreter_name(interpreter);
 
     if is_perl_interpreter_name(interpreter) {
         return true;
@@ -231,8 +233,19 @@ fn is_perl_shebang_line(line: &str) -> bool {
     } else {
         command
     };
-    let command = command.rsplit('/').next().unwrap_or(command);
+    let command = perl_interpreter_name(command);
     is_perl_interpreter_name(command)
+}
+
+fn perl_interpreter_name(command: &str) -> &str {
+    let name = command.rsplit(['/', '\\']).next().unwrap_or(command);
+    if let Some((stem, extension)) = name.rsplit_once('.')
+        && extension.eq_ignore_ascii_case("exe")
+    {
+        stem
+    } else {
+        name
+    }
 }
 
 fn is_perl_interpreter_name(name: &str) -> bool {
@@ -240,12 +253,14 @@ fn is_perl_interpreter_name(name: &str) -> bool {
         return true;
     }
 
-    name.strip_prefix("perl").is_some_and(|version| {
-        !version.is_empty()
-            && version.split('.').all(|component| {
-                !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
-            })
-    })
+    let Some(version) = name.strip_prefix("perl") else {
+        return false;
+    };
+    let mut components = version.split('.');
+    components.next() == Some("5")
+        && components.all(|component| {
+            !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 /// Returns `true` if `uri` or path-like string points to a Perl source file.
@@ -347,10 +362,33 @@ mod tests {
         assert!(is_perl_shebang_line("#!/usr/local/bin/perl5.40 -w"));
         assert!(is_perl_shebang_line("#!/usr/bin/env perl"));
         assert!(is_perl_shebang_line("#!/usr/bin/env -S perl -w"));
+        assert!(is_perl_shebang_line(r"#!C:\Strawberry\perl\bin\perl.exe -w"));
+        assert!(is_perl_shebang_line(r"#!/usr/bin/perl5.40.exe"));
         assert!(!is_perl_shebang_line("#!/usr/bin/superl"));
         assert!(!is_perl_shebang_line("#!/usr/bin/perlbrew"));
+        assert!(!is_perl_shebang_line("#!/usr/bin/perl6"));
         assert!(!is_perl_shebang_line("#!/bin/sh # perl"));
         assert!(!is_perl_shebang_line("use strict;"));
+    }
+
+    #[test]
+    fn classifies_extensionless_regular_files_without_following_directories()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let perl_script = directory.path().join("perl-tool");
+        let shell_script = directory.path().join("shell-tool");
+        let perl_named_text = directory.path().join("notes.txt");
+        let directory_path = directory.path().join("directory");
+        std::fs::write(&perl_script, "#!/usr/bin/env -S perl -w\n1;\n")?;
+        std::fs::write(&shell_script, "#!/bin/sh # perl\necho hi\n")?;
+        std::fs::write(&perl_named_text, "#!/usr/bin/perl\n1;\n")?;
+        std::fs::create_dir(&directory_path)?;
+
+        assert!(is_perl_source_path(&perl_script));
+        assert!(!is_perl_source_path(&shell_script));
+        assert!(!is_perl_source_path(&perl_named_text));
+        assert!(!is_perl_source_path(&directory_path));
+        Ok(())
     }
 
     #[test]

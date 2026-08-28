@@ -37,7 +37,7 @@ use perl_parser::workspace_index::{
     DegradationReason, EarlyExitReason, IndexState, ResourceKind, SymbolKind,
 };
 #[cfg(feature = "workspace")]
-use perl_parser_core::source_file::{is_perl_source_path, is_perl_source_uri};
+use perl_parser_core::source_file::is_perl_source_path;
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 use perl_semantic_facts::{
     Confidence, Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFallbackState,
@@ -72,6 +72,11 @@ const WORKSPACE_CONFIGURATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(30
 #[allow(dead_code)]
 fn is_perl_source_file(path: &Path) -> bool {
     is_perl_source_path(path)
+}
+
+#[cfg(feature = "workspace")]
+fn is_perl_source_uri_on_disk(uri: &str) -> bool {
+    uri_to_fs_path(uri).is_some_and(|path| is_perl_source_path(&path))
 }
 
 #[cfg(feature = "workspace")]
@@ -1683,7 +1688,7 @@ impl LspServer {
         // Re-index the file if it is a Perl source file.
         #[cfg(feature = "workspace")]
         if let Some(coordinator) = self.coordinator()
-            && is_perl_source_uri(uri)
+            && is_perl_source_uri_on_disk(uri)
         {
             if loaded_content.is_none() {
                 loaded_content = read_watched_file_content(uri, "re-indexing");
@@ -1915,7 +1920,7 @@ impl LspServer {
                 // Note: Mutation operation - use coordinator with lifecycle tracking
                 #[cfg(feature = "workspace")]
                 if let Some(coordinator) = self.coordinator()
-                    && is_perl_source_uri(uri)
+                    && is_perl_source_uri_on_disk(uri)
                     && let Some(path) = uri_to_fs_path(uri)
                 {
                     match read_text_file_with_encoding(&path) {
@@ -2008,7 +2013,7 @@ impl LspServer {
                     // Index new file if it's a Perl file. When a document is
                     // open at the new URI, its buffer — not disk bytes — is
                     // authoritative for that subject, so skip disk indexing.
-                    if is_perl_source_uri(&new_uri)
+                    if is_perl_source_uri_on_disk(&new_uri)
                         && !self.document_is_open(&new_uri)
                         && let Some(path) = uri_to_fs_path(&new_uri)
                     {
@@ -2897,6 +2902,76 @@ mod tests {
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
         assert_eq!(err.message, "workspace/symbol/resolve: missing required parameter 'params'");
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn filesystem_watcher_classifier_accepts_shebang_files_but_not_uri_only_names()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let perl_path = directory.path().join("tool");
+        let shell_path = directory.path().join("shell-tool");
+        std::fs::write(&perl_path, "#!/usr/bin/env perl\n1;\n")?;
+        std::fs::write(&shell_path, "#!/bin/sh # perl\necho hi\n")?;
+        let perl_uri = url::Url::from_file_path(&perl_path).map_err(|_| "invalid Perl URI")?;
+        let shell_uri = url::Url::from_file_path(&shell_path).map_err(|_| "invalid shell URI")?;
+
+        assert!(!perl_parser_core::source_file::is_perl_source_uri(perl_uri.as_str()));
+        assert!(super::is_perl_source_uri_on_disk(perl_uri.as_str()));
+        assert!(!super::is_perl_source_uri_on_disk(shell_uri.as_str()));
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn file_lifecycle_paths_index_extensionless_shebang_scripts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let old_path = directory.path().join("tool");
+        let new_path = directory.path().join("renamed-tool");
+        std::fs::write(&old_path, "#!/usr/bin/env perl\nsub created_tool { 1 }\n1;\n")?;
+        let old_uri = url::Url::from_file_path(&old_path).map_err(|_| "invalid old URI")?;
+        let new_uri = url::Url::from_file_path(&new_path).map_err(|_| "invalid new URI")?;
+
+        let mut server = LspServer::new();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps::default(),
+            )));
+
+        server.handle_did_create_files(Some(json!({
+            "files": [{ "uri": old_uri.to_string() }]
+        })))?;
+        let created = server
+            .coordinator()
+            .ok_or("missing index coordinator")?
+            .index()
+            .find_symbols("created_tool");
+        assert_eq!(created.len(), 1, "didCreateFiles must index an extensionless Perl script");
+
+        std::fs::write(&old_path, "#!/usr/bin/env perl\nsub changed_tool { 1 }\n1;\n")?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": old_uri.to_string(), "type": 2 }]
+        })))?;
+        let changed = server
+            .coordinator()
+            .ok_or("missing index coordinator")?
+            .index()
+            .find_symbols("changed_tool");
+        assert_eq!(changed.len(), 1, "watched changes must re-index an extensionless Perl script");
+
+        std::fs::rename(&old_path, &new_path)?;
+        server.handle_did_rename_files(Some(json!({
+            "files": [{ "oldUri": old_uri.to_string(), "newUri": new_uri.to_string() }]
+        })))?;
+        let renamed = server
+            .coordinator()
+            .ok_or("missing index coordinator")?
+            .index()
+            .find_symbols("changed_tool");
+        assert_eq!(renamed.len(), 1, "renames must index an extensionless Perl script");
+        Ok(())
     }
 
     /// #8262 counterexample: the case-sensitive name-index prefix search returns
