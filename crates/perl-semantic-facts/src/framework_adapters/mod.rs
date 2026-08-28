@@ -5,6 +5,8 @@
 //! framework registry/publication issues; the adapters here are
 //! framework-specific and shadow-only until those land.
 
+/// DBIx::Class result-class/result-source identity adapter (#9736).
+pub mod dbix_class;
 /// Dancer2 framework adapter (#8914).
 pub mod dancer2;
 /// Registry-activated Dancer2 hook fact minting (#8924).
