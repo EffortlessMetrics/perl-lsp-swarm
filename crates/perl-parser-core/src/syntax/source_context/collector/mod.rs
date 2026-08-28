@@ -26,6 +26,12 @@ pub(crate) fn collect_regions(source: &str) -> Vec<SourceRegion> {
     coalesce_regions(regions, source.len())
 }
 
+/// Return completed heredoc spans before normalization, retaining zero-length
+/// spans for empty bodies so callers can protect their terminator boundaries.
+pub(crate) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
+    literal_scan::scan_heredoc_regions(source)
+}
+
 fn collect_lexer_literal_regions(source: &str) -> Vec<SourceRegion> {
     let mut regions = Vec::new();
     let mut lexer = PerlLexer::with_body_tokens(source);

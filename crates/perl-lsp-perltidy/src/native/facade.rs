@@ -276,6 +276,7 @@ fn range_overlaps_completed_heredoc(source: &str, range: TextRange) -> bool {
     }
 
     let regions = SourceRegionIndex::build(source);
+    let heredoc_spans = regions.completed_heredoc_spans();
     let mut stream = TokenStream::new(source);
     let mut pending_body_starts = Vec::new();
 
@@ -300,11 +301,13 @@ fn range_overlaps_completed_heredoc(source: &str, range: TextRange) -> bool {
                 line_start_at_or_before(source, token.start())
             };
             if pending_body_starts.iter().any(|body_start| {
-                regions.regions().iter().any(|region| {
+                heredoc_spans.iter().any(|region| {
                     let protected_end = byte_offset_after_line(source, region.end);
+                    let completed_before_token =
+                        region.start == region.end || protected_end <= completion_limit;
                     region.kind == SourceRegionKind::Heredoc
-                        && region.end > *body_start
-                        && protected_end <= completion_limit
+                        && region.start == *body_start
+                        && completed_before_token
                         && region.start < range_end
                         && protected_end > range_start
                 })

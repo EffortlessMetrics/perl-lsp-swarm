@@ -88,6 +88,49 @@ fn range_formatting_refuses_heredoc_terminator_line() {
 }
 
 #[test]
+fn range_formatting_refuses_empty_heredoc_terminator_line() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<A;\nA\nmy$x=1;\n";
+    let terminator = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+
+    let result = formatter.format_range(source, terminator, &FormatConfig::default());
+
+    assert!(!result.changed);
+    assert_eq!(result.formatted, source);
+    assert!(result.edits.is_empty());
+    assert!(result.diagnostics.first().is_some_and(|diagnostic| {
+        diagnostic.code == "native.format.literal_preserve_region"
+            && diagnostic.message.contains("heredoc")
+    }));
+}
+
+#[test]
+fn empty_heredocs_keep_each_terminator_protected_and_following_code_eligible() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<A, <<B;\nA\nB\nmy$x=2;\n";
+
+    for line in [1, 2] {
+        let terminator = TextRange::new(TextPosition::new(line, 0), TextPosition::new(line + 1, 0));
+        let result = formatter.format_range(source, terminator, &FormatConfig::default());
+
+        assert!(!result.changed, "empty heredoc terminator must be preserved");
+        assert_eq!(result.formatted, source);
+        assert!(result.edits.is_empty());
+        assert!(result.diagnostics.first().is_some_and(|diagnostic| {
+            diagnostic.code == "native.format.literal_preserve_region"
+                && diagnostic.message.contains("heredoc")
+        }));
+    }
+
+    let following_code = TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0));
+    let result = formatter.format_range(source, following_code, &FormatConfig::default());
+
+    assert!(result.changed, "code after the final empty terminator remains eligible");
+    assert_eq!(result.formatted, "print <<A, <<B;\nA\nB\nmy $x = 2;\n");
+    assert!(result.diagnostics.is_empty());
+}
+
+#[test]
 fn range_formatting_after_heredoc_terminator_remains_eligible() {
     let formatter = NativeFormatter::new();
     let source = "print <<'EOF';\nmy$x=1;\nEOF\nmy$y=2;\n";

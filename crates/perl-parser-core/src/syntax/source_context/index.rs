@@ -82,6 +82,13 @@ impl SourceRegionIndex {
         &self.regions
     }
 
+    /// Return completed heredoc spans before normalization, retaining empty
+    /// body spans so callers can protect their terminator lines.
+    #[must_use]
+    pub fn completed_heredoc_spans(&self) -> Vec<SourceRegion> {
+        collector::scan_heredoc_regions(&self.source)
+    }
+
     /// Return a copy with additional override regions merged in.
     ///
     /// PR1 identity stub for future semantic-island overlays: overrides are merged
