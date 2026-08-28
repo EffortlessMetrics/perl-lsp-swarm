@@ -18,7 +18,7 @@
 use perl_tdd_support::{must, must_err};
 use serde_json::{Value, json};
 
-use super::capabilities::{CatalogDapFlags, DebugBackendCapabilities, intersect_dap_capabilities};
+use super::capabilities::{ControlMode, DebugBackendCapabilities};
 use super::{
     AttachBackendParams, AttachResult, BackendError, BackendResult, ContinueResult, DebugBackend,
     EvaluateParams, EvaluateResult, InitializeBackendParams, LaunchBackendParams, LaunchResult,
@@ -46,6 +46,31 @@ impl NativePerlDbBackend {
     /// Access the underlying adapter (e.g. to install an event sender).
     pub fn adapter_mut(&mut self) -> &mut DebugAdapter {
         &mut self.adapter
+    }
+
+    /// Capabilities backed by implemented native methods and positive behavior proof.
+    ///
+    /// Keep this projection crate-private so later backend evidence work can consume
+    /// the same fail-closed inventory without turning it into a public API contract.
+    #[must_use]
+    pub(crate) fn proven_capabilities() -> DebugBackendCapabilities {
+        DebugBackendCapabilities {
+            source_breakpoints: true,
+            conditional_breakpoints: false,
+            hit_conditions: false,
+            logpoints: false,
+            function_breakpoints: false,
+            data_breakpoints: false,
+            evaluate: false,
+            variables: false,
+            scopes: false,
+            stack_trace: false,
+            continue_execution: false,
+            stepping: false,
+            pause: false,
+            set_variable: false,
+            control_mode: ControlMode::DapControlled,
+        }
     }
 
     fn next_seq(&mut self) -> i64 {
@@ -89,28 +114,7 @@ impl DebugBackend for NativePerlDbBackend {
     }
 
     fn capabilities(&self) -> DebugBackendCapabilities {
-        // The native engine can, in principle, do everything the catalog
-        // compiled in. Report the intersection so callers see an honest floor.
-        let catalog = CatalogDapFlags::from_catalog();
-        let engine = DebugBackendCapabilities::full();
-        let negotiated = intersect_dap_capabilities(&catalog, &engine);
-        DebugBackendCapabilities {
-            source_breakpoints: true,
-            conditional_breakpoints: negotiated.supports_conditional_breakpoints,
-            hit_conditions: negotiated.supports_hit_conditional_breakpoints,
-            logpoints: negotiated.supports_log_points,
-            function_breakpoints: negotiated.supports_function_breakpoints,
-            data_breakpoints: negotiated.supports_data_breakpoints,
-            evaluate: negotiated.supports_evaluate_for_hovers,
-            variables: true,
-            scopes: true,
-            stack_trace: true,
-            continue_execution: true,
-            stepping: true,
-            pause: true,
-            set_variable: negotiated.supports_set_variable,
-            control_mode: engine.control_mode,
-        }
+        Self::proven_capabilities()
     }
 
     fn initialize(&mut self, _params: InitializeBackendParams) -> BackendResult<()> {
@@ -293,16 +297,32 @@ impl SetFunctionBreakpointsParams {
 mod tests {
     use super::*;
     use crate::model::{DebugBreakpoint, DebugSource};
+    use anyhow::ensure;
     use std::io::Write;
 
     #[test]
-    fn capabilities_reflect_catalog_and_engine() {
+    fn capabilities_fail_closed_to_proven_native_methods() -> anyhow::Result<()> {
         let backend = NativePerlDbBackend::new();
         let caps = backend.capabilities();
-        // The native engine always supports source breakpoints, stack, vars.
-        assert!(caps.source_breakpoints);
-        assert!(caps.stack_trace);
-        assert!(caps.variables);
+        let expected = DebugBackendCapabilities {
+            source_breakpoints: true,
+            conditional_breakpoints: false,
+            hit_conditions: false,
+            logpoints: false,
+            function_breakpoints: false,
+            data_breakpoints: false,
+            evaluate: false,
+            variables: false,
+            scopes: false,
+            stack_trace: false,
+            continue_execution: false,
+            stepping: false,
+            pause: false,
+            set_variable: false,
+            control_mode: ControlMode::DapControlled,
+        };
+        ensure!(caps == expected, "native capabilities widened beyond proven methods: {caps:?}");
+        Ok(())
     }
 
     #[test]
