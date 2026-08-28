@@ -94,13 +94,32 @@ fn workspace_symbol_match_requires_name_and_uri() {
         "the requested name from another file must not satisfy a URI-bound wait"
     );
 
+    let exact_package_name = json!([{
+        "name": "MyApp::Target",
+        "location": {
+            "uri": target_uri,
+            "range": {
+                "start": { "line": 1, "character": 0 },
+                "end": { "line": 1, "character": 13 }
+            }
+        }
+    }]);
+    assert!(
+        workspace_symbol_response_contains(
+            &exact_package_name,
+            "MyApp::Target",
+            Some(target_uri)
+        ),
+        "an exact qualified package name should satisfy readiness"
+    );
+
     let qualified_name = json!([{
         "name": "MyApp::target",
         "location": {
             "uri": target_uri,
             "range": {
-                "start": { "line": 1, "character": 4 },
-                "end": { "line": 1, "character": 10 }
+                "start": { "line": 2, "character": 4 },
+                "end": { "line": 2, "character": 10 }
             }
         }
     }]);
@@ -114,8 +133,8 @@ fn workspace_symbol_match_requires_name_and_uri() {
         "location": {
             "uri": target_uri,
             "range": {
-                "start": { "line": 2, "character": 3 },
-                "end": { "line": 2, "character": 10 }
+                "start": { "line": 3, "character": 3 },
+                "end": { "line": 3, "character": 10 }
             }
         }
     }]);
