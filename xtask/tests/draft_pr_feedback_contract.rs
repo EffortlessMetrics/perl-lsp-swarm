@@ -8,6 +8,14 @@ use std::fs;
 use std::path::PathBuf;
 
 const CI_WORKFLOW: &[u8] = include_bytes!("../../.github/workflows/ci.yml");
+const DRAFT_EVENT_TYPES: &[u8] =
+    b"types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]";
+const DRAFT_SELECTOR: &[u8] = b"echo \"run_ci=false\" >> \"$GITHUB_OUTPUT\"";
+const SKIPPED_IS_NOT_PROOF: &[u8] = b"A skipped job is not verification";
+const DRAFT_CONFLICT_ROUTE: &[u8] =
+    b"github.event_name == 'pull_request' && github.event.pull_request.draft == true";
+const SURVIVE_SKIPPED_DEPENDENCY: &[u8] = b"always() &&";
+const EXACT_PR_HEAD: &[u8] = b"github.event.pull_request.head.sha || github.ref_name";
 
 const fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
@@ -31,42 +39,12 @@ const fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     false
 }
 
-const _: () = assert!(
-    contains(
-        CI_WORKFLOW,
-        b"types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
-    ),
-    "draft/ready state changes must retrigger CI"
-);
-const _: () = assert!(
-    contains(
-        CI_WORKFLOW,
-        b"echo \"run_ci=false\" >> \"$GITHUB_OUTPUT\"",
-    ),
-    "drafts must keep the expensive CI selector disabled"
-);
-const _: () = assert!(
-    contains(CI_WORKFLOW, b"A skipped job is not verification"),
-    "draft summaries must distinguish skipped jobs from proof"
-);
-const _: () = assert!(
-    contains(
-        CI_WORKFLOW,
-        b"github.event_name == 'pull_request' && github.event.pull_request.draft == true",
-    ),
-    "the conflict-marker job must select draft pull requests"
-);
-const _: () = assert!(
-    contains(CI_WORKFLOW, b"always() &&"),
-    "the draft route must survive its intentionally skipped preflight dependency"
-);
-const _: () = assert!(
-    contains(
-        CI_WORKFLOW,
-        b"github.event.pull_request.head.sha || github.ref_name",
-    ),
-    "the cheap draft check must inspect the exact pull-request head"
-);
+const _: () = assert!(contains(CI_WORKFLOW, DRAFT_EVENT_TYPES));
+const _: () = assert!(contains(CI_WORKFLOW, DRAFT_SELECTOR));
+const _: () = assert!(contains(CI_WORKFLOW, SKIPPED_IS_NOT_PROOF));
+const _: () = assert!(contains(CI_WORKFLOW, DRAFT_CONFLICT_ROUTE));
+const _: () = assert!(contains(CI_WORKFLOW, SURVIVE_SKIPPED_DEPENDENCY));
+const _: () = assert!(contains(CI_WORKFLOW, EXACT_PR_HEAD));
 
 fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
