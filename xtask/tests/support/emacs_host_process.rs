@@ -17,7 +17,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::fs;
-use std::io::Read;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
@@ -163,16 +162,8 @@ pub fn run_owned_process(
     let pid = child.id();
     let mut stdout = child.stdout.take().context("capturing host stdout")?;
     let mut stderr = child.stderr.take().context("capturing host stderr")?;
-    let stdout_reader = thread::spawn(move || -> std::io::Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes)?;
-        Ok(bytes)
-    });
-    let stderr_reader = thread::spawn(move || -> std::io::Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes)?;
-        Ok(bytes)
-    });
+    let stdout_reader = spawn_bounded_reader(stdout, StreamSanitizer::for_run(plan, layout));
+    let stderr_reader = spawn_bounded_reader(stderr, StreamSanitizer::for_run(plan, layout));
 
     let deadline = Instant::now() + Duration::from_millis(plan.identity.timeout_ms);
     let mut timed_out = false;
@@ -190,8 +181,8 @@ pub fn run_owned_process(
         thread::sleep(Duration::from_millis(10));
     };
 
-    let stdout = join_reader(stdout_reader, "host stdout")?;
-    let stderr = join_reader(stderr_reader, "host stderr")?;
+    let stdout_capture = join_capture(stdout_reader, "host stdout")?;
+    let stderr_capture = join_capture(stderr_reader, "host stderr")?;
     // Give the platform process table a bounded chance to publish a child
     // that outlived the host. This is not a cleanup grace period: survivors
     // still fail, and a missing probe still cannot pass.
@@ -203,37 +194,60 @@ pub fn run_owned_process(
     {
         (CleanupResult::NotProven, before_error, Vec::new())
     } else {
-        match (&probe_before, &probe_after) {
-            (Some(Ok(_)), Some(Ok(after_text))) => match parse_probe(after_text) {
-                Ok(after_lines) => {
-                    let survivors = surviving_processes(&before_lines, &after_lines, &needle);
-                    if survivors.is_empty() {
-                        (CleanupResult::Pass, "process-set comparison clean".to_string(), survivors)
-                    } else {
-                        (
-                            CleanupResult::Fail,
-                            format!(
-                                "process-set comparison observed {} surviving candidate \
+        let pre_existing = matching_candidates(&before_lines, &needle);
+        if !pre_existing.is_empty() {
+            // A candidate process was alive before this run launched. This
+            // run cannot attribute survivors (or their absence) to itself,
+            // and the contract requires the test-owned candidate tree to be
+            // created and reaped by this run alone: fail closed instead of
+            // letting a leaked process hide in the before-baseline.
+            (
+                CleanupResult::NotProven,
+                format!(
+                    "{} candidate process(es) matching {needle:?} were already present \
+                         before launch; cleanup cannot be attributed to this run",
+                    pre_existing.len()
+                ),
+                pre_existing,
+            )
+        } else {
+            match (&probe_before, &probe_after) {
+                (Some(Ok(_)), Some(Ok(after_text))) => match parse_probe(after_text) {
+                    Ok(after_lines) => {
+                        let survivors = surviving_processes(&before_lines, &after_lines, &needle);
+                        if survivors.is_empty() {
+                            (
+                                CleanupResult::Pass,
+                                "process-set comparison clean".to_string(),
+                                survivors,
+                            )
+                        } else {
+                            (
+                                CleanupResult::Fail,
+                                format!(
+                                    "process-set comparison observed {} surviving candidate \
                                      process(es) after the run",
-                                survivors.len()
-                            ),
-                            survivors,
-                        )
+                                    survivors.len()
+                                ),
+                                survivors,
+                            )
+                        }
                     }
-                }
-                Err(error) => (
+                    Err(error) => (
+                        CleanupResult::NotProven,
+                        format!("after-process probe unparseable: {error:#}"),
+                        Vec::new(),
+                    ),
+                },
+                _ => (
                     CleanupResult::NotProven,
-                    format!("after-process probe unparseable: {error:#}"),
+                    after_diagnostic.unwrap_or_else(|| {
+                        "process probe unavailable on this platform; cleanup not observed"
+                            .to_string()
+                    }),
                     Vec::new(),
                 ),
-            },
-            _ => (
-                CleanupResult::NotProven,
-                after_diagnostic.unwrap_or_else(|| {
-                    "process probe unavailable on this platform; cleanup not observed".to_string()
-                }),
-                Vec::new(),
-            ),
+            }
         }
     };
     let _ = fs::write(layout.process_snapshot_before(), render_process_snapshot(&before_lines));
@@ -258,22 +272,18 @@ pub fn run_owned_process(
 
     let mut bounds: BTreeMap<String, CaptureBoundsRow> = BTreeMap::new();
     let mut artifacts = Vec::new();
-    artifacts.push(write_sanitized_artifact(
+    artifacts.push(write_captured_stream_artifact(
         &layout.artifact_directory,
         "emacs/driver-stdout.log",
         ArtifactKind::DriverOutput,
-        &stdout,
-        plan,
-        layout,
+        &stdout_capture,
         &mut bounds,
     )?);
-    artifacts.push(write_sanitized_artifact(
+    artifacts.push(write_captured_stream_artifact(
         &layout.artifact_directory,
         "emacs/driver-stderr.log",
         ArtifactKind::DriverOutput,
-        &stderr,
-        plan,
-        layout,
+        &stderr_capture,
         &mut bounds,
     )?);
     artifacts.push(write_sanitized_artifact(
@@ -366,14 +376,176 @@ pub fn run_owned_process(
     })
 }
 
-fn join_reader(
-    handle: thread::JoinHandle<std::io::Result<Vec<u8>>>,
+/// A host output stream captured with a bounded memory footprint.
+#[derive(Debug, Clone)]
+struct CapturedStream {
+    /// Sanitized diagnostic window: at most `MAX_CAPTURE_BYTES` bytes.
+    retained: Vec<u8>,
+    /// Total sanitized bytes observed, including everything drained past the
+    /// retention window.
+    total_bytes: u64,
+    /// `sha256:<hex>` over the complete sanitized stream, computed
+    /// incrementally while draining, so the identity never depends on what
+    /// was retained and a truncated retention cannot present its prefix hash
+    /// as the full-stream identity.
+    full_sha256: String,
+}
+
+/// Resolved per-run sanitization for streaming captures. Every replacement
+/// target is a path or path-like token and the redaction patterns exclude
+/// newlines, so sanitizing line-by-line is byte-identical to sanitizing the
+/// whole stream while keeping the reader's memory bounded.
+struct StreamSanitizer {
+    replacements: Vec<(String, String)>,
+}
+
+impl StreamSanitizer {
+    fn for_run(plan: &EmacsHostRunPlan, layout: &HermeticLayout) -> Self {
+        let mut replacements = vec![
+            (&layout.root, "<RUN_ROOT>"),
+            (&plan.paths.artifact_root, "<ARTIFACT_ROOT>"),
+            (&plan.paths.fixture_root, "<WORKSPACE>"),
+            (&plan.paths.candidate_executable, "<CANDIDATE>"),
+            (&plan.paths.emacs_executable, "<EMACS>"),
+            (&plan.paths.client_source, "<CLIENT_SOURCE>"),
+            (&plan.paths.driver, "<DRIVER>"),
+            (&plan.paths.adapter, "<ADAPTER>"),
+            (&plan.paths.configuration, "<CONFIGURATION>"),
+        ];
+        if let Some(client_package) = plan.paths.client_package.as_ref() {
+            replacements.push((client_package, "<CLIENT_PACKAGE>"));
+        }
+        replacements.sort_by_key(|(path, _)| std::cmp::Reverse(path.as_os_str().len()));
+        Self {
+            replacements: replacements
+                .into_iter()
+                .filter_map(|(path, token)| {
+                    path.to_str().map(|value| (value.to_string(), token.to_string()))
+                })
+                .flat_map(|(value, token)| {
+                    [(value.clone(), token.clone()), (value.replace('\\', "/"), token)]
+                })
+                .collect(),
+        }
+    }
+
+    fn sanitize_line(&self, line: &str) -> String {
+        let mut sanitized = line.to_string();
+        for (needle, token) in &self.replacements {
+            sanitized = sanitized.replace(needle, token);
+        }
+        redact_resident_private_paths(&mut sanitized);
+        sanitized
+    }
+}
+
+/// Drain one host output pipe with bounded memory: the full sanitized stream
+/// is hashed and counted while only a bounded diagnostic window is retained.
+/// Reading continues to EOF so the host can never block on a full pipe; a
+/// hung host is still governed by the run deadline's kill, after which the
+/// pipes reach EOF and the reader joins. A single line larger than the
+/// retention window is flushed incrementally so no host output can grow the
+/// reader's memory without bound.
+fn spawn_bounded_reader(
+    mut stream: impl std::io::Read + Send + 'static,
+    sanitizer: StreamSanitizer,
+) -> thread::JoinHandle<std::io::Result<CapturedStream>> {
+    thread::spawn(move || {
+        use sha2::Digest as _;
+        let mut hasher = sha2::Sha256::new();
+        let mut retained = Vec::new();
+        let mut total_bytes = 0u64;
+        let mut line: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 8192];
+        let mut absorb = |bytes: &[u8],
+                          retained: &mut Vec<u8>,
+                          total_bytes: &mut u64,
+                          hasher: &mut sha2::Sha256|
+         -> std::io::Result<()> {
+            let sanitized = sanitizer.sanitize_line(&String::from_utf8_lossy(bytes));
+            let sanitized = sanitized.as_bytes();
+            hasher.update(sanitized);
+            *total_bytes += sanitized.len() as u64;
+            if retained.len() < MAX_CAPTURE_BYTES {
+                let take = usize::min(MAX_CAPTURE_BYTES - retained.len(), sanitized.len());
+                retained.extend_from_slice(&sanitized[..take]);
+            }
+            Ok(())
+        };
+        loop {
+            let read = stream.read(&mut chunk)?;
+            if read == 0 {
+                break;
+            }
+            for byte in &chunk[..read] {
+                if *byte == b'\n' {
+                    line.push(b'\n');
+                    absorb(&line, &mut retained, &mut total_bytes, &mut hasher)?;
+                    line.clear();
+                } else {
+                    line.push(*byte);
+                    if line.len() >= MAX_CAPTURE_BYTES {
+                        absorb(&line, &mut retained, &mut total_bytes, &mut hasher)?;
+                        line.clear();
+                    }
+                }
+            }
+        }
+        if !line.is_empty() {
+            absorb(&line, &mut retained, &mut total_bytes, &mut hasher)?;
+        }
+        let digest = hasher.finalize();
+        let full_sha256 = format!(
+            "sha256:{}",
+            digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+        );
+        Ok(CapturedStream { retained, total_bytes, full_sha256 })
+    })
+}
+
+fn join_capture(
+    handle: thread::JoinHandle<std::io::Result<CapturedStream>>,
     label: &str,
-) -> Result<Vec<u8>> {
+) -> Result<CapturedStream> {
     handle
         .join()
         .map_err(|_| anyhow::anyhow!("{label} reader thread panicked"))?
         .with_context(|| format!("reading {label}"))
+}
+
+/// Persist one bounded captured stream as a durable artifact. The stream is
+/// already sanitized by the reader; the bounds row stays honest about the
+/// streaming capture: `full_stream_sha256` covers the complete sanitized
+/// stream (independent of retention), `original_byte_count` is the total
+/// sanitized bytes observed, and `truncated` records that the stream exceeded
+/// the retention window.
+fn write_captured_stream_artifact(
+    artifact_root: &Path,
+    id: &str,
+    kind: ArtifactKind,
+    captured: &CapturedStream,
+    bounds: &mut BTreeMap<String, CaptureBoundsRow>,
+) -> Result<EvidenceArtifact> {
+    validate_safe_identity(id, "artifact id")?;
+    let destination = artifact_root.join(id);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&destination, &captured.retained)
+        .with_context(|| format!("writing sanitized artifact {}", destination.display()))?;
+    let sha256 = file_sha256(&destination)?;
+    bounds.insert(
+        id.to_string(),
+        CaptureBoundsRow {
+            id: id.to_string(),
+            kind: artifact_kind_token(kind).to_string(),
+            full_stream_sha256: captured.full_sha256.clone(),
+            original_byte_count: captured.total_bytes,
+            retained_byte_count: captured.retained.len() as u64,
+            truncated: captured.total_bytes > captured.retained.len() as u64,
+        },
+    );
+    Ok(EvidenceArtifact { kind, id: id.to_string(), sha256 })
 }
 
 fn write_sanitized_artifact(
@@ -542,8 +714,21 @@ pub fn parse_windows_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine
     Ok(lines)
 }
 
+/// Candidate-identity lines matching `needle`. On Unix the needle is the
+/// exact candidate path, so a match is this suite's identity. On Windows the
+/// probe exposes only image names, so any process with the candidate's image
+/// basename matches: every failure direction here is conservative (cleanup is
+/// `Fail` or `NotProven`, never a false `Pass`), and a match found in the
+/// before-probe fails the run closed via the pre-existing check in
+/// `run_owned_process`.
+fn matching_candidates(lines: &[ProcessProbeLine], needle: &str) -> Vec<ProcessProbeLine> {
+    lines.iter().filter(|line| line.args.contains(needle)).cloned().collect()
+}
+
 /// After-probe lines matching `needle` that were absent from the before-probe.
-/// A survivor is a leak of this run's candidate identity.
+/// A survivor is a leak of this run's candidate identity. Pre-existing
+/// candidate processes are handled separately and fail closed before this
+/// comparison runs.
 pub fn surviving_processes(
     before: &[ProcessProbeLine],
     after: &[ProcessProbeLine],
@@ -556,6 +741,27 @@ pub fn surviving_processes(
         .filter(|line| line.args.contains(needle) && !before_matching.contains(line))
         .cloned()
         .collect()
+}
+
+#[cfg(test)]
+mod process_tests {
+    use super::*;
+
+    #[test]
+    fn pre_existing_candidate_lines_are_detectable_in_the_before_probe() {
+        let leaked = ProcessProbeLine { pid: 4242, args: "/opt/perllsp/bin/perllsp serve".into() };
+        let before = vec![
+            ProcessProbeLine { pid: 1, args: "/usr/bin/emacs --daemon".into() },
+            leaked.clone(),
+        ];
+        let needle = "/opt/perllsp/bin/perllsp";
+        let detected = matching_candidates(&before, needle);
+        assert_eq!(detected, vec![leaked.clone()], "a pre-existing candidate must be detected");
+        // ...and the survivor comparison alone must never re-report it,
+        // which is exactly why run_owned_process fails closed on it instead.
+        let after = vec![leaked];
+        assert!(surviving_processes(&before, &after, needle).is_empty());
+    }
 }
 
 fn diagnostic_probe_failure(phase: &str, probe: &Option<Result<String>>) -> Option<String> {
