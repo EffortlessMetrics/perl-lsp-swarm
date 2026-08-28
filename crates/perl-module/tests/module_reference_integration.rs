@@ -2,7 +2,7 @@ use perl_module::module_name_to_path;
 use perl_module::{ModuleImportKind, parse_module_import_head};
 use perl_module::{
     extract_module_reference, extract_module_reference_extended, find_module_reference,
-    find_module_reference_extended,
+    find_module_reference_extended, is_lookup_safe_module_name,
 };
 
 #[test]
@@ -32,6 +32,24 @@ fn extracted_module_name_converts_to_expected_module_path() {
         let canonical = reference.canonical_module_name();
         assert_eq!(canonical, "Demo::Worker");
         assert_eq!(module_name_to_path(&canonical), "Demo/Worker.pm");
+    }
+}
+
+#[test]
+fn unicode_module_reference_remains_byte_exact_and_lookup_safe() {
+    let module = "Δοκιμή::設定2";
+    let line = format!("use {module};");
+    let cursor = line.find("設定2").unwrap_or(0);
+
+    let reference = find_module_reference(&line, cursor);
+    assert!(reference.is_some());
+    if let Some(reference) = reference {
+        assert_eq!(reference.module_name, module);
+        assert_eq!(reference.module_start, 4);
+        assert_eq!(reference.module_end, 4 + module.len());
+        assert_eq!(reference.canonical_module_name(), module);
+        assert!(is_lookup_safe_module_name(reference.module_name));
+        assert_eq!(module_name_to_path(reference.module_name), "Δοκιμή/設定2.pm");
     }
 }
 
