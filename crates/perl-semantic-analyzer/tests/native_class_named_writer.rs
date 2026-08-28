@@ -90,6 +90,10 @@ class Collection {
     let model = must_some(models.iter().find(|model| model.name == "Collection"));
 
     assert!(
+        model.fields.is_empty(),
+        "non-scalar field declarations must be rejected before entering the writer boundary"
+    );
+    assert!(
         !model.methods.iter().any(|method| method.synthetic),
         "array/hash fields must not synthesize scalar writer methods"
     );
