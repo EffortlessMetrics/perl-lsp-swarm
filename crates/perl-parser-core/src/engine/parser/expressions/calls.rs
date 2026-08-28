@@ -37,15 +37,17 @@ impl<'a> Parser<'a> {
                         }
                 // Form 2: variable filehandle `print $fh $msg` (no comma after $fh)
                 if next_text.as_deref().unwrap_or("").starts_with('$') {
-                    // If next-next starts with a sigil, string, or number, it is likely
-                    // `print $fh EXPR` — no comma between filehandle and message.
+                    // If next-next starts with a sigil or string, or is a numeric term
+                    // accepted by an output builtin, it is likely `print $fh EXPR`.
                     // A comma means it is a regular `print $var, $other` list.
                     if third_kind != Some(TokenKind::Comma)
                         && let Some(ref txt) = third_text
                             && (txt.starts_with('$')
                                 || txt.starts_with('@')
+                                || txt.starts_with('%')
                                 || third_kind == Some(TokenKind::String)
-                                || third_kind == Some(TokenKind::Number))
+                                || (third_kind == Some(TokenKind::Number)
+                                    && matches!(name, "print" | "printf" | "say")))
                             {
                                 return true;
                             }
@@ -135,9 +137,10 @@ impl<'a> Parser<'a> {
                     return matches!(
                         third.kind(),
                         TokenKind::String       // print $fh "x"
-                        | TokenKind::Number       // print $fh 1
                         | TokenKind::LeftParen    // print $fh ($x)
-                    ) || third_text.starts_with('$')    // print $fh $x
+                    ) || (third.kind() == TokenKind::Number
+                        && matches!(name, "print" | "printf" | "say")) // print $fh 1
+                      || third_text.starts_with('$')    // print $fh $x
                       || third_text.starts_with('@')    // print $fh @array
                       || third_text.starts_with('%'); // print $fh %hash
                 }
