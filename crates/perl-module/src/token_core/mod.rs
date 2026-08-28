@@ -1,5 +1,7 @@
 //! Shared primitives for Perl module token parsing and boundary detection.
 
+use unicode_ident::{is_xid_continue, is_xid_start};
+
 /// Byte span for a parsed module token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModuleTokenSpan {
@@ -12,9 +14,10 @@ pub struct ModuleTokenSpan {
 /// Parse a module token that starts at `start` in `text`.
 ///
 /// A module token is one or more identifier segments separated by either
-/// `::` (canonical) or `'` (legacy) separators. Segment starts accept Unicode
-/// alphabetic characters or `_`; segment continuations additionally accept
-/// Unicode numeric characters. Returned offsets remain exact UTF-8 byte spans.
+/// `::` (canonical) or `'` (legacy) separators. Segment starts and
+/// continuations follow the lexer’s Unicode XID authority; continuations also
+/// accept Perl’s emoji and join-control extensions. Returned offsets remain
+/// exact UTF-8 byte spans.
 #[must_use]
 pub fn parse_module_token(text: &str, start: usize) -> Option<ModuleTokenSpan> {
     if start >= text.len() || !text.is_char_boundary(start) {
@@ -98,11 +101,40 @@ fn parse_identifier_segment(text: &str, start: usize) -> Option<usize> {
 }
 
 fn is_identifier_start(ch: char) -> bool {
-    ch == '_' || ch.is_alphabetic()
+    ch == '_' || is_xid_start(ch) || is_emoji_codepoint(ch)
 }
 
 fn is_identifier_continue(ch: char) -> bool {
-    ch == '_' || ch.is_alphanumeric()
+    is_identifier_start(ch)
+        || is_xid_continue(ch)
+        || matches!(
+            ch as u32,
+            0x200C | 0x200D |
+            0x20E3 |
+            0xFE00..=0xFE0F |
+            0xE0100..=0xE01EF |
+            0x1F3FB..=0x1F3FF |
+            0xE0020..=0xE007F
+        )
+}
+
+fn is_emoji_codepoint(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x1F000..=0x1F02F |
+        0x1F0A0..=0x1F0FF |
+        0x1F100..=0x1F1FF |
+        0x1F200..=0x1F2FF |
+        0x1F300..=0x1F6FF |
+        0x1F700..=0x1F77F |
+        0x1F780..=0x1F7FF |
+        0x1F800..=0x1F8FF |
+        0x1F900..=0x1F9FF |
+        0x1FA00..=0x1FA6F |
+        0x1FA70..=0x1FAFF |
+        0x2600..=0x26FF |
+        0x2700..=0x27BF
+    )
 }
 
 fn left_context_is_module_char(line: &str, start: usize) -> bool {

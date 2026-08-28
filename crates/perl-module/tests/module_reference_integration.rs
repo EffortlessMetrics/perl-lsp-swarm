@@ -2,7 +2,8 @@ use perl_module::module_name_to_path;
 use perl_module::{ModuleImportKind, parse_module_import_head};
 use perl_module::{
     extract_module_reference, extract_module_reference_extended, find_module_reference,
-    find_module_reference_extended, is_lookup_safe_module_name,
+    find_module_reference_extended, has_standalone_module_token_boundaries,
+    is_lookup_safe_module_name,
 };
 
 #[test]
@@ -51,6 +52,27 @@ fn unicode_module_reference_remains_byte_exact_and_lookup_safe() {
         assert!(is_lookup_safe_module_name(reference.module_name));
         assert_eq!(module_name_to_path(reference.module_name), "Δοκιμή/設定2.pm");
     }
+}
+
+#[test]
+fn direct_reference_rejects_partial_token_before_combining_mark_suffix() {
+    let line = "use Foo::Bar\u{0301};";
+    let cursor = line.find("Bar").unwrap_or(0);
+
+    let reference = find_module_reference(line, cursor);
+    assert_eq!(reference.map(|value| value.module_name), Some("Foo::Bar\u{0301}"));
+
+    let partial_end = line.find('\u{0301}').unwrap_or(0);
+    assert!(!has_standalone_module_token_boundaries(line, 4, partial_end));
+}
+
+#[test]
+fn direct_reference_keeps_standalone_token_control() {
+    let line = "use Foo::Bar;";
+    let cursor = line.find("Bar").unwrap_or(0);
+
+    let reference = find_module_reference(line, cursor);
+    assert_eq!(reference.map(|value| value.module_name), Some("Foo::Bar"));
 }
 
 #[test]
