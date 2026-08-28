@@ -199,7 +199,7 @@ fn structural_tokens_match(old_source: &str, new_source: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_parser_core::position::Position;
+    use perl_parser_core::{ast::NodeKind, position::Position};
 
     fn edit(start: usize, old_end: usize, new_end: usize) -> Edit {
         Edit::new(
@@ -228,63 +228,69 @@ mod tests {
         Node::new(NodeKind::Identifier { name: name.to_string() }, loc(start, end))
     }
 
-    use perl_parser_core::ast::NodeKind;
-
     #[test]
-    fn admits_exact_mid_file_insertion_and_shifts_only_following_geometry() {
+    fn admits_exact_mid_file_insertion_and_shifts_only_following_geometry()
+    -> Result<(), Box<dyn std::error::Error>> {
         let edits = edit_set([edit(2, 2, 3)]);
         let map = WhitespaceEditMap::try_new("a b", "a  b", &edits)
-            .expect("exact whitespace insertion should be admitted");
+            .ok_or("exact whitespace insertion should be admitted")?;
         let root = Node::new(
             NodeKind::Program { statements: vec![leaf("a", 0, 1), leaf("b", 2, 3)] },
             loc(0, 3),
         );
 
         let mapped = map.clone_tree(&root);
-        let NodeKind::Program { statements } = mapped.kind else {
-            panic!("expected Program");
+        let statements = match &mapped.kind {
+            NodeKind::Program { statements } => statements,
+            other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
         };
         assert_eq!(mapped.location, loc(0, 4));
         assert_eq!(statements[0].location, loc(0, 1));
         assert_eq!(statements[1].location, loc(3, 4));
+        Ok(())
     }
 
     #[test]
-    fn admits_exact_deletion_and_left_biases_the_preceding_token_end() {
+    fn admits_exact_deletion_and_left_biases_the_preceding_token_end()
+    -> Result<(), Box<dyn std::error::Error>> {
         let edits = edit_set([edit(2, 3, 2)]);
         let map = WhitespaceEditMap::try_new("a  b", "a b", &edits)
-            .expect("exact whitespace deletion should be admitted");
+            .ok_or("exact whitespace deletion should be admitted")?;
         let root = Node::new(
             NodeKind::Program { statements: vec![leaf("a", 0, 1), leaf("b", 3, 4)] },
             loc(0, 4),
         );
 
         let mapped = map.clone_tree(&root);
-        let NodeKind::Program { statements } = mapped.kind else {
-            panic!("expected Program");
+        let statements = match &mapped.kind {
+            NodeKind::Program { statements } => statements,
+            other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
         };
         assert_eq!(mapped.location, loc(0, 3));
         assert_eq!(statements[0].location, loc(0, 1));
         assert_eq!(statements[1].location, loc(2, 3));
+        Ok(())
     }
 
     #[test]
-    fn maps_progressive_multi_edit_coordinates() {
+    fn maps_progressive_multi_edit_coordinates() -> Result<(), Box<dyn std::error::Error>> {
         let edits = edit_set([edit(0, 0, 1), edit(3, 3, 4), edit(5, 5, 6)]);
         let map = WhitespaceEditMap::try_new("a b", " a  b ", &edits)
-            .expect("coherent progressive whitespace edits should be admitted");
+            .ok_or("coherent progressive whitespace edits should be admitted")?;
         let root = Node::new(
             NodeKind::Program { statements: vec![leaf("a", 0, 1), leaf("b", 2, 3)] },
             loc(0, 3),
         );
 
         let mapped = map.clone_tree(&root);
-        let NodeKind::Program { statements } = mapped.kind else {
-            panic!("expected Program");
+        let statements = match &mapped.kind {
+            NodeKind::Program { statements } => statements,
+            other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
         };
         assert_eq!(mapped.location, loc(1, 5));
         assert_eq!(statements[0].location, loc(1, 2));
         assert_eq!(statements[1].location, loc(4, 5));
+        Ok(())
     }
 
     #[test]
