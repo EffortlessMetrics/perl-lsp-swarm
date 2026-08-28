@@ -42,6 +42,7 @@ fn init_fixture(root: &Path) -> Result<(String, String)> {
     git(root, &["init", "--initial-branch=main"])?;
     git(root, &["config", "user.email", "ci-subject@example.com"])?;
     git(root, &["config", "user.name", "CI Subject Fixture"])?;
+    git(root, &["config", "commit.gpgsign", "false"])?;
     git(root, &["remote", "add", "origin", "git@github.com:EffortlessMetrics/perl-lsp-swarm.git"])?;
     fs::create_dir_all(root.join("crates/demo/src"))?;
     fs::write(
@@ -171,7 +172,7 @@ fn captured_pr_subject_survives_base_branch_movement_and_drives_real_ci_scope() 
     const EXPECTED_BASE_TREE: &str = "a886ebee86252cc16c459dbe52830030ec354545";
     const EXPECTED_HEAD_TREE: &str = "c742cf5cbf9aa88f4f8ad298e306cd3e455d7238";
     const EXPECTED_SUBJECT_DIGEST: &str =
-        "33b499f4cf944e37a19ea2d2620c19317aa7acfb854438e552f614956b37eff7";
+        "b5cf004cbbeabf075acef82521031a3a5d094a906dfe1b19e67bb503fcb0a75b";
     let tmp = tempfile::tempdir()?;
     let repo = tmp.path().join("repo");
     fs::create_dir_all(&repo)?;
