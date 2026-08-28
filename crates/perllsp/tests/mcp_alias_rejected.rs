@@ -29,8 +29,8 @@ fn retired_mcp_alias_exits_without_starting_lsp() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-fn reserved_mcp_subcommand_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
-    let output = run_perllsp(&["mcp", "--workspace", ".", "--stdio"])?;
+fn canonical_mcp_subcommand_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let output = run_perllsp(&["mcp", "--stdio"])?;
 
     if output.status.success() {
         return Err("reserved MCP command unexpectedly succeeded".into());
