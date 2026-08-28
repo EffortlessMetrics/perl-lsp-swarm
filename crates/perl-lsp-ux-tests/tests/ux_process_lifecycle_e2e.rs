@@ -79,7 +79,7 @@ impl LifecycleProcess {
                 let mut tail =
                     stderr_tail_for_thread.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 if tail.len() >= STDERR_TAIL_LINES {
-                    tail.pop_front();
+                    let _ = tail.pop_front();
                 }
                 tail.push_back(line);
             }
@@ -143,7 +143,7 @@ impl LifecycleProcess {
     }
 
     fn close_stdin(&mut self) {
-        self.stdin.take();
+        let _ = self.stdin.take();
     }
 
     fn wait_for_exit(&mut self, timeout: Duration) -> Result<ExitStatus> {
@@ -219,7 +219,7 @@ impl LifecycleProcess {
 
 impl Drop for LifecycleProcess {
     fn drop(&mut self) {
-        self.stdin.take();
+        let _ = self.stdin.take();
         if self.child.try_wait().ok().flatten().is_none() {
             let _ = self.child.kill();
             let _ = self.child.wait();
