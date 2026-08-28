@@ -1725,6 +1725,7 @@ impl LspServer {
             // this watcher event, do not clear its prior disk facts here;
             // the open buffer remains authoritative and its own lifecycle
             // will reconcile the index.
+            let _transition = self.indexing_transition_lock.lock();
             if self.document_is_open(uri) {
                 self.record_backing_file_transition(uri, BackingFileTransition::Changed);
                 tracing::debug!(
@@ -1960,6 +1961,7 @@ impl LspServer {
                             // content. Recheck document authority after the
                             // potentially blocking I/O so a racing didOpen
                             // cannot be overwritten by disk facts.
+                            let _transition = self.indexing_transition_lock.lock();
                             if self.document_is_open(uri) {
                                 self.record_backing_file_transition(
                                     uri,
@@ -2038,18 +2040,19 @@ impl LspServer {
                 // resolved by the client's own didSave/didClose/didOpen
                 // lifecycle. Silently retargeting the buffer would change its
                 // identity without that authority.
-                let old_document_open = self.document_is_open(&old_uri);
-                if old_document_open {
-                    self.record_backing_file_transition(
-                        &old_uri,
-                        BackingFileTransition::RenamedOrMoved { new_uri: new_uri.clone() },
-                    );
-                }
-
                 // Update the index for the renamed file
                 // Note: Mutation operation - use coordinator with lifecycle tracking
                 #[cfg(feature = "workspace")]
                 if let Some(coordinator) = self.coordinator() {
+                    let _transition = self.indexing_transition_lock.lock();
+                    let old_document_open = self.document_is_open(&old_uri);
+                    if old_document_open {
+                        self.record_backing_file_transition(
+                            &old_uri,
+                            BackingFileTransition::RenamedOrMoved { new_uri: new_uri.clone() },
+                        );
+                    }
+
                     coordinator.notify_change(&old_uri);
                     coordinator.notify_change(&new_uri);
 
@@ -3048,8 +3051,10 @@ mod tests {
         let change_path = directory.path().join("changed-tool");
         let old_path = directory.path().join("old-tool");
         let rename_path = directory.path().join("renamed-tool");
-        let create_uri = url::Url::from_file_path(&create_path).map_err(|_| "invalid create URI")?;
-        let change_uri = url::Url::from_file_path(&change_path).map_err(|_| "invalid change URI")?;
+        let create_uri =
+            url::Url::from_file_path(&create_path).map_err(|_| "invalid create URI")?;
+        let change_uri =
+            url::Url::from_file_path(&change_path).map_err(|_| "invalid change URI")?;
         let old_uri = url::Url::from_file_path(&old_path).map_err(|_| "invalid old URI")?;
         let rename_uri =
             url::Url::from_file_path(&rename_path).map_err(|_| "invalid rename URI")?;
@@ -3068,41 +3073,67 @@ mod tests {
         // A synchronously observed didOpen is the deterministic stand-in for
         // the lifecycle race: every disk operation must re-check this same
         // authority before mutating the workspace index.
-        server.test_apply_did_open(
-            create_uri.as_str(),
-            "sub buffer_create { 1 }\n1;\n",
-            1,
-        )?;
+        server.test_apply_did_open(create_uri.as_str(), "sub buffer_create { 1 }\n1;\n", 1)?;
+        let index = server.coordinator().ok_or("missing index coordinator")?.index();
+        assert!(
+            index
+                .file_symbols(create_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "buffer_create"),
+            "didOpen must publish buffer_create facts before a create event"
+        );
         server.handle_did_create_files(Some(json!({
             "files": [{ "uri": create_uri.to_string() }]
         })))?;
 
-        server.test_apply_did_open(
-            change_uri.as_str(),
-            "sub buffer_change { 1 }\n1;\n",
-            1,
-        )?;
+        server.test_apply_did_open(change_uri.as_str(), "sub buffer_change { 1 }\n1;\n", 1)?;
+        assert!(
+            index
+                .file_symbols(change_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "buffer_change"),
+            "didOpen must publish buffer_change facts before a watcher event"
+        );
         server.handle_did_change_watched_files(Some(json!({
             "changes": [{ "uri": change_uri.to_string(), "type": 2 }]
         })))?;
 
-        std::fs::rename(&old_path, &rename_path)?;
-        server.test_apply_did_open(
-            rename_uri.as_str(),
-            "sub buffer_rename { 1 }\n1;\n",
-            1,
+        index.index_file(
+            url::Url::parse(old_uri.as_str())?,
+            "#!/usr/bin/env perl\nsub disk_rename { 1 }\n1;\n".to_string(),
         )?;
+        std::fs::rename(&old_path, &rename_path)?;
+        server.test_apply_did_open(rename_uri.as_str(), "sub buffer_rename { 1 }\n1;\n", 1)?;
+        assert!(
+            index
+                .file_symbols(rename_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "buffer_rename"),
+            "didOpen must publish buffer_rename facts before a rename event"
+        );
         server.handle_did_rename_files(Some(json!({
             "files": [{ "oldUri": old_uri.to_string(), "newUri": rename_uri.to_string() }]
         })))?;
 
-        let index = server.coordinator().ok_or("missing index coordinator")?.index();
         for disk_symbol in ["disk_create", "disk_change", "disk_rename"] {
             assert!(
                 index.find_symbols(disk_symbol).is_empty(),
                 "open-buffer lifecycle must not index disk symbol {disk_symbol}"
             );
         }
+        assert!(
+            index.file_symbols(old_uri.as_str()).is_empty(),
+            "rename must remove the old index identity"
+        );
+        let renamed_symbols = index.file_symbols(rename_uri.as_str());
+        assert!(
+            renamed_symbols.iter().any(|symbol| symbol.name == "buffer_rename"),
+            "rename must preserve the new open-buffer facts"
+        );
+        assert!(
+            renamed_symbols.iter().all(|symbol| symbol.uri == rename_uri.as_str()),
+            "rename must keep every surviving fact on the new URI identity"
+        );
         Ok(())
     }
 
