@@ -53,11 +53,7 @@ fn parse_minor_version_component(component: &str, is_decimal: bool) -> Option<u3
     // Perl decimal versions group fractional digits in threes. The current
     // public model retains only major/minor, so discard later patch groups
     // instead of interpreting `5.043011` as the future minor version 43011.
-    let component = if is_decimal && component.len() > 3 {
-        component.get(..3)?
-    } else {
-        component
-    };
+    let component = if is_decimal && component.len() > 3 { component.get(..3)? } else { component };
     component.parse().ok()
 }
 
