@@ -308,15 +308,71 @@ CLAIM_DISPOSITION_RULES = {
         "reason": "channel_rule",
         "rationale": "channel-independence frame",
     },
+    "C703": {
+        "kind": "exclude",
+        "reason": "channel_rule",
+        "rationale": "channel-independence frame",
+    },
+    "C801": {
+        "kind": "exclude",
+        "reason": "diagnostic_surface",
+        "rationale": "diagnostic advice",
+    },
+    "C1001": {
+        "kind": "exclude",
+        "reason": "diagnostic_surface",
+        "rationale": "PATH/health advice",
+    },
+    "C1002": {
+        "kind": "exclude",
+        "reason": "non_install_dependency",
+        "rationale": "runtime-dependency posture",
+    },
+    "C1008": {
+        "kind": "exclude",
+        "reason": "verification_metadata",
+        "rationale": "post-install probes",
+    },
+    "C1102": {
+        "kind": "exclude",
+        "reason": "non_install_dependency",
+        "rationale": "virtual-workspace limitation",
+    },
+    "C1201": {
+        "kind": "exclude",
+        "reason": "volatile_metadata",
+        "rationale": "install-count badge",
+    },
     "C1205": {
         "kind": "exclude",
         "reason": "non_install_dependency",
         "rationale": "internal deployment guidance",
     },
+    "C1309": {
+        "kind": "exclude",
+        "reason": "adjacent_product",
+        "rationale": "lsp-mcp tool",
+    },
+    "C106": {
+        "kind": "exclude",
+        "reason": "verification_metadata",
+        "rationale": "post-install probe metadata",
+    },
+    "C216": {
+        "kind": "exclude",
+        "reason": "verification_metadata",
+        "rationale": "post-install probe metadata",
+    },
 }
+REQUIRED_EXCLUSION_IDS = (
+    "C106", "C108", "C201", "C216", "C703", "C801", "C1001", "C1002",
+    "C1008", "C1102", "C1201", "C1205", "C1309",
+)
 def fixture_catalog():
     rows = []
     for item_id in EXPECTED_CLAIMS:
+        if item_id in REQUIRED_EXCLUSION_IDS:
+            continue
         if item_id == "C202":
             rows.extend({
                 "route_id": f"fixture-route-{route}",
@@ -371,8 +427,12 @@ def require_open_vsx_route(catalog_rows, route_id, projection_context):
 
 def require_claim_disposition(row):
     expected = CLAIM_DISPOSITION_RULES.get(row["id"])
-    if expected and any(row.get(key) != value for key, value in expected.items()):
+    if expected is not None and any(row.get(key) != value for key, value in expected.items()):
         raise ValueError(f"{row['id']}: incompatible claim disposition")
+
+def require_true(condition, message):
+    if not condition:
+        raise AssertionError(message)
 
 def assert_rejected(catalog_rows, route_id, projection_context):
     try:
@@ -403,7 +463,7 @@ def fixture_ledger():
                 "exact_catalog_route_id": "r_4f8c2a",
                 "exact_projection_context": "Open_VSX_compatible_marketplace_context",
             })
-        elif item_id in CLAIM_DISPOSITION_RULES:
+        elif item_id in REQUIRED_EXCLUSION_IDS:
             rows.append({"id": item_id, **CLAIM_DISPOSITION_RULES[item_id]})
         else:
             rows.append({
@@ -463,39 +523,49 @@ def validate_closure(inventory_rows, ledger_rows, catalog_rows):
         c1208_rows[0]["exact_catalog_route_id"],
         c1208_rows[0]["exact_projection_context"],
     )
+    catalog_route_ids = [row["route_id"] for row in catalog_rows]
+    referenced_route_ids = [
+        row["exact_catalog_route_id"]
+        for row in ledger_rows
+        if row["kind"] == "project"
+    ]
+    if Counter(referenced_route_ids) != Counter(catalog_route_ids):
+        raise ValueError("catalog contains an unreferenced or multiply referenced route")
     return True
 
-assert validate_closure(
+def assert_closure_rejected(catalog_rows):
+    try:
+        validate_closure(
+            [{"id": item_id} for item_id in EXPECTED_CLAIMS],
+            fixture_ledger(),
+            catalog_rows,
+        )
+    except ValueError:
+        return True
+    raise AssertionError("unreferenced catalog row was accepted")
+
+require_true(validate_closure(
     [{"id": item_id} for item_id in EXPECTED_CLAIMS],
     fixture_ledger(),
     FIXTURE_CATALOG,
-)
-assert assert_rejected(
+), "fixture closure was not validated")
+UNREFERENCED_CATALOG = FIXTURE_CATALOG + ({
+    "route_id": "r_unreferenced",
+    "target_registry": "fixture_registry",
+    "projection_contexts": ("fixture-context-unreferenced",),
+},)
+require_true(assert_closure_rejected(UNREFERENCED_CATALOG), "unreferenced catalog row was accepted")
+require_true(assert_rejected(
     WRONG_REGISTRY_CATALOG,
     "r_4f8c2a",
     "Open_VSX_compatible_marketplace_context",
-)
-assert assert_rejected(FIXTURE_CATALOG, "r_unknown", "Open_VSX_compatible_marketplace_context")
-assert assert_rejected(DUPLICATE_ID_CATALOG, "r_4f8c2a", "Open_VSX_compatible_marketplace_context")
-assert assert_rejected(FIXTURE_CATALOG, "r_4f8c2a", "VS_Marketplace_compatible_marketplace_context")
-for incompatible in (
-    {
-        "id": "C108", "kind": "project",
-        "exact_catalog_route_id": "fixture-route-C108",
-        "exact_projection_context": "fixture-context-C108",
-    },
-    {
-        "id": "C201", "kind": "project",
-        "exact_catalog_route_id": "fixture-route-C201",
-        "exact_projection_context": "fixture-context-C201",
-    },
-    {
-        "id": "C1205", "kind": "project",
-        "exact_catalog_route_id": "fixture-route-C1205",
-        "exact_projection_context": "fixture-context-C1205",
-    },
-):
-    assert assert_disposition_rejected(incompatible)
+), "wrong registry was accepted")
+require_true(assert_rejected(FIXTURE_CATALOG, "r_unknown", "Open_VSX_compatible_marketplace_context"), "unknown route was accepted")
+require_true(assert_rejected(DUPLICATE_ID_CATALOG, "r_4f8c2a", "Open_VSX_compatible_marketplace_context"), "duplicate route was accepted")
+require_true(assert_rejected(FIXTURE_CATALOG, "r_4f8c2a", "VS_Marketplace_compatible_marketplace_context"), "wrong context was accepted")
+for item_id in REQUIRED_EXCLUSION_IDS:
+    incompatible = {"id": item_id, "kind": "project"}
+    require_true(assert_disposition_rejected(incompatible), "incompatible disposition was accepted")
 ```
 
 The fixture rejects missing, duplicate, unknown, and incompatible IDs before
@@ -507,10 +577,11 @@ before route classification exists; only exact catalog route IDs and projection
 contexts remain gated on #10334's catalog and #10333's contract. A prose manifest or count without this
 set-equality and compatibility check does not satisfy closure. Every project row
 also resolves its exact route ID and projection context through the fixture catalog.
-The claim-to-disposition rules independently require out-of-scope C108, C201, and
-C1205 to remain their declared exclusions (`non_install_dependency`, `channel_rule`,
-and `non_install_dependency`, respectively); a project or other incompatible
-exclusion disposition is rejected for each.
+The claim-to-disposition rules independently require every explicit out-of-scope
+row (C106, C108, C201, C216, C703, C801, C1001, C1002, C1008, C1102, C1201,
+C1205, and C1309) to remain its declared exclusion; a project or other incompatible
+exclusion disposition is rejected for each. The reverse catalog check also rejects
+any catalog route that is not referenced by exactly one project projection.
 The C1208 assertion
 also proves that its opaque ID resolves to exactly one catalog row whose registry is
 Open VSX and whose projection context is compatible; an ID that resolves to the
