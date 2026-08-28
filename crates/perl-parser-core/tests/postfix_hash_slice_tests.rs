@@ -38,6 +38,18 @@ fn hash_slices<'a>(node: &'a Node, found: &mut Vec<&'a Node>) {
     }
 }
 
+fn hash_slice_index_parents<'a>(node: &'a Node, found: &mut Vec<&'a Node>) {
+    if let NodeKind::Binary { op, left, .. } = &node.kind
+        && op == "[]"
+        && matches!(&left.kind, NodeKind::HashSlice { .. })
+    {
+        found.push(node);
+    }
+    for child in node.children() {
+        hash_slice_index_parents(child, found);
+    }
+}
+
 fn one_hash_slice<'a>(source: &str, ast: &'a Node) -> Result<&'a Node, String> {
     let mut slices = Vec::new();
     hash_slices(ast, &mut slices);
@@ -128,24 +140,65 @@ fn postfix_hash_slice_after_chained_receiver() -> TestResult {
 }
 
 #[test]
+fn postfix_hash_slice_preserves_utf8_key_spans() -> TestResult {
+    let source = "my @values = $href->@{'naïve', '東京'};";
+    let ast = parse_clean(source)?;
+    let slice = one_hash_slice(source, &ast)?;
+    let (target, keys) = match &slice.kind {
+        NodeKind::HashSlice { target, keys } => (target, keys),
+        other => return Err(format!("expected HashSlice, got {}", other.kind_name())),
+    };
+
+    if source_text(source, slice)? != "$href->@{'naïve', '東京'}"
+        || source_text(source, target)? != "$href"
+        || source_text(source, keys)? != "'naïve', '東京'"
+    {
+        return Err(format!(
+            "UTF-8 HashSlice spans were not retained: slice={:?}, target={:?}, keys={:?}",
+            source_text(source, slice)?,
+            source_text(source, target)?,
+            source_text(source, keys)?
+        ));
+    }
+    Ok(())
+}
+
+#[test]
 fn postfix_hash_slice_keeps_postfix_precedence() -> TestResult {
     let source = "my $value = $href->@{'alpha'}[0];";
     let ast = parse_clean(source)?;
     let slice = one_hash_slice(source, &ast)?;
-    let parent = ast
-        .children()
-        .into_iter()
-        .find(|node| source_text(source, node).ok() == Some("my $value = $href->@{'alpha'}[0]"))
-        .ok_or_else(|| {
-            "the declaration containing the postfix chain was not retained".to_string()
-        })?;
-    if !matches!(&parent.kind, NodeKind::VariableDeclaration { .. }) {
-        return Err(format!("expected a variable declaration, got {}", parent.kind.kind_name()));
+    let mut parents = Vec::new();
+    hash_slice_index_parents(&ast, &mut parents);
+    if parents.len() != 1 {
+        return Err(format!(
+            "expected exactly one Binary [] parent for the HashSlice, found {}",
+            parents.len()
+        ));
     }
-    let slice_end = slice.location.end;
-    let parent_text = source_text(source, parent)?;
-    if slice_end >= parent.location.end || !parent_text.ends_with("[0]") {
-        return Err(format!("HashSlice did not remain the left operand of [0]: {parent_text:?}"));
+    let parent = parents
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no Binary [] parent retained the HashSlice".to_string())?;
+    if !matches!(&parent.kind, NodeKind::Binary { op, .. } if op == "[]") {
+        return Err(format!("expected a Binary [] parent, got {}", parent.kind.kind_name()));
+    }
+    let NodeKind::Binary { left, right, .. } = &parent.kind else {
+        return Err("the postfix index parent changed shape during inspection".to_string());
+    };
+    if !std::ptr::eq(left.as_ref(), slice) {
+        return Err(
+            "the Binary [] parent does not own the HashSlice as its left operand".to_string()
+        );
+    }
+    if source_text(source, right)? != "0" {
+        return Err(format!(
+            "postfix index parent retained an unexpected right operand: {:?}",
+            source_text(source, right)?
+        ));
+    }
+    if source_text(source, parent)? != "$href->@{'alpha'}[0]" {
+        return Err(format!("unexpected postfix parent span: {:?}", source_text(source, parent)?));
     }
     Ok(())
 }
@@ -175,6 +228,39 @@ fn incomplete_postfix_hash_slice_recovers_without_panicking() -> TestResult {
     }
     if !matches!(output.ast.kind, NodeKind::Program { .. }) {
         return Err(format!("recovery returned {}, not a Program", output.ast.kind.kind_name()));
+    }
+    Ok(())
+}
+
+#[test]
+fn malformed_postfix_hash_slice_does_not_create_a_clean_hash_slice() -> TestResult {
+    let source = "$href->@{};";
+    let mut parser = Parser::new(source);
+    let output = parser.parse_with_recovery();
+    if output.diagnostics.is_empty() {
+        return Err("empty postfix hash slice retained no recovery diagnostics".to_string());
+    }
+    let mut slices = Vec::new();
+    hash_slices(&output.ast, &mut slices);
+    if !slices.is_empty() {
+        return Err(format!(
+            "empty postfix hash slice was classified as clean HashSlice: {}",
+            output.ast.to_sexp()
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn truncated_postfix_hash_slice_keeps_following_statement_recoverable() -> TestResult {
+    let source = "$href->@{'alpha'; my $after = 1;";
+    let mut parser = Parser::new(source);
+    let output = parser.parse_with_recovery();
+    if output.diagnostics.is_empty() {
+        return Err("truncated postfix hash slice retained no recovery diagnostics".to_string());
+    }
+    if !source_text(source, &output.ast)?.contains("my $after = 1") {
+        return Err("postfix hash-slice recovery discarded the following statement".to_string());
     }
     Ok(())
 }
