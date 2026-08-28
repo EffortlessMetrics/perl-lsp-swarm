@@ -170,12 +170,13 @@ fn rotation_paths_keep_condition_reads_distinct_from_branch_writes() {
     let file = lower(ROTATION_SOURCE);
     let paths = subscript_paths(ROTATION_SOURCE, &file);
 
-    // Each path is read in the orientation test and written in the selected
-    // branch. The same source shape must not collapse to one global mode.
+    // Each path is read in one direction's orientation test and written in
+    // that selected branch; the mirror direction's fallback branch writes the
+    // same path a second time, so file-wide write counts are two.
     assert_path_count(&paths, "$pivot->{parent}->{left}", AccessMode::Read, 1);
-    assert_path_count(&paths, "$pivot->{parent}->{left}", AccessMode::Write, 1);
+    assert_path_count(&paths, "$pivot->{parent}->{left}", AccessMode::Write, 2);
     assert_path_count(&paths, "$pivot->{parent}->{right}", AccessMode::Read, 1);
-    assert_path_count(&paths, "$pivot->{parent}->{right}", AccessMode::Write, 1);
+    assert_path_count(&paths, "$pivot->{parent}->{right}", AccessMode::Write, 2);
 
     assert_path_count(&paths, "$tree->{root}", AccessMode::Write, 2);
     assert_path_count(&paths, "$pivot->{right}", AccessMode::Read, 1);
