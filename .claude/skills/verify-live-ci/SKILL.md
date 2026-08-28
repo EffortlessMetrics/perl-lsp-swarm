@@ -25,11 +25,11 @@ SHA changed, or review-receipt convergence.
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains the substantive-review prerequisite, required/advisory policy
-interpretation, failure ownership, whether candidate/review meaning changed, whether a
-remote state is in flight or blocked, and whether integration is ready.
+The main Claude thread retains the substantive-review prerequisite, required/advisory
+policy interpretation, failure ownership, whether candidate/review meaning changed,
+whether a remote state is in flight or blocked, and whether integration is ready.
 
 ### Useful evidence agents
 
@@ -163,9 +163,9 @@ synthesis, or closeout-relevant limitation.
   only the affected proof and review;
 - `main` advances while the candidate remains conflict-free → no required candidate,
   proof, or review action;
-- rebase is acceptable when resolving an actual conflict or when the lane owner judges
-  that a base refresh materially simplifies active work or reduces a concrete
-  integration risk;
+- rebase is acceptable when resolving an actual conflict or when the main/accountable
+  root judges that a base refresh materially simplifies active work or reduces a
+  concrete integration risk;
 - repeated rebases solely to chase `main` or replay CI are churn; distinct integration
   work may justify more than one.
 
