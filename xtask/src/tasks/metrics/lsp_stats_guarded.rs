@@ -206,7 +206,8 @@ fn malformed_marker(object: &serde_json::Map<String, Value>, marker: &str) -> bo
         }
         "ci_tier" => !matches!(value.as_str(), Some("pr" | "nightly" | "release")),
         "result" => !matches!(value.as_str(), Some("pass" | "fail" | "quarantined" | "skipped")),
-        "duration_ms" | "time_to_first_useful_result_ms" => {
+        "duration_ms" => !value.as_f64().is_some_and(|number| number.is_finite() && number >= 0.0),
+        "time_to_first_useful_result_ms" => {
             !value.is_null()
                 && !value.as_f64().is_some_and(|number| number.is_finite() && number >= 0.0)
         }
@@ -368,6 +369,32 @@ mod tests {
             "receipt-shaped JSON with a valid result and invalid duration unexpectedly passed",
         )?;
         assert!(format!("{error:#}").contains("unsupported or malformed kind"));
+        Ok(())
+    }
+
+    #[test]
+    fn null_duration_with_valid_result_fails_closed() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&receipts)?;
+        let path = write_receipt(
+            &receipts,
+            "null-duration.json",
+            "simple_file_smoke",
+            "ux_scenario_01_simple_file.rs",
+        )?;
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
+        value["duration_ms"] = Value::Null;
+        fs::write(&path, serde_json::to_string_pretty(&value)?)?;
+        let fixture_matrix = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("crates/perl-lsp-ux-tests/fixtures/editor_ux_fixture_matrix.json");
+
+        let error = validation_error(
+            aggregate_from_receipts(&receipts, &fixture_matrix, None).map(|_| ()),
+            "passing receipt with null duration unexpectedly passed the guarded scorecard path",
+        )?;
+        assert!(format!("{error:#}").contains("invalid UX scenario receipt"));
         Ok(())
     }
 
