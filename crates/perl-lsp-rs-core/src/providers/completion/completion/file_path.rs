@@ -234,6 +234,21 @@ mod tests {
     }
 
     #[test]
+    fn bare_hx_prefix_exposes_the_full_catalog_without_filesystem_fallthrough() {
+        let context = FileCompletionContext::new("hx", 4, 6);
+        let completions = complete_file_paths(&context, &|| false);
+        let labels: Vec<&str> = completions.iter().map(|item| item.label.as_ref()).collect();
+
+        assert_eq!(labels.len(), 18);
+        assert!(labels.contains(&"HX-Request"));
+        assert!(labels.contains(&"HX-Trigger-After-Settle"));
+        assert!(
+            complete_htmx_headers(&FileCompletionContext::new("HX", 0, 2))
+                .is_some_and(|items| items.len() == 18)
+        );
+    }
+
+    #[test]
     fn unknown_hx_header_prefix_does_not_fall_through_to_filesystem_completion() {
         let context = FileCompletionContext::new("HX-Not-A-Header", 0, 15);
 
