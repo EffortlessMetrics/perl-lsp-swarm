@@ -210,11 +210,7 @@ fn top_level_quickorm_import_tokens(use_source: &str) -> Option<Vec<ImportToken>
 
 fn strip_keyword<'a>(source: &'a str, keyword: &str) -> Option<&'a str> {
     let remainder = source.strip_prefix(keyword)?;
-    if remainder
-        .chars()
-        .next()
-        .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-    {
+    if remainder.chars().next().is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
         None
     } else {
         Some(remainder)
@@ -382,9 +378,7 @@ fn expand_symbol_list(raw: &str) -> Vec<String> {
             '<' => '>',
             delimiter => delimiter,
         };
-        if let Some(inner) = delimited
-            .strip_prefix(open)
-            .and_then(|body| body.strip_suffix(close))
+        if let Some(inner) = delimited.strip_prefix(open).and_then(|body| body.strip_suffix(close))
         {
             return inner
                 .split_whitespace()
