@@ -12,7 +12,7 @@ fn workspace_index_receipts_keep_quickorm_virtual_and_source_symbols_separate()
 package MyApp::Schema::User;
 use DBIx::QuickORM type => 'table';
 
-table users => sub {
+table "users" => sub {
     column id;
     columns qw/name email/;
 };
@@ -56,6 +56,37 @@ table users => sub {
             "manual QuickORM metadata must not synthesize '{manual_name}'"
         );
     }
+
+    Ok(())
+}
+
+#[test]
+fn workspace_index_blocks_dynamic_quickorm_type_calls()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/Dynamic.pm")?;
+    let source = r#"
+package MyApp::Schema::Dynamic;
+use DBIx::QuickORM type => table();
+table "users" => sub {};
+1;
+"#;
+
+    index.index_file(uri.clone(), source.to_string())?;
+
+    let shard =
+        index.file_fact_shard(uri.as_str()).ok_or("WorkspaceIndex did not retain a fact shard")?;
+    assert!(
+        shard
+            .entities
+            .iter()
+            .all(|entity| entity.canonical_name != "MyApp::Schema::Dynamic::qorm_table"),
+        "runtime import configuration must not create a generated member fact"
+    );
+    assert!(
+        index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
+        "runtime import configuration must not reach generated workspace symbols"
+    );
 
     Ok(())
 }
