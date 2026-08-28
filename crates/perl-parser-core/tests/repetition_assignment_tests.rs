@@ -56,6 +56,26 @@ fn repetition_assignment_is_right_associative() -> Result<(), String> {
 }
 
 #[test]
+fn ordinary_repetition_operator_remains_binary() -> Result<(), String> {
+    let source = "$value = 'a' x 3;";
+    assert_clean_parse(source);
+
+    let ast = parse(source);
+    let assignment = find_assignment(&ast, "=")
+        .ok_or_else(|| format!("expected outer assignment:\n{}", ast.to_sexp()))?;
+    let NodeKind::Assignment { rhs, .. } = &assignment.kind else {
+        return Err(format!("expected Assignment, got: {:?}", assignment.kind));
+    };
+
+    assert!(
+        matches!(&rhs.kind, NodeKind::Binary { op, .. } if op == "x"),
+        "expected ordinary x repetition on assignment RHS, got: {:?}",
+        rhs.kind,
+    );
+    Ok(())
+}
+
+#[test]
 fn whitespace_does_not_form_repetition_assignment() {
     let source = "$value x = 3;";
     let mut parser = Parser::new(source);
