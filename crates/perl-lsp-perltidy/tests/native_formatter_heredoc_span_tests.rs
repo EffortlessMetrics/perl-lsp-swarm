@@ -4,6 +4,7 @@ use perl_lsp_perltidy::native::{
     FormatContext, FormatDisposition, FormatReasonCode, FormatRequestTarget,
 };
 use perl_lsp_perltidy::{FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange};
+use perl_parser_core::SourceRegionIndex;
 
 #[test]
 fn document_formatting_ignores_marker_text_inside_string_and_comment() {
@@ -332,6 +333,93 @@ fn multiple_heredocs_preserve_each_body_and_terminator() {
     assert!(result.changed, "code after the second terminator remains eligible");
     assert_eq!(result.formatted, "print <<A, <<B;\nfirst\nA\nsecond\nB\nmy $x = 2;\n");
     assert!(result.diagnostics.is_empty());
+}
+
+#[test]
+fn lexer_spans_are_exact_for_queued_empty_and_partial_heredocs()
+-> Result<(), Box<dyn std::error::Error>> {
+    let queued = "print <<A, <<B;\nfirst\nA\nB\n";
+    let queued_regions = SourceRegionIndex::build(queued).completed_heredoc_spans();
+    let first_start = queued.find("first").ok_or("missing first body")?;
+    let first_end = queued.find("A\n").ok_or("missing first terminator")?;
+    let empty_start = queued.rfind("B\n").ok_or("missing empty terminator")?;
+    assert_eq!(
+        queued_regions.iter().map(|region| (region.start, region.end)).collect::<Vec<_>>(),
+        vec![(first_start, first_end), (empty_start, empty_start)]
+    );
+
+    let partial = "print <<A, <<B;\nfirst\nA\npartial";
+    let partial_regions = SourceRegionIndex::build(partial).completed_heredoc_spans();
+    assert_eq!(partial_regions.len(), 1);
+    assert_eq!(
+        partial_regions.first().map(|region| (region.start, region.end)),
+        Some((
+            partial.find("first").ok_or("missing partial body")?,
+            partial.find("A\n").ok_or("missing partial terminator")?,
+        ))
+    );
+    Ok(())
+}
+
+#[test]
+fn range_formatting_refuses_bare_cr_heredoc_body_and_terminator() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<'EOF';\rraw { text }\rEOF\rmy$x=1;\r";
+
+    for range in [
+        TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0)),
+        TextRange::new(TextPosition::new(2, 0), TextPosition::new(3, 0)),
+    ] {
+        let result = formatter.format_range(source, range, &FormatConfig::default());
+        assert!(!result.changed);
+        assert!(result.edits.is_empty());
+        assert!(result.diagnostics.first().is_some_and(|diagnostic| {
+            diagnostic.code == "native.format.literal_preserve_region"
+        }));
+    }
+}
+
+#[test]
+fn utf8_nonzero_columns_and_adjacent_code_are_independent_controls() {
+    let formatter = NativeFormatter::new();
+    let source = "my$x=1; # é\nprint <<'EOF';\nraw { text }\nEOF\nmy$x=1;\n";
+    let body = TextRange::new(TextPosition::new(2, 1), TextPosition::new(3, 1));
+    let refused = formatter.format_range(source, body, &FormatConfig::default());
+    assert!(!refused.changed);
+    assert!(
+        refused.diagnostics.first().is_some_and(|diagnostic| {
+            diagnostic.code == "native.format.literal_preserve_region"
+        })
+    );
+
+    let before = TextRange::new(TextPosition::new(0, 0), TextPosition::new(1, 0));
+    let before_result = formatter.format_range(source, before, &FormatConfig::default());
+    assert!(before_result.changed);
+    assert!(before_result.diagnostics.is_empty());
+
+    let after = TextRange::new(TextPosition::new(4, 0), TextPosition::new(5, 0));
+    let after_result = formatter.format_range(source, after, &FormatConfig::default());
+    assert!(after_result.changed);
+    assert!(after_result.diagnostics.is_empty());
+}
+
+#[test]
+fn utf16_nonzero_columns_refuse_heredoc_without_hiding_adjacent_code() {
+    let formatter = NativeFormatter::new();
+    let source = "my $😀 = 1;\nprint <<'EOF';\nraw { text }\nEOF\nmy$x=1;\n";
+    let body = TextRange::new(TextPosition::new(2, 1), TextPosition::new(3, 1));
+    let refused = formatter.format_range(source, body, &FormatConfig::default());
+    assert!(!refused.changed);
+    assert!(
+        refused.diagnostics.first().is_some_and(|diagnostic| {
+            diagnostic.code == "native.format.literal_preserve_region"
+        })
+    );
+
+    let after = TextRange::new(TextPosition::new(4, 0), TextPosition::new(5, 0));
+    let after_result = formatter.format_range(source, after, &FormatConfig::default());
+    assert!(after_result.changed);
+    assert!(after_result.diagnostics.is_empty());
 }
 
 #[test]

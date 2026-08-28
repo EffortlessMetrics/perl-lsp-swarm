@@ -8,6 +8,10 @@
 //! - completed heredoc bodies drained by the lexer are protected during range
 //!   formatting even when their opener lies outside the requested lines.
 //!
+//! The claim covered here is the native provider API. Public LSP
+//! `rangeFormatting` reachability and incremental snapshot replay are
+//! intentionally out of scope until a real stateful request path exists.
+//!
 //! Every existing parse, literal-preservation, render, and post-parse gate still
 //! runs in the underlying engine.
 
@@ -290,29 +294,25 @@ fn range_overlaps_completed_heredoc(source: &str, range: TextRange) -> bool {
 }
 
 fn byte_offset_after_line(source: &str, offset: usize) -> usize {
-    source
-        .get(offset..)
-        .and_then(|suffix| suffix.find('\n').map(|relative| offset + relative + 1))
-        .unwrap_or(source.len())
+    source_line_ranges(source)
+        .into_iter()
+        .find(|(start, end)| *start <= offset && offset < *end)
+        .map_or(source.len(), |(_, end)| end)
 }
 
 fn byte_span_for_line_range(source: &str, range: TextRange) -> (usize, usize) {
     let mut byte_start = 0_usize;
     let mut byte_end = source.len();
     let mut found_start = false;
-    let mut byte_offset = 0_usize;
-
-    for (line_index, line) in source.split_inclusive('\n').enumerate() {
+    for (line_index, (line_start, line_end)) in source_line_ranges(source).into_iter().enumerate() {
         let line_index = line_index as u32;
         if line_index == range.start.line {
-            byte_start = byte_offset;
+            byte_start = line_start;
             found_start = true;
         }
-        let next_offset = byte_offset + line.len();
         if range_includes_line(range, line_index) {
-            byte_end = next_offset;
+            byte_end = line_end;
         }
-        byte_offset = next_offset;
     }
 
     if !found_start {
@@ -325,11 +325,47 @@ fn valid_range(source: &str, range: TextRange) -> bool {
     if (range.start.line, range.start.character) > (range.end.line, range.end.character) {
         return false;
     }
-    let lines = source.split('\n').collect::<Vec<_>>();
+    let lines = source_line_ranges(source);
     let position_is_valid = |position: implementation::TextPosition| {
         lines
             .get(position.line as usize)
+            .and_then(|(start, end)| source.get(*start..*end))
+            .map(strip_line_ending)
             .is_some_and(|line| line.encode_utf16().count() >= position.character as usize)
     };
     position_is_valid(range.start) && position_is_valid(range.end)
+}
+
+fn source_line_ranges(source: &str) -> Vec<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let mut ranges = Vec::new();
+    let mut start = 0_usize;
+    let mut offset = 0_usize;
+
+    while offset < bytes.len() {
+        let terminator_len = match bytes[offset] {
+            b'\n' => 1,
+            b'\r' if offset + 1 < bytes.len() && bytes[offset + 1] == b'\n' => 2,
+            b'\r' => 1,
+            _ => {
+                offset += 1;
+                continue;
+            }
+        };
+        offset += terminator_len;
+        ranges.push((start, offset));
+        start = offset;
+    }
+
+    if start < source.len() || ranges.is_empty() || start == source.len() {
+        ranges.push((start, source.len()));
+    }
+    ranges
+}
+
+fn strip_line_ending(line: &str) -> &str {
+    line.strip_suffix("\r\n")
+        .or_else(|| line.strip_suffix('\n'))
+        .or_else(|| line.strip_suffix('\r'))
+        .unwrap_or(line)
 }
