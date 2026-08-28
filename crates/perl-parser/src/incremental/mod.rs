@@ -10,6 +10,7 @@ mod reparse;
 mod snapshot;
 mod state;
 mod strategy;
+mod whitespace_geometry;
 
 use anyhow::Result;
 
