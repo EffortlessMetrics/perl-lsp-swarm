@@ -272,7 +272,7 @@
       "id": "parser.ripr.seam_proof",
       "package": "perl-parser-core",
       "target": "ripr_seam_proof_parser",
-      "featurs": [],
+      "features": [],
       "no_default_features": false,
       "cargo_args": [],
       "test_args": [
