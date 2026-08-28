@@ -39,10 +39,12 @@ fn gold_root() -> Result<PathBuf, Box<dyn Error>> {
 }
 
 fn fixture_name(directory: &Path) -> Result<String, Box<dyn Error>> {
-    let name = directory
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| contract_error(format!("invalid fixture directory name: {}", directory.display())))?;
+    let name = directory.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
+        contract_error(format!(
+            "invalid fixture directory name: {}",
+            directory.display()
+        ))
+    })?;
     Ok(name.to_owned())
 }
 
@@ -112,8 +114,9 @@ fn regular_file_if_present(path: &Path) -> Result<bool, Box<dyn Error>> {
 
 fn read_json(path: &Path) -> Result<Value, Box<dyn Error>> {
     let text = fs::read_to_string(path)?;
-    serde_json::from_str(&text)
-        .map_err(|error| contract_error(format!("parsing {}: {error}", path.display())).into())
+    let document = serde_json::from_str(&text)
+        .map_err(|error| contract_error(format!("parsing {}: {error}", path.display())))?;
+    Ok(document)
 }
 
 fn validate_diagnostics_sidecar(path: &Path, source_len: usize) -> Result<(), Box<dyn Error>> {
@@ -148,17 +151,28 @@ fn validate_diagnostics_sidecar(path: &Path, source_len: usize) -> Result<(), Bo
 
 fn validate_named_sidecar(path: &Path, expected_fixture: &str) -> Result<(), Box<dyn Error>> {
     let document = read_json(path)?;
-    let object = document.as_object().ok_or_else(|| {
-        contract_error(format!("{} must contain a JSON object", path.display()))
-    })?;
+    let object = document
+        .as_object()
+        .ok_or_else(|| contract_error(format!("{} must contain a JSON object", path.display())))?;
 
     let version = object.get("version").and_then(Value::as_u64).ok_or_else(|| {
-        contract_error(format!("{} must declare an integer version", path.display()))
+        contract_error(format!(
+            "{} must declare an integer version",
+            path.display()
+        ))
     })?;
-    assert_eq!(version, 1, "{} uses an unsupported sidecar version", path.display());
+    assert_eq!(
+        version,
+        1,
+        "{} uses an unsupported sidecar version",
+        path.display()
+    );
 
     let declared_fixture = object.get("fixture").and_then(Value::as_str).ok_or_else(|| {
-        contract_error(format!("{} must declare its fixture identity", path.display()))
+        contract_error(format!(
+            "{} must declare its fixture identity",
+            path.display()
+        ))
     })?;
     assert_eq!(
         declared_fixture,
@@ -168,7 +182,10 @@ fn validate_named_sidecar(path: &Path, expected_fixture: &str) -> Result<(), Box
     );
 
     let assertions = object.get("assertions").and_then(Value::as_array).ok_or_else(|| {
-        contract_error(format!("{} must declare an assertions array", path.display()))
+        contract_error(format!(
+            "{} must declare an assertions array",
+            path.display()
+        ))
     })?;
     assert!(
         !assertions.is_empty(),
@@ -199,8 +216,7 @@ fn reject_unknown_sidecars(directory: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn gold_repository_assets_are_complete_and_population_does_not_regress()
--> Result<(), Box<dyn Error>> {
+fn gold_repository_contract_holds() -> Result<(), Box<dyn Error>> {
     let root = gold_root()?;
     let root_metadata = fs::symlink_metadata(&root)?;
     assert!(
