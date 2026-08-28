@@ -1,4 +1,4 @@
-name: Finalize heredoc terminator preservation
+name: Finalize completed heredoc preservation
 
 on:
   push:
@@ -15,6 +15,8 @@ jobs:
   finalize:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: 1.95.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -24,7 +26,7 @@ jobs:
       - name: Install Rust 1.95
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
 
-      - name: Extend proven body spans through terminators
+      - name: Protect only completed heredoc spans
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -38,38 +40,48 @@ jobs:
 
           path = Path("crates/perl-lsp-perltidy/src/native/implementation.rs")
           text = path.read_text(encoding="utf-8")
-          helper = '''fn heredoc_preserve_region_overlapping(
+
+          helper = r'''fn heredoc_preserve_region_overlapping(
               source: &str,
               range_byte_start: usize,
               range_byte_end: usize,
           ) -> bool {
               use perl_lexer::TokenType;
 
+              let mut openers = Vec::new();
+              let mut bodies = Vec::new();
               let mut lexer = perl_lexer::PerlLexer::with_body_tokens(source);
               while let Some(token) = lexer.next_token() {
-                  let protected_end = match &token.token_type {
-                      TokenType::EOF => return false,
-                      TokenType::HeredocStart => token.end,
-                      TokenType::HeredocBody(_) => physical_line_end(source, token.end),
-                      _ => continue,
-                  };
-                  if token.start < range_byte_end && protected_end > range_byte_start {
-                      return true;
+                  match &token.token_type {
+                      TokenType::EOF => break,
+                      TokenType::HeredocStart => openers.push((token.start, token.end)),
+                      TokenType::HeredocBody(_) => {
+                          bodies.push((token.start, physical_line_end(source, token.end)));
+                      }
+                      _ => {}
                   }
               }
-              false
+
+              if openers.len() != bodies.len() {
+                  return false;
+              }
+
+              openers
+                  .into_iter()
+                  .chain(bodies)
+                  .any(|(start, end)| start < range_byte_end && end > range_byte_start)
           }
 
           fn physical_line_end(source: &str, line_start: usize) -> usize {
               let bytes = source.as_bytes();
               let mut end = line_start.min(bytes.len());
-              while end < bytes.len() && !matches!(bytes[end], b'\\n' | b'\\r') {
+              while end < bytes.len() && !matches!(bytes[end], b'\n' | b'\r') {
                   end += 1;
               }
               if end < bytes.len() {
-                  if bytes[end] == b'\\r' {
+                  if bytes[end] == b'\r' {
                       end += 1;
-                      if end < bytes.len() && bytes[end] == b'\\n' {
+                      if end < bytes.len() && bytes[end] == b'\n' {
                           end += 1;
                       }
                   } else {
@@ -80,9 +92,10 @@ jobs:
           }
 
           fn token_literal_preserve_region_overlapping'''
+
           text, count = re.subn(
               r"fn heredoc_preserve_region_overlapping\(.*?\n}\n\nfn token_literal_preserve_region_overlapping",
-              helper,
+              lambda _match: helper,
               text,
               count=1,
               flags=re.S,
@@ -92,42 +105,76 @@ jobs:
 
           text = replace_once(
               text,
-              '''        let after_start = source
-                      .find("my$y=2")
+              r'''        let body_start =
+                      source.find("my$x=1").ok_or_else(|| std::io::Error::other("missing heredoc body"))?;
+                  let after_start = source
           ''',
-              '''        let terminator_start = source
-                      .find("\\nEOF\\n")
+              r'''        let body_start =
+                      source.find("my$x=1").ok_or_else(|| std::io::Error::other("missing heredoc body"))?;
+                  let terminator_start = source
+                      .find("\nEOF\n")
                       .map(|offset| offset + 1)
                       .ok_or_else(|| std::io::Error::other("missing heredoc terminator"))?;
                   let after_start = source
-                      .find("my$y=2")
           ''',
-              "inline terminator offset",
+              "unit terminator offset",
           )
           text = replace_once(
               text,
-              '''        assert!(!heredoc_preserve_region_overlapping(source, after_start, source.len()));
+              r'''        assert!(heredoc_preserve_region_overlapping(
+                      source,
+                      body_start,
+                      body_start + "my$x=1".len()
+                  ));
+                  assert!(!heredoc_preserve_region_overlapping(source, after_start, source.len()));
           ''',
-              '''        assert!(heredoc_preserve_region_overlapping(
+              r'''        assert!(heredoc_preserve_region_overlapping(
+                      source,
+                      body_start,
+                      body_start + "my$x=1".len()
+                  ));
+                  assert!(heredoc_preserve_region_overlapping(
                       source,
                       terminator_start,
                       terminator_start + "EOF".len()
                   ));
                   assert!(!heredoc_preserve_region_overlapping(source, after_start, source.len()));
           ''',
-              "inline terminator assertion",
+              "unit terminator assertion",
+          )
+          marker = "    #[test]\n    fn heredoc_span_helper_rejects_textual_false_markers"
+          text = replace_once(
+              text,
+              marker,
+              r'''    #[test]
+              fn heredoc_span_helper_rejects_unclosed_source() {
+                  let source = "print <<'EOF';\nraw { text }\n";
+
+                  assert!(!heredoc_preserve_region_overlapping(source, 0, source.len()));
+              }
+
+          ''' + marker,
+              "unclosed helper test",
           )
           text = replace_once(
               text,
-              '''        let after = TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0));
-
-                  assert_eq!(literal_preserve_region_for_range(source, body), Some("heredoc"));
+              "    fn range_preserve_gate_detects_body_but_not_code_after_terminator()",
+              "    fn range_preserve_gate_detects_body_and_terminator_but_not_later_code()",
+              "range test name",
+          )
+          text = replace_once(
+              text,
+              "        let after = TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0));\n",
+              "        let terminator = TextRange::new(TextPosition::new(2, 0), TextPosition::new(3, 0));\n"
+              "        let after = TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0));\n",
+              "range terminator value",
+          )
+          text = replace_once(
+              text,
+              r'''        assert_eq!(literal_preserve_region_for_range(source, body), Some("heredoc"));
                   assert_eq!(literal_preserve_region_for_range(source, after), None);
           ''',
-              '''        let terminator = TextRange::new(TextPosition::new(2, 0), TextPosition::new(3, 0));
-                  let after = TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0));
-
-                  assert_eq!(literal_preserve_region_for_range(source, body), Some("heredoc"));
+              r'''        assert_eq!(literal_preserve_region_for_range(source, body), Some("heredoc"));
                   assert_eq!(
                       literal_preserve_region_for_range(source, terminator),
                       Some("heredoc")
@@ -140,34 +187,12 @@ jobs:
 
           path = Path("crates/perl-lsp-perltidy/tests/native_formatter_heredoc_span_tests.rs")
           text = path.read_text(encoding="utf-8")
+
+          marker = "#[test]\nfn native_range_formatter_refuses_real_heredoc_opener"
           text = replace_once(
               text,
-              "#[test]\nfn marker_like_text_in_strings_and_comments_remains_format_eligible() {\n",
-              '''#[test]
-          fn native_range_formatter_refuses_real_heredoc_terminator() {
-              let formatter = NativeFormatter::new();
-              let source = "print <<'EOF';\\nraw { text }\\nEOF\\nmy$x=1;\\n";
-
-              let result = formatter.format_range(source, line_range(2), &FormatConfig::default());
-
-              assert_heredoc_refusal(&result, source);
-          }
-
-          #[test]
-          fn marker_like_text_in_strings_and_comments_remains_format_eligible() {
-          ''',
-              "terminator integration test",
-          )
-          text = replace_once(
-              text,
-              "#[test]\nfn whole_document_with_real_heredoc_remains_conservative() {\n",
-              '''#[test]
-          fn unterminated_heredoc_remains_owned_by_parse_gate() {
-              let formatter = NativeFormatter::new();
-              let source = "print <<'EOF';\\nraw { text }\\n";
-
-              let result = formatter.format_range(source, line_range(1), &FormatConfig::default());
-
+              marker,
+              r'''fn assert_parse_gate_refusal(result: &FormatResult, source: &str) {
               assert!(!result.changed);
               assert_eq!(result.formatted, source);
               assert!(result.edits.is_empty());
@@ -182,9 +207,48 @@ jobs:
           }
 
           #[test]
-          fn whole_document_with_real_heredoc_remains_conservative() {
-          ''',
-              "unterminated heredoc integration test",
+          fn native_range_formatter_refuses_real_heredoc_opener''',
+              "parse assertion helper",
+          )
+
+          marker = "#[test]\nfn marker_like_text_in_strings_and_comments_remains_format_eligible()"
+          text = replace_once(
+              text,
+              marker,
+              r'''#[test]
+          fn native_range_formatter_refuses_real_heredoc_terminator() {
+              let formatter = NativeFormatter::new();
+              let source = "print <<'EOF';\nraw { text }\nEOF\nmy$x=1;\n";
+
+              let result = formatter.format_range(source, line_range(2), &FormatConfig::default());
+
+              assert_heredoc_refusal(&result, source);
+          }
+
+          #[test]
+          fn marker_like_text_in_strings_and_comments_remains_format_eligible()''',
+              "terminator integration test",
+          )
+
+          marker = "#[test]\nfn whole_document_with_real_heredoc_remains_conservative()"
+          text = replace_once(
+              text,
+              marker,
+              r'''#[test]
+          fn unterminated_heredoc_remains_owned_by_parse_gate() {
+              let formatter = NativeFormatter::new();
+              let source = "print <<'EOF';\nraw { text }\n";
+
+              let document = formatter.format_document(source, &FormatConfig::default());
+              let range = formatter.format_range(source, line_range(1), &FormatConfig::default());
+
+              assert_parse_gate_refusal(&document, source);
+              assert_parse_gate_refusal(&range, source);
+          }
+
+          #[test]
+          fn whole_document_with_real_heredoc_remains_conservative()''',
+              "unterminated integration test",
           )
           path.write_text(text, encoding="utf-8")
           PY
@@ -194,10 +258,11 @@ jobs:
           cargo fmt -p perl-lsp-perltidy
           git diff --check
           cargo fmt -p perl-lsp-perltidy -- --check
+          cargo check -p perl-lsp-perltidy --all-targets --locked
           cargo clippy -p perl-lsp-perltidy --all-targets --locked -- -D warnings
           cargo test -p perl-lsp-perltidy --all-targets --locked
 
-      - name: Publish one clean commit
+      - name: Publish one clean source commit
         env:
           BASE_SHA: a9664af790888333efbe50a042fa060f3cc2d171
           BRANCH_REF: refs/heads/fix/13085-heredoc-lexer-spans
