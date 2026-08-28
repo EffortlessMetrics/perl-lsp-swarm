@@ -664,7 +664,9 @@ fn test_rename_gold_corpus() -> TestResult {
                         && response_edits_are_well_formed
                         && expected_edits_ok
                 }
-                RenameAssertionKind::RenameNull => rename_is_null(&resp),
+                RenameAssertionKind::RenameNull => {
+                    rename_is_null(&resp) && assertion.expected_edits.is_none()
+                }
                 RenameAssertionKind::RenameEditCountAtLeast { min } => {
                     response_edits_are_well_formed
                         && rename_total_edit_count(&resp) >= *min
@@ -851,10 +853,19 @@ mod rename_oracle_tests {
     }
 
     #[test]
-    fn rename_parser_rejects_null_without_disabling_count_only_mode() -> TestResult {
+    fn rename_parser_round_trips_omission_and_rejects_explicit_null() -> TestResult {
         let omitted: RenameAssertion = serde_json::from_str(
             r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values"}"#,
         )?;
+        let serialized = serde_json::to_value(&omitted)?;
+        if serialized.get("expected_edits").is_some() {
+            return Err("omitted expected_edits must serialize as omission".into());
+        }
+        let round_tripped: RenameAssertion = serde_json::from_value(serialized)?;
+        if round_tripped.expected_edits.is_some() {
+            return Err("omitted expected_edits must round-trip as count-only mode".into());
+        }
+
         let null = serde_json::from_str::<RenameAssertion>(
             r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_edits":null}"#,
         );
@@ -870,11 +881,11 @@ mod rename_oracle_tests {
             "newText": "sum_values"
         });
         let response = response_with_entries(json!([valid]));
-        if omitted.expected_edits.is_some()
+        if round_tripped.expected_edits.is_some()
             || !rename_expected_edits_match(
                 &response,
                 "file:///gold/rename_subroutine.pl",
-                omitted.expected_edits.as_deref(),
+                round_tripped.expected_edits.as_deref(),
             )
         {
             return Err("omitted expected_edits must use count-only scorecard mode".into());

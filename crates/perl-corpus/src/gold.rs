@@ -120,7 +120,7 @@ pub fn load_gold_fixtures_from<P: AsRef<Path>>(
 
 /// Assertion kind for hover gold corpus entries
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
+#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 pub enum HoverAssertionKind {
     /// Response must have non-null, non-empty content
     HoverNonNull,
@@ -212,7 +212,7 @@ pub fn load_hover_gold_fixtures<P: AsRef<Path>>(
 
 /// Assertion kind for goto-definition gold corpus entries
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
+#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 pub enum GotoAssertionKind {
     /// Response must return at least one location
     GotoNonNull,
@@ -296,7 +296,7 @@ pub fn load_goto_gold_fixtures<P: AsRef<Path>>(
 
 /// Assertion kind for completion gold corpus entries
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
+#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 pub enum CompletionAssertionKind {
     /// Completion list must not be empty
     CompletionNonEmpty,
@@ -388,7 +388,7 @@ pub fn load_completion_gold_fixtures<P: AsRef<Path>>(
 
 /// Assertion kind for document-symbol gold corpus entries
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
+#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 pub enum DocumentSymbolAssertionKind {
     /// Symbols list must not be empty
     SymbolNonEmpty,
@@ -497,8 +497,13 @@ pub struct RenameAssertion {
     /// Exact edits expected when this assertion exercises a concrete rename.
     /// Omission preserves the count-only contract of older fixtures; an explicit
     /// empty list remains an exact expectation of no edits. `null` is rejected
-    /// so it cannot silently weaken an assertion to count-only mode.
-    #[serde(default, deserialize_with = "deserialize_expected_edits")]
+    /// so it cannot silently weaken an assertion to count-only mode. Omission
+    /// serializes as omission so the legacy mode round-trips.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_expected_edits"
+    )]
     pub expected_edits: Option<Vec<RenameExpectedEdit>>,
     #[serde(default)]
     pub rationale: String,
@@ -541,6 +546,13 @@ impl<'de> Deserialize<'de> for RenameAssertion {
         {
             return Err(de::Error::custom(
                 "min is only supported for rename_edit_count_at_least assertions",
+            ));
+        }
+        if matches!(&unchecked.kind, RenameAssertionKind::RenameNull)
+            && unchecked.expected_edits.is_some()
+        {
+            return Err(de::Error::custom(
+                "expected_edits is only supported for rename assertions that inspect edits",
             ));
         }
         Ok(Self {
@@ -718,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn rename_expected_edits_distinguishes_omission_from_null()
+    fn rename_expected_edits_round_trips_omission_and_rejects_null()
     -> Result<(), Box<dyn std::error::Error>> {
         let omitted: RenameAssertion = serde_json::from_str(
             r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values"}"#,
@@ -726,12 +738,25 @@ mod tests {
         if omitted.expected_edits.is_some() {
             return Err("omitted expected_edits must remain count-only mode".into());
         }
+        let serialized = serde_json::to_value(&omitted)?;
+        if serialized.get("expected_edits").is_some() {
+            return Err("omitted expected_edits must serialize as omission".into());
+        }
+        let round_tripped: RenameAssertion = serde_json::from_value(serialized)?;
+        if round_tripped.expected_edits.is_some() {
+            return Err("omitted expected_edits must round-trip as count-only mode".into());
+        }
 
         let explicit_null = serde_json::from_str::<RenameAssertion>(
             r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_edits":null}"#,
         );
         if explicit_null.is_ok() {
             return Err("explicit null expected_edits must fail closed".into());
+        }
+
+        let rename_null_with_edits = r#"{"kind":"rename_null","line":4,"character":4,"new_name":"sum_values","expected_edits":[]}"#;
+        if serde_json::from_str::<RenameAssertion>(rename_null_with_edits).is_ok() {
+            return Err("expected_edits for rename_null must fail closed".into());
         }
 
         Ok(())

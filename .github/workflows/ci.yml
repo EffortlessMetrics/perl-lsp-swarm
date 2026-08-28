@@ -1485,12 +1485,10 @@ jobs:
       - name: Gold repository contract (required merge surface)
         run: cargo test -p perl-corpus --test gold_repository_contract --locked -- --nocapture
 
-      # The gold repository contract protects fixture shape; this companion
-      # integration test is the production editor-intelligence oracle. Keep
-      # both on the same required merge surface so a passing schema check
-      # cannot substitute for replaying the real LSP scorecard.
+      # The corpus contract protects the on-disk shape; this executes the
+      # production editor-intelligence consumers against the same candidate tree.
       - name: Editor intelligence scorecard (required merge surface)
-        run: cargo test -p perl-lsp-rs --test editor_intelligence_scorecard --locked -- --nocapture
+        run: RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs --test editor_intelligence_scorecard --locked -- --nocapture
 
       # Required merge surface for #7767/#7796: unit_routed_full only executes via
       # advisory pr-smoke, so stale Emacs guidance could otherwise merge while this

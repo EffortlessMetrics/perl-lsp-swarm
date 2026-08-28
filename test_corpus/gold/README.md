@@ -30,7 +30,9 @@ Editor and module sidecars use this common envelope:
 }
 ```
 
-`fixture` must exactly match the containing directory name. LSP `line` and `character` values are zero-based.
+`fixture` must exactly match the containing directory name. Named sidecars are
+closed-world contracts: their envelope and typed assertion members reject unknown
+fields. LSP `line` and `character` values are zero-based.
 
 Rename assertions use `expected_edits` as follows:
 
@@ -48,7 +50,7 @@ Rename assertions use `expected_edits` as follows:
 | `expected_completion.json` | Completion | 4 |
 | `expected_symbols.json` | Document symbols | 2 |
 | `expected_rename.json` | Rename | 2 |
-| `expected_module.json` | `@INC` and module-resolution consumer consistency | 5 |
+| `expected_module.json` | Contract metadata for `@INC` and module-resolution cases | 5 |
 
 The corpus currently contains at least 34 fixture directories. Sidecar counts overlap because one fixture may exercise several surfaces.
 
@@ -126,7 +128,11 @@ The five `expected_module.json` fixtures exercise the same module-resolution dec
 | `inc_findbin_relative` | `FindBin`-relative library path |
 | `inc_system_inc` | Injected system `@INC` entry |
 
-These cases are scored by `ux_scenario_14_inc_conformance`; they are not loaded by the editor-intelligence sidecar loaders in `perl-corpus`.
+The repository contract validates these sidecars. The production
+`ux_scenario_14_inc_conformance` harness currently uses its own inline fixtures and
+does not consume `expected_module.json`; its results therefore establish the
+module-resolution behavior, not sidecar-to-harness wiring. Keep the sidecars as
+contract metadata until a dedicated loader/adapter makes that connection explicit.
 
 ## Tracking
 

@@ -36,7 +36,8 @@ Fixtures live under `test_corpus/gold/`. Every fixture directory contains
 - `expected.json` — diagnostics
 - `expected_hover.json`, `expected_goto.json`, `expected_completion.json`,
   `expected_symbols.json`, `expected_rename.json` — editor intelligence
-- `expected_module.json` — `@INC` and module-resolution consumer consistency
+- `expected_module.json` — contract metadata for `@INC` and module-resolution cases;
+  production conformance is separately exercised by `ux_scenario_14_inc_conformance`
 
 The corpus currently contains at least 34 fixture directories spanning hover,
 goto definition, completion, document symbols, rename, diagnostics, `@INC`/`use
@@ -47,6 +48,10 @@ version, and assertion non-vacuity:
 ```bash
 cargo test -p perl-corpus --test gold_repository_contract
 ```
+
+Named sidecars are closed-world contracts: unknown envelope and typed assertion
+fields are rejected. The module sidecars are validated here but are not the input
+to the hard-coded Scenario 14 production harness.
 
 This is separate from `editor_ux.md`'s "N of 22 declared" scenario count,
 which measures `crates/perl-lsp-ux-tests` scenarios against

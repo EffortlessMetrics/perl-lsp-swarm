@@ -203,85 +203,6 @@ fn validate_typed_named_sidecar<T: DeserializeOwned>(
     Ok(())
 }
 
-fn validate_named_assertion_fields(path: &Path, document: &Value) -> Result<(), Box<dyn Error>> {
-    let object = document
-        .as_object()
-        .ok_or_else(|| contract_error(format!("{} must contain a JSON object", path.display())))?;
-    const ENVELOPE_FIELDS: &[&str] = &["version", "fixture", "assertions"];
-    for field in object.keys() {
-        if !ENVELOPE_FIELDS.contains(&field.as_str()) {
-            return Err(contract_error(format!(
-                "{} contains unknown sidecar field {field:?}",
-                path.display()
-            ))
-            .into());
-        }
-    }
-
-    let sidecar = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-    let assertions = object.get("assertions").and_then(Value::as_array).ok_or_else(|| {
-        contract_error(format!("{} must declare an assertions array", path.display()))
-    })?;
-
-    for (index, assertion) in assertions.iter().enumerate() {
-        let assertion_object = assertion.as_object().ok_or_else(|| {
-            contract_error(format!("{} assertion {index} must be a JSON object", path.display()))
-        })?;
-        let Some(kind) = assertion_object.get("kind").and_then(Value::as_str) else {
-            // Preserve the typed deserializer's established diagnostic for
-            // malformed assertions that cannot select a variant yet.
-            continue;
-        };
-
-        let allowed: &[&str] = match (sidecar, kind) {
-            ("expected_hover.json", "hover_non_null" | "hover_null")
-            | ("expected_goto.json", "goto_non_null" | "goto_null")
-            | ("expected_completion.json", "completion_non_empty")
-            | ("expected_symbols.json", "symbol_non_empty") => {
-                &["kind", "line", "character", "rationale"]
-            }
-            ("expected_hover.json", "hover_contains" | "hover_absent") => {
-                &["kind", "line", "character", "needle", "rationale"]
-            }
-            ("expected_goto.json", "goto_line") => {
-                &["kind", "line", "character", "expected_line", "rationale"]
-            }
-            (
-                "expected_completion.json",
-                "completion_top1" | "completion_top5" | "completion_present",
-            ) => &["kind", "line", "character", "expected_label", "rationale"],
-            ("expected_completion.json", "completion_noise_absent") => {
-                &["kind", "line", "character", "forbidden_label", "rationale"]
-            }
-            ("expected_symbols.json", "symbol_present" | "symbol_absent") => {
-                &["kind", "name", "rationale"]
-            }
-            ("expected_symbols.json", "symbol_count") => &["kind", "count", "rationale"],
-            ("expected_rename.json", "rename_succeeds" | "rename_null") => {
-                &["kind", "line", "character", "new_name", "expected_edits", "rationale"]
-            }
-            ("expected_rename.json", "rename_edit_count_at_least") => {
-                &["kind", "line", "character", "new_name", "min", "expected_edits", "rationale"]
-            }
-            (_, _) => {
-                continue;
-            }
-        };
-
-        for field in assertion_object.keys() {
-            if !allowed.contains(&field.as_str()) {
-                return Err(contract_error(format!(
-                    "{} assertion {index} contains unknown field {field:?}",
-                    path.display()
-                ))
-                .into());
-            }
-        }
-    }
-
-    Ok(())
-}
-
 fn validate_module_sidecar(
     path: &Path,
     document: &Value,
@@ -385,10 +306,6 @@ fn validate_named_sidecar(path: &Path, expected_fixture: &str) -> Result<(), Box
             path.display()
         ))
         .into());
-    }
-
-    if path.file_name().and_then(|name| name.to_str()) != Some("expected_module.json") {
-        validate_named_assertion_fields(path, &document)?;
     }
 
     match path.file_name().and_then(|name| name.to_str()) {
@@ -729,45 +646,69 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_fields_across_all_typed_sidecars() -> Result<(), Box<dyn Error>> {
-        let directory = tempdir()?;
+    fn named_sidecars_accept_declared_fields_and_reject_unknown_fields()
+    -> Result<(), Box<dyn Error>> {
         let cases = [
             (
                 "expected_hover.json",
-                r#"{"version":1,"fixture":"fixture","assertions":[{"kind":"hover_non_null","line":1,"character":0,"rationale":"proof"}]}"#,
+                r#"{"version":1,"fixture":"fixture","assertions":[{"kind":"hover_contains","line":0,"character":0,"needle":"name","rationale":"known fields"}]}"#,
             ),
             (
                 "expected_goto.json",
-                r#"{"version":1,"fixture":"fixture","assertions":[{"kind":"goto_non_null","line":1,"character":0,"rationale":"proof"}]}"#,
+                r#"{"version":1,"fixture":"fixture","assertions":[{"kind":"goto_line","line":0,"character":0,"expected_line":1,"rationale":"known fields"}]}"#,
             ),
             (
                 "expected_completion.json",
-                r#"{"version":1,"fixture":"fixture","assertions":[{"kind":"completion_non_empty","line":1,"character":0,"rationale":"proof"}]}"#,
+                r#"{"version":1,"fixture":"fixture","assertions":[{"kind":"completion_present","line":0,"character":0,"expected_label":"name","rationale":"known fields"}]}"#,
             ),
             (
                 "expected_symbols.json",
-                r#"{"version":1,"fixture":"fixture","assertions":[{"kind":"symbol_non_empty","rationale":"proof"}]}"#,
+                r#"{"version":1,"fixture":"fixture","assertions":[{"kind":"symbol_present","name":"name","rationale":"known fields"}]}"#,
             ),
             (
-                "expected_rename.json",
-                r#"{"version":1,"fixture":"fixture","assertions":[{"kind":"rename_succeeds","line":1,"character":0,"new_name":"renamed","rationale":"proof"}]}"#,
+                "expected_module.json",
+                r#"{"version":1,"fixture":"fixture","resolution_mode":"test","assertions":[{"kind":"resolves","module":"Test","expected_suffix":"Test.pm","use_line":0,"use_col":4,"consumers":["goto_definition"],"rationale":"known fields"}]}"#,
             ),
         ];
 
         for (name, valid) in cases {
+            let directory = tempdir()?;
             let sidecar = directory.path().join(name);
-            let envelope_typo =
-                valid.replace("\"assertions\"", "\"unexpected\":true,\"assertions\"");
-            write_fixture_file(&sidecar, &envelope_typo)?;
-            if validate_named_sidecar(&sidecar, "fixture").is_ok() {
-                return Err(format!("unknown envelope field was accepted in {name}").into());
+            write_fixture_file(&sidecar, valid)?;
+            validate_named_sidecar(&sidecar, "fixture")?;
+
+            let mut envelope: Value = serde_json::from_str(valid)?;
+            let envelope_object =
+                envelope.as_object_mut().ok_or("valid named sidecar must be an object")?;
+            envelope_object.insert("unexpected_envelope".to_string(), Value::Bool(true));
+            write_fixture_file(&sidecar, &serde_json::to_string(&envelope)?)?;
+            let error = match validate_named_sidecar(&sidecar, "fixture") {
+                Ok(()) => {
+                    return Err(format!("unknown envelope field was accepted for {name}").into());
+                }
+                Err(error) => error,
+            };
+            if !error.to_string().contains("unexpected_envelope") {
+                return Err(format!("unexpected envelope error for {name}: {error}").into());
             }
 
-            let assertion_typo = valid
-                .replace("\"rationale\":\"proof\"", "\"rationale\":\"proof\",\"unexpected\":true");
-            write_fixture_file(&sidecar, &assertion_typo)?;
-            if validate_named_sidecar(&sidecar, "fixture").is_ok() {
-                return Err(format!("unknown assertion field was accepted in {name}").into());
+            let mut assertion: Value = serde_json::from_str(valid)?;
+            let assertion_object = assertion
+                .get_mut("assertions")
+                .and_then(Value::as_array_mut)
+                .and_then(|assertions| assertions.first_mut())
+                .and_then(Value::as_object_mut)
+                .ok_or("valid named sidecar must contain an assertion object")?;
+            assertion_object.insert("unexpected_assertion".to_string(), Value::Bool(true));
+            write_fixture_file(&sidecar, &serde_json::to_string(&assertion)?)?;
+            let error = match validate_named_sidecar(&sidecar, "fixture") {
+                Ok(()) => {
+                    return Err(format!("unknown assertion field was accepted for {name}").into());
+                }
+                Err(error) => error,
+            };
+            if !error.to_string().contains("unexpected_assertion") {
+                return Err(format!("unexpected assertion error for {name}: {error}").into());
             }
         }
 
@@ -851,6 +792,22 @@ mod tests {
             if validate_named_sidecar(&sidecar, "fixture").is_ok() {
                 return Err(format!("min was accepted for {kind}").into());
             }
+        }
+
+        let rename_null_with_edits = r#"{
+            "version": 1,
+            "fixture": "fixture",
+            "assertions": [{
+                "kind": "rename_null",
+                "line": 4,
+                "character": 4,
+                "new_name": "sum_values",
+                "expected_edits": []
+            }]
+        }"#;
+        write_fixture_file(&sidecar, rename_null_with_edits)?;
+        if validate_named_sidecar(&sidecar, "fixture").is_ok() {
+            return Err("expected_edits was accepted for rename_null".into());
         }
 
         let count = r#"{
