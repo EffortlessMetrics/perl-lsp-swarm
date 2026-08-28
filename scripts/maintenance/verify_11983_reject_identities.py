@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -206,6 +208,43 @@ def _verify_patch_path(path: str, patch_file: Path) -> None:
         raise ValueError(f"{path}: patch artifact path mismatch")
 
 
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _verify_provenance(
+    provenance_path: Path,
+    entries: list[list[str]],
+    *,
+    source_parent: str | None,
+    source_commit: str | None,
+) -> None:
+    try:
+        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid reject-artifact provenance: {provenance_path}") from error
+    if source_parent is not None and provenance.get("source_parent") != source_parent:
+        raise ValueError("reject-artifact provenance source parent mismatch")
+    if source_commit is not None and provenance.get("source_commit") != source_commit:
+        raise ValueError("reject-artifact provenance source commit mismatch")
+    records = provenance.get("artifacts")
+    if not isinstance(records, list) or len(records) != len(entries):
+        raise ValueError("reject-artifact provenance coverage mismatch")
+    by_path = {record.get("path"): record for record in records if isinstance(record, dict)}
+    if set(by_path) != {entry[0] for entry in entries}:
+        raise ValueError("reject-artifact provenance path mismatch")
+    for path, patch_file, apply_log_file, _ in entries:
+        record = by_path[path]
+        if Path(record.get("patch", "")).resolve() != Path(patch_file).resolve():
+            raise ValueError(f"{path}: patch provenance path mismatch")
+        if Path(record.get("apply_log", "")).resolve() != Path(apply_log_file).resolve():
+            raise ValueError(f"{path}: apply-log provenance path mismatch")
+        if record.get("patch_sha256") != _sha256(Path(patch_file)):
+            raise ValueError(f"{path}: patch provenance digest mismatch")
+        if record.get("apply_log_sha256") != _sha256(Path(apply_log_file)):
+            raise ValueError(f"{path}: apply-log provenance digest mismatch")
+
+
 def validate_manifest(
     manifest_path: Path,
     evidence_dir: Path,
@@ -213,10 +252,20 @@ def validate_manifest(
     reject_scope: Path,
     delete_verified: bool = False,
     require_complete_table: bool = True,
+    provenance_path: Path | None = None,
+    source_parent: str | None = None,
+    source_commit: str | None = None,
 ) -> None:
     entries = [line.split("\t") for line in manifest_path.read_text(encoding="utf-8").splitlines()]
     if any(len(entry) != 4 for entry in entries):
         raise ValueError("reject manifest entries must have four tab-separated fields")
+    if provenance_path is not None:
+        _verify_provenance(
+            provenance_path,
+            entries,
+            source_parent=source_parent,
+            source_commit=source_commit,
+        )
     paths = {entry[0] for entry in entries}
     if len(paths) != len(entries):
         raise ValueError("reject manifest contains duplicate file identities")
@@ -331,12 +380,28 @@ def validate_manifest(
         verified.append(reject)
 
     if delete_verified:
-        snapshots = {reject: reject.read_bytes() for reject in verified}
+        snapshots = {}
+        for reject in verified:
+            stat = reject.stat()
+            snapshots[reject] = (
+                (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns),
+                reject.read_bytes(),
+            )
         try:
             for reject in verified:
+                expected_identity, expected_contents = snapshots[reject]
+                current_stat = reject.stat()
+                current_identity = (
+                    current_stat.st_dev,
+                    current_stat.st_ino,
+                    current_stat.st_size,
+                    current_stat.st_mtime_ns,
+                )
+                if current_identity != expected_identity or reject.read_bytes() != expected_contents:
+                    raise ValueError(f"verified reject cleanup target changed: {reject}")
                 reject.unlink()
-        except OSError as error:
-            for reject, contents in snapshots.items():
+        except (OSError, ValueError) as error:
+            for reject, (_, contents) in snapshots.items():
                 if not reject.exists():
                     reject.write_bytes(contents)
             _copy_rejects(set(verified), scope, evidence_dir)
@@ -359,6 +424,9 @@ def main() -> int:
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--reject-scope", type=Path, default=Path("."))
     parser.add_argument("--delete-verified", action="store_true")
+    parser.add_argument("--provenance", type=Path)
+    parser.add_argument("--source-parent")
+    parser.add_argument("--source-commit")
     args = parser.parse_args()
     try:
         validate_manifest(
@@ -366,6 +434,9 @@ def main() -> int:
             args.evidence_dir,
             reject_scope=args.reject_scope,
             delete_verified=args.delete_verified,
+            provenance_path=args.provenance,
+            source_parent=args.source_parent,
+            source_commit=args.source_commit,
         )
     except (OSError, ValueError) as error:
         print(error, flush=True)

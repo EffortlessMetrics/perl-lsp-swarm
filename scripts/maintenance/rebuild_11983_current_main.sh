@@ -152,6 +152,8 @@ if ! run_cherry_pick_or_skip_empty "first cherry-pick" "$first_commit" git cherr
 
   reject_manifest="$(mktemp)"
   export REBUILD_REJECT_MANIFEST="$reject_manifest"
+  export REBUILD_SOURCE_PARENT="$first_parent"
+  export REBUILD_SOURCE_COMMIT="$first_commit"
   for path in "${conflicts[@]}"; do
     git checkout --ours -- "$path"
     patch="/tmp/$(printf '%s' "$path" | tr '/' '_').patch"
@@ -163,12 +165,41 @@ if ! run_cherry_pick_or_skip_empty "first cherry-pick" "$first_commit" git cherr
   done
 
   python3 - <<'PY'
+import hashlib
+import json
 import os
 import subprocess
 from pathlib import Path
 manifest_path = os.environ.get("REBUILD_REJECT_MANIFEST")
 if not manifest_path:
     raise SystemExit("reject manifest environment variable is missing")
+source_parent = os.environ["REBUILD_SOURCE_PARENT"]
+source_commit = os.environ["REBUILD_SOURCE_COMMIT"]
+provenance_path = Path("target/receipts/rebuild-11983/reject-provenance.json")
+artifacts = []
+for entry in Path(manifest_path).read_text(encoding="utf-8").splitlines():
+    path, patch_file, apply_log_file, _ = entry.split("\t")
+    artifacts.append(
+        {
+            "path": path,
+            "patch": patch_file,
+            "apply_log": apply_log_file,
+            "patch_sha256": hashlib.sha256(Path(patch_file).read_bytes()).hexdigest(),
+            "apply_log_sha256": hashlib.sha256(Path(apply_log_file).read_bytes()).hexdigest(),
+        }
+    )
+provenance_path.write_text(
+    json.dumps(
+        {
+            "source_parent": source_parent,
+            "source_commit": source_commit,
+            "artifacts": artifacts,
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
 verification = subprocess.run(
     [
         "python3",
@@ -180,6 +211,12 @@ verification = subprocess.run(
         "--reject-scope",
         ".",
         "--delete-verified",
+        "--provenance",
+        str(provenance_path),
+        "--source-parent",
+        source_parent,
+        "--source-commit",
+        source_commit,
     ],
     check=False,
 )

@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -324,6 +326,7 @@ def write_manifest(
     root.mkdir(parents=True, exist_ok=True)
     manifest = root / "manifest.tsv"
     rows = []
+    artifacts = []
     for index, (path, identities) in enumerate(FIXTURE_IDENTITIES.items()):
         patch = root / f"patch-{index}.diff"
         log = root / f"log-{index}.txt"
@@ -365,6 +368,15 @@ def write_manifest(
             encoding="utf-8",
         )
         rows.append(f"{path}\t{patch}\t{log}\t{reject}\n")
+        artifacts.append(
+            {
+                "path": path,
+                "patch": str(patch),
+                "apply_log": str(log),
+                "patch_sha256": hashlib.sha256(patch.read_bytes()).hexdigest(),
+                "apply_log_sha256": hashlib.sha256(log.read_bytes()).hexdigest(),
+            }
+        )
     if mutation == "missing_row":
         rows.pop(0)
     elif mutation == "extra_row":
@@ -381,9 +393,30 @@ def write_manifest(
         log.write_text("Rejected hunk #1.\n", encoding="utf-8")
         reject.write_text(segment, encoding="utf-8")
         rows.append(f"extra/path\t{patch}\t{log}\t{reject}\n")
+        artifacts.append(
+            {
+                "path": "extra/path",
+                "patch": str(patch),
+                "apply_log": str(log),
+                "patch_sha256": hashlib.sha256(patch.read_bytes()).hexdigest(),
+                "apply_log_sha256": hashlib.sha256(log.read_bytes()).hexdigest(),
+            }
+        )
     manifest.write_text("".join(rows), encoding="utf-8")
     if extra_artifact:
         (root / "unlisted.rej").write_text("@@ -1,1 +1,1 @@\n forged\n", encoding="utf-8")
+    (root / "provenance.json").write_text(
+        json.dumps(
+            {
+                "source_parent": "fixture-parent",
+                "source_commit": "fixture-commit",
+                "artifacts": artifacts,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     return manifest
 
 
@@ -402,6 +435,23 @@ def expect_rejection(
             raise RuntimeError(f"rejected artifact was not retained: {evidence / retained}")
     else:
         raise RuntimeError(f"fixture unexpectedly passed: {phrase}")
+
+
+def expect_provenance_rejection(manifest: Path, evidence: Path, phrase: str) -> None:
+    try:
+        MODULE.validate_manifest(
+            manifest,
+            evidence,
+            reject_scope=manifest.parent,
+            provenance_path=manifest.parent / "provenance.json",
+            source_parent="fixture-parent",
+            source_commit="fixture-commit",
+        )
+    except ValueError as error:
+        if phrase not in str(error):
+            raise RuntimeError(f"unexpected provenance rejection: {error}") from error
+    else:
+        raise RuntimeError(f"provenance tamper unexpectedly passed: {phrase}")
 
 
 def main() -> None:
@@ -476,6 +526,15 @@ def main() -> None:
         raise RuntimeError("initial empty cherry-pick is not recorded in reconstruction state")
     if "first-commit: already-current-empty-cherry-pick-skipped" not in rebuild_script:
         raise RuntimeError("reconstruction summary omits the initial empty-pick outcome")
+    for fragment in (
+        'export REBUILD_SOURCE_PARENT="$first_parent"',
+        'export REBUILD_SOURCE_COMMIT="$first_commit"',
+        '"--provenance"',
+        '"--source-parent"',
+        '"--source-commit"',
+    ):
+        if fragment not in rebuild_script:
+            raise RuntimeError(f"rebuild does not wire provenance input {fragment!r}")
     with tempfile.TemporaryDirectory(prefix="rebuild-11983-imports-") as directory:
         path = Path(directory) / "text_sync.rs"
         old = "old import\n"
@@ -554,9 +613,75 @@ def main() -> None:
                 table_mismatch,
                 root / "table-mismatch" / "evidence",
                 "hunk identity omitted or reused",
+                Path("reject-0.rej"),
             )
         finally:
             MODULE.EXPECTED_REJECT_IDENTITIES[table_path] = authored
+
+        provenance_tamper = root / "provenance-tamper"
+        provenance_manifest = write_manifest(provenance_tamper)
+        tampered_patch = provenance_tamper / "patch-0.diff"
+        tampered_patch.write_text(
+            tampered_patch.read_text(encoding="utf-8") + "substituted after provenance\n",
+            encoding="utf-8",
+        )
+        expect_provenance_rejection(
+            provenance_manifest,
+            provenance_tamper / "evidence",
+            "patch provenance digest mismatch",
+        )
+
+        apply_log_tamper = root / "apply-log-tamper"
+        apply_log_manifest = write_manifest(apply_log_tamper)
+        tampered_log = apply_log_tamper / "log-0.txt"
+        tampered_log.write_text(
+            tampered_log.read_text(encoding="utf-8") + "substituted after provenance\n",
+            encoding="utf-8",
+        )
+        expect_provenance_rejection(
+            apply_log_manifest,
+            apply_log_tamper / "evidence",
+            "apply-log provenance digest mismatch",
+        )
+
+        replacement = root / "replacement"
+        replacement_manifest = write_manifest(replacement)
+        replacement_evidence = replacement / "evidence"
+        replacement_rejects = sorted(replacement.glob("reject-*.rej"))
+        replacement_target = replacement_rejects[1]
+        original_unlink = Path.unlink
+        unlink_count = 0
+
+        def replace_after_first_unlink(path: Path, *args, **kwargs):
+            nonlocal unlink_count
+            result = original_unlink(path, *args, **kwargs)
+            unlink_count += 1
+            if unlink_count == 1:
+                replacement_target.write_text("replacement reject\n", encoding="utf-8")
+            return result
+
+        with mock.patch.object(Path, "unlink", replace_after_first_unlink):
+            try:
+                MODULE.validate_manifest(
+                    replacement_manifest,
+                    replacement_evidence,
+                    reject_scope=replacement,
+                    delete_verified=True,
+                )
+            except ValueError as error:
+                if "verified reject cleanup failed" not in str(error):
+                    raise RuntimeError(f"unexpected replacement rejection: {error}") from error
+                if error.__cause__ is None or "verified reject cleanup target changed" not in str(error.__cause__):
+                    raise RuntimeError(
+                        f"replacement cause omitted target-change rejection: {error}"
+                    ) from error
+            else:
+                raise RuntimeError("replaced reject cleanup target was deleted")
+        if not replacement_target.is_file():
+            raise RuntimeError("replacement reject target was not preserved")
+        if not (replacement_evidence / replacement_target.name).is_file():
+            raise RuntimeError("replacement reject evidence was not retained")
+
         table_order = write_manifest(root / "reorder")
         order_path = "crates/perl-lsp-rs/src/runtime/language/formatting_policy/tests.rs"
         ordered = MODULE.EXPECTED_REJECT_IDENTITIES[order_path]
