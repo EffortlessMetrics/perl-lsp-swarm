@@ -646,6 +646,65 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unknown_rename_assertion_fields_without_weakening_edit_modes()
+    -> Result<(), Box<dyn Error>> {
+        let directory = tempdir()?;
+        let sidecar = directory.path().join("expected_rename.json");
+        let omitted = r#"{
+            "version": 1,
+            "fixture": "fixture",
+            "assertions": [{
+                "kind": "rename_succeeds",
+                "line": 4,
+                "character": 4,
+                "new_name": "sum_values"
+            }]
+        }"#;
+        write_fixture_file(&sidecar, omitted)?;
+        validate_named_sidecar(&sidecar, "fixture")?;
+        let parsed: RenameGoldExpected = serde_json::from_str(omitted)?;
+        if parsed
+            .assertions
+            .first()
+            .and_then(|assertion| assertion.expected_edits.as_ref())
+            .is_some()
+        {
+            return Err("omitted expected_edits must remain count-only mode".into());
+        }
+
+        let explicit_empty = omitted.replace(
+            "\"new_name\": \"sum_values\"",
+            "\"new_name\": \"sum_values\",\n                \"expected_edits\": []",
+        );
+        write_fixture_file(&sidecar, &explicit_empty)?;
+        validate_named_sidecar(&sidecar, "fixture")?;
+        let parsed: RenameGoldExpected = serde_json::from_str(&explicit_empty)?;
+        if !parsed
+            .assertions
+            .first()
+            .and_then(|assertion| assertion.expected_edits.as_ref())
+            .is_some_and(Vec::is_empty)
+        {
+            return Err("explicit empty expected_edits must remain exact mode".into());
+        }
+
+        let typo = omitted.replace(
+            "\"new_name\": \"sum_values\"",
+            "\"new_name\": \"sum_values\",\n                \"expected_editz\": []",
+        );
+        write_fixture_file(&sidecar, &typo)?;
+        let error = match validate_named_sidecar(&sidecar, "fixture") {
+            Ok(()) => return Err("unknown rename assertion field was accepted".into()),
+            Err(error) => error,
+        };
+        if !error.to_string().contains("expected_editz") {
+            return Err(contract_error(format!("unexpected validation error: {error}")).into());
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn rejects_unclaimed_fixture_members() -> Result<(), Box<dyn Error>> {
         let root = tempdir()?;
         let fixture = root.path().join("fixture");

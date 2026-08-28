@@ -483,7 +483,7 @@ pub enum RenameAssertionKind {
 }
 
 /// A single rename assertion at a given (line, character) position
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RenameAssertion {
     #[serde(flatten)]
     pub kind: RenameAssertionKind,
@@ -498,6 +498,49 @@ pub struct RenameAssertion {
     pub expected_edits: Option<Vec<RenameExpectedEdit>>,
     #[serde(default)]
     pub rationale: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RenameAssertionUnchecked {
+    #[serde(flatten)]
+    kind: RenameAssertionKind,
+    line: u32,
+    character: u32,
+    new_name: String,
+    #[serde(default, deserialize_with = "deserialize_expected_edits")]
+    expected_edits: Option<Vec<RenameExpectedEdit>>,
+    #[serde(default)]
+    rationale: String,
+}
+
+impl<'de> Deserialize<'de> for RenameAssertion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| de::Error::custom("rename assertion must be a JSON object"))?;
+        const FIELDS: &[&str] =
+            &["kind", "line", "character", "new_name", "min", "expected_edits", "rationale"];
+        for field in object.keys() {
+            if !FIELDS.contains(&field.as_str()) {
+                return Err(de::Error::unknown_field(field, FIELDS));
+            }
+        }
+
+        let unchecked: RenameAssertionUnchecked =
+            serde_json::from_value(value).map_err(de::Error::custom)?;
+        Ok(Self {
+            kind: unchecked.kind,
+            line: unchecked.line,
+            character: unchecked.character,
+            new_name: unchecked.new_name,
+            expected_edits: unchecked.expected_edits,
+            rationale: unchecked.rationale,
+        })
+    }
 }
 
 /// One expected text edit in a rename workspace edit.
