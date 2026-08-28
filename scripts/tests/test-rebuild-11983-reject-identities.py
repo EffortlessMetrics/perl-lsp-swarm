@@ -34,6 +34,59 @@ def load_rebuild_import_helper():
     return namespace["replace_stale_import"]
 
 
+def load_live_reject_guard() -> str:
+    script = (ROOT / "scripts/maintenance/rebuild_11983_current_main.sh").read_text(encoding="utf-8")
+    start = script.index("find_live_rejects() {\n")
+    end = script.index("\n# Identity gate", start)
+    return script[start:end]
+
+
+def exercise_retry_reject_scope() -> None:
+    guard = load_live_reject_guard()
+    required_fragments = (
+        "-path './target/receipts/rebuild-11983/rejected-hunks' -prune",
+        "assert_no_live_rejects",
+    )
+    if any(fragment not in guard for fragment in required_fragments):
+        raise RuntimeError("retry reject guard lost its retained-evidence exclusion")
+    with tempfile.TemporaryDirectory(
+        prefix="rebuild-11983-retry-rejects-", dir=ROOT
+    ) as directory:
+        root = Path(directory)
+        retained = root / "target/receipts/rebuild-11983/rejected-hunks/run-one.rej"
+        retained.parent.mkdir(parents=True)
+        retained.write_text("retained evidence from run one\n", encoding="utf-8")
+        harness = f"""\
+set -euo pipefail
+cd {root.name}
+{guard}
+assert_no_live_rejects
+printf '%s\\n' 'live reject from run two' > live.rej
+if assert_no_live_rejects >stdout.txt 2>stderr.txt; then
+  echo 'live reject was incorrectly ignored' >&2
+  exit 1
+fi
+grep -Fq './live.rej' stderr.txt
+if grep -Fq 'run-one.rej' stderr.txt; then
+  echo 'retained evidence was treated as a live reject' >&2
+  exit 1
+fi
+cd /
+"""
+        result = subprocess.run(
+            ["bash"],
+            cwd=ROOT,
+            input=harness.encode("utf-8"),
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode:
+            raise RuntimeError(
+                "retry reject-scope fixture failed: "
+                f"status={result.returncode}; stdout={result.stdout!r}; stderr={result.stderr!r}"
+            )
+
+
 def exercise_empty_cherry_pick_guard(
     *,
     cherry_pick_head: str,
@@ -357,6 +410,8 @@ def main() -> None:
         raise RuntimeError("independent fixture file count drifted")
     if actual_hunk_count != EXPECTED_HUNK_COUNT:
         raise RuntimeError("independent fixture hunk count drifted")
+
+    exercise_retry_reject_scope()
 
     exercise_empty_cherry_pick_guard(
         cherry_pick_head="d174ec1e9845056b8e1a193001ce88a2ea9eaebe",

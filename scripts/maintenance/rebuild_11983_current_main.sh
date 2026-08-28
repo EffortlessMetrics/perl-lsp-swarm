@@ -72,6 +72,25 @@ run_cherry_pick_or_skip_empty() {
   return 0
 }
 
+find_live_rejects() {
+  find . \
+    -path './target/receipts/rebuild-11983/rejected-hunks' -prune \
+    -o -name '*.rej' -print
+}
+
+assert_no_live_rejects() {
+  local live_rejects
+  live_rejects="$(find_live_rejects)"
+  if [ -n "$live_rejects" ]; then
+    echo "Unreviewed rejected hunks remain:" >&2
+    while IFS= read -r reject; do
+      echo "--- $reject" >&2
+      cat "$reject" >&2
+    done <<< "$live_rejects"
+    return 1
+  fi
+}
+
 # Identity gate (#12045 review): prove this lane executed exactly the triggering
 # pull-request revision before any local reconstruction mutates the workspace.
 if [ -z "${REBUILD_EVENT_HEAD_SHA:-}" ]; then
@@ -239,11 +258,7 @@ if '"my $result = calculate(5, 3);\\n",\n            "\\n",' in e2e_text:
 
 PY
 
-  if find . -name '*.rej' -print -quit | grep -q .; then
-    echo "Unreviewed rejected hunks remain:" >&2
-    find . -name '*.rej' -print -exec sh -c 'echo "--- $1"; cat "$1"' _ {} \;
-    exit 1
-  fi
+  assert_no_live_rejects
 
   git add -- "${conflicts[@]}"
   run_cherry_pick_or_skip_empty "first cherry-pick --continue" "$first_commit" git cherry-pick --continue
