@@ -10,21 +10,32 @@ permissions:
 
 jobs:
   stage:
-    name: Apply reviewed harness patch
+    name: Apply reviewed harness transformation
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - name: Checkout staging branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: chatgpt/editor-scorecard-rustfmt-probe
           fetch-depth: 0
-      - name: Apply exact patch
+
+      - name: Install pinned formatter toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Apply deterministic source transformation
         run: |
           set -euo pipefail
-          git apply --check .agent/editor-scorecard/scenario14-harness.patch
-          git apply .agent/editor-scorecard/scenario14-harness.patch
+          python3 .agent/editor-scorecard/apply_scenario14_harness.py
+          cargo fmt --manifest-path crates/perl-lsp-ux-tests/Cargo.toml
           git diff --check
+          test "$(grep -c '^fn scenario_14_' crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs)" -eq 13
+          ! grep -q 'fn scenario_14_include_path_missing_module_completion_consistency' \
+            crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs
+
       - name: Commit staging candidate
         run: |
           set -euo pipefail
