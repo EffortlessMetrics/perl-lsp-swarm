@@ -138,6 +138,22 @@ fn quoted_truthy_strings_are_distinct_from_unquoted_false_literals() -> TestResu
 }
 
 #[test]
+fn qualified_quoted_scalar_targets_require_literal_proof() -> TestResult {
+    let qualified = resolve_import("Test2::V0", "-target => 'Foo::Bar'")
+        .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+    assert!(qualified.symbols.contains("CLASS"));
+    assert!(!qualified.symbols.contains("Foo"));
+    assert!(!qualified.symbols.contains("Bar"));
+
+    let interpolated = resolve_import("Test2::V0", "-target => \"$ENV{TARGET}\"")
+        .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+    assert!(!interpolated.symbols.contains("CLASS"));
+    assert!(!interpolated.symbols.contains("ENV"));
+    assert!(!interpolated.symbols.contains("TARGET"));
+    Ok(())
+}
+
+#[test]
 fn named_hash_targets_preserve_defaults_and_generate_helpers() -> TestResult {
     let args = "-target => { pkg => 'Widget', other => 'Gadget' }";
     for (module, expected_default) in [("Test2::V0", "is"), ("Test2::V1", "T2")] {
@@ -507,6 +523,11 @@ fn target_helpers_reach_live_bundle_completion() {
         !has_test2_completion(&v0_target, "Foo"),
         "completion must not project the target package as a Test2 function"
     );
+
+    let qualified = complete("use Test2::V0 -target => 'Foo::Bar';\nC|");
+    assert!(has_test2_completion(&qualified, "CLASS"));
+    let dynamic = complete("use Test2::V0 -target => \"$ENV{TARGET}\";\nC|");
+    assert!(!has_test2_completion(&dynamic, "CLASS"));
 
     let v0_hash = complete("use Test2::V0 -target => { pkg => 'Widget', other => 'Gadget' };\np|");
     assert!(has_test2_completion(&v0_hash, "plan"));
