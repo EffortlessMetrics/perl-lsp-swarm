@@ -3,8 +3,9 @@
 //! QuickORM's import arguments configure its custom DSL importer; they are not
 //! an Exporter-style explicit symbol list. Exact unfiltered `type => 'orm'`
 //! and `type => 'table'` forms select QuickORM's default DSL export set. Forms
-//! with filters, renames, or otherwise unknown configuration remain a dynamic
-//! import boundary until the canonical import model can represent that mapping.
+//! with filters, renames, calls, or otherwise unknown configuration remain a
+//! dynamic import boundary until the canonical import model can represent that
+//! mapping.
 //!
 //! In table-package mode, executing a direct package-level `table` or `view`
 //! builder installs one fixed method, `qorm_table`.
@@ -180,11 +181,45 @@ fn direct_table_or_view_builder_anchor(expression: &Node) -> Option<&Node> {
 
 fn static_table_name_anchor(node: &Node) -> Option<&Node> {
     match &node.kind {
-        NodeKind::String { value, interpolated: false } if !value.trim().is_empty() => Some(node),
-        NodeKind::Identifier { name } if !name.trim().is_empty() => Some(node),
+        NodeKind::String {
+            value,
+            interpolated,
+        } if !value.trim().is_empty()
+            && (!*interpolated || !contains_unescaped_interpolation(value)) =>
+        {
+            Some(node)
+        }
+        NodeKind::Identifier { name } if is_static_identifier(name) => Some(node),
         NodeKind::Binary { op, left, .. } if op == "=>" => static_table_name_anchor(left),
         _ => None,
     }
+}
+
+fn contains_unescaped_interpolation(value: &str) -> bool {
+    let mut escaped = false;
+    for character in value.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' {
+            escaped = true;
+            continue;
+        }
+        if matches!(character, '$' | '@' | '%') {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_static_identifier(value: &str) -> bool {
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
 }
 
 fn contains_builder_body(node: &Node) -> bool {
@@ -253,40 +288,49 @@ fn classify_import_shape(args: &[String]) -> QuickOrmImportShape {
         return QuickOrmImportShape::Bare;
     }
 
-    let raw_args = args.join(" ");
-    if raw_args.chars().any(|ch| matches!(ch, '{' | '}' | '[' | ']')) {
-        return QuickOrmImportShape::Dynamic;
-    }
-
-    let tokens = normalized_import_tokens(args);
-    let value = match tokens.as_slice() {
-        // The parser stores a bare use argument as key/value tokens and
-        // intentionally drops the fat-arrow token.
-        [key, value] if key == "type" => value.as_str(),
-        // Keep accepting the normalized form for callers that provide the
-        // source-level token stream directly.
-        [key, arrow, value] if key == "type" && arrow == "=>" => value.as_str(),
+    let (raw_key, raw_value) = match args {
+        // The parser intentionally drops the fat arrow from a normal
+        // `use Module key => value` import and retains expression punctuation
+        // as additional raw args. Exactly two static atoms are therefore the
+        // admitted parser-backed shape.
+        [key, value] => (key.as_str(), value.as_str()),
+        // Preserve support for callers that provide source-level tokens.
+        [key, arrow, value] if arrow.trim() == "=>" => (key.as_str(), value.as_str()),
         _ => return QuickOrmImportShape::Dynamic,
     };
 
-    match value {
+    let Some(key) = static_import_atom(raw_key) else {
+        return QuickOrmImportShape::Dynamic;
+    };
+    let Some(value) = static_import_atom(raw_value) else {
+        return QuickOrmImportShape::Dynamic;
+    };
+    if key != "type" {
+        return QuickOrmImportShape::Dynamic;
+    }
+
+    match value.as_str() {
         "orm" => QuickOrmImportShape::UnfilteredOrm,
         "table" => QuickOrmImportShape::UnfilteredTable,
         _ => QuickOrmImportShape::Dynamic,
     }
 }
 
-fn normalized_import_tokens(args: &[String]) -> Vec<String> {
-    let mut joined = args.join(" ").replace("=>", " => ");
-    for delimiter in [',', '(', ')', '[', ']', '{', '}'] {
-        joined = joined.replace(delimiter, " ");
+fn static_import_atom(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.len() >= 2 {
+        let first = value.as_bytes().first().copied()?;
+        let last = value.as_bytes().last().copied()?;
+        if (first == b'\'' && last == b'\'') || (first == b'"' && last == b'"') {
+            let body = &value[1..value.len() - 1];
+            if body.is_empty() || (first == b'"' && contains_unescaped_interpolation(body)) {
+                return None;
+            }
+            return Some(body.to_string());
+        }
     }
 
-    joined
-        .split_whitespace()
-        .map(|token| token.trim_matches('\'').trim_matches('"').to_string())
-        .filter(|token| !token.is_empty())
-        .collect()
+    is_static_identifier(value).then_some(value.to_string())
 }
 
 fn stable_id(label: &str, file_id: FileId, anchor_start: usize, package: &str, name: &str) -> u64 {
@@ -320,7 +364,10 @@ mod tests {
         let ast = parser
             .parse()
             .map_err(|error| format!("failed to parse QuickORM import: {error:?}"))?;
-        Ok(super::super::workspace_import_extractor::extract_import_specs(&ast, FileId(1)))
+        Ok(super::super::workspace_import_extractor::extract_import_specs(
+            &ast,
+            FileId(1),
+        ))
     }
 
     fn generated_facts_from_source(
@@ -357,8 +404,10 @@ mod tests {
     }
 
     fn canonical_names(facts: &[GeneratedMemberFact]) -> Vec<&str> {
-        let mut names: Vec<_> =
-            facts.iter().map(|fact| fact.entity.canonical_name.as_str()).collect();
+        let mut names: Vec<_> = facts
+            .iter()
+            .map(|fact| fact.entity.canonical_name.as_str())
+            .collect();
         names.sort_unstable();
         names
     }
@@ -395,6 +444,26 @@ mod tests {
     }
 
     #[test]
+    fn parser_preserves_quickorm_type_call_expression_syntax()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut parser = Parser::new("use DBIx::QuickORM type => table();");
+        let ast = parser
+            .parse()
+            .map_err(|error| format!("failed to parse QuickORM call import: {error:?}"))?;
+        let use_node = find_quickorm_use(&ast).ok_or("missing QuickORM use node")?;
+        let NodeKind::Use { args, .. } = &use_node.kind else {
+            return Err("expected QuickORM use node".into());
+        };
+
+        let raw = args.join(" ");
+        assert!(
+            raw.contains('(') && raw.contains(')'),
+            "call expression punctuation must remain visible to the classifier: {args:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn configured_orm_import_uses_default_dsl_exports() -> Result<(), Box<dyn std::error::Error>> {
         let specs = import_specs_from_source("package App; use DBIx::QuickORM type => 'orm';")?;
         let spec = quickorm_spec(&specs)?;
@@ -403,6 +472,26 @@ mod tests {
         assert_eq!(spec.symbols, ImportSymbols::Default);
         assert_eq!(spec.provenance, Provenance::ImportExportInference);
         assert_eq!(spec.confidence, Confidence::High);
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_type_call_remains_dynamic_and_does_not_emit_qorm_table()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = r#"
+package User;
+use DBIx::QuickORM type => table();
+table users => sub {};
+1;
+"#;
+        let specs = import_specs_from_source(source)?;
+        let spec = quickorm_spec(&specs)?;
+
+        assert_eq!(spec.kind, ImportKind::ManualImport);
+        assert_eq!(spec.symbols, ImportSymbols::Dynamic);
+        assert_eq!(spec.provenance, Provenance::DynamicBoundary);
+        assert_eq!(spec.confidence, Confidence::Low);
+        assert!(generated_facts_from_source(source)?.is_empty());
         Ok(())
     }
 
@@ -465,6 +554,41 @@ table users => sub {
     }
 
     #[test]
+    fn double_quoted_static_table_name_emits_qorm_table()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = generated_facts_from_source(
+            r#"
+package MyApp::Schema::User;
+use DBIx::QuickORM type => 'table';
+table "users" => sub {};
+1;
+"#,
+        )?;
+
+        assert_eq!(
+            canonical_names(&facts),
+            vec!["MyApp::Schema::User::qorm_table"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn interpolated_table_name_does_not_emit_qorm_table()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = generated_facts_from_source(
+            r#"
+package MyApp::Schema::User;
+use DBIx::QuickORM type => 'table';
+table "${prefix}_users" => sub {};
+1;
+"#,
+        )?;
+
+        assert!(facts.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn view_package_emits_fixed_qorm_table_member() -> Result<(), Box<dyn std::error::Error>> {
         let facts = generated_facts_from_source(
             r#"
@@ -475,7 +599,10 @@ view active_users => sub {};
 "#,
         )?;
 
-        assert_eq!(canonical_names(&facts), vec!["MyApp::Schema::ActiveUser::qorm_table"]);
+        assert_eq!(
+            canonical_names(&facts),
+            vec!["MyApp::Schema::ActiveUser::qorm_table"]
+        );
         Ok(())
     }
 
@@ -574,7 +701,10 @@ table users => sub {};
 "#,
         )?;
 
-        assert_eq!(canonical_names(&facts), vec!["MyApp::Schema::User::qorm_table"]);
+        assert_eq!(
+            canonical_names(&facts),
+            vec!["MyApp::Schema::User::qorm_table"]
+        );
         Ok(())
     }
 
