@@ -490,9 +490,10 @@ pub struct RenameAssertion {
     pub character: u32,
     pub new_name: String,
     /// Exact edits expected when this assertion exercises a concrete rename.
-    /// An empty list preserves the count-only contract of older fixtures.
+    /// Omission preserves the count-only contract of older fixtures; an explicit
+    /// empty list remains an exact expectation of no edits.
     #[serde(default)]
-    pub expected_edits: Vec<RenameExpectedEdit>,
+    pub expected_edits: Option<Vec<RenameExpectedEdit>>,
     #[serde(default)]
     pub rationale: String,
 }

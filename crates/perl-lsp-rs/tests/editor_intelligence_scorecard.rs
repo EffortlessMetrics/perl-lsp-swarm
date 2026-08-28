@@ -601,8 +601,12 @@ fn observed_rename_edits(resp: &Value) -> Option<Vec<ObservedRenameEdit>> {
 fn rename_expected_edits_match(
     resp: &Value,
     expected_uri: &str,
-    expected: &[RenameExpectedEdit],
+    expected: Option<&[RenameExpectedEdit]>,
 ) -> bool {
+    let Some(expected) = expected else {
+        return observed_rename_edits(resp).is_some();
+    };
+
     let mut expected_edits: Vec<ObservedRenameEdit> = expected
         .iter()
         .map(|edit| ObservedRenameEdit {
@@ -650,7 +654,7 @@ fn test_rename_gold_corpus() -> TestResult {
                 server.get_rename(&uri, assertion.line, assertion.character, &assertion.new_name);
 
             let expected_edits_ok =
-                rename_expected_edits_match(&resp, &uri, &assertion.expected_edits);
+                rename_expected_edits_match(&resp, &uri, assertion.expected_edits.as_deref());
             let response_edits_are_well_formed =
                 rename_is_null(&resp) || observed_rename_edits(&resp).is_some();
             let ok = match &assertion.kind {
@@ -750,7 +754,11 @@ mod rename_oracle_tests {
             json!({"start":{"line":4,"character":5},"end":{"line":4,"character":20}}),
             "sum_values",
         );
-        if rename_expected_edits_match(&resp, "file:///gold/rename_subroutine.pl", &expected()) {
+        if rename_expected_edits_match(
+            &resp,
+            "file:///gold/rename_subroutine.pl",
+            Some(expected().as_slice()),
+        ) {
             return Err("wrong-range rename edit passed the oracle".into());
         }
         Ok(())
@@ -762,7 +770,11 @@ mod rename_oracle_tests {
             json!({"start":{"line":4,"character":4},"end":{"line":4,"character":19}}),
             "calculate_total",
         );
-        if rename_expected_edits_match(&resp, "file:///gold/rename_subroutine.pl", &expected()) {
+        if rename_expected_edits_match(
+            &resp,
+            "file:///gold/rename_subroutine.pl",
+            Some(expected().as_slice()),
+        ) {
             return Err("wrong-text rename edit passed the oracle".into());
         }
         Ok(())
@@ -785,7 +797,11 @@ mod rename_oracle_tests {
             "newText": "sum_values"
         });
         let resp = response_with_entries(json!([valid, malformed]));
-        if rename_expected_edits_match(&resp, "file:///gold/rename_subroutine.pl", &expected()) {
+        if rename_expected_edits_match(
+            &resp,
+            "file:///gold/rename_subroutine.pl",
+            Some(expected().as_slice()),
+        ) {
             return Err("malformed extra rename edit passed the oracle".into());
         }
         Ok(())
@@ -801,8 +817,35 @@ mod rename_oracle_tests {
             "newText": "sum_values"
         });
         let resp = response_with_entries(json!([malformed]));
-        if rename_expected_edits_match(&resp, "file:///gold/rename_subroutine.pl", &[]) {
+        if rename_expected_edits_match(&resp, "file:///gold/rename_subroutine.pl", None) {
             return Err("malformed rename edit passed an empty expected-edit oracle".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rename_oracle_preserves_count_only_and_exact_modes() -> TestResult {
+        let valid = json!({
+            "range": {
+                "start": {"line": 4, "character": 4},
+                "end": {"line": 4, "character": 19}
+            },
+            "newText": "sum_values"
+        });
+        let resp = response_with_entries(json!([valid]));
+
+        if !rename_expected_edits_match(&resp, "file:///gold/rename_subroutine.pl", None) {
+            return Err("well-formed rename edit failed count-only mode".into());
+        }
+        if !rename_expected_edits_match(
+            &resp,
+            "file:///gold/rename_subroutine.pl",
+            Some(expected().as_slice()),
+        ) {
+            return Err("matching rename edit failed exact mode".into());
+        }
+        if rename_expected_edits_match(&resp, "file:///gold/rename_subroutine.pl", Some(&[])) {
+            return Err("non-empty rename edit passed explicit empty exact mode".into());
         }
         Ok(())
     }
