@@ -38,7 +38,14 @@ const UX_RUN_SIGNATURE_FIELDS: &[&str] = &[
     "friendly_repro",
 ];
 
-const MIN_UX_RUN_SIGNATURE_FIELDS: usize = 2;
+const UX_RUN_IDENTITY_FIELDS: &[&str] = &["workflow_id", "scenario_file", "test_name"];
+const UX_RUN_DISTINCTIVE_FIELDS: &[&str] = &[
+    "ci_tier",
+    "operation_timings",
+    "time_to_first_useful_result_ms",
+    "canonical_repro",
+    "friendly_repro",
+];
 
 #[derive(Debug, Deserialize)]
 struct FixtureMatrix {
@@ -167,19 +174,46 @@ fn load_receipt_validator(receipt_schema: &Path) -> Result<jsonschema::Validator
 }
 
 /// Identify malformed UX run candidates without claiming every JSON receipt in
-/// the shared directory. A candidate must carry at least two UX-run signature
-/// fields, including documents that have lost all identity fields. This catches
-/// missing, non-string, or wrong discriminators while allowing distinct
-/// companion receipts with generic metadata to remain outside the scorecard
-/// denominator.
+/// the shared directory. Identity markers are unique enough to stand alone;
+/// otherwise require either two markers with one distinctive UX-run field or a
+/// marker whose value is malformed. This catches truncated and malformed runs
+/// while allowing companion receipts that happen to share generic fields.
 fn looks_like_ux_scenario_run(value: &Value) -> bool {
     let Some(object) = value.as_object() else {
         return false;
     };
 
-    let signature_count =
-        UX_RUN_SIGNATURE_FIELDS.iter().filter(|field| object.contains_key(**field)).count();
-    signature_count >= MIN_UX_RUN_SIGNATURE_FIELDS
+    let signature_fields: Vec<&str> = UX_RUN_SIGNATURE_FIELDS
+        .iter()
+        .copied()
+        .filter(|field| object.contains_key(*field))
+        .collect();
+    let has_identity = UX_RUN_IDENTITY_FIELDS.iter().any(|field| object.contains_key(*field));
+    let has_distinctive = UX_RUN_DISTINCTIVE_FIELDS.iter().any(|field| object.contains_key(*field));
+
+    has_identity
+        || (signature_fields.len() >= 2 && has_distinctive)
+        || (signature_fields.len() == 1 && malformed_marker(object, signature_fields[0]))
+}
+
+fn malformed_marker(object: &serde_json::Map<String, Value>, marker: &str) -> bool {
+    let Some(value) = object.get(marker) else {
+        return false;
+    };
+    match marker {
+        "workflow_id" | "scenario_file" | "test_name" | "canonical_repro" | "friendly_repro" => {
+            value.as_str().map_or(true, str::is_empty)
+        }
+        "ci_tier" => !matches!(value.as_str(), Some("pr" | "nightly" | "release")),
+        "result" => !matches!(value.as_str(), Some("pass" | "fail" | "quarantined" | "skipped")),
+        "duration_ms" | "time_to_first_useful_result_ms" => {
+            !value.is_null()
+                && !value.as_f64().is_some_and(|number| number.is_finite() && number >= 0.0)
+        }
+        "assertions" => !value.is_object(),
+        "operation_timings" => !value.is_array(),
+        _ => false,
+    }
 }
 
 fn read_receipt_candidates(receipts_dir: &Path) -> Result<Vec<ReceiptCandidate>> {
@@ -221,50 +255,10 @@ mod tests {
         }
     }
 
-    fn write_schema(dir: &Path) -> Result<PathBuf> {
-        let schema = serde_json::json!({
-            "type": "object",
-            "required": [
-                "kind", "schema_version", "measured_at", "run_identity", "workflow_id",
-                "scenario_file", "test_name", "ci_tier", "result", "duration_ms",
-                "assertions", "canonical_repro", "friendly_repro"
-            ],
-            "properties": {
-                "kind": { "const": "ux_scenario_run" },
-                "schema_version": { "const": 1 },
-                "measured_at": { "type": "string" },
-                "run_identity": { "type": "object" },
-                "workflow_id": { "type": "string", "minLength": 1 },
-                "scenario_file": { "type": "string", "minLength": 1 },
-                "test_name": { "type": "string", "minLength": 1 },
-                "ci_tier": { "enum": ["pr", "nightly", "release"] },
-                "result": { "enum": ["pass", "fail", "quarantined", "skipped"] },
-                "duration_ms": { "type": "number", "minimum": 0 },
-                "time_to_first_useful_result_ms": { "type": ["number", "null"], "minimum": 0 },
-                "operation_timings": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "required": ["operation"],
-                        "properties": {
-                            "operation": { "type": "string", "minLength": 1 },
-                            "time_to_first_useful_result_ms": {
-                                "type": ["number", "null"],
-                                "minimum": 0
-                            },
-                            "timing_status": { "enum": ["missing_request_start"] }
-                        },
-                        "additionalProperties": false
-                    }
-                },
-                "assertions": { "type": "object" },
-                "canonical_repro": { "type": "string", "minLength": 1 },
-                "friendly_repro": { "type": "string", "minLength": 1 }
-            }
-        });
-        let path = dir.join("receipt.schema.json");
-        fs::write(&path, serde_json::to_string_pretty(&schema)?)?;
-        Ok(path)
+    fn checked_in_receipt_schema() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(".ci/schemas/ux-scenario-run.schema.json")
     }
 
     fn write_matrix(dir: &Path, workflows: &[(&str, &str)]) -> Result<PathBuf> {
@@ -319,7 +313,7 @@ mod tests {
         fs::create_dir_all(&receipts)?;
         fs::write(receipts.join("broken.json"), "{")?;
         let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
-        let schema = write_schema(temp.path())?;
+        let schema = checked_in_receipt_schema();
 
         let error = validation_error(
             validate_scorecard_inputs(&receipts, &matrix, &schema),
@@ -336,9 +330,40 @@ mod tests {
         fs::create_dir_all(&receipts)?;
         fs::write(receipts.join("schema.json"), r#"{"$schema":"https://json-schema.org"}"#)?;
         let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
-        let schema = write_schema(temp.path())?;
+        let schema = checked_in_receipt_schema();
 
         validate_scorecard_inputs(&receipts, &matrix, &schema)?;
+        Ok(())
+    }
+
+    #[test]
+    fn one_malformed_ux_marker_fails_closed() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&receipts)?;
+        fs::write(receipts.join("truncated.json"), r#"{"duration_ms":"not-a-number"}"#)?;
+        let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+
+        let error = validation_error(
+            validate_scorecard_inputs(&receipts, &matrix, &checked_in_receipt_schema()),
+            "one-marker malformed UX receipt unexpectedly passed",
+        )?;
+        assert!(format!("{error:#}").contains("unsupported or malformed kind"));
+        Ok(())
+    }
+
+    #[test]
+    fn generic_companion_markers_remain_ignored() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&receipts)?;
+        fs::write(
+            receipts.join("companion.json"),
+            r#"{"kind":"golden_editor_workload","result":"pass","duration_ms":10.0}"#,
+        )?;
+        let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+
+        validate_scorecard_inputs(&receipts, &matrix, &checked_in_receipt_schema())?;
         Ok(())
     }
 
@@ -363,7 +388,7 @@ mod tests {
             serde_json::to_string_pretty(&companion)?,
         )?;
         let matrix = write_matrix(temp.path(), &[("golden_editor_workload", "scenario.rs")])?;
-        let schema = write_schema(temp.path())?;
+        let schema = checked_in_receipt_schema();
 
         validate_scorecard_inputs(&receipts, &matrix, &schema)?;
         Ok(())
@@ -379,7 +404,7 @@ mod tests {
         value["kind"] = Value::String("other_receipt".to_string());
         fs::write(&path, serde_json::to_string_pretty(&value)?)?;
         let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
-        let schema = write_schema(temp.path())?;
+        let schema = checked_in_receipt_schema();
 
         let error = validation_error(
             validate_scorecard_inputs(&receipts, &matrix, &schema),
@@ -406,7 +431,7 @@ mod tests {
             }
             fs::write(receipts.join("malformed-kind.json"), serde_json::to_string(&value)?)?;
             let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
-            let schema = write_schema(temp.path())?;
+            let schema = checked_in_receipt_schema();
 
             let error = validation_error(
                 validate_scorecard_inputs(&receipts, &matrix, &schema),
@@ -427,7 +452,7 @@ mod tests {
             r#"{"kind":"ux_scenario_run","schema_version":1}"#,
         )?;
         let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
-        let schema = write_schema(temp.path())?;
+        let schema = checked_in_receipt_schema();
 
         let error = validation_error(
             validate_scorecard_inputs(&receipts, &matrix, &schema),
@@ -451,7 +476,7 @@ mod tests {
         }]);
         fs::write(&path, serde_json::to_string_pretty(&value)?)?;
         let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
-        let schema = write_schema(temp.path())?;
+        let schema = checked_in_receipt_schema();
 
         validate_scorecard_inputs(&receipts, &matrix, &schema)?;
         Ok(())
@@ -464,7 +489,7 @@ mod tests {
         fs::create_dir_all(&receipts)?;
         write_receipt(&receipts, "unknown.json", "unknown", "unknown.rs")?;
         let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
-        let schema = write_schema(temp.path())?;
+        let schema = checked_in_receipt_schema();
 
         let error = validation_error(
             validate_scorecard_inputs(&receipts, &matrix, &schema),
@@ -481,7 +506,7 @@ mod tests {
         fs::create_dir_all(&receipts)?;
         write_receipt(&receipts, "mismatch.json", "known", "actual.rs")?;
         let matrix = write_matrix(temp.path(), &[("known", "expected.rs")])?;
-        let schema = write_schema(temp.path())?;
+        let schema = checked_in_receipt_schema();
 
         let error = validation_error(
             validate_scorecard_inputs(&receipts, &matrix, &schema),
@@ -500,7 +525,7 @@ mod tests {
         fs::create_dir_all(&receipts)?;
         let matrix =
             write_matrix(temp.path(), &[("duplicate", "first.rs"), ("duplicate", "second.rs")])?;
-        let schema = write_schema(temp.path())?;
+        let schema = checked_in_receipt_schema();
 
         let error = validation_error(
             validate_scorecard_inputs(&receipts, &matrix, &schema),
@@ -516,7 +541,7 @@ mod tests {
         let receipts = temp.path().join("receipts");
         fs::create_dir_all(&receipts)?;
         let matrix = write_matrix(temp.path(), &[])?;
-        let schema = write_schema(temp.path())?;
+        let schema = checked_in_receipt_schema();
 
         let error = validation_error(
             validate_scorecard_inputs(&receipts, &matrix, &schema),
