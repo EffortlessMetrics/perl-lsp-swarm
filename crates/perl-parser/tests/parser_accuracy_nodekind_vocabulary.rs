@@ -87,32 +87,108 @@ fn parser_accuracy_ast_nodekind_references_are_canonical() -> TestResult {
 }
 
 #[test]
-fn misspelled_forbidden_kind_is_rejected_before_absence_matching() {
-    assert!(
-        validate_node_kind_reference(
+fn misspelled_forbidden_kind_is_rejected_before_absence_matching() -> TestResult {
+    let canonical = serde_json::json!({
+        "forbidden_nodes": [{
+            "id": "quote_braces_not_block",
+            "kind": "Block"
+        }]
+    });
+    assert_eq!(
+        validate_reference_rows(
             "quote_like",
-            "quote_braces_not_block",
+            &canonical,
+            "forbidden_nodes",
             "forbidden_nodes.kind",
-            "Block",
-        )
-        .is_ok(),
-        "the canonical control must remain admitted"
+            "forbidden_nodes.parent_kind",
+        )?,
+        1,
+        "the canonical forbidden-node control must remain admitted"
     );
 
-    assert_eq!(
-        validate_node_kind_reference(
+    let misspelled = serde_json::json!({
+        "forbidden_nodes": [{
+            "id": "quote_braces_not_block",
+            "kind": "Bloock"
+        }]
+    });
+    assert_invalid_reference(
+        validate_reference_rows(
             "quote_like",
-            "quote_braces_not_block",
+            &misspelled,
+            "forbidden_nodes",
             "forbidden_nodes.kind",
-            "Bloock",
+            "forbidden_nodes.parent_kind",
         ),
-        Err(InvalidNodeKindReference {
+        InvalidNodeKindReference {
             fixture_id: "quote_like".to_string(),
             expectation_id: "quote_braces_not_block".to_string(),
             field: "forbidden_nodes.kind",
             kind: "Bloock".to_string(),
-        })
+        },
+    )
+}
+
+#[test]
+fn misspelled_parent_kind_is_rejected_through_manifest_row_validation() -> TestResult {
+    let canonical = serde_json::json!({
+        "ast_expectations": [{
+            "id": "string_under_statement",
+            "kind": "String",
+            "parent_kind": "ExpressionStatement"
+        }]
+    });
+    assert_eq!(
+        validate_reference_rows(
+            "quote_like",
+            &canonical,
+            "ast_expectations",
+            "ast_expectations.kind",
+            "ast_expectations.parent_kind",
+        )?,
+        2,
+        "the canonical kind and parent-kind control must remain admitted"
     );
+
+    let misspelled = serde_json::json!({
+        "ast_expectations": [{
+            "id": "string_under_statement",
+            "kind": "String",
+            "parent_kind": "ExpressionStatment"
+        }]
+    });
+    assert_invalid_reference(
+        validate_reference_rows(
+            "quote_like",
+            &misspelled,
+            "ast_expectations",
+            "ast_expectations.kind",
+            "ast_expectations.parent_kind",
+        ),
+        InvalidNodeKindReference {
+            fixture_id: "quote_like".to_string(),
+            expectation_id: "string_under_statement".to_string(),
+            field: "ast_expectations.parent_kind",
+            kind: "ExpressionStatment".to_string(),
+        },
+    )
+}
+
+fn assert_invalid_reference(
+    result: Result<usize, Box<dyn std::error::Error>>,
+    expected: InvalidNodeKindReference,
+) -> TestResult {
+    let error = match result {
+        Ok(checked) => {
+            return Err(format!(
+                "non-canonical NodeKind reference was admitted after checking {checked} references"
+            )
+            .into());
+        }
+        Err(error) => error,
+    };
+    assert_eq!(error.to_string(), expected.to_string());
+    Ok(())
 }
 
 fn validate_reference_rows(
