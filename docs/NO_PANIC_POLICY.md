@@ -54,6 +54,25 @@ Existing `perl_tdd_support::must*` imports are compatibility and workspace
 migration state governed by #8605 and #8436. New code should not depend on the
 broader `perl-tdd-support` package solely to obtain these helpers.
 
+### Proof ownership for mechanical conversions
+
+`perl-test-must` owns the canonical helper contract. Its public contract and
+process-isolated tests prove helper naming, retained context, unexpected-branch
+details, payload type/value rendering, and caller attribution. A mechanical
+site conversion should not reproduce that helper proof.
+
+The changed site must instead prove that:
+
+1. the selected direct extraction and any local panic-family allowance are gone;
+2. the fixture, assertions, and shared call path are preserved;
+3. focused behavior tests pass; and
+4. strict Clippy reports no finding for the selected file or target.
+
+Run a controlled failing branch at the site when it distinguishes local behavior:
+for example, a local wrapper, fallback, error translation, or exact diagnostic
+claim. Merely showing that both the old direct extractor and the canonical helper
+reject the same unexpected branch is not discriminating proof.
+
 Intentional assertion panics and explicit panic-injection tests require narrow,
 reviewed exceptions at the actual panic owner. They do not make accidental panic
 paths acceptable in the rest of a test target.
