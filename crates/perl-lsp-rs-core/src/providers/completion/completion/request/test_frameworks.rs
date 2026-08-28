@@ -451,6 +451,17 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_target_map_values_do_not_emit_static_aliases() {
+        let direct_items =
+            complete("use Test2::Tools::Target service => $target;\nser|", Some("t/example.t"));
+        assert!(!labels(&direct_items).contains(&"service"));
+
+        let bundle_items =
+            complete("use Test2::V0 -target => { service => $target };\nser|", Some("t/example.t"));
+        assert!(!labels(&bundle_items).contains(&"service"));
+    }
+
+    #[test]
     fn target_helpers_survive_selective_imports_and_exclusions() {
         let selected = complete(
             "use Test2::V0 -target => { service => 'My::Service' }, ok;\nser|",

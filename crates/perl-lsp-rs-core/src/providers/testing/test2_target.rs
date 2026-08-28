@@ -18,7 +18,7 @@ static BUNDLE_TARGET_OPTION: LazyLock<Option<Regex>> = LazyLock::new(|| {
 
 static TARGET_ALIAS_PAIR: LazyLock<Option<Regex>> = LazyLock::new(|| {
     Regex::new(
-        r#"(?x)(?:^|,)\s*(?:'(?P<single>[A-Za-z_][A-Za-z0-9_]*|)'|"(?P<double>[A-Za-z_][A-Za-z0-9_]*|)"|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))\s*=>"#,
+        r#"(?x)(?:^|,)\s*(?:'(?P<single>[A-Za-z_][A-Za-z0-9_]*|)'|"(?P<double>[A-Za-z_][A-Za-z0-9_]*|)"|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))\s*=>\s*(?P<target>[^,]+)"#,
     )
     .ok()
 });
@@ -70,6 +70,14 @@ fn parse_target_aliases(raw_value: &str) -> BTreeSet<String> {
             return aliases;
         };
         for captures in pattern.captures_iter(value) {
+            let Some(target) = captures.name("target").map(|capture| capture.as_str().trim())
+            else {
+                continue;
+            };
+            if !is_static_target_package(target) {
+                continue;
+            }
+
             let name = captures
                 .name("single")
                 .or_else(|| captures.name("double"))
@@ -81,12 +89,17 @@ fn parse_target_aliases(raw_value: &str) -> BTreeSet<String> {
         }
     } else {
         let package = strip_quotes(value);
-        if STATIC_PACKAGE.as_ref().is_some_and(|pattern| pattern.is_match(package)) {
+        if is_static_target_package(package) {
             aliases.insert("CLASS".to_string());
         }
     }
 
     aliases
+}
+
+fn is_static_target_package(value: &str) -> bool {
+    let package = strip_quotes(value.trim());
+    STATIC_PACKAGE.as_ref().is_some_and(|pattern| pattern.is_match(package))
 }
 
 fn remove_option(raw_args: &str, option_start: usize, option_end: usize) -> String {
@@ -204,5 +217,16 @@ mod tests {
     fn dynamic_target_expression_does_not_invent_an_alias() {
         assert!(aliases("Test2::Tools::Target", "$target").is_empty());
         assert!(resolve_target_import("Test2::V0", "-target => $target").is_none());
+    }
+
+    #[test]
+    fn target_pairs_require_static_package_values() {
+        assert!(aliases("Test2::Tools::Target", "service => $target").is_empty());
+        assert!(aliases("Test2::V0", "-target => { service => $target }").is_empty());
+
+        assert_eq!(
+            aliases("Test2::Tools::Target", "service => 'My::Service', dynamic => $target",),
+            BTreeSet::from(["service".to_string()])
+        );
     }
 }
