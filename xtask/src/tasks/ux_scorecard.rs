@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use tempfile::NamedTempFile;
 
 const DEFAULT_INPUT: &str =
     "crates/perl-lsp-ux-tests/fixtures/editor_ux_scorecard_measurements.json";
@@ -153,10 +155,18 @@ fn run_at(
         enforce_ratchet(baseline, &artifact)?;
     }
 
-    write_json(&output_path, &artifact)?;
-    fs::write(&status_path, render_status_markdown(&artifact, baseline.as_ref()))
-        .with_context(|| format!("writing {}", status_path.display()))?;
-    maybe_embed_receipt_block(&root, &artifact)?;
+    // Prepare every publication payload, including the optional receipt, before
+    // replacing any existing artifact. In particular, a malformed receipt must
+    // fail while the old scorecard and status remain intact.
+    let scorecard_payload = serde_json::to_string_pretty(&artifact)? + "\n";
+    let status_payload = render_status_markdown(&artifact, baseline.as_ref());
+    let receipt_payload = prepare_receipt_payload(&root, &artifact)?;
+
+    write_atomic(&output_path, scorecard_payload.as_bytes())?;
+    write_atomic(&status_path, status_payload.as_bytes())?;
+    if let Some((receipt_path, payload)) = receipt_payload {
+        write_atomic(&receipt_path, payload.as_bytes())?;
+    }
 
     match format {
         UxScorecardFormat::Human => {
@@ -228,12 +238,25 @@ fn load_baseline(root: &Path) -> Result<SubsystemBaseline> {
     serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
 }
 
-fn write_json(path: &Path, artifact: &UxScorecardArtifact) -> Result<()> {
+fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
-    let payload = serde_json::to_string_pretty(artifact)?;
-    fs::write(path, format!("{payload}\n")).with_context(|| format!("writing {}", path.display()))
+    let parent =
+        path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let mut temporary = NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating temporary publication for {}", path.display()))?;
+    temporary
+        .write_all(content)
+        .with_context(|| format!("writing temporary publication for {}", path.display()))?;
+    temporary
+        .as_file_mut()
+        .sync_all()
+        .with_context(|| format!("syncing temporary publication for {}", path.display()))?;
+    temporary.persist(path).map_err(|error| {
+        color_eyre::eyre::eyre!("atomically replacing {}: {}", path.display(), error.error)
+    })?;
+    Ok(())
 }
 
 fn render_status_markdown(
@@ -345,10 +368,13 @@ fn percentile(samples: &[u64], pct: f64) -> Option<f64> {
     samples.get(rank).map(|value| *value as f64)
 }
 
-fn maybe_embed_receipt_block(root: &Path, artifact: &UxScorecardArtifact) -> Result<()> {
+fn prepare_receipt_payload(
+    root: &Path,
+    artifact: &UxScorecardArtifact,
+) -> Result<Option<(PathBuf, String)>> {
     let receipt_path = root.join("target/receipts/receipt.json");
     if !receipt_path.exists() {
-        return Ok(());
+        return Ok(None);
     }
     let raw = fs::read_to_string(&receipt_path)
         .with_context(|| format!("reading {}", receipt_path.display()))?;
@@ -370,8 +396,7 @@ fn maybe_embed_receipt_block(root: &Path, artifact: &UxScorecardArtifact) -> Res
             }),
         );
     }
-    fs::write(&receipt_path, format!("{}\n", serde_json::to_string_pretty(&json_value)?))
-        .with_context(|| format!("writing {}", receipt_path.display()))
+    Ok(Some((receipt_path, format!("{}\n", serde_json::to_string_pretty(&json_value)?))))
 }
 
 #[derive(Debug, PartialEq)]
@@ -923,6 +948,64 @@ mod tests {
             &fs::read_to_string(&receipt_path)?,
             &previous_receipt.to_string(),
             "receipt artifact changed after failed ratchet",
+        )
+    }
+
+    #[test]
+    fn malformed_existing_receipt_preserves_all_artifacts_after_valid_ratchet() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let baseline_path = root.path().join(BASELINE_PATH);
+        let baseline_parent = baseline_path
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("baseline path has no parent"))?;
+        fs::create_dir_all(baseline_parent)?;
+        let baseline = baseline_with_floor_metrics(BTreeMap::new());
+        fs::write(&baseline_path, serde_json::to_string_pretty(&baseline)?)?;
+
+        fs::write(root.path().join("measurements.json"), minimal_measurement_json())?;
+        let output_path = root.path().join("scorecard.json");
+        let status_path = root.path().join("status.md");
+        let receipt_path = root.path().join("target/receipts/receipt.json");
+        fs::create_dir_all(
+            receipt_path
+                .parent()
+                .ok_or_else(|| color_eyre::eyre::eyre!("receipt path has no parent"))?,
+        )?;
+
+        let previous_output = "previous scorecard\n";
+        let previous_status = "previous status\n";
+        let malformed_receipt = "{ malformed receipt\n";
+        fs::write(&output_path, previous_output)?;
+        fs::write(&status_path, previous_status)?;
+        fs::write(&receipt_path, malformed_receipt)?;
+
+        let error = run_at(
+            root.path(),
+            UxScorecardFormat::Human,
+            Some(PathBuf::from("measurements.json")),
+            Some(PathBuf::from("scorecard.json")),
+            Some(PathBuf::from("status.md")),
+            true,
+        )
+        .expect_err("malformed existing receipt must fail before publication");
+        check_true(
+            error.to_string().contains("parsing"),
+            "malformed receipt error missing parsing context",
+        )?;
+        check(
+            &fs::read_to_string(&output_path)?,
+            &previous_output.to_string(),
+            "scorecard artifact changed after malformed receipt",
+        )?;
+        check(
+            &fs::read_to_string(&status_path)?,
+            &previous_status.to_string(),
+            "status artifact changed after malformed receipt",
+        )?;
+        check(
+            &fs::read_to_string(&receipt_path)?,
+            &malformed_receipt.to_string(),
+            "receipt artifact changed after malformed receipt",
         )
     }
 
