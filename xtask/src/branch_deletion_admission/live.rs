@@ -301,7 +301,7 @@ pub fn collect_request(
     // Both the fetch and push URLs are read here: the deletion travels over the
     // push endpoint, so admitting against the fetch endpoint alone would bind
     // the wrong thing. A divergence refuses collection outright.
-    let remote_identity = resolve_remote_endpoint(commands, remote)?;
+    let (remote_identity, push_endpoint) = resolve_remote_endpoint(commands, remote)?;
     let repository = remote_identity.repository.clone();
 
     let parent_json = commands.capture(
@@ -413,6 +413,7 @@ pub fn collect_request(
             parent: parent_subject,
             graph,
             remote: remote.to_string(),
+            push_endpoint: Some(push_endpoint.clone()),
         },
         remote_identity,
     })
@@ -450,7 +451,7 @@ pub struct LiveCollection {
 fn resolve_remote_endpoint(
     commands: &dyn ReadOnlyCommands,
     remote: &str,
-) -> Result<RemoteIdentity> {
+) -> Result<(RemoteIdentity, String)> {
     let fetch_url = commands
         .capture("git", &["remote", "get-url", remote])
         .map_err(|error| eyre!("reading the fetch URL of remote {remote}: {error}"))?;
@@ -492,7 +493,9 @@ fn resolve_remote_endpoint(
             push.render()
         ));
     }
-    Ok(push)
+    // Return the RAW verified URL as well: the deletion is executed against
+    // this exact string, never against the mutable remote name.
+    Ok((push, (*push_url).to_string()))
 }
 
 pub fn verify_remote_identity(
@@ -500,7 +503,7 @@ pub fn verify_remote_identity(
     remote: &str,
     expected: &RemoteIdentity,
 ) -> Result<()> {
-    let observed = resolve_remote_endpoint(commands, remote)?;
+    let (observed, _verified_url) = resolve_remote_endpoint(commands, remote)?;
     if &observed != expected {
         return Err(eyre!(
             "remote {remote} resolves to {} but the admission was granted against {}",

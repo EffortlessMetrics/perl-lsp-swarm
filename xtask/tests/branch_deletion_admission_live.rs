@@ -685,6 +685,47 @@ fn a_fan_out_of_push_urls_is_refused() -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
+/// The deletion must be executed against the verified URL, not the remote NAME.
+///
+/// A remote name is mutable config that git re-resolves at push time. Verifying
+/// that `origin` points at the admitted endpoint and then running
+/// `git push origin --delete` leaves a window in which
+/// `git remote set-url --push origin <elsewhere>` redirects the deletion after
+/// every check has already passed. Binding the argv to the URL removes the
+/// second resolution entirely.
+#[test]
+fn the_deletion_targets_the_verified_url_not_the_remote_name()
+-> Result<(), Box<dyn std::error::Error>> {
+    let collected = collect_request(&healthy(), 7799, "origin")?;
+    let outcome = evaluate(&collected.request);
+    assert_eq!(outcome.admission, DeletionAdmission::SafeToDelete, "{}", outcome.detail);
+
+    let argv =
+        branch_deletion_command(&outcome).ok_or("an admitted outcome must yield a command")?;
+    let target = argv.get(2).ok_or("the push target is the third argument")?;
+
+    assert_eq!(
+        target, "https://github.com/EffortlessMetrics/perl-lsp-swarm.git",
+        "the push target must be the verified URL",
+    );
+    assert_ne!(target, "origin", "pushing to the remote name re-resolves mutable config");
+    assert!(
+        !argv.iter().any(|argument| argument == "origin"),
+        "no argument may be the mutable remote name: {argv:?}",
+    );
+
+    // Fail closed: an outcome carrying no verified endpoint yields no command,
+    // so a snapshot can never authorize a push at all.
+    let mut unbound = outcome.clone();
+    unbound.push_endpoint = None;
+    assert_eq!(
+        branch_deletion_command(&unbound),
+        None,
+        "an outcome with no bound push endpoint must yield no deletion command",
+    );
+    Ok(())
+}
+
 /// A fork parent must retain even though every other subject reads clean.
 ///
 /// `gh` reports `isCrossRepository` for such a pull request; the collector

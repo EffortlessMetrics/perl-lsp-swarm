@@ -25,6 +25,7 @@ fn repository() -> RepositoryId {
 /// field, so a passing test names the field that mattered.
 fn admissible_request() -> AdmissionRequest {
     AdmissionRequest {
+        push_endpoint: Some("https://github.com/EffortlessMetrics/perl-lsp-swarm.git".to_string()),
         parent: ParentSubject {
             repository: repository(),
             number: 7799,
@@ -69,7 +70,9 @@ fn a_merged_unencumbered_branch_with_a_proven_empty_graph_is_admitted() {
         Some(vec![
             "git".to_string(),
             "push".to_string(),
-            "origin".to_string(),
+            // The bound push URL, not the remote name: a name is mutable config
+            // git would re-resolve at push time, after every check has passed.
+            "https://github.com/EffortlessMetrics/perl-lsp-swarm.git".to_string(),
             format!("--force-with-lease=refs/heads/{PARENT_BRANCH}:{REVIEWED_SHA}"),
             "--delete".to_string(),
             PARENT_BRANCH.to_string(),
@@ -558,14 +561,17 @@ fn a_malformed_request_cannot_reach_safe_to_delete() {
     assert_eq!(outcome.admitted_sha.as_deref(), Some(LETTERED_SHA));
 }
 
-/// The deletion targets a remote *name*, which alone says nothing about which
-/// repository it resolves to — so the same-repository child check would not
-/// cover a caller pointed elsewhere. The plan must therefore pair the deletion
-/// with a verification naming the admitted repository.
+/// The plan pairs the deletion with a verification naming the admitted
+/// repository, and the deletion itself targets the VERIFIED URL rather than the
+/// remote name. A name alone says nothing about which repository it resolves to,
+/// and it stays mutable after the verification runs — so the argv must not
+/// contain it at all.
 #[test]
 fn the_deletion_plan_binds_the_remote_to_the_admitted_repository() {
     let mut request = admissible_request();
     request.remote = "upstream".to_string();
+    request.push_endpoint =
+        Some("https://github.com/EffortlessMetrics/upstream-clone.git".to_string());
     let outcome = evaluate(&request);
 
     let (verification, expected) =
@@ -581,9 +587,15 @@ fn the_deletion_plan_binds_the_remote_to_the_admitted_repository() {
     );
     assert_eq!(expected, "EffortlessMetrics/perl-lsp-swarm");
 
-    // The deletion must target the same remote the verification checked.
+    // The verification names the remote; the deletion targets the URL that
+    // verification bound. Neither the checked name nor a fallback may appear in
+    // the mutating argv, or git would resolve remote config a second time.
     let command = branch_deletion_command(&outcome).unwrap_or_default();
-    assert!(command.contains(&"upstream".to_string()), "{command:?}");
+    assert!(
+        command.contains(&"https://github.com/EffortlessMetrics/upstream-clone.git".to_string()),
+        "the deletion must target the bound URL: {command:?}",
+    );
+    assert!(!command.contains(&"upstream".to_string()), "must not push to a name: {command:?}");
     assert!(!command.contains(&"origin".to_string()), "must not fall back to origin: {command:?}");
 
     // A retaining outcome gets neither.

@@ -181,6 +181,16 @@ pub struct AdmissionRequest {
     /// `route::remote_verification_command`.
     #[serde(default = "default_remote")]
     pub remote: String,
+    /// The exact push URL this admission was verified against.
+    ///
+    /// A remote *name* is mutable config: verifying that `origin` resolves to
+    /// the admitted endpoint and then pushing to `origin` leaves a window in
+    /// which `git remote set-url --push` redirects the deletion after every
+    /// check has passed. The deletion is therefore executed against this URL,
+    /// not the name. `None` for snapshot requests, which are non-authorizing
+    /// and emit nothing runnable.
+    #[serde(default)]
+    pub push_endpoint: Option<String>,
 }
 
 fn default_remote() -> String {
@@ -344,6 +354,10 @@ pub struct AdmissionOutcome {
     /// Git remote the deletion would target, echoed from the request so the
     /// emitted command and its verification name the same remote.
     pub remote: String,
+    /// The exact push URL the deletion is executed against, carried from the
+    /// request so the mutation never re-resolves mutable remote config.
+    #[serde(default)]
+    pub push_endpoint: Option<String>,
     /// The branch tip this admission was granted against, present only for
     /// `SAFE_TO_DELETE`.
     ///

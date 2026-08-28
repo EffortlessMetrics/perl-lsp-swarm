@@ -61,10 +61,18 @@ pub fn branch_deletion_command(outcome: &AdmissionOutcome) -> Option<Vec<String>
     // does not get a command.
     let admitted_sha = outcome.admitted_sha.as_deref()?;
 
+    // Push to the exact verified URL, not the remote NAME. Verifying that a
+    // name resolves to the admitted endpoint and then pushing to that name
+    // leaves a window in which `git remote set-url --push` redirects the
+    // deletion after every check has passed; the name is mutable config
+    // re-resolved by git at mutation time. An outcome with no bound endpoint
+    // gets no command — a snapshot is not an authorization.
+    let push_endpoint = outcome.push_endpoint.as_deref()?;
+
     Some(vec![
         "git".to_string(),
         "push".to_string(),
-        outcome.remote.clone(),
+        push_endpoint.to_string(),
         format!("--force-with-lease=refs/heads/{}:{admitted_sha}", outcome.branch),
         "--delete".to_string(),
         outcome.branch.clone(),

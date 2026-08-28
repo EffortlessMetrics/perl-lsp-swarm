@@ -46,6 +46,7 @@ pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
         detail,
         retained_children,
         remote: request.remote.clone(),
+        push_endpoint: request.push_endpoint.clone(),
         admitted_sha: None,
     };
 
