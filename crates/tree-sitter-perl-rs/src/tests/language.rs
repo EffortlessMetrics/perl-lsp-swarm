@@ -2,7 +2,6 @@ use crate::*;
 
 // Tests for PerlLanguage descriptor
 
-
 #[test]
 fn test_language_returns_descriptor_with_nonzero_kind_count() {
     let lang = language();
@@ -23,10 +22,7 @@ fn test_language_reports_program_as_named_kind() {
 #[test]
 fn test_language_rejects_unknown_kind() {
     let lang = language();
-    assert!(
-        !lang.node_kind_is_named("__nonexistent_kind__"),
-        "unknown kind should not be named"
-    );
+    assert!(!lang.node_kind_is_named("__nonexistent_kind__"), "unknown kind should not be named");
 }
 
 #[test]

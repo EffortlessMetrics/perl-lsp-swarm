@@ -1,5 +1,5 @@
-use crate::support::{ast_child_at, ast_child_count};
 use crate::Node;
+use crate::support::{ast_child_at, ast_child_count};
 use perl_ast::Node as AstNode;
 
 /// Stateful cursor for navigating a subtree.

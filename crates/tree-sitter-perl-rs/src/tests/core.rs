@@ -21,11 +21,7 @@ fn test_to_sexp_starts_with_source_file() {
     let mut p = Parser::new();
     let tree = must_some(p.parse("my $x = 42;"));
     let sexp = tree.root_node().to_sexp();
-    assert!(
-        sexp.starts_with("(source_file"),
-        "sexp should start with (source_file, got: {}",
-        sexp
-    );
+    assert!(sexp.starts_with("(source_file"), "sexp should start with (source_file, got: {}", sexp);
 }
 
 #[test]

@@ -155,10 +155,7 @@ fn test_tree_cursor_sibling_with_unicode_identifiers() {
         count += 1;
     }
 
-    assert_eq!(
-        count, expected_count,
-        "sibling count should match even with Unicode identifiers"
-    );
+    assert_eq!(count, expected_count, "sibling count should match even with Unicode identifiers");
 }
 
 #[test]
