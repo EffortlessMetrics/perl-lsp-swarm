@@ -140,6 +140,7 @@ jobs:
             exit 1
           fi
           cargo fmt -p perl-lexer -- --check
+          cargo fmt --all -- --check
           cargo test -p perl-lexer --test heredoc_terminator_exactness --locked
           cargo test -p perl-lexer --test edge_case_tests --locked
           cargo clippy -p perl-lexer --lib --locked -- -D warnings
