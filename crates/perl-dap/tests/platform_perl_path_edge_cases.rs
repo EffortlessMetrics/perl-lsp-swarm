@@ -9,12 +9,12 @@
     reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
 )]
 
-use perl_dap::platform::{
-    PerlInterpreterResult, find_perl_interpreter_cached, normalize_path, resolve_perl_path,
-    resolve_perl_path_with_toolchain, setup_environment,
-};
 #[cfg(not(windows))]
 use perl_dap::platform::{detect_perlbrew_perl, detect_plenv_perl};
+use perl_dap::platform::{
+    find_perl_interpreter_cached, normalize_path, resolve_perl_path,
+    resolve_perl_path_with_toolchain, setup_environment, PerlInterpreterResult,
+};
 use perl_tdd_support::{must, must_some};
 use serial_test::serial;
 use std::path::PathBuf;
@@ -267,10 +267,7 @@ fn normalize_path_wsl_activeperl() -> TestResult {
 fn normalize_path_wsl_bare_drive_root_not_translated() -> TestResult {
     let input = PathBuf::from("/mnt/c");
     let normalized = normalize_path(&input);
-    assert_eq!(
-        normalized, input,
-        "bare /mnt/c must remain the exact input PathBuf"
-    );
+    assert_eq!(normalized, input, "bare /mnt/c must remain the exact input PathBuf");
     Ok(())
 }
 
@@ -297,10 +294,7 @@ fn normalize_path_wsl_longer_path_still_translates() -> TestResult {
 fn normalize_path_wsl_non_ascii_drive_not_translated() -> TestResult {
     let input = PathBuf::from("/mnt/é/file.pl");
     let normalized = normalize_path(&input);
-    assert_eq!(
-        normalized, input,
-        "non-ASCII drive position must remain the exact input PathBuf"
-    );
+    assert_eq!(normalized, input, "non-ASCII drive position must remain the exact input PathBuf");
     Ok(())
 }
 
@@ -311,10 +305,7 @@ fn normalize_path_wsl_non_ascii_drive_not_translated() -> TestResult {
 fn normalize_path_wsl_digit_drive_not_translated() -> TestResult {
     let input = PathBuf::from("/mnt/1/file.pl");
     let normalized = normalize_path(&input);
-    assert_eq!(
-        normalized, input,
-        "digit drive position must remain the exact input PathBuf"
-    );
+    assert_eq!(normalized, input, "digit drive position must remain the exact input PathBuf");
     Ok(())
 }
 
