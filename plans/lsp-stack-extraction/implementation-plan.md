@@ -138,9 +138,10 @@ Prove the first candidate extraction set can compile without Perl dependencies.
 
 Audit input:
 
-- reconcile JSON-RPC error classification before treating
-  `protocol/jsonrpc.rs` as dependency-clean
-- keep the `$/perl-lsp/clientResponse` compatibility shim outside low-level
+- record JSON-RPC error classification as a blocker; do not treat
+  `protocol/jsonrpc.rs` as dependency-clean until a later dependency-boundary
+  PR reconciles the application classification seam
+- record the `$/perl-lsp/clientResponse` compatibility shim outside low-level
   framing
 - verify the source again at the PR's own base; the PR 2 audit is a reviewed
   classification, not build proof
@@ -169,11 +170,49 @@ Rollback:
 Revert the audit. Keep candidates in the current app until the dependency
 boundary is clean.
 
+### Pre-scaffold dependency preparation
+
+Status: required only when PR 3 proves a preferred candidate is still mixed
+
+Goal:
+
+Remove the specific Perl dependency documented by PR 3 without moving the
+candidate or creating `crates/lsp-stack`.
+
+Allowed changes:
+
+- one bounded no-behavior-change cleanup in current application/core code
+- affected tests and error-classification inventory
+- no file movement into a new crate
+- no capability, provider, routing, editor, DAP, release, or package change
+
+Acceptance:
+
+- the candidate no longer imports the documented Perl dependency
+- application-owned classification behavior remains proven
+- the intended language-neutral dependency closure is re-checked at the
+  candidate head
+
+Proof:
+
+```bash
+git diff --check
+./scripts/cargo-safe test -p perl-lsp-rs-core protocol::jsonrpc --profile agent --locked
+./scripts/cargo-safe check -p perl-lsp-rs-core --all-targets --profile agent --locked
+./scripts/cargo-safe check -p perl-lsp-rs --all-targets --profile agent --locked
+```
+
+Rollback:
+
+Revert the dependency preparation and keep the candidate in the current app.
+Do not create the scaffold while the documented blocker remains.
+
 ### PR 4: Crate scaffold
 
 Goal:
 
-Create `crates/lsp-stack` only after PRs 1-3 land.
+Create `crates/lsp-stack` only after PRs 1-3 and any required dependency
+preparation land.
 
 Allowed changes:
 

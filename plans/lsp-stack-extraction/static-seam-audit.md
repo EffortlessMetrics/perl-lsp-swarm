@@ -111,11 +111,11 @@ importantly, the foreign `ErrorClass` implementation cannot follow
 `perl_parser_core` dependency. Because of Rust's orphan rules, the application
 cannot later implement a foreign trait for a type owned by another crate.
 
-PR 3 should therefore establish one application-owned classification seam,
-such as a local classifier or local wrapper, remove the parser taxonomy from
-the wire type, update the inventory, and prove the observed category mapping
-has not changed. It should not introduce a generic error-classification
-framework into `lsp-stack`.
+A pre-scaffold dependency-preparation PR after PR 3 should establish one
+application-owned classification seam, such as a local classifier or local
+wrapper, remove the parser taxonomy from the wire type, update the inventory,
+and prove the observed category mapping has not changed. It should not
+introduce a generic error-classification framework into `lsp-stack`.
 
 ## Transport Audit
 
@@ -153,26 +153,39 @@ the client-response shim are separate claims.
 
 ## Recommended Sequence from This Audit
 
-### PR 3A: Remove Perl taxonomy from the first wire candidates
+### PR 3: Record the dependency blocker
 
-Bounded claim:
+PR 3 remains the audit-only step defined by the implementation plan. It should:
+
+- record the direct `perl_parser_core::ErrorClass` dependency in
+  `protocol/jsonrpc.rs`;
+- record the contradictory classification authorities as a blocker rather than
+  declaring the file dependency-clean;
+- record the intended `std` + `serde` + `serde_json` closure;
+- move no code and create no `lsp-stack` crate.
+
+A dependency audit that proves the preferred candidate is still mixed is a
+valid result. Do not widen PR 3 to repair production code.
+
+### Pre-scaffold dependency-preparation PR
+
+After PR 3 lands, one bounded dependency-boundary PR should:
 
 - reconcile the three JSON-RPC classification authorities;
 - remove the direct `perl_parser_core::ErrorClass` dependency from
   `protocol/jsonrpc.rs`;
 - keep category mapping in an application-owned seam where current consumers
   need it;
-- remove the direct error-taxonomy dependency from low-level framing only if
-  that can remain one coherent no-behavior-change claim;
 - update affected inventory and tests;
 - move no files and create no `lsp-stack` crate.
 
-The JSON-RPC and framing changes may be split if one PR would join unrelated
-proof surfaces.
+The equivalent `FramingError` cleanup should be separate unless the proof shows
+that combining the two removes one shared authority rather than joining two
+independent claims.
 
-### PR 3B: Prove candidate dependency closure
+### Pre-scaffold dependency closure re-check
 
-For the first candidate set, prove:
+After the preparation PR, prove the first candidate set has this closure:
 
 ```text
 protocol/jsonrpc.rs
@@ -186,14 +199,15 @@ The audit does not authorize adding dependencies to make that proof pass.
 product configuration are not required by the first JSON-RPC move.
 
 Record the exact source set and dependency closure in the dependency-audit
-artifact. Re-run the source scan after PR 3A; do not treat this audit snapshot
-as build proof.
+artifact or a bounded follow-up receipt. Re-run the source scan after the
+preparation PR; do not treat this audit snapshot as build proof.
 
 ### PR 4: Scaffold only the neutral crate
 
-Create the minimal crate only after PR 3A/3B establish the dependency boundary.
-The scaffold should contain no copied production behavior and no Perl
-dependency. Its package metadata must avoid claims of release readiness.
+Create the minimal crate only after PR 3 and the required dependency-preparation
+and closure proof establish the boundary. The scaffold should contain no copied
+production behavior and no Perl dependency. Its package metadata must avoid
+claims of release readiness.
 
 ### PR 5: Move JSON-RPC IDs and envelopes
 
