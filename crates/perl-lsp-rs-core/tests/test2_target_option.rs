@@ -49,7 +49,7 @@ fn scalar_targets_preserve_defaults_and_generate_class() -> TestResult {
 
 #[test]
 fn false_scalar_targets_do_not_generate_class() -> TestResult {
-    for target in ["0", "undef", "''", "\"\""] {
+    for target in ["0", "undef", "''", "\"\"", "q{}", "q{0}", "qq{}"] {
         let resolved = resolve_import("Test2::V0", &format!("-target => {target}"))
             .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
 
@@ -58,6 +58,20 @@ fn false_scalar_targets_do_not_generate_class() -> TestResult {
             !resolved.symbols.contains("CLASS"),
             "false target {target:?} must not install CLASS"
         );
+    }
+    Ok(())
+}
+
+#[test]
+fn quote_like_targets_fail_closed_without_leaking_delimiters() -> TestResult {
+    for target in ["q{}", "q{0}", "qq{}"] {
+        let resolved = resolve_import("Test2::V0", &format!("-target => {target}, ok"))
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+        assert!(resolved.symbols.contains("ok"));
+        assert!(!resolved.symbols.contains("CLASS"));
+        assert!(!resolved.symbols.contains("q"));
+        assert!(!resolved.symbols.contains("qq"));
     }
     Ok(())
 }
@@ -335,4 +349,16 @@ fn target_helpers_reach_live_bundle_completion() {
 
     let v1_class = complete("use Test2::V1 -target => 'Foo';\nC|");
     assert!(has_test2_completion(&v1_class, "CLASS"));
+
+    for source in [
+        "use Test2::V0 -target => q{};\nC|",
+        "use Test2::V0 -target => q{0};\nC|",
+        "use Test2::V0 -target => qq{};\nC|",
+    ] {
+        let completions = complete(source);
+        assert!(
+            !has_test2_completion(&completions, "CLASS"),
+            "quote-like target must not synthesize CLASS: {source:?}"
+        );
+    }
 }

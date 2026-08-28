@@ -970,6 +970,14 @@ fn consume_parenthesized_scalar(atoms: &[String], start: usize) -> Option<(usize
 /// resolver's proof boundary rather than being guessed as truthy or falsey.
 fn scalar_target_is_truthy(raw: &str) -> bool {
     let trimmed = raw.trim();
+    // Quote-like operators are expressions, not bareword package names. The
+    // import tokenizer may expose `q{...}`/`qq{...}` as `q`/`qq` followed by
+    // delimiter atoms; fail closed here rather than inferring CLASS from the
+    // operator name. The following delimiter atoms are structural and are not
+    // eligible for ordinary export matching.
+    if matches!(trimmed, "q" | "qq") {
+        return false;
+    }
     let quoted = is_quoted_token(trimmed);
     let value = strip_quotes(trimmed);
 
