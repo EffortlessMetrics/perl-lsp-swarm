@@ -37,28 +37,77 @@ fn uri_matches(expected: &str, actual: &str) -> bool {
 }
 
 fn workspace_edit_has_text_edits(edit: &Value, target_uri: &str) -> bool {
+    fn valid_text_edit(edit: &Value) -> bool {
+        let Some(range) = edit.get("range") else {
+            return false;
+        };
+        let valid_position = |position: &Value| {
+            position.get("line").and_then(Value::as_u64).is_some()
+                && position.get("character").and_then(Value::as_u64).is_some()
+        };
+
+        range.get("start").is_some_and(valid_position)
+            && range.get("end").is_some_and(valid_position)
+            && edit.get("newText").and_then(Value::as_str).is_some()
+    }
+
     if edit.get("changes").and_then(Value::as_object).is_some_and(|changes| {
         changes.iter().any(|(uri, edits)| {
             uri_matches(target_uri, uri)
-                && edits.as_array().is_some_and(|edits| !edits.is_empty())
+                && edits.as_array().is_some_and(|edits| edits.iter().any(valid_text_edit))
         })
     }) {
         return true;
     }
 
-    edit.get("documentChanges")
-        .and_then(Value::as_array)
-        .is_some_and(|document_changes| {
-            document_changes.iter().any(|change| {
-                change
-                    .pointer("/textDocument/uri")
-                    .and_then(Value::as_str)
-                    .is_some_and(|uri| uri_matches(target_uri, uri))
-                    && change.get("edits").and_then(Value::as_array).is_some_and(|edits| {
-                        !edits.is_empty()
-                    })
-            })
+    edit.get("documentChanges").and_then(Value::as_array).is_some_and(|document_changes| {
+        document_changes.iter().any(|change| {
+            change
+                .pointer("/textDocument/uri")
+                .and_then(Value::as_str)
+                .is_some_and(|uri| uri_matches(target_uri, uri))
+                && change
+                    .get("edits")
+                    .and_then(Value::as_array)
+                    .is_some_and(|edits| edits.iter().any(valid_text_edit))
         })
+    })
+}
+
+#[test]
+fn workspace_edit_requires_well_formed_text_edits() {
+    let target_uri = "file:///workspace/script.pl";
+    let range = json!({
+        "start": { "line": 0, "character": 0 },
+        "end": { "line": 0, "character": 4 }
+    });
+    let valid = json!({
+        "changes": {
+            (target_uri): [{ "range": range.clone(), "newText": "my $x" }]
+        }
+    });
+    assert!(workspace_edit_has_text_edits(&valid, target_uri));
+
+    for malformed in [
+        json!({ "changes": { (target_uri): [null] } }),
+        json!({ "changes": { (target_uri): [{}] } }),
+        json!({
+            "changes": {
+                (target_uri): [{ "range": range.clone(), "newText": 42 }]
+            }
+        }),
+        json!({
+            "documentChanges": [{
+                "textDocument": { "uri": target_uri },
+                "edits": [null]
+            }]
+        }),
+    ] {
+        assert!(
+            !workspace_edit_has_text_edits(&malformed, target_uri),
+            "malformed workspace edit must not satisfy the behavioral oracle: {malformed}"
+        );
+    }
 }
 
 mod test_fixtures {
@@ -258,9 +307,7 @@ fn test_extract_variable_returns_edits() -> TestResult {
         let actions = result.as_array().ok_or("Should return action array")?;
         let extract_action = actions
             .iter()
-            .find(|action| {
-                action["title"].as_str().is_some_and(|title| title.contains("Extract"))
-            })
+            .find(|action| action["title"].as_str().is_some_and(|title| title.contains("Extract")))
             .ok_or("Should have extract variable action")?;
         let edit = extract_action
             .get("edit")

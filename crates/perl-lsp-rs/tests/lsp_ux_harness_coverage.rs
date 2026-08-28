@@ -105,11 +105,7 @@ fn workspace_symbol_match_requires_name_and_uri() {
         }
     }]);
     assert!(
-        workspace_symbol_response_contains(
-            &exact_package_name,
-            "MyApp::Target",
-            Some(target_uri)
-        ),
+        workspace_symbol_response_contains(&exact_package_name, "MyApp::Target", Some(target_uri)),
         "an exact qualified package name should satisfy readiness"
     );
 
@@ -142,6 +138,36 @@ fn workspace_symbol_match_requires_name_and_uri() {
         workspace_symbol_response_contains(&sigiled_name, "target", Some(target_uri)),
         "Perl variable sigils should not prevent a matching symbol from satisfying readiness"
     );
+}
+
+#[test]
+fn wait_for_symbol_rejects_same_file_decoy() -> Result<(), String> {
+    let (mut harness, workspace) = LspHarness::with_workspace(&[(
+        "lib/Target.pm",
+        "package Decoy;\nsub target_helper { 1 }\n1;\n",
+    )])?;
+    let target_uri = workspace.uri("lib/Target.pm");
+
+    let result = harness.wait_for_symbol("target", Some(&target_uri), Duration::from_millis(300));
+    if result.is_ok() {
+        return Err("same-file decoy must not satisfy wait_for_symbol".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn wait_for_symbol_rejects_matching_name_from_wrong_uri() -> Result<(), String> {
+    let (mut harness, workspace) = LspHarness::with_workspace(&[
+        ("lib/Expected.pm", "package Expected;\nsub target { 1 }\n1;\n"),
+        ("lib/Other.pm", "package Other;\n1;\n"),
+    ])?;
+    let other_uri = workspace.uri("lib/Other.pm");
+
+    let result = harness.wait_for_symbol("target", Some(&other_uri), Duration::from_millis(300));
+    if result.is_ok() {
+        return Err("matching name from another URI must not satisfy wait_for_symbol".to_string());
+    }
+    Ok(())
 }
 
 #[test]

@@ -70,14 +70,12 @@ fn workspace_symbol_name_matches(query: &str, actual: &str) -> bool {
         return true;
     }
 
-    let leaf = actual.rsplit("::").next().unwrap_or(actual);
+    let leaf = actual.rsplit("::").next().map_or(actual, |leaf| leaf);
     if leaf == query {
         return true;
     }
 
-    leaf.chars()
-        .next()
-        .is_some_and(|sigil| matches!(sigil, '$' | '@' | '%' | '&' | '*'))
+    leaf.chars().next().is_some_and(|sigil| matches!(sigil, '$' | '@' | '%' | '&' | '*'))
         && leaf.get(1..) == Some(query)
 }
 
@@ -629,7 +627,11 @@ impl LspHarness {
         }
     }
 
-    /// Poll workspace/symbol until the requested symbol identity appears.
+    /// Poll workspace/symbol until a response contains the requested identity.
+    ///
+    /// Workspace symbols do not carry a document version, so this proves only that
+    /// the requested name and URI were observed in a response. Callers that need
+    /// current-document freshness must establish that separately.
     pub fn wait_for_symbol(
         &mut self,
         query: &str,
