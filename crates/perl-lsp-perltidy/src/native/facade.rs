@@ -16,7 +16,7 @@ use super::implementation::{
     range_includes_line,
 };
 use super::outcome::{
-    FormatChangeSummary, FormatContext, FormatReasonCode, FormatRequestTarget, TypedFormatResult,
+    FormatChangeSummary, FormatContext, FormatRequestTarget, TypedFormatResult,
 };
 use perl_parser_core::{SourceRegionIndex, SourceRegionKind, TokenKind, TokenStream};
 
@@ -412,6 +412,7 @@ fn count_changed_lines(source: &str, formatted: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use super::super::outcome::FormatReasonCode;
     use super::*;
 
     #[test]
