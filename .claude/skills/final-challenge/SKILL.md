@@ -14,12 +14,12 @@ do not manufacture changes.
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains whether the cumulative candidate is ready for fixed review,
-which findings are material, whether proof/claim/authority changed, which challenge
-lenses are needed, and whether repair, simplification, issue return, claim split, or
-`NOT_PROVEN` is honest.
+The main Claude thread retains whether the cumulative candidate is ready for fixed
+review, which findings are material, whether proof/claim/authority changed, which
+challenge lenses are needed, and whether repair, simplification, issue return, claim
+split, or `NOT_PROVEN` is honest.
 
 ### Useful review contexts
 
@@ -40,7 +40,7 @@ entered.
 
 ### Mutation owner and join
 
-One candidate writer integrates accepted mutable repairs. The lane root joins
+One candidate writer integrates accepted mutable repairs. The main Claude thread joins
 contradictions/findings, verifies load-bearing seams, and decides the cumulative
 challenge result. Subagent verdicts do not authorize formal review or merge.
 
