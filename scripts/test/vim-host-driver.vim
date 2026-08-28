@@ -129,13 +129,16 @@ if empty(s:failures)
         \ })
 
   " #7762 root observation: the effective root must resolve through the
-  " activation markers, not through an inherited working directory.
+  " activation markers, not through an inherited working directory. Semantic
+  " markers may be files or directories (`.git` is both across Git layouts),
+  " so the receipt must recognize either shape.
   let s:root_uri = VimLspHostRootUri()
   let s:root_path = lsp#utils#uri_to_path(s:root_uri)
   let s:root_source = 'cwd_fallback'
   let s:root_marker = ''
   for s:marker in s:root_markers
-    if filereadable(s:root_path . '/' . s:marker)
+    let s:marker_path = s:root_path . '/' . s:marker
+    if filereadable(s:marker_path) || isdirectory(s:marker_path)
       let s:root_source = 'activation_root_marker'
       let s:root_marker = s:marker
       break
@@ -144,7 +147,7 @@ if empty(s:failures)
   if s:root_source !=# 'activation_root_marker'
     " The reason must stay a safe identity token: embedding the root URI
     " would violate the Rust event contract and discard the whole stream.
-    call s:Fail('root did not resolve through an activation marker (marker_file_absent)')
+    call s:Fail('root did not resolve through an activation marker (marker_absent)')
   endif
   call s:Emit('root_selected', {'root_source': s:root_source, 'root_marker': s:root_marker})
 endif
