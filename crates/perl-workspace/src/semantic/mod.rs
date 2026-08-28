@@ -38,10 +38,15 @@ pub mod queries;
 /// Literal-eval sub extractor for dynamic boundary evidence.
 pub mod eval_sub_extractor;
 
-/// Framework generated-member extraction, including the bounded
-/// DBIx::QuickORM explicit-table-class adapter.
-#[path = "generated_member_extractor_quickorm.rs"]
+/// Production framework generated-member extraction.
 pub mod generated_member_extractor;
+
+/// Non-published DBIx::QuickORM candidate extraction.
+///
+/// This module has no canonical-shard or provider consumer. Promotion requires
+/// a separate admission receipt rather than joining the live fact stream.
+#[path = "generated_member_extractor_quickorm.rs"]
+pub(crate) mod dbix_quickorm_candidate;
 
 /// Import-spec extractor for `ImportExportIndex` population during `index_file`.
 pub mod workspace_import_extractor;
